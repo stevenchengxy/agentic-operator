@@ -18,6 +18,8 @@ import { usePathname } from "next/navigation";
 import { Icon } from "../Icon";
 import { Kbd } from "../atoms";
 import { useTweaks } from "../tweaks/use-tweaks";
+import { useI18n } from "../../lib/preferences-context";
+import { ThemeToggle, LanguageToggle } from "./appearance-controls";
 import { useCommandPalette } from "../cmd-k";
 import { useTenant } from "../../lib/use-tenant";
 
@@ -26,17 +28,7 @@ export interface TopBarProps {
   user?: { name: string; initials: string };
 }
 
-const VIEW_TITLE_CASE: Record<string, string> = {
-  dashboard: "Dashboard",
-  workflows: "Workflows",
-  agents: "Agents",
-  runs: "Runs",
-  events: "Events",
-  tasks: "Human tasks",
-  logs: "Logs",
-  deployments: "Deployments",
-  settings: "Settings",
-};
+type Translate = (key: string) => string;
 
 export function TopBar({
   user = { name: "Liu Wei", initials: "LW" },
@@ -44,9 +36,13 @@ export function TopBar({
   const pathname = usePathname() ?? "";
   const tenant = useTenant();
   const [tweaks, setTweak] = useTweaks();
+  const { t } = useI18n();
   const cmdK = useCommandPalette();
 
-  const crumb = useMemo(() => buildCrumb(pathname, tenant), [pathname, tenant]);
+  const crumb = useMemo(
+    () => buildCrumb(pathname, tenant, t),
+    [pathname, tenant, t],
+  );
   const liveStream = tweaks.liveStream;
 
   return (
@@ -129,11 +125,14 @@ export function TopBar({
         }}
       >
         <Icon name="search" size={11} />
-        <span>Jump to agent, event, run…</span>
+        <span>{t("topbar.search")}</span>
         <span style={{ marginLeft: "auto" }}>
           <Kbd>⌘</Kbd> <Kbd>K</Kbd>
         </span>
       </button>
+
+      <ThemeToggle />
+      <LanguageToggle />
 
       <button
         onClick={() => setTweak("liveStream", !liveStream)}
@@ -153,7 +152,7 @@ export function TopBar({
         }}
       >
         <Icon name={liveStream ? "pause" : "play"} size={10} />
-        {liveStream ? "LIVE" : "PAUSED"}
+        {liveStream ? t("topbar.live") : t("topbar.paused")}
       </button>
 
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -187,8 +186,19 @@ interface CrumbPart {
   mono?: boolean;
 }
 
+/** Translate a view segment via `nav.<view>`, falling back to Capitalized. */
+function viewLabel(view: string, t: Translate): string {
+  const key = `nav.${view}`;
+  const translated = t(key);
+  return translated === key ? capitalize(view) : translated;
+}
+
 /** Build breadcrumb parts from `/portal/<tenant>/<view>[/<id>]`. */
-function buildCrumb(pathname: string, tenant: string): CrumbPart[] {
+function buildCrumb(
+  pathname: string,
+  tenant: string,
+  t: Translate,
+): CrumbPart[] {
   // Split, drop leading "portal" + tenant.
   const parts = pathname.split("/").filter(Boolean);
   // parts: ["portal", tenant, view?, ...rest]
@@ -197,9 +207,9 @@ function buildCrumb(pathname: string, tenant: string): CrumbPart[] {
   const base = `/portal/${tenant}`;
 
   if (!view) {
-    return [{ label: "Dashboard" }];
+    return [{ label: t("nav.dashboard") }];
   }
-  const viewTitle = VIEW_TITLE_CASE[view] ?? capitalize(view);
+  const viewTitle = viewLabel(view, t);
   if (rest.length === 0) {
     return [{ label: viewTitle }];
   }

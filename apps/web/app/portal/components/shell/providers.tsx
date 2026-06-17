@@ -16,6 +16,7 @@
 import { useState, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { DirtyProvider } from "../../lib/dirty-context";
+import { PreferencesProvider } from "../../lib/preferences-context";
 
 export function PortalProviders({ children }: { children: ReactNode }) {
   const [client] = useState(
@@ -30,8 +31,10 @@ export function PortalProviders({ children }: { children: ReactNode }) {
       }),
   );
   return (
-    <QueryClientProvider client={client}>
-      <DirtyProvider>{children}</DirtyProvider>
-    </QueryClientProvider>
+    <PreferencesProvider>
+      <QueryClientProvider client={client}>
+        <DirtyProvider>{children}</DirtyProvider>
+      </QueryClientProvider>
+    </PreferencesProvider>
   );
 }
