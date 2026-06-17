@@ -65,7 +65,7 @@ Responsibilities:
 `apps/web/lib/i18n/`:
 - `types.ts` — `export type Language = "en" | "zh"`; the `TranslationKey` union (keys of the `en` dictionary) for compile-time safety.
 - `en.ts`, `zh.ts` — plain nested objects, namespaced: `nav.*` (11 items + 3 group labels), `topbar.*` (breadcrumb view titles, search placeholder, LIVE/PAUSED, Cmd-K), `settings.*` (section nav + Appearance copy), `common.*` (Save/Cancel/Close/…), `toast.*`, `empty.*`. `zh` keys must mirror `en` exactly (enforced by test, §7).
-- `index.ts` — `translate(language, key, vars?)`: dot-path lookup, `{var}` interpolation, fallback chain `zh → en → key` (never throws, never blank); dev-only `console.warn` on miss.
+- `index.ts` — `translate(language, key, vars?)`: dot-path lookup, `{var}` interpolation, fallback chain **`active-language → en → key`** (an `en`-active miss goes straight to `key`; never throws, never blank); dev-only `console.warn` on miss.
 
 `useI18n()` (exposed from `preferences-context.tsx`) returns `{ language, setLanguage, t }` where `t(key, vars?) = translate(language, key, vars)`. `setLanguage` delegates to `setPref("language", …)` so language and theme share one persistence + apply path.
 
@@ -74,7 +74,7 @@ Why custom over next-intl/react-i18next: zero new deps (repo norm), no locale-ro
 ### 3.3 Relationship to the existing Workspace "Locale" field
 The new control is named **"Language"** (`language: "en"|"zh"`) and governs **UI chrome text + `<html lang>`**. It is intentionally **orthogonal** to the existing Workspace **"Locale"** (`en-US`/`zh-CN`/…) which governs **number/date formatting** via `useWorkspace`. They coexist:
 - Different concern (display language vs regional formatting), different value-space, different store (localStorage vs cookie).
-- We do **not** reconcile or auto-link them in this change (changing 中 does not flip the formatting Locale). To prevent confusion, the Workspace "Locale" field's helper text is clarified to "Number & date formatting" (label unchanged), and the Appearance "Language" field carries helper text "Interface language / 界面语言". No behavioral coupling.
+- We do **not** reconcile or auto-link them in this change (changing 中 does not flip the formatting Locale). The existing Workspace "Locale" field **already** disambiguates itself — its live helper text reads "Number and date formatting throughout the UI." (`Workspace.tsx:118`) — so it needs **no edit**. The new Appearance "Language" field carries helper text "Interface language / 界面语言". No behavioral coupling.
 - This non-coupling is a deliberate scope boundary; a future change may unify them.
 
 ### 3.4 Persistence choice & why the cookie store is left alone
@@ -110,13 +110,13 @@ Because the script mutates `<html>` (server-rendered as `data-theme="dark" lang=
 | `apps/web/app/portal/components/shell/providers.tsx` | Wrap children in `PreferencesProvider` (outermost, so chrome + Settings + panel share it). |
 | `apps/web/app/layout.tsx` | Add the first-paint `<script>` in `<head>`; add `suppressHydrationWarning` to `<html>`. |
 | `apps/web/lib/i18n/{types,en,zh,index}.ts` | **New.** Dictionaries (11 nav items + 3 group labels + topbar + settings + common + toast + empty) + `translate()`. |
-| `apps/web/app/portal/components/Icon.tsx` | **Add** a `sun` icon (and a `languages`/globe glyph if the language control uses an icon; otherwise the language pill is text `EN`/`中` and only `sun` is needed). |
-| `apps/web/app/portal/components/shell/topbar.tsx` | Add theme control (sun/moon, popover for System/Light/Dark) + language pill (`EN`/`中`) to the right cluster. Replace hardcoded strings (`VIEW_TITLE_CASE`, search placeholder, LIVE/PAUSED) with `t()`. |
+| `apps/web/app/portal/components/Icon.tsx` | **Add** a `sun` icon (for the theme toggle; `moon` already exists). The language control is a **text pill** (`EN`/`中`), so **no** globe/language glyph is added — respecting Icon.tsx's guidance against unused glyphs. |
+| `apps/web/app/portal/components/shell/topbar.tsx` | Add theme control (sun/moon, popover for System/Light/Dark) + language pill (`EN`/`中`) to the right cluster. Replace hardcoded strings (`VIEW_TITLE_CASE`, search placeholder, LIVE/PAUSED) with `t()`. Note: `tools`/`tenants` breadcrumbs flow through `buildCrumb`'s `capitalize` fallback (they're absent from `VIEW_TITLE_CASE`), so route that fallback through `t("nav.*")` too, or those two crumbs stay English. |
 | `apps/web/app/portal/components/shell/sidebar.tsx` | Replace the 11 item labels + 3 group labels with `t("nav.*")`. |
 | `apps/web/app/portal/components/settings/sections/Appearance.tsx` | **New.** Radios: Theme (System/Light/Dark), Language (English/中文); surface Density + Accent. Consumes context. Helper text per §3.3. |
 | `apps/web/app/portal/components/settings/data.ts` | Register the `appearance` section in `SETTINGS_SECTIONS`. |
 | `apps/web/app/portal/[tenant]/(views)/settings/page.tsx` | **Required wiring:** import `AppearanceSection` and add `{section === "appearance" && <AppearanceSection />}` to the render switch. |
-| `apps/web/app/portal/components/settings/sections/Workspace.tsx` | Minor: clarify the existing "Locale" helper text to "Number & date formatting" (§3.3). No behavior change. |
+| `apps/web/app/portal/components/settings/sections/Workspace.tsx` | **No edit required** — its "Locale" helper already reads "Number and date formatting throughout the UI." Listed only for awareness of the adjacent concept (§3.3). |
 | `apps/web/app/portal/components/tweaks/panel.tsx` | Restyle to theme tokens (`--panel`/`--text`/`--border`) so it's readable in dark mode; add "System" to the Theme radio options; add a Language row. |
 | Toasts / shared empty states in chrome + Settings | Swap hardcoded English copy to `t()`. |
 
@@ -141,7 +141,7 @@ First paint (pre-hydration): the inline `<head>` script sets `data-theme`/`data-
 ## 6. Error handling & edge cases
 - localStorage unavailable / quota / private mode: read returns defaults, write is swallowed (preserve current `try/catch`). UI still works for the session.
 - Corrupt `agentic.tweaks` JSON: `JSON.parse` guarded → defaults (both in the provider and the inline script).
-- Missing translation key: `translate()` falls back `zh → en → key`; never blank, never throws; dev `console.warn`.
+- Missing translation key: `translate()` falls back `active-language → en → key`; never blank, never throws; dev `console.warn`.
 - `theme:"system"` and the OS preference flips at runtime: `matchMedia` `change` listener re-applies the resolved theme without reload.
 - Legacy stored `theme:"dark"|"light"` (pre-`system`): valid values, respected as-is.
 - Hydration: `<html suppressHydrationWarning>` suppresses the expected attribute mismatch from the inline script; no other element is mutated pre-hydration.
