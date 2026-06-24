@@ -1,17 +1,25 @@
 "use client";
 
 /**
- * Dashboard — control plane overview (P2-FE-07).
+ * Dashboard — control-plane overview, "management overview" redesign
+ * (Layout A: health-first vertical narrative).
  *
- * Live data via canonical TanStack hooks:
- *   - useAgents() — workflow agents
- *   - useRuns({ limit: 200 }) — recent runs (active filter + 24h aggregates)
- *   - useEvents({ limit: 200 }) — event ticker + sparkline
- *   - useTasks() — pending human tasks panel
- *   - useDag() — workflow stages for the funnel + agent stage indices
- *   - useHealth() — runtime status footer
+ * Read order top → bottom by importance:
+ *   1. System-health hero    — one-line verdict (green/amber/red) from
+ *                              /health + 24h error rate + high-priority tasks,
+ *                              with inngest / sqlite / disk status chips.
+ *   2. 4 KPI cards           — active runs · throughput · error rate · spend,
+ *                              all real data (no estimated cost, no fake buckets).
+ *   3. Actionable middle     — left: active runs (cancellable) + pending HITL
+ *                              tasks; right: live event stream (pausable).
+ *   4. Cost + funnel         — spend-by-model (/v1/usage) + pipeline conversion
+ *                              funnel (/v1/funnel, distinct subjects per stage).
+ *   5. Agent activity        — collapsed by default; secondary detail.
  *
- * No bootstrap snapshot — every panel reflects the live tenant.
+ * Live data via canonical TanStack hooks. /v1/stream SSE is mounted once at
+ * the shell root (useStream) and auto-invalidates every query below; the
+ * "pause" control here freezes the event-stream panel's rendered window
+ * without tearing down the global subscription.
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -31,43 +39,36 @@ import {
   useToast,
   type StatusName,
 } from "@/app/portal/components";
-import {
-  fmtAgo,
-  fmtDur,
-  fmtNum,
-  fmtTime,
-} from "@/app/portal/lib/format";
+import { fmtAgo, fmtDur, fmtNum, fmtTime } from "@/app/portal/lib/format";
 import { useTenant } from "@/app/portal/lib/use-tenant";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 import {
   useAgents,
-  useDag,
+  useCounts,
+  useFunnel,
   type AgentListRow,
-  type DagAgent,
 } from "@/lib/hooks/useAgents";
 import { useEvents, type EventRow } from "@/lib/hooks/useEvents";
 import { useTasks, type TaskRow } from "@/lib/hooks/useTasks";
-import {
-  useRuns,
-  useCancelRun,
-  type RunListRow,
-} from "@/lib/hooks/useRuns";
+import { useRuns, useCancelRun, type RunListRow } from "@/lib/hooks/useRuns";
 import { useHealth, fmtBytes } from "@/lib/hooks/useHealth";
+import { useUsage, useBudget } from "@/lib/hooks/useUsage";
 
 /**
- * Stage label catalog — static workflow ontology. The /v1/workflows/dag
- * payload returns numeric `stage` indices for each agent; this map keeps
- * the funnel readable. Tenants without staged pipelines get an empty
- * stages array and the funnel panel hides itself.
+ * Stage-label catalog — maps the numeric pipeline stage (kebab-id prefix the
+ * DAG/funnel derive) to a stable i18n key suffix. The English/中文 strings
+ * live in the dictionary at `dashboard.stage.*`; this map only routes the
+ * number to a key. Stages without an entry fall back to "Stage N".
  */
 const STAGE_LABELS: Record<number, string> = {
-  0: "Intake",
-  1: "Analyze",
-  2: "JD",
-  3: "Publish",
-  4: "Resume",
-  5: "Match & Interview",
-  6: "Package",
-  7: "Submit",
+  0: "intake",
+  1: "analyze",
+  2: "jd",
+  3: "publish",
+  4: "resume",
+  5: "matchInterview",
+  6: "package",
+  7: "submit",
 };
 
 /** Narrowed view of an event row for the ticker. */
@@ -75,9 +76,7 @@ interface EventItem {
   id: string;
   name: string;
   color: string;
-  category: string;
   at: number;
-  source: string;
   sourceTitle: string;
   subject: string;
   consumers: Array<{
@@ -93,10 +92,8 @@ interface TaskItem {
   id: string;
   title: string;
   priority: string;
-  status: string;
   createdAt: number | null;
   awaitingFrom: string | null;
-  type: string;
 }
 
 function fromEventRow(e: EventRow): EventItem {
@@ -104,9 +101,7 @@ function fromEventRow(e: EventRow): EventItem {
     id: e.id,
     name: e.name,
     color: e.color ?? "muted",
-    category: e.category ?? "agent",
     at: e.receivedAt ? Date.parse(e.receivedAt) : 0,
-    source: e.sourceAgentName ?? "external",
     sourceTitle: e.sourceAgentTitle ?? e.sourceAgentName ?? "External",
     subject: e.subject ?? "",
     consumers: e.consumers ?? [],
@@ -118,14 +113,12 @@ function fromTaskRow(t: TaskRow): TaskItem {
     id: t.id,
     title: t.title,
     priority: t.priority ?? "med",
-    status: t.status,
     createdAt: t.createdAt ? Date.parse(t.createdAt) : null,
     awaitingFrom: t.awaitingRole,
-    type: t.type,
   };
 }
 
-/** v1_1 supports running/ok/failed/waiting/paused/idle. API status → dot. */
+/** API run status → status-dot name. */
 const STATUS_TO_DOT: Record<string, StatusName> = {
   running: "running",
   queued: "waiting",
@@ -137,28 +130,26 @@ const STATUS_TO_DOT: Record<string, StatusName> = {
   idle: "idle",
 };
 
-// ─── Page (live tick state + liveStream wiring) ──────────────────────────────
+/** Format integer USD cents as a dollar string. */
+function usd(cents: number | null | undefined): string {
+  return `$${((cents ?? 0) / 100).toFixed(2)}`;
+}
+
+// ─── Page (data wiring) ──────────────────────────────────────────────────────
 
 export default function DashboardPage() {
+  const countsQuery = useCounts();
   const agentsQuery = useAgents();
-  const dagQuery = useDag();
   const tasksQuery = useTasks();
   const eventsQuery = useEvents({ limit: 200 });
   const runsQuery = useRuns({ limit: 200 });
+  const funnelQuery = useFunnel("24h");
+  const usageQuery = useUsage();
+  const budgetQuery = useBudget();
+  const healthQuery = useHealth();
 
+  const counts = countsQuery.data ?? null;
   const agents = agentsQuery.data ?? [];
-  const dagAgents = dagQuery.data?.agents ?? [];
-  // Derive the funnel's stage set from the live DAG: the set of stage
-  // indices actually used by this tenant's agents. Tenants without staged
-  // pipelines get an empty list and the funnel panel hides itself.
-  const stages = useMemo(() => {
-    const used = new Set<number>();
-    for (const a of dagAgents) used.add(a.stage);
-    return Array.from(used)
-      .sort((a, b) => a - b)
-      .map((id) => ({ id, label: STAGE_LABELS[id] ?? `Stage ${id}` }));
-  }, [dagAgents]);
-
   const events = useMemo(
     () => (eventsQuery.data ?? []).map(fromEventRow),
     [eventsQuery.data],
@@ -169,75 +160,88 @@ export default function DashboardPage() {
   );
   const liveRuns = runsQuery.data ?? [];
 
-  // Live-stream toggle proxy — Phase 2 will wire this through Tweaks panel.
-  // Falls back to true (matching the v1_1 default) until the toggle exists.
-  const [liveStream] = useState(true);
-
-  // First-load gate — render a single empty state until the primary queries
-  // resolve so panels don't flash zero-state placeholders.
+  // First-load gate — keep panels from flashing zero-states before the
+  // primary queries resolve.
   const isPrimaryLoading =
-    agentsQuery.isLoading || runsQuery.isLoading || eventsQuery.isLoading;
+    countsQuery.isLoading || runsQuery.isLoading || eventsQuery.isLoading;
   const primaryError =
-    agentsQuery.error ?? runsQuery.error ?? eventsQuery.error ?? null;
+    countsQuery.error ?? runsQuery.error ?? eventsQuery.error ?? null;
 
   return (
     <DashboardView
+      counts={counts}
       agents={agents}
-      dagAgents={dagAgents}
-      stages={stages}
       tasks={taskItems}
       eventStream={events}
       liveRuns={liveRuns}
-      liveStream={liveStream}
+      funnel={funnelQuery.data?.stages ?? []}
+      usage={usageQuery.data ?? null}
+      usageError={Boolean(usageQuery.error)}
+      budget={budgetQuery.data ?? null}
+      health={healthQuery.data ?? null}
+      healthError={Boolean(healthQuery.isError)}
       loading={isPrimaryLoading}
       error={primaryError}
     />
   );
 }
 
+type Verdict = "ok" | "warn" | "down";
+
 interface DashboardViewProps {
+  counts: { runningRuns: number; okRuns24h: number; failedRuns24h: number; events24h: number; openTasks: number; totalRuns: number } | null;
   agents: AgentListRow[];
-  dagAgents: DagAgent[];
-  stages: { id: number; label: string }[];
   tasks: TaskItem[];
   eventStream: EventItem[];
   liveRuns: RunListRow[];
-  liveStream: boolean;
+  funnel: Array<{ stage: number; count: number }>;
+  usage: { totals: { usdCents: number }; byModel: Array<{ key: string; usdCents: number }>; byDay: Array<{ usdCents: number }> } | null;
+  usageError: boolean;
+  budget: { monthlyUsdCap: number | null; usedUsdMonth: number; periodStart: number } | null;
+  health: ReturnType<typeof useHealth>["data"] | null;
+  healthError: boolean;
   loading: boolean;
   error: Error | null;
 }
 
 function DashboardView({
+  counts,
   agents,
-  dagAgents,
-  stages,
   tasks,
   eventStream,
   liveRuns,
-  liveStream,
+  funnel,
+  usage,
+  usageError,
+  budget,
+  health,
+  healthError,
   loading,
   error,
 }: DashboardViewProps) {
   const tenant = useTenant();
+  const { t } = useI18n();
 
-  // Hydration gate. The dashboard is heavily time-dependent (Date.now() in
-  // sparkline bucketing, fmtAgo/fmtTime in the ticker, the 1.5s `tickerIdx`
-  // interval) and reads react-query state that can differ between SSR and
-  // the first client paint. Rather than scatter `suppressHydrationWarning`
-  // across every consumer, we render a deterministic skeleton until the
-  // component mounts on the client — server HTML and first-client HTML
-  // match exactly, then the real dashboard takes over on the next tick.
+  // Hydration gate — the dashboard is time-dependent (Date.now() bucketing,
+  // fmtAgo/fmtTime). Render a deterministic skeleton until mounted so SSR and
+  // first-client HTML match.
   const [hasMounted, setHasMounted] = useState(false);
   useEffect(() => setHasMounted(true), []);
 
-  // Live runs (from /v1/runs) auto-invalidate on every SSE event.
-  const active = liveRuns.filter((r) => r.status === "running");
-  const failed24 = liveRuns.filter((r) => r.status === "failed").length;
-  const ok24 = liveRuns.filter((r) => r.status === "ok").length;
-  const total24 = liveRuns.length;
+  // Event-stream pause. The global SSE subscription keeps running; pausing
+  // only freezes the rendered window so an operator can read it.
+  const [streamLive, setStreamLive] = useState(true);
 
-  // Throughput sparkline — events / min over last 60 min from the bootstrap
-  // snapshot (events are refreshed via context on testAgent push).
+  // ── Derived metrics (all from authoritative sources) ──────────────────────
+  const active = liveRuns.filter((r) => r.status === "running");
+  const runningCount = counts?.runningRuns ?? active.length;
+  const ok24 = counts?.okRuns24h ?? 0;
+  const failed24 = counts?.failedRuns24h ?? 0;
+  const completed24 = ok24 + failed24;
+  const errorRatePct = completed24 > 0 ? (failed24 / completed24) * 100 : 0;
+  const highTasks = tasks.filter((t) => t.priority === "high").length;
+
+  // Throughput — real per-minute buckets over the last 60 minutes.
   const buckets = useMemo(() => {
     const now = Date.now();
     const bs = new Array(60).fill(0);
@@ -247,46 +251,29 @@ function DashboardView({
     });
     return bs;
   }, [eventStream]);
+  const eventsPerHr = useMemo(() => buckets.reduce((a, b) => a + b, 0), [buckets]);
 
-  // Token usage sparkline — sum tokens across runs per 24h bucket.
-  const tokSpark = useMemo(() => {
-    const arr = new Array(24).fill(0);
-    liveRuns.forEach((r, i) => {
-      arr[i % 24] += (r.tokensIn || 0) + (r.tokensOut || 0);
-    });
-    return arr;
-  }, [liveRuns]);
+  // Spend — authoritative monthly figure from the budget row; spark from the
+  // per-day usage breakdown when available.
+  const spendCents = budget?.usedUsdMonth ?? usage?.totals.usdCents ?? 0;
+  const capCents = budget?.monthlyUsdCap ?? null;
+  const budgetPct = capCents && capCents > 0 ? (spendCents / capCents) * 100 : null;
+  const spendSpark = useMemo(
+    () => (usage?.byDay ?? []).map((d) => d.usdCents),
+    [usage],
+  );
 
-  // Per-agent activity over the last hour.
-  const agentActivity = useMemo(() => {
-    interface Bucket {
-      agent: AgentListRow;
-      runs: number;
-      errors: number;
-      lastRun: number;
-    }
-    const m = new Map<string, Bucket>();
-    agents.forEach((a) =>
-      m.set(a.name, { agent: a, runs: 0, errors: 0, lastRun: 0 }),
-    );
-    liveRuns.forEach((r) => {
-      const e = m.get(r.agentName);
-      if (!e) return;
-      e.runs++;
-      if (r.status === "failed") e.errors++;
-      const t = r.startedAt ? Date.parse(r.startedAt) : 0;
-      if (t > e.lastRun) e.lastRun = t;
-    });
-    return Array.from(m.values()).sort((a, b) => b.runs - a.runs);
-  }, [agents, liveRuns]);
+  // ── Health verdict ────────────────────────────────────────────────────────
+  const healthFail =
+    !!health &&
+    (!health.inngest.ok || !health.sqlite.ok || !health.disk.ok);
+  const verdict: Verdict = healthFail || healthError
+    ? "down"
+    : errorRatePct >= 5 || highTasks > 0
+      ? "warn"
+      : "ok";
 
-  // Newest-first stable window. The previous implementation rotated
-  // `tickerIdx` every 1.5s and sliced from there, which made the panel
-  // appear to "scroll" even when nothing new was arriving — visually
-  // indistinguishable from a fresh event. The list is now sorted by
-  // received-at and clamped to 14 distinct rows; new events naturally
-  // appear at the top when the underlying query invalidates, and the
-  // brand-new row gets the entry animation (see `latestEventId` below).
+  // ── Event window (newest-first, deduped, frozen when paused) ───────────────
   const recentEvents = useMemo(() => {
     if (eventStream.length === 0) return [];
     const sorted = [...eventStream].sort((a, b) => b.at - a.at);
@@ -301,31 +288,44 @@ function DashboardView({
     return out;
   }, [eventStream]);
 
-  // Track only the most recently arrived event id so we can animate just
-  // that row, not the whole list. Updated when the head of the sorted
-  // window changes — i.e. only on a real new arrival, not on every render.
+  // Snapshot the window when paused so it stops updating visually.
+  const [frozen, setFrozen] = useState<EventItem[] | null>(null);
+  useEffect(() => {
+    if (!streamLive && frozen === null) setFrozen(recentEvents);
+    if (streamLive && frozen !== null) setFrozen(null);
+  }, [streamLive, frozen, recentEvents]);
+  const shownEvents = streamLive ? recentEvents : (frozen ?? recentEvents);
+
   const [latestEventId, setLatestEventId] = useState<string | null>(null);
   useEffect(() => {
     const head = recentEvents[0]?.id ?? null;
-    if (head && head !== latestEventId) setLatestEventId(head);
-  }, [recentEvents, latestEventId]);
+    if (streamLive && head && head !== latestEventId) setLatestEventId(head);
+  }, [recentEvents, latestEventId, streamLive]);
 
-  const tokensTotal = useMemo(
-    () =>
-      liveRuns.reduce(
-        (sum, r) => sum + (r.tokensIn ?? 0) + (r.tokensOut ?? 0),
-        0,
-      ),
-    [liveRuns],
-  );
-  const tokensEstCost = (tokensTotal / 1000) * 0.01;
+  // Per-agent activity (collapsible bottom section).
+  const agentActivity = useMemo(() => {
+    const m = new Map<
+      string,
+      { agent: AgentListRow; runs: number; errors: number; lastRun: number }
+    >();
+    agents.forEach((a) =>
+      m.set(a.name, { agent: a, runs: 0, errors: 0, lastRun: 0 }),
+    );
+    liveRuns.forEach((r) => {
+      const e = m.get(r.agentName);
+      if (!e) return;
+      e.runs++;
+      if (r.status === "failed") e.errors++;
+      const ts = r.startedAt ? Date.parse(r.startedAt) : 0;
+      if (ts > e.lastRun) e.lastRun = ts;
+    });
+    return Array.from(m.values()).sort((a, b) => b.runs - a.runs);
+  }, [agents, liveRuns]);
+  const [showAgents, setShowAgents] = useState(false);
 
-  // Cancel mutation — used by the per-row cancel button and the
-  // panel-level "Cancel all". `useCancelRun` already invalidates the runs
-  // list + counts on settle, so panels repaint without manual refetch.
+  // Cancel mutation.
   const cancelRun = useCancelRun();
   const toast = useToast();
-
   const handleCancel = useCallback(
     (runId: string) => {
       cancelRun.mutate(runId, {
@@ -333,56 +333,42 @@ function DashboardView({
           toast({
             tone: data.cancelled ? "signal" : "default",
             title: data.cancelled
-              ? `Run ${runId} cancelling`
-              : `Run ${runId} already ${data.status}`,
+              ? t("dashboard.toastRunCancelling", { runId })
+              : t("dashboard.toastRunAlready", { runId, status: data.status }),
             description: data.note,
           });
         },
         onError: (err) => {
           toast({
             tone: "red",
-            title: `Cancel failed`,
+            title: t("dashboard.toastCancelFailed"),
             description: err instanceof Error ? err.message : String(err),
           });
         },
       });
     },
-    [cancelRun, toast],
+    [cancelRun, toast, t],
   );
-
   const handleCancelAll = useCallback(() => {
     if (active.length === 0) return;
     const ids = active.map((r) => r.id);
     toast({
       tone: "amber",
-      title: `Cancelling ${ids.length} active run${ids.length === 1 ? "" : "s"}`,
+      title:
+        ids.length === 1
+          ? t("dashboard.toastCancellingOne", { count: ids.length })
+          : t("dashboard.toastCancellingMany", { count: ids.length }),
       description: ids.slice(0, 4).join(", ") + (ids.length > 4 ? "…" : ""),
     });
     for (const id of ids) cancelRun.mutate(id);
-  }, [active, cancelRun, toast]);
+  }, [active, cancelRun, toast, t]);
 
-  // dagAgents is currently only used to derive `stages`. Marking the prop as
-  // intentionally unread keeps the contract documented without introducing
-  // an unused-variable lint warning.
-  void dagAgents;
-
-  // First-paint skeleton — see `hasMounted` comment above. We deliberately
-  // mirror the loading branch below so the eventual hydrated paint replaces
-  // a friendly empty state rather than a flash of nothing.
   if (!hasMounted) {
     return (
       <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
-        <ViewHeader
-          title="Dashboard"
-          subtitle="Live state of all agent runs, events, and queues across the active tenant."
-          badge={
-            <Badge tone="signal">
-              <span className="live-dot" style={{ width: 5, height: 5 }} /> LIVE
-            </Badge>
-          }
-        />
+        <ViewHeader title={t("nav.dashboard")} subtitle={t("dashboard.subtitle")} />
         <div style={{ padding: 20 }}>
-          <Empty title="Loading dashboard…" hint="" />
+          <Empty title={t("dashboard.loading")} hint="" />
         </div>
       </div>
     );
@@ -391,102 +377,121 @@ function DashboardView({
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
       <ViewHeader
-        title="Dashboard"
-        subtitle="Live state of all agent runs, events, and queues across the active tenant."
+        title={t("nav.dashboard")}
+        subtitle={t("dashboard.subtitle")}
         badge={
-          <Badge tone="signal">
-            <span className="live-dot" style={{ width: 5, height: 5 }} /> LIVE
+          <Badge tone={streamLive ? "signal" : "muted"}>
+            {streamLive && (
+              <span className="live-dot" style={{ width: 5, height: 5 }} />
+            )}{" "}
+            {streamLive ? t("topbar.live") : t("dashboard.paused")}
           </Badge>
-        }
-        action={
-          <>
-            <Button icon="deploy" small>
-              Deploy
-            </Button>
-            <Button icon="replay" small>
-              Replay window
-            </Button>
-          </>
         }
       />
 
       {error && (
         <div style={{ padding: 20 }}>
           <Empty
-            title="Failed to load dashboard"
-            hint={error.message || "api unreachable on :3501"}
+            title={t("dashboard.loadFailed")}
+            hint={error.message || t("dashboard.apiUnreachablePort")}
           />
         </div>
       )}
-      {!error && loading && agents.length === 0 && liveRuns.length === 0 && (
+      {!error && loading && !counts && liveRuns.length === 0 && (
         <div style={{ padding: 20 }}>
-          <Empty title="Loading dashboard…" hint="" />
+          <Empty title={t("dashboard.loading")} hint="" />
         </div>
       )}
 
       <div style={{ flex: 1, overflow: "auto", padding: 20 }}>
-        {/* Top KPI row */}
+        {/* ① Health hero */}
+        <HealthHero
+          verdict={verdict}
+          running={runningCount}
+          errorRatePct={errorRatePct}
+          highTasks={highTasks}
+          streamLive={streamLive}
+          health={health}
+          healthError={healthError}
+        />
+
+        {/* ② KPI row */}
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: "repeat(5, 1fr)",
+            gridTemplateColumns: "repeat(4, 1fr)",
             gap: 12,
-            marginBottom: 16,
+            margin: "12px 0",
           }}
         >
           <KPICard
-            label="Active runs"
-            value={active.length}
-            sub={`${ok24}/${total24} ok past hour`}
-            tone="up"
+            label={t("dashboard.kpiActiveRuns")}
+            value={runningCount}
+            sub={t("dashboard.kpiActiveSub", { ok: ok24, total: completed24 })}
             accent="var(--signal)"
             spark={buckets.slice(40)}
           />
           <KPICard
-            label="Events / hr"
-            value={fmtNum(eventStream.length)}
-            sub={`${fmtNum(eventStream.length)} in window`}
-            tone="up"
+            label={t("dashboard.kpiThroughput")}
+            value={fmtNum(eventsPerHr)}
+            sub={t("dashboard.kpiThroughputSub")}
             spark={buckets}
           />
           <KPICard
-            label="Errors / hr"
-            value={failed24}
+            label={t("dashboard.kpiErrorRate")}
+            value={`${errorRatePct.toFixed(1)}%`}
+            sub={t("dashboard.kpiErrorRateSub", {
+              failed: failed24,
+              total: completed24,
+            })}
+            tone={errorRatePct >= 5 ? "down" : "up"}
+            accent={errorRatePct >= 5 ? "var(--red)" : "var(--green)"}
+          />
+          <KPICard
+            label={t("dashboard.kpiSpend")}
+            value={usd(spendCents)}
             sub={
-              failed24 > 0 && total24 > 0
-                ? `${((failed24 / total24) * 100).toFixed(1)}% failure rate`
-                : "all green"
+              budgetPct != null
+                ? t("dashboard.kpiBudgetSub", {
+                    cap: usd(capCents),
+                    pct: budgetPct.toFixed(0),
+                  })
+                : t("dashboard.kpiNoBudget")
             }
-            tone={failed24 > 4 ? "down" : "up"}
-            accent={failed24 > 4 ? "var(--red)" : "var(--green)"}
-          />
-          <KPICard
-            label="Pending tasks"
-            value={tasks.length}
-            sub={`${tasks.filter((t) => t.priority === "high").length} high priority`}
             accent="var(--amber)"
-          />
-          <KPICard
-            label="Tokens / hr"
-            value={fmtNum(tokensTotal)}
-            sub={`≈ $${tokensEstCost.toFixed(2)}`}
-            spark={tokSpark}
+            spark={spendSpark.length > 1 ? spendSpark : undefined}
+            sparkColor="var(--amber)"
+            footer={
+              budgetPct != null ? (
+                <div
+                  style={{
+                    height: 4,
+                    background: "var(--panel-3)",
+                    borderRadius: 99,
+                    marginTop: 8,
+                    overflow: "hidden",
+                  }}
+                >
+                  <div
+                    style={{
+                      height: "100%",
+                      width: `${Math.min(100, budgetPct)}%`,
+                      background:
+                        budgetPct >= 90 ? "var(--red)" : "var(--signal)",
+                    }}
+                  />
+                </div>
+              ) : undefined
+            }
           />
         </div>
 
-        {/* Main grid */}
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "1.4fr 1fr",
-            gap: 12,
-          }}
-        >
-          {/* LEFT */}
+        {/* ③ Actionable middle */}
+        <div style={{ display: "grid", gridTemplateColumns: "1.45fr 1fr", gap: 12 }}>
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             <Panel
-              title="Active runs"
-              subtitle={`${active.length} running`}
+              title={t("dashboard.panelActiveRuns")}
+              subtitle={t("dashboard.runningCount", { count: active.length })}
               action={
                 <div style={{ display: "flex", gap: 6 }}>
                   {active.length > 0 && (
@@ -497,15 +502,12 @@ function DashboardView({
                       onClick={handleCancelAll}
                       disabled={cancelRun.isPending}
                     >
-                      Cancel all
+                      {t("dashboard.cancelAll")}
                     </Button>
                   )}
-                  <Link
-                    href={`/portal/${tenant}/runs` as never}
-                    style={{ textDecoration: "none" }}
-                  >
+                  <Link href={`/portal/${tenant}/runs` as never} style={{ textDecoration: "none" }}>
                     <Button small icon="external" tone="ghost">
-                      View all
+                      {t("dashboard.viewAll")}
                     </Button>
                   </Link>
                 </div>
@@ -521,58 +523,12 @@ function DashboardView({
             </Panel>
 
             <Panel
-              title="Agent activity · past hour"
+              title={t("dashboard.panelAwaitingHumans")}
+              subtitle={t("dashboard.tasksCount", { count: tasks.length })}
               action={
-                <Link
-                  href={`/portal/${tenant}/agents` as never}
-                  style={{ textDecoration: "none" }}
-                >
+                <Link href={`/portal/${tenant}/tasks` as never} style={{ textDecoration: "none" }}>
                   <Button small icon="external" tone="ghost">
-                    All agents
-                  </Button>
-                </Link>
-              }
-              padded={false}
-            >
-              <AgentActivityGrid items={agentActivity} tenant={tenant} />
-            </Panel>
-          </div>
-
-          {/* RIGHT */}
-          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            <Panel
-              title="Event stream"
-              subtitle={liveStream ? "auto-updating" : "paused"}
-              action={
-                <Link
-                  href={`/portal/${tenant}/events` as never}
-                  style={{ textDecoration: "none" }}
-                >
-                  <Button small icon="external" tone="ghost">
-                    Open
-                  </Button>
-                </Link>
-              }
-              padded={false}
-              style={{ minHeight: 320 }}
-            >
-              <EventTicker
-                events={recentEvents}
-                live={liveStream}
-                latestEventId={latestEventId}
-              />
-            </Panel>
-
-            <Panel
-              title="Awaiting humans"
-              subtitle={`${tasks.length} tasks`}
-              action={
-                <Link
-                  href={`/portal/${tenant}/tasks` as never}
-                  style={{ textDecoration: "none" }}
-                >
-                  <Button small icon="external" tone="ghost">
-                    Inbox
+                    {t("dashboard.inbox")}
                   </Button>
                 </Link>
               }
@@ -580,24 +536,246 @@ function DashboardView({
             >
               <PendingTasksList tasks={tasks.slice(0, 5)} tenant={tenant} />
             </Panel>
-
-            <Panel title="Runtime" padded>
-              <SystemHealth />
-            </Panel>
           </div>
+
+          <Panel
+            title={t("dashboard.panelEventStream")}
+            subtitle={streamLive ? t("dashboard.autoUpdating") : t("dashboard.paused")}
+            action={
+              <div style={{ display: "flex", gap: 6 }}>
+                <Button
+                  small
+                  icon={streamLive ? "pause" : "play"}
+                  tone="ghost"
+                  onClick={() => setStreamLive((v) => !v)}
+                >
+                  {streamLive ? t("dashboard.streamPause") : t("dashboard.streamResume")}
+                </Button>
+                <Link href={`/portal/${tenant}/events` as never} style={{ textDecoration: "none" }}>
+                  <Button small icon="external" tone="ghost">
+                    {t("dashboard.open")}
+                  </Button>
+                </Link>
+              </div>
+            }
+            padded={false}
+            style={{ minHeight: 320 }}
+          >
+            <EventTicker events={shownEvents} live={streamLive} latestEventId={latestEventId} />
+          </Panel>
         </div>
 
-        {/* Bottom: stage funnel — only show if the tenant has stages defined.
-            Avoids leaking the RAAS-specific funnel title for tenants that
-            don't have a staged pipeline (e.g. northwind, robohire). */}
-        {stages.length > 0 && (
-          <div style={{ marginTop: 12 }}>
-            <Panel title="Stage funnel · last 24h" padded>
-              <StageFunnel stages={stages} />
-            </Panel>
-          </div>
-        )}
+        {/* ④ Cost + funnel */}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 12 }}>
+          <Panel
+            title={t("dashboard.panelCost")}
+            subtitle={t("dashboard.costTotalLabel", {
+              total: usd(usage?.totals.usdCents),
+            })}
+            action={
+              <Link href={`/portal/${tenant}/settings/usage` as never} style={{ textDecoration: "none" }}>
+                <Button small icon="external" tone="ghost">
+                  {t("dashboard.usage")}
+                </Button>
+              </Link>
+            }
+            padded={false}
+          >
+            <CostByModel rows={usage?.byModel ?? []} unavailable={usageError} />
+          </Panel>
+
+          <Panel
+            title={t("dashboard.panelFunnel")}
+            subtitle={t("dashboard.funnelBySubject", { window: "24h" })}
+            padded
+          >
+            <StageFunnel stages={funnel} />
+          </Panel>
+        </div>
+
+        {/* ⑤ Agent activity — collapsed by default */}
+        <div style={{ marginTop: 12 }}>
+          <button
+            type="button"
+            onClick={() => setShowAgents((v) => !v)}
+            style={{
+              width: "100%",
+              textAlign: "left",
+              padding: "10px 14px",
+              background: "var(--panel)",
+              border: "1px solid var(--border)",
+              borderRadius: 8,
+              color: "var(--text-2)",
+              fontSize: 12,
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+            }}
+          >
+            <span style={{ color: "var(--text-3)" }}>{showAgents ? "▾" : "▸"}</span>
+            {showAgents
+              ? t("dashboard.agentActivityHide")
+              : t("dashboard.agentActivityShow", { count: agents.length })}
+          </button>
+          {showAgents && (
+            <div style={{ marginTop: 12 }}>
+              <Panel title={t("dashboard.panelAgentActivity")} padded={false}>
+                <AgentActivityGrid items={agentActivity} tenant={tenant} />
+              </Panel>
+            </div>
+          )}
+        </div>
       </div>
+    </div>
+  );
+}
+
+// ─── Health hero ─────────────────────────────────────────────────────────────
+
+function HealthHero({
+  verdict,
+  running,
+  errorRatePct,
+  highTasks,
+  streamLive,
+  health,
+  healthError,
+}: {
+  verdict: Verdict;
+  running: number;
+  errorRatePct: number;
+  highTasks: number;
+  streamLive: boolean;
+  health: ReturnType<typeof useHealth>["data"] | null;
+  healthError: boolean;
+}) {
+  const { t } = useI18n();
+  const tone =
+    verdict === "down" ? "var(--red)" : verdict === "warn" ? "var(--amber)" : "var(--green)";
+  const verdictLabel =
+    verdict === "down"
+      ? t("dashboard.verdictDown")
+      : verdict === "warn"
+        ? t("dashboard.verdictWarn")
+        : t("dashboard.verdictOk");
+
+  const parts = [
+    t("dashboard.heroRunning", { count: running }),
+    t("dashboard.heroErrorRate", { pct: errorRatePct.toFixed(1) }),
+    t("dashboard.heroHighTasks", { count: highTasks }),
+    streamLive ? t("dashboard.heroStreamLive") : t("dashboard.heroStreamPaused"),
+  ];
+
+  const chips: Array<{ label: string; ok: boolean; note: string }> = [];
+  if (health) {
+    chips.push({
+      label: t("dashboard.healthInngest"),
+      ok: health.inngest.ok,
+      note: health.inngest.ok ? t("dashboard.healthReachable") : t("dashboard.healthUnreachable"),
+    });
+    chips.push({
+      label: t("dashboard.healthSqlite"),
+      ok: health.sqlite.ok,
+      note: health.sqlite.ok
+        ? `${fmtBytes(health.sqlite.sizeBytes)} · ${health.sqlite.journalMode ?? "—"}`
+        : t("dashboard.healthUnreachable"),
+    });
+    chips.push({
+      label: t("dashboard.healthLogVolume"),
+      ok: health.disk.ok,
+      note: health.disk.ok ? fmtBytes(health.disk.freeBytes) : t("dashboard.healthStatFailed"),
+    });
+  } else if (healthError) {
+    for (const label of [t("dashboard.healthInngest"), t("dashboard.healthSqlite"), t("dashboard.healthLogVolume")]) {
+      chips.push({ label, ok: false, note: t("dashboard.healthApiUnreachable") });
+    }
+  }
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 16,
+        padding: "16px 18px",
+        background: "var(--panel)",
+        border: "1px solid var(--border)",
+        borderLeft: `3px solid ${tone}`,
+        borderRadius: 10,
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
+        <span
+          style={{
+            width: 13,
+            height: 13,
+            borderRadius: 99,
+            background: tone,
+            boxShadow: `0 0 12px ${tone}`,
+            flex: "none",
+          }}
+        />
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontSize: 19, fontWeight: 600, color: "var(--text)" }}>{verdictLabel}</div>
+          <div
+            style={{
+              fontSize: 12.5,
+              color: "var(--text-2)",
+              marginTop: 2,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {parts.join(" · ")}
+          </div>
+        </div>
+      </div>
+      {chips.length > 0 && (
+        <div style={{ marginLeft: "auto", display: "flex", gap: 8, flexWrap: "wrap" }}>
+          {chips.map((c) => (
+            <div
+              key={c.label}
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                gap: 3,
+                padding: "7px 11px",
+                background: "var(--panel-2)",
+                border: "1px solid var(--border)",
+                borderRadius: 8,
+                minWidth: 92,
+              }}
+            >
+              <span
+                style={{
+                  fontSize: 9,
+                  textTransform: "uppercase",
+                  letterSpacing: "0.08em",
+                  color: "var(--text-3)",
+                  fontFamily: "var(--mono)",
+                }}
+              >
+                {c.label}
+              </span>
+              <span
+                style={{
+                  fontSize: 11.5,
+                  fontFamily: "var(--mono)",
+                  color: "var(--text-2)",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 5,
+                }}
+              >
+                <StatusDot status={c.ok ? "ok" : "failed"} size={7} />
+                {c.note}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -611,6 +789,8 @@ function KPICard({
   tone,
   accent,
   spark,
+  sparkColor,
+  footer,
 }: {
   label: string;
   value: React.ReactNode;
@@ -618,6 +798,8 @@ function KPICard({
   tone?: "up" | "down";
   accent?: string;
   spark?: number[];
+  sparkColor?: string;
+  footer?: React.ReactNode;
 }) {
   return (
     <div
@@ -659,12 +841,7 @@ function KPICard({
           {value}
         </div>
         {spark && spark.length > 0 && (
-          <Sparkline
-            values={spark}
-            width={70}
-            height={26}
-            color={accent || "var(--signal)"}
-          />
+          <Sparkline values={spark} width={70} height={26} color={sparkColor || accent || "var(--signal)"} />
         )}
       </div>
       {sub && (
@@ -672,17 +849,13 @@ function KPICard({
           style={{
             marginTop: 4,
             fontSize: 11,
-            color:
-              tone === "down"
-                ? "var(--red)"
-                : tone === "up"
-                  ? "var(--text-2)"
-                  : "var(--text-3)",
+            color: tone === "down" ? "var(--red)" : tone === "up" ? "var(--text-2)" : "var(--text-3)",
           }}
         >
           {sub}
         </div>
       )}
+      {footer}
     </div>
   );
 }
@@ -700,17 +873,13 @@ function RunTable({
   onCancel?: (id: string) => void;
   cancelPendingIds?: string;
 }) {
+  const { t } = useI18n();
   if (rows.length === 0)
-    return <Empty title="No active runs" hint="Quiet — system idle" />;
+    return <Empty title={t("dashboard.noActiveRuns")} hint={t("dashboard.systemIdle")} />;
   return (
     <div style={{ maxHeight: 280, overflow: "auto" }}>
       <table
-        style={{
-          width: "100%",
-          borderCollapse: "collapse",
-          fontSize: 12.5,
-          tableLayout: "fixed",
-        }}
+        style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, tableLayout: "fixed" }}
       >
         <colgroup>
           <col style={{ width: 28 }} />
@@ -731,12 +900,12 @@ function RunTable({
             }}
           >
             <Th />
-            <Th>Run</Th>
-            <Th>Agent</Th>
-            <Th>Subject</Th>
-            <Th>Step</Th>
-            <Th style={{ textAlign: "right" }}>Dur</Th>
-            {onCancel && <Th style={{ textAlign: "right" }}>Action</Th>}
+            <Th>{t("dashboard.colRun")}</Th>
+            <Th>{t("dashboard.colAgent")}</Th>
+            <Th>{t("dashboard.colSubject")}</Th>
+            <Th>{t("dashboard.colStep")}</Th>
+            <Th style={{ textAlign: "right" }}>{t("dashboard.colDur")}</Th>
+            {onCancel && <Th style={{ textAlign: "right" }}>{t("dashboard.colAction")}</Th>}
           </tr>
         </thead>
         <tbody>
@@ -766,37 +935,19 @@ function RunTableRow({
   onCancel?: (id: string) => void;
   cancelling?: boolean;
 }) {
-  // Detect a TEST run — RunListRow doesn't surface testRun yet (Phase 2
-  // backend wiring lands in Cleanup); falling back to the SPA snapshot row.
-  const testRun = (row as { testRun?: boolean }).testRun === true;
+  const { t } = useI18n();
   return (
-    <tr
-      style={{
-        borderBottom: "1px solid var(--border)",
-      }}
-    >
+    <tr style={{ borderBottom: "1px solid var(--border)" }}>
       <Td>
         <StatusDot status={STATUS_TO_DOT[row.status] ?? "idle"} />
       </Td>
       <Td>
-        <Link
-          href={`/portal/${tenant}/runs/${row.id}` as never}
-          style={{ textDecoration: "none" }}
-        >
-          <span
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 5,
-            }}
-          >
-            <span
-              className="mono"
-              style={{ color: "var(--text-2)", whiteSpace: "nowrap" }}
-            >
+        <Link href={`/portal/${tenant}/runs/${row.id}` as never} style={{ textDecoration: "none" }}>
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+            <span className="mono" style={{ color: "var(--text-2)", whiteSpace: "nowrap" }}>
               {row.id}
             </span>
-            {testRun && (
+            {row.testRun && (
               <Badge tone="signal" style={{ fontSize: 9 }}>
                 TEST
               </Badge>
@@ -804,40 +955,23 @@ function RunTableRow({
           </span>
         </Link>
       </Td>
-      <Td
-        style={{
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          whiteSpace: "nowrap",
-        }}
-      >
-        <span style={{ color: "var(--text)" }}>
-          {row.agentTitle ?? row.agentName}
-        </span>
+      <Td style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        <span style={{ color: "var(--text)" }}>{row.agentTitle ?? row.agentName}</span>
       </Td>
       <Td>
-        <span
-          className="mono"
-          style={{ color: "var(--text-2)", whiteSpace: "nowrap" }}
-        >
+        <span className="mono" style={{ color: "var(--text-2)", whiteSpace: "nowrap" }}>
           {row.subject ?? "—"}
         </span>
       </Td>
       <Td style={{ overflow: "hidden" }}>
         {row.currentStepName && row.stepCount ? (
           <span
-            style={{
-              fontSize: 11.5,
-              display: "flex",
-              gap: 4,
-              alignItems: "baseline",
-              overflow: "hidden",
-            }}
+            style={{ fontSize: 11.5, display: "flex", gap: 4, alignItems: "baseline", overflow: "hidden" }}
           >
             <span
               className="mono"
               style={{
-                color: "var(--signal)",
+                color: "var(--accent-text)",
                 overflow: "hidden",
                 textOverflow: "ellipsis",
                 whiteSpace: "nowrap",
@@ -846,13 +980,7 @@ function RunTableRow({
             >
               {row.currentStepName}
             </span>
-            <span
-              style={{
-                color: "var(--text-3)",
-                whiteSpace: "nowrap",
-                flexShrink: 0,
-              }}
-            >
+            <span style={{ color: "var(--text-3)", whiteSpace: "nowrap", flexShrink: 0 }}>
               {(row.currentStepOrd ?? "?") + "/" + row.stepCount}
             </span>
           </span>
@@ -861,23 +989,14 @@ function RunTableRow({
         )}
       </Td>
       <Td style={{ textAlign: "right" }}>
-        <span
-          className="mono"
-          style={{ color: "var(--signal)", whiteSpace: "nowrap" }}
-        >
+        <span className="mono" style={{ color: "var(--accent-text)", whiteSpace: "nowrap" }}>
           {fmtDur(row.durationMs)}
         </span>
       </Td>
       {onCancel && (
         <Td style={{ textAlign: "right" }}>
-          <Button
-            small
-            icon="x"
-            tone="danger"
-            onClick={() => onCancel(row.id)}
-            disabled={cancelling}
-          >
-            {cancelling ? "…" : "Cancel"}
+          <Button small icon="x" tone="danger" onClick={() => onCancel(row.id)} disabled={cancelling}>
+            {cancelling ? "…" : t("dashboard.cancel")}
           </Button>
         </Td>
       )}
@@ -894,15 +1013,9 @@ interface AgentActivity {
   lastRun: number;
 }
 
-function AgentActivityGrid({
-  items,
-  tenant,
-}: {
-  items: AgentActivity[];
-  tenant: string;
-}) {
-  if (items.length === 0)
-    return <Empty title="No agent activity" hint="—" />;
+function AgentActivityGrid({ items, tenant }: { items: AgentActivity[]; tenant: string }) {
+  const { t } = useI18n();
+  if (items.length === 0) return <Empty title={t("dashboard.noAgentActivity")} hint="—" />;
   return (
     <div
       style={{
@@ -938,17 +1051,10 @@ function AgentActivityGrid({
                 background:
                   errors > 0
                     ? "var(--red)"
-                    : `rgba(208,255,0,${0.15 + intensity * 0.6})`,
+                    : `color-mix(in srgb, var(--signal) ${(0.15 + intensity * 0.6) * 100}%, transparent)`,
               }}
             />
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 6,
-                marginBottom: 4,
-              }}
-            >
+            <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
               <ActorTag actor={agent.actor} />
               <span
                 style={{
@@ -974,17 +1080,11 @@ function AgentActivityGrid({
             >
               {agent.title}
             </div>
-            <div
-              style={{
-                fontSize: 10.5,
-                fontFamily: "var(--mono)",
-                color: "var(--text-3)",
-              }}
-            >
-              {lastRun > 0 ? fmtAgo(lastRun) : "idle"}
+            <div style={{ fontSize: 10.5, fontFamily: "var(--mono)", color: "var(--text-3)" }}>
+              {lastRun > 0 ? fmtAgo(lastRun) : t("dashboard.idle")}
               {errors > 0 && (
                 <span style={{ color: "var(--red)", marginLeft: 8 }}>
-                  {errors} err
+                  {t("dashboard.errCount", { count: errors })}
                 </span>
               )}
             </div>
@@ -1019,34 +1119,14 @@ function EventTicker({
             padding: "8px 14px",
             borderBottom: "1px solid var(--border)",
             fontSize: 12,
-            // Animate only the genuinely-new head row, and only when live
-            // streaming is enabled. Older rows are static — no idle scroll.
-            animation:
-              live && e.id === latestEventId ? "tick 0.4s ease-out" : "none",
+            animation: live && e.id === latestEventId ? "tick 0.4s ease-out" : "none",
           }}
         >
-          <span
-            className="mono"
-            style={{ color: "var(--text-3)", fontSize: 10.5, marginTop: 2 }}
-          >
+          <span className="mono" style={{ color: "var(--text-3)", fontSize: 10.5, marginTop: 2 }}>
             {fmtTime(e.at)}
           </span>
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              gap: 4,
-              minWidth: 0,
-            }}
-          >
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                minWidth: 0,
-              }}
-            >
+          <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 0 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
               <Badge tone={eventTone(e.color)} style={{ fontSize: 9.5 }}>
                 {e.name}
               </Badge>
@@ -1065,10 +1145,7 @@ function EventTicker({
             </div>
             <EventConsumerStrip consumers={e.consumers} />
           </div>
-          <span
-            className="mono"
-            style={{ color: "var(--text-3)", fontSize: 10.5, marginTop: 2 }}
-          >
+          <span className="mono" style={{ color: "var(--text-3)", fontSize: 10.5, marginTop: 2 }}>
             {e.subject}
           </span>
         </div>
@@ -1077,24 +1154,11 @@ function EventTicker({
   );
 }
 
-/**
- * Renders the subscriber chips under each event row. Three states:
- *   - no consumers at all  → muted "no subscribers" (event went nowhere)
- *   - some still running   → animated dot per consumer
- *   - all terminal         → "✓ consumed by …" with the final status tone
- *
- * Status mapping mirrors STATUS_TO_DOT at the top of this file.
- */
-function EventConsumerStrip({
-  consumers,
-}: {
-  consumers: EventItem["consumers"];
-}) {
+function EventConsumerStrip({ consumers }: { consumers: EventItem["consumers"] }) {
+  const { t } = useI18n();
   if (!consumers || consumers.length === 0) {
     return (
-      <span style={{ fontSize: 10.5, color: "var(--text-4)" }}>
-        no subscribers
-      </span>
+      <span style={{ fontSize: 10.5, color: "var(--text-4)" }}>{t("dashboard.noSubscribers")}</span>
     );
   }
   return (
@@ -1108,7 +1172,7 @@ function EventConsumerStrip({
         color: "var(--text-3)",
       }}
     >
-      <span>consumed by</span>
+      <span>{t("dashboard.consumedBy")}</span>
       {consumers.map((c) => (
         <span
           key={c.runId}
@@ -1125,7 +1189,7 @@ function EventConsumerStrip({
         >
           <StatusDot status={STATUS_TO_DOT[c.status] ?? "idle"} size={6} />
           <span style={{ color: "var(--text-2)" }}>
-            {c.agentTitle || c.agentName || "agent"}
+            {c.agentTitle || c.agentName || t("dashboard.agentFallback")}
           </span>
         </span>
       ))}
@@ -1135,21 +1199,16 @@ function EventConsumerStrip({
 
 // ─── Pending tasks ───────────────────────────────────────────────────────────
 
-function PendingTasksList({
-  tasks,
-  tenant,
-}: {
-  tasks: TaskItem[];
-  tenant: string;
-}) {
+function PendingTasksList({ tasks, tenant }: { tasks: TaskItem[]; tenant: string }) {
+  const { t } = useI18n();
   if (tasks.length === 0)
-    return <Empty title="All clear" hint="No pending tasks" />;
+    return <Empty title={t("dashboard.allClear")} hint={t("dashboard.noPendingTasks")} />;
   return (
     <div>
-      {tasks.map((t) => (
+      {tasks.map((task) => (
         <Link
-          key={t.id}
-          href={`/portal/${tenant}/tasks?id=${encodeURIComponent(t.id)}` as never}
+          key={task.id}
+          href={`/portal/${tenant}/tasks?id=${encodeURIComponent(task.id)}` as never}
           style={{
             display: "block",
             width: "100%",
@@ -1159,57 +1218,24 @@ function PendingTasksList({
             textDecoration: "none",
           }}
         >
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              marginBottom: 4,
-            }}
-          >
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
             <Badge
-              tone={
-                t.priority === "high"
-                  ? "amber"
-                  : t.priority === "med"
-                    ? "blue"
-                    : "muted"
-              }
+              tone={task.priority === "high" ? "amber" : task.priority === "med" ? "blue" : "muted"}
               style={{ fontSize: 9.5 }}
             >
-              {t.priority.toUpperCase()}
+              {task.priority.toUpperCase()}
             </Badge>
-            <span
-              style={{
-                fontSize: 11,
-                color: "var(--text-3)",
-                fontFamily: "var(--mono)",
-              }}
-            >
-              {t.id}
+            <span style={{ fontSize: 11, color: "var(--text-3)", fontFamily: "var(--mono)" }}>
+              {task.id}
             </span>
-            <span
-              style={{
-                marginLeft: "auto",
-                fontSize: 11,
-                color: "var(--text-3)",
-              }}
-            >
-              {t.createdAt ? fmtAgo(t.createdAt) : "—"}
+            <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--text-3)" }}>
+              {task.createdAt ? fmtAgo(task.createdAt) : "—"}
             </span>
           </div>
-          <div
-            style={{
-              fontSize: 12.5,
-              color: "var(--text)",
-              marginBottom: 2,
-            }}
-          >
-            {t.title}
-          </div>
-          {t.awaitingFrom ? (
+          <div style={{ fontSize: 12.5, color: "var(--text)", marginBottom: 2 }}>{task.title}</div>
+          {task.awaitingFrom ? (
             <div style={{ fontSize: 11, color: "var(--text-3)" }}>
-              awaiting · {t.awaitingFrom}
+              {t("dashboard.awaiting", { role: task.awaitingFrom })}
             </div>
           ) : null}
         </Link>
@@ -1218,90 +1244,59 @@ function PendingTasksList({
   );
 }
 
-// ─── System health ───────────────────────────────────────────────────────────
+// ─── Cost by model ───────────────────────────────────────────────────────────
 
-function SystemHealth() {
-  // FE-P0-4 sub-fix 4b: wired to `/health` (apps/api/src/routes/health.ts)
-  // via `useHealth()`. The endpoint exposes three sub-components — inngest,
-  // sqlite, disk — and polls every 15s. When the api is unreachable we
-  // render fallback rows tagged "fail · unreachable" so the operator still
-  // sees a panel rather than a blank.
-  const { data: health, isError } = useHealth();
-  const items: Array<{
-    label: string;
-    status: "ok" | "warn" | "fail";
-    note: string;
-  }> = [];
-  if (health) {
-    items.push({
-      label: "Inngest worker",
-      status: health.inngest.ok ? "ok" : "fail",
-      note:
-        health.inngest.note ??
-        (health.inngest.reachable === false
-          ? "unreachable"
-          : health.inngest.ok
-            ? "reachable"
-            : "degraded"),
-    });
-    items.push({
-      label: "SQLite",
-      status: health.sqlite.ok ? "ok" : "fail",
-      note: health.sqlite.ok
-        ? `${fmtBytes(health.sqlite.sizeBytes)} · ${health.sqlite.journalMode ?? "—"}`
-        : "unreachable",
-    });
-    items.push({
-      label: "Log volume",
-      status: health.disk.ok ? "ok" : "fail",
-      note: health.disk.ok
-        ? `${fmtBytes(health.disk.freeBytes)} free · ${health.disk.logsDir ?? ""}`
-        : "stat failed",
-    });
-  } else if (isError) {
-    items.push({
-      label: "Inngest worker",
-      status: "fail",
-      note: "api unreachable",
-    });
-    items.push({ label: "SQLite", status: "fail", note: "api unreachable" });
-    items.push({ label: "Log volume", status: "fail", note: "api unreachable" });
-  } else {
-    items.push({ label: "Inngest worker", status: "ok", note: "checking…" });
-    items.push({ label: "SQLite", status: "ok", note: "checking…" });
-    items.push({ label: "Log volume", status: "ok", note: "checking…" });
-  }
+function CostByModel({
+  rows,
+  unavailable,
+}: {
+  rows: Array<{ key: string; usdCents: number }>;
+  unavailable: boolean;
+}) {
+  const { t } = useI18n();
+  if (unavailable) return <Empty title={t("dashboard.costUnavailable")} hint="—" />;
+  const sorted = [...rows].sort((a, b) => b.usdCents - a.usdCents).slice(0, 6);
+  if (sorted.length === 0) return <Empty title={t("dashboard.noCost")} hint="—" />;
+  const max = Math.max(...sorted.map((r) => r.usdCents), 1);
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-      {items.map((i) => (
+    <div style={{ padding: "8px 0" }}>
+      {sorted.map((r) => (
         <div
-          key={i.label}
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 10,
-            fontSize: 12,
-          }}
+          key={r.key}
+          style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 14px", fontSize: 11.5 }}
         >
-          <StatusDot
-            status={
-              i.status === "ok"
-                ? "ok"
-                : i.status === "warn"
-                  ? "waiting"
-                  : "failed"
-            }
-          />
-          <span style={{ color: "var(--text)" }}>{i.label}</span>
           <span
+            className="mono"
             style={{
-              marginLeft: "auto",
-              color: "var(--text-3)",
-              fontSize: 11,
-              fontFamily: "var(--mono)",
+              width: 150,
+              color: "var(--text-2)",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
             }}
           >
-            {i.note}
+            {r.key || "—"}
+          </span>
+          <span
+            style={{
+              flex: 1,
+              height: 7,
+              background: "var(--panel-3)",
+              borderRadius: 99,
+              overflow: "hidden",
+            }}
+          >
+            <span
+              style={{
+                display: "block",
+                height: "100%",
+                width: `${(r.usdCents / max) * 100}%`,
+                background: "var(--signal)",
+              }}
+            />
+          </span>
+          <span className="mono" style={{ width: 62, textAlign: "right", color: "var(--text)" }}>
+            {usd(r.usdCents)}
           </span>
         </div>
       ))}
@@ -1311,61 +1306,41 @@ function SystemHealth() {
 
 // ─── Stage funnel ────────────────────────────────────────────────────────────
 
-function StageFunnel({ stages }: { stages: { id: number; label: string }[] }) {
-  // Render 0 per stage until the forthcoming /v1/funnel endpoint ships.
-  // None of the live hooks expose per-stage funnel counts today.
-  const counts = stages.map(() => 0);
-  const max = 1;
+function StageFunnel({ stages }: { stages: Array<{ stage: number; count: number }> }) {
+  const { t } = useI18n();
   if (stages.length === 0) {
-    return <Empty title="No stages defined" hint="Workflow not yet loaded" />;
+    return <Empty title={t("dashboard.noStages")} hint={t("dashboard.workflowNotLoaded")} />;
   }
+  const max = Math.max(...stages.map((s) => s.count), 1);
   return (
-    <div
-      style={{
-        display: "grid",
-        gridTemplateColumns: `repeat(${stages.length}, 1fr)`,
-        gap: 8,
-      }}
-    >
+    <div style={{ display: "grid", gridTemplateColumns: `repeat(${stages.length}, 1fr)`, gap: 8 }}>
       {stages.map((s, i) => {
-        const c = counts[i] ?? 0;
-        const pct = c / max;
-        const prior = counts[i - 1];
+        const pct = s.count / max;
+        const prior = stages[i - 1]?.count;
         const drop =
           i > 0 && prior != null && prior > 0
-            ? (((prior - c) / prior) * 100).toFixed(1)
+            ? (((prior - s.count) / prior) * 100).toFixed(0)
             : null;
+        const labelKey = STAGE_LABELS[s.stage];
         return (
-          <div
-            key={s.id}
-            style={{ display: "flex", flexDirection: "column", gap: 6 }}
-          >
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "baseline",
-              }}
-            >
+          <div key={s.stage} style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
               <span
                 style={{
-                  fontSize: 10.5,
+                  fontSize: 10,
                   fontFamily: "var(--mono)",
                   textTransform: "uppercase",
                   color: "var(--text-3)",
                   letterSpacing: "0.06em",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
                 }}
               >
-                {s.label}
+                {labelKey ? t(`dashboard.stage.${labelKey}`) : t("dashboard.stageFallback", { id: s.stage })}
               </span>
-              {drop && (
-                <span
-                  style={{
-                    fontSize: 9.5,
-                    fontFamily: "var(--mono)",
-                    color: "var(--text-3)",
-                  }}
-                >
+              {drop && Number(drop) > 0 && (
+                <span style={{ fontSize: 9.5, fontFamily: "var(--mono)", color: "var(--text-3)" }}>
                   −{drop}%
                 </span>
               )}
@@ -1387,19 +1362,13 @@ function StageFunnel({ stages }: { stages: { id: number; label: string }[] }) {
                   bottom: 0,
                   width: `${pct * 100}%`,
                   background:
-                    "linear-gradient(90deg, var(--signal) 0%, var(--signal) 70%, rgba(208,255,0,0.5) 100%)",
+                    "linear-gradient(90deg, var(--signal) 0%, var(--signal) 70%, color-mix(in srgb, var(--signal) 50%, transparent) 100%)",
                   opacity: 0.3 + pct * 0.7,
                 }}
               />
             </div>
-            <div
-              style={{
-                fontSize: 16,
-                fontFamily: "var(--mono)",
-                color: "var(--text)",
-              }}
-            >
-              {fmtNum(c)}
+            <div style={{ fontSize: 16, fontFamily: "var(--mono)", color: "var(--text)" }}>
+              {fmtNum(s.count)}
             </div>
           </div>
         );

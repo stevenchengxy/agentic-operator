@@ -1,6 +1,9 @@
 export { inngest, type EventMap } from "./client";
 export { helloFn } from "./hello";
 export { registerAgent, type RegisterContext } from "./register";
+// Agent migration — branch-emit: let a forked agent's final step pick which
+// declared `triggered_event` to emit (PASS/FAIL routing) instead of always [0].
+export { selectEmittedEvent } from "./emit-select";
 export {
   bootstrapAll,
   bootstrapTenant,

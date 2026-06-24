@@ -29,6 +29,7 @@ import {
   ViewHeader,
 } from "@/app/portal/components";
 import { useTenant } from "@/app/portal/lib/use-tenant";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 import { fmtNum } from "@/app/portal/lib/format";
 import { useBudget, useUsage, useUpdateBudget } from "@/lib/hooks/useUsage";
 import {
@@ -46,6 +47,7 @@ const WINDOWS: Array<{ id: Window; label: string; ms: number }> = [
 
 export default function UsagePage() {
   const tenant = useTenant();
+  const { t } = useI18n();
   const [win, setWin] = useState<Window>("7d");
   const [metric, setMetric] = useState<"tokens" | "usd" | "runs">("tokens");
   const since = useMemo(() => {
@@ -80,14 +82,14 @@ export default function UsagePage() {
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
       <ViewHeader
-        title="Usage & cost"
+        title={t("usage.title")}
         subtitle={
           <>
-            Tenant{" "}
+            {t("usage.subtitleTenant")}{" "}
             <span className="mono" style={{ color: "var(--text)" }}>
               {tenant}
             </span>{" "}
-            · windowed read from{" "}
+            {t("usage.subtitleWindowed")}{" "}
             <span className="mono" style={{ color: "var(--text)" }}>
               /v1/usage
             </span>
@@ -95,9 +97,9 @@ export default function UsagePage() {
         }
         badge={
           usageUnavailable ? (
-            <Badge tone="amber">limited</Badge>
+            <Badge tone="amber">{t("usage.badgeLimited")}</Badge>
           ) : (
-            <Badge tone="muted">live</Badge>
+            <Badge tone="muted">{t("usage.badgeLive")}</Badge>
           )
         }
         action={[
@@ -107,7 +109,7 @@ export default function UsagePage() {
             style={{ textDecoration: "none" }}
           >
             <Button small icon="chevron-left" tone="ghost">
-              Back to Settings
+              {t("usage.backToSettings")}
             </Button>
           </Link>,
         ]}
@@ -138,9 +140,9 @@ export default function UsagePage() {
             <div style={{ display: "flex", gap: 6 }}>
               {(
                 [
-                  { id: "tokens", label: "Tokens" },
-                  { id: "usd", label: "USD" },
-                  { id: "runs", label: "Runs" },
+                  { id: "tokens", label: t("usage.metricTokens") },
+                  { id: "usd", label: t("usage.metricUsd") },
+                  { id: "runs", label: t("usage.metricRuns") },
                 ] as const
               ).map((m) => (
                 <FilterChip
@@ -165,11 +167,11 @@ export default function UsagePage() {
               background: "var(--panel)",
             }}
           >
-            <Totals label="Runs" value={fmtNum(total?.runs ?? 0)} />
-            <Totals label="Tokens in" value={fmtNum(total?.tokensIn ?? 0)} />
-            <Totals label="Tokens out" value={fmtNum(total?.tokensOut ?? 0)} />
+            <Totals label={t("usage.totalsRuns")} value={fmtNum(total?.runs ?? 0)} />
+            <Totals label={t("usage.totalsTokensIn")} value={fmtNum(total?.tokensIn ?? 0)} />
+            <Totals label={t("usage.totalsTokensOut")} value={fmtNum(total?.tokensOut ?? 0)} />
             <Totals
-              label="USD this period"
+              label={t("usage.totalsUsdPeriod")}
               value={fmtUsd(total?.usdCents ?? 0)}
               accent="var(--signal)"
             />
@@ -188,8 +190,8 @@ export default function UsagePage() {
 
           {/* Per-day line chart */}
           <Panel
-            title={`Usage by day · ${metric}`}
-            subtitle={`Last ${win} · ${byDay.length} buckets`}
+            title={t("usage.byDayTitle", { metric })}
+            subtitle={t("usage.byDaySubtitle", { win, buckets: byDay.length })}
             padded={false}
           >
             <LineChart
@@ -213,7 +215,7 @@ export default function UsagePage() {
               gap: 16,
             }}
           >
-            <Panel title="By agent" subtitle="Tokens in+out · top 10" padded={false}>
+            <Panel title={t("usage.byAgentTitle")} subtitle={t("usage.barChartSubtitle")} padded={false}>
               <HorizontalBarChart
                 data={byAgent
                   .map((r) => ({
@@ -225,7 +227,7 @@ export default function UsagePage() {
                 formatValue={fmtNum}
               />
             </Panel>
-            <Panel title="By model" subtitle="Tokens in+out · top 10" padded={false}>
+            <Panel title={t("usage.byModelTitle")} subtitle={t("usage.barChartSubtitle")} padded={false}>
               <HorizontalBarChart
                 data={byModel
                   .map((r) => ({
@@ -241,8 +243,8 @@ export default function UsagePage() {
 
           {usageUnavailable && (
             <Empty
-              title="Live usage data unavailable"
-              hint="The /v1/usage endpoint did not respond. Showing budget row only."
+              title={t("usage.emptyTitle")}
+              hint={t("usage.emptyHint")}
             />
           )}
         </div>
@@ -300,6 +302,7 @@ function BudgetRow({
   };
   onCapsChanged: () => void;
 }) {
+  const { t } = useI18n();
   const update = useUpdateBudget();
   const [tokenCap, setTokenCap] = useState(
     row.monthlyTokenCap?.toString() ?? "",
@@ -328,8 +331,10 @@ function BudgetRow({
 
   return (
     <Panel
-      title="Monthly budget"
-      subtitle={`Period started ${new Date(row.periodStart).toLocaleDateString()}`}
+      title={t("usage.budgetTitle")}
+      subtitle={t("usage.budgetPeriodStarted", {
+        date: new Date(row.periodStart).toLocaleDateString(),
+      })}
       padded
       action={
         <Button
@@ -338,7 +343,7 @@ function BudgetRow({
           onClick={saveCaps}
           disabled={update.isPending}
         >
-          {update.isPending ? "Saving…" : "Save caps"}
+          {update.isPending ? t("usage.saving") : t("usage.saveCaps")}
         </Button>
       }
     >
@@ -350,19 +355,19 @@ function BudgetRow({
         }}
       >
         <CapInput
-          label="Monthly token cap"
+          label={t("usage.tokenCapLabel")}
           value={tokenCap}
           onChange={setTokenCap}
-          placeholder="unlimited"
+          placeholder={t("usage.capUnlimited")}
           used={row.usedTokensMonth}
           usedLabel={fmtNum(row.usedTokensMonth)}
           pct={tokenPct}
         />
         <CapInput
-          label="Monthly USD cap"
+          label={t("usage.usdCapLabel")}
           value={usdCap}
           onChange={setUsdCap}
-          placeholder="unlimited"
+          placeholder={t("usage.capUnlimited")}
           used={row.usedUsdMonth}
           usedLabel={fmtUsd(row.usedUsdMonth)}
           pct={usdPct}
@@ -389,6 +394,7 @@ function CapInput({
   usedLabel: string;
   pct: number | null;
 }) {
+  const { t } = useI18n();
   return (
     <div>
       <div
@@ -428,7 +434,7 @@ function CapInput({
         }}
       >
         <span style={{ color: "var(--text-3)" }}>
-          Used {usedLabel}
+          {t("usage.used", { amount: usedLabel })}
           {pct != null ? ` · ${pct.toFixed(0)}%` : ""}
         </span>
         <div
@@ -463,7 +469,7 @@ function CapInput({
             color: "var(--text-3)",
           }}
         >
-          (no cap configured — unlimited)
+          {t("usage.noCapConfigured")}
         </div>
       )}
     </div>

@@ -6,6 +6,7 @@
 
 import { Badge, Button, Panel } from "@/app/portal/components";
 import { Field, TextIn } from "@/app/portal/components/settings/atoms";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 
 const PER_TENANT_BUDGETS = [
   { tenant: "RAAS", spend30d: 1924, cap: 4000 },
@@ -14,27 +15,28 @@ const PER_TENANT_BUDGETS = [
 ];
 
 export function BillingSection() {
+  const { t } = useI18n();
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
       <Panel
-        title="Plan"
+        title={t("billing.plan")}
         padded
         action={
           <Button small icon="external" tone="ghost">
-            Open invoice
+            {t("billing.openInvoice")}
           </Button>
         }
       >
         <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 0 }}>
-          <BudgetCell label="Plan" value="Team" sub="$420 / mo base" />
-          <BudgetCell label="This cycle" value="$2,284" sub="May 1 → May 31" />
-          <BudgetCell label="Projection" value="$3,140" sub="based on 60% of cycle" />
+          <BudgetCell label={t("billing.plan")} value="Team" sub="$420 / mo base" />
+          <BudgetCell label={t("billing.thisCycle")} value="$2,284" sub="May 1 → May 31" />
+          <BudgetCell label={t("billing.projection")} value="$3,140" sub={t("billing.projectionSub")} />
         </div>
       </Panel>
 
       <Panel
-        title="Per-tenant cost caps"
-        subtitle="Soft monthly caps. Calls to /v1/budgets enforce these."
+        title={t("billing.costCaps")}
+        subtitle={t("billing.costCapsSubtitle")}
         padded={false}
       >
         {PER_TENANT_BUDGETS.map((b, i) => {
@@ -60,7 +62,7 @@ export function BillingSection() {
                   ${b.spend30d.toLocaleString()} / ${b.cap.toLocaleString()}
                 </Badge>
                 <Button small tone="ghost" style={{ marginLeft: "auto" }}>
-                  Edit
+                  {t("billing.edit")}
                 </Button>
               </div>
               <div
@@ -86,12 +88,12 @@ export function BillingSection() {
         })}
       </Panel>
 
-      <Panel title="Billing contact" padded>
-        <Field label="Email">
+      <Panel title={t("billing.contact")} padded>
+        <Field label={t("billing.email")}>
           <TextIn value="billing@agentic.local" />
         </Field>
-        <Field label="VAT / Tax ID">
-          <TextIn value="" placeholder="Optional — e.g. EU VAT" mono />
+        <Field label={t("billing.vatTaxId")}>
+          <TextIn value="" placeholder={t("billing.vatPlaceholder")} mono />
         </Field>
       </Panel>
     </div>

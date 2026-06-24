@@ -20,10 +20,10 @@ import { useI18n } from "@/app/portal/lib/preferences-context";
 import type { Theme, Density } from "@/app/portal/lib/preferences";
 
 const ACCENTS = [
-  { value: "#d0ff00", label: "Lime" },
-  { value: "#5deeff", label: "Cyan" },
-  { value: "#ffb547", label: "Amber" },
-  { value: "#b594ff", label: "Violet" },
+  { value: "#d0ff00", id: "accentLime" },
+  { value: "#5deeff", id: "accentCyan" },
+  { value: "#ffb547", id: "accentAmber" },
+  { value: "#b594ff", id: "accentViolet" },
 ];
 
 function Segmented<T extends string>({
@@ -129,8 +129,8 @@ export function AppearanceSection() {
               <button
                 key={a.value}
                 onClick={() => setTweak("accent", a.value)}
-                aria-label={a.label}
-                title={a.label}
+                aria-label={t(`appearanceSection.${a.id}`)}
+                title={t(`appearanceSection.${a.id}`)}
                 style={{
                   width: 24,
                   height: 24,

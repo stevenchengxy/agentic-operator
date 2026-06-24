@@ -215,22 +215,22 @@
     "actions": [
       {
         "order": "1",
-        "name": "uploadResume",
-        "description": "recruiter使用IDE上传简历，将下载的简历文件上传至系统，建立候选人与招聘岗位的初步关联。",
+        "name": "fs.readFromInbox",
+        "description": "从租户收件箱 data/resumes/<tenant>/inbox 读取已下载的简历文件字节（base64），供下一步解析。",
         "type": "tool",
         "condition": "已收到简历下载完成事件"
       },
       {
         "order": "2",
-        "name": "parseResume",
-        "description": "对上传的简历文件进行智能解析，使用自然语言处理技术提取候选人的基本信息（姓名、手机号、邮箱、身份证号）、教育经历（学校、专业、学历、时间）、工作经历（公司、职位、时间、职责）、项目经历、技能标签等结构化数据。",
+        "name": "parseResumeApi",
+        "description": "调用 RoboHire /api/v1/parse-resume，将上一步读取的简历字节解析为结构化候选人数据（姓名、手机号、邮箱、教育/工作/项目经历、技能）。",
         "type": "tool",
         "condition": "已收到简历下载完成事件"
       },
       {
         "order": "3",
-        "name": "extractResumeInfo",
-        "description": "基于解析出的候选人姓名与手机号，在系统中执行唯一性锁定检查。若该候选人已被其他Recruiter锁定，则触发锁定冲突终止流程；若为新候选人则完成锁定注册。",
+        "name": "candidateDedupLookup",
+        "description": "基于解析出的姓名+手机号+邮箱执行候选人查重与一候选人仅归属一名Recruiter的锁定检查；新候选人则注册，冲突则在结果中标记 lock_conflict。",
         "type": "tool",
         "condition": "简历解析成功，已提取姓名和手机号"
       },
@@ -253,7 +253,28 @@
       "RESUME_PROCESSED",
       "RESUME_INFO_MISSING"
     ],
-    "input_data": {}
+    "input_data": {},
+    "tool_use": [
+      {
+        "name": "fs.readFromInbox",
+        "description": "读取收件箱简历字节",
+        "config": {
+          "subdir": "resumes"
+        }
+      },
+      {
+        "name": "parseResumeApi",
+        "description": "RoboHire 简历解析",
+        "config": {
+          "api_key_env": "ROBOHIRE_API_KEY",
+          "timeout_ms": 300000
+        }
+      },
+      {
+        "name": "candidateDedupLookup",
+        "description": "候选人查重 + 归属锁定"
+      }
+    ]
   },
   {
     "id": "10-1",
@@ -272,9 +293,17 @@
         "description": "根据客户特定的规则对处理完成的候选人简历进行检查，确保符合客户的特殊要求。",
         "type": "logic",
         "condition": "已收到简历处理完成事件"
+      },
+      {
+        "order": "2",
+        "name": "foldRuleDecision",
+        "description": "确定性收敛：将上一步逐条规则的 LLM 判定按 fail-closed 折叠为最终结论（任一不通过/存疑/评估器异常→不通过），并在 _emit 路由 CLIENT_RULES_PASSED / CLIENT_RULES_FAILED。",
+        "type": "tool",
+        "condition": "客户规则逐条评估完成"
       }
     ],
     "triggered_event": [
+      "CLIENT_RULES_PASSED",
       "CLIENT_RULES_FAILED"
     ],
     "input_data": {
@@ -317,17 +346,28 @@
       },
       {
         "order": "4",
-        "name": "generateMatchResult",
-        "description": "调用评分模型或算法，基于硬性要求匹配度、加分项权重、缺失项扣分等维度进行加权计算。汇总匹配结果，结构化匹配报告，包含匹配得分、各维度评分明细、缺失信息列表、风险提示等，并包含推荐建议（面试/直接推荐/淘汰）。根据是否需要内部面试（由客户设置决定）触发不同的后续流程：需要面试则进入内部面试邀约，不需要则直接进入简历优化。",
-        "type": "tool",
+        "name": "decideMatchOutcome",
+        "description": "综合红线/黑名单、硬性条件、加分与回流冷静期的结果，必要时调用 matchResumeApi 获取打分，给出最终匹配结论，并在 _emit 字段路由：通过需面试 / 通过免面试 / 不通过。",
+        "type": "logic",
         "condition": "加分项评估和回流检查完成"
       }
     ],
     "triggered_event": [
       "MATCH_PASSED_NEED_INTERVIEW",
-      "MATCH_PASSED_NO_INTERVIEW"
+      "MATCH_PASSED_NO_INTERVIEW",
+      "MATCH_FAILED"
     ],
-    "input_data": {}
+    "input_data": {},
+    "tool_use": [
+      {
+        "name": "matchResumeApi",
+        "description": "RoboHire 简历-JD 匹配打分（需 {resume, jd}）",
+        "config": {
+          "api_key_env": "ROBOHIRE_API_KEY",
+          "timeout_ms": 300000
+        }
+      }
+    ]
   },
   {
     "id": "11-1",
@@ -365,7 +405,17 @@
     "triggered_event": [
       "INTERVIEW_INVITATION_SENT"
     ],
-    "input_data": {}
+    "input_data": {},
+    "tool_use": [
+      {
+        "name": "inviteCandidateApi",
+        "description": "RoboHire 生成面试邀请正文（仅生成，不投递）",
+        "config": {
+          "api_key_env": "ROBOHIRE_API_KEY",
+          "timeout_ms": 300000
+        }
+      }
+    ]
   },
   {
     "id": "12",

@@ -12,6 +12,29 @@ export const TenantCounts = z.object({
 });
 export type TenantCounts = z.infer<typeof TenantCounts>;
 
+/**
+ * Stage-funnel for the dashboard. For the tenant's LIVE workflow, each
+ * pipeline stage (the numeric kebab-id prefix getDag derives) gets the
+ * count of DISTINCT subjects whose runs reached it within the rolling
+ * window — a conversion funnel, not a throughput count. Stages are sorted
+ * ascending; the unstaged sentinel (stage 99) is excluded and test runs
+ * never contribute.
+ */
+export const FunnelStage = z.object({
+  stage: z.number(),
+  count: z.number(),
+});
+export type FunnelStage = z.infer<typeof FunnelStage>;
+
+export const FunnelResult = z.object({
+  /** Human window token echoed back: "1h" | "24h" | "7d". */
+  window: z.string(),
+  /** Window length in milliseconds (source of truth for the query). */
+  windowMs: z.number(),
+  stages: z.array(FunnelStage),
+});
+export type FunnelResult = z.infer<typeof FunnelResult>;
+
 /** Health endpoint — unauthenticated, used by load balancers / `/api/health`. */
 export const HealthReport = z.object({
   ok: z.boolean(),

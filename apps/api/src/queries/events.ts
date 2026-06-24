@@ -25,6 +25,7 @@
  */
 
 import { and, desc, eq, gt, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/sqlite-core";
 import {
   agents,
   events,
@@ -33,6 +34,7 @@ import {
   runs,
   tenants,
 } from "@agentic/db";
+import { resolvePayloadRef } from "./runs";
 import type {
   EventCatalogEntry,
   EventCatalogField,
@@ -326,4 +328,62 @@ export async function fetchCausality(
   }
 
   return { events: eventRows, runs: runRows, edges };
+}
+
+/**
+ * Single event with its REAL resolved payload + actual consumers (the runs
+ * this event triggered). Powers the Events view detail panel — replaces the
+ * old reconstructed-envelope fake payload with what actually fired, and the
+ * DAG-declared "listeners" with who really consumed this instance.
+ */
+export async function getEventDetail(
+  tenantSlug: string,
+  eventId: string,
+): Promise<(EventRow & { payload: unknown }) | null> {
+  const db = getDb();
+  const tenantId = await resolveTenantId(tenantSlug);
+  if (!tenantId) return null;
+
+  const row = db
+    .select({
+      id: events.id,
+      name: events.name,
+      subject: events.subject,
+      category: events.category,
+      color: eventTypes.color,
+      receivedAt: events.receivedAt,
+      sourceAgentName: agents.name,
+      sourceAgentTitle: agents.title,
+      payloadRef: events.payloadRef,
+    })
+    .from(events)
+    .leftJoin(agents, eq(agents.id, events.sourceAgentId))
+    .leftJoin(
+      eventTypes,
+      and(
+        eq(eventTypes.tenantId, events.tenantId),
+        eq(eventTypes.name, events.name),
+      ),
+    )
+    .where(and(eq(events.id, eventId), eq(events.tenantId, tenantId)))
+    .all()[0];
+  if (!row) return null;
+
+  // Consumers: every run this event triggered (tenant-scoped via the event).
+  const consumerAgents = alias(agents, "consumer_agents");
+  const consumers = db
+    .select({
+      runId: runs.id,
+      agentName: consumerAgents.name,
+      agentTitle: consumerAgents.title,
+      status: runs.status,
+    })
+    .from(runs)
+    .leftJoin(consumerAgents, eq(consumerAgents.id, runs.agentId))
+    .where(eq(runs.triggerEventId, eventId))
+    .orderBy(desc(runs.startedAt))
+    .all();
+
+  const payload = await resolvePayloadRef(row.payloadRef);
+  return { ...row, payload, consumers };
 }

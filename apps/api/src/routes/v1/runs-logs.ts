@@ -10,6 +10,7 @@ import type { FastifyInstance } from "fastify";
 import { open, stat, watch } from "node:fs/promises";
 import path from "node:path";
 import { requireAuth } from "../../plugins/auth";
+import { requirePermission } from "../../plugins/rbac";
 import { getRun } from "../../queries/runs";
 
 function dateDir(at: Date): string {
@@ -30,7 +31,7 @@ export async function runsLogsRoute(app: FastifyInstance) {
   app.get<{ Params: { id: string }; Querystring: { follow?: string } }>(
     "/runs/:id/logs",
     async (req, reply) => {
-      const auth = requireAuth(req);
+      const auth = requirePermission(req, "runs.read");
       // Strictly tenant-scoped. The previous __system fallback (matched the
       // behavior in /v1/runs/:id) leaked log streams of platform/code-agent
       // runs to any authed caller. P0-AUTH-02.

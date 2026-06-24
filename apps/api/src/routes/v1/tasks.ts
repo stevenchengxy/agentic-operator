@@ -4,20 +4,21 @@ import { getDb, tasks } from "@agentic/db";
 import { inngest } from "@agentic/runtime";
 import { ResolveTaskBody } from "@agentic/contracts";
 import { requireAuth } from "../../plugins/auth";
+import { requirePermission } from "../../plugins/rbac";
 import { writeAudit } from "../../plugins/audit";
 import { listAllTasks, getTask } from "../../queries/tasks";
 
 export async function tasksRoutes(app: FastifyInstance) {
   // GET /v1/tasks — list
   app.get("/tasks", async (req, reply) => {
-    const auth = requireAuth(req);
+    const auth = requirePermission(req, "tasks.read");
     const rows = await listAllTasks(auth.tenantSlug, { limit: 100 });
     return reply.ok(rows);
   });
 
   // GET /v1/tasks/:id — detail
   app.get<{ Params: { id: string } }>("/tasks/:id", async (req, reply) => {
-    const auth = requireAuth(req);
+    const auth = requirePermission(req, "tasks.read");
     const row = await getTask(auth.tenantSlug, req.params.id);
     if (!row) return reply.fail("not_found", "task not found", 404);
     return reply.ok(row);
@@ -27,7 +28,7 @@ export async function tasksRoutes(app: FastifyInstance) {
   app.post<{ Params: { id: string } }>(
     "/tasks/:id/resolve",
     async (req, reply) => {
-      const auth = requireAuth(req);
+      const auth = requirePermission(req, "tasks.resolve");
       const body = ResolveTaskBody.parse(req.body);
       const db = getDb();
       const row = db.select().from(tasks).where(eq(tasks.id, req.params.id)).all()[0];

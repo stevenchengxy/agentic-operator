@@ -31,6 +31,7 @@ import { makeId } from "@agentic/shared";
 import { getLLMGateway } from "../../services/llm";
 import { metrics } from "../../services/metrics";
 import { requireAuth } from "../../plugins/auth";
+import { requirePermission } from "../../plugins/rbac";
 import { findManifestAgentTrigger } from "../../queries/agents";
 import {
   lookupIdempotency,
@@ -61,7 +62,7 @@ export async function agentInvokeRoutes(app: FastifyInstance): Promise<void> {
       // UC-V11-32 / PF-GAP-10 — idempotency replay. Authenticate first so
       // the cache lookup is correctly scoped per-tenant; missing/invalid
       // auth still returns the same 401 it always did.
-      const auth = requireAuth(req);
+      const auth = requirePermission(req, "agents.invoke");
       const idemKey = readIdempotencyKey(req);
       if (idemKey) {
         const cached = lookupIdempotency(auth.tenantId, idemKey);

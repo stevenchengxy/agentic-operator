@@ -82,7 +82,7 @@ export function FilterChip({ active, onClick, children }: FilterChipProps) {
         fontFamily: "var(--mono)",
         textTransform: "uppercase",
         letterSpacing: "0.04em",
-        color: active ? "#000" : "var(--text-2)",
+        color: active ? "var(--on-signal)" : "var(--text-2)",
         background: active ? "var(--signal)" : "transparent",
         border: `1px solid ${active ? "var(--signal)" : "var(--border-2)"}`,
         borderRadius: 3,

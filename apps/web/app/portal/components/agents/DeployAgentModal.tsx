@@ -9,6 +9,7 @@
  */
 
 import { useMemo, useState } from "react";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 import {
   ActorTag,
   Badge,
@@ -81,6 +82,7 @@ export function DeployAgentModal({
   onClose: () => void;
   models: ModelInfo[];
 }) {
+  const { t } = useI18n();
   const { data: dag } = useDag();
   const { data: liveEvents = [] } = useEvents({ limit: 100 });
   // Derive stages from the live DAG (set of stage indices in use).
@@ -89,8 +91,13 @@ export function DeployAgentModal({
     for (const a of dag?.agents ?? []) used.add(a.stage);
     return Array.from(used)
       .sort((a, b) => a - b)
-      .map((id) => ({ id, label: STAGE_LABELS[id] ?? `Stage ${id}` }));
-  }, [dag]);
+      .map((id) => ({
+        id,
+        label: STAGE_LABELS[id]
+          ? t(`deployAgentModal.stage_${id}`)
+          : t("deployAgentModal.stageFallback", { id }),
+      }));
+  }, [dag, t]);
   // Event-name catalog combines names seen on the live stream + every name
   // declared by an agent in the DAG.
   const events = useMemo(() => {
@@ -119,7 +126,14 @@ export function DeployAgentModal({
   const [tsCode, setTsCode] = useState(AGENT_SAMPLE_TS_CODE);
   const [toolUse, setToolUse] = useState<ToolUseSchema[]>(AGENT_SAMPLE_TOOL_USE);
 
-  const steps = ["Template", "Identity", "Events", "Implementation", "Behavior", "Review"];
+  const steps = [
+    t("deployAgentModal.stepTemplate"),
+    t("deployAgentModal.stepIdentity"),
+    t("deployAgentModal.stepEvents"),
+    t("deployAgentModal.stepImplementation"),
+    t("deployAgentModal.stepBehavior"),
+    t("deployAgentModal.stepReview"),
+  ];
 
   function pickTemplate(t: Template) {
     setTemplate(t);
@@ -162,16 +176,16 @@ export function DeployAgentModal({
         }}
       >
         <header style={{ display: "flex", alignItems: "center", gap: 10, padding: "14px 18px", borderBottom: "1px solid var(--border)" }}>
-          <Icon name="agent" size={14} style={{ color: "var(--signal)" }} />
+          <Icon name="agent" size={14} style={{ color: "var(--accent-text)" }} />
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 14, color: "var(--text)", fontWeight: 500 }}>Deploy new agent</div>
+            <div style={{ fontSize: 14, color: "var(--text)", fontWeight: 500 }}>{t("deployAgentModal.title")}</div>
             <div style={{ fontSize: 11, color: "var(--text-3)" }}>
-              Added as a draft to workflow <span className="mono">raas</span>. Connect it to events on the workflow canvas after deploy.
+              {t("deployAgentModal.draftHintPart1")} <span className="mono">raas</span>. {t("deployAgentModal.draftHintPart2")}
             </div>
           </div>
           <button
             onClick={onClose}
-            aria-label="Close deploy agent modal"
+            aria-label={t("deployAgentModal.closeAria")}
             style={{ color: "var(--text-3)" }}
           >
             <Icon name="x" size={13} />
@@ -204,7 +218,7 @@ export function DeployAgentModal({
                   borderRadius: "50%",
                   background: i < step ? "var(--signal)" : "transparent",
                   border: `1px solid ${i <= step ? "var(--signal)" : "var(--border-2)"}`,
-                  color: i < step ? "#000" : i === step ? "var(--signal)" : "var(--text-3)",
+                  color: i < step ? "var(--on-signal)" : i === step ? "var(--accent-text)" : "var(--text-3)",
                   fontSize: 10,
                   fontFamily: "var(--mono)",
                   display: "flex",
@@ -235,17 +249,17 @@ export function DeployAgentModal({
         <div style={{ padding: 20, overflow: "auto", flex: 1, minHeight: 0 }}>
           {step === 0 && (
             <div>
-              <SectionLabel>Pick a template</SectionLabel>
+              <SectionLabel>{t("deployAgentModal.pickTemplate")}</SectionLabel>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10 }}>
-                {AGENT_TEMPLATES.map((t) => (
+                {AGENT_TEMPLATES.map((tpl) => (
                   <button
-                    key={t.id}
-                    onClick={() => pickTemplate(t)}
+                    key={tpl.id}
+                    onClick={() => pickTemplate(tpl)}
                     style={{
                       padding: "12px 14px",
                       background: "var(--panel-2)",
                       border: "1px solid var(--border)",
-                      borderLeft: `3px solid ${t.color}`,
+                      borderLeft: `3px solid ${tpl.color}`,
                       borderRadius: 5,
                       textAlign: "left",
                       cursor: "pointer",
@@ -253,10 +267,10 @@ export function DeployAgentModal({
                     }}
                   >
                     <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
-                      <ActorTag actor={t.actor} />
+                      <ActorTag actor={tpl.actor} />
                     </div>
-                    <div style={{ fontSize: 13, color: "var(--text)", fontWeight: 500, marginBottom: 3 }}>{t.name}</div>
-                    <div style={{ fontSize: 11.5, color: "var(--text-2)", lineHeight: 1.5 }}>{t.desc}</div>
+                    <div style={{ fontSize: 13, color: "var(--text)", fontWeight: 500, marginBottom: 3 }}>{t(`deployAgentModal.tpl_${tpl.id}_name`)}</div>
+                    <div style={{ fontSize: 11.5, color: "var(--text-2)", lineHeight: 1.5 }}>{t(`deployAgentModal.tpl_${tpl.id}_desc`)}</div>
                   </button>
                 ))}
               </div>
@@ -265,18 +279,18 @@ export function DeployAgentModal({
 
           {step === 1 && template && (
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, maxWidth: 760 }}>
-              <EditField label="Name (id)" hint="lowercase camelCase, used in events & logs">
+              <EditField label={t("deployAgentModal.nameLabel")} hint={t("deployAgentModal.nameHint")}>
                 <EditText value={name} onChange={setName} mono />
               </EditField>
-              <EditField label="Title" hint="Shown in the operator UI">
+              <EditField label={t("deployAgentModal.titleLabel")} hint={t("deployAgentModal.titleHint")}>
                 <EditText value={title} onChange={setTitle} />
               </EditField>
               <div style={{ gridColumn: "1 / -1" }}>
-                <EditField label="Description" hint="One paragraph. Shown in the workflow graph inspector.">
+                <EditField label={t("deployAgentModal.descLabel")} hint={t("deployAgentModal.descHint")}>
                   <EditTextarea value={desc} onChange={setDesc} rows={3} />
                 </EditField>
               </div>
-              <EditField label="Workflow stage" hint="Column on the workflow canvas.">
+              <EditField label={t("deployAgentModal.stageLabel")} hint={t("deployAgentModal.stageHint")}>
                 <select
                   value={stage}
                   onChange={(e) => setStage(parseInt(e.target.value, 10))}
@@ -289,13 +303,13 @@ export function DeployAgentModal({
                   ))}
                 </select>
               </EditField>
-              <EditField label="Actor" hint={template.actor === "Human" ? "Pauses for operator input" : "Runs automatically"}>
+              <EditField label={t("deployAgentModal.actorLabel")} hint={template.actor === "Human" ? t("deployAgentModal.actorHintHuman") : t("deployAgentModal.actorHintAgent")}>
                 <Seg
                   value={template.actor}
                   onChange={() => {}}
                   options={[
-                    { value: "Agent", label: "Agent" },
-                    { value: "Human", label: "Human task" },
+                    { value: "Agent", label: t("deployAgentModal.actorAgent") },
+                    { value: "Human", label: t("deployAgentModal.actorHumanTask") },
                   ]}
                 />
               </EditField>
@@ -304,7 +318,7 @@ export function DeployAgentModal({
 
           {step === 2 && (
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, maxWidth: 760 }}>
-              <EditField label="Listens to (triggers)" hint="Pick existing events from the workflow, or type new EVENT_NAMEs.">
+              <EditField label={t("deployAgentModal.triggersLabel")} hint={t("deployAgentModal.triggersHint")}>
                 <EventPicker
                   selected={triggers}
                   onAdd={(v) => addEvent(setTriggers, v)}
@@ -313,7 +327,7 @@ export function DeployAgentModal({
                   all={events.map((e) => e.name)}
                 />
               </EditField>
-              <EditField label="Emits (outbound)" hint="The events this agent publishes. Downstream agents listen to these.">
+              <EditField label={t("deployAgentModal.emitsLabel")} hint={t("deployAgentModal.emitsHint")}>
                 <EventPicker
                   selected={emits}
                   onAdd={(v) => addEvent(setEmits, v)}
@@ -336,14 +350,14 @@ export function DeployAgentModal({
                 }}
               >
                 {([
-                  { id: "prompt", label: "System prompt", icon: "logs" as const },
-                  { id: "code", label: "TypeScript code", icon: "code" as const },
+                  { id: "prompt", label: t("deployAgentModal.tabPrompt"), icon: "logs" as const },
+                  { id: "code", label: t("deployAgentModal.tabCode"), icon: "code" as const },
                   { id: "tools", label: "tool_use", icon: "spark" as const },
-                  { id: "bind", label: "Tool bindings", icon: "git" as const },
-                ] as const).map((t) => (
+                  { id: "bind", label: t("deployAgentModal.tabBind"), icon: "git" as const },
+                ] as const).map((tab) => (
                   <button
-                    key={t.id}
-                    onClick={() => setImplTab(t.id)}
+                    key={tab.id}
+                    onClick={() => setImplTab(tab.id)}
                     style={{
                       display: "flex",
                       alignItems: "center",
@@ -353,14 +367,14 @@ export function DeployAgentModal({
                       fontFamily: "var(--mono)",
                       textTransform: "uppercase",
                       letterSpacing: "0.06em",
-                      color: implTab === t.id ? "var(--text)" : "var(--text-3)",
-                      borderBottom: `2px solid ${implTab === t.id ? "var(--signal)" : "transparent"}`,
+                      color: implTab === tab.id ? "var(--text)" : "var(--text-3)",
+                      borderBottom: `2px solid ${implTab === tab.id ? "var(--signal)" : "transparent"}`,
                       marginBottom: -1,
                     }}
                   >
-                    <Icon name={t.icon} size={11} />
-                    {t.label}
-                    {t.id === "tools" && (
+                    <Icon name={tab.icon} size={11} />
+                    {tab.label}
+                    {tab.id === "tools" && (
                       <span
                         style={{
                           marginLeft: 4,
@@ -375,7 +389,7 @@ export function DeployAgentModal({
                         {toolUse.length}
                       </span>
                     )}
-                    {t.id === "bind" && (
+                    {tab.id === "bind" && (
                       <span
                         style={{
                           marginLeft: 4,
@@ -393,7 +407,7 @@ export function DeployAgentModal({
                   </button>
                 ))}
                 <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8, padding: "4px 0" }}>
-                  <span style={{ fontSize: 11, color: "var(--text-3)" }}>Model</span>
+                  <span style={{ fontSize: 11, color: "var(--text-3)" }}>{t("deployAgentModal.model")}</span>
                   <select
                     value={model}
                     onChange={(e) => setModel(e.target.value)}
@@ -409,7 +423,7 @@ export function DeployAgentModal({
                     }}
                   >
                     {models.length === 0 ? (
-                      <option value="">No models configured</option>
+                      <option value="">{t("deployAgentModal.noModels")}</option>
                     ) : (
                       models.map((m) => (
                         <option key={m.id} value={m.name}>{m.name}</option>
@@ -421,8 +435,8 @@ export function DeployAgentModal({
 
               {implTab === "prompt" && (
                 <EditField
-                  label="System prompt"
-                  hint="Prepended to every request. Use {{vars}} to interpolate run context."
+                  label={t("deployAgentModal.systemPromptLabel")}
+                  hint={t("deployAgentModal.systemPromptHint")}
                 >
                   <EditTextarea
                     value={`You are an automated agent named ${name || "<name>"} in the RAAS workflow.\nGoal: ${title || "<title>"}.\n\nFollow these rules:\n- Emit one structured progress event per step.\n- Never block on human input — emit a HUMAN_TASK event if needed.\n- Be conservative; if uncertain, fall through to manual review.`}
@@ -442,8 +456,8 @@ export function DeployAgentModal({
 
               {implTab === "bind" && (
                 <EditField
-                  label={`Tool bindings · ${tools.length} selected`}
-                  hint="Workspace tools this agent's code may invoke at runtime."
+                  label={t("deployAgentModal.toolBindingsLabel", { n: tools.length })}
+                  hint={t("deployAgentModal.toolBindingsHint")}
                 >
                   <div
                     style={{
@@ -455,18 +469,18 @@ export function DeployAgentModal({
                       padding: 2,
                     }}
                   >
-                    {COMMON_TOOLS.map((t) => {
-                      const on = tools.includes(t.id);
+                    {COMMON_TOOLS.map((tool) => {
+                      const on = tools.includes(tool.id);
                       return (
                         <button
-                          key={t.id}
-                          onClick={() => toggleTool(t.id)}
+                          key={tool.id}
+                          onClick={() => toggleTool(tool.id)}
                           style={{
                             display: "flex",
                             alignItems: "center",
                             gap: 8,
                             padding: "7px 9px",
-                            background: on ? "rgba(208,255,0,0.06)" : "var(--panel-2)",
+                            background: on ? "color-mix(in srgb, var(--signal) 6%, transparent)" : "var(--panel-2)",
                             border: `1px solid ${on ? "var(--signal)" : "var(--border)"}`,
                             borderRadius: 4,
                             textAlign: "left",
@@ -484,10 +498,10 @@ export function DeployAgentModal({
                               justifyContent: "center",
                             }}
                           >
-                            {on && <Icon name="check" size={9} style={{ color: "#000" }} />}
+                            {on && <Icon name="check" size={9} style={{ color: "var(--on-signal)" }} />}
                           </span>
-                          <span className="mono" style={{ fontSize: 11.5, color: "var(--text)" }}>{t.id}</span>
-                          <Badge tone="muted" style={{ marginLeft: "auto" }}>{t.kind}</Badge>
+                          <span className="mono" style={{ fontSize: 11.5, color: "var(--text)" }}>{tool.id}</span>
+                          <Badge tone="muted" style={{ marginLeft: "auto" }}>{t(`deployAgentModal.toolKind_${tool.kind}`)}</Badge>
                         </button>
                       );
                     })}
@@ -499,42 +513,42 @@ export function DeployAgentModal({
 
           {step === 4 && (
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, maxWidth: 760 }}>
-              <EditField label="Retries" hint="On tool/model errors. Exponential backoff.">
+              <EditField label={t("deployAgentModal.retriesLabel")} hint={t("deployAgentModal.retriesHint")}>
                 <EditText
                   value={String(retries)}
                   onChange={(v) => setRetries(parseInt(v, 10) || 0)}
                   mono
-                  suffix="attempts"
+                  suffix={t("deployAgentModal.suffixAttempts")}
                 />
               </EditField>
-              <EditField label="Per-run timeout">
+              <EditField label={t("deployAgentModal.timeoutLabel")}>
                 <EditText
                   value={String(timeout)}
                   onChange={(v) => setTimeoutVal(parseInt(v, 10) || 0)}
                   mono
-                  suffix="seconds"
+                  suffix={t("deployAgentModal.suffixSeconds")}
                 />
               </EditField>
-              <EditField label="Concurrency" hint="Max simultaneous runs.">
+              <EditField label={t("deployAgentModal.concurrencyLabel")} hint={t("deployAgentModal.concurrencyHint")}>
                 <EditText
                   value={String(concurrency)}
                   onChange={(v) => setConcurrency(parseInt(v, 10) || 0)}
                   mono
-                  suffix="runs"
+                  suffix={t("deployAgentModal.suffixRuns")}
                 />
               </EditField>
-              <EditField label="Concurrency key" hint="Partition by a payload field — one run per key at a time.">
+              <EditField label={t("deployAgentModal.concurrencyKeyLabel")} hint={t("deployAgentModal.concurrencyKeyHint")}>
                 <EditText value="${event.payload.candidate_id}" mono onChange={() => {}} />
               </EditField>
               <div style={{ gridColumn: "1 / -1" }}>
-                <EditField label="Dead-letter queue" hint="Where failed runs go after retries are exhausted.">
+                <EditField label={t("deployAgentModal.dlqLabel")} hint={t("deployAgentModal.dlqHint")}>
                   <Seg
                     value="audit"
                     onChange={() => {}}
                     options={[
-                      { value: "audit", label: "Audit log (default)" },
-                      { value: "queue", label: "DLQ for replay" },
-                      { value: "human", label: "Page human · #ops-alerts" },
+                      { value: "audit", label: t("deployAgentModal.dlqAudit") },
+                      { value: "queue", label: t("deployAgentModal.dlqQueue") },
+                      { value: "human", label: t("deployAgentModal.dlqHuman") },
                     ]}
                   />
                 </EditField>
@@ -544,7 +558,7 @@ export function DeployAgentModal({
 
           {step === 5 && (
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
-              <Panel title="Manifest" padded={false}>
+              <Panel title={t("deployAgentModal.manifestPanel")} padded={false}>
                 <CodeBlock>
                   {JSON.stringify(
                     {
@@ -582,28 +596,28 @@ export function DeployAgentModal({
                 </CodeBlock>
               </Panel>
               <div>
-                <Panel title="Pre-flight" padded>
-                  <ValidationLine ok={!!name} warn={!name} label="Identity valid" hint={name ? "✓" : "name required"} />
-                  <ValidationLine ok={triggers.length > 0} warn={triggers.length === 0} label={`${triggers.length} trigger event(s)`} />
-                  <ValidationLine ok={emits.length > 0} warn={emits.length === 0} label={`${emits.length} emit event(s)`} />
-                  <ValidationLine ok label={`${tools.length} tool bindings`} />
+                <Panel title={t("deployAgentModal.preflightPanel")} padded>
+                  <ValidationLine ok={!!name} warn={!name} label={t("deployAgentModal.identityValid")} hint={name ? "✓" : t("deployAgentModal.nameRequired")} />
+                  <ValidationLine ok={triggers.length > 0} warn={triggers.length === 0} label={t("deployAgentModal.triggerEvents", { n: triggers.length })} />
+                  <ValidationLine ok={emits.length > 0} warn={emits.length === 0} label={t("deployAgentModal.emitEvents", { n: emits.length })} />
+                  <ValidationLine ok label={t("deployAgentModal.toolBindingsCount", { n: tools.length })} />
                   {template?.actor !== "Human" && (
-                    <ValidationLine ok label={`typescript_code · ${tsCode.split("\n").length} lines`} hint="compiles" />
+                    <ValidationLine ok label={t("deployAgentModal.tsLines", { n: tsCode.split("\n").length })} hint={t("deployAgentModal.compiles")} />
                   )}
                   {template?.actor !== "Human" && (
                     <ValidationLine
                       ok={toolUse.length > 0}
                       warn={toolUse.length === 0}
-                      label={`tool_use · ${toolUse.length} defined`}
-                      hint="schemas valid"
+                      label={t("deployAgentModal.toolUseDefined", { n: toolUse.length })}
+                      hint={t("deployAgentModal.schemasValid")}
                     />
                   )}
-                  <ValidationLine ok label="Model accessible" hint={model} />
+                  <ValidationLine ok label={t("deployAgentModal.modelAccessible")} hint={model} />
                 </Panel>
-                <Panel title="Deploy target" padded style={{ marginTop: 12 }}>
+                <Panel title={t("deployAgentModal.deployTargetPanel")} padded style={{ marginTop: 12 }}>
                   <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                    <DeployTargetRow on label="Staging · raas-stage" sub="Smoke test before prod" />
-                    <DeployTargetRow label="Production · raas" sub="Live event stream" warn />
+                    <DeployTargetRow on label={t("deployAgentModal.stagingLabel")} sub={t("deployAgentModal.stagingSub")} />
+                    <DeployTargetRow label={t("deployAgentModal.productionLabel")} sub={t("deployAgentModal.productionSub")} warn />
                   </div>
                   <div
                     style={{
@@ -617,7 +631,7 @@ export function DeployAgentModal({
                       lineHeight: 1.55,
                     }}
                   >
-                    Will save as <span className="mono" style={{ color: "var(--text-2)" }}>raas@2026.05.18-draft</span>. Roll forward to prod from the Deployments page.
+                    {t("deployAgentModal.willSaveAs")} <span className="mono" style={{ color: "var(--text-2)" }}>raas@2026.05.18-draft</span>. {t("deployAgentModal.rollForward")}
                   </div>
                 </Panel>
               </div>
@@ -637,21 +651,21 @@ export function DeployAgentModal({
         >
           {step > 0 && (
             <Button tone="ghost" icon="chevron-left" onClick={back}>
-              Back
+              {t("deployAgentModal.back")}
             </Button>
           )}
           <span style={{ fontSize: 11, color: "var(--text-3)" }}>
-            Step {step + 1} of {steps.length}
+            {t("deployAgentModal.stepOf", { n: step + 1, total: steps.length })}
           </span>
           <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
-            <Button tone="ghost" onClick={onClose}>Cancel</Button>
+            <Button tone="ghost" onClick={onClose}>{t("deployAgentModal.cancel")}</Button>
             {step < steps.length - 1 ? (
               <Button tone="primary" onClick={next}>
-                Continue
+                {t("deployAgentModal.continue")}
               </Button>
             ) : (
               <Button tone="primary" icon="deploy" onClick={onClose}>
-                Deploy to staging
+                {t("deployAgentModal.deployToStaging")}
               </Button>
             )}
           </div>
@@ -825,10 +839,11 @@ function EventPicker({
   tone: "blue" | "green";
   all: string[];
 }) {
+  const { t } = useI18n();
   const [input, setInput] = useState("");
   const colorMap = {
-    blue: { fg: "var(--blue)", bg: "rgba(132,169,255,0.10)", bd: "rgba(132,169,255,0.32)" },
-    green: { fg: "var(--green)", bg: "rgba(101,224,163,0.08)", bd: "rgba(101,224,163,0.30)" },
+    blue: { fg: "var(--blue)", bg: "color-mix(in srgb, var(--blue) 10%, transparent)", bd: "color-mix(in srgb, var(--blue) 32%, transparent)" },
+    green: { fg: "var(--green)", bg: "color-mix(in srgb, var(--green) 8%, transparent)", bd: "color-mix(in srgb, var(--green) 30%, transparent)" },
   } as const;
   const c = colorMap[tone] ?? colorMap.blue;
   const suggestions = input
@@ -839,11 +854,11 @@ function EventPicker({
     <div>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 6, minHeight: 22 }}>
         {selected.length === 0 && (
-          <span style={{ fontSize: 11, color: "var(--text-3)" }}>None yet — type a name below to add.</span>
+          <span style={{ fontSize: 11, color: "var(--text-3)" }}>{t("deployAgentModal.eventPickerEmpty")}</span>
         )}
-        {selected.map((t) => (
+        {selected.map((ev) => (
           <span
-            key={t}
+            key={ev}
             style={{
               display: "inline-flex",
               alignItems: "center",
@@ -858,10 +873,10 @@ function EventPicker({
               borderRadius: 3,
             }}
           >
-            {t}
+            {ev}
             <button
-              onClick={() => onRemove(t)}
-              aria-label={`Remove ${t}`}
+              onClick={() => onRemove(ev)}
+              aria-label={t("deployAgentModal.removeEvent", { name: ev })}
               style={{ color: "currentColor", opacity: 0.6, padding: 1 }}
             >
               <Icon name="x" size={8} />
@@ -879,7 +894,7 @@ function EventPicker({
               setInput("");
             }
           }}
-          placeholder="Type EVENT_NAME, press enter…"
+          placeholder={t("deployAgentModal.eventPickerPlaceholder")}
           style={{
             width: "100%",
             background: "var(--panel-2)",
@@ -982,6 +997,7 @@ function DeployTargetRow({
   on?: boolean;
   warn?: boolean;
 }) {
+  const { t } = useI18n();
   return (
     <label
       style={{
@@ -1000,7 +1016,7 @@ function DeployTargetRow({
         <div style={{ fontSize: 12, color: "var(--text)" }}>{label}</div>
         <div style={{ fontSize: 10.5, color: "var(--text-3)" }}>{sub}</div>
       </div>
-      {warn && <Badge tone="amber">requires approval</Badge>}
+      {warn && <Badge tone="amber">{t("deployAgentModal.requiresApproval")}</Badge>}
     </label>
   );
 }

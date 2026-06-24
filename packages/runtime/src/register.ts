@@ -19,7 +19,10 @@
 
 import { inngest } from "./client";
 import { runAction } from "./step-engine";
+import { selectEmittedEvent } from "./emit-select";
 import { appendToLedger } from "./event-ledger";
+import { publish } from "./broadcast";
+import { writeArtifact } from "./artifacts";
 import { writeRunLog } from "./log-writer";
 import { correlationFromEvent, withCorrelation } from "./correlation";
 import type { AgentSpec } from "./manifest";
@@ -31,6 +34,7 @@ import {
   runs,
   steps,
   tasks as tasksTable,
+  workflows,
   getDb,
 } from "@agentic/db";
 import { eq, and } from "drizzle-orm";
@@ -210,14 +214,25 @@ export function registerAgent(
         const rid = makeId("run");
         const db = getDb();
 
+        // Scope the lookup to THIS tenant's workflow. kebab_id is unique only
+        // *within* a tenant — two tenants can legitimately reuse the same ids
+        // (e.g. raas + zhaopin both ship "10-1"). Matching on kebab_id alone
+        // grabbed whichever tenant's row sorted first, mis-attributing the run
+        // (and its stats) to the wrong tenant's agent. ctx.tenantId pins it.
         const agentRow = db
           .select()
           .from(agents)
-          .where(eq(agents.kebabId, agent.id))
-          .all()[0];
+          .innerJoin(workflows, eq(workflows.id, agents.workflowId))
+          .where(
+            and(
+              eq(workflows.tenantId, ctx.tenantId),
+              eq(agents.kebabId, agent.id),
+            ),
+          )
+          .all()[0]?.agents;
         if (!agentRow) {
           throw new Error(
-            `[runtime] agent kebab_id=${agent.id} not found in DB — bootstrap must run before functions register`,
+            `[runtime] agent kebab_id=${agent.id} (tenant=${ctx.tenantId}) not found in DB — bootstrap must run before functions register`,
           );
         }
         const agentVersionRow = db
@@ -247,6 +262,25 @@ export function registerAgent(
             logPath: null,
           })
           .run();
+        // Live feed: broadcast run.started so the portal's stream (LIVE pill,
+        // dashboards, Logs → live terminal) reflects manifest-agent activity in
+        // real time. Inside `init`'s step.run ⇒ exactly-once across replays.
+        // Best-effort: a broadcast failure must never abort the run.
+        try {
+          publish({
+            type: "run.started",
+            tenantId: ctx.tenantId,
+            at: startedAt,
+            runId: rid,
+            agentName: agent.name,
+            triggerEvent: event.name ?? null,
+            subject: subject ?? null,
+            correlationId: cid,
+            testRun: isTest,
+          });
+        } catch {
+          /* broadcast best-effort */
+        }
         return {
           runId: rid,
           correlationId: cid,
@@ -415,6 +449,20 @@ export function registerAgent(
               startedAt: new Date(sStarted),
             })
             .run();
+          try {
+            publish({
+              type: "run.step.started",
+              tenantId: ctx.tenantId,
+              at: sStarted,
+              runId,
+              stepId: sid,
+              ord,
+              name: action.name,
+              stepType: action.type,
+            });
+          } catch {
+            /* broadcast best-effort */
+          }
 
           try {
             const res = await runAction({
@@ -453,15 +501,61 @@ export function registerAgent(
               autoResolveManual: true,
             });
             const sEnded = Date.now();
+            // Persist this step's INPUT (what flowed in — the prior step's
+            // result + the trigger event) and OUTPUT (what it returned) so the
+            // run-detail Timeline/Trace/IO tabs can show real per-step
+            // input/output, Inngest-style. Best-effort; mirrors the code
+            // engine (run-engine.ts). Inside step.run ⇒ written once per run.
+            let stepInputRef: string | null = null;
+            let stepOutputRef: string | null = null;
+            try {
+              stepInputRef = await writeArtifact(runId, `step-${ord}-input.json`, {
+                last_result: lastResult ?? null,
+                trigger_event: event.name,
+                subject: subject ?? null,
+              });
+              stepOutputRef = await writeArtifact(
+                runId,
+                `step-${ord}-output.json`,
+                res.data ?? null,
+              );
+            } catch {
+              /* artifact write best-effort — never fail the step */
+            }
             dbInner
               .update(steps)
               .set({
                 status: res.ok ? "ok" : "failed",
                 endedAt: new Date(sEnded),
                 durationMs: sEnded - sStarted,
+                inputRef: stepInputRef,
+                outputRef: stepOutputRef,
+                tokensIn: res.tokensIn ?? null,
+                tokensOut: res.tokensOut ?? null,
               })
               .where(eq(steps.id, sid))
               .run();
+            try {
+              publish({
+                type: "run.step.completed",
+                tenantId: ctx.tenantId,
+                at: sEnded,
+                runId,
+                stepId: sid,
+                ord,
+                name: action.name,
+                stepType: action.type,
+                status: res.ok ? "ok" : "failed",
+                durationMs: sEnded - sStarted,
+                provider: null,
+                model: null,
+                tokensIn: res.tokensIn ?? null,
+                tokensOut: res.tokensOut ?? null,
+                error: null,
+              });
+            } catch {
+              /* broadcast best-effort */
+            }
             return {
               ok: res.ok,
               data: res.data,
@@ -502,7 +596,12 @@ export function registerAgent(
 
       // Emit downstream event + finalize run — wrapped in step.run so it
       // executes once even with Inngest replays.
-      const emittedName = agent.triggered_event[0];
+      //
+      // Branch-emit: a forked agent's final step can name which declared
+      // `triggered_event` to emit (e.g. MATCH_FAILED vs MATCH_PASSED_*) via an
+      // `_emit`/`event`/`next_event` field on its result; validated against the
+      // declared list, falling back to [0] for every single-outcome agent.
+      const emittedName = selectEmittedEvent(agent.triggered_event, lastResult);
       const finalize = await step.run("finalize", async () => {
         const dbInner = getDb();
         let emittedEventId: string | null = null;
@@ -532,6 +631,19 @@ export function registerAgent(
               payloadRef,
             })
             .run();
+          try {
+            publish({
+              type: "event.emitted",
+              tenantId: ctx.tenantId,
+              at: Date.now(),
+              eventId: emittedEventId,
+              name: emittedName,
+              subject: subject ?? null,
+              sourceRunId: runId,
+            });
+          } catch {
+            /* broadcast best-effort */
+          }
         }
 
         const endedAtMs = Date.now();
@@ -548,6 +660,20 @@ export function registerAgent(
           })
           .where(eq(runs.id, runId))
           .run();
+        try {
+          publish({
+            type: "run.completed",
+            tenantId: ctx.tenantId,
+            at: endedAtMs,
+            runId,
+            durationMs: endedAtMs - startedAtMs,
+            tokensIn,
+            tokensOut,
+            emittedEventId,
+          });
+        } catch {
+          /* broadcast best-effort */
+        }
 
         // UC-V11-22 / AR-GAP-07 / PF-GAP-08 — Prometheus `runs_total`
         // bump for the manifest engine. Lives inside this `step.run`
@@ -622,6 +748,17 @@ export function registerAgent(
             })
             .where(eq(runs.id, rid))
             .run();
+          try {
+            publish({
+              type: "run.failed",
+              tenantId: ctx.tenantId,
+              at: ended.getTime(),
+              runId: rid,
+              errorMessage: message,
+            });
+          } catch {
+            /* broadcast best-effort */
+          }
 
           // UC-V11-22 / AR-GAP-07 — `runs_total{status="failed"}` so the
           // dashboards see manifest-engine failures, not just code-agent

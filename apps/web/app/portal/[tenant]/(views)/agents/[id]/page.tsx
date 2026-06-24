@@ -34,11 +34,13 @@ import {
   useAgent,
   useAgents,
   useInvokeAgent,
+  useSetAgentEnabled,
   type AgentDetail,
   type AgentListRow,
 } from "@/lib/hooks/useAgents";
 import { useRuns, type RunListRow } from "@/lib/hooks/useRuns";
 import { useTenant } from "@/app/portal/lib/use-tenant";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 import { AgentCodeTab } from "@/app/portal/components/agent-code/AgentCodeTab";
 import { AgentCodeEdit } from "@/app/portal/components/agent-code/edit-code";
 import {
@@ -101,6 +103,7 @@ function detailToViewAgent(
 }
 
 export default function AgentDetailPage() {
+  const { t } = useI18n();
   const params = useParams<{ id: string }>();
   const router = useRouter();
   const tenant = useTenant();
@@ -170,14 +173,18 @@ export default function AgentDetailPage() {
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
       <ViewHeader
-        title="Agents"
-        subtitle={`${agents.length} agents in this workflow · ${agents.filter((a) => a.actor === "Agent").length} automated · ${agents.filter((a) => a.actor === "Human").length} human`}
+        title={t("nav.agents")}
+        subtitle={t("agentDetail.subtitle", {
+          count: agents.length,
+          automated: agents.filter((a) => a.actor === "Agent").length,
+          human: agents.filter((a) => a.actor === "Human").length,
+        })}
         action={[
           <Button key="upload" icon="upload" small onClick={() => setImportOpen(true)}>
-            Import manifest
+            {t("agentDetail.importManifest")}
           </Button>,
           <Button key="new" icon="plus" tone="primary" small onClick={() => setDeployOpen(true)}>
-            Deploy agent
+            {t("agentDetail.deployAgent")}
           </Button>,
         ]}
       />
@@ -196,7 +203,7 @@ export default function AgentDetailPage() {
           }}
         >
           <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--border)", display: "flex", gap: 8 }}>
-            <SearchInput value={query} onChange={setQuery} placeholder="agent name…" />
+            <SearchInput value={query} onChange={setQuery} placeholder={t("agentDetail.searchPlaceholder")} />
           </div>
           <div
             style={{
@@ -207,23 +214,23 @@ export default function AgentDetailPage() {
             }}
           >
             <FilterChip active={actorFilter === "all"} onClick={() => setActorFilter("all")}>
-              All
+              {t("agentDetail.filterAll")}
             </FilterChip>
             <FilterChip active={actorFilter === "Agent"} onClick={() => setActorFilter("Agent")}>
-              Agents
+              {t("agentDetail.filterAgents")}
             </FilterChip>
             <FilterChip active={actorFilter === "Human"} onClick={() => setActorFilter("Human")}>
-              Human
+              {t("agentDetail.filterHuman")}
             </FilterChip>
           </div>
           <div style={{ flex: 1, overflow: "auto" }}>
             {agentsQuery.isError ? (
               <Empty
-                title="Failed to load agents"
-                hint={agentsQuery.error?.message ?? "api unreachable on :3501"}
+                title={t("agentDetail.loadAgentsFailed")}
+                hint={agentsQuery.error?.message ?? t("agentDetail.apiUnreachable")}
               />
             ) : agentsQuery.isLoading && agents.length === 0 ? (
-              <Empty title="Loading agents…" hint="" />
+              <Empty title={t("agentDetail.loadingAgents")} hint="" />
             ) : (
               <AgentsListCompact
                 agents={filtered}
@@ -240,14 +247,15 @@ export default function AgentDetailPage() {
         <div style={{ flex: 1, minWidth: 0, overflow: "auto", minHeight: 0 }}>
           {detailQuery.isError ? (
             <Empty
-              title="Failed to load agent"
-              hint={detailQuery.error?.message ?? "api unreachable on :3501"}
+              title={t("agentDetail.loadAgentFailed")}
+              hint={detailQuery.error?.message ?? t("agentDetail.apiUnreachable")}
             />
           ) : detailQuery.isLoading && !agent ? (
-            <Empty title="Loading agent…" hint={selectedKebab} />
+            <Empty title={t("agentDetail.loadingAgent")} hint={selectedKebab} />
           ) : (
             <AgentDetail
               agent={agent}
+              enabled={listMatch?.enabled ?? true}
               stats={stats.get(selectedKebab) ?? stats.get(agent?.name ?? "")}
               tenant={tenant}
               onOpenWorkflow={() => router.push(`/portal/${tenant}/workflows` as never)}
@@ -319,6 +327,7 @@ function AgentsListCompact({
 
 function AgentDetail({
   agent,
+  enabled,
   stats,
   tenant,
   onOpenWorkflow,
@@ -326,13 +335,16 @@ function AgentDetail({
   allRuns,
 }: {
   agent: ViewAgent | null;
+  enabled: boolean;
   stats: AgentStats | undefined;
   tenant: string;
   onOpenWorkflow: () => void;
   onOpenRun: (id: string) => void;
   allRuns: RunListRow[];
 }) {
+  const { t } = useI18n();
   const invoke = useInvokeAgent();
+  const setEnabled = useSetAgentEnabled();
   const [tab, setTab] = useState<"config" | "io" | "code" | "versions" | "runs">("config");
   const [editing, setEditing] = useState(false);
   // "Run with input…" dialog. Decoupled from the default "Test run" path
@@ -348,7 +360,7 @@ function AgentDetail({
   const [testCooldown, setTestCooldown] = useState(false);
   void tenant; // tenant is in URL via the layout
 
-  if (!agent) return <Empty title="Agent not found" />;
+  if (!agent) return <Empty title={t("agentDetail.notFound")} />;
 
   // Runs are keyed by name in the live api payload.
   const recentRuns = allRuns
@@ -391,10 +403,11 @@ function AgentDetail({
           <ActorTag actor={agent.actor} />
           <Badge tone="muted">{agent.id}</Badge>
           <span className="mono" style={{ fontSize: 11.5, color: "var(--text-3)" }}>{agent.name}</span>
+          {!enabled && <Badge tone="amber">{t("agentDetail.disabledBadge")}</Badge>}
           {lastTest && (
             <button
               onClick={() => onOpenRun(lastTest.id)}
-              title={`Latest test run · ${lastTest.id}`}
+              title={t("agentDetail.latestTestRun", { id: lastTest.id })}
               style={{
                 display: "inline-flex",
                 alignItems: "center",
@@ -402,41 +415,61 @@ function AgentDetail({
                 padding: "2px 7px",
                 fontSize: 10.5,
                 fontFamily: "var(--mono)",
-                color: "var(--signal)",
-                background: "rgba(208,255,0,0.06)",
-                border: "1px solid rgba(208,255,0,0.32)",
+                color: "var(--accent-text)",
+                background: "color-mix(in srgb, var(--signal) 6%, transparent)",
+                border: "1px solid color-mix(in srgb, var(--signal) 32%, transparent)",
                 borderRadius: 3,
                 cursor: "pointer",
               }}
             >
               <StatusDot status={(lastTest.status as never) ?? "idle"} size={6} />
-              TEST · {fmtAgo(lastTest.startedAt ? Date.parse(lastTest.startedAt) : 0)}
+              {t("agentDetail.testBadge")} · {fmtAgo(lastTest.startedAt ? Date.parse(lastTest.startedAt) : 0)}
             </button>
           )}
           <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
             <Button small icon="external" tone="ghost" onClick={onOpenWorkflow}>
-              View in graph
+              {t("agentDetail.viewInGraph")}
             </Button>
             {editing ? (
               <>
                 <Button small tone="ghost" onClick={() => setEditing(false)}>
-                  Cancel
+                  {t("agentDetail.cancel")}
                 </Button>
                 <Button small icon="check" tone="primary" onClick={() => setEditing(false)}>
-                  Save & deploy
+                  {t("agentDetail.saveAndDeploy")}
                 </Button>
               </>
             ) : (
               <>
                 <Button small icon="code" onClick={() => setEditing(true)}>
-                  Edit
+                  {t("agentDetail.edit")}
+                </Button>
+                <Button
+                  small
+                  tone={enabled ? "ghost" : "primary"}
+                  icon={enabled ? "pause" : "play"}
+                  disabled={setEnabled.isPending}
+                  onClick={() =>
+                    setEnabled.mutate({ kebabId: agent!.id, enabled: !enabled })
+                  }
+                  title={
+                    enabled
+                      ? t("agentDetail.disableHint")
+                      : t("agentDetail.enableHint")
+                  }
+                >
+                  {setEnabled.isPending
+                    ? t("agentDetail.savingState")
+                    : enabled
+                      ? t("agentDetail.disable")
+                      : t("agentDetail.enable")}
                 </Button>
                 <Button
                   small
                   onClick={() => setRunInputOpen(true)}
-                  title="Open a JSON editor and run with a custom body.input — needed for manifest agents whose tool-use loop requires real payload fields (e.g. resume + jd)."
+                  title={t("agentDetail.runWithInputHint")}
                 >
-                  Run with input…
+                  {t("agentDetail.runWithInput")}
                 </Button>
                 <Button
                   small
@@ -446,13 +479,13 @@ function AgentDetail({
                   disabled={invoke.isPending || testCooldown}
                   title={
                     invoke.isPending
-                      ? "Running…"
+                      ? t("agentDetail.running")
                       : testCooldown
-                        ? "Cooling down (2s) — prevents double-clicks from creating duplicate runs"
-                        : "Run the agent with its declared default input"
+                        ? t("agentDetail.cooldownHint")
+                        : t("agentDetail.testRunHint")
                   }
                 >
-                  {invoke.isPending ? "Running…" : "Test run"}
+                  {invoke.isPending ? t("agentDetail.running") : t("agentDetail.testRun")}
                 </Button>
               </>
             )}
@@ -493,14 +526,14 @@ function AgentDetail({
           flexShrink: 0,
         }}
       >
-        <StatCellA label="Runs 24h" value={stats?.runs ?? 0} />
+        <StatCellA label={t("agentDetail.statRuns24h")} value={stats?.runs ?? 0} />
         <StatCellA
-          label="Errors"
+          label={t("agentDetail.statErrors")}
           value={stats?.errors ?? 0}
           accent={(stats?.errors ?? 0) > 0 ? "var(--red)" : undefined}
         />
         <StatCellA
-          label="P50 latency"
+          label={t("agentDetail.statP50Latency")}
           value={(() => {
             // Compute P50 from real durationMs across this agent's runs
             // — replaces the hardcoded "2.4s" mock so every agent shows
@@ -517,7 +550,7 @@ function AgentDetail({
           })()}
         />
         <StatCellA
-          label="Last run"
+          label={t("agentDetail.statLastRun")}
           value={stats?.lastRun && stats.lastRun > 0 ? fmtAgo(stats.lastRun) : "—"}
         />
       </div>
@@ -531,22 +564,22 @@ function AgentDetail({
           flexShrink: 0,
         }}
       >
-        {(["config", "io", "code", "versions", "runs"] as const).map((t) => (
+        {(["config", "io", "code", "versions", "runs"] as const).map((tabId) => (
           <button
-            key={t}
-            onClick={() => setTab(t)}
+            key={tabId}
+            onClick={() => setTab(tabId)}
             style={{
               padding: "8px 14px",
               fontSize: 12,
               fontFamily: "var(--mono)",
               textTransform: "uppercase",
               letterSpacing: "0.08em",
-              color: tab === t ? "var(--text)" : "var(--text-3)",
-              borderBottom: `2px solid ${tab === t ? "var(--signal)" : "transparent"}`,
+              color: tab === tabId ? "var(--text)" : "var(--text-3)",
+              borderBottom: `2px solid ${tab === tabId ? "var(--signal)" : "transparent"}`,
               marginBottom: -1,
             }}
           >
-            {t}
+            {t(`agentDetail.tab_${tabId}`)}
           </button>
         ))}
       </div>

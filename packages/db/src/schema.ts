@@ -60,7 +60,29 @@ export const users = sqliteTable(
     id: text("id").primaryKey(),
     email: text("email").notNull(),
     name: text("name").notNull(),
+    /**
+     * P6-AUTH — scrypt password hash (`scrypt$<N>$<saltB64>$<hashB64>`, see
+     * password.ts). Null for legacy users seeded before auth landed and for
+     * not-yet-activated accounts; a null hash can never satisfy login.
+     */
+    passwordHash: text("password_hash"),
+    /**
+     * P6-AUTH — cross-tenant platform role. `superadmin` bypasses per-tenant
+     * RBAC and may manage tenants + users platform-wide; `none` is an ordinary
+     * user whose authority comes solely from `memberships`.
+     */
+    platformRole: text("platform_role", { enum: ["none", "superadmin"] })
+      .notNull()
+      .default("none"),
+    /** P6-AUTH — account lifecycle. `suspended` blocks login + new sessions. */
+    status: text("status", { enum: ["active", "suspended"] })
+      .notNull()
+      .default("active"),
     createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+    /** P6-AUTH — last credential/profile/role change. */
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
       .notNull()
       .default(now),
   },
@@ -79,6 +101,12 @@ export const memberships = sqliteTable(
       .notNull()
       .references(() => tenants.id, { onDelete: "cascade" }),
     role: text("role", { enum: ["admin", "operator", "viewer"] }).notNull(),
+    /** P6-AUTH — when this membership was granted (for the Access tab). */
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+    /** P6-AUTH — user id of the admin/superadmin who granted this membership. */
+    createdBy: text("created_by").references(() => users.id),
   },
   (t) => ({
     pk: primaryKey({ columns: [t.userId, t.tenantId] }),

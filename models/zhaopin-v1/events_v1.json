@@ -1,0 +1,108 @@
+{
+  "metadata": {
+    "version_number": 1,
+    "created_at": "2026-06-23T00:00:00.000Z",
+    "created_by": "migration",
+    "source": "AO 招聘-v1 6agents-latest (events_v0_1_005_6agents.json)",
+    "ai_involved": true,
+    "last_updated": "2026-06-23"
+  },
+  "events": [
+    {
+      "name": "REQUIREMENT_LOGGED",
+      "category": "JD创建与更新",
+      "description": "外部招聘需求已成功登记并结构化入库，触发 JD 生成（或需求分析）。",
+      "payload": { "event_data": [{ "name": "job_requisition_id", "type": "String", "target_object": "Job_Requisition" }] }
+    },
+    {
+      "name": "CLARIFICATION_READY",
+      "category": "JD创建与更新",
+      "description": "需求澄清确认无待澄清项或澄清已闭环，进入标准职位描述（JD）生成阶段。",
+      "payload": { "event_data": [{ "name": "job_requisition_id", "type": "String", "target_object": "Job_Requisition" }] }
+    },
+    {
+      "name": "JD_REJECTED",
+      "category": "JD创建与更新",
+      "description": "生成的职位描述（JD）未通过审核，需退回重新创建或修正需求信息。",
+      "payload": { "event_data": [{ "name": "job_posting_id", "type": "String", "target_object": "Job_Posting" }] }
+    },
+    {
+      "name": "JD_GENERATED",
+      "category": "JD创建与更新",
+      "description": "基于已确认的需求，系统自动生成的标准化职位描述（JD）已就绪，等待审核发布。",
+      "payload": { "event_data": [{ "name": "job_posting_id", "type": "String", "target_object": "Job_Posting" }, { "name": "jd_content", "type": "String", "target_object": null }] }
+    },
+    {
+      "name": "RESUME_DOWNLOADED",
+      "category": "简历处理",
+      "description": "候选人简历已从招聘渠道成功采集并下载至系统暂存区，等待自动化处理。",
+      "payload": { "event_data": [{ "name": "resume_file_path", "type": "String", "target_object": "Resume" }, { "name": "job_requisition_id", "type": "String", "target_object": "Job_Requisition" }] }
+    },
+    {
+      "name": "RESUME_PROCESSED",
+      "category": "简历处理",
+      "description": "简历已完成结构化解析、查重锁定与完整性校验，候选人档案就绪，进入后续身份去重与匹配环节。",
+      "payload": { "event_data": [{ "name": "candidate_id", "type": "String", "target_object": "Candidate" }, { "name": "resume_id", "type": "String", "target_object": "Resume" }] }
+    },
+    {
+      "name": "RESUME_LOCKED_CONFLICT",
+      "category": "简历处理",
+      "description": "简历处理时检测到唯一性归属冲突（候选人已被其他顾问锁定），当前处理流程中止。",
+      "payload": { "event_data": [{ "name": "candidate_id", "type": "String", "target_object": "Candidate" }] }
+    },
+    {
+      "name": "CANDIDATE_IDENTITY_CHECKED",
+      "category": "简历处理",
+      "description": "候选人身份去重检查完成：已按 9-15 三级规则判定本次上传候选人是否与已有候选人为同一人，并写入身份检查审计结果。",
+      "payload": { "event_data": [{ "name": "candidate_id", "type": "String", "target_object": "Candidate" }, { "name": "same_person", "type": "Boolean", "target_object": null }] }
+    },
+    {
+      "name": "MATCH_RULE_CHECK_PASSED",
+      "category": "简历匹配",
+      "description": "候选人简历通过 matchResume 前置规则检查（关联公司冷冻期 / 国籍限制 / 回流冷冻期等），进入智能匹配评分环节。",
+      "payload": { "event_data": [{ "name": "candidate_id", "type": "String", "target_object": "Candidate" }, { "name": "job_requisition_id", "type": "String", "target_object": "Job_Requisition" }] }
+    },
+    {
+      "name": "MATCH_RULE_CHECK_FAILED",
+      "category": "简历匹配",
+      "description": "候选人简历未通过 matchResume 前置规则检查，不进入智能匹配评分环节，触发审计与人工复核。",
+      "payload": { "event_data": [{ "name": "candidate_id", "type": "String", "target_object": "Candidate" }, { "name": "failure_reasons", "type": "Array<String>", "target_object": null }] }
+    },
+    {
+      "name": "MATCH_PASSED_NEED_INTERVIEW",
+      "category": "简历匹配",
+      "description": "候选人通过匹配评分，根据业务规则需触发内部初试邀请流程。",
+      "payload": { "event_data": [{ "name": "candidate_id", "type": "String", "target_object": "Candidate" }, { "name": "overall_match_score", "type": "Number", "target_object": null }] }
+    },
+    {
+      "name": "MATCH_PASSED_NO_INTERVIEW",
+      "category": "简历匹配",
+      "description": "候选人简历通过高精度匹配校验且符合直接推荐规则，跳过面试环节进入推荐包封装。",
+      "payload": { "event_data": [{ "name": "candidate_id", "type": "String", "target_object": "Candidate" }] }
+    },
+    {
+      "name": "MATCH_FAILED",
+      "category": "简历匹配",
+      "description": "候选人未通过匹配评分门槛（如硬性条件缺项、得分过低），匹配流程自动关闭。",
+      "payload": { "event_data": [{ "name": "candidate_id", "type": "String", "target_object": "Candidate" }] }
+    },
+    {
+      "name": "INTERVIEW_INVITATION_REQUESTED",
+      "category": "内部面试邀约",
+      "description": "RaaS 在 HSM/审批确认后请求 AO 发起 AI 面试邀请；触发 inviteInternalInterview 调用 RoboHire /invite-candidate（外部边界事件）。",
+      "payload": { "event_data": [{ "name": "candidate_id", "type": "String", "target_object": "Candidate" }, { "name": "job_requisition_id", "type": "String", "target_object": "Job_Requisition" }] }
+    },
+    {
+      "name": "INTERVIEW_INVITATION_SENT",
+      "category": "内部面试邀约",
+      "description": "AI 面试邀请已成功通过指定渠道发送给候选人，驱动面试执行环节。",
+      "payload": { "event_data": [{ "name": "candidate_id", "type": "String", "target_object": "Candidate" }, { "name": "interview_record_id", "type": "String", "target_object": "Interview_Record" }] }
+    },
+    {
+      "name": "INTERVIEW_INVITATION_FAILED",
+      "category": "内部面试邀约",
+      "description": "AO 发起 AI 面试邀请失败（payload 缺关键字段 / 简历或 JD 回查失败 / RoboHire 报错 / 上游拒绝），供 RaaS 重试或人工跟进。",
+      "payload": { "event_data": [{ "name": "candidate_id", "type": "String", "target_object": "Candidate" }, { "name": "error_code", "type": "String", "target_object": null }] }
+    }
+  ]
+}

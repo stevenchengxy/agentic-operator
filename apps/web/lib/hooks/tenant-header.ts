@@ -10,10 +10,13 @@
  * sidebar shows `hello`, but every `/v1/*` call resolves to whichever slug
  * the env var pins (default `raas`).
  *
- * The api auth plugin only honors this header when `AUTH_MODE=dev`. In prod
- * the bearer token / session cookie is the *only* source of tenant truth —
- * a client-controlled header can never override it. See
- * `apps/api/src/plugins/auth.ts:devTenantOverride`.
+ * Since P6-AUTH the api honors this header in production too, but it is NOT a
+ * trust vector: the header only selects WHICH tenant the request acts on; the
+ * caller's role in that tenant is always re-derived from `memberships`
+ * server-side, so a forged slug for a tenant the user isn't a member of
+ * resolves to `role=null` and the RBAC guard denies. Identity still comes
+ * solely from the session cookie / bearer token. See
+ * `apps/api/src/plugins/auth.ts:resolveTenant`.
  *
  * Returns an empty object on the server side (`typeof window === "undefined"`)
  * — server components / RSC routes should derive the tenant from `params`

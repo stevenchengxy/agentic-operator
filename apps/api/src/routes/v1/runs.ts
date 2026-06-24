@@ -6,13 +6,14 @@ import { inngest } from "@agentic/runtime";
 import { makeId } from "@agentic/shared";
 import { ListRunsQuery } from "@agentic/contracts";
 import { requireAuth } from "../../plugins/auth";
+import { requirePermission } from "../../plugins/rbac";
 import { writeAudit } from "../../plugins/audit";
 import { getRun, listRecentRuns, listSteps } from "../../queries/runs";
 
 export async function runsRoutes(app: FastifyInstance) {
   // GET /v1/runs — list
   app.get("/runs", async (req, reply) => {
-    const auth = requireAuth(req);
+    const auth = requirePermission(req, "runs.read");
     const q = ListRunsQuery.parse(req.query);
     const rows = await listRecentRuns(auth.tenantSlug, {
       limit: q.limit,
@@ -32,7 +33,7 @@ export async function runsRoutes(app: FastifyInstance) {
   // tenant are now stored under that tenant; cross-tenant __system runs are
   // an operator/platform-admin surface and require a dedicated route + grant.
   app.get<{ Params: { id: string } }>("/runs/:id", async (req, reply) => {
-    const auth = requireAuth(req);
+    const auth = requirePermission(req, "runs.read");
     const run = await getRun(auth.tenantSlug, req.params.id);
     if (!run) return reply.fail("not_found", "run not found", 404);
     const steps = await listSteps(run.id);
@@ -43,7 +44,7 @@ export async function runsRoutes(app: FastifyInstance) {
   app.post<{ Params: { id: string } }>(
     "/runs/:id/replay",
     async (req, reply) => {
-      const auth = requireAuth(req);
+      const auth = requirePermission(req, "runs.replay");
       const db = getDb();
       const run = db.select().from(runs).where(eq(runs.id, req.params.id)).all()[0];
       if (!run) return reply.fail("not_found", "run not found", 404);
@@ -118,7 +119,7 @@ export async function runsRoutes(app: FastifyInstance) {
   app.post<{ Params: { id: string } }>(
     "/runs/:id/cancel",
     async (req, reply) => {
-      const auth = requireAuth(req);
+      const auth = requirePermission(req, "runs.cancel");
       const db = getDb();
       const run = db.select().from(runs).where(eq(runs.id, req.params.id)).all()[0];
       if (!run) return reply.fail("not_found", "run not found", 404);

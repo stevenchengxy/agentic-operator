@@ -143,6 +143,10 @@ export function dispatch(event: StreamEvent, client: QueryClient): void {
       void client.invalidateQueries({ queryKey: RUN_KEYS.all });
       void client.invalidateQueries({ queryKey: COUNT_KEYS.tenant });
       void client.invalidateQueries({ queryKey: RUN_KEYS.detail(event.runId) });
+      // The stage funnel counts distinct subjects per pipeline stage; a run
+      // starting/finishing can move a subject into a new stage. Prefix-match
+      // invalidates every window variant ("1h"/"24h"/"7d").
+      void client.invalidateQueries({ queryKey: ["workflows", "funnel"] as const });
       break;
     }
     case "run.step.started":

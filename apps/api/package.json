@@ -31,6 +31,7 @@
     "@tenants/raas": "workspace:*",
     "@tenants/robohire": "workspace:*",
     "@tenants/tenant-test1": "workspace:*",
+    "@tenants/zhaopin": "workspace:*",
     "@fastify/cors": "^11.2.0",
     "drizzle-orm": "^0.45.2",
     "fastify": "^5.8.5",

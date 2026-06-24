@@ -87,15 +87,15 @@ export default function SettingsPage() {
         title={t("settings.title")}
         subtitle={
           <>
-            Workspace{" "}
+            {t("settingsPage.workspaceLabel")}{" "}
             <span className="mono" style={{ color: "var(--text)" }}>
               {tenant}
             </span>{" "}
-            · region{" "}
+            · {t("settingsPage.regionLabel")}{" "}
             <span className="mono" style={{ color: "var(--text)" }}>
               {REGION}
             </span>{" "}
-            · operator{" "}
+            · {t("settingsPage.operatorLabel")}{" "}
             <span style={{ color: "var(--text)" }}>{operatorName}</span>
           </>
         }
@@ -223,7 +223,7 @@ function SectionHeader({ section }: { section: (typeof SETTINGS_SECTIONS)[number
   return (
     <div style={{ marginBottom: 18 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-        <Icon name={section.icon} size={14} style={{ color: "var(--signal)" }} />
+        <Icon name={section.icon} size={14} style={{ color: "var(--accent-text)" }} />
         <span
           style={{
             fontSize: 11,

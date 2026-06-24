@@ -99,7 +99,7 @@ Commands:
   events tail                 Subscribe to /v1/stream and pretty-print
 
 Global options:
-  --api <url>                 Override AGENTIC_API_URL (default http://localhost:3501)
+  --api <url>                 Override AGENTIC_API_URL (default http://localhost:3540)
   --token <token>             Override AGENTIC_API_TOKEN
   -h, --help                  Show this help and exit
   -v, --version               Show CLI version and exit
@@ -123,7 +123,7 @@ export function buildContext(args: ParsedArgs): RunContext {
   return {
     args,
     apiUrl:
-      args.globals.api ?? process.env.AGENTIC_API_URL ?? "http://localhost:3501",
+      args.globals.api ?? process.env.AGENTIC_API_URL ?? "http://localhost:3540",
     apiToken: args.globals.token ?? process.env.AGENTIC_API_TOKEN ?? "",
     stdout: process.stdout,
     stderr: process.stderr,

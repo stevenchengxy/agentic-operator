@@ -53,6 +53,7 @@ import {
 import { makeId } from "@agentic/shared";
 import { dataTenantsRoot, publishStreamEvent } from "@agentic/runtime";
 import { requireAuth } from "../../plugins/auth";
+import { requirePermission } from "../../plugins/rbac";
 import { writeAudit } from "../../plugins/audit";
 import { reregisterInngest } from "../../services/inngest-registry";
 
@@ -74,7 +75,7 @@ export async function tenantCodeRoutes(app: FastifyInstance) {
   app.post<{ Params: { slug: string } }>(
     "/tenants/:slug/code",
     async (req, reply) => {
-      const auth = requireAuth(req);
+      const auth = requirePermission(req, "deployments.write");
       const slug = req.params.slug;
       if (auth.tenantSlug !== slug) {
         return reply.fail(

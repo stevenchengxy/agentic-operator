@@ -21,13 +21,14 @@
 import type { FastifyInstance } from "fastify";
 import { listGlobalTools } from "@agentic/tools";
 import { requireAuth } from "../../plugins/auth";
+import { requirePermission } from "../../plugins/rbac";
 
 export async function toolsRoutes(app: FastifyInstance): Promise<void> {
   app.get("/tools", async (req, reply) => {
     // requireAuth here purely to scope the response to a logged-in
     // operator. The catalog itself is global (same for every tenant) —
     // there's no per-tenant filtering today.
-    requireAuth(req);
+    requirePermission(req, "tools.read");
     const tools = listGlobalTools();
     return reply.ok({
       tools,

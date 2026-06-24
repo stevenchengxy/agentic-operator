@@ -25,6 +25,7 @@ import {
   buildWorkflowJsonSchema,
 } from "@agentic/runtime";
 import { requireAuth } from "../../plugins/auth";
+import { requirePermission } from "../../plugins/rbac";
 import { writeAudit } from "../../plugins/audit";
 import { reregisterInngest } from "../../services/inngest-registry";
 
@@ -166,7 +167,7 @@ export async function workflowRoutes(app: FastifyInstance) {
   app.get<{ Params: { slug: string } }>(
     "/tenants/:slug/workflow",
     async (req, reply) => {
-      const auth = requireAuth(req);
+      const auth = requirePermission(req, "workflows.read");
       const slug = req.params.slug;
       if (auth.tenantSlug !== slug) {
         return reply.fail("forbidden", "cannot read another tenant's workflow", 403);
@@ -225,7 +226,7 @@ export async function workflowRoutes(app: FastifyInstance) {
       target_file?: string;
     };
   }>("/tenants/:slug/workflow", async (req, reply) => {
-    const auth = requireAuth(req);
+    const auth = requirePermission(req, "workflows.write");
     const slug = req.params.slug;
     if (auth.tenantSlug !== slug) {
       return reply.fail("forbidden", "cannot write another tenant's workflow", 403);

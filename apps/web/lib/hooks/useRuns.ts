@@ -88,6 +88,10 @@ export interface RunListRow {
   emittedEvent?: string | null;
   /** Correlation id linking this run to others in the same workflow chain. */
   correlationId?: string | null;
+  /** Run-detail only: real trigger-event payload (input) + emitted-event
+   *  payload (output), resolved server-side. Undefined on the list endpoint. */
+  inputPayload?: unknown;
+  outputPayload?: unknown;
 }
 
 export function useRuns(
@@ -117,6 +121,9 @@ export interface StepRow {
   model: string | null;
   tokensIn: number | null;
   tokensOut: number | null;
+  /** Run-detail only: resolved real input/output payloads for this step. */
+  input?: unknown;
+  output?: unknown;
 }
 
 export interface RunDetail {

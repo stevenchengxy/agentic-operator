@@ -6,10 +6,12 @@ import { events, eventTypes, getDb } from "@agentic/db";
 import { makeId } from "@agentic/shared";
 import { IngestEventBody, ListEventsQuery } from "@agentic/contracts";
 import { requireAuth } from "../../plugins/auth";
+import { requirePermission } from "../../plugins/rbac";
 import { listRecentEvents } from "../../queries/runs";
 import {
   fetchCausality,
   fetchEventsSince,
+  getEventDetail,
   listEventCatalog,
 } from "../../queries/events";
 import {
@@ -43,7 +45,7 @@ export async function eventsRoutes(app: FastifyInstance) {
   // PRD FR-4 / FR-8 / NFR-6 — kept fully backwards-compatible with existing
   // payload shapes by routing them through the same Zod schema.
   app.post("/events", async (req, reply) => {
-    const auth = requireAuth(req);
+    const auth = requirePermission(req, "events.publish");
     const parsed = IngestEventBody.parse(req.body);
 
     // UC-V11-32 / PF-GAP-10 — idempotency replay. If the caller supplied
@@ -171,7 +173,7 @@ export async function eventsRoutes(app: FastifyInstance) {
   app.post<{ Params: { id: string } }>(
     "/events/:id/replay",
     async (req, reply) => {
-      const auth = requireAuth(req);
+      const auth = requirePermission(req, "events.publish");
       const { id } = req.params;
       const db = getDb();
       const row = db.select().from(events).where(eq(events.id, id)).all()[0];
@@ -231,7 +233,7 @@ export async function eventsRoutes(app: FastifyInstance) {
   // GET /v1/events — list recent (legacy shape, used by the existing
   // events.jsx view; kept unchanged so we don't break that surface).
   app.get("/events", async (req, reply) => {
-    const auth = requireAuth(req);
+    const auth = requirePermission(req, "events.read");
     const q = ListEventsQuery.parse(req.query);
     const rows = await listRecentEvents(auth.tenantSlug, q);
     return reply.ok(rows);
@@ -239,9 +241,20 @@ export async function eventsRoutes(app: FastifyInstance) {
 
   // GET /v1/events/catalog — tenant's event catalog (FR-1).
   app.get("/events/catalog", async (req, reply) => {
-    const auth = requireAuth(req);
+    const auth = requirePermission(req, "events.read");
     const list = await listEventCatalog(auth.tenantSlug);
     return reply.ok({ events: list });
+  });
+
+  // GET /v1/events/:id — single event with its REAL resolved payload +
+  // actual consumers (the runs it triggered). Powers the Events detail panel.
+  // Declared AFTER the static /events/catalog + /events/recent routes so
+  // Fastify's static-before-param ordering doesn't shadow them.
+  app.get<{ Params: { id: string } }>("/events/:id", async (req, reply) => {
+    const auth = requirePermission(req, "events.read");
+    const detail = await getEventDetail(auth.tenantSlug, req.params.id);
+    if (!detail) return reply.fail("not_found", "event not found", 404);
+    return reply.ok(detail);
   });
 
   // GET /v1/events/recent — same payload as /events but with optional
@@ -255,7 +268,7 @@ export async function eventsRoutes(app: FastifyInstance) {
       name?: string;
     };
   }>("/events/recent", async (req, reply) => {
-    const auth = requireAuth(req);
+    const auth = requirePermission(req, "events.read");
     if (req.query.causality === "1" && req.query.seed) {
       const out = await fetchCausality(auth.tenantSlug, req.query.seed);
       return reply.ok(out);
@@ -275,7 +288,7 @@ export async function eventsRoutes(app: FastifyInstance) {
   app.get<{
     Querystring: { since?: string; names?: string };
   }>("/events/stream", async (req, reply) => {
-    const auth = requireAuth(req);
+    const auth = requirePermission(req, "events.read");
 
     reply.raw.writeHead(200, {
       "Content-Type": "text/event-stream; charset=utf-8",

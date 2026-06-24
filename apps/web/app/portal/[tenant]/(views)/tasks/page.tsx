@@ -24,6 +24,7 @@ import {
   FilterChip,
 } from "@/app/portal/components";
 import { fmtAgo } from "@/app/portal/lib/format";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 import { useTasks, type TaskRow as ApiTaskRow } from "@/lib/hooks/useTasks";
 import { useDag, type DagAgent } from "@/lib/hooks/useAgents";
 
@@ -59,6 +60,7 @@ export default function TasksPage() {
   // Live tasks + workflow DAG via TanStack Query — kept in sync by useStream
   // cache invalidation. DAG carries triggers/emits per agent so the task
   // detail can render "will emit on approve" / "downstream listeners".
+  const { t } = useI18n();
   const tasksQuery = useTasks();
   const dagQuery = useDag();
   const apiTasks = tasksQuery.data ?? [];
@@ -85,9 +87,12 @@ export default function TasksPage() {
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
       <ViewHeader
-        title="Human tasks"
-        subtitle={`${tasks.length} pending · ${tasks.filter((t) => t.priority === "high").length} high priority`}
-        badge={<Badge tone="amber">{tasks.length} OPEN</Badge>}
+        title={t("nav.tasks")}
+        subtitle={t("tasks.subtitle", {
+          pending: tasks.length,
+          high: tasks.filter((t) => t.priority === "high").length,
+        })}
+        badge={<Badge tone="amber">{t("tasks.openBadge", { count: tasks.length })}</Badge>}
       />
 
       <div
@@ -120,22 +125,22 @@ export default function TasksPage() {
                 active={filter === p}
                 onClick={() => setFilter(p)}
               >
-                {p === "all" ? "All" : p.toUpperCase()}
+                {p === "all" ? t("tasks.filterAll") : p.toUpperCase()}
               </FilterChip>
             ))}
           </div>
           <div style={{ flex: 1, overflow: "auto" }}>
             {tasksQuery.isError ? (
               <Empty
-                title="Failed to load tasks"
-                hint={tasksQuery.error?.message ?? "api unreachable on :3501"}
+                title={t("tasks.loadErrorTitle")}
+                hint={tasksQuery.error?.message ?? t("tasks.apiUnreachable")}
               />
             ) : tasksQuery.isLoading && tasks.length === 0 ? (
-              <Empty title="Loading tasks…" hint="" />
+              <Empty title={t("tasks.loadingTitle")} hint="" />
             ) : filtered.length === 0 ? (
               <Empty
-                title={tasks.length === 0 ? "No human tasks yet" : "No tasks at this priority"}
-                hint={tasks.length === 0 ? "Tasks appear here when an agent emits a HUMAN_TASK event." : ""}
+                title={tasks.length === 0 ? t("tasks.emptyAllTitle") : t("tasks.emptyPriorityTitle")}
+                hint={tasks.length === 0 ? t("tasks.emptyAllHint") : ""}
               />
             ) : (
               filtered.map((t) => (
@@ -154,7 +159,7 @@ export default function TasksPage() {
           {selected ? (
             <TaskDetail task={selected} agents={dagAgents} />
           ) : (
-            <Empty title="Inbox zero" hint="No pending human tasks" />
+            <Empty title={t("tasks.inboxZeroTitle")} hint={t("tasks.inboxZeroHint")} />
           )}
         </div>
       </div>
@@ -248,6 +253,7 @@ function TaskDetail({
   task: TaskItem;
   agents: DagAgent[];
 }) {
+  const { t } = useI18n();
   // /v1/tasks payload doesn't carry an agent reference today; surface the
   // closest match by `awaitingRole` (if a Human agent with that title
   // exists). Otherwise the panel falls back to the literal role string.
@@ -278,12 +284,14 @@ function TaskDetail({
                   : "muted"
             }
           >
-            {task.priority.toUpperCase()} PRIORITY
+            {t("tasks.priorityBadge", { priority: task.priority.toUpperCase() })}
           </Badge>
           <Badge tone="muted">{task.id}</Badge>
           <ActorTag actor="Human" />
           <span style={{ fontSize: 11, color: "var(--text-3)" }}>
-            created {task.createdAt ? fmtAgo(task.createdAt) : "—"}
+            {t("tasks.createdAgo", {
+              ago: task.createdAt ? fmtAgo(task.createdAt) : "—",
+            })}
           </span>
         </div>
         <h2
@@ -297,9 +305,11 @@ function TaskDetail({
           {task.title}
         </h2>
         <div style={{ fontSize: 12.5, color: "var(--text-2)" }}>
-          Pending {agent?.title ?? task.awaitingFrom ?? "operator"} · awaiting{" "}
+          {t("tasks.pendingAwaiting", {
+            owner: agent?.title ?? task.awaitingFrom ?? t("tasks.operator"),
+          })}{" "}
           <span style={{ color: "var(--text)" }}>
-            {task.awaitingFrom ?? "operator"}
+            {task.awaitingFrom ?? t("tasks.operator")}
           </span>
         </div>
       </header>
@@ -342,16 +352,16 @@ function TaskDetail({
             marginBottom: 10,
           }}
         >
-          Decide
+          {t("tasks.decide")}
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <Button tone="primary" icon="check">
-            {decisionLabel(task.type, "primary")}
+            {decisionLabel(task.type, "primary", t)}
           </Button>
-          {decisionLabel(task.type, "secondary") && (
-            <Button>{decisionLabel(task.type, "secondary")}</Button>
+          {decisionLabel(task.type, "secondary", t) && (
+            <Button>{decisionLabel(task.type, "secondary", t)}</Button>
           )}
-          <Button tone="ghost">Snooze</Button>
+          <Button tone="ghost">{t("tasks.snooze")}</Button>
           <span
             style={{
               marginLeft: "auto",
@@ -359,14 +369,14 @@ function TaskDetail({
               color: "var(--text-3)",
             }}
           >
-            <Kbd>⌘</Kbd> <Kbd>↵</Kbd> approve · <Kbd>⌘</Kbd> <Kbd>R</Kbd>{" "}
-            reject
+            <Kbd>⌘</Kbd> <Kbd>↵</Kbd> {t("tasks.approve")} · <Kbd>⌘</Kbd>{" "}
+            <Kbd>R</Kbd> {t("tasks.reject")}
           </span>
         </div>
       </div>
 
       {/* Run context */}
-      <Panel title="Workflow context" padded style={{ marginTop: 16 }}>
+      <Panel title={t("tasks.workflowContext")} padded style={{ marginTop: 16 }}>
         <div
           style={{
             display: "flex",
@@ -375,7 +385,7 @@ function TaskDetail({
             fontSize: 12,
           }}
         >
-          <span style={{ color: "var(--text-3)" }}>Will emit on approve:</span>
+          <span style={{ color: "var(--text-3)" }}>{t("tasks.willEmitOnApprove")}</span>
           {agent?.emits?.map((e) => (
             <Badge key={e} tone="green">
               {e}
@@ -383,7 +393,7 @@ function TaskDetail({
           )) ?? null}
         </div>
         <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-3)" }}>
-          Downstream listeners:{" "}
+          {t("tasks.downstreamListeners")}{" "}
           {(() => {
             const evs = agent?.emits ?? [];
             const listeners = new Set<string>();
@@ -403,22 +413,43 @@ function TaskDetail({
 function decisionLabel(
   type: string,
   slot: "primary" | "secondary",
+  t: (key: string, vars?: Record<string, string | number>) => string,
 ): string | null {
-  const map: Record<string, { primary: string; secondary: string | null }> = {
-    jdReview: { primary: "Approve JD", secondary: "Reject with notes" },
-    packageReview: {
-      primary: "Approve & submit",
-      secondary: "Send back to recruiter",
+  // Keys are stable per task-type + slot; resolve to translated labels at the
+  // render site (the map is a structural lookup, not a string table).
+  const map: Record<
+    string,
+    { primary: string; secondary: string | null }
+  > = {
+    jdReview: {
+      primary: t("tasks.decision.jdReview.primary"),
+      secondary: t("tasks.decision.jdReview.secondary"),
     },
-    resumeFix: { primary: "Mark fixed", secondary: "Re-upload" },
+    packageReview: {
+      primary: t("tasks.decision.packageReview.primary"),
+      secondary: t("tasks.decision.packageReview.secondary"),
+    },
+    resumeFix: {
+      primary: t("tasks.decision.resumeFix.primary"),
+      secondary: t("tasks.decision.resumeFix.secondary"),
+    },
     requirementReClarification: {
-      primary: "Submit answers",
+      primary: t("tasks.decision.requirementReClarification.primary"),
       secondary: null,
     },
-    packageSupplement: { primary: "Mark complete", secondary: null },
-    manualPublish: { primary: "Confirm published", secondary: null },
+    packageSupplement: {
+      primary: t("tasks.decision.packageSupplement.primary"),
+      secondary: null,
+    },
+    manualPublish: {
+      primary: t("tasks.decision.manualPublish.primary"),
+      secondary: null,
+    },
   };
-  return map[type]?.[slot] ?? (slot === "primary" ? "Approve" : null);
+  return (
+    map[type]?.[slot] ??
+    (slot === "primary" ? t("tasks.decision.default.primary") : null)
+  );
 }
 
 // ─── Payload renderers (6 of 6) ──────────────────────────────────────────────
@@ -428,6 +459,7 @@ function JDReviewPayload({
 }: {
   payload: Record<string, unknown>;
 }) {
+  const { t } = useI18n();
   const p = payload as {
     title?: string;
     level?: string;
@@ -445,7 +477,7 @@ function JDReviewPayload({
       }}
     >
       <Panel
-        title="Generated JD"
+        title={t("tasks.generatedJd")}
         padded
         action={<Badge tone="muted">draft v3</Badge>}
       >
@@ -469,7 +501,7 @@ function JDReviewPayload({
                 marginBottom: 4,
               }}
             >
-              Title
+              {t("tasks.title")}
             </div>
             <div style={{ fontSize: 14, fontWeight: 500 }}>
               {p.title ?? "—"}
@@ -482,19 +514,19 @@ function JDReviewPayload({
               gap: 12,
             }}
           >
-            <KV label="Level" value={p.level ?? "—"} mono />
-            <KV label="City" value={p.city ?? "—"} />
-            <KV label="Salary" value={p.salary ?? "—"} />
-            <KV label="Status" value={<Badge tone="signal">DRAFT</Badge>} />
+            <KV label={t("tasks.level")} value={p.level ?? "—"} mono />
+            <KV label={t("tasks.city")} value={p.city ?? "—"} />
+            <KV label={t("tasks.salary")} value={p.salary ?? "—"} />
+            <KV label={t("tasks.status")} value={<Badge tone="signal">DRAFT</Badge>} />
           </div>
           <SectionList
-            label="Responsibilities"
+            label={t("tasks.responsibilities")}
             items={p.responsibilities ?? []}
           />
-          <SectionList label="Requirements" items={p.requirements ?? []} />
+          <SectionList label={t("tasks.requirements")} items={p.requirements ?? []} />
         </div>
       </Panel>
-      <Panel title="Agent reasoning" padded>
+      <Panel title={t("tasks.agentReasoning")} padded>
         <div
           style={{
             display: "flex",
@@ -506,25 +538,25 @@ function JDReviewPayload({
           }}
         >
           <p style={{ margin: 0 }}>
-            Drafted from{" "}
+            {t("tasks.draftedFrom")}{" "}
             <span className="mono" style={{ color: "var(--text)" }}>
               REQ
             </span>{" "}
-            after clarification. Template{" "}
+            {t("tasks.afterClarificationTemplate")}{" "}
             <span className="mono" style={{ color: "var(--text)" }}>
               jd-tencent-wxg-v3
             </span>{" "}
-            applied.
+            {t("tasks.applied")}
           </p>
           <p style={{ margin: 0 }}>
-            Top 5 search keywords surfaced:{" "}
-            <span className="mono" style={{ color: "var(--signal)" }}>
+            {t("tasks.topKeywords")}{" "}
+            <span className="mono" style={{ color: "var(--accent-text)" }}>
               backend, java, go, messaging, distributed-systems
             </span>
             .
           </p>
           <p style={{ margin: 0 }}>
-            Salary range confirmed within ¥45-65k client cap.
+            {t("tasks.salaryConfirmed")}
           </p>
           <div
             style={{
@@ -536,11 +568,9 @@ function JDReviewPayload({
               fontSize: 11.5,
             }}
           >
-            <strong style={{ color: "var(--amber)" }}>Heads up · </strong>
+            <strong style={{ color: "var(--amber)" }}>{t("tasks.headsUp")}</strong>
             <span style={{ color: "var(--text-2)" }}>
-              This req has been re-opened twice in 2026 Q1. Consider
-              tightening &lsquo;distributed systems fundamentals&rsquo; before
-              posting to BOSS.
+              {t("tasks.reqReopenedWarning")}
             </span>
           </div>
         </div>
@@ -554,6 +584,7 @@ function PackagePayload({
 }: {
   payload: Record<string, unknown>;
 }) {
+  const { t } = useI18n();
   const p = payload as {
     candidate?: string;
     matchScore?: number;
@@ -569,10 +600,10 @@ function PackagePayload({
       }}
     >
       <Panel
-        title="Candidate package"
+        title={t("tasks.candidatePackage")}
         padded
         action={
-          <Badge tone="signal">SCORE {p.matchScore ?? "—"}</Badge>
+          <Badge tone="signal">{t("tasks.scoreBadge", { score: p.matchScore ?? "—" })}</Badge>
         }
       >
         <div
@@ -591,9 +622,9 @@ function PackagePayload({
             gap: 8,
           }}
         >
-          <KV label="Match" value={`${p.matchScore ?? "—"}/100`} mono />
+          <KV label={t("tasks.match")} value={`${p.matchScore ?? "—"}/100`} mono />
           <KV
-            label="Missing items"
+            label={t("tasks.missingItems")}
             value={
               (p.missingItems?.length ?? 0) === 0 ? (
                 <Badge tone="green">COMPLETE</Badge>
@@ -602,21 +633,21 @@ function PackagePayload({
               )
             }
           />
-          <SectionList label="Highlights" items={p.highlights ?? []} />
+          <SectionList label={t("tasks.highlights")} items={p.highlights ?? []} />
         </div>
         <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
           <Button small icon="external">
             Resume.pdf
           </Button>
           <Button small icon="external">
-            Interview clip
+            {t("tasks.interviewClip")}
           </Button>
           <Button small icon="external">
-            Eval report
+            {t("tasks.evalReport")}
           </Button>
         </div>
       </Panel>
-      <Panel title="Submission preview" padded>
+      <Panel title={t("tasks.submissionPreview")} padded>
         <div
           style={{
             display: "flex",
@@ -626,14 +657,14 @@ function PackagePayload({
             color: "var(--text)",
           }}
         >
-          <KV label="Target" value="Tencent ATS · WXG queue" />
-          <KV label="Method" value="API auto-submit" />
+          <KV label={t("tasks.target")} value="Tencent ATS · WXG queue" />
+          <KV label={t("tasks.method")} value={t("tasks.apiAutoSubmit")} />
           <KV
-            label="Mock dry-run"
-            value={<Badge tone="green">OK · req-ack received</Badge>}
+            label={t("tasks.mockDryRun")}
+            value={<Badge tone="green">{t("tasks.dryRunOk")}</Badge>}
           />
           <KV
-            label="Will emit"
+            label={t("tasks.willEmit")}
             value={<Badge tone="green">APPLICATION_SUBMITTED</Badge>}
           />
         </div>
@@ -647,15 +678,16 @@ function ResumeFixPayload({
 }: {
   payload: Record<string, unknown>;
 }) {
+  const { t } = useI18n();
   const p = payload as { file?: string; error?: string };
   return (
     <Panel
-      title="Parse error"
+      title={t("tasks.parseError")}
       padded
       action={<Badge tone="red">PARSE FAIL</Badge>}
     >
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-        <KV label="File" value={<span className="mono">{p.file ?? "—"}</span>} />
+        <KV label={t("tasks.file")} value={<span className="mono">{p.file ?? "—"}</span>} />
         <div>
           <div
             className="mono"
@@ -666,26 +698,26 @@ function ResumeFixPayload({
               marginBottom: 4,
             }}
           >
-            Error
+            {t("tasks.error")}
           </div>
           <div
             style={{
               fontSize: 12.5,
               color: "var(--red)",
               padding: 10,
-              background: "rgba(255,100,112,0.06)",
-              border: "1px solid rgba(255,100,112,0.25)",
+              background: "color-mix(in srgb, var(--red) 6%, transparent)",
+              border: "1px solid color-mix(in srgb, var(--red) 25%, transparent)",
               borderRadius: 4,
             }}
           >
-            {p.error ?? "Unknown error"}
+            {p.error ?? t("tasks.unknownError")}
           </div>
         </div>
         <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
           <Button small icon="upload">
-            Re-upload PDF
+            {t("tasks.reuploadPdf")}
           </Button>
-          <Button small>Edit parsed fields</Button>
+          <Button small>{t("tasks.editParsedFields")}</Button>
         </div>
       </div>
     </Panel>
@@ -697,9 +729,10 @@ function ClarificationPayload({
 }: {
   payload: Record<string, unknown>;
 }) {
+  const { t } = useI18n();
   const p = payload as { questions?: string[] };
   return (
-    <Panel title="Open questions for client" padded>
+    <Panel title={t("tasks.openQuestions")} padded>
       <ol
         style={{
           margin: 0,
@@ -720,7 +753,7 @@ function ClarificationPayload({
           >
             {q}
             <input
-              placeholder="answer…"
+              placeholder={t("tasks.answerPlaceholder")}
               style={{
                 display: "block",
                 marginTop: 6,
@@ -746,9 +779,10 @@ function SupplementPayload({
 }: {
   payload: Record<string, unknown>;
 }) {
+  const { t } = useI18n();
   const p = payload as { missing?: string[] };
   return (
-    <Panel title="Items requested" padded>
+    <Panel title={t("tasks.itemsRequested")} padded>
       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
         {(p.missing ?? []).map((m) => (
           <div
@@ -775,7 +809,7 @@ function SupplementPayload({
               {m}
             </span>
             <Button small style={{ marginLeft: "auto" }}>
-              Attach
+              {t("tasks.attach")}
             </Button>
           </div>
         ))}
@@ -789,14 +823,15 @@ function ManualPublishPayload({
 }: {
   payload: Record<string, unknown>;
 }) {
+  const { t } = useI18n();
   const p = payload as { channel?: string; reason?: string };
   return (
-    <Panel title="Manual publish required" padded>
+    <Panel title={t("tasks.manualPublishRequired")} padded>
       <KV
-        label="Channel"
+        label={t("tasks.channel")}
         value={<Badge tone="amber">{p.channel ?? "—"}</Badge>}
       />
-      <KV label="Reason" value={p.reason ?? "—"} />
+      <KV label={t("tasks.reason")} value={p.reason ?? "—"} />
       <div
         style={{
           marginTop: 10,
@@ -808,12 +843,11 @@ function ManualPublishPayload({
           color: "var(--text-2)",
         }}
       >
-        Open the generated helper page → copy each field into the
-        channel&rsquo;s post composer → return here and confirm.
+        {t("tasks.manualPublishInstructions")}
       </div>
       <div style={{ marginTop: 10, display: "flex", gap: 8 }}>
         <Button small icon="external" tone="primary">
-          Open helper page
+          {t("tasks.openHelperPage")}
         </Button>
       </div>
     </Panel>

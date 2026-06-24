@@ -4,10 +4,11 @@ import { createReadStream } from "node:fs";
 import { eq } from "drizzle-orm";
 import { artifacts, getDb } from "@agentic/db";
 import { requireAuth } from "../../plugins/auth";
+import { requirePermission } from "../../plugins/rbac";
 
 export async function artifactsRoutes(app: FastifyInstance) {
   app.get<{ Params: { id: string } }>("/artifacts/:id", async (req, reply) => {
-    const auth = requireAuth(req);
+    const auth = requirePermission(req, "runs.read");
     const row = getDb()
       .select()
       .from(artifacts)

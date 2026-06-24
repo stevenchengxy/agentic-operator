@@ -14,14 +14,14 @@
  */
 
 import { useEffect, useState } from "react";
-import {
-  RESERVED_TENANT_SLUGS,
-  TENANT_SLUG_REGEX,
-  type TenantCreateBody,
-  type TenantCreateResponse,
+import type {
+  TenantCreateBody,
+  TenantCreateResponse,
 } from "@agentic/contracts";
 import { Button, Icon, ModalOverlay } from "@/app/portal/components";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 import type { TenantOption } from "./tenant-switcher";
+import { computeSlugIssues, deriveSlug, shouldShowSlugIssue } from "./tenant-slug";
 
 const DEFAULT_COLORS = [
   "#d0ff00",
@@ -51,6 +51,7 @@ export function TenantCreateModal({
   existingSlugs,
   existingTenants,
 }: TenantCreateModalProps) {
+  const { t } = useI18n();
   const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -68,26 +69,27 @@ export function TenantCreateModal({
   const [usdCap, setUsdCap] = useState("");
   const [mintToken, setMintToken] = useState(true);
 
-  // Auto-derive slug from name until the user edits the slug field.
+  // Auto-derive slug from name until the user edits the slug field. A name with
+  // no Latin letters (e.g. pure Chinese) derives to "" — the slug field then
+  // shows a "required" hint (see shouldShowSlugIssue) so the wizard isn't a
+  // silent dead-end.
   useEffect(() => {
     if (slugDirty) return;
-    const derived = name
-      .toLowerCase()
-      .replace(/[^a-z0-9-]+/g, "-")
-      .replace(/^-+|-+$/g, "")
-      .replace(/^[^a-z]/, "t");
-    setSlug(derived.slice(0, 32));
+    setSlug(deriveSlug(name));
   }, [name, slugDirty]);
 
-  const slugIssues = computeSlugIssues(slug, existingSlugs);
-  const canNextFrom1 = name.trim().length > 0 && slugIssues.length === 0;
+  const slugIssueCodes = computeSlugIssues(slug, existingSlugs);
+  const slugIssues = slugIssueCodes.map((code) =>
+    t(`tenantCreateModal.slugIssue.${code}`),
+  );
+  const canNextFrom1 = name.trim().length > 0 && slugIssueCodes.length === 0;
   const canNextFrom2 = starter !== "copy-from" || copyFromSlug.length > 0;
   const canNextFrom3 = true;
   const colorValid = HEX_COLOR_RE.test(color);
 
   async function submit() {
     if (!colorValid) {
-      setErr("Color must be a 6-digit hex like #d0ff00");
+      setErr(t("tenantCreateModal.errColorHex"));
       return;
     }
     setSubmitting(true);
@@ -127,14 +129,14 @@ export function TenantCreateModal({
       const data = unwrapData<TenantCreateResponse>(raw);
       onCreated(data);
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "Network error");
+      setErr(e instanceof Error ? e.message : t("tenantCreateModal.errNetwork"));
     } finally {
       setSubmitting(false);
     }
   }
 
   return (
-    <ModalOverlay onClose={onClose} ariaLabel={`New tenant · step ${step} of 4`}>
+    <ModalOverlay onClose={onClose} ariaLabel={t("tenantCreateModal.ariaWizard", { step })}>
       <div
         style={{
           width: 560,
@@ -159,9 +161,13 @@ export function TenantCreateModal({
           }}
         >
           <div style={{ fontSize: 13, color: "var(--text)", fontWeight: 500 }}>
-            New tenant · Step {step} of 4
+            {t("tenantCreateModal.headerTitle", { step })}
           </div>
-          <button onClick={onClose} style={{ color: "var(--text-3)" }} aria-label="Close">
+          <button
+            onClick={onClose}
+            style={{ color: "var(--text-3)" }}
+            aria-label={t("tenantCreateModal.close")}
+          >
             <Icon name="x" size={12} />
           </button>
         </header>
@@ -172,8 +178,8 @@ export function TenantCreateModal({
               style={{
                 padding: "8px 12px",
                 marginBottom: 12,
-                background: "rgba(255,100,112,0.08)",
-                border: "1px solid rgba(255,100,112,0.3)",
+                background: "color-mix(in srgb, var(--red) 8%, transparent)",
+                border: "1px solid color-mix(in srgb, var(--red) 30%, transparent)",
                 borderRadius: 4,
                 color: "var(--red)",
                 fontSize: 12,
@@ -185,19 +191,26 @@ export function TenantCreateModal({
 
           {step === 1 && (
             <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-              <Field label="Display name" hint="Shown in the sidebar switcher and tenant lists.">
+              <Field
+                label={t("tenantCreateModal.displayName")}
+                hint={t("tenantCreateModal.displayNameHint")}
+              >
                 <input
                   autoFocus
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                  placeholder="e.g. Acme Recruiting"
+                  placeholder={t("tenantCreateModal.displayNamePlaceholder")}
                   style={inputStyle()}
                 />
               </Field>
               <Field
-                label="Slug"
-                hint="Immutable. Used in URLs, log paths, and Inngest function IDs. [a-z][a-z0-9-]{1,31}"
-                error={slugDirty && slugIssues.length > 0 ? slugIssues.join("; ") : null}
+                label={t("tenantCreateModal.slug")}
+                hint={t("tenantCreateModal.slugHint")}
+                error={
+                  shouldShowSlugIssue({ slugDirty, name, issueCount: slugIssueCodes.length })
+                    ? slugIssues.join("; ")
+                    : null
+                }
               >
                 <input
                   value={slug}
@@ -209,7 +222,10 @@ export function TenantCreateModal({
                   style={{ ...inputStyle(), fontFamily: "var(--mono)" }}
                 />
               </Field>
-              <Field label="Subtitle" hint="Optional short description shown under the name.">
+              <Field
+                label={t("tenantCreateModal.subtitle")}
+                hint={t("tenantCreateModal.subtitleHint")}
+              >
                 <input
                   value={subtitle}
                   onChange={(e) => setSubtitle(e.target.value)}
@@ -217,7 +233,10 @@ export function TenantCreateModal({
                   style={inputStyle()}
                 />
               </Field>
-              <Field label="Accent color" hint="Used for the tenant avatar and accent strokes.">
+              <Field
+                label={t("tenantCreateModal.accentColor")}
+                hint={t("tenantCreateModal.accentColorHint")}
+              >
                 <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                   {DEFAULT_COLORS.map((c) => (
                     <button
@@ -235,7 +254,7 @@ export function TenantCreateModal({
                         cursor: "pointer",
                       }}
                       title={c}
-                      aria-label={`Color ${c}`}
+                      aria-label={t("tenantCreateModal.colorSwatchAria", { color: c })}
                     />
                   ))}
                   <input
@@ -256,27 +275,27 @@ export function TenantCreateModal({
           {step === 2 && (
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
               <Field
-                label="Starter content"
-                hint="Seed the new tenant with sample events / a cloned manifest, or start empty."
+                label={t("tenantCreateModal.starterContent")}
+                hint={t("tenantCreateModal.starterContentHint")}
               >
                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                   <RadioRow
                     checked={starter === "empty"}
                     onChange={() => setStarter("empty")}
-                    title="Empty"
-                    body="Just the tenant row and a default budget. You'll deploy a workflow later via PUT /v1/tenants/:slug/workflow."
+                    title={t("tenantCreateModal.starterEmptyTitle")}
+                    body={t("tenantCreateModal.starterEmptyBody")}
                   />
                   <RadioRow
                     checked={starter === "hello"}
                     onChange={() => setStarter("hello")}
-                    title="Hello (recommended)"
-                    body="Seeds TENANT_BOOTSTRAPPED + HELLO_WORLD event types so the dashboard isn't blank."
+                    title={t("tenantCreateModal.starterHelloTitle")}
+                    body={t("tenantCreateModal.starterHelloBody")}
                   />
                   <RadioRow
                     checked={starter === "copy-from"}
                     onChange={() => setStarter("copy-from")}
-                    title="Copy from existing tenant"
-                    body="Clone the live manifest, event types, and entity types from another tenant."
+                    title={t("tenantCreateModal.starterCopyTitle")}
+                    body={t("tenantCreateModal.starterCopyBody")}
                   />
                 </div>
                 {starter === "copy-from" && (
@@ -285,7 +304,7 @@ export function TenantCreateModal({
                     onChange={(e) => setCopyFromSlug(e.target.value)}
                     style={{ ...inputStyle(), marginTop: 10 }}
                   >
-                    <option value="">— pick a source tenant —</option>
+                    <option value="">{t("tenantCreateModal.pickSourceTenant")}</option>
                     {existingTenants.map((t) => (
                       <option key={t.id} value={t.id}>
                         {t.name} ({t.id})
@@ -300,8 +319,8 @@ export function TenantCreateModal({
           {step === 3 && (
             <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
               <Field
-                label="Monthly token cap"
-                hint="Hard limit on input+output tokens charged through the LLM gateway. Empty = unlimited."
+                label={t("tenantCreateModal.tokenCap")}
+                hint={t("tenantCreateModal.tokenCapHint")}
               >
                 <input
                   value={tokenCap}
@@ -313,8 +332,8 @@ export function TenantCreateModal({
                 />
               </Field>
               <Field
-                label="Monthly USD cap"
-                hint="Stored as integer cents. Empty = unlimited."
+                label={t("tenantCreateModal.usdCap")}
+                hint={t("tenantCreateModal.usdCapHint")}
               >
                 <input
                   value={usdCap}
@@ -327,8 +346,8 @@ export function TenantCreateModal({
                 />
               </Field>
               <Field
-                label="API token"
-                hint="Issue a bootstrap token in the response. You can revoke it later from Settings → API keys."
+                label={t("tenantCreateModal.apiToken")}
+                hint={t("tenantCreateModal.apiTokenHint")}
               >
                 <label
                   style={{
@@ -344,7 +363,7 @@ export function TenantCreateModal({
                     checked={mintToken}
                     onChange={(e) => setMintToken(e.target.checked)}
                   />
-                  Mint a bootstrap token now (shown ONCE)
+                  {t("tenantCreateModal.mintTokenLabel")}
                 </label>
               </Field>
             </div>
@@ -360,7 +379,7 @@ export function TenantCreateModal({
                   marginBottom: 8,
                 }}
               >
-                REVIEW
+                {t("tenantCreateModal.reviewHeading")}
               </div>
               <div
                 style={{
@@ -378,20 +397,27 @@ export function TenantCreateModal({
               >
                 <KvRow k="name" v={name} />
                 <KvRow k="slug" v={slug} />
-                <KvRow k="subtitle" v={subtitle || "(none)"} />
+                <KvRow k="subtitle" v={subtitle || t("tenantCreateModal.reviewNone")} />
                 <KvRow k="color" v={color} />
                 <KvRow
                   k="starter"
                   v={starter === "copy-from" ? `copy-from:${copyFromSlug}` : starter}
                 />
-                <KvRow k="monthly_token_cap" v={tokenCap === "" ? "unlimited" : tokenCap} />
-                <KvRow k="monthly_usd_cap" v={usdCap === "" ? "unlimited" : `$${usdCap}`} />
-                <KvRow k="mint_bootstrap_token" v={mintToken ? "yes" : "no"} />
+                <KvRow
+                  k="monthly_token_cap"
+                  v={tokenCap === "" ? t("tenantCreateModal.reviewUnlimited") : tokenCap}
+                />
+                <KvRow
+                  k="monthly_usd_cap"
+                  v={usdCap === "" ? t("tenantCreateModal.reviewUnlimited") : `$${usdCap}`}
+                />
+                <KvRow
+                  k="mint_bootstrap_token"
+                  v={mintToken ? t("tenantCreateModal.reviewYes") : t("tenantCreateModal.reviewNo")}
+                />
               </div>
               <div style={{ marginTop: 14, fontSize: 11.5, color: "var(--text-3)" }}>
-                Provisioning runs in a single DB transaction. On success you&apos;ll
-                receive the bootstrap token (if requested) and the new tenant will
-                appear in the sidebar.
+                {t("tenantCreateModal.provisioningNote")}
               </div>
             </div>
           )}
@@ -407,15 +433,15 @@ export function TenantCreateModal({
             }}
           >
             <div style={{ fontSize: 11, color: "var(--text-3)" }}>
-              {step === 1 && "Identity"}
-              {step === 2 && "Template"}
-              {step === 3 && "Quotas & budget"}
-              {step === 4 && "Review & create"}
+              {step === 1 && t("tenantCreateModal.stepIdentity")}
+              {step === 2 && t("tenantCreateModal.stepTemplate")}
+              {step === 3 && t("tenantCreateModal.stepQuotas")}
+              {step === 4 && t("tenantCreateModal.stepReview")}
             </div>
             <div style={{ display: "flex", gap: 8 }}>
               {step > 1 && (
                 <Button tone="ghost" onClick={() => setStep((s) => (s - 1) as 1 | 2 | 3 | 4)}>
-                  Back
+                  {t("tenantCreateModal.back")}
                 </Button>
               )}
               {step < 4 && (
@@ -428,7 +454,7 @@ export function TenantCreateModal({
                   }
                   onClick={() => setStep((s) => (s + 1) as 1 | 2 | 3 | 4)}
                 >
-                  Next
+                  {t("tenantCreateModal.next")}
                 </Button>
               )}
               {step === 4 && (
@@ -437,7 +463,9 @@ export function TenantCreateModal({
                   onClick={submit}
                   disabled={submitting || !colorValid}
                 >
-                  {submitting ? "Provisioning…" : "Create tenant"}
+                  {submitting
+                    ? t("tenantCreateModal.provisioning")
+                    : t("tenantCreateModal.createTenant")}
                 </Button>
               )}
             </div>
@@ -449,23 +477,8 @@ export function TenantCreateModal({
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────
-
-function computeSlugIssues(slug: string, existingSlugs: Set<string>): string[] {
-  const issues: string[] = [];
-  if (!slug) {
-    issues.push("required");
-    return issues;
-  }
-  if (!TENANT_SLUG_REGEX.test(slug)) {
-    issues.push("must start with a lowercase letter and contain only [a-z0-9-]");
-  }
-  if (RESERVED_TENANT_SLUGS.has(slug)) issues.push("reserved");
-  if (slug.startsWith("_") || slug.startsWith("-") || slug.endsWith("-")) {
-    issues.push("cannot start/end with - or _");
-  }
-  if (existingSlugs.has(slug)) issues.push("already taken");
-  return issues;
-}
+// computeSlugIssues / deriveSlug / shouldShowSlugIssue live in ./tenant-slug
+// (pure + unit-tested in apps/api/test/tenant-slug.test.ts).
 
 function unwrapData<T>(body: unknown): T {
   if (

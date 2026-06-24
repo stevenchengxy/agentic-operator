@@ -14,9 +14,11 @@ import {
 import { makeId } from "@agentic/shared";
 import { ManifestUploadBody } from "@agentic/contracts";
 import { requireAuth } from "../../plugins/auth";
+import { requirePermission } from "../../plugins/rbac";
 import { writeAudit } from "../../plugins/audit";
 import { getAgentDetail, listAgentRuns, listAgents } from "../../queries/agents";
 import { resolveTenantCodePath } from "../../services/tenant-code";
+import { reregisterInngest } from "../../services/inngest-registry";
 
 function hashManifest(m: unknown): string {
   return crypto
@@ -69,7 +71,7 @@ export async function agentsRoutes(app: FastifyInstance) {
   app.get<{ Querystring: { kind?: string } }>(
     "/agents",
     async (req, reply) => {
-      const auth = requireAuth(req);
+      const auth = requirePermission(req, "agents.read");
       const rawKind = (req.query as { kind?: string }).kind;
       const kind: "code" | "manifest" | "all" =
         rawKind === "code" || rawKind === "manifest" ? rawKind : "all";
@@ -89,7 +91,7 @@ export async function agentsRoutes(app: FastifyInstance) {
   app.get<{ Params: { kebab: string } }>(
     "/agents/:kebab",
     async (req, reply) => {
-      const auth = requireAuth(req);
+      const auth = requirePermission(req, "agents.read");
       const detail = await getAgentDetail(auth.tenantSlug, req.params.kebab);
       if (!detail) return reply.fail("not_found", "agent not found", 404);
       const recentRuns = await listAgentRuns(auth.tenantSlug, detail.id, 20);
@@ -99,7 +101,7 @@ export async function agentsRoutes(app: FastifyInstance) {
 
   // POST /v1/agents — Mode 1 manifest upload
   app.post("/agents", async (req, reply) => {
-    const auth = requireAuth(req);
+    const auth = requirePermission(req, "agents.write");
     const parsed = ManifestUploadBody.parse(req.body);
     const db = getDb();
     const tenant = db
@@ -296,4 +298,91 @@ export async function agentsRoutes(app: FastifyInstance) {
       note: "Server restart picks up the new manifest in Inngest runtime.",
     });
   });
+
+  // PATCH /v1/agents/:kebab — 上线/下线 a single agent (toggle `enabled`).
+  //
+  // Flipping `enabled` then re-registering the tenant is the runtime
+  // disable/enable path: a disabled manifest agent is dropped from the served
+  // Inngest function set (see packages/runtime bootstrapTenant), so no event
+  // routes to it until it's re-enabled. Code agents have no Inngest function;
+  // their `enabled` flag is honored at invoke time instead. Idempotent —
+  // toggling to the current state still returns 200 with the row state.
+  app.patch<{ Params: { kebab: string }; Body: { enabled?: unknown } }>(
+    "/agents/:kebab",
+    async (req, reply) => {
+      const auth = requirePermission(req, "agents.write");
+      const body = (req.body ?? {}) as { enabled?: unknown };
+      if (typeof body.enabled !== "boolean") {
+        return reply.fail(
+          "invalid_body",
+          "body must be { enabled: boolean }",
+          400,
+        );
+      }
+      const db = getDb();
+      const row = db
+        .select({
+          id: agents.id,
+          kebabId: agents.kebabId,
+          name: agents.name,
+          kind: agents.kind,
+          enabled: agents.enabled,
+        })
+        .from(agents)
+        .innerJoin(workflows, eq(workflows.id, agents.workflowId))
+        .where(
+          and(
+            eq(workflows.tenantId, auth.tenantId),
+            eq(agents.kebabId, req.params.kebab),
+          ),
+        )
+        .all()[0];
+      if (!row) return reply.fail("not_found", "agent not found", 404);
+
+      const enabled = body.enabled;
+      if (row.enabled !== enabled) {
+        db.update(agents)
+          .set({ enabled, updatedAt: new Date() })
+          .where(eq(agents.id, row.id))
+          .run();
+        writeAudit({
+          tenantId: auth.tenantId,
+          action: enabled ? "agent.enable" : "agent.disable",
+          targetType: "agent",
+          targetId: row.id,
+          meta: { kebabId: row.kebabId, kind: row.kind },
+        });
+      }
+
+      // Re-register so a manifest agent's function is added/removed from the
+      // live serve handler without a restart. No-op for code agents (they
+      // contribute no Inngest function) but harmless. Best-effort: a failed
+      // re-register is logged and surfaced, but the DB flip already persisted
+      // and the next boot reflects it.
+      let reregistered = false;
+      let fnCount: number | undefined;
+      try {
+        const r = await reregisterInngest({
+          tenantSlug: auth.tenantSlug,
+          scope: "tenant",
+        });
+        reregistered = true;
+        fnCount = r.fnCount;
+      } catch (err) {
+        req.log.warn(
+          { err, kebabId: row.kebabId },
+          "agent enable/disable: re-register failed; next boot will reflect it",
+        );
+      }
+
+      return reply.ok({
+        kebabId: row.kebabId,
+        name: row.name,
+        kind: row.kind,
+        enabled,
+        reregistered,
+        fnCount,
+      });
+    },
+  );
 }

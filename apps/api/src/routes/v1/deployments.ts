@@ -2,13 +2,14 @@ import type { FastifyInstance } from "fastify";
 import { and, eq } from "drizzle-orm";
 import { deployments, getDb } from "@agentic/db";
 import { requireAuth } from "../../plugins/auth";
+import { requirePermission } from "../../plugins/rbac";
 import { writeAudit } from "../../plugins/audit";
 import { getLiveDeployment, listDeployments } from "../../queries/deployments";
 
 export async function deploymentsRoutes(app: FastifyInstance) {
   // GET /v1/deployments — list history
   app.get("/deployments", async (req, reply) => {
-    const auth = requireAuth(req);
+    const auth = requirePermission(req, "deployments.read");
     const [list, live] = await Promise.all([
       listDeployments(auth.tenantSlug),
       getLiveDeployment(auth.tenantSlug),
@@ -20,7 +21,7 @@ export async function deploymentsRoutes(app: FastifyInstance) {
   app.post<{ Params: { id: string } }>(
     "/deployments/:id/rollback",
     async (req, reply) => {
-      const auth = requireAuth(req);
+      const auth = requirePermission(req, "deployments.write");
       const db = getDb();
       const target = db
         .select()

@@ -36,13 +36,13 @@ describe("parseArgs", () => {
       "logs",
       "run-1",
       "--api",
-      "http://other:3501",
+      "http://other:3540",
       "--token",
       "abc",
     ]);
     expect(a.command).toBe("logs");
     expect(a.positional).toEqual(["run-1"]);
-    expect(a.globals.api).toBe("http://other:3501");
+    expect(a.globals.api).toBe("http://other:3540");
     expect(a.globals.token).toBe("abc");
   });
 

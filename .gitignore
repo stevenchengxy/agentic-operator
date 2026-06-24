@@ -63,3 +63,6 @@ models/mi*-v*/
 # committed before this rule landed; run `git rm -r --cached models/__system-v1`
 # to untrack them in a dedicated cleanup commit.)
 models/__system-v1/workflow_v*.json
+
+# brainstorm visual companion
+.superpowers/

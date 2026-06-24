@@ -20,6 +20,7 @@ import {
   MonacoEditor,
   Panel,
 } from "@/app/portal/components";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 import { AGENT_SAMPLE_TS_CODE, AGENT_SAMPLE_TOOL_USE, type ToolUseSchema } from "./samples";
 
 export function AgentCodeEditPanel({
@@ -31,6 +32,7 @@ export function AgentCodeEditPanel({
   onChange?: (v: string) => void;
   height?: number | string;
 }) {
+  const { t } = useI18n();
   const [val, setVal] = useState(value ?? AGENT_SAMPLE_TS_CODE);
   function handle(v: string) {
     setVal(v);
@@ -42,19 +44,19 @@ export function AgentCodeEditPanel({
       title="typescript_code"
       subtitle={
         <>
-          Compiled with the workspace&apos;s{" "}
-          <span className="mono" style={{ color: "var(--text-2)" }}>@agentic/runtime</span> typings.
+          {t("editPanels.codeSubtitlePrefix")}{" "}
+          <span className="mono" style={{ color: "var(--text-2)" }}>@agentic/runtime</span> {t("editPanels.codeSubtitleSuffix")}
         </>
       }
       padded={false}
       action={
         <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-          <span style={{ fontSize: 10.5, fontFamily: "var(--mono)", color: "var(--text-3)" }}>{lines} lines</span>
+          <span style={{ fontSize: 10.5, fontFamily: "var(--mono)", color: "var(--text-3)" }}>{t("editPanels.linesCount", { lines })}</span>
           <Button small tone="ghost" icon="replay" onClick={() => handle(AGENT_SAMPLE_TS_CODE)}>
-            Reset
+            {t("editPanels.reset")}
           </Button>
           <Button small tone="ghost" icon="check">
-            Format
+            {t("editPanels.format")}
           </Button>
         </div>
       }
@@ -73,10 +75,10 @@ export function AgentCodeEditPanel({
         }}
       >
         <span>
-          <Icon name="check" size={10} style={{ color: "var(--green)" }} /> 0 errors
+          <Icon name="check" size={10} style={{ color: "var(--green)" }} /> {t("editPanels.errorsCount", { n: 0 })}
         </span>
         <span>
-          <Icon name="alert" size={10} style={{ color: "var(--amber)" }} /> 0 warnings
+          <Icon name="alert" size={10} style={{ color: "var(--amber)" }} /> {t("editPanels.warningsCount", { n: 0 })}
         </span>
         <span style={{ marginLeft: "auto" }}>TypeScript 5.6 · ESNext · NodeJs resolution</span>
       </div>
@@ -93,6 +95,7 @@ export function AgentOntologyEditPanel({
   onChange?: (v: string) => void;
   height?: number | string;
 }) {
+  const { t } = useI18n();
   const [val, setVal] = useState(value ?? "");
   function handle(v: string) {
     setVal(v);
@@ -102,12 +105,12 @@ export function AgentOntologyEditPanel({
   return (
     <Panel
       title="ontology_instructions"
-      subtitle="Domain vocabulary, business rules, and guardrails. Prepended to every prompt."
+      subtitle={t("editPanels.ontologySubtitle")}
       padded={false}
       action={
         <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-          <span style={{ fontSize: 10.5, fontFamily: "var(--mono)", color: "var(--text-3)" }}>{lines} lines</span>
-          <Button small tone="ghost" icon="external">Templates</Button>
+          <span style={{ fontSize: 10.5, fontFamily: "var(--mono)", color: "var(--text-3)" }}>{t("editPanels.linesCount", { lines })}</span>
+          <Button small tone="ghost" icon="external">{t("editPanels.templates")}</Button>
         </div>
       }
     >
@@ -121,7 +124,7 @@ export function AgentOntologyEditPanel({
           lineHeight: 1.5,
         }}
       >
-        Plain markdown. Reference entity names, list hard rules, define vocabulary. The LLM sees this verbatim as a system-prompt prefix on every call this agent makes.
+        {t("editPanels.ontologyHelp")}
       </div>
     </Panel>
   );
@@ -136,6 +139,7 @@ export function AgentInputDataEditPanel({
   onChange?: (v: Record<string, unknown>) => void;
   height?: number | string;
 }) {
+  const { t } = useI18n();
   const [raw, setRaw] = useState(JSON.stringify(value ?? {}, null, 2));
   const [err, setErr] = useState<string | null>(null);
 
@@ -152,10 +156,10 @@ export function AgentInputDataEditPanel({
   return (
     <Panel
       title="input_data"
-      subtitle="Sample input payload. Used for test runs and to auto-generate the IO docs."
+      subtitle={t("editPanels.inputDataSubtitle")}
       padded={false}
       action={
-        err ? <Badge tone="red">JSON ERR</Badge> : <Button small tone="ghost" icon="run">Run with this</Button>
+        err ? <Badge tone="red">{t("editPanels.jsonErr")}</Badge> : <Button small tone="ghost" icon="run">{t("editPanels.runWithThis")}</Button>
       }
     >
       <MonacoEditor value={raw} onChange={handle} language="json" height={height} />
@@ -199,6 +203,7 @@ export function AgentToolUseEditPanel({
   tools?: ToolUseSchema[];
   onChange?: (next: ToolUseSchema[]) => void;
 }) {
+  const { t } = useI18n();
   const [items, setItems] = useState<ToolUseInternal[]>(
     tools && tools.length ? tools : AGENT_SAMPLE_TOOL_USE,
   );
@@ -248,16 +253,16 @@ export function AgentToolUseEditPanel({
   return (
     <Panel
       title={`tool_use · ${items.length}`}
-      subtitle="Tool definitions handed to the LLM at request time. Each tool's input_schema is a JSON Schema."
+      subtitle={t("editPanels.toolUseSubtitle")}
       padded={false}
       action={
         <Button small icon="plus" tone="ghost" onClick={add}>
-          Add tool
+          {t("editPanels.addTool")}
         </Button>
       }
     >
       {items.length === 0 ? (
-        <Empty title="No tools defined" hint="Click Add tool to expose an API to the LLM." />
+        <Empty title={t("editPanels.noToolsTitle")} hint={t("editPanels.noToolsHint")} />
       ) : (
         <div>
           {items.map((t, i) => (
@@ -292,6 +297,7 @@ function ToolUseCard({
   onUpdateSchema: (raw: string) => void;
   onRemove: () => void;
 }) {
+  const { t } = useI18n();
   const paramCount =
     tool.input_schema && tool.input_schema.properties
       ? Object.keys(tool.input_schema.properties).length
@@ -312,7 +318,7 @@ function ToolUseCard({
         }}
       >
         <Icon name={open ? "chevron-down" : "chevron-right"} size={11} style={{ color: "var(--text-3)" }} />
-        <Icon name="code" size={11} style={{ color: open ? "var(--signal)" : "var(--text-3)" }} />
+        <Icon name="code" size={11} style={{ color: open ? "var(--accent-text)" : "var(--text-3)" }} />
         <span className="mono" style={{ fontSize: 12.5, color: "var(--text)" }}>{tool.name}</span>
         <span
           style={{
@@ -328,9 +334,9 @@ function ToolUseCard({
           {tool.description}
         </span>
         <span style={{ fontSize: 10, fontFamily: "var(--mono)", color: "var(--text-3)" }}>
-          {paramCount} params
+          {t("editPanels.paramsCount", { n: paramCount })}
         </span>
-        {tool.__schemaError && <Badge tone="red">SCHEMA ERR</Badge>}
+        {tool.__schemaError && <Badge tone="red">{t("editPanels.schemaErr")}</Badge>}
         <button
           onClick={(e) => {
             e.stopPropagation();
@@ -360,10 +366,10 @@ function ToolUseCard({
               />
             </label>
             <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              <Label>required by</Label>
+              <Label>{t("editPanels.requiredBy")}</Label>
               <select defaultValue="llm" style={{ ...inputBoxStyle, appearance: "none" }}>
-                <option value="llm">LLM tool-use (Anthropic / OpenAI)</option>
-                <option value="code">Imperative code only</option>
+                <option value="llm">{t("editPanels.requiredByLlm")}</option>
+                <option value="code">{t("editPanels.requiredByCode")}</option>
               </select>
             </label>
           </div>
@@ -377,12 +383,12 @@ function ToolUseCard({
               style={{ ...inputBoxStyle, resize: "vertical", lineHeight: 1.5 }}
             />
             <span style={{ fontSize: 10.5, color: "var(--text-3)" }}>
-              The LLM uses this to decide when to call. Be specific about inputs, side effects, and when NOT to use it.
+              {t("editPanels.descriptionHelp")}
             </span>
           </label>
 
           <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            <Label>input_schema · JSON Schema</Label>
+            <Label>{t("editPanels.inputSchemaLabel")}</Label>
             <MonacoEditor
               value={JSON.stringify(tool.input_schema, null, 2)}
               onChange={onUpdateSchema}

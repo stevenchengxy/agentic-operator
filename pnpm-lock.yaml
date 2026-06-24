@@ -83,6 +83,9 @@ importers:
       '@tenants/tenant-test1':
         specifier: workspace:*
         version: link:../../tenants/tenant-test1
+      '@tenants/zhaopin':
+        specifier: workspace:*
+        version: link:../../tenants/zhaopin
       drizzle-orm:
         specifier: ^0.45.2
         version: 0.45.2(@opentelemetry/api@1.9.1)(@types/better-sqlite3@7.6.13)(@types/pg@8.15.6)(better-sqlite3@12.10.0)
@@ -580,6 +583,28 @@ importers:
       '@types/node':
         specifier: ^25.8.0
         version: 25.8.0
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+
+  tenants/zhaopin:
+    dependencies:
+      '@agentic/agent-kit':
+        specifier: workspace:*
+        version: link:../../packages/agent-kit
+      '@agentic/db':
+        specifier: workspace:*
+        version: link:../../packages/db
+      '@agentic/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
+      '@agentic/tools':
+        specifier: workspace:*
+        version: link:../../packages/tools
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
+    devDependencies:
       typescript:
         specifier: ^6.0.3
         version: 6.0.3

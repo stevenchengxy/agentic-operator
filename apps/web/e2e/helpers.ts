@@ -11,7 +11,7 @@
  * file:line.
  */
 
-export const API_BASE = process.env.PW_API_BASE ?? "http://localhost:3501";
+export const API_BASE = process.env.PW_API_BASE ?? "http://localhost:3540";
 export const WEB_BASE = process.env.PW_WEB_BASE ?? "http://localhost:3599";
 
 interface JsonOk<T> {

@@ -67,6 +67,15 @@ export const RunRow = z.object({
    * it (defaulting to false when the column is null/absent).
    */
   testRun: z.boolean().optional(),
+  /**
+   * Resolved real payloads for the run-detail IO/Events tabs — the trigger
+   * event payload (the run's INPUT) and the emitted event payload (its
+   * OUTPUT). Detail-only: the list endpoint never reads payload files, so
+   * these stay undefined there. Bounded server-side (oversized payloads
+   * collapse to a `{ _truncated, _preview }` marker).
+   */
+  inputPayload: z.unknown().optional(),
+  outputPayload: z.unknown().optional(),
 });
 export type RunRow = z.infer<typeof RunRow>;
 
@@ -84,6 +93,11 @@ export const StepRow = z.object({
   model: z.string().nullable(),
   tokensIn: z.number().nullable(),
   tokensOut: z.number().nullable(),
+  // Resolved real input/output payloads for this step (run-detail only — the
+  // list endpoint leaves these undefined). Powers the Timeline/Trace/IO tabs'
+  // Inngest-style per-step 📥 input / 📤 output.
+  input: z.unknown().optional(),
+  output: z.unknown().optional(),
 });
 export type StepRow = z.infer<typeof StepRow>;
 

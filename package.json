@@ -9,8 +9,8 @@
   "packageManager": "pnpm@11.3.0",
   "scripts": {
     "ensure:native": "node scripts/ensure-native-modules.mjs",
-    "predev": "pnpm run ensure:native && (lsof -ti:3599,3501,8288,8289,50052,50053 | xargs kill -9 2>/dev/null; exit 0)",
-    "dev": "concurrently -n web,api,inngest -c blue,green,magenta \"pnpm --filter @agentic/web run dev\" \"pnpm --filter @agentic/api run dev\" \"npx -y inngest-cli@latest dev -u http://localhost:3501/inngest\"",
+    "predev": "pnpm run ensure:native && (lsof -ti:3599,3540,8288,8289,50052,50053 | xargs kill -9 2>/dev/null; exit 0)",
+    "dev": "concurrently -n web,api,inngest -c blue,green,magenta \"pnpm --filter @agentic/web run dev\" \"pnpm --filter @agentic/api run dev\" \"npx -y inngest-cli@latest dev -u http://localhost:3540/inngest\"",
     "prebuild": "pnpm run ensure:native",
     "build": "turbo run build",
     "lint": "turbo run lint",

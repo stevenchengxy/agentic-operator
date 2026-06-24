@@ -57,6 +57,9 @@ export const EventRow = z.object({
    * subscribers fired (e.g. a dead-letter event). Optional so older
    * tests / callers that don't populate it keep validating. */
   consumers: z.array(EventConsumer).optional(),
+  /** Resolved REAL payload (detail endpoint only — GET /v1/events/:id reads
+   * the ledger file). Bounded server-side. Undefined on list endpoints. */
+  payload: z.unknown().optional(),
 });
 export type EventRow = z.infer<typeof EventRow>;
 

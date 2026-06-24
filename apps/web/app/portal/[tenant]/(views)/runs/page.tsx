@@ -24,6 +24,7 @@ import {
 } from "@/app/portal/components";
 import { fmtAgo, fmtDur } from "@/app/portal/lib/format";
 import { useTenant } from "@/app/portal/lib/use-tenant";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 import { useRuns, type RunListRow } from "@/lib/hooks/useRuns";
 
 const STATUS_TO_DOT: Record<string, StatusName> = {
@@ -39,6 +40,7 @@ const STATUS_TO_DOT: Record<string, StatusName> = {
 
 export default function RunsPage() {
   const tenant = useTenant();
+  const { t } = useI18n();
   const { data: allRuns = [] } = useRuns({ limit: 200 });
   const [statusFilter, setStatusFilter] = useState<
     "all" | "running" | "ok" | "failed"
@@ -67,11 +69,14 @@ export default function RunsPage() {
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
       <ViewHeader
-        title="Runs"
-        subtitle={`${filtered.length} runs · ${activeCount} active`}
+        title={t("nav.runs")}
+        subtitle={t("runs.summary", {
+          count: filtered.length,
+          active: activeCount,
+        })}
         action={
           <Button icon="replay" small>
-            Replay selection
+            {t("runs.replaySelection")}
           </Button>
         }
       />
@@ -104,7 +109,7 @@ export default function RunsPage() {
             <SearchInput
               value={query}
               onChange={setQuery}
-              placeholder="run id, agent, subject…"
+              placeholder={t("runs.searchPlaceholder")}
             />
           </div>
           <div
@@ -118,24 +123,24 @@ export default function RunsPage() {
           >
             {(
               [
-                { id: "all", label: "All" },
-                { id: "running", label: "Running" },
-                { id: "ok", label: "Ok" },
-                { id: "failed", label: "Failed" },
+                { id: "all", labelKey: "runs.filterAll" },
+                { id: "running", labelKey: "runs.filterRunning" },
+                { id: "ok", labelKey: "runs.filterOk" },
+                { id: "failed", labelKey: "runs.filterFailed" },
               ] as const
-            ).map((t) => (
+            ).map((chip) => (
               <FilterChip
-                key={t.id}
-                active={statusFilter === t.id}
-                onClick={() => setStatusFilter(t.id)}
+                key={chip.id}
+                active={statusFilter === chip.id}
+                onClick={() => setStatusFilter(chip.id)}
               >
-                {t.label}
+                {t(chip.labelKey)}
               </FilterChip>
             ))}
           </div>
           <div style={{ flex: 1, overflow: "auto" }}>
             {filtered.length === 0 ? (
-              <Empty title="No runs" hint="Adjust filters or try a fresh trigger" />
+              <Empty title={t("runs.emptyTitle")} hint={t("runs.emptyHint")} />
             ) : (
               filtered.map((r) => (
                 <RunListItem
@@ -160,8 +165,8 @@ export default function RunsPage() {
           }}
         >
           <Empty
-            title="Select a run"
-            hint="Pick from the list — the detail opens at /runs/[id]"
+            title={t("runs.selectTitle")}
+            hint={t("runs.selectHint")}
           />
         </div>
       </div>
@@ -178,6 +183,7 @@ function RunListItem({
   tenant: string;
   selected: boolean;
 }) {
+  const { t } = useI18n();
   const testRun = (row as { testRun?: boolean }).testRun === true;
   const isReplay = Boolean(row.parentRunId);
   return (
@@ -217,12 +223,12 @@ function RunListItem({
         </span>
         {testRun && (
           <Badge tone="signal" style={{ fontSize: 9 }}>
-            TEST
+            {t("runs.badgeTest")}
           </Badge>
         )}
         {isReplay && (
           <Badge tone="amber" style={{ fontSize: 9 }}>
-            REPLAY
+            {t("runs.badgeReplay")}
           </Badge>
         )}
         <span

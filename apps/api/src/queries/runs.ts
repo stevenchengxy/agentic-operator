@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { alias } from "drizzle-orm/sqlite-core";
 import { and, desc, eq, isNull, like, or, sql } from "drizzle-orm";
 import {
@@ -10,6 +11,57 @@ import {
   tenants,
 } from "@agentic/db";
 import type { RunRow, StepRow, EventRow } from "@agentic/contracts";
+
+/**
+ * Resolve a stored payload reference to its real JSON, for the run-detail
+ * IO/Events tabs. Two ref formats coexist:
+ *   - event ledger: "<file>#<byteOffset>" → the NDJSON line's `.data`
+ *   - step artifact: "<file>"             → the whole JSON file
+ * Bounded to MAX_PAYLOAD_BYTES so a base64 résumé can't bloat the response;
+ * an oversized payload collapses to a small preview marker. Best-effort —
+ * a missing/garbled file resolves to null rather than throwing.
+ */
+const MAX_PAYLOAD_BYTES = 24_000;
+
+function capPayload(value: unknown): unknown {
+  if (value == null) return value;
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(value);
+  } catch {
+    return null;
+  }
+  if (serialized.length <= MAX_PAYLOAD_BYTES) return value;
+  return {
+    _truncated: true,
+    _bytes: serialized.length,
+    _preview: serialized.slice(0, 4000),
+  };
+}
+
+export async function resolvePayloadRef(
+  ref: string | null | undefined,
+): Promise<unknown> {
+  if (!ref) return null;
+  const hashIdx = ref.lastIndexOf("#");
+  try {
+    if (hashIdx === -1) {
+      // step artifact — the whole file is the payload
+      return capPayload(JSON.parse(await readFile(ref, "utf8")));
+    }
+    // event ledger ref "<file>#<offset>" → the line's `.data`
+    const filePath = ref.slice(0, hashIdx);
+    const offset = Number(ref.slice(hashIdx + 1));
+    if (!Number.isFinite(offset)) return null;
+    const buf = await readFile(filePath);
+    const nl = buf.indexOf(0x0a, offset);
+    const line = buf.toString("utf8", offset, nl === -1 ? undefined : nl);
+    const parsed = JSON.parse(line) as { data?: unknown };
+    return capPayload(parsed.data ?? parsed);
+  } catch {
+    return null;
+  }
+}
 
 // UC-V11-21 / AR-GAP-06 — two `events` joins on the same query (the
 // trigger event AND the emitted event) need aliases or Drizzle's
@@ -190,6 +242,10 @@ export async function getRun(
       errorMessage: runs.errorMessage,
       logPath: runs.logPath,
       isTest: runs.isTest,
+      // Real payloads for the run-detail IO/Events tabs: the trigger event is
+      // the run's INPUT, the emitted event its OUTPUT. Resolved below.
+      triggerPayloadRef: events.payloadRef,
+      emittedPayloadRef: emittedEventsAlias.payloadRef,
     })
     .from(runs)
     .innerJoin(agents, eq(agents.id, runs.agentId))
@@ -201,15 +257,24 @@ export async function getRun(
     .where(and(eq(runs.tenantId, tenantId), eq(runs.id, runId)))
     .all()[0];
   if (!row) return null;
+  const { triggerPayloadRef, emittedPayloadRef, ...runFields } = row;
+  // Resolve the real input (trigger) + output (emitted) payloads from the
+  // ledger — detail-only (the list endpoint never reads files).
+  const [inputPayload, outputPayload] = await Promise.all([
+    resolvePayloadRef(triggerPayloadRef),
+    resolvePayloadRef(emittedPayloadRef),
+  ]);
   // P2-FE-18 — mirror errorMessage→error and surface isTest→testRun so the
   // detail surface matches the list surface and cold-loads paint the badge.
   const enriched = {
-    ...row,
-    error: row.errorMessage,
-    testRun: row.isTest === true,
+    ...runFields,
+    error: runFields.errorMessage,
+    testRun: runFields.isTest === true,
     currentStepName: null,
     currentStepOrd: null,
     stepCount: null,
+    inputPayload,
+    outputPayload,
   } as RunRow;
   const hydrated = hydrateStepInfo([enriched]);
   return hydrated[0] ?? null;
@@ -217,7 +282,7 @@ export async function getRun(
 
 export async function listSteps(runId: string): Promise<StepRow[]> {
   const db = getDb();
-  return db
+  const rows = db
     .select({
       id: steps.id,
       ord: steps.ord,
@@ -232,11 +297,22 @@ export async function listSteps(runId: string): Promise<StepRow[]> {
       model: steps.model,
       tokensIn: steps.tokensIn,
       tokensOut: steps.tokensOut,
+      inputRef: steps.inputRef,
+      outputRef: steps.outputRef,
     })
     .from(steps)
     .where(eq(steps.runId, runId))
     .orderBy(steps.ord)
     .all();
+  // Resolve each step's real input/output artifact for the Timeline/Trace/IO
+  // tabs (Inngest-style per-step 📥/📤). Detail-only file reads.
+  return Promise.all(
+    rows.map(async ({ inputRef, outputRef, ...step }) => ({
+      ...step,
+      input: await resolvePayloadRef(inputRef),
+      output: await resolvePayloadRef(outputRef),
+    })),
+  ) as Promise<StepRow[]>;
 }
 
 export async function listRecentEvents(

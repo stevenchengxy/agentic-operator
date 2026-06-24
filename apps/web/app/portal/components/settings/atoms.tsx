@@ -10,6 +10,7 @@
 
 import type { CSSProperties, ReactNode } from "react";
 import { Badge, Icon, StatusDot } from "@/app/portal/components";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 
 // ---------- Field ----------
 export function Field({
@@ -105,6 +106,7 @@ export function TextIn({
    */
   ariaLabel?: string;
 }) {
+  const { t } = useI18n();
   return (
     <div
       style={{
@@ -132,7 +134,7 @@ export function TextIn({
         value={value}
         onChange={(e) => onChange?.(e.target.value)}
         placeholder={placeholder}
-        aria-label={ariaLabel ?? placeholder ?? "Text input"}
+        aria-label={ariaLabel ?? placeholder ?? t("settingsAtoms.textInput")}
         style={{
           flex: 1,
           background: "transparent",
@@ -174,11 +176,12 @@ export function SelectIn({
   /** P2-FE-24 — accessible name. Defaults to "Select" to silence axe. */
   ariaLabel?: string;
 }) {
+  const { t } = useI18n();
   return (
     <select
       value={value}
       onChange={(e) => onChange?.(e.target.value)}
-      aria-label={ariaLabel ?? "Select"}
+      aria-label={ariaLabel ?? t("settingsAtoms.select")}
       style={{
         background: "var(--panel-2)",
         border: "1px solid var(--border-2)",
@@ -223,10 +226,11 @@ export function Toggle({
   /** P2-FE-24 — accessible name. Required for icon-only toggles. */
   ariaLabel?: string;
 }) {
+  const { t } = useI18n();
   return (
     <button
       onClick={() => onChange?.(!value)}
-      aria-label={ariaLabel ?? (value ? "On" : "Off")}
+      aria-label={ariaLabel ?? (value ? t("settingsAtoms.on") : t("settingsAtoms.off"))}
       style={{
         width: 36,
         height: 20,
@@ -247,7 +251,7 @@ export function Toggle({
           width: 16,
           height: 16,
           borderRadius: "50%",
-          background: value ? "#000" : "var(--text-3)",
+          background: value ? "var(--on-signal)" : "var(--text-3)",
           transition: "left 0.12s",
         }}
       />
@@ -281,24 +285,25 @@ export function CardRow({
 
 // ---------- StatusPill ----------
 export function StatusPill({ status }: { status: "ok" | "warn" | "err" | "off" }) {
+  const { t } = useI18n();
   const map = {
-    ok: { tone: "green" as const, label: "CONNECTED", dot: "ok" as const },
+    ok: { tone: "green" as const, label: t("settingsAtoms.statusConnected"), dot: "ok" as const },
     warn: {
       tone: "amber" as const,
-      label: "DEGRADED",
+      label: t("settingsAtoms.statusDegraded"),
       dot: "waiting" as const,
     },
-    err: { tone: "red" as const, label: "ERROR", dot: "failed" as const },
+    err: { tone: "red" as const, label: t("settingsAtoms.statusError"), dot: "failed" as const },
     off: {
       tone: "muted" as const,
-      label: "DISCONNECTED",
+      label: t("settingsAtoms.statusDisconnected"),
       dot: "idle" as const,
     },
   };
-  const t = map[status] ?? map.off;
+  const entry = map[status] ?? map.off;
   return (
-    <Badge tone={t.tone}>
-      <StatusDot status={t.dot} size={5} /> {t.label}
+    <Badge tone={entry.tone}>
+      <StatusDot status={entry.dot} size={5} /> {entry.label}
     </Badge>
   );
 }

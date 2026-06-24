@@ -25,6 +25,7 @@ import type { FastifyInstance } from "fastify";
 import { and, desc, eq, gte, lt } from "drizzle-orm";
 import { auditLog, getDb } from "@agentic/db";
 import { requireAuth } from "../../plugins/auth";
+import { requirePermission } from "../../plugins/rbac";
 
 interface QueryString {
   since?: string;
@@ -37,7 +38,7 @@ interface QueryString {
 
 export async function auditRoutes(app: FastifyInstance): Promise<void> {
   app.get<{ Querystring: QueryString }>("/audit", async (req, reply) => {
-    const auth = requireAuth(req);
+    const auth = requirePermission(req, "audit.read");
     const q = req.query;
 
     const limitRaw = q.limit ? Number(q.limit) : 100;

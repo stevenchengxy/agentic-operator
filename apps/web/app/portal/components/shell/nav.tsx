@@ -92,7 +92,7 @@ export function NavItem({
             gap: 4,
             fontSize: 10.5,
             fontFamily: "var(--mono)",
-            color: "var(--signal)",
+            color: "var(--accent-text)",
           }}
         >
           <span className="live-dot" style={{ width: 5, height: 5 }} />
@@ -106,12 +106,12 @@ export function NavItem({
             fontFamily: "var(--mono)",
             padding: "1px 6px",
             background: highlight
-              ? "rgba(255,181,71,0.12)"
+              ? "color-mix(in srgb, var(--amber) 12%, transparent)"
               : "var(--panel-2)",
             color: highlight ? "var(--amber)" : "var(--text-3)",
             borderRadius: 8,
             border: highlight
-              ? "1px solid rgba(255,181,71,0.3)"
+              ? "1px solid color-mix(in srgb, var(--amber) 30%, transparent)"
               : "1px solid var(--border)",
           }}
         >

@@ -3,7 +3,7 @@
  *
  * The api exposes an unauthenticated health endpoint (apps/api/src/routes/health.ts)
  * with three sub-component reports: inngest, sqlite, and disk. The Next.js
- * rewrite in `next.config.mjs` routes `/health` to the api on :3501 so this
+ * rewrite in `next.config.mjs` routes `/health` to the api on :3540 so this
  * hook works the same in dev and prod.
  *
  * Used by:

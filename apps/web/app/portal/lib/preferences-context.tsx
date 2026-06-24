@@ -28,7 +28,7 @@ import {
 import type { Language } from "@/lib/i18n/types";
 import { translate } from "@/lib/i18n";
 import {
-  ACCENT_DIMS,
+  accentVarsFor,
   DEFAULT_PREFERENCES,
   normalizePreferences,
   resolveTheme,
@@ -76,6 +76,19 @@ function osPrefersDark(): boolean {
   );
 }
 
+/** Write the theme-aware accent variables onto <html>. */
+function applyAccentVars(
+  html: HTMLElement,
+  accent: string,
+  theme: "light" | "dark",
+): void {
+  const v = accentVarsFor(accent, theme);
+  html.style.setProperty("--signal", v.signal);
+  html.style.setProperty("--signal-dim", v.signalDim);
+  html.style.setProperty("--accent-text", v.accentText);
+  html.style.setProperty("--on-signal", v.onSignal);
+}
+
 export function PreferencesProvider({ children }: { children: ReactNode }) {
   const [prefs, setPrefs] = useState<Preferences>(DEFAULT_PREFERENCES);
   // `loaded` gates the apply-effect so we never paint the DEFAULT theme over
@@ -104,18 +117,25 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!loaded || typeof document === "undefined") return;
     const html = document.documentElement;
-    html.dataset.theme = resolveTheme(prefs.theme, osPrefersDark());
+    const resolved = resolveTheme(prefs.theme, osPrefersDark());
+    html.dataset.theme = resolved;
     html.dataset.density = prefs.density;
     html.lang = prefs.language;
-    html.style.setProperty("--signal", prefs.accent);
-    html.style.setProperty("--signal-dim", ACCENT_DIMS[prefs.accent] ?? "#5a6e00");
+    // Accent vars are theme-aware: vivid on dark (fill + text both read on
+    // near-black), darkened on light (a deep, intentional accent — vivid lime
+    // is garish/low-contrast as a fill on white). Injected here (not in CSS)
+    // because this inline style overrides the stylesheet token in both themes.
+    applyAccentVars(html, prefs.accent, resolved);
 
     if (prefs.theme !== "system" || typeof window.matchMedia !== "function") {
       return;
     }
     const mq = window.matchMedia("(prefers-color-scheme: dark)");
     const onChange = () => {
-      html.dataset.theme = resolveTheme(prefs.theme, mq.matches);
+      const next = resolveTheme(prefs.theme, mq.matches);
+      html.dataset.theme = next;
+      // Re-derive the whole accent set when the OS flips while in system mode.
+      applyAccentVars(html, prefs.accent, next);
     };
     mq.addEventListener("change", onChange);
     return () => mq.removeEventListener("change", onChange);

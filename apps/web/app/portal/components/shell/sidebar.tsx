@@ -20,6 +20,7 @@ import { useAgents } from "@/lib/hooks/useAgents";
 import { useRuns } from "@/lib/hooks/useRuns";
 import { useTasks } from "@/lib/hooks/useTasks";
 import { useHealth, fmtBytes } from "@/lib/hooks/useHealth";
+import { useCan } from "@/lib/hooks/useMe";
 import {
   useDemoStatus,
   useStartDemo,
@@ -40,6 +41,7 @@ export function Sidebar({ tenants, version = "v0.6.2" }: SidebarProps) {
   const tenantSlug = useTenant();
   const base = `/portal/${tenantSlug}`;
   const { t } = useI18n();
+  const can = useCan();
   const { data: agents = [] } = useAgents();
   const { data: runs = [] } = useRuns({ limit: 200 });
   const { data: tasks = [] } = useTasks();
@@ -198,6 +200,16 @@ export function Sidebar({ tenants, version = "v0.6.2" }: SidebarProps) {
             label={t("nav.tenants")}
             matchPrefix
           />
+          {/* P6-AUTH — Access & roles. Shown only to tenant admins (members.read)
+            * and platform superadmins; viewers/operators never see it. */}
+          {can("members.read") ? (
+            <NavItem
+              href={`${base}/access`}
+              icon="human"
+              label={t("nav.access")}
+              matchPrefix
+            />
+          ) : null}
           <NavItem
             href={`${base}/settings`}
             icon="settings"
@@ -238,6 +250,7 @@ export function Sidebar({ tenants, version = "v0.6.2" }: SidebarProps) {
  * tokens via the demo loop, regardless of how `.env` is configured.
  */
 function DemoToggle() {
+  const { t } = useI18n();
   const { data: status } = useDemoStatus();
   const start = useStartDemo();
   const stop = useStopDemo();
@@ -252,8 +265,11 @@ function DemoToggle() {
 
   const stats = status?.stats;
   const title = running
-    ? `Demo ON — provider=${status?.llmProvider ?? "?"}, events fired=${stats?.eventsFired ?? 0}. Click to stop.`
-    : `Demo OFF. Click to start the synthetic-traffic loop (LLM auto-swapped to mock; no real tokens spent).`;
+    ? t("sidebarComp.demoOnTitle", {
+        provider: status?.llmProvider ?? "?",
+        events: stats?.eventsFired ?? 0,
+      })
+    : t("sidebarComp.demoOffTitle");
 
   if (running) {
     return (

@@ -18,6 +18,7 @@
 import { useMemo, useState } from "react";
 import { Badge, Button, Icon, Panel, Td, Th } from "@/app/portal/components";
 import { Field, SelectIn, TextIn } from "@/app/portal/components/settings/atoms";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 import {
   useAddFleetEntry,
   useAvailableModels,
@@ -69,23 +70,24 @@ function ConfiguredFleetPanel({
   fleet: FleetEntry[];
   loading: boolean;
 }) {
+  const { t } = useI18n();
   const updateMut = useUpdateFleetEntry();
   const deleteMut = useDeleteFleetEntry();
 
   return (
     <Panel
-      title={`Configured models · ${fleet.length}`}
-      subtitle="The fleet available to agents. Set a primary and one or more fallbacks."
+      title={`${t("models.configuredTitle")} · ${fleet.length}`}
+      subtitle={t("models.configuredSubtitle")}
       padded={false}
     >
       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
         <thead>
           <tr style={{ borderBottom: "1px solid var(--border)" }}>
-            <Th>Model</Th>
-            <Th>Provider</Th>
-            <Th>Alias</Th>
-            <Th>Role</Th>
-            <Th>Daily cap</Th>
+            <Th>{t("models.colModel")}</Th>
+            <Th>{t("models.colProvider")}</Th>
+            <Th>{t("models.colAlias")}</Th>
+            <Th>{t("models.colRole")}</Th>
+            <Th>{t("models.colDailyCap")}</Th>
             <Th />
           </tr>
         </thead>
@@ -93,14 +95,14 @@ function ConfiguredFleetPanel({
           {loading && (
             <tr>
               <Td colSpan={6} style={{ color: "var(--text-3)", padding: 14 }}>
-                Loading fleet…
+                {t("models.loadingFleet")}
               </Td>
             </tr>
           )}
           {!loading && fleet.length === 0 && (
             <tr>
               <Td colSpan={6} style={{ color: "var(--text-3)", padding: 14 }}>
-                No models configured yet — use the picker below to add some.
+                {t("models.noneConfigured")}
               </Td>
             </tr>
           )}
@@ -129,7 +131,7 @@ function ConfiguredFleetPanel({
                     })
                   }
                   disabled={updateMut.isPending}
-                  aria-label={`Role for ${m.modelName}`}
+                  aria-label={t("models.roleForAria", { name: m.modelName })}
                   style={{
                     background: "var(--panel-2)",
                     border: "1px solid var(--border-2)",
@@ -143,7 +145,7 @@ function ConfiguredFleetPanel({
                 >
                   {FLEET_ROLES.map((r) => (
                     <option key={r} value={r}>
-                      {r}
+                      {t(`models.role_${r}`)}
                     </option>
                   ))}
                 </select>
@@ -158,16 +160,16 @@ function ConfiguredFleetPanel({
                   small
                   tone="ghost"
                   onClick={async () => {
-                    if (!confirm(`Remove ${m.modelName} from this tenant's fleet?`)) return;
+                    if (!confirm(t("models.removeConfirm", { name: m.modelName }))) return;
                     try {
                       await deleteMut.mutateAsync(m.id);
                     } catch (err) {
-                      alert(`Failed to remove ${m.modelName}: ${(err as Error).message}`);
+                      alert(t("models.removeFailed", { name: m.modelName, error: (err as Error).message }));
                     }
                   }}
                   disabled={deleteMut.isPending}
                 >
-                  <Icon name="x" size={10} /> Remove
+                  <Icon name="x" size={10} /> {t("models.remove")}
                 </Button>
               </Td>
             </tr>
@@ -181,6 +183,7 @@ function ConfiguredFleetPanel({
 // ─── Browse models from provider ──────────────────────────────────────────
 
 function BrowseModelsPanel() {
+  const { t } = useI18n();
   const [provider, setProvider] = useState<string>("anthropic");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [freeText, setFreeText] = useState("");
@@ -213,7 +216,7 @@ function BrowseModelsPanel() {
       try {
         await addMut.mutateAsync({ provider, modelName: id });
       } catch (err) {
-        alert(`Failed to add ${id}: ${(err as Error).message}`);
+        alert(t("models.addFailed", { id, error: (err as Error).message }));
       }
     }
   }
@@ -225,7 +228,7 @@ function BrowseModelsPanel() {
       await addMut.mutateAsync({ provider, modelName: id });
       setFreeText("");
     } catch (err) {
-      alert(`Failed to add ${id}: ${(err as Error).message}`);
+      alert(t("models.addFailed", { id, error: (err as Error).message }));
     }
   }
 
@@ -240,13 +243,13 @@ function BrowseModelsPanel() {
 
   return (
     <Panel
-      title="Browse models from provider"
-      subtitle="Pick a provider to see the models its API offers. Check the ones you want available to agents in this tenant."
+      title={t("models.browseTitle")}
+      subtitle={t("models.browseSubtitle")}
       padded
     >
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <Field label="Provider">
+          <Field label={t("models.providerLabel")}>
             <SelectIn
               value={provider}
               onChange={pickProvider}
@@ -261,7 +264,7 @@ function BrowseModelsPanel() {
             disabled={available.isFetching}
           >
             <Icon name="replay" size={11} />{" "}
-            {available.isFetching ? "Refreshing…" : "Refresh"}
+            {available.isFetching ? t("models.refreshing") : t("models.refresh")}
           </Button>
         </div>
 
@@ -274,7 +277,7 @@ function BrowseModelsPanel() {
 
         {available.isLoading && (
           <div style={{ padding: 14, color: "var(--text-3)", fontSize: 12.5 }}>
-            Fetching models…
+            {t("models.fetchingModels")}
           </div>
         )}
 
@@ -295,11 +298,11 @@ function BrowseModelsPanel() {
                 <thead style={{ position: "sticky", top: 0, background: "var(--bg-2)" }}>
                   <tr style={{ borderBottom: "1px solid var(--border)" }}>
                     <Th style={{ width: 32 }} />
-                    <Th>Model ID</Th>
-                    <Th>Context</Th>
-                    <Th>$ / Mtok in→out</Th>
-                    <Th>Capabilities</Th>
-                    <Th>Source</Th>
+                    <Th>{t("models.colModelId")}</Th>
+                    <Th>{t("models.colContext")}</Th>
+                    <Th>{t("models.colPrice")}</Th>
+                    <Th>{t("models.colCapabilities")}</Th>
+                    <Th>{t("models.colSource")}</Th>
                   </tr>
                 </thead>
                 <tbody>
@@ -317,10 +320,12 @@ function BrowseModelsPanel() {
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <div style={{ fontSize: 12, color: "var(--text-3)", flex: 1 }}>
                 {selected.size === 0
-                  ? "Select one or more models to add."
-                  : `${addableCount} of ${selected.size} selected can be added · ${
-                      selected.size - addableCount
-                    } already in fleet`}
+                  ? t("models.selectToAdd")
+                  : t("models.selectionSummary", {
+                      addable: addableCount,
+                      total: selected.size,
+                      inFleet: selected.size - addableCount,
+                    })}
               </div>
               <Button
                 tone="primary"
@@ -329,7 +334,7 @@ function BrowseModelsPanel() {
                 disabled={addableCount === 0 || addMut.isPending}
               >
                 <Icon name="plus" size={11} />{" "}
-                {addMut.isPending ? "Adding…" : `Add ${addableCount} to fleet`}
+                {addMut.isPending ? t("models.adding") : t("models.addToFleet", { count: addableCount })}
               </Button>
             </div>
           </>
@@ -354,18 +359,19 @@ function SourceBanner({
   message: string | null;
   modelCount: number;
 }) {
+  const { t } = useI18n();
   if (loading || source === null) return null;
   if (source === "live") {
     return (
       <Banner tone="ok">
-        <Icon name="check" size={11} /> {modelCount} models returned by provider API
+        <Icon name="check" size={11} /> {t("models.liveBanner", { count: modelCount })}
       </Banner>
     );
   }
   return (
     <Banner tone="warn">
       <Icon name="alert" size={11} />{" "}
-      {message ?? "Provider doesn't support live model listing — showing curated catalog"}
+      {message ?? t("models.unsupportedBanner")}
     </Banner>
   );
 }
@@ -373,8 +379,8 @@ function SourceBanner({
 function Banner({ tone, children }: { tone: "ok" | "warn"; children: React.ReactNode }) {
   const colors =
     tone === "ok"
-      ? { bg: "rgba(101,224,163,0.08)", border: "rgba(101,224,163,0.3)", text: "var(--text-2)" }
-      : { bg: "rgba(255,181,71,0.08)", border: "rgba(255,181,71,0.3)", text: "var(--text-2)" };
+      ? { bg: "color-mix(in srgb, var(--green) 8%, transparent)", border: "color-mix(in srgb, var(--green) 30%, transparent)", text: "var(--text-2)" }
+      : { bg: "color-mix(in srgb, var(--amber) 8%, transparent)", border: "color-mix(in srgb, var(--amber) 30%, transparent)", text: "var(--text-2)" };
   return (
     <div
       style={{
@@ -403,6 +409,7 @@ function ModelRow({
   checked: boolean;
   onToggle: () => void;
 }) {
+  const { t } = useI18n();
   return (
     <tr
       style={{
@@ -416,7 +423,7 @@ function ModelRow({
           checked={checked}
           onChange={onToggle}
           disabled={model.inFleet}
-          aria-label={`Select ${model.id}`}
+          aria-label={t("models.selectAria", { id: model.id })}
         />
       </Td>
       <Td>
@@ -425,7 +432,7 @@ function ModelRow({
         </span>{" "}
         {model.inFleet && (
           <Badge tone="muted" style={{ marginLeft: 6 }}>
-            in fleet
+            {t("models.inFleet")}
           </Badge>
         )}
       </Td>
@@ -452,6 +459,7 @@ function ModelRow({
 }
 
 function CapabilityChips({ model }: { model: AvailableModel }) {
+  const { t } = useI18n();
   const chips: string[] = [];
   if (model.vision) chips.push("vision");
   if (model.tools) chips.push("tools");
@@ -461,7 +469,7 @@ function CapabilityChips({ model }: { model: AvailableModel }) {
     <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
       {chips.map((c) => (
         <Badge key={c} tone="muted">
-          {c}
+          {t(`models.cap_${c}`)}
         </Badge>
       ))}
     </div>
@@ -495,6 +503,7 @@ function FreeTextAdd({
   onAdd: () => void;
   adding: boolean;
 }) {
+  const { t } = useI18n();
   return (
     <div
       style={{
@@ -508,18 +517,17 @@ function FreeTextAdd({
       }}
     >
       <div style={{ fontSize: 12, color: "var(--text-2)" }}>
-        Provider <span className="mono">{provider}</span> doesn't expose a
-        model list and has no curated catalog. Enter the model ID exactly as
-        the provider expects it.
+        {t("models.freeTextDescPrefix")} <span className="mono">{provider}</span>{" "}
+        {t("models.freeTextDescSuffix")}
       </div>
       <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
         <div style={{ flex: 1 }}>
           <TextIn
             value={value}
             onChange={onChange}
-            placeholder="e.g. arn:aws:bedrock:…:foundation-model/…"
+            placeholder={t("models.freeTextPlaceholder")}
             mono
-            ariaLabel="Model ID"
+            ariaLabel={t("models.modelIdAria")}
           />
         </div>
         <Button
@@ -528,7 +536,7 @@ function FreeTextAdd({
           onClick={onAdd}
           disabled={!value.trim() || adding}
         >
-          {adding ? "Adding…" : "Add to fleet"}
+          {adding ? t("models.adding") : t("models.addToFleetPlain")}
         </Button>
       </div>
     </div>
@@ -538,13 +546,13 @@ function FreeTextAdd({
 // ─── Fallback chain ───────────────────────────────────────────────────────
 
 function FallbackChainPanel({ fleet }: { fleet: FleetEntry[] }) {
+  const { t } = useI18n();
   const chain = fleet.filter((m) => m.role === "primary" || m.role === "fallback");
   if (chain.length === 0) return null;
   return (
-    <Panel title="Fallback chain" padded>
+    <Panel title={t("models.fallbackTitle")} padded>
       <div style={{ fontSize: 12.5, color: "var(--text-2)", marginBottom: 10, lineHeight: 1.55 }}>
-        When the primary model is unavailable or rate-limited, requests cascade
-        through fallbacks in this order.
+        {t("models.fallbackDesc")}
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
         {chain.map((m, i) => (
@@ -574,7 +582,7 @@ function FallbackChainPanel({ fleet }: { fleet: FleetEntry[] }) {
               {m.alias}
             </span>
             <Badge tone="muted">{m.provider}</Badge>
-            <Badge tone={m.role === "primary" ? "signal" : "muted"}>{m.role}</Badge>
+            <Badge tone={m.role === "primary" ? "signal" : "muted"}>{t(`models.role_${m.role}`)}</Badge>
           </div>
         ))}
       </div>

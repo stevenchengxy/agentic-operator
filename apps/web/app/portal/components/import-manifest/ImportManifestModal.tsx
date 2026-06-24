@@ -37,6 +37,7 @@ import { useDag, type DagAgent } from "@/lib/hooks/useAgents";
 import { tenantHeader } from "@/lib/hooks/tenant-header";
 import { useTenant } from "@/app/portal/lib/use-tenant";
 import { toast } from "@/app/portal/components/toast";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 import { OverwriteConfirmModal } from "./OverwriteConfirmModal";
 
 /**
@@ -201,6 +202,7 @@ export function ImportManifestModal({
   mode = "workflow",
   tenantSlug,
 }: ImportManifestModalProps) {
+  const { t } = useI18n();
   // Fallback to the tenant in the URL when the caller didn't override.
   const urlTenant = useTenant();
   const slug = tenantSlug ?? urlTenant;
@@ -275,17 +277,17 @@ export function ImportManifestModal({
 
     // Build manifest from whichever source step the operator chose.
     if (source === "paste") {
-      const t = pasted.trim();
-      if (!t) {
-        setValidationError("Paste a workflow.json (or bundle) first.");
+      const trimmed = pasted.trim();
+      if (!trimmed) {
+        setValidationError(t("importManifestModal.errPasteFirst"));
         return;
       }
       let parsedPaste: unknown;
       try {
-        parsedPaste = JSON.parse(t);
+        parsedPaste = JSON.parse(trimmed);
       } catch (e) {
         setValidationError(
-          `Invalid JSON: ${e instanceof Error ? e.message : "parse error"}`,
+          `${t("importManifestModal.errInvalidJson")}: ${e instanceof Error ? e.message : t("importManifestModal.errParseError")}`,
         );
         return;
       }
@@ -327,7 +329,7 @@ export function ImportManifestModal({
             errObj.error?.code ??
             errObj.error?.message ??
             `HTTP ${res.status}`;
-          setValidationError(`URL fetch failed: ${code}`);
+          setValidationError(`${t("importManifestModal.errUrlFetchFailed")}: ${code}`);
           return;
         }
         const unwrapped = unwrapEnvelope<{
@@ -340,7 +342,7 @@ export function ImportManifestModal({
           : null;
       } catch (e) {
         setValidationError(
-          `URL fetch failed: ${e instanceof Error ? e.message : "network"}`,
+          `${t("importManifestModal.errUrlFetchFailed")}: ${e instanceof Error ? e.message : t("importManifestModal.errNetwork")}`,
         );
         return;
       }
@@ -353,20 +355,16 @@ export function ImportManifestModal({
       nextWorkflow = workflowRaw;
       nextActions = actionsRaw;
       if (!nextWorkflow) {
-        setValidationError(
-          "Drop a workflow.json (and optionally actions.json) first.",
-        );
+        setValidationError(t("importManifestModal.errDropFirst"));
         return;
       }
     } else if (source === "git") {
-      setValidationError(
-        "Repo source is coming soon — use upload, paste, or URL.",
-      );
+      setValidationError(t("importManifestModal.errRepoComingSoon"));
       return;
     }
 
     if (!nextWorkflow) {
-      setValidationError("No manifest gathered from this source.");
+      setValidationError(t("importManifestModal.errNoManifest"));
       return;
     }
 
@@ -420,7 +418,7 @@ export function ImportManifestModal({
       setValidating(false);
     } catch (e) {
       setValidationError(
-        e instanceof Error ? e.message : "Network error during validate",
+        e instanceof Error ? e.message : t("importManifestModal.errNetworkValidate"),
       );
       setValidating(false);
     }
@@ -434,9 +432,7 @@ export function ImportManifestModal({
    */
   async function runCommit({ confirmOverwrite }: { confirmOverwrite: boolean }) {
     if (!parsed || !parsed.deployment_id) {
-      setCommitError(
-        "No deployment session — go back to Source and re-validate.",
-      );
+      setCommitError(t("importManifestModal.errNoDeploySession"));
       return;
     }
     setCommitError(null);
@@ -518,10 +514,10 @@ export function ImportManifestModal({
       const versionLabel = committed.version ?? committed.workflow_version_id;
       toast({
         tone: "green",
-        title: "Workflow deployed",
+        title: t("importManifestModal.toastDeployedTitle"),
         description: versionLabel
-          ? `${versionLabel} is live for ${slug}`
-          : `Manifest is live for ${slug}`,
+          ? t("importManifestModal.toastVersionLive", { version: versionLabel, slug })
+          : t("importManifestModal.toastManifestLive", { slug }),
       });
       setOverwriteRequired(null);
       setCommitting(false);
@@ -545,7 +541,7 @@ export function ImportManifestModal({
       onClose();
     } catch (e) {
       setCommitError(
-        e instanceof Error ? e.message : "Network error during deploy",
+        e instanceof Error ? e.message : t("importManifestModal.errNetworkDeploy"),
       );
       setCommitting(false);
     }
@@ -621,7 +617,7 @@ export function ImportManifestModal({
     void handleFiles(e.dataTransfer.files);
   }
 
-  const title = mode === "agent" ? "Import agent manifest" : "Import workflow manifest";
+  const title = mode === "agent" ? t("importManifestModal.titleAgent") : t("importManifestModal.titleWorkflow");
 
   return (
     <ModalOverlay onClose={onClose}>
@@ -639,13 +635,13 @@ export function ImportManifestModal({
         }}
       >
         <header style={{ display: "flex", alignItems: "center", gap: 10, padding: "14px 18px", borderBottom: "1px solid var(--border)" }}>
-          <Icon name="upload" size={14} style={{ color: "var(--signal)" }} />
+          <Icon name="upload" size={14} style={{ color: "var(--accent-text)" }} />
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontSize: 14, color: "var(--text)", fontWeight: 500 }}>{title}</div>
             <div style={{ fontSize: 11, color: "var(--text-3)" }}>
-              Accepts a v1 or v2 manifest pair:{" "}
+              {t("importManifestModal.headerAccepts")}{" "}
               <span className="mono" style={{ color: "var(--text-2)" }}>workflow.json</span> +{" "}
-              <span className="mono" style={{ color: "var(--text-2)" }}>actions.json</span>. Validates, diffs against the live workflow, then deploys to staging.
+              <span className="mono" style={{ color: "var(--text-2)" }}>actions.json</span>. {t("importManifestModal.headerValidates")}
             </div>
           </div>
           <button onClick={onClose} style={{ color: "var(--text-3)" }}>
@@ -702,11 +698,11 @@ export function ImportManifestModal({
         <footer style={{ display: "flex", alignItems: "center", gap: 8, padding: "12px 18px", borderTop: "1px solid var(--border)", background: "var(--panel-2)" }}>
           {step > 0 && (
             <Button tone="ghost" icon="chevron-left" onClick={back}>
-              Back
+              {t("importManifestModal.back")}
             </Button>
           )}
           <span style={{ fontSize: 11, color: "var(--text-3)" }}>
-            Step {step + 1} of {IMPORT_STEPS.length}
+            {t("importManifestModal.stepCounter", { current: step + 1, total: IMPORT_STEPS.length })}
           </span>
           {step === 2 && parsed && (
             <span style={{ marginLeft: 14, fontSize: 11, fontFamily: "var(--mono)", color: "var(--text-3)" }}>
@@ -717,11 +713,11 @@ export function ImportManifestModal({
           )}
           <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
             <Button tone="ghost" onClick={onClose}>
-              Cancel
+              {t("importManifestModal.cancel")}
             </Button>
             {step < IMPORT_STEPS.length - 1 ? (
               <Button tone="primary" icon="chevron-right" onClick={next} disabled={!canAdvance}>
-                {step === 0 ? "Validate" : "Continue"}
+                {step === 0 ? t("importManifestModal.validate") : t("importManifestModal.continue")}
               </Button>
             ) : (
               <Button
@@ -737,8 +733,10 @@ export function ImportManifestModal({
                 disabled={committing || !parsed?.deployment_id}
               >
                 {committing
-                  ? "Deploying…"
-                  : `Deploy to ${deployTarget.prod ? "prod" : "staging"}`}
+                  ? t("importManifestModal.deploying")
+                  : deployTarget.prod
+                    ? t("importManifestModal.deployToProd")
+                    : t("importManifestModal.deployToStaging")}
               </Button>
             )}
           </div>
@@ -753,8 +751,8 @@ export function ImportManifestModal({
           <div
             style={{
               padding: "10px 18px",
-              background: "rgba(255,100,112,0.08)",
-              borderTop: "1px solid rgba(255,100,112,0.32)",
+              background: "color-mix(in srgb, var(--red) 8%, transparent)",
+              borderTop: "1px solid color-mix(in srgb, var(--red) 32%, transparent)",
               fontSize: 12,
               color: "var(--red)",
             }}
@@ -766,23 +764,22 @@ export function ImportManifestModal({
           <div
             style={{
               padding: "10px 18px",
-              background: "rgba(255,181,71,0.08)",
-              borderTop: "1px solid rgba(255,181,71,0.32)",
+              background: "color-mix(in srgb, var(--amber) 8%, transparent)",
+              borderTop: "1px solid color-mix(in srgb, var(--amber) 32%, transparent)",
               fontSize: 12,
               color: "var(--amber)",
             }}
           >
-            Import already in progress for this tenant
-            {pendingLock.locked_by ? ` (${pendingLock.locked_by})` : ""}. Wait
-            for it to expire or cancel the pending lock from another session.
+            {t("importManifestModal.lockInProgress")}
+            {pendingLock.locked_by ? ` (${pendingLock.locked_by})` : ""}. {t("importManifestModal.lockWait")}
           </div>
         )}
         {commitError && step === IMPORT_STEPS.length - 1 && (
           <div
             style={{
               padding: "10px 18px",
-              background: "rgba(255,100,112,0.08)",
-              borderTop: "1px solid rgba(255,100,112,0.32)",
+              background: "color-mix(in srgb, var(--red) 8%, transparent)",
+              borderTop: "1px solid color-mix(in srgb, var(--red) 32%, transparent)",
               fontSize: 12,
               color: "var(--red)",
               maxHeight: 220,
@@ -819,9 +816,11 @@ export function ImportManifestModal({
                       color: "var(--amber)",
                     }}
                   >
-                    Go Back to <strong>Resolve</strong> and select{" "}
-                    <strong>Skip agent</strong> for the affected paths to drop
-                    them from this import.
+                    {t("importManifestModal.commitIssueHintPart1")}{" "}
+                    <strong>{t("importManifestModal.stepResolveBold")}</strong>{" "}
+                    {t("importManifestModal.commitIssueHintPart2")}{" "}
+                    <strong>{t("importManifestModal.skipAgentBold")}</strong>{" "}
+                    {t("importManifestModal.commitIssueHintPart3")}
                   </li>
                 )}
               </ul>
@@ -863,6 +862,7 @@ function ImportStepDot({
   active: boolean;
   done: boolean;
 }) {
+  const { t } = useI18n();
   return (
     <div
       style={{
@@ -883,7 +883,7 @@ function ImportStepDot({
           borderRadius: "50%",
           background: done ? "var(--signal)" : "transparent",
           border: `1px solid ${done || active ? "var(--signal)" : "var(--border-2)"}`,
-          color: done ? "#000" : active ? "var(--signal)" : "var(--text-3)",
+          color: done ? "var(--on-signal)" : active ? "var(--accent-text)" : "var(--text-3)",
           fontSize: 10,
           fontFamily: "var(--mono)",
           display: "flex",
@@ -904,9 +904,9 @@ function ImportStepDot({
             lineHeight: 1.1,
           }}
         >
-          {step.label}
+          {t(`importManifestModal.step_${step.id}`)}
         </div>
-        <div style={{ fontSize: 10, color: "var(--text-3)" }}>{step.hint}</div>
+        <div style={{ fontSize: 10, color: "var(--text-3)" }}>{t(`importManifestModal.stepHint_${step.id}`)}</div>
       </div>
     </div>
   );
@@ -939,14 +939,15 @@ function SourceStep({
   onDragLeave: () => void;
   onDrop: (e: React.DragEvent) => void;
 }) {
+  const { t } = useI18n();
   return (
     <div>
-      <div style={{ fontSize: 11, fontFamily: "var(--mono)", textTransform: "uppercase", color: "var(--text-3)", letterSpacing: "0.08em", marginBottom: 10 }}>Source</div>
+      <div style={{ fontSize: 11, fontFamily: "var(--mono)", textTransform: "uppercase", color: "var(--text-3)", letterSpacing: "0.08em", marginBottom: 10 }}>{t("importManifestModal.source")}</div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, marginBottom: 18 }}>
-        <SourceCard active={source === "file"} onClick={() => setSource("file")} icon="upload" title="Upload files" sub="Drop workflow.json + actions.json" />
-        <SourceCard active={source === "paste"} onClick={() => setSource("paste")} icon="code" title="Paste JSON" sub="Paste a combined manifest" />
-        <SourceCard active={source === "url"} onClick={() => setSource("url")} icon="external" title="From URL" sub="HTTPS or git+ssh" />
-        <SourceCard active={source === "git"} onClick={() => setSource("git")} icon="git" title="From repo" sub="agentic/raas-workflows" />
+        <SourceCard active={source === "file"} onClick={() => setSource("file")} icon="upload" title={t("importManifestModal.srcUploadTitle")} sub={t("importManifestModal.srcUploadSub")} />
+        <SourceCard active={source === "paste"} onClick={() => setSource("paste")} icon="code" title={t("importManifestModal.srcPasteTitle")} sub={t("importManifestModal.srcPasteSub")} />
+        <SourceCard active={source === "url"} onClick={() => setSource("url")} icon="external" title={t("importManifestModal.srcUrlTitle")} sub={t("importManifestModal.srcUrlSub")} />
+        <SourceCard active={source === "git"} onClick={() => setSource("git")} icon="git" title={t("importManifestModal.srcRepoTitle")} sub="agentic/raas-workflows" />
       </div>
 
       {source === "file" && (
@@ -967,13 +968,14 @@ function SourceStep({
           >
             <Icon name="upload" size={22} style={{ color: "var(--text-3)" }} />
             <div style={{ marginTop: 8, fontSize: 13, color: "var(--text-2)" }}>
-              Drop <span className="mono" style={{ color: "var(--text)" }}>workflow.json</span> and{" "}
+              {t("importManifestModal.dropPrefix")}{" "}
+              <span className="mono" style={{ color: "var(--text)" }}>workflow.json</span> {t("importManifestModal.dropAnd")}{" "}
               <span className="mono" style={{ color: "var(--text)" }}>actions.json</span>
             </div>
             <div style={{ marginTop: 4, fontSize: 11.5, color: "var(--text-3)" }}>
-              or{" "}
-              <label style={{ color: "var(--signal)", cursor: "pointer" }}>
-                browse files
+              {t("importManifestModal.or")}{" "}
+              <label style={{ color: "var(--accent-text)", cursor: "pointer" }}>
+                {t("importManifestModal.browseFiles")}
                 <input
                   type="file"
                   multiple
@@ -982,7 +984,7 @@ function SourceStep({
                   onChange={(e) => handleFiles(e.target.files)}
                 />
               </label>{" "}
-              · max 1 MB per file
+              {t("importManifestModal.maxFileSize")}
             </div>
           </div>
 
@@ -997,14 +999,14 @@ function SourceStep({
                     gap: 10,
                     padding: "7px 12px",
                     background: "var(--panel-2)",
-                    border: `1px solid ${f.ok ? "var(--border)" : "rgba(255,181,71,0.30)"}`,
+                    border: `1px solid ${f.ok ? "var(--border)" : "color-mix(in srgb, var(--amber) 30%, transparent)"}`,
                     borderRadius: 4,
                   }}
                 >
                   <Icon name="code" size={12} style={{ color: f.ok ? "var(--green)" : "var(--amber)" }} />
                   <span className="mono" style={{ fontSize: 12, color: "var(--text)" }}>{f.name}</span>
                   <span style={{ marginLeft: "auto", fontSize: 11, fontFamily: "var(--mono)", color: "var(--text-3)" }}>{fmtBytes(f.size)}</span>
-                  {f.ok ? <Badge tone="green">DETECTED</Badge> : <Badge tone="amber">UNKNOWN ROLE</Badge>}
+                  {f.ok ? <Badge tone="green">{t("importManifestModal.badgeDetected")}</Badge> : <Badge tone="amber">{t("importManifestModal.badgeUnknownRole")}</Badge>}
                 </div>
               ))}
             </div>
@@ -1017,7 +1019,7 @@ function SourceStep({
       {source === "url" && (
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <div>
-            <label style={{ display: "block", fontSize: 11, color: "var(--text-2)", marginBottom: 4 }}>Manifest URL</label>
+            <label style={{ display: "block", fontSize: 11, color: "var(--text-2)", marginBottom: 4 }}>{t("importManifestModal.manifestUrlLabel")}</label>
             <input
               value={url}
               onChange={(e) => setUrl(e.target.value)}
@@ -1035,18 +1037,18 @@ function SourceStep({
               }}
             />
             <div style={{ marginTop: 6, fontSize: 11, color: "var(--text-3)" }}>
-              We&apos;ll <span className="mono">GET</span> the URL and look for a{" "}
-              <span className="mono">manifest.zip</span> or a JSON bundle. SSH git URLs are also supported if a deploy key is provisioned.
+              {t("importManifestModal.urlHelpPart1")} <span className="mono">GET</span> {t("importManifestModal.urlHelpPart2")}{" "}
+              <span className="mono">manifest.zip</span> {t("importManifestModal.urlHelpPart3")}
             </div>
           </div>
           <div style={{ padding: "10px 12px", background: "var(--panel-2)", border: "1px solid var(--border)", borderRadius: 4 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
               <Icon name="alert" size={11} style={{ color: "var(--amber)" }} />
-              <span style={{ fontSize: 12, color: "var(--text)" }}>Egress allow-list</span>
+              <span style={{ fontSize: 12, color: "var(--text)" }}>{t("importManifestModal.egressTitle")}</span>
             </div>
             <div style={{ fontSize: 11.5, color: "var(--text-3)", lineHeight: 1.55 }}>
-              Outbound fetches go through the workspace egress proxy.{" "}
-              <span className="mono">github.com</span> and <span className="mono">*.amazonaws.com</span> are pre-allowed. Add more in Settings → Integrations.
+              {t("importManifestModal.egressPart1")}{" "}
+              <span className="mono">github.com</span> {t("importManifestModal.egressAnd")} <span className="mono">*.amazonaws.com</span> {t("importManifestModal.egressPart2")}
             </div>
           </div>
         </div>
@@ -1054,14 +1056,14 @@ function SourceStep({
 
       {source === "git" && (
         <div>
-          <div style={{ marginBottom: 8, fontSize: 11, fontFamily: "var(--mono)", textTransform: "uppercase", color: "var(--text-3)", letterSpacing: "0.08em" }}>Connected repositories</div>
+          <div style={{ marginBottom: 8, fontSize: 11, fontFamily: "var(--mono)", textTransform: "uppercase", color: "var(--text-3)", letterSpacing: "0.08em" }}>{t("importManifestModal.connectedRepos")}</div>
           <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            <RepoOption name="agentic/raas-workflows" branch="main" path="dist/manifest.zip" connected lastBuilt="3 minutes ago" />
-            <RepoOption name="agentic/raas-workflows" branch="v2-rewrite" path="dist/manifest.zip" connected lastBuilt="11 hours ago · ✓ green" recommended />
-            <RepoOption name="agentic/supportflow" branch="main" path="dist/manifest.zip" connected lastBuilt="2 days ago" />
+            <RepoOption name="agentic/raas-workflows" branch="main" path="dist/manifest.zip" connected lastBuilt={t("importManifestModal.repoBuilt3min")} />
+            <RepoOption name="agentic/raas-workflows" branch="v2-rewrite" path="dist/manifest.zip" connected lastBuilt={`${t("importManifestModal.repoBuilt11hr")} · ✓ green`} recommended />
+            <RepoOption name="agentic/supportflow" branch="main" path="dist/manifest.zip" connected lastBuilt={t("importManifestModal.repoBuilt2days")} />
             <button style={{ padding: "8px 12px", textAlign: "left", background: "var(--panel-2)", border: "1px dashed var(--border-2)", borderRadius: 4, fontSize: 11.5, color: "var(--text-3)" }}>
               <Icon name="plus" size={11} style={{ marginRight: 6 }} />
-              Connect another repo…
+              {t("importManifestModal.connectAnotherRepo")}
             </button>
           </div>
         </div>
@@ -1097,7 +1099,7 @@ function SourceCard({
       }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 5 }}>
-        <Icon name={icon} size={12} style={{ color: active ? "var(--signal)" : "var(--text-2)" }} />
+        <Icon name={icon} size={12} style={{ color: active ? "var(--accent-text)" : "var(--text-2)" }} />
         <span style={{ fontSize: 12.5, color: "var(--text)", fontWeight: 500 }}>{title}</span>
       </div>
       <div style={{ fontSize: 11, color: "var(--text-3)", lineHeight: 1.45 }}>{sub}</div>
@@ -1120,6 +1122,7 @@ function RepoOption({
   lastBuilt: string;
   recommended?: boolean;
 }) {
+  const { t } = useI18n();
   return (
     <label
       style={{
@@ -1127,8 +1130,8 @@ function RepoOption({
         alignItems: "center",
         gap: 10,
         padding: "10px 12px",
-        background: recommended ? "rgba(208,255,0,0.04)" : "var(--panel-2)",
-        border: `1px solid ${recommended ? "rgba(208,255,0,0.30)" : "var(--border)"}`,
+        background: recommended ? "color-mix(in srgb, var(--signal) 4%, transparent)" : "var(--panel-2)",
+        border: `1px solid ${recommended ? "color-mix(in srgb, var(--signal) 30%, transparent)" : "var(--border)"}`,
         borderRadius: 4,
         cursor: "pointer",
       }}
@@ -1139,16 +1142,17 @@ function RepoOption({
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <span className="mono" style={{ fontSize: 12, color: "var(--text)" }}>{name}</span>
           <Badge tone="muted">{branch}</Badge>
-          {recommended && <Badge tone="signal">RECOMMENDED</Badge>}
+          {recommended && <Badge tone="signal">{t("importManifestModal.badgeRecommended")}</Badge>}
         </div>
         <div style={{ fontSize: 10.5, color: "var(--text-3)", fontFamily: "var(--mono)", marginTop: 2 }}>{path} · {lastBuilt}</div>
       </div>
-      {connected && <span style={{ fontSize: 10, color: "var(--green)", fontFamily: "var(--mono)" }}>● CONNECTED</span>}
+      {connected && <span style={{ fontSize: 10, color: "var(--green)", fontFamily: "var(--mono)" }}>● {t("importManifestModal.badgeConnected")}</span>}
     </label>
   );
 }
 
 function ValidatingState() {
+  const { t } = useI18n();
   return (
     <div style={{ padding: "60px 20px", textAlign: "center" }}>
       <div
@@ -1162,15 +1166,16 @@ function ValidatingState() {
           animation: "spin 0.8s linear infinite",
         }}
       />
-      <div style={{ marginTop: 16, fontSize: 13, color: "var(--text)" }}>Validating manifest…</div>
+      <div style={{ marginTop: 16, fontSize: 13, color: "var(--text)" }}>{t("importManifestModal.validatingManifest")}</div>
       <div style={{ marginTop: 6, fontSize: 11.5, color: "var(--text-3)" }}>
-        Parsing JSON · resolving event references · checking for cycles · type-checking handlers
+        {t("importManifestModal.validatingSteps")}
       </div>
     </div>
   );
 }
 
 function ValidateStep({ parsed }: { parsed: ParsedManifest | null }) {
+  const { t } = useI18n();
   if (!parsed) return null;
   return (
     <div>
@@ -1185,19 +1190,19 @@ function ValidateStep({ parsed }: { parsed: ParsedManifest | null }) {
           background: "var(--panel)",
         }}
       >
-        <ValidateCell label="Workflow" value={parsed.workflow.id} mono />
-        <ValidateCell label="Version" value={parsed.workflow.version} mono accent="var(--signal)" />
-        <ValidateCell label="Agents" value={parsed.workflow.agent_count} mono />
-        <ValidateCell label="Events" value={parsed.workflow.event_count} mono />
+        <ValidateCell label={t("importManifestModal.cellWorkflow")} value={parsed.workflow.id} mono />
+        <ValidateCell label={t("importManifestModal.cellVersion")} value={parsed.workflow.version} mono accent="var(--signal)" />
+        <ValidateCell label={t("importManifestModal.cellAgents")} value={parsed.workflow.agent_count} mono />
+        <ValidateCell label={t("importManifestModal.cellEvents")} value={parsed.workflow.event_count} mono />
         <ValidateCell
-          label="Cycles"
+          label={t("importManifestModal.cellCycles")}
           value={parsed.cycles}
           mono
           accent={parsed.cycles === 0 ? "var(--green)" : "var(--red)"}
         />
       </div>
 
-      <Panel title="Validation results" padded={false}>
+      <Panel title={t("importManifestModal.validationResults")} padded={false}>
         {parsed.issues.map((iss, i) => (
           <div
             key={i}
@@ -1243,11 +1248,12 @@ function ValidateCell({
 }
 
 function DiffStep({ parsed }: { parsed: ParsedManifest }) {
+  const { t } = useI18n();
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
       <Panel
-        title="Agent diff vs live"
-        subtitle={`live: raas@2026.05.16-a → imported: ${parsed.workflow.version}`}
+        title={t("importManifestModal.agentDiffTitle")}
+        subtitle={`${t("importManifestModal.diffLiveLabel")}: raas@2026.05.16-a → ${t("importManifestModal.diffImportedLabel")}: ${parsed.workflow.version}`}
         padded={false}
       >
         <DiffGroup
@@ -1271,9 +1277,9 @@ function DiffStep({ parsed }: { parsed: ParsedManifest }) {
         />
       </Panel>
 
-      <Panel title="Schema diff · new properties on existing agents" padded>
+      <Panel title={t("importManifestModal.schemaDiffTitle")} padded>
         <div style={{ fontSize: 12, color: "var(--text-2)", lineHeight: 1.6, marginBottom: 10 }}>
-          The v2 manifest adds four properties on every agent. Existing agents will be augmented in place; their event signatures and stages are unchanged.
+          {t("importManifestModal.schemaDiffDesc")}
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 8 }}>
           {["input_data", "ontology_instructions", "tool_use", "typescript_code"].map((p) => (
@@ -1285,13 +1291,13 @@ function DiffStep({ parsed }: { parsed: ParsedManifest }) {
                 gap: 8,
                 padding: "8px 12px",
                 background: "var(--panel-2)",
-                border: "1px solid rgba(208,255,0,0.20)",
+                border: "1px solid color-mix(in srgb, var(--signal) 20%, transparent)",
                 borderRadius: 4,
               }}
             >
-              <Icon name="plus" size={11} style={{ color: "var(--signal)" }} />
+              <Icon name="plus" size={11} style={{ color: "var(--accent-text)" }} />
               <span className="mono" style={{ fontSize: 12, color: "var(--text)" }}>{p}</span>
-              <span style={{ marginLeft: "auto", fontSize: 10.5, color: "var(--text-3)" }}>+ on 22 agents</span>
+              <span style={{ marginLeft: "auto", fontSize: 10.5, color: "var(--text-3)" }}>{t("importManifestModal.onNAgents", { count: 22 })}</span>
             </div>
           ))}
         </div>
@@ -1309,13 +1315,20 @@ function DiffGroup({
   tone: "green" | "amber" | "red";
   items: Array<{ key: string; name: string; sub: string }>;
 }) {
+  const { t } = useI18n();
   const sigil = label === "Added" ? "+" : label === "Removed" ? "−" : "~";
   const toneVar = tone === "green" ? "var(--green)" : tone === "amber" ? "var(--amber)" : "var(--red)";
+  const labelText =
+    label === "Added"
+      ? t("importManifestModal.diffAdded")
+      : label === "Removed"
+        ? t("importManifestModal.diffRemoved")
+        : t("importManifestModal.diffModified");
   if (items.length === 0) {
     return (
       <div style={{ padding: "8px 14px", borderBottom: "1px solid var(--border)", fontSize: 11.5, color: "var(--text-3)" }}>
         <span style={{ color: toneVar, fontFamily: "var(--mono)", marginRight: 8 }}>{sigil}</span>
-        {label}: none
+        {labelText}: {t("importManifestModal.diffNone")}
       </div>
     );
   }
@@ -1323,7 +1336,7 @@ function DiffGroup({
     <div style={{ borderBottom: "1px solid var(--border)" }}>
       <div style={{ padding: "8px 14px", display: "flex", alignItems: "center", gap: 8, background: "var(--panel-2)" }}>
         <span style={{ color: toneVar, fontFamily: "var(--mono)", fontSize: 13, fontWeight: 700, width: 12, textAlign: "center" }}>{sigil}</span>
-        <span style={{ fontSize: 11, fontFamily: "var(--mono)", textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--text-2)" }}>{label} · {items.length}</span>
+        <span style={{ fontSize: 11, fontFamily: "var(--mono)", textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--text-2)" }}>{labelText} · {items.length}</span>
       </div>
       {items.map((it) => (
         <div
@@ -1368,6 +1381,7 @@ function ResolveStep({
   setResolution: (r: { model: string }) => void;
   workflowRaw: unknown;
 }) {
+  const { t } = useI18n();
   // Map agent indices that the current resolution mode will drop. Skip
   // mode drops every conflicted agent; fallback drops only the
   // block-severity conflicts that have no auto-fix (since fallback maps
@@ -1407,8 +1421,8 @@ function ResolveStep({
             alignItems: "flex-start",
             gap: 10,
             padding: "10px 12px",
-            background: "rgba(255,181,71,0.08)",
-            border: "1px solid rgba(255,181,71,0.32)",
+            background: "color-mix(in srgb, var(--amber) 8%, transparent)",
+            border: "1px solid color-mix(in srgb, var(--amber) 32%, transparent)",
             borderRadius: 4,
             fontSize: 11.5,
             color: "var(--text-2)",
@@ -1417,25 +1431,25 @@ function ResolveStep({
           <Icon name="alert" size={11} style={{ color: "var(--amber)", marginTop: 2 }} />
           <div>
             <div style={{ color: "var(--text)", fontWeight: 500, marginBottom: 2 }}>
-              {dropNames.length}{" "}
-              {dropNames.length === 1 ? "agent" : "agents"} will be dropped from
-              this import
+              {dropNames.length === 1
+                ? t("importManifestModal.dropWarnOne", { count: dropNames.length })
+                : t("importManifestModal.dropWarnMany", { count: dropNames.length })}
             </div>
             <div style={{ color: "var(--text-3)", fontFamily: "var(--mono)", fontSize: 11 }}>
               {dropNames.slice(0, 8).join(", ")}
-              {dropNames.length > 8 ? ` · +${dropNames.length - 8} more` : ""}
+              {dropNames.length > 8 ? ` · ${t("importManifestModal.dropMore", { count: dropNames.length - 8 })}` : ""}
             </div>
             <div style={{ color: "var(--text-3)", marginTop: 4 }}>
               {resolution.model === "skip"
-                ? "Every conflicted agent is removed. Switch to “Use fallback” to keep agents whose conflicts have an auto-fix."
-                : "These conflicts have no auto-fix, so “Use fallback” drops the agent. Edit the manifest to add the missing field (e.g. a `taskDefinition` tool for Human agents) if you want them in."}
+                ? t("importManifestModal.dropExplainSkip")
+                : t("importManifestModal.dropExplainFallback")}
             </div>
           </div>
         </div>
       )}
       <Panel
-        title={`Conflicts to resolve · ${parsed.conflicts.length}`}
-        subtitle="The manifest references things this workspace doesn't have. Pick how to handle each."
+        title={t("importManifestModal.conflictsTitle", { count: parsed.conflicts.length })}
+        subtitle={t("importManifestModal.conflictsSubtitle")}
         padded={false}
       >
         {parsed.conflicts.map((c, i) => (
@@ -1450,24 +1464,24 @@ function ResolveStep({
               <Badge tone="amber">{c.kind}</Badge>
               <span className="mono" style={{ fontSize: 12, color: "var(--text)" }}>{c.name}</span>
               <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--text-3)" }}>
-                referenced by <span className="mono">{c.agent}</span>
+                {t("importManifestModal.referencedBy")} <span className="mono">{c.agent}</span>
               </span>
             </div>
             <div style={{ fontSize: 11.5, color: "var(--text-2)", marginBottom: 10 }}>{c.note}</div>
             <div style={{ display: "flex", gap: 0, border: "1px solid var(--border-2)", borderRadius: 4, overflow: "hidden", width: "fit-content" }}>
-              <ResolveOption value="fallback" current={resolution.model} setCurrent={(v) => setResolution({ ...resolution, model: v })} label="Use fallback" hint="claude-sonnet-4-5" />
-              <ResolveOption value="connect" current={resolution.model} setCurrent={(v) => setResolution({ ...resolution, model: v })} label="Connect OpenAI" hint="adds gpt-4.1" />
-              <ResolveOption value="skip" current={resolution.model} setCurrent={(v) => setResolution({ ...resolution, model: v })} label="Skip agent" hint="drops the agent" />
+              <ResolveOption value="fallback" current={resolution.model} setCurrent={(v) => setResolution({ ...resolution, model: v })} label={t("importManifestModal.optUseFallback")} hint="claude-sonnet-4-5" />
+              <ResolveOption value="connect" current={resolution.model} setCurrent={(v) => setResolution({ ...resolution, model: v })} label={t("importManifestModal.optConnectOpenai")} hint={t("importManifestModal.optConnectOpenaiHint")} />
+              <ResolveOption value="skip" current={resolution.model} setCurrent={(v) => setResolution({ ...resolution, model: v })} label={t("importManifestModal.optSkipAgent")} hint={t("importManifestModal.optSkipAgentHint")} />
             </div>
           </div>
         ))}
       </Panel>
 
-      <Panel title="ID conflicts" padded>
+      <Panel title={t("importManifestModal.idConflictsTitle")} padded>
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          <ResolveLine ok label="matchResume" hint="id changes 10 → 10-2 · auto-rewires triggers/emits" />
-          <ResolveLine ok label="recallStockCandidates" hint="new id 10-1 · no conflict" />
-          <ResolveLine ok label="all event names match" hint="33 events checked against live registry" />
+          <ResolveLine ok label="matchResume" hint={t("importManifestModal.idConflictHint1")} />
+          <ResolveLine ok label="recallStockCandidates" hint={t("importManifestModal.idConflictHint2")} />
+          <ResolveLine ok label={t("importManifestModal.allEventsMatch")} hint={t("importManifestModal.idConflictHint3")} />
         </div>
       </Panel>
     </div>
@@ -1521,6 +1535,7 @@ function ResolveLine({ ok, label, hint }: { ok: boolean; label: string; hint: st
 }
 
 function PreviewStep({ parsed }: { parsed: ParsedManifest }) {
+  const { t } = useI18n();
   // Source of truth for the preview mini-graph: the live workflow DAG.
   // Stages are derived from the indices actually used by tenant agents
   // (mirrors the dashboard funnel logic) so non-RAAS tenants render too.
@@ -1531,8 +1546,14 @@ function PreviewStep({ parsed }: { parsed: ParsedManifest }) {
     for (const a of dagAgents) used.add(a.stage);
     return Array.from(used)
       .sort((x, y) => x - y)
-      .map((id) => ({ id, label: STAGE_LABELS[id] ?? `Stage ${id}` }));
-  }, [dagAgents]);
+      .map((id) => ({
+        id,
+        label:
+          id in STAGE_LABELS
+            ? t(`importManifestModal.stage_${id}`)
+            : t("importManifestModal.stageGeneric", { id }),
+      }));
+  }, [dagAgents, t]);
   // Mini-graph wants {id, name, actor, stage}; DagAgent already carries
   // these fields (with the id from the kebabId form).
   const agents = dagAgents.map((a) => ({
@@ -1543,39 +1564,39 @@ function PreviewStep({ parsed }: { parsed: ParsedManifest }) {
   }));
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-      <Panel title="Imported workflow" subtitle={parsed.workflow.version} padded>
+      <Panel title={t("importManifestModal.importedWorkflow")} subtitle={parsed.workflow.version} padded>
         <PreviewMiniGraph stages={stages} agents={agents} />
         <div style={{ display: "flex", gap: 14, marginTop: 14, fontSize: 11.5, color: "var(--text-3)" }}>
           <span>
             <span style={{ display: "inline-block", width: 8, height: 8, background: "var(--signal)", marginRight: 5, borderRadius: 1 }} />
-            Existing agent
+            {t("importManifestModal.legendExisting")}
           </span>
           <span>
             <span style={{ display: "inline-block", width: 8, height: 8, background: "var(--green)", marginRight: 5, borderRadius: 1 }} />
-            Added (1)
+            {t("importManifestModal.legendAdded", { count: 1 })}
           </span>
           <span>
             <span style={{ display: "inline-block", width: 8, height: 8, background: "var(--amber)", marginRight: 5, borderRadius: 1 }} />
-            Modified (22)
+            {t("importManifestModal.legendModified", { count: 22 })}
           </span>
           <span>
             <span style={{ display: "inline-block", width: 8, height: 8, background: "var(--violet)", marginRight: 5, borderRadius: 1 }} />
-            Human task
+            {t("importManifestModal.legendHumanTask")}
           </span>
         </div>
       </Panel>
 
-      <Panel title="Summary" padded>
+      <Panel title={t("importManifestModal.summaryTitle")} padded>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
           <Stat
-            label="Net agents"
+            label={t("importManifestModal.statNetAgents")}
             value={`+${parsed.diff.added.length - parsed.diff.removed.length}`}
             mono
             accent="var(--signal)"
           />
-          <Stat label="Modified" value={parsed.diff.modified.length} mono accent="var(--amber)" />
-          <Stat label="New properties" value="4" mono sub="× 23 agents = 92 fields" />
-          <Stat label="Estimated rollout" value="~ 4 s" mono />
+          <Stat label={t("importManifestModal.statModified")} value={parsed.diff.modified.length} mono accent="var(--amber)" />
+          <Stat label={t("importManifestModal.statNewProperties")} value="4" mono sub={t("importManifestModal.statNewPropertiesSub")} />
+          <Stat label={t("importManifestModal.statEstimatedRollout")} value="~ 4 s" mono />
         </div>
       </Panel>
     </div>
@@ -1628,7 +1649,7 @@ function PreviewMiniGraph({
                 width={NODE_W}
                 height={NODE_H}
                 rx={2}
-                fill={isNew ? "rgba(101,224,163,0.10)" : "var(--panel-2)"}
+                fill={isNew ? "color-mix(in srgb, var(--green) 10%, transparent)" : "var(--panel-2)"}
                 stroke={color}
                 strokeWidth={isNew ? 1.5 : 1}
                 strokeDasharray={isModified && !isNew ? "3 2" : "0"}
@@ -1659,27 +1680,28 @@ function DeployStep({
   setAutoRollback: (v: boolean) => void;
   mode: "workflow" | "agent";
 }) {
+  const { t } = useI18n();
   return (
     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        <Panel title="Deploy target" padded>
+        <Panel title={t("importManifestModal.deployTarget")} padded>
           <DeployTargetIM
             on={target.staging}
             onToggle={() => setTarget({ ...target, staging: !target.staging })}
-            label="Staging · raas-stage"
-            sub="Replays last 10 events through the new graph as a smoke test"
+            label={`${t("importManifestModal.targetStaging")} · raas-stage`}
+            sub={t("importManifestModal.targetStagingSub")}
             recommended
           />
           <DeployTargetIM
             on={target.prod}
             onToggle={() => setTarget({ ...target, prod: !target.prod })}
-            label="Production · raas"
-            sub="Live event stream. New runs use the new version immediately."
+            label={`${t("importManifestModal.targetProduction")} · raas`}
+            sub={t("importManifestModal.targetProductionSub")}
             warn
           />
         </Panel>
 
-        <Panel title="Safety" padded>
+        <Panel title={t("importManifestModal.safetyTitle")} padded>
           <label style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "8px 0", cursor: "pointer" }}>
             <input
               type="checkbox"
@@ -1688,27 +1710,27 @@ function DeployStep({
               style={{ accentColor: "var(--signal)", marginTop: 3 }}
             />
             <div>
-              <div style={{ fontSize: 12.5, color: "var(--text)" }}>Auto-rollback on error spike</div>
+              <div style={{ fontSize: 12.5, color: "var(--text)" }}>{t("importManifestModal.safetyAutoRollback")}</div>
               <div style={{ fontSize: 11, color: "var(--text-3)" }}>
-                If error rate exceeds 5% over 5 minutes post-deploy, restore the previous version.
+                {t("importManifestModal.safetyAutoRollbackDesc")}
               </div>
             </div>
           </label>
           <label style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "8px 0", cursor: "pointer" }}>
             <input type="checkbox" defaultChecked style={{ accentColor: "var(--signal)", marginTop: 3 }} />
             <div>
-              <div style={{ fontSize: 12.5, color: "var(--text)" }}>Drain in-flight runs on rollback</div>
+              <div style={{ fontSize: 12.5, color: "var(--text)" }}>{t("importManifestModal.safetyDrain")}</div>
               <div style={{ fontSize: 11, color: "var(--text-3)" }}>
-                Let active runs finish on the old version; only new triggers route to the new one.
+                {t("importManifestModal.safetyDrainDesc")}
               </div>
             </div>
           </label>
           <label style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "8px 0", cursor: "pointer" }}>
             <input type="checkbox" style={{ accentColor: "var(--signal)", marginTop: 3 }} />
             <div>
-              <div style={{ fontSize: 12.5, color: "var(--text)" }}>Require code review</div>
+              <div style={{ fontSize: 12.5, color: "var(--text)" }}>{t("importManifestModal.safetyReview")}</div>
               <div style={{ fontSize: 11, color: "var(--text-3)" }}>
-                Block deploy until another Admin approves on the Deployments page.
+                {t("importManifestModal.safetyReviewDesc")}
               </div>
             </div>
           </label>
@@ -1716,8 +1738,8 @@ function DeployStep({
       </div>
 
       <Panel
-        title="Final manifest"
-        subtitle="Read-only · what will be written to /var/agentic/deploys/"
+        title={t("importManifestModal.finalManifest")}
+        subtitle={t("importManifestModal.finalManifestSubtitle")}
         padded={false}
       >
         <CodeBlock>
@@ -1760,6 +1782,7 @@ function DeployTargetIM({
   recommended?: boolean;
   warn?: boolean;
 }) {
+  const { t } = useI18n();
   return (
     <label
       style={{
@@ -1778,11 +1801,11 @@ function DeployTargetIM({
       <div style={{ flex: 1 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <span style={{ fontSize: 12.5, color: "var(--text)" }}>{label}</span>
-          {recommended && <Badge tone="signal">RECOMMENDED</Badge>}
+          {recommended && <Badge tone="signal">{t("importManifestModal.badgeRecommended")}</Badge>}
         </div>
         <div style={{ fontSize: 11, color: "var(--text-3)" }}>{sub}</div>
       </div>
-      {warn && <Badge tone="amber">requires approval</Badge>}
+      {warn && <Badge tone="amber">{t("importManifestModal.requiresApproval")}</Badge>}
     </label>
   );
 }

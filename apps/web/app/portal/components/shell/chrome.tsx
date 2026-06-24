@@ -23,6 +23,8 @@ import { useCallback } from "react";
 import type { RunStreamEvent } from "@agentic/contracts";
 import { useStream } from "@/lib/hooks/useStream";
 import { useTenants } from "@/lib/hooks/useTenants";
+import { useTenant } from "@/app/portal/lib/use-tenant";
+import { useMe, useLogout } from "@/lib/hooks/useMe";
 import { Sidebar } from "./sidebar";
 import { TopBar } from "./topbar";
 import { TweaksPanel } from "../tweaks/panel";
@@ -33,6 +35,7 @@ import {
   SessionProvider,
   type SessionUser,
 } from "../../lib/session-context";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 
 export function PortalChrome({
   children,
@@ -41,27 +44,44 @@ export function PortalChrome({
   children: ReactNode;
   user: SessionUser;
 }) {
+  const { t } = useI18n();
+  const { data: me } = useMe();
   // UC-V11-06 — when the SSE stream surfaces a `deployment.created` event
   // for tenant code, fire a hot-reload toast so engineers see their CLI
   // deploy land without a manual refresh. Manifest deploys already get an
   // explicit "Manifest deployed" toast at save time, so we only fire here
   // for `kind: 'tenant_code'`.
-  const onStreamEvent = useCallback((event: RunStreamEvent) => {
-    if (event.type === "deployment.created" && event.kind === "tenant_code") {
-      toast({
-        tone: "signal",
-        title: `Tenant code ${event.version} active`,
-        description: event.workflowSlug
-          ? `Hot-reloaded for ${event.workflowSlug}`
-          : "Hot-reloaded",
-      });
-    }
-  }, []);
+  const onStreamEvent = useCallback(
+    (event: RunStreamEvent) => {
+      if (event.type === "deployment.created" && event.kind === "tenant_code") {
+        toast({
+          tone: "signal",
+          title: t("chromeComp.toastTenantCodeActive", {
+            version: event.version,
+          }),
+          description: event.workflowSlug
+            ? t("chromeComp.toastHotReloadedFor", { slug: event.workflowSlug })
+            : t("chromeComp.toastHotReloaded"),
+        });
+      }
+    },
+    [t],
+  );
 
   // useStream owns the SSE subscription that invalidates the TanStack Query
   // caches; mount it once at the chrome level so every view inherits live
-  // updates without re-subscribing.
-  useStream({ onEvent: onStreamEvent });
+  // updates without re-subscribing. We connect through the unbuffered
+  // `/livefeed` route handler (the `/v1/*` rewrite buffers SSE) and scope it
+  // to the VIEWED tenant (EventSource can't set the x-agentic-tenant header,
+  // so the proxy forwards it from the query param). Switching tenants
+  // re-subscribes via the path dependency.
+  const activeTenant = useTenant();
+  useStream({
+    path: activeTenant
+      ? `/livefeed?tenant=${encodeURIComponent(activeTenant)}`
+      : "/livefeed",
+    onEvent: onStreamEvent,
+  });
 
   // Live tenant list. No static fallback — when /v1/tenants errors we
   // surface a banner so the operator knows the api is unreachable rather
@@ -85,6 +105,19 @@ export function PortalChrome({
     tenantsQuery.isError ||
     (!tenantsQuery.isLoading && !tenantsQuery.data);
 
+  // P6-AUTH — a self-registered user with no tenant membership (and not a
+  // platform superadmin) can't use any view yet. Show a "waiting for access"
+  // screen instead of a dashboard that would just 403 on every /v1 call.
+  const pendingAccess =
+    !!me && me.memberships.length === 0 && me.user.platformRole !== "superadmin";
+  if (pendingAccess) {
+    return (
+      <SessionProvider value={user}>
+        <PendingAccess email={me.user.email} />
+      </SessionProvider>
+    );
+  }
+
   return (
     <SessionProvider value={user}>
       <div
@@ -101,7 +134,7 @@ export function PortalChrome({
           * users can jump past the sidebar straight to the view body.
           * Styled in tokens.css `.skip-link`. */}
         <a href="#portal-view-content" className="skip-link">
-          Skip to content
+          {t("chromeComp.skipToContent")}
         </a>
         <Sidebar tenants={tenants} />
         <main
@@ -141,6 +174,7 @@ export function PortalChrome({
  * truth for the "api down" error UX in the portal shell.
  */
 function ApiUnreachableBanner() {
+  const { t } = useI18n();
   return (
     <div
       role="alert"
@@ -166,9 +200,77 @@ function ApiUnreachableBanner() {
         aria-hidden
       />
       <span>
-        Cannot reach api on <code style={{ fontFamily: "var(--mono)" }}>:3501</code>
-        {" — check that `pnpm dev` is running. The portal will keep retrying."}
+        {t("chromeComp.bannerCannotReachApi")}{" "}
+        <code style={{ fontFamily: "var(--mono)" }}>:3540</code>
+        {t("chromeComp.bannerCheckPnpmDev")}
       </span>
+    </div>
+  );
+}
+
+/**
+ * Shown to a signed-in user who has no tenant membership yet (open
+ * self-registration → admin grants access later). Offers only sign-out.
+ */
+function PendingAccess({ email }: { email: string }) {
+  const { t } = useI18n();
+  const logout = useLogout();
+  return (
+    <div
+      style={{
+        minHeight: "100vh",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        background: "var(--bg)",
+        padding: 20,
+      }}
+    >
+      <div
+        style={{
+          width: 460,
+          maxWidth: "90vw",
+          background: "var(--panel)",
+          border: "1px solid var(--border)",
+          borderRadius: 12,
+          padding: 28,
+          textAlign: "center",
+        }}
+      >
+        <h1
+          style={{
+            margin: 0,
+            fontSize: 22,
+            fontFamily: "var(--display)",
+            fontWeight: 400,
+            color: "var(--text)",
+          }}
+        >
+          {t("auth.pendingTitle")}
+        </h1>
+        <p style={{ marginTop: 10, fontSize: 13, color: "var(--text-2)", lineHeight: 1.6 }}>
+          {t("auth.pendingHint")}
+        </p>
+        <p style={{ marginTop: 14, fontSize: 11.5, color: "var(--text-3)", fontFamily: "var(--mono)" }}>
+          {t("auth.pendingSignedInAs", { email })}
+        </p>
+        <button
+          onClick={() => logout.mutate()}
+          disabled={logout.isPending}
+          style={{
+            marginTop: 18,
+            padding: "9px 16px",
+            background: "transparent",
+            border: "1px solid var(--border-2)",
+            borderRadius: 7,
+            color: "var(--text-2)",
+            fontSize: 12.5,
+            cursor: logout.isPending ? "wait" : "pointer",
+          }}
+        >
+          {t("auth.signOut")}
+        </button>
+      </div>
     </div>
   );
 }

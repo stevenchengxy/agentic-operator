@@ -29,37 +29,37 @@ const BADGE_TONES: Record<
 > = {
   default: { bg: "transparent", fg: "var(--text-2)", border: "var(--border-2)" },
   signal: {
-    bg: "rgba(208,255,0,0.08)",
-    fg: "var(--signal)",
-    border: "rgba(208,255,0,0.32)",
+    bg: "color-mix(in srgb, var(--signal) 8%, transparent)",
+    fg: "var(--accent-text)",
+    border: "color-mix(in srgb, var(--signal) 32%, transparent)",
   },
   green: {
-    bg: "rgba(101,224,163,0.08)",
+    bg: "color-mix(in srgb, var(--green) 8%, transparent)",
     fg: "var(--green)",
-    border: "rgba(101,224,163,0.30)",
+    border: "color-mix(in srgb, var(--green) 30%, transparent)",
   },
   blue: {
-    bg: "rgba(132,169,255,0.10)",
+    bg: "color-mix(in srgb, var(--blue) 10%, transparent)",
     fg: "var(--blue)",
-    border: "rgba(132,169,255,0.32)",
+    border: "color-mix(in srgb, var(--blue) 32%, transparent)",
   },
   amber: {
-    bg: "rgba(255,181,71,0.10)",
+    bg: "color-mix(in srgb, var(--amber) 10%, transparent)",
     fg: "var(--amber)",
-    border: "rgba(255,181,71,0.32)",
+    border: "color-mix(in srgb, var(--amber) 32%, transparent)",
   },
   red: {
-    bg: "rgba(255,100,112,0.10)",
+    bg: "color-mix(in srgb, var(--red) 10%, transparent)",
     fg: "var(--red)",
-    border: "rgba(255,100,112,0.34)",
+    border: "color-mix(in srgb, var(--red) 34%, transparent)",
   },
   violet: {
-    bg: "rgba(181,148,255,0.10)",
+    bg: "color-mix(in srgb, var(--violet) 10%, transparent)",
     fg: "var(--violet)",
-    border: "rgba(181,148,255,0.30)",
+    border: "color-mix(in srgb, var(--violet) 30%, transparent)",
   },
   muted: { bg: "var(--panel-2)", fg: "var(--text-3)", border: "var(--border)" },
-  solid: { bg: "var(--signal)", fg: "#000", border: "var(--signal)" },
+  solid: { bg: "var(--signal)", fg: "var(--on-signal)", border: "var(--signal)" },
 };
 
 export interface BadgeProps {
@@ -109,7 +109,7 @@ export interface ActorTagProps {
 export function ActorTag({ actor }: ActorTagProps) {
   if (actor === "Agent") {
     return (
-      <Badge tone="signal" style={{ background: "rgba(208,255,0,0.06)" }}>
+      <Badge tone="signal" style={{ background: "color-mix(in srgb, var(--signal) 6%, transparent)" }}>
         <Icon name="dot" size={6} /> AGENT
       </Badge>
     );

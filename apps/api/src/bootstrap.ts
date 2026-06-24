@@ -31,6 +31,7 @@ import tenantTest1 from "@tenants/tenant-test1";
 import robohireTenant from "@tenants/robohire";
 import northwindTenant from "@tenants/northwind";
 import insightlabTenant from "@tenants/insightlab";
+import zhaopinTenant from "@tenants/zhaopin";
 import {
   bootstrapCodeAgents,
   setGateway as setAgentGateway,
@@ -43,7 +44,10 @@ import { getLLMGateway } from "./services/llm";
 import { metrics } from "./services/metrics";
 import { reconcileImports } from "./services/reconcile-imports";
 import { getDb, pruneRolledBackDeployments } from "@agentic/db";
-import { reregisterInngest } from "./services/inngest-registry";
+import {
+  initInngestRegistry,
+  reregisterInngest,
+} from "./services/inngest-registry";
 import {
   applyDemoModeOverrides,
   describeDemoMode,
@@ -92,7 +96,47 @@ const TENANT_REGISTRIES: TenantRegistries = {
   robohire: robohireTenant,
   northwind: northwindTenant,
   insightlab: insightlabTenant,
+  zhaopin: zhaopinTenant,
 };
+
+/**
+ * The MCP/Skills-expanded tenant registries, captured at boot so a runtime
+ * re-register (deploy / undeploy / archive) can re-run `bootstrapAll` against
+ * the SAME registries without re-connecting MCP servers. `rebuildTenantFns`
+ * reads this. Empty until `bootstrapRuntime` populates it.
+ */
+let cachedExpanded: TenantRegistries = {};
+
+/**
+ * Re-run the manifest bootstrap and return the fresh tenant Inngest function
+ * set. Called by `reregisterInngest({ scope: "tenant" })` (via dynamic import
+ * to dodge the circular dep). This is what makes 上线/下线 actually hot-swap:
+ *
+ *   - 上线 (deploy): the import wizard renames the new manifest onto disk, then
+ *     reregisters → `bootstrapAll` re-reads disk → the new agent set is served.
+ *   - 下线 (disable): a route flips `agents.enabled=false`, then reregisters →
+ *     `bootstrapTenant` skips disabled agents → their functions drop out.
+ *   - archive: an archived tenant is skipped entirely (see runtime bootstrap).
+ *
+ * `bootstrapAll` is idempotent (upserts by primary key), so re-running it on a
+ * live process only changes the returned function array, never the DB.
+ */
+export async function rebuildTenantFns(): Promise<InngestFunction.Any[]> {
+  return bootstrapAll(cachedExpanded);
+}
+
+/**
+ * Re-run the code-agent bootstrap. Code agents are invoked synchronously
+ * (`POST /v1/agents/:name/invoke`) and do NOT yet contribute Inngest functions
+ * (async-via-Inngest is reserved for v2 per CLAUDE.md), so this returns an
+ * empty set. Wired through so `reregisterInngest({ scope: "code_agent" })`
+ * resolves a real function rather than silently no-op'ing, and so the day code
+ * agents gain Inngest fns there's a single place to return them.
+ */
+export async function rebuildCodeAgentFns(): Promise<InngestFunction.Any[]> {
+  await bootstrapCodeAgents();
+  return [];
+}
 
 export async function bootstrapRuntime(): Promise<BootstrapResult> {
   // 0. Surface the demo-mode flag at the very top of the boot log so the
@@ -142,6 +186,9 @@ export async function bootstrapRuntime(): Promise<BootstrapResult> {
   for (const [slug, base] of Object.entries(TENANT_REGISTRIES)) {
     expanded[slug] = await expandTenantRegistry(slug, base);
   }
+  // Capture for runtime re-registration (deploy / undeploy / archive). See
+  // `rebuildTenantFns`.
+  cachedExpanded = expanded;
 
   // 4. Manifest-driven (RAAS etc) Inngest functions.
   const tenantFns = await bootstrapAll(expanded);
@@ -149,6 +196,19 @@ export async function bootstrapRuntime(): Promise<BootstrapResult> {
   console.log(
     `[bootstrap] api serving ${allFns.length} Inngest function(s) (${tenantFns.length} from tenant manifests)`,
   );
+
+  // 4a. Seed the MUTABLE Inngest registry so the `/inngest` route serves a
+  //     function set that `reregisterInngest()` can swap at runtime without a
+  //     restart. base = helloFn (+ any future platform fns); tenant = the
+  //     manifest fns just built; codeAgent = none yet (sync-invoked). Before
+  //     this call the registry was never initialized and every re-register
+  //     silently no-op'd — that's the gap this completes.
+  initInngestRegistry({
+    client: inngest as Inngest.Any,
+    base: [helloFn],
+    codeAgent: [],
+    tenant: tenantFns,
+  });
 
   // 4. Crash recovery for the manifest-import wizard (per review C1).
   //    `reconcileImports` does three things:

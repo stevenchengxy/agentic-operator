@@ -306,13 +306,20 @@ export async function bootstrapTenant(spec: {
       }
     }
 
-    const fn = registerAgent(a, {
-      tenantId: tenant.id,
-      tenantSlug: spec.tenantSlug,
-      workflowVersionId: workflowVersion.id,
-      tenantRegistry: tenantRegistry ?? undefined,
-    });
-    if (fn) registered.push(fn);
+    // 下线 (disable): a disabled agent stays in the catalog — its agents /
+    // agent_versions / event_listeners rows are upserted above — but its
+    // Inngest function is NOT registered, so no event routes to it until it is
+    // re-enabled and the tenant re-registers. `enabled` defaults to true, so
+    // this is a no-op for every agent that was never explicitly disabled.
+    if (agentRow.enabled !== false) {
+      const fn = registerAgent(a, {
+        tenantId: tenant.id,
+        tenantSlug: spec.tenantSlug,
+        workflowVersionId: workflowVersion.id,
+        tenantRegistry: tenantRegistry ?? undefined,
+      });
+      if (fn) registered.push(fn);
+    }
   }
 
   // Upsert ontology catalogs (RF-1.4 additive tables)
@@ -414,7 +421,25 @@ export async function bootstrapAll(
     );
     return fns;
   }
+
+  // archive (tenant-level 下线): an archived tenant is taken fully offline —
+  // none of its agents register, so no events route anywhere for it. The rows
+  // stay in the DB; clearing `archived_at` (restore) + a re-register brings it
+  // back. Read once per bootstrap so a re-register reflects the latest state.
+  const archivedSlugs = new Set(
+    getDb()
+      .select({ slug: tenants.slug, archivedAt: tenants.archivedAt })
+      .from(tenants)
+      .all()
+      .filter((r) => r.archivedAt != null)
+      .map((r) => r.slug),
+  );
+
   for (const f of folders) {
+    if (archivedSlugs.has(f.slug)) {
+      console.log(`[bootstrap] ${f.slug} (${f.folder}): archived — skipped`);
+      continue;
+    }
     try {
       const result = await bootstrapTenant({
         tenantSlug: f.slug,

@@ -95,6 +95,59 @@ async function loadMonaco(): Promise<typeof import("monaco-editor")> {
           focusBorder: "#5a6e00",
         },
       });
+      // Light counterpart — maps onto the light token palette (tokens.css
+      // `html[data-theme="light"]`) so the editor isn't a dark slab on a
+      // white page. Syntax hues are darkened variants of the dark theme's so
+      // they clear contrast on white while keeping the same colour language.
+      monaco.editor.defineTheme("agentic-light", {
+        base: "vs",
+        inherit: true,
+        rules: [
+          { token: "", foreground: "1a1a1d" },
+          { token: "comment", foreground: "8c8d94", fontStyle: "italic" },
+          { token: "keyword", foreground: "6b3fd4" },
+          { token: "keyword.flow", foreground: "6b3fd4" },
+          { token: "storage", foreground: "6b3fd4" },
+          { token: "storage.type", foreground: "6b3fd4" },
+          { token: "string", foreground: "1a7f4b" },
+          { token: "string.escape", foreground: "1a7f4b" },
+          { token: "number", foreground: "9a6500" },
+          { token: "type", foreground: "2b5fd9" },
+          { token: "type.identifier", foreground: "2b5fd9" },
+          { token: "identifier", foreground: "1a1a1d" },
+          { token: "delimiter", foreground: "5a5b62" },
+          { token: "tag", foreground: "4d5e00" },
+          { token: "key", foreground: "2b5fd9" },
+          { token: "constant", foreground: "4d5e00" },
+        ],
+        colors: {
+          "editor.background": "#ffffff",
+          "editor.foreground": "#1a1a1d",
+          "editor.lineHighlightBackground": "#f5f5f2",
+          "editor.lineHighlightBorder": "#f5f5f2",
+          "editorLineNumber.foreground": "#b8b9be",
+          "editorLineNumber.activeForeground": "#5a5b62",
+          "editor.selectionBackground": "#dfe6c2",
+          "editor.inactiveSelectionBackground": "#eceee0",
+          "editorCursor.foreground": "#4d5e00",
+          "editorWhitespace.foreground": "#e3e3df",
+          "editorIndentGuide.background": "#ececea",
+          "editorIndentGuide.activeBackground": "#d4d4cf",
+          "editorBracketMatch.background": "#e8efc9",
+          "editorBracketMatch.border": "#c8d985",
+          "scrollbarSlider.background": "#d4d4cf80",
+          "scrollbarSlider.hoverBackground": "#b8b8b2",
+          "scrollbarSlider.activeBackground": "#8c8d94",
+          "editorGutter.background": "#ffffff",
+          "editorWidget.background": "#ffffff",
+          "editorWidget.border": "#d4d4cf",
+          "editorSuggestWidget.background": "#ffffff",
+          "editorSuggestWidget.border": "#d4d4cf",
+          "editorSuggestWidget.selectedBackground": "#f1f1ee",
+          "list.hoverBackground": "#f5f5f2",
+          focusBorder: "#c8d985",
+        },
+      });
       // Relax TS diagnostics so imports from "@agentic/runtime" don't error.
       // Monaco 0.51+ moved the typescript helpers from
       // `monaco.languages.typescript` to a top-level `monaco.typescript`
@@ -123,6 +176,15 @@ async function loadMonaco(): Promise<typeof import("monaco-editor")> {
     return monaco;
   })();
   return __monacoLoadPromise;
+}
+
+/** Pick the editor theme from the app's `<html data-theme>` so the code
+ *  surface follows light/dark like the rest of the portal. */
+function editorThemeName(): "agentic-dark" | "agentic-light" {
+  if (typeof document === "undefined") return "agentic-dark";
+  return document.documentElement.dataset.theme === "light"
+    ? "agentic-light"
+    : "agentic-dark";
 }
 
 export function MonacoEditor({
@@ -154,7 +216,7 @@ export function MonacoEditor({
         editorRef.current = monaco.editor.create(containerRef.current, {
           value: value || "",
           language,
-          theme: "agentic-dark",
+          theme: editorThemeName(),
           automaticLayout: true,
           minimap: { enabled: false },
           fontSize: 12,
@@ -204,6 +266,25 @@ export function MonacoEditor({
     }
   }, [value]);
 
+  // Follow the app theme: setTheme is global to Monaco, so flip it whenever
+  // `<html data-theme>` changes (top-bar toggle, Settings, or OS in system mode).
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    let monacoNs: typeof import("monaco-editor") | null = null;
+    loadMonaco().then((m) => {
+      monacoNs = m;
+      m.editor.setTheme(editorThemeName());
+    });
+    const obs = new MutationObserver(() => {
+      monacoNs?.editor.setTheme(editorThemeName());
+    });
+    obs.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["data-theme"],
+    });
+    return () => obs.disconnect();
+  }, []);
+
   const wrap: CSSProperties = {
     position: "relative",
     height,
@@ -211,7 +292,7 @@ export function MonacoEditor({
     border: "1px solid var(--border-2)",
     borderRadius: 4,
     overflow: "hidden",
-    background: "#0f0f11",
+    background: "var(--bg-2)",
   };
 
   return (

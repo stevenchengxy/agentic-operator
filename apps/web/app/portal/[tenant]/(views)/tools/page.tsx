@@ -32,12 +32,14 @@ import {
   type ToolCatalogEntry,
   type ToolFieldSchema,
 } from "@/lib/hooks/useTools";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 
 function slugifyAnchor(name: string): string {
   return "tool-" + name.replace(/[^a-zA-Z0-9._-]/g, "-").toLowerCase();
 }
 
 export default function ToolsPage() {
+  const { t } = useI18n();
   const { data, isLoading, error } = useTools();
   const tools = data?.tools ?? [];
   const categories = data?.categories ?? [];
@@ -104,11 +106,16 @@ export default function ToolsPage() {
       style={{ display: "flex", flexDirection: "column", height: "100%" }}
     >
       <ViewHeader
-        title="Agentic Tools"
-        subtitle="Globally-registered tools any workflow can call. Configure per tenant via the manifest's tool_use[].config block — no code changes required."
+        title={t("nav.tools")}
+        subtitle={t("tools.subtitle")}
         badge={
           <Badge tone="signal">
-            {data ? `${data.count} tools · ${data.categories.length} categories` : "—"}
+            {data
+              ? t("tools.countBadge", {
+                  count: data.count,
+                  categories: data.categories.length,
+                })
+              : "—"}
           </Badge>
         }
       />
@@ -116,14 +123,14 @@ export default function ToolsPage() {
       {error && (
         <div style={{ padding: 20 }}>
           <Empty
-            title="Failed to load tool catalog"
-            hint={error.message || "api unreachable on :3501"}
+            title={t("tools.loadFailedTitle")}
+            hint={error.message || t("tools.apiUnreachable")}
           />
         </div>
       )}
       {!error && isLoading && (
         <div style={{ padding: 20 }}>
-          <Empty title="Loading catalog…" hint="" />
+          <Empty title={t("tools.loading")} hint="" />
         </div>
       )}
 
@@ -153,7 +160,7 @@ export default function ToolsPage() {
               type="search"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search tools…"
+              placeholder={t("tools.searchPlaceholder")}
               style={{
                 width: "100%",
                 padding: "7px 9px",
@@ -172,7 +179,7 @@ export default function ToolsPage() {
                 active={category === "all"}
                 onClick={() => setCategory("all")}
               >
-                All ({tools.length})
+                {t("tools.allChip", { count: tools.length })}
               </FilterChip>
               {categories.map((cat) => {
                 const count = tools.filter((t) => t.category === cat).length;
@@ -210,7 +217,7 @@ export default function ToolsPage() {
               ))}
               {grouped.length === 0 && (
                 <div style={{ color: "var(--text-3)", fontSize: 12 }}>
-                  No tools match the current filter.
+                  {t("tools.navNoMatch")}
                 </div>
               )}
             </nav>
@@ -223,8 +230,8 @@ export default function ToolsPage() {
           >
             {filtered.length === 0 ? (
               <Empty
-                title="No tools match"
-                hint="Try clearing the search or category filter."
+                title={t("tools.noMatchTitle")}
+                hint={t("tools.noMatchHint")}
               />
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: 28 }}>
@@ -237,17 +244,16 @@ export default function ToolsPage() {
                       color: "var(--text)",
                     }}
                   >
-                    API reference
+                    {t("tools.apiReference")}
                   </h2>
                   <p style={introBodyStyle}>
-                    Every tool listed below is callable from any tenant's
-                    workflow manifest by adding it to an agent's{" "}
-                    <code className="mono">tool_use[]</code> array. Per-tenant
-                    knobs (API keys, paths, allow-lists) bind via{" "}
-                    <code className="mono">tool_use[].config</code> with no
-                    TypeScript involved. Resolution order is{" "}
-                    <strong>tenant override → global registry → MCP</strong>;
-                    the manifest is always the trust boundary.
+                    {t("tools.introPart1")}{" "}
+                    <code className="mono">tool_use[]</code>{" "}
+                    {t("tools.introPart2")}{" "}
+                    <code className="mono">tool_use[].config</code>{" "}
+                    {t("tools.introPart3")}{" "}
+                    <strong>{t("tools.resolutionOrder")}</strong>;{" "}
+                    {t("tools.introPart4")}
                   </p>
                 </div>
 
@@ -274,6 +280,7 @@ export default function ToolsPage() {
 // ─── Section ────────────────────────────────────────────────────────────────
 
 function ToolSection({ tool }: { tool: ToolCatalogEntry }) {
+  const { t } = useI18n();
   const manifestSnippet = useMemo(() => {
     const entry: Record<string, unknown> = {
       name: tool.name,
@@ -318,7 +325,9 @@ function ToolSection({ tool }: { tool: ToolCatalogEntry }) {
           <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
             <Badge tone="muted">{tool.category}</Badge>
             {tool.chainsWith && tool.chainsWith.length > 0 && (
-              <Badge tone="signal">chains with {tool.chainsWith.join(", ")}</Badge>
+              <Badge tone="signal">
+                {t("tools.chainsWith", { tools: tool.chainsWith.join(", ") })}
+              </Badge>
             )}
           </div>
         </div>
@@ -356,57 +365,64 @@ function ToolSection({ tool }: { tool: ToolCatalogEntry }) {
           }}
         >
           {tool.aliases && tool.aliases.length > 0 && (
-            <span>aliases: {tool.aliases.join(", ")}</span>
+            <span>
+              {t("tools.aliasesLabel")} {tool.aliases.join(", ")}
+            </span>
           )}
-          <span>source: {tool.sourcePath}</span>
+          <span>
+            {t("tools.sourceLabel")} {tool.sourcePath}
+          </span>
         </div>
       </header>
 
-      <SubBlock title="Manifest declaration" copyText={manifestSnippet}>
+      <SubBlock title={t("tools.manifestDeclaration")} copyText={manifestSnippet}>
         <pre style={preStyle}>{manifestSnippet}</pre>
       </SubBlock>
 
       {hasArgs ? (
         <SubBlock
-          title="Arguments"
-          subtitle={`Passed by the LLM (or by a type:"tool" action's upstream event payload).`}
+          title={t("tools.arguments")}
+          subtitle={t("tools.argumentsSubtitle")}
         >
           <SchemaTable schema={tool.argsSchema!} />
           {tool.argsExample && Object.keys(tool.argsExample).length > 0 && (
-            <ExampleBlock value={tool.argsExample} label="Example" />
+            <ExampleBlock value={tool.argsExample} label={t("tools.example")} />
           )}
         </SubBlock>
       ) : (
-        <SubBlock title="Arguments">
+        <SubBlock title={t("tools.arguments")}>
           <p style={mutedNoteStyle}>
-            This tool takes no arguments — call it with{" "}
+            {t("tools.noArgsPart1")}{" "}
             <code className="mono">{"{}"}</code>.
           </p>
         </SubBlock>
       )}
 
       {hasReturns && (
-        <SubBlock title="Returns" subtitle="Available to the LLM in the next turn and to the next step as `ctx.lastResult`.">
+        <SubBlock title={t("tools.returns")} subtitle={t("tools.returnsSubtitle")}>
           <SchemaTable schema={tool.returnsSchema!} />
           {tool.returnsExample !== undefined && (
-            <ExampleBlock value={tool.returnsExample} label="Example" />
+            <ExampleBlock value={tool.returnsExample} label={t("tools.example")} />
           )}
         </SubBlock>
       )}
 
       {hasConfig ? (
         <SubBlock
-          title="Per-tenant configuration"
-          subtitle="Bound in the manifest's tool_use[].config block. Lifted into ctx.config at dispatch."
+          title={t("tools.perTenantConfig")}
+          subtitle={t("tools.perTenantConfigSubtitle")}
         >
           <SchemaTable schema={tool.configSchema!} />
           {tool.configExample && Object.keys(tool.configExample).length > 0 && (
-            <ExampleBlock value={tool.configExample} label="Example config" />
+            <ExampleBlock
+              value={tool.configExample}
+              label={t("tools.exampleConfig")}
+            />
           )}
         </SubBlock>
       ) : (
-        <SubBlock title="Per-tenant configuration">
-          <p style={mutedNoteStyle}>No per-tenant configuration — same behaviour for every tenant.</p>
+        <SubBlock title={t("tools.perTenantConfig")}>
+          <p style={mutedNoteStyle}>{t("tools.noConfig")}</p>
         </SubBlock>
       )}
     </article>
@@ -426,6 +442,7 @@ function SubBlock({
   copyText?: string;
   children: React.ReactNode;
 }) {
+  const { t } = useI18n();
   const [copied, setCopied] = useState(false);
   function copy() {
     if (!copyText) return;
@@ -472,7 +489,7 @@ function SubBlock({
         </div>
         {copyText && (
           <Button small tone="ghost" icon={copied ? "check" : "code"} onClick={copy}>
-            {copied ? "Copied" : "Copy"}
+            {copied ? t("tools.copied") : t("tools.copy")}
           </Button>
         )}
       </div>
@@ -482,15 +499,16 @@ function SubBlock({
 }
 
 function SchemaTable({ schema }: { schema: Record<string, ToolFieldSchema> }) {
+  const { t } = useI18n();
   const entries = Object.entries(schema);
   return (
     <table style={tableStyle}>
       <thead>
         <tr>
-          <th style={thStyle}>Field</th>
-          <th style={thStyle}>Type</th>
-          <th style={thStyle}>Default</th>
-          <th style={thStyle}>Description</th>
+          <th style={thStyle}>{t("tools.colField")}</th>
+          <th style={thStyle}>{t("tools.colType")}</th>
+          <th style={thStyle}>{t("tools.colDefault")}</th>
+          <th style={thStyle}>{t("tools.colDescription")}</th>
         </tr>
       </thead>
       <tbody>
@@ -505,7 +523,7 @@ function SchemaTable({ schema }: { schema: Record<string, ToolFieldSchema> }) {
                     marginLeft: 4,
                     fontFamily: "var(--mono)",
                   }}
-                  title="Required"
+                  title={t("tools.required")}
                 >
                   *
                 </span>
@@ -528,6 +546,7 @@ function SchemaTable({ schema }: { schema: Record<string, ToolFieldSchema> }) {
 }
 
 function ExampleBlock({ value, label }: { value: unknown; label: string }) {
+  const { t } = useI18n();
   const json = useMemo(() => JSON.stringify(value, null, 2), [value]);
   const [copied, setCopied] = useState(false);
   function copy() {
@@ -557,7 +576,7 @@ function ExampleBlock({ value, label }: { value: unknown; label: string }) {
           {label}
         </span>
         <Button small tone="ghost" icon={copied ? "check" : "code"} onClick={copy}>
-          {copied ? "Copied" : "Copy"}
+          {copied ? t("tools.copied") : t("tools.copy")}
         </Button>
       </div>
       <pre style={preStyle}>{json}</pre>

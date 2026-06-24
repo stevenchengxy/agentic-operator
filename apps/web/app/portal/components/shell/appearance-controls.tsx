@@ -128,7 +128,7 @@ export function ThemeToggle() {
                   fontSize: 12,
                   textAlign: "left",
                   background: active ? "var(--panel-3)" : "transparent",
-                  color: active ? "var(--signal)" : "var(--text-2)",
+                  color: active ? "var(--accent-text)" : "var(--text-2)",
                 }}
               >
                 <Icon name={o.icon} size={12} />

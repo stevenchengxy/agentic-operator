@@ -28,13 +28,16 @@ import { tenantCodeRoutes } from "./routes/v1/tenant-code";
 import { workflowRoutes } from "./routes/v1/workflow";
 import { demoRoutes } from "./routes/v1/demo";
 import { toolsRoutes } from "./routes/v1/tools";
+import { authRoutes } from "./routes/v1/auth";
+import { membersRoutes } from "./routes/v1/members";
+import { adminUsersRoutes } from "./routes/v1/admin-users";
 import { stopDemoRunner } from "./services/demo-runner";
 import { inngestRoute } from "./routes/inngest";
 import { bootstrapRuntime } from "./bootstrap";
 
 const MAX_BODY_BYTES = Number(process.env.AGENTIC_MAX_BODY_BYTES ?? 10 * 1024 * 1024);
 
-const PORT = Number(process.env.PORT ?? 3501);
+const PORT = Number(process.env.PORT ?? 3540);
 const HOST = process.env.HOST ?? "0.0.0.0";
 const WEB_ORIGIN = process.env.WEB_ORIGIN ?? "http://localhost:3599";
 
@@ -137,6 +140,11 @@ export async function build() {
       // Global tool catalog — drives the Tools view in the portal so
       // manifest authors can browse what's available without spelunking.
       await v1.register(toolsRoutes);
+      // P6-AUTH — login + identity, tenant-scoped membership management, and
+      // platform-wide user administration (the Access tab + sign-in/up flows).
+      await v1.register(authRoutes);
+      await v1.register(membersRoutes);
+      await v1.register(adminUsersRoutes);
     },
     { prefix: "/v1" },
   );
@@ -145,7 +153,11 @@ export async function build() {
 }
 
 // Auto-start only when this file is the main entrypoint, not when imported by tests.
-const isMain = import.meta.url === `file://${process.argv[1]}`;
+// Compare normalized file URLs so a project path containing spaces (which
+// import.meta.url percent-encodes but a raw `file://` + argv concat does not)
+// still matches.
+const isMain =
+  !!process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href;
 if (isMain) {
   const app = await build();
   // Install signal handlers BEFORE listen() so a SIGTERM during a slow boot

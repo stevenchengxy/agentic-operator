@@ -130,7 +130,7 @@ export default function PortalError({
             padding: "6px 14px",
             fontSize: 12.5,
             fontWeight: 500,
-            color: "#000",
+            color: "var(--on-signal)",
             background: "var(--signal)",
             border: "1px solid var(--signal)",
             borderRadius: 5,

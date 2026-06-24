@@ -23,6 +23,7 @@ import { z } from "zod";
 import { eq } from "drizzle-orm";
 import { getDb, tenantBudgets } from "@agentic/db";
 import { requireAuth } from "../../plugins/auth";
+import { requirePermission } from "../../plugins/rbac";
 import { writeAudit } from "../../plugins/audit";
 
 const BudgetUpdateBody = z.object({
@@ -72,13 +73,13 @@ function ensureRow(tenantId: string) {
 
 export async function budgetsRoutes(app: FastifyInstance): Promise<void> {
   app.get("/budgets", async (req, reply) => {
-    const auth = requireAuth(req);
+    const auth = requirePermission(req, "usage.read");
     const row = ensureRow(auth.tenantId);
     return reply.ok(shapeRow(row));
   });
 
   app.put("/budgets", async (req, reply) => {
-    const auth = requireAuth(req);
+    const auth = requirePermission(req, "budgets.write");
     const body = BudgetUpdateBody.parse(req.body ?? {});
     const db = getDb();
     ensureRow(auth.tenantId);

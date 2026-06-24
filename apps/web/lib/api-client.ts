@@ -24,7 +24,7 @@ import {
   type ListEventsQuery,
 } from "@agentic/contracts";
 
-const API_URL = process.env.AGENTIC_API_URL ?? "http://localhost:3501";
+const API_URL = process.env.AGENTIC_API_URL ?? "http://localhost:3540";
 const API_TOKEN = process.env.AGENTIC_API_TOKEN ?? "";
 
 interface ApiOk<T> {

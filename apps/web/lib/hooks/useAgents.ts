@@ -138,6 +138,61 @@ export function useDag(): UseQueryResult<DagPayload> {
   });
 }
 
+export interface FunnelStage {
+  stage: number;
+  count: number;
+}
+
+export interface FunnelResult {
+  window: string;
+  windowMs: number;
+  stages: FunnelStage[];
+}
+
+/**
+ * Stage-funnel conversion counts (`GET /v1/funnel`). `window` is one of
+ * "1h" | "24h" | "7d"; the backend echoes the resolved window back. Rides
+ * the same SSE-driven count invalidation as the other dashboard reads.
+ */
+export function useFunnel(window: "1h" | "24h" | "7d" = "24h"): UseQueryResult<FunnelResult> {
+  return useQuery({
+    queryKey: ["workflows", "funnel", window] as const,
+    queryFn: () => callV1<FunnelResult>(`/v1/funnel?window=${window}`),
+    staleTime: 10_000,
+  });
+}
+
+/**
+ * Enable / disable an agent: `PATCH /v1/agents/:kebab { enabled }`.
+ *
+ * 下线 (disable) flips the row + re-registers the tenant so a manifest agent's
+ * Inngest function is dropped from the live serve handler without a restart;
+ * 上线 (enable) reverses it. Invalidates the agent list + detail so the toggle
+ * reflects the new state immediately.
+ */
+export function useSetAgentEnabled() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { kebabId: string; enabled: boolean }) =>
+      callV1<{
+        kebabId: string;
+        name: string;
+        kind: "code" | "manifest";
+        enabled: boolean;
+        reregistered: boolean;
+        fnCount?: number;
+      }>(`/v1/agents/${encodeURIComponent(vars.kebabId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: vars.enabled }),
+      }),
+    onSettled: (_data, _err, vars) => {
+      void client.invalidateQueries({ queryKey: AGENT_KEYS.list });
+      void client.invalidateQueries({ queryKey: AGENT_KEYS.detail(vars.kebabId) });
+    },
+  });
+}
+
 /** Invoke an agent: `POST /v1/agents/:name/invoke`. */
 export function useInvokeAgent() {
   const client = useQueryClient();

@@ -3,17 +3,19 @@
 import { Button, Icon, Panel } from "@/app/portal/components";
 import { StatusPill } from "@/app/portal/components/settings/atoms";
 import { SETTINGS_INTEGRATIONS } from "@/app/portal/components/settings/data";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 
 export function IntegrationsSection() {
+  const { t } = useI18n();
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
       <Panel
-        title={`Integrations · ${SETTINGS_INTEGRATIONS.length}`}
-        subtitle="External systems this workspace can reach."
+        title={t("integrations.title", { n: SETTINGS_INTEGRATIONS.length })}
+        subtitle={t("integrations.subtitle")}
         padded={false}
         action={
           <Button small icon="plus" tone="primary">
-            New integration
+            {t("integrations.newIntegration")}
           </Button>
         }
       >

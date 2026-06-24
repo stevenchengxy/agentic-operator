@@ -29,6 +29,7 @@ import type { FastifyInstance } from "fastify";
 import { and, eq, gte, lt, sql } from "drizzle-orm";
 import { agents, getDb, runs, tenantBudgets } from "@agentic/db";
 import { requireAuth } from "../../plugins/auth";
+import { requirePermission } from "../../plugins/rbac";
 
 interface QueryString {
   groupBy?: string;
@@ -79,7 +80,7 @@ interface RawRunRow {
 
 export async function usageRoutes(app: FastifyInstance): Promise<void> {
   app.get<{ Querystring: QueryString }>("/usage", async (req, reply) => {
-    const auth = requireAuth(req);
+    const auth = requirePermission(req, "usage.read");
     const q = req.query;
 
     const limit = clampLimit(q.limit);

@@ -1,56 +1,84 @@
 "use client";
 
 /**
- * Logs — file-tree log explorer (P2-FE-13).
+ * Logs — unified 4-facet logging explorer.
  *
- * Tree-based exploration is currently unwired: no `/v1/logs?listFiles`
- * endpoint exists yet. To avoid the previous behaviour of showing a
- * hardcoded RAAS tree (`run-01000.log` from 2026-05-16 etc.) and a
- * synthetic matchResume body for every tenant — making the view look like
- * it had real data when it didn't — we render a clear empty state that
- * points operators at the Runs view, where per-run SSE log tailing
- * (`/v1/runs/:runId/logs?follow=1`) actually works against live data.
+ *   操作日志  Operation  — the tenant audit_log (deploys, enable/disable,
+ *                          archive, …) via GET /v1/audit.
+ *   事件日志  Event      — the chronological event ledger via GET /v1/events.
+ *   运行日志  Agent run  — agent run rows (+ per-run SSE tail link) via
+ *                          GET /v1/runs and the run detail page.
+ *   实时终端  Terminal   — a live `tail -f`-style console of ALL tenant
+ *                          activity over the /v1/stream SSE channel.
+ *
+ * Each facet is a focused tab component; the shell owns tab state + the live
+ * pill. Replaces the previous "Log explorer pending" placeholder.
  */
 
-import Link from "next/link";
-import { Button, Empty, ViewHeader } from "@/app/portal/components";
-import { useTenant } from "@/app/portal/lib/use-tenant";
+import { useState } from "react";
+import { ViewHeader } from "@/app/portal/components";
+import { useI18n } from "@/app/portal/lib/preferences-context";
+import { OperationLogTab } from "@/app/portal/components/logs/OperationLogTab";
+import { EventLogTab } from "@/app/portal/components/logs/EventLogTab";
+import { RunLogTab } from "@/app/portal/components/logs/RunLogTab";
+import { TerminalLogTab } from "@/app/portal/components/logs/TerminalLogTab";
+
+type LogTab = "operation" | "event" | "run" | "terminal";
+
+const TABS: Array<{ id: LogTab; labelKey: string }> = [
+  { id: "operation", labelKey: "logsExplorer.tabOperation" },
+  { id: "event", labelKey: "logsExplorer.tabEvent" },
+  { id: "run", labelKey: "logsExplorer.tabRun" },
+  { id: "terminal", labelKey: "logsExplorer.tabTerminal" },
+];
 
 export default function LogsPage() {
-  const tenant = useTenant();
+  const { t } = useI18n();
+  const [tab, setTab] = useState<LogTab>("operation");
+
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
-      <ViewHeader
-        title="Logs"
-        subtitle="Per-run logs are streamed via SSE on each run detail page (`/v1/runs/:runId/logs?follow=1`). A workspace-wide log explorer is not yet wired up."
-      />
+      <ViewHeader title={t("nav.logs")} subtitle={t("logsExplorer.subtitle")} />
+
+      {/* Tab bar */}
       <div
         style={{
-          flex: 1,
           display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          padding: 32,
+          gap: 0,
+          borderBottom: "1px solid var(--border)",
+          padding: "0 24px",
+          flexShrink: 0,
         }}
       >
-        <div style={{ maxWidth: 480 }}>
-          <Empty
-            title="Log explorer pending"
-            hint={`File-backed logs live under data/logs/${tenant}/ (events ndjson + per-run .log files). The tree view + grep/tail UI is on the roadmap — for now, open a run from the Runs view to follow its log over SSE in real time.`}
-          />
-          <div style={{ display: "flex", justifyContent: "center", marginTop: 16 }}>
-            <Link
-              href={`/portal/${tenant}/runs` as never}
-              style={{ textDecoration: "none" }}
-            >
-              <Button icon="external" small>
-                Go to Runs
-              </Button>
-            </Link>
-          </div>
-        </div>
+        {TABS.map((tb) => (
+          <button
+            key={tb.id}
+            onClick={() => setTab(tb.id)}
+            style={{
+              padding: "10px 16px",
+              fontSize: 12,
+              fontFamily: "var(--mono)",
+              textTransform: "uppercase",
+              letterSpacing: "0.08em",
+              color: tab === tb.id ? "var(--text)" : "var(--text-3)",
+              borderBottom: `2px solid ${tab === tb.id ? "var(--signal)" : "transparent"}`,
+              marginBottom: -1,
+              cursor: "pointer",
+              background: "none",
+            }}
+          >
+            {t(tb.labelKey)}
+          </button>
+        ))}
+      </div>
+
+      {/* Active facet */}
+      <div style={{ flex: 1, minHeight: 0, overflow: "hidden", display: "flex" }}>
+        {tab === "operation" && <OperationLogTab />}
+        {tab === "event" && <EventLogTab />}
+        {tab === "run" && <RunLogTab />}
+        {tab === "terminal" && <TerminalLogTab />}
       </div>
     </div>
   );
 }
-

@@ -64,6 +64,7 @@ import {
   isReservedSlug,
 } from "@agentic/contracts";
 import { requireAuth } from "../../plugins/auth";
+import { requirePermission } from "../../plugins/rbac";
 import {
   getTenantDetail,
   listTenantsWithCounts,
@@ -72,10 +73,11 @@ import {
   tenantSlugExists,
 } from "../../queries/tenants";
 // P5-TEN-01 — the dynamic Inngest re-register hook may not exist in every
-// HEAD checkout (`reregisterInngest` lives in services/inngest-registry but
-// the underlying `rebuildTenantFns` ships in a follow-on PR). We import it
-// lazily and degrade to "next manifest deploy will pick it up" rather than
-// crashing the create handler if the export is missing.
+// `reregisterInngest` lives in services/inngest-registry and now drives a real
+// rebuild (`bootstrapRuntime` exports `rebuildTenantFns` + seeds the mutable
+// serve handler). We still import it lazily and degrade to "next manifest
+// deploy will pick it up" rather than crashing the handler if the export is
+// missing — defensive against partial boots / future refactors.
 
 async function safeReregisterInngest(): Promise<number | null> {
   try {
@@ -530,7 +532,8 @@ export async function tenantsRoutes(app: FastifyInstance): Promise<void> {
 
   // ── POST /v1/tenants ───────────────────────────────────────────────────
   app.post("/tenants", async (req, reply) => {
-    const auth = requireAuth(req);
+    // P6-AUTH — creating a tenant is a platform-superadmin operation.
+    const auth = requirePermission(req, "platform.tenants.create");
     const body = TenantCreateBody.parse(req.body);
 
     // Defense in depth: the Zod superRefine catches reserved slugs, but we
@@ -596,6 +599,20 @@ export async function tenantsRoutes(app: FastifyInstance): Promise<void> {
         return reply.fail("tenant_not_found", `no tenant with slug "${slug}"`, 404);
       }
 
+      // P6-AUTH — updating tenant attributes requires admin of THIS tenant or
+      // a platform superadmin. (requirePermission checks the *active* tenant,
+      // but the tenants page edits arbitrary rows, so we check :slug directly.)
+      if (auth.platformRole !== "superadmin") {
+        const m = db
+          .select({ role: memberships.role })
+          .from(memberships)
+          .where(and(eq(memberships.userId, auth.userId ?? ""), eq(memberships.tenantId, row.id)))
+          .all()[0];
+        if (m?.role !== "admin") {
+          return reply.fail("forbidden", "must be an admin of this tenant", 403);
+        }
+      }
+
       const now = new Date();
       const update: Partial<typeof tenants.$inferInsert> = { updatedAt: now };
       if (body.name !== undefined) update.name = body.name;
@@ -640,7 +657,8 @@ export async function tenantsRoutes(app: FastifyInstance): Promise<void> {
   app.delete<{ Params: { slug: string } }>(
     "/tenants/:slug",
     async (req, reply) => {
-      const auth = requireAuth(req);
+      // P6-AUTH — archiving a tenant is a platform-superadmin operation.
+      const auth = requirePermission(req, "platform.tenants.archive");
       const slug = req.params.slug;
       const body = TenantArchiveBody.parse(req.body ?? {});
 
@@ -722,7 +740,8 @@ export async function tenantsRoutes(app: FastifyInstance): Promise<void> {
   app.post<{ Params: { slug: string } }>(
     "/tenants/:slug/restore",
     async (req, reply) => {
-      const auth = requireAuth(req);
+      // P6-AUTH — restoring a tenant is a platform-superadmin operation.
+      const auth = requirePermission(req, "platform.tenants.archive");
       const slug = req.params.slug;
       const body = TenantRestoreBody.parse(req.body ?? {});
 

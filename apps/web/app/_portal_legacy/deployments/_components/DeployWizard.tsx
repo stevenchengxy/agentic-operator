@@ -340,7 +340,7 @@ function CodeStep() {
   return (
     <div>
       <Lbl>1 · From your shell</Lbl>
-      <Code>{`$ curl -X POST http://localhost:3501/v1/agents \\
+      <Code>{`$ curl -X POST http://localhost:3540/v1/agents \\
     -H "Content-Type: application/json" \\
     -d @workflow.json
 
