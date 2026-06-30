@@ -130,7 +130,7 @@ export function EventGraph({
                 {sc && (
                   <g transform={`translate(${p.x + AW / 2 - 34},${-AH / 2 + p.y - 8})`}>
                     <rect width={40} height={16} rx={8} fill={sc.regression ? "var(--red)" : "var(--green)"} />
-                    <text x={20} y={11} textAnchor="middle" fontSize={9} fontWeight={700} fill="#fff">{sc.delta >= 0 ? "▲" : "▼"}{Math.abs(sc.delta)}</text>
+                    <text x={20} y={11} textAnchor="middle" fontSize={9} fontWeight={700} fill="var(--on-accent)">{sc.delta >= 0 ? "▲" : "▼"}{Math.abs(sc.delta)}</text>
                   </g>
                 )}
                 <title>{n.title}{sc ? ` · 评分 ${sc.next}（${sc.delta >= 0 ? "+" : ""}${sc.delta}）` : ""}</title>
