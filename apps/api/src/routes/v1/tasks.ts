@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { eq } from "drizzle-orm";
 import { getDb, tasks } from "@agentic/db";
-import { inngest } from "@agentic/runtime";
+import { getTenantInngest } from "@agentic/runtime";
 import { ResolveTaskBody } from "@agentic/contracts";
 import { requireAuth } from "../../plugins/auth";
 import { requirePermission } from "../../plugins/rbac";
@@ -42,8 +42,12 @@ export async function tasksRoutes(app: FastifyInstance) {
       // agent's `step.waitForEvent` can pin the predicate to the issuing
       // tenant. Without this, a leaked taskId in tenant A would let an
       // attacker resume tenant B's HITL flow.
-      await inngest.send({
-        name: "task.resolved",
+      // Per-tenant app: send on THIS tenant's client with the tenant-namespaced
+      // name `${slug}/task.resolved`. Lockstep with the waitForEvent in
+      // `packages/runtime/src/register.ts` — both the name AND the client must
+      // match the waiting function's app, or HITL resume hangs to timeout.
+      await getTenantInngest(auth.tenantSlug).send({
+        name: `${auth.tenantSlug}/task.resolved` as `${string}/${string}`,
         data: {
           taskId: req.params.id,
           tenantId: auth.tenantId,

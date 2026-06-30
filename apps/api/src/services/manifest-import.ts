@@ -538,6 +538,14 @@ function loadLiveSnapshot(ctx: TenantCtx): LiveSnapshot {
   };
 }
 
+/** The tenant's current LIVE workflow agents (the raw committed manifest array). Exported
+ *  for the factory's draft-promotion merge: promoting agents must be ADDITIVE — keep all of
+ *  the tenant's existing agents and only add/replace by id — never clobber the live workflow
+ *  the way a throwaway sandbox tenant can be replaced. Empty array for a first-time tenant. */
+export function loadLiveManifest(ctx: TenantCtx): unknown[] {
+  return loadLiveSnapshot(ctx).agents as unknown[];
+}
+
 function liveSnapshotForLint(live: LiveSnapshot): LiveWorkflowSnapshot {
   const events = new Set<string>();
   for (const a of live.agents) {

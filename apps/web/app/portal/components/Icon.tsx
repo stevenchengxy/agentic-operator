@@ -39,6 +39,8 @@ export type IconName =
   | "dot"
   | "git"
   | "code"
+  | "trash"
+  | "library"
   | "upload"
   | "tenant"
   | "moon"
@@ -69,6 +71,16 @@ export function Icon({ name, size = 14, color, style }: IconProps) {
   };
 
   switch (name) {
+    case "library":
+      return (
+        <svg style={s} viewBox="0 0 16 16" aria-hidden="true">
+          <g {...common}>
+            <path d="M8 2 L14 5 L8 8 L2 5 Z" />
+            <path d="M2 8 L8 11 L14 8" />
+            <path d="M2 11 L8 14 L14 11" />
+          </g>
+        </svg>
+      );
     case "dashboard":
       return (
         <svg style={s} viewBox="0 0 16 16" aria-hidden="true">
@@ -312,6 +324,14 @@ export function Icon({ name, size = 14, color, style }: IconProps) {
           <g {...common}>
             <path d="M8 2 V11 M4.5 5.5 L8 2 L11.5 5.5" />
             <path d="M2.5 13 H13.5" />
+          </g>
+        </svg>
+      );
+    case "trash":
+      return (
+        <svg style={s} viewBox="0 0 16 16" aria-hidden="true">
+          <g {...common}>
+            <path d="M3 4 H13 M6.5 4 V2.5 H9.5 V4 M4.5 4 L5 13.2 H11 L11.5 4 M6.7 6.5 V11 M9.3 6.5 V11" />
           </g>
         </svg>
       );

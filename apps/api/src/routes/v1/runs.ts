@@ -1,8 +1,8 @@
 import type { FastifyInstance } from "fastify";
 import { readFile } from "node:fs/promises";
-import { eq } from "drizzle-orm";
-import { agents, events, getDb, runs } from "@agentic/db";
-import { inngest } from "@agentic/runtime";
+import { and, desc, eq } from "drizzle-orm";
+import { agents, events, getDb, runs, tasks } from "@agentic/db";
+import { getTenantInngest } from "@agentic/runtime";
 import { makeId } from "@agentic/shared";
 import { ListRunsQuery } from "@agentic/contracts";
 import { requireAuth } from "../../plugins/auth";
@@ -20,6 +20,7 @@ export async function runsRoutes(app: FastifyInstance) {
       status: q.status,
       agentName: q.agent,
       query: q.q,
+      parentRunId: q.parentRunId,
     });
     return reply.ok(rows);
   });
@@ -37,7 +38,21 @@ export async function runsRoutes(app: FastifyInstance) {
     const run = await getRun(auth.tenantSlug, req.params.id);
     if (!run) return reply.fail("not_found", "run not found", 404);
     const steps = await listSteps(run.id);
-    return reply.ok({ run, steps });
+    // HITL: if the run is blocked on an open human task, surface it so the
+    // run viewer can show a "waiting for approval" state + deep-link instead
+    // of looking stalled. Newest open task wins.
+    const waiting = getDb()
+      .select({
+        id: tasks.id,
+        title: tasks.title,
+        awaitingRole: tasks.awaitingRole,
+        createdAt: tasks.createdAt,
+      })
+      .from(tasks)
+      .where(and(eq(tasks.runId, run.id), eq(tasks.status, "open")))
+      .orderBy(desc(tasks.createdAt))
+      .all()[0];
+    return reply.ok({ run, steps, waitingTask: waiting ?? null });
   });
 
   // POST /v1/runs/:id/replay
@@ -79,7 +94,7 @@ export async function runsRoutes(app: FastifyInstance) {
       }
 
       const newEventId = makeId("evt");
-      await inngest.send({
+      await getTenantInngest(auth.tenantSlug).send({
         name: `${auth.tenantSlug}/${evt.name}` as `${string}/${string}`,
         data: {
           ...payload,
@@ -193,7 +208,7 @@ export async function runsRoutes(app: FastifyInstance) {
         try {
           // Resolve tenant slug for the namespaced event name. Cached at
           // the auth context so this is a no-op lookup in practice.
-          await inngest.send({
+          await getTenantInngest(auth.tenantSlug).send({
             name: `${auth.tenantSlug}/run.cancel` as `${string}/${string}`,
             data: {
               runId: run.id,

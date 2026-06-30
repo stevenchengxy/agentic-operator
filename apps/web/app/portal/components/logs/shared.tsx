@@ -8,6 +8,7 @@
 
 import type { ReactNode } from "react";
 import { fmtAgo } from "@/lib/format";
+import { CodeBlock, Icon } from "@/app/portal/components";
 
 /** Full-height column: a sticky toolbar over a single scroll region. */
 export function LogPane({
@@ -131,5 +132,115 @@ export function TimeCell({ ms }: { ms: number }) {
     <span style={monoStyle} title={new Date(ms).toLocaleString()}>
       {fmtAgo(ms)}
     </span>
+  );
+}
+
+// ─── Expand-to-detail scaffolding ────────────────────────────────────────────
+// Every log row can be opened to reveal the FULL record (complete JSON /
+// payload / metadata), not the truncated table summary.
+
+/** A chevron in the row's lead column signalling expandability. */
+export function ExpandCaret({ open }: { open: boolean }) {
+  return (
+    <Icon
+      name={open ? "chevron-down" : "chevron-right"}
+      size={11}
+      style={{ color: "var(--text-3)" }}
+    />
+  );
+}
+
+/** A row whose <td> spans the whole table to host the expanded detail. */
+export function DetailCell({
+  colSpan,
+  children,
+}: {
+  colSpan: number;
+  children: ReactNode;
+}) {
+  return (
+    <tr>
+      <td
+        colSpan={colSpan}
+        style={{
+          padding: 0,
+          background: "var(--bg-2)",
+          borderBottom: "1px solid var(--border)",
+        }}
+      >
+        <div
+          style={{
+            padding: "12px 18px 16px 38px",
+            display: "flex",
+            flexDirection: "column",
+            gap: 10,
+          }}
+          className="rise"
+        >
+          {children}
+        </div>
+      </td>
+    </tr>
+  );
+}
+
+/** A labelled value line inside a detail block. */
+export function Field({
+  label,
+  children,
+}: {
+  label: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <div style={{ display: "flex", gap: 10, alignItems: "baseline", flexWrap: "wrap" }}>
+      <span
+        style={{
+          fontSize: 9.5,
+          fontFamily: "var(--mono)",
+          textTransform: "uppercase",
+          letterSpacing: "0.08em",
+          color: "var(--text-3)",
+          minWidth: 96,
+        }}
+      >
+        {label}
+      </span>
+      <span style={{ fontSize: 12, color: "var(--text)", fontFamily: "var(--mono)", wordBreak: "break-all" }}>
+        {children}
+      </span>
+    </div>
+  );
+}
+
+/** Pretty-printed JSON (or a muted dash for empty values). */
+export function JsonView({ label, value }: { label?: ReactNode; value: unknown }) {
+  const empty =
+    value == null ||
+    (typeof value === "object" && Object.keys(value as object).length === 0);
+  return (
+    <div>
+      {label && (
+        <div
+          style={{
+            fontSize: 9.5,
+            fontFamily: "var(--mono)",
+            textTransform: "uppercase",
+            letterSpacing: "0.08em",
+            color: "var(--text-3)",
+            marginBottom: 4,
+          }}
+        >
+          {label}
+        </div>
+      )}
+      {empty ? (
+        <span style={{ ...monoStyle, color: "var(--text-4)" }}>—</span>
+      ) : (
+        <CodeBlock>
+          {typeof value === "string" ? value : JSON.stringify(value, null, 2)}
+        </CodeBlock>
+      )}
+    </div>
   );
 }

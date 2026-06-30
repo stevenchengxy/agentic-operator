@@ -79,11 +79,26 @@ import {
 // deploy will pick it up" rather than crashing the handler if the export is
 // missing — defensive against partial boots / future refactors.
 
-async function safeReregisterInngest(): Promise<number | null> {
+async function safeReregisterInngest(slug?: string): Promise<number | null> {
   try {
     const mod = await import("../../services/inngest-registry");
     if (typeof mod.reregisterInngest !== "function") return null;
-    const out = await mod.reregisterInngest({ scope: "tenant" });
+    // Scoped to one tenant app when a slug is given (create / archive / restore
+    // only touch that tenant) — rebuilds + re-serves just `agentic-operator-
+    // <slug>`, never the whole fleet. No slug → full rebuild (legacy callers).
+    const out = await mod.reregisterInngest(
+      slug ? { tenantSlug: slug, scope: "tenant" } : { scope: "tenant" },
+    );
+    // Push the (new / now-empty) app to the Inngest server so its
+    // online/offline + functionCount reflects the change. Best-effort.
+    if (slug) {
+      try {
+        const sync = await import("../../services/inngest-sync");
+        await sync.syncTenantApp(slug);
+      } catch {
+        /* best-effort: the reconciler / next boot re-syncs */
+      }
+    }
     return out.fnCount;
   } catch {
     return null;
@@ -446,7 +461,7 @@ async function performCreate(
   // but call it so the dynamic loader picks up any pre-staged code dir.
   // safeReregisterInngest() returns null when the hook isn't wired in this
   // build — we still report success to the caller because the row is in.
-  const inngestFnCount = await safeReregisterInngest();
+  const inngestFnCount = await safeReregisterInngest(body.slug);
   if (inngestFnCount === null) {
     req.log.debug?.("[tenants] reregister hook unavailable; deferred to next deploy");
   }
@@ -511,6 +526,46 @@ export async function tenantsRoutes(app: FastifyInstance): Promise<void> {
           tenantSlug: auth.tenantSlug,
           userId: operatorUserId,
         },
+      });
+    },
+  );
+
+  // ── GET /v1/tenants/:slug/inngest-app ──────────────────────────────────
+  // Per-tenant Inngest app status for the SaaS-ops view: the app id + serve
+  // path this api serves locally, plus a live probe of how the Inngest server
+  // sees it (connected / functionCount / error). `online` = the local app
+  // serves ≥1 function; an archived / all-disabled tenant reads `offline`.
+  app.get<{ Params: { slug: string } }>(
+    "/tenants/:slug/inngest-app",
+    async (req, reply) => {
+      requireAuth(req);
+      const slug = req.params.slug;
+      if (!TENANT_SLUG_REGEX.test(slug)) {
+        return reply.fail("invalid_slug", `slug "${slug}" is malformed`, 400);
+      }
+      const { appIdForTenant } = await import("@agentic/runtime");
+      const reg = await import("../../services/inngest-registry");
+      const sync = await import("../../services/inngest-sync");
+      const appId = appIdForTenant(slug);
+      const local = reg
+        .listRegisteredApps()
+        .find((a) => a.appId === appId);
+      if (!local) {
+        return reply.fail(
+          "app_not_registered",
+          `no Inngest app registered for tenant "${slug}"`,
+          404,
+        );
+      }
+      const probe = await sync.probeApp(appId);
+      return reply.ok({
+        slug,
+        appId,
+        servePath: local.servePath,
+        serveOrigin: sync.serveOrigin(),
+        localFnCount: local.fnCount,
+        status: local.fnCount > 0 ? "online" : "offline",
+        inngest: probe,
       });
     },
   );
@@ -727,7 +782,7 @@ export async function tenantsRoutes(app: FastifyInstance): Promise<void> {
           .run();
       });
 
-      await safeReregisterInngest();
+      await safeReregisterInngest(slug);
 
       return reply.ok({
         slug,
@@ -786,7 +841,7 @@ export async function tenantsRoutes(app: FastifyInstance): Promise<void> {
           .run();
       });
 
-      await safeReregisterInngest();
+      await safeReregisterInngest(slug);
 
       const detail = await getTenantDetail(slug, {
         forUserId: resolveOperatorUserId(),

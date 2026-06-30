@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { readFile } from "node:fs/promises";
 import { and, eq } from "drizzle-orm";
-import { appendToLedger, inngest } from "@agentic/runtime";
+import { appendToLedger, getTenantInngest } from "@agentic/runtime";
 import { events, eventTypes, getDb } from "@agentic/db";
 import { makeId } from "@agentic/shared";
 import { IngestEventBody, ListEventsQuery } from "@agentic/contracts";
@@ -116,7 +116,7 @@ export async function eventsRoutes(app: FastifyInstance) {
       inngestData.__test = true;
     }
 
-    await inngest.send({
+    await getTenantInngest(auth.tenantSlug).send({
       name: tenantNamespacedName as `${string}/${string}`,
       data: inngestData,
     });
@@ -203,7 +203,7 @@ export async function eventsRoutes(app: FastifyInstance) {
       // collide on the legacy `${id}-replay-${Date.now()}` pattern.
       const newId = makeId("evt");
       try {
-        await inngest.send({
+        await getTenantInngest(auth.tenantSlug).send({
           name: `${auth.tenantSlug}/${row.name}` as `${string}/${string}`,
           data: {
             ...((payload as Record<string, unknown>) ?? {}),

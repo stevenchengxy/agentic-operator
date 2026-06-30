@@ -15,6 +15,8 @@ export interface PanelProps {
   style?: CSSProperties;
   padded?: boolean;
   scroll?: boolean;
+  /** Pass-through for animation/hover utility classes (see global.css). */
+  className?: string;
 }
 
 export function Panel({
@@ -25,9 +27,13 @@ export function Panel({
   style,
   padded = true,
   scroll = false,
+  className,
 }: PanelProps) {
   return (
     <section
+      // Every panel fades/rises in on mount so all views share the dashboard's
+      // entrance motion; callers can append `dash-card` for hover-lift etc.
+      className={className ? `rise ${className}` : "rise"}
       style={{
         background: "var(--panel)",
         border: "1px solid var(--border)",

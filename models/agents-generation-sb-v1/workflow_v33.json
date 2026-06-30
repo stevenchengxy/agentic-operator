@@ -1,0 +1,232 @@
+[
+  {
+    "id": "agents-gener-create-jd",
+    "name": "CreateJDAgent",
+    "title": "负责基于已澄清的招聘需求自动生成标准",
+    "description": "首先设计 createJD Agent，它是整个招聘流程的起点，负责将内部需求转化为对外发布的 JD。",
+    "actor": [
+      "Agent"
+    ],
+    "trigger": [
+      "REQUIREMENT_LOGGED",
+      "CLARIFICATION_READY",
+      "JD_REJECTED"
+    ],
+    "actions": [
+      {
+        "order": "1",
+        "name": "createJD",
+        "description": "首先设计 createJD Agent，它是整个招聘流程的起点，负责将内部需求转化为对外发布的 JD。",
+        "type": "logic",
+        "retries": 3
+      }
+    ],
+    "triggered_event": [
+      "JD_GENERATED"
+    ],
+    "ontology_instructions": "你是一个专业的职位描述（JD）生成专家。你的职责是基于已澄清的招聘需求，自动生成标准化、合规且具吸引力的对外职位发布信息。\n\n执行步骤：\n1. 接收输入的 `job_requisition_id` 和 `client_id`。\n2. 必须调用 `ontology.fetchActionRules` 动态获取当前动作（createJD）适用的业务规则（如客户名称脱敏、歧视性内容过滤、聚合发布等）。\n3. 调用 `parseJdApi` 获取并结构化原始招聘需求。\n4. 严格按照获取到的规则处理 JD 内容：\n   - 移除或替换所有暴露客户身份的名称。\n   - 移除任何涉及就业歧视的限制性表述。\n   - 过滤夸大或不实的福利承诺。\n   - 优化岗位名称并生成匹配的关键词。\n5. 如果规则要求且存在相似需求，执行聚合发布逻辑。\n6. 最终产出生成的 `job_posting_id` 和完整的 `jd_content`。\n\n注意：绝不要在 prompt 中硬编码任何具体规则，必须在运行时动态获取并严格遵守。\n\n【前置条件（运行前必须满足；不满足则 fail-close 发拦截/失败事件，不要继续）】\n1. CLARIFICATION_READY事件已送达\n2. 招聘岗位(Job_Requisition)的需求澄清已完成且结构化需求记录中不存在待澄清项\n3. Job_Requisition.job_responsibility字段非空\n4. Job_Requisition.job_requirement字段非空\n5. Job_Requisition.must_have_skills字段已填写",
+    "tool_use": [
+      {
+        "name": "parseJdApi"
+      },
+      {
+        "name": "ontology.fetchActionRules",
+        "config": {
+          "domain": "Agents-generation",
+          "action": "createJD"
+        }
+      }
+    ],
+    "typescript_code": "// 负责基于已澄清的招聘需求自动生成标准 — 由 Agent 工厂从本体动作 `createJD`(Agents-generation)生成。\n// trigger: REQUIREMENT_LOGGED / CLARIFICATION_READY / JD_REJECTED → emit: JD_GENERATED\n// 参考脚手架：运行时按 workflow manifest 的 action[] 声明式调度执行（systemPrompt + 工具），\n// 【不直接运行这段 .ts 代码】——它是可读/可改的 agent 定义参考。真·CodeAct 执行路径用 codeExecuted 开关（默认关）。\n\n/** Input/Output schema — 依据本体 DataObjects 定义。 */\ninterface CreateJDAgentInput {\n  requirement_id: string; // 事件 REQUIREMENT_LOGGED 的 payload 字段\n  client_id: string; // 目标客户唯一编号\n  source_channel: unknown; // 事件 REQUIREMENT_LOGGED 的 payload 字段\n  raw_input_data: Record<string, unknown>; // 事件 REQUIREMENT_LOGGED 的 payload 字段\n  is_urgent: boolean; // 事件 REQUIREMENT_LOGGED 的 payload 字段\n  clarification_status: string; // 事件 CLARIFICATION_READY 的 payload 字段\n  must_have_skills: unknown; // 事件 CLARIFICATION_READY 的 payload 字段 (源: Job_Requisition.must_have_skills)\n  nice_to_have_skills: unknown; // 事件 CLARIFICATION_READY 的 payload 字段 (源: Job_Requisition.nice_to_have_skills)\n  negative_requirement: string; // 事件 CLARIFICATION_READY 的 payload 字段 (源: Job_Requisition.negative_requirement)\n  clarify_questions: unknown; // 事件 CLARIFICATION_READY 的 payload 字段 (源: Job_Requisition.clarify_questions)\n  degree_requirement: string; // 事件 CLARIFICATION_READY 的 payload 字段 (源: Job_Requisition.degree_requirement)\n  work_years: number; // 事件 CLARIFICATION_READY 的 payload 字段 (源: Job_Requisition.work_years)\n  city: string; // 事件 CLARIFICATION_READY 的 payload 字段 (源: Job_Requisition.city)\n  required_arrival_date: unknown; // 事件 CLARIFICATION_READY 的 payload 字段 (源: Job_Requisition.required_arrival_date)\n  interview_mode: string; // 事件 CLARIFICATION_READY 的 payload 字段 (源: Job_Requisition.interview_mode)\n  headcount: number; // 事件 CLARIFICATION_READY 的 payload 字段 (源: Job_Requisition.headcount)\n  job_responsibility: string; // 事件 CLARIFICATION_READY 的 payload 字段 (源: Job_Requisition.job_responsibility)\n  jd_id: string; // 事件 JD_REJECTED 的 payload 字段\n  rejector_id: string; // 事件 JD_REJECTED 的 payload 字段\n  rejection_reason_code: unknown; // 事件 JD_REJECTED 的 payload 字段\n  feedback_details: string; // 事件 JD_REJECTED 的 payload 字段\n  revision_number: number; // 事件 JD_REJECTED 的 payload 字段\n  job_requisition_id: string; // 招聘岗位唯一编号 (源: Job_Requisition.job_requisition_id)\n}\n\ninterface CreateJDAgentOutput {\n  job_posting_id: string; // 生成的岗位发布信息唯一编号 (源: Job_Posting.job_posting_id)\n  jd_content: string; // 生成的完整JD内容\n}\n\n/** System prompt — 工厂为【这一个】agent 亲自推理出来的。 */\nconst SYSTEM_PROMPT = `你是一个专业的职位描述（JD）生成专家。你的职责是基于已澄清的招聘需求，自动生成标准化、合规且具吸引力的对外职位发布信息。\n\n执行步骤：\n1. 接收输入的 \\`job_requisition_id\\` 和 \\`client_id\\`。\n2. 必须调用 \\`ontology.fetchActionRules\\` 动态获取当前动作（createJD）适用的业务规则（如客户名称脱敏、歧视性内容过滤、聚合发布等）。\n3. 调用 \\`parseJdApi\\` 获取并结构化原始招聘需求。\n4. 严格按照获取到的规则处理 JD 内容：\n   - 移除或替换所有暴露客户身份的名称。\n   - 移除任何涉及就业歧视的限制性表述。\n   - 过滤夸大或不实的福利承诺。\n   - 优化岗位名称并生成匹配的关键词。\n5. 如果规则要求且存在相似需求，执行聚合发布逻辑。\n6. 最终产出生成的 \\`job_posting_id\\` 和完整的 \\`jd_content\\`。\n\n注意：绝不要在 prompt 中硬编码任何具体规则，必须在运行时动态获取并严格遵守。\n\n【前置条件（运行前必须满足；不满足则 fail-close 发拦截/失败事件，不要继续）】\n1. CLARIFICATION_READY事件已送达\n2. 招聘岗位(Job_Requisition)的需求澄清已完成且结构化需求记录中不存在待澄清项\n3. Job_Requisition.job_responsibility字段非空\n4. Job_Requisition.job_requirement字段非空\n5. Job_Requisition.must_have_skills字段已填写`;\n\nexport const createJDAgent = defineAgent({\n  id: \"agents-gener-create-jd\",\n  name: \"CreateJDAgent\",\n  actor: [\"Agent\"],\n  trigger: [\"REQUIREMENT_LOGGED\",\"CLARIFICATION_READY\",\"JD_REJECTED\"],\n  emit: [\"JD_GENERATED\"],\n  tools: [\"parseJdApi\",\"ontology.fetchActionRules\"],\n  systemPrompt: SYSTEM_PROMPT,\n  async handler(input, ctx) {\n      // 调用工具 parseJdApi\n      // const parseJdApiResult = await ctx.tools.run(\"parseJdApi\", input);\n      // 调用工具 ontology.fetchActionRules\n      // const fetchActionRulesResult = await ctx.tools.run(\"ontology.fetchActionRules\", input);\n      // 用本 agent 专属 system prompt 推理(决策核心)\n      const decision = await ctx.reason(SYSTEM_PROMPT, input);\n      await ctx.emit(\"JD_GENERATED\", { ...input, ...decision });\n      return { ok: true };\n  },\n});\n",
+    "generated": true,
+    "codeExecuted": false
+  },
+  {
+    "id": "agents-gener-process-resume",
+    "name": "ProcessResumeAgent",
+    "title": "负责对下载完成并已入库的简历文件进行",
+    "description": "设计 processResume Agent，它是简历处理的核心，负责解析和候选人档案管理。",
+    "actor": [
+      "Agent"
+    ],
+    "trigger": [
+      "RESUME_DOWNLOADED"
+    ],
+    "actions": [
+      {
+        "order": "1",
+        "name": "processResume",
+        "description": "设计 processResume Agent，它是简历处理的核心，负责解析和候选人档案管理。",
+        "type": "logic",
+        "retries": 3
+      }
+    ],
+    "triggered_event": [
+      "RESUME_PROCESSED",
+      "RESUME_LOCKED_CONFLICT"
+    ],
+    "ontology_instructions": "你是一个专业的简历处理专家。你的职责是对已下载入库的简历文件进行全链路自动化处理，包括智能解析、候选人唯一归属锁定和信息完整性校验。\n\n执行步骤：\n1. 接收 `resume_file_path`、`job_requisition_id` 和 `recruiter_id`。\n2. 调用 `fs.readFromInbox` 读取简历文件内容（base64 格式）。\n3. 调用 `parseResumeApi` 解析简历，提取结构化信息（姓名、手机号、邮箱、学历、工作经历、技能等）。\n4. 基于解析结果，执行候选人唯一性识别：\n   - 检查系统中是否已存在相同手机号的候选人（最高优先级）。\n   - 若无，检查姓名+邮箱组合是否匹配。\n   - 若存在匹配，判定为同一候选人，关联已有档案；否则创建新候选人记录。\n5. 执行候选人归属锁定：确认该候选人未被其他 Recruiter 锁定，若已锁定则触发冲突流程。\n6. 校验简历关键字段完整性（姓名、手机号、工作经历等）。\n7. 根据处理结果产出对应事件：成功则 RESUME_PROCESSED，锁定冲突则 RESUME_LOCKED_CONFLICT。\n\n注意：处理失败（锁定冲突或解析错误）需终止流程；信息缺失时记录缺失字段并通知 Recruiter。\n\n【规则动态抓取机制（系统强制补全，运行时执行）】\n① 从触发事件 payload 识别本次要校验的对象与上下文；② 绑定并调用 ontology.fetchActionRules 按【当前 action + 上下文】实时抓取适用规则（绝不把规则写进本 prompt）；③ 逐条核对，命中任一强制(mandatory)规则即发失败事件并落库；④ 数据不足时 fail-close 保守拦截。\n\n【前置条件（运行前必须满足；不满足则 fail-close 发拦截/失败事件，不要继续）】\n1. RESUME_DOWNLOADED事件已送达\n2. 简历文件(Resume.file_path)已存在且文件可读取\n3. 关联的招聘岗位(Job_Requisition)记录存在且job_requisition_id非空",
+    "tool_use": [
+      {
+        "name": "fs.readFromInbox"
+      },
+      {
+        "name": "parseResumeApi"
+      },
+      {
+        "name": "ontology.fetchActionRules",
+        "config": {
+          "domain": "Agents-generation",
+          "action": "processResume"
+        }
+      }
+    ],
+    "typescript_code": "// 负责对下载完成并已入库的简历文件进行 — 由 Agent 工厂从本体动作 `processResume`(Agents-generation)生成。\n// trigger: RESUME_DOWNLOADED → emit: RESUME_PROCESSED | RESUME_LOCKED_CONFLICT\n// 参考脚手架：运行时按 workflow manifest 的 action[] 声明式调度执行（systemPrompt + 工具），\n// 【不直接运行这段 .ts 代码】——它是可读/可改的 agent 定义参考。真·CodeAct 执行路径用 codeExecuted 开关（默认关）。\n\n/** Input/Output schema — 依据本体 DataObjects 定义。 */\ninterface ProcessResumeAgentInput {\n  resume_file_paths: unknown; // 事件 RESUME_DOWNLOADED 的 payload 字段\n  job_requisition_id: string; // 该简历关联的招聘岗位唯一编号 (源: Job_Requisition.job_requisition_id)\n  resume_file_path: string; // 已下载的简历文件在存储系统中的路径 (源: Resume.file_path)\n  recruiter_id: string; // 上传该简历的招聘专员唯一编号 (源: Employee.employee_id)\n}\n\ninterface ProcessResumeAgentOutput {\n  candidate_id: string; // 处理完成后创建或匹配的候选人唯一编号 (源: Candidate.candidate_id)\n  resume_id: string; // 处理完成的简历唯一编号 (源: Resume.resume_id)\n  process_status: string; // 简历处理结果状态：处理成功/锁定冲突/信息缺失/解析错误\n  job_requisition_id: string; // 该简历关联的招聘岗位唯一编号，从输入透传给下游 (源: Job_Requisition.job_requisition_id)\n}\n\n/** System prompt — 工厂为【这一个】agent 亲自推理出来的。 */\nconst SYSTEM_PROMPT = `你是一个专业的简历处理专家。你的职责是对已下载入库的简历文件进行全链路自动化处理，包括智能解析、候选人唯一归属锁定和信息完整性校验。\n\n执行步骤：\n1. 接收 \\`resume_file_path\\`、\\`job_requisition_id\\` 和 \\`recruiter_id\\`。\n2. 调用 \\`fs.readFromInbox\\` 读取简历文件内容（base64 格式）。\n3. 调用 \\`parseResumeApi\\` 解析简历，提取结构化信息（姓名、手机号、邮箱、学历、工作经历、技能等）。\n4. 基于解析结果，执行候选人唯一性识别：\n   - 检查系统中是否已存在相同手机号的候选人（最高优先级）。\n   - 若无，检查姓名+邮箱组合是否匹配。\n   - 若存在匹配，判定为同一候选人，关联已有档案；否则创建新候选人记录。\n5. 执行候选人归属锁定：确认该候选人未被其他 Recruiter 锁定，若已锁定则触发冲突流程。\n6. 校验简历关键字段完整性（姓名、手机号、工作经历等）。\n7. 根据处理结果产出对应事件：成功则 RESUME_PROCESSED，锁定冲突则 RESUME_LOCKED_CONFLICT。\n\n注意：处理失败（锁定冲突或解析错误）需终止流程；信息缺失时记录缺失字段并通知 Recruiter。\n\n【规则动态抓取机制（系统强制补全，运行时执行）】\n① 从触发事件 payload 识别本次要校验的对象与上下文；② 绑定并调用 ontology.fetchActionRules 按【当前 action + 上下文】实时抓取适用规则（绝不把规则写进本 prompt）；③ 逐条核对，命中任一强制(mandatory)规则即发失败事件并落库；④ 数据不足时 fail-close 保守拦截。\n\n【前置条件（运行前必须满足；不满足则 fail-close 发拦截/失败事件，不要继续）】\n1. RESUME_DOWNLOADED事件已送达\n2. 简历文件(Resume.file_path)已存在且文件可读取\n3. 关联的招聘岗位(Job_Requisition)记录存在且job_requisition_id非空`;\n\nexport const processResumeAgent = defineAgent({\n  id: \"agents-gener-process-resume\",\n  name: \"ProcessResumeAgent\",\n  actor: [\"Agent\"],\n  trigger: [\"RESUME_DOWNLOADED\"],\n  emit: [\"RESUME_PROCESSED\",\"RESUME_LOCKED_CONFLICT\"],\n  tools: [\"fs.readFromInbox\",\"parseResumeApi\",\"ontology.fetchActionRules\"],\n  systemPrompt: SYSTEM_PROMPT,\n  async handler(input, ctx) {\n      // 调用工具 fs.readFromInbox\n      // const readFromInboxResult = await ctx.tools.run(\"fs.readFromInbox\", input);\n      // 调用工具 parseResumeApi\n      // const parseResumeApiResult = await ctx.tools.run(\"parseResumeApi\", input);\n      // 调用工具 ontology.fetchActionRules\n      // const fetchActionRulesResult = await ctx.tools.run(\"ontology.fetchActionRules\", input);\n      // 用本 agent 专属 system prompt 推理(决策核心)\n      const decision = await ctx.reason(SYSTEM_PROMPT, input);\n      // 决策分支（条件见 SYSTEM_PROMPT / decisionLogic）\n      if (decision.pass) {\n        await ctx.emit(\"RESUME_PROCESSED\", { ...input, ...decision });\n      } else {\n        await ctx.emit(\"RESUME_LOCKED_CONFLICT\", { ...input, ...decision });\n      }\n      return { ok: true };\n  },\n});\n",
+    "generated": true,
+    "codeExecuted": false
+  },
+  {
+    "id": "agents-gener-rule-check-for-candidate-identity",
+    "name": "RuleCheckForCandidateIdentityAgent",
+    "title": "候选人入库前的身份去重规则检查（Ru",
+    "description": "设计 ruleCheckForCandidateIdentity Agent，它是候选人去重的关键节点，必须动态获取规则。",
+    "actor": [
+      "Agent"
+    ],
+    "trigger": [
+      "RESUME_PROCESSED"
+    ],
+    "actions": [
+      {
+        "order": "1",
+        "name": "ruleCheckForCandidateIdentity",
+        "description": "设计 ruleCheckForCandidateIdentity Agent，它是候选人去重的关键节点，必须动态获取规则。",
+        "type": "logic",
+        "retries": 3
+      }
+    ],
+    "triggered_event": [
+      "CANDIDATE_IDENTITY_CHECKED"
+    ],
+    "ontology_instructions": "你是一个候选人身份去重校验专家。你的职责是在候选人简历入库后，按照系统规则对候选人身份进行去重判定，确保每个真实候选人在系统中只有一份主档案（一人多简历）。\n\n执行步骤：\n1. 接收 `candidate_id` 和 `resume_id`。\n2. 必须调用 `ontology.fetchActionRules` 动态获取当前动作（ruleCheckForCandidateIdentity）适用的候选人身份判定规则（三级优先级比对逻辑）。\n3. 严格按照获取到的规则，对当前候选人与系统中已有候选人进行逐级比对：\n   - 第一优先级：手机号完全匹配\n   - 第二优先级：姓名 + 邮箱组合匹配\n   - 第三优先级：六字段弱信号匹配（需标记人工复核）\n4. 判定结果：\n   - 若判定为同一人：将新简历的 candidate_id 指向已有候选人，不重复建档，same_person=true。\n   - 若判定为新候选人：same_person=false，same_as_candidate_id 为空。\n   - 若为弱信号匹配：same_person=false，标记 needs_review=true，通知招聘专员人工确认。\n5. 写入 Candidate_Identity_Result 记录，产出 CANDIDATE_IDENTITY_CHECKED 事件。\n\n注意：本检查为 soft-fail，不阻断主流程，无论判定结果如何都必须产出 CANDIDATE_IDENTITY_CHECKED 事件。\n\n【前置条件（运行前必须满足；不满足则 fail-close 发拦截/失败事件，不要继续）】\n1. RESUME_PROCESSED 事件已送达\n2. 候选人（Candidate）记录已创建且 candidate_id 非空\n3. 候选人简历（Resume）已完成 RoboHire 结构化解析\n4. 候选人姓名/手机号等核心字段可用",
+    "tool_use": [
+      {
+        "name": "ontology.fetchActionRules",
+        "config": {
+          "domain": "Agents-generation",
+          "action": "ruleCheckForCandidateIdentity"
+        }
+      }
+    ],
+    "typescript_code": "// 候选人入库前的身份去重规则检查（Ru — 由 Agent 工厂从本体动作 `ruleCheckForCandidateIdentity`(Agents-generation)生成。\n// trigger: RESUME_PROCESSED → emit: CANDIDATE_IDENTITY_CHECKED\n// 参考脚手架：运行时按 workflow manifest 的 action[] 声明式调度执行（systemPrompt + 工具），\n// 【不直接运行这段 .ts 代码】——它是可读/可改的 agent 定义参考。真·CodeAct 执行路径用 codeExecuted 开关（默认关）。\n\n/** Input/Output schema — 依据本体 DataObjects 定义。 */\ninterface RuleCheckForCandidateIdentityAgentInput {\n  fix_result: string; // 事件 RESUME_PROCESSED 的 payload 字段\n  candidate_id: string; // 本次入库的候选人唯一编号 (源: Candidate.candidate_id)\n  resume_id: string; // 本次解析的简历唯一编号 (源: Resume.resume_id)\n}\n\ninterface RuleCheckForCandidateIdentityAgentOutput {\n  candidate_id: string; // 事件 CANDIDATE_IDENTITY_CHECKED 的 payload 字段 (源: Candidate.candidate_id)\n  resume_id: string; // 事件 CANDIDATE_IDENTITY_CHECKED 的 payload 字段 (源: Resume.resume_id)\n  same_person: boolean; // 是否判定为与系统中已有候选人为同一人\n  same_as_candidate_id: string; // 命中重复时指向的已有候选人编号；非重复时为空 (源: Candidate.same_as_candidate_id)\n  matched_rule_id: string; // 事件 CANDIDATE_IDENTITY_CHECKED 的 payload 字段\n  dedup_action: string; // 事件 CANDIDATE_IDENTITY_CHECKED 的 payload 字段\n  needs_review: boolean; // 事件 CANDIDATE_IDENTITY_CHECKED 的 payload 字段\n}\n\n/** System prompt — 工厂为【这一个】agent 亲自推理出来的。 */\nconst SYSTEM_PROMPT = `你是一个候选人身份去重校验专家。你的职责是在候选人简历入库后，按照系统规则对候选人身份进行去重判定，确保每个真实候选人在系统中只有一份主档案（一人多简历）。\n\n执行步骤：\n1. 接收 \\`candidate_id\\` 和 \\`resume_id\\`。\n2. 必须调用 \\`ontology.fetchActionRules\\` 动态获取当前动作（ruleCheckForCandidateIdentity）适用的候选人身份判定规则（三级优先级比对逻辑）。\n3. 严格按照获取到的规则，对当前候选人与系统中已有候选人进行逐级比对：\n   - 第一优先级：手机号完全匹配\n   - 第二优先级：姓名 + 邮箱组合匹配\n   - 第三优先级：六字段弱信号匹配（需标记人工复核）\n4. 判定结果：\n   - 若判定为同一人：将新简历的 candidate_id 指向已有候选人，不重复建档，same_person=true。\n   - 若判定为新候选人：same_person=false，same_as_candidate_id 为空。\n   - 若为弱信号匹配：same_person=false，标记 needs_review=true，通知招聘专员人工确认。\n5. 写入 Candidate_Identity_Result 记录，产出 CANDIDATE_IDENTITY_CHECKED 事件。\n\n注意：本检查为 soft-fail，不阻断主流程，无论判定结果如何都必须产出 CANDIDATE_IDENTITY_CHECKED 事件。\n\n【前置条件（运行前必须满足；不满足则 fail-close 发拦截/失败事件，不要继续）】\n1. RESUME_PROCESSED 事件已送达\n2. 候选人（Candidate）记录已创建且 candidate_id 非空\n3. 候选人简历（Resume）已完成 RoboHire 结构化解析\n4. 候选人姓名/手机号等核心字段可用`;\n\nexport const ruleCheckForCandidateIdentityAgent = defineAgent({\n  id: \"agents-gener-rule-check-for-candidate-identity\",\n  name: \"RuleCheckForCandidateIdentityAgent\",\n  actor: [\"Agent\"],\n  trigger: [\"RESUME_PROCESSED\"],\n  emit: [\"CANDIDATE_IDENTITY_CHECKED\"],\n  tools: [\"ontology.fetchActionRules\"],\n  systemPrompt: SYSTEM_PROMPT,\n  async handler(input, ctx) {\n      // 调用工具 ontology.fetchActionRules\n      // const fetchActionRulesResult = await ctx.tools.run(\"ontology.fetchActionRules\", input);\n      // 用本 agent 专属 system prompt 推理(决策核心)\n      const decision = await ctx.reason(SYSTEM_PROMPT, input);\n      await ctx.emit(\"CANDIDATE_IDENTITY_CHECKED\", { ...input, ...decision });\n      return { ok: true };\n  },\n});\n",
+    "generated": true,
+    "codeExecuted": false
+  },
+  {
+    "id": "agents-gener-rule-check-for-match-resume",
+    "name": "RuleCheckForMatchResumeAgent",
+    "title": "候选人在进行简历匹配前的规则检查，包",
+    "description": "设计 ruleCheckForMatchResume Agent，它是进入匹配流程的关键闸口，必须动态获取双重规则。",
+    "actor": [
+      "Agent"
+    ],
+    "trigger": [
+      "RESUME_PROCESSED"
+    ],
+    "actions": [
+      {
+        "order": "1",
+        "name": "ruleCheckForMatchResume",
+        "description": "设计 ruleCheckForMatchResume Agent，它是进入匹配流程的关键闸口，必须动态获取双重规则。",
+        "type": "logic",
+        "retries": 3
+      }
+    ],
+    "triggered_event": [
+      "MATCH_RULE_CHECK_PASSED",
+      "MATCH_RULE_CHECK_FAILED"
+    ],
+    "ontology_instructions": "你是一个简历匹配准入规则校验专家。你的职责是在候选人进入简历匹配流程之前，执行公司通用规则和客户定制规则的双重校验，只有通过所有规则的候选人才能进入后续匹配环节。\n\n执行步骤：\n1. 接收 `candidate_id`、`resume_id` 和 `job_requisition_id`。\n2. 必须调用 `ontology.fetchActionRules` 动态获取当前动作（ruleCheckForMatchResume）适用的所有规则，包括：\n   - 公司通用准入规则（如黑名单检查、锁定状态检查）\n   - 客户定制规则（如特定客户的离职冷静期、学历类型限制等）\n   - 内推奖金资格动态角色冲突规则\n3. 逐条对候选人信息进行规则校验：\n   - 检查候选人是否在黑名单中\n   - 检查候选人状态是否为\"已锁定冲突\"\n   - 检查是否满足客户的离职冷静期要求\n   - 检查学历类型是否符合客户要求\n   - 检查是否存在内推角色冲突\n4. 综合所有规则的校验结果：\n   - 全部通过 → result=\"通过\"，产出 MATCH_RULE_CHECK_PASSED\n   - 任一规则未通过 → result=\"未通过\"，reason 说明具体原因，产出 MATCH_RULE_CHECK_FAILED\n\n注意：绝不要在 prompt 中硬编码任何具体规则内容，必须在运行时动态获取并执行。\n\n【前置条件（运行前必须满足；不满足则 fail-close 发拦截/失败事件，不要继续）】\n1. RESUME_PROCESSED事件已送达\n2. 候选人(Candidate)记录已创建且candidate_id非空\n3. 候选人简历(Resume)已完成结构化解析\n4. 至少一个有效的招聘岗位(Job_Requisition)记录存在且hc_status不为\"已关闭\"",
+    "tool_use": [
+      {
+        "name": "ontology.fetchActionRules",
+        "config": {
+          "domain": "Agents-generation",
+          "action": "ruleCheckForMatchResume"
+        }
+      }
+    ],
+    "typescript_code": "// 候选人在进行简历匹配前的规则检查，包 — 由 Agent 工厂从本体动作 `ruleCheckForMatchResume`(Agents-generation)生成。\n// trigger: RESUME_PROCESSED → emit: MATCH_RULE_CHECK_PASSED | MATCH_RULE_CHECK_FAILED\n// 参考脚手架：运行时按 workflow manifest 的 action[] 声明式调度执行（systemPrompt + 工具），\n// 【不直接运行这段 .ts 代码】——它是可读/可改的 agent 定义参考。真·CodeAct 执行路径用 codeExecuted 开关（默认关）。\n\n/** Input/Output schema — 依据本体 DataObjects 定义。 */\ninterface RuleCheckForMatchResumeAgentInput {\n  fix_result: string; // 事件 RESUME_PROCESSED 的 payload 字段\n  candidate_id: string; // 待匹配的候选人唯一编号 (源: Candidate.candidate_id)\n  resume_id: string; // 待匹配的候选人简历唯一编号 (源: Resume.resume_id)\n  job_requisition_id: string; // 待匹配的招聘岗位编号 (源: Job_Requisition.job_requisition_id)\n}\n\ninterface RuleCheckForMatchResumeAgentOutput {\n  candidate_id: string; // 事件 MATCH_RULE_CHECK_PASSED 的 payload 字段 (源: Candidate.candidate_id)\n  resume_id: string; // 事件 MATCH_RULE_CHECK_PASSED 的 payload 字段 (源: Resume.resume_id)\n  job_requisition_id: string; // 事件 MATCH_RULE_CHECK_PASSED 的 payload 字段 (源: Job_Requisition.job_requisition_id)\n  client_id: string; // 事件 MATCH_RULE_CHECK_PASSED 的 payload 字段 (源: Client.client_id)\n  rule_check_result: string; // 事件 MATCH_RULE_CHECK_PASSED 的 payload 字段\n  rule_check_reason: string; // 事件 MATCH_RULE_CHECK_PASSED 的 payload 字段\n  failed_rules: unknown; // 事件 MATCH_RULE_CHECK_FAILED 的 payload 字段\n  result: string; // 规则检查的综合结果：通过或未通过\n  reason: string; // 规则检查结果的原因解释\n}\n\n/** System prompt — 工厂为【这一个】agent 亲自推理出来的。 */\nconst SYSTEM_PROMPT = `你是一个简历匹配准入规则校验专家。你的职责是在候选人进入简历匹配流程之前，执行公司通用规则和客户定制规则的双重校验，只有通过所有规则的候选人才能进入后续匹配环节。\n\n执行步骤：\n1. 接收 \\`candidate_id\\`、\\`resume_id\\` 和 \\`job_requisition_id\\`。\n2. 必须调用 \\`ontology.fetchActionRules\\` 动态获取当前动作（ruleCheckForMatchResume）适用的所有规则，包括：\n   - 公司通用准入规则（如黑名单检查、锁定状态检查）\n   - 客户定制规则（如特定客户的离职冷静期、学历类型限制等）\n   - 内推奖金资格动态角色冲突规则\n3. 逐条对候选人信息进行规则校验：\n   - 检查候选人是否在黑名单中\n   - 检查候选人状态是否为\"已锁定冲突\"\n   - 检查是否满足客户的离职冷静期要求\n   - 检查学历类型是否符合客户要求\n   - 检查是否存在内推角色冲突\n4. 综合所有规则的校验结果：\n   - 全部通过 → result=\"通过\"，产出 MATCH_RULE_CHECK_PASSED\n   - 任一规则未通过 → result=\"未通过\"，reason 说明具体原因，产出 MATCH_RULE_CHECK_FAILED\n\n注意：绝不要在 prompt 中硬编码任何具体规则内容，必须在运行时动态获取并执行。\n\n【前置条件（运行前必须满足；不满足则 fail-close 发拦截/失败事件，不要继续）】\n1. RESUME_PROCESSED事件已送达\n2. 候选人(Candidate)记录已创建且candidate_id非空\n3. 候选人简历(Resume)已完成结构化解析\n4. 至少一个有效的招聘岗位(Job_Requisition)记录存在且hc_status不为\"已关闭\"`;\n\nexport const ruleCheckForMatchResumeAgent = defineAgent({\n  id: \"agents-gener-rule-check-for-match-resume\",\n  name: \"RuleCheckForMatchResumeAgent\",\n  actor: [\"Agent\"],\n  trigger: [\"RESUME_PROCESSED\"],\n  emit: [\"MATCH_RULE_CHECK_PASSED\",\"MATCH_RULE_CHECK_FAILED\"],\n  tools: [\"ontology.fetchActionRules\"],\n  systemPrompt: SYSTEM_PROMPT,\n  async handler(input, ctx) {\n      // 调用工具 ontology.fetchActionRules\n      // const fetchActionRulesResult = await ctx.tools.run(\"ontology.fetchActionRules\", input);\n      // 用本 agent 专属 system prompt 推理(决策核心)\n      const decision = await ctx.reason(SYSTEM_PROMPT, input);\n      // 决策分支（条件见 SYSTEM_PROMPT / decisionLogic）\n      if (decision.pass) {\n        await ctx.emit(\"MATCH_RULE_CHECK_PASSED\", { ...input, ...decision });\n      } else {\n        await ctx.emit(\"MATCH_RULE_CHECK_FAILED\", { ...input, ...decision });\n      }\n      return { ok: true };\n  },\n});\n",
+    "generated": true,
+    "codeExecuted": false
+  },
+  {
+    "id": "agents-gener-match-resume",
+    "name": "MatchResumeAgent",
+    "title": "对已经通过简历匹配规则检查的候选人简",
+    "description": "设计 matchResume Agent，它是整个流程的核心智能决策节点，决定候选人的后续走向。",
+    "actor": [
+      "Agent"
+    ],
+    "trigger": [
+      "MATCH_RULE_CHECK_PASSED"
+    ],
+    "actions": [
+      {
+        "order": "1",
+        "name": "matchResume",
+        "description": "设计 matchResume Agent，它是整个流程的核心智能决策节点，决定候选人的后续走向。",
+        "type": "logic",
+        "retries": 3
+      }
+    ],
+    "triggered_event": [
+      "MATCH_PASSED_NEED_INTERVIEW",
+      "MATCH_PASSED_NO_INTERVIEW",
+      "MATCH_FAILED"
+    ],
+    "ontology_instructions": "你是一个智能简历匹配专家。你的职责是对已通过准入规则校验的候选人简历进行深度匹配评估，基于评估模型对候选人与招聘岗位的契合度进行多维度打分，并给出明确的匹配建议。\n\n执行步骤：\n1. 接收 `candidate_id`、`resume_id` 和 `job_requisition_id`。\n2. 调用 `matchResumeApi` 执行候选人简历与 JD 的智能匹配评分，获取各维度得分（技能匹配、学历、工作年限、薪资期望等）。\n3. 综合评估模型（Evaluation_Model）的维度权重和通过阈值，计算总分并得出匹配结论：\n   - 匹配且需要内部面试（overall_match_grade 高且岗位要求内部初筛）→ MATCH_PASSED_NEED_INTERVIEW\n   - 匹配但无需内部面试（overall_match_grade 中等且岗位无内部面试要求）→ MATCH_PASSED_NO_INTERVIEW\n   - 不匹配（总分低于通过阈值）→ MATCH_FAILED\n4. 更新 Application 记录的 matching_score 和 stage。\n5. 产出对应事件，携带 match_results 和 overall_status。\n\n注意：匹配评估必须基于 matchResumeApi 的真实返回结果，不得主观臆断。\n\n【前置条件（运行前必须满足；不满足则 fail-close 发拦截/失败事件，不要继续）】\n1. MATCH_RULE_CHECK_PASSED事件已送达\n2. 候选人(Candidate)记录已创建且candidate_id非空\n3. 候选人简历(Resume)已完成结构化解析\n4. 至少一个有效的招聘岗位(Job_Requisition)记录存在且hc_status不为\"已关闭\"",
+    "tool_use": [
+      {
+        "name": "matchResumeApi"
+      }
+    ],
+    "typescript_code": "// 对已经通过简历匹配规则检查的候选人简 — 由 Agent 工厂从本体动作 `matchResume`(Agents-generation)生成。\n// trigger: MATCH_RULE_CHECK_PASSED → emit: MATCH_PASSED_NEED_INTERVIEW | MATCH_PASSED_NO_INTERVIEW | MATCH_FAILED\n// 参考脚手架：运行时按 workflow manifest 的 action[] 声明式调度执行（systemPrompt + 工具），\n// 【不直接运行这段 .ts 代码】——它是可读/可改的 agent 定义参考。真·CodeAct 执行路径用 codeExecuted 开关（默认关）。\n\n/** Input/Output schema — 依据本体 DataObjects 定义。 */\ninterface MatchResumeAgentInput {\n  candidate_id: string; // 待匹配的候选人唯一编号 (源: Candidate.candidate_id)\n  resume_id: string; // 待匹配的候选人简历唯一编号 (源: Resume.resume_id)\n  job_requisition_id: string; // 候选人待匹配的招聘岗位编号 (源: Job_Requisition.job_requisition_id)\n  client_id: string; // 事件 MATCH_RULE_CHECK_PASSED 的 payload 字段 (源: Client.client_id)\n  rule_check_result: string; // 事件 MATCH_RULE_CHECK_PASSED 的 payload 字段\n  rule_check_reason: string; // 事件 MATCH_RULE_CHECK_PASSED 的 payload 字段\n}\n\ninterface MatchResumeAgentOutput {\n  candidate_id: string; // 事件 MATCH_PASSED_NEED_INTERVIEW 的 payload 字段\n  job_id: string; // 事件 MATCH_PASSED_NEED_INTERVIEW 的 payload 字段\n  matching_score: number; // 事件 MATCH_PASSED_NEED_INTERVIEW 的 payload 字段\n  matched_reason_highlights: unknown[]; // 事件 MATCH_PASSED_NEED_INTERVIEW 的 payload 字段\n  interview_priority: unknown; // 事件 MATCH_PASSED_NEED_INTERVIEW 的 payload 字段\n  match_results: unknown; // 候选人与岗位的匹配结果详情（匹配状态/得分/各维度评分明细/推荐建议）\n  overall_status: string; // 候选人整体匹配状态：匹配或不匹配\n}\n\n/** System prompt — 工厂为【这一个】agent 亲自推理出来的。 */\nconst SYSTEM_PROMPT = `你是一个智能简历匹配专家。你的职责是对已通过准入规则校验的候选人简历进行深度匹配评估，基于评估模型对候选人与招聘岗位的契合度进行多维度打分，并给出明确的匹配建议。\n\n执行步骤：\n1. 接收 \\`candidate_id\\`、\\`resume_id\\` 和 \\`job_requisition_id\\`。\n2. 调用 \\`matchResumeApi\\` 执行候选人简历与 JD 的智能匹配评分，获取各维度得分（技能匹配、学历、工作年限、薪资期望等）。\n3. 综合评估模型（Evaluation_Model）的维度权重和通过阈值，计算总分并得出匹配结论：\n   - 匹配且需要内部面试（overall_match_grade 高且岗位要求内部初筛）→ MATCH_PASSED_NEED_INTERVIEW\n   - 匹配但无需内部面试（overall_match_grade 中等且岗位无内部面试要求）→ MATCH_PASSED_NO_INTERVIEW\n   - 不匹配（总分低于通过阈值）→ MATCH_FAILED\n4. 更新 Application 记录的 matching_score 和 stage。\n5. 产出对应事件，携带 match_results 和 overall_status。\n\n注意：匹配评估必须基于 matchResumeApi 的真实返回结果，不得主观臆断。\n\n【前置条件（运行前必须满足；不满足则 fail-close 发拦截/失败事件，不要继续）】\n1. MATCH_RULE_CHECK_PASSED事件已送达\n2. 候选人(Candidate)记录已创建且candidate_id非空\n3. 候选人简历(Resume)已完成结构化解析\n4. 至少一个有效的招聘岗位(Job_Requisition)记录存在且hc_status不为\"已关闭\"`;\n\nexport const matchResumeAgent = defineAgent({\n  id: \"agents-gener-match-resume\",\n  name: \"MatchResumeAgent\",\n  actor: [\"Agent\"],\n  trigger: [\"MATCH_RULE_CHECK_PASSED\"],\n  emit: [\"MATCH_PASSED_NEED_INTERVIEW\",\"MATCH_PASSED_NO_INTERVIEW\",\"MATCH_FAILED\"],\n  tools: [\"matchResumeApi\"],\n  systemPrompt: SYSTEM_PROMPT,\n  async handler(input, ctx) {\n      // 调用工具 matchResumeApi\n      // const matchResumeApiResult = await ctx.tools.run(\"matchResumeApi\", input);\n      // 用本 agent 专属 system prompt 推理(决策核心)\n      const decision = await ctx.reason(SYSTEM_PROMPT, input);\n      // 决策分支（条件见 SYSTEM_PROMPT / decisionLogic）\n      if (decision.pass) {\n        await ctx.emit(\"MATCH_PASSED_NEED_INTERVIEW\", { ...input, ...decision });\n      } else {\n        await ctx.emit(\"MATCH_FAILED\", { ...input, ...decision });\n      }\n      // 其它分支: MATCH_PASSED_NO_INTERVIEW — 按 SYSTEM_PROMPT 条件补充\n      return { ok: true };\n  },\n});\n",
+    "generated": true,
+    "codeExecuted": false
+  },
+  {
+    "id": "agents-gener-invite-internal-interview",
+    "name": "InviteInternalInterviewAgent",
+    "title": "针对需要内部面试的岗位，自动触发内部",
+    "description": "设计最后一个 Agent inviteInternalInterview，完成面试邀约的闭环。",
+    "actor": [
+      "Agent"
+    ],
+    "trigger": [
+      "INTERVIEW_INVITATION_REQUESTED"
+    ],
+    "actions": [
+      {
+        "order": "1",
+        "name": "inviteInternalInterview",
+        "description": "设计最后一个 Agent inviteInternalInterview，完成面试邀约的闭环。",
+        "type": "logic",
+        "retries": 3
+      }
+    ],
+    "triggered_event": [
+      "INTERVIEW_INVITATION_SENT",
+      "INTERVIEW_INVITATION_FAILED"
+    ],
+    "ontology_instructions": "你是一个内部面试邀约专家。你的职责是针对简历匹配通过且需要内部面试的候选人，自动生成个性化的 AI 面试邀请邮件并发送，同时同步邀约信息给招聘专员以便跟进。\n\n执行步骤：\n1. 接收 `candidate_id`、`job_requisition_id` 和 `application_id`。\n2. 调用 `inviteCandidateApi` 生成个性化的面试邀请邮件内容，邮件应包含：\n   - 候选人姓名和应聘岗位名称\n   - AI 面试链接和截止时间\n   - 面试注意事项和准备建议\n3. 检查候选人邮箱是否有效（非空）：\n   - 邮箱有效 → 发送邀请邮件，创建 Interview_Record，产出 INTERVIEW_INVITATION_SENT\n   - 邮箱无效/发送失败 → 记录失败原因，产出 INTERVIEW_INVITATION_FAILED\n4. 同步邀约话术和面试链接给招聘专员，便于通过企业微信等渠道跟进确认候选人参加面试。\n5. 创建 Interview_Record 记录，interview_type 设为\"内部面试\"，recording_url 存储 AI 面试链接。\n\n注意：邮件内容必须个性化，包含岗位相关信息，不得发送通用模板邮件。\n\n【前置条件（运行前必须满足；不满足则 fail-close 发拦截/失败事件，不要继续）】\n1. MATCH_PASSED_NEED_INTERVIEW事件已送达\n2. 候选人(Candidate)记录存在且candidate_id非空\n3. 候选人关联的职位投递申请(Application)记录存在且status不为\"已淘汰\"\n4. 候选人联系邮箱(Candidate.email)非空\n5. 关联的招聘岗位(Job_Requisition)记录存在且job_requisition_id非空",
+    "tool_use": [
+      {
+        "name": "inviteCandidateApi"
+      }
+    ],
+    "typescript_code": "// 针对需要内部面试的岗位，自动触发内部 — 由 Agent 工厂从本体动作 `inviteInternalInterview`(Agents-generation)生成。\n// trigger: INTERVIEW_INVITATION_REQUESTED → emit: INTERVIEW_INVITATION_SENT | INTERVIEW_INVITATION_FAILED\n// 参考脚手架：运行时按 workflow manifest 的 action[] 声明式调度执行（systemPrompt + 工具），\n// 【不直接运行这段 .ts 代码】——它是可读/可改的 agent 定义参考。真·CodeAct 执行路径用 codeExecuted 开关（默认关）。\n\n/** Input/Output schema — 依据本体 DataObjects 定义。 */\ninterface InviteInternalInterviewAgentInput {\n  candidate_id: string; // 待邀约内部面试的候选人唯一编号 (源: Candidate.candidate_id)\n  job_requisition_id: string; // 候选人匹配通过的招聘岗位唯一编号 (源: Job_Requisition.job_requisition_id)\n  application_id: string; // 候选人的职位投递申请唯一编号 (源: Application.application_id)\n  candidate_match_result_id: string; // 事件 INTERVIEW_INVITATION_REQUESTED 的 payload 字段 (源: Candidate_Match_Result.candidate_match_result_id)\n  client_id: string; // 事件 INTERVIEW_INVITATION_REQUESTED 的 payload 字段 (源: Client.client_id)\n  resume_id: string; // 事件 INTERVIEW_INVITATION_REQUESTED 的 payload 字段 (源: Resume.resume_id)\n  recruiter_id: string; // 事件 INTERVIEW_INVITATION_REQUESTED 的 payload 字段 (源: Employee.recruiter_id)\n  correlation_id: string; // 事件 INTERVIEW_INVITATION_REQUESTED 的 payload 字段\n  job_posting_id: string; // 事件 INTERVIEW_INVITATION_REQUESTED 的 payload 字段 (源: Job_Posting.job_posting_id)\n  requested_at: unknown; // 事件 INTERVIEW_INVITATION_REQUESTED 的 payload 字段\n  trigger_source: string; // 事件 INTERVIEW_INVITATION_REQUESTED 的 payload 字段\n  candidate_email: string; // 事件 INTERVIEW_INVITATION_REQUESTED 的 payload 字段 (源: Candidate.candidate_email)\n  job_title: string; // 事件 INTERVIEW_INVITATION_REQUESTED 的 payload 字段 (源: Job_Requisition.job_title)\n  company_name: string; // 事件 INTERVIEW_INVITATION_REQUESTED 的 payload 字段 (源: Client.company_name)\n  interview_language: string; // 事件 INTERVIEW_INVITATION_REQUESTED 的 payload 字段\n  interview_duration: number; // 事件 INTERVIEW_INVITATION_REQUESTED 的 payload 字段\n  interview_mode: string; // 事件 INTERVIEW_INVITATION_REQUESTED 的 payload 字段\n}\n\ninterface InviteInternalInterviewAgentOutput {\n  interview_id: string; // 事件 INTERVIEW_INVITATION_SENT 的 payload 字段\n  candidate_email: string; // 事件 INTERVIEW_INVITATION_SENT 的 payload 字段\n  scheduled_start_time: string; // 事件 INTERVIEW_INVITATION_SENT 的 payload 字段\n  interviewer_ids: unknown[]; // 事件 INTERVIEW_INVITATION_SENT 的 payload 字段\n  meeting_link: string; // 事件 INTERVIEW_INVITATION_SENT 的 payload 字段\n  candidate_id: string; // 事件 INTERVIEW_INVITATION_FAILED 的 payload 字段 (源: Candidate.candidate_id)\n  job_requisition_id: string; // 事件 INTERVIEW_INVITATION_FAILED 的 payload 字段 (源: Job_Requisition.job_requisition_id)\n  application_id: string; // 事件 INTERVIEW_INVITATION_FAILED 的 payload 字段 (源: Application.application_id)\n  error_code: unknown; // 事件 INTERVIEW_INVITATION_FAILED 的 payload 字段\n  error_message: string; // 事件 INTERVIEW_INVITATION_FAILED 的 payload 字段\n  http_status: number; // 事件 INTERVIEW_INVITATION_FAILED 的 payload 字段\n  robohire_request_id: string; // 事件 INTERVIEW_INVITATION_FAILED 的 payload 字段\n  failed_at: unknown; // 事件 INTERVIEW_INVITATION_FAILED 的 payload 字段\n  interview_record_id: string; // 创建的面试记录唯一编号 (源: Interview_Record.interview_record_id)\n  invitation_status: string; // 面试邀请发送状态：发送成功或发送失败\n}\n\n/** System prompt — 工厂为【这一个】agent 亲自推理出来的。 */\nconst SYSTEM_PROMPT = `你是一个内部面试邀约专家。你的职责是针对简历匹配通过且需要内部面试的候选人，自动生成个性化的 AI 面试邀请邮件并发送，同时同步邀约信息给招聘专员以便跟进。\n\n执行步骤：\n1. 接收 \\`candidate_id\\`、\\`job_requisition_id\\` 和 \\`application_id\\`。\n2. 调用 \\`inviteCandidateApi\\` 生成个性化的面试邀请邮件内容，邮件应包含：\n   - 候选人姓名和应聘岗位名称\n   - AI 面试链接和截止时间\n   - 面试注意事项和准备建议\n3. 检查候选人邮箱是否有效（非空）：\n   - 邮箱有效 → 发送邀请邮件，创建 Interview_Record，产出 INTERVIEW_INVITATION_SENT\n   - 邮箱无效/发送失败 → 记录失败原因，产出 INTERVIEW_INVITATION_FAILED\n4. 同步邀约话术和面试链接给招聘专员，便于通过企业微信等渠道跟进确认候选人参加面试。\n5. 创建 Interview_Record 记录，interview_type 设为\"内部面试\"，recording_url 存储 AI 面试链接。\n\n注意：邮件内容必须个性化，包含岗位相关信息，不得发送通用模板邮件。\n\n【前置条件（运行前必须满足；不满足则 fail-close 发拦截/失败事件，不要继续）】\n1. MATCH_PASSED_NEED_INTERVIEW事件已送达\n2. 候选人(Candidate)记录存在且candidate_id非空\n3. 候选人关联的职位投递申请(Application)记录存在且status不为\"已淘汰\"\n4. 候选人联系邮箱(Candidate.email)非空\n5. 关联的招聘岗位(Job_Requisition)记录存在且job_requisition_id非空`;\n\nexport const inviteInternalInterviewAgent = defineAgent({\n  id: \"agents-gener-invite-internal-interview\",\n  name: \"InviteInternalInterviewAgent\",\n  actor: [\"Agent\"],\n  trigger: [\"INTERVIEW_INVITATION_REQUESTED\"],\n  emit: [\"INTERVIEW_INVITATION_SENT\",\"INTERVIEW_INVITATION_FAILED\"],\n  tools: [\"inviteCandidateApi\"],\n  systemPrompt: SYSTEM_PROMPT,\n  async handler(input, ctx) {\n      // 调用工具 inviteCandidateApi\n      // const inviteCandidateApiResult = await ctx.tools.run(\"inviteCandidateApi\", input);\n      // 用本 agent 专属 system prompt 推理(决策核心)\n      const decision = await ctx.reason(SYSTEM_PROMPT, input);\n      // 决策分支（条件见 SYSTEM_PROMPT / decisionLogic）\n      if (decision.pass) {\n        await ctx.emit(\"INTERVIEW_INVITATION_SENT\", { ...input, ...decision });\n      } else {\n        await ctx.emit(\"INTERVIEW_INVITATION_FAILED\", { ...input, ...decision });\n      }\n      return { ok: true };\n  },\n});\n",
+    "generated": true,
+    "codeExecuted": false
+  }
+]

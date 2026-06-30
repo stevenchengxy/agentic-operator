@@ -17,8 +17,9 @@
  *   5. Updates the run with status=ok + emitted_event_id.
  */
 
-import { inngest } from "./client";
+import { getTenantInngest } from "./client";
 import { runAction } from "./step-engine";
+import { stableStepId, shouldSkip, softInvoke, type GateState } from "./action-plan";
 import { selectEmittedEvent } from "./emit-select";
 import { appendToLedger } from "./event-ledger";
 import { publish } from "./broadcast";
@@ -39,7 +40,7 @@ import {
 } from "@agentic/db";
 import { eq, and } from "drizzle-orm";
 
-import type { TenantRegistry } from "@agentic/agent-kit";
+import type { TenantRegistry, ToolDescriptor } from "@agentic/agent-kit";
 import type { InngestFunction } from "inngest";
 import { getRuntimeMetrics } from "./llm-host";
 
@@ -53,6 +54,21 @@ export interface RegisterContext {
    * manifest action.name → tenant impl when present, generic when absent.
    */
   tenantRegistry?: TenantRegistry;
+  /**
+   * Phase 1a — optional resolver mapping an `invoke` action's target ref (an agent name or
+   * Inngest function id) to the registered InngestFunction, so `type:"invoke"` actions can
+   * synchronously call a sub-agent via step.invoke. When unset (or the target is unknown), an
+   * invoke action soft-fails to its `default_result`. Wired in bootstrap after all functions
+   * are built (so siblings are resolvable by the time a handler actually runs).
+   */
+  resolveFunction?: (ref: string) => InngestFunction.Any | undefined;
+  /**
+   * Phase 2 — brain-authored declarative HTTP tools (from factory_tools), built into runtime
+   * ToolDescriptors via buildDeclarativeOverlay. Merged into the per-step tenant tool map so the
+   * step-engine resolves them (overlay → tenant → global) — this is what makes a tool the brain
+   * DECLARED actually INVOKABLE by the deployed agent. Domain-scoped + injected by the api.
+   */
+  declarativeTools?: Record<string, ToolDescriptor>;
 }
 
 /**
@@ -80,6 +96,9 @@ export function findMissingTenantPrompts(args: {
   const prompts = args.tenantRegistry?.prompts ?? {};
   const missing: MissingPromptRef[] = [];
   for (const agent of args.manifest) {
+    // Generated agents (Agent Factory) supply their own default prompt at runtime — not a missing
+    // hand-written prompt, so they never block boot.
+    if ((agent as { generated?: boolean }).generated) continue;
     for (const action of agent.actions) {
       if (action.type !== "logic") continue;
       if (prompts[action.name]) continue;
@@ -155,7 +174,12 @@ export function registerAgent(
       ? concurrencyConfig.max_concurrent_executions
       : 8;
 
-  return inngest.createFunction(
+  // One Inngest app per tenant: bind this agent's function to the tenant's own
+  // client (`agentic-operator-<slug>`). fnId stays `${slug}.${agent}` — Inngest
+  // tracks function history by id, so we keep it stable even though the app id
+  // already carries the slug (the external slug becomes
+  // `agentic-operator-<slug>-<slug>.<agent>`, redundant but harmless).
+  return getTenantInngest(tenantSlug).createFunction(
     {
       id: fnId,
       name: agent.title ?? agent.name,
@@ -308,13 +332,66 @@ export function registerAgent(
       });
       logger.info("run.start", { runId, agent: agent.name, event: event.name });
 
+      // Phase 2 — merge brain-authored declarative tools into the per-step tenant registry so the
+      // step-engine resolves them ahead of the global registry. No-op when none are injected.
+      const effectiveTenantRegistry =
+        ctx.declarativeTools && Object.keys(ctx.declarativeTools).length
+          ? { ...ctx.tenantRegistry, tools: { ...(ctx.tenantRegistry?.tools ?? {}), ...ctx.declarativeTools } }
+          : ctx.tenantRegistry;
+
       let tokensIn = 0;
       let tokensOut = 0;
       let lastResult: unknown = null;
+      // Phase 1a — real branching: a condition step records its boolean here; a downstream
+      // action that dependsOn a false condition (or a skipped step) is SKIPPED, not run.
+      const gate: GateState = { conditionTrue: {}, skipped: new Set<string>() };
 
       for (let i = 0; i < agent.actions.length; i++) {
         const action = agent.actions[i]!;
         const ord = i + 1;
+        // Scope for stable idempotency-keyed step ids + (later) invoke input resolution.
+        const stepScope = {
+          event: { name: event.name, data: (event.data ?? {}) as Record<string, unknown> },
+          subject: subject ?? undefined,
+          lastResult,
+        };
+
+        // Phase 1a — dependsOn gating. Skip (don't fail) an action whose gating condition was
+        // false or whose dependency was skipped. Backward-compatible: actions with no depends_on
+        // never skip, so existing single-path manifests are unaffected.
+        const skip = shouldSkip({ name: action.name, dependsOn: (action as { depends_on?: string[] }).depends_on }, gate);
+        if (skip.skip) {
+          gate.skipped.add(action.name);
+          await writeRunLog(logCtx, "INFO", "step.skip", { ord, name: action.name, type: action.type, reason: skip.reason });
+          continue;
+        }
+
+        // Phase 1a — synchronous sub-agent invoke (step.invoke) with timeout + soft-fail default.
+        // Dormant for existing manifests (none declare type:"invoke"). Resolves the target via the
+        // optional ctx.resolveFunction; soft-fails to `default_result` when unresolved or on error.
+        if (action.type === "invoke") {
+          const a = action as { invoke?: string; invoke_input?: Record<string, unknown>; timeout_s?: number; on_error?: "soft" | "terminal"; default_result?: unknown };
+          const targetRef = a.invoke ?? "";
+          const fn = ctx.resolveFunction?.(targetRef);
+          const invoked = await softInvoke(
+            async () => {
+              if (!fn) throw new Error(`invoke target "${targetRef}" not resolvable`);
+              return await step.invoke(`invoke-${stableStepId(action.name, (action as { idempotency_key_from?: string }).idempotency_key_from, stepScope)}`, {
+                function: fn,
+                data: { ...(a.invoke_input ?? {}), _subject: subject, _correlationId: correlationId },
+                timeout: a.timeout_s ? `${a.timeout_s}s` : undefined,
+              });
+            },
+            { timeoutMs: a.timeout_s ? a.timeout_s * 1000 : undefined, onError: a.on_error ?? "soft", fallback: a.default_result },
+          );
+          if (!invoked.ok && (a.on_error ?? "soft") !== "soft") {
+            await failRun(runId, `invoke ${targetRef} failed`, startedAt);
+            throw new Error(`invoke ${targetRef} failed`);
+          }
+          lastResult = invoked.data ?? null;
+          await writeRunLog(logCtx, invoked.softFailed ? "WARN" : "INFO", "step.invoke", { ord, name: action.name, target: targetRef, softFailed: invoked.softFailed, timedOut: invoked.timedOut });
+          continue;
+        }
 
         if (action.type === "manual") {
           // Human-in-the-loop step (DESIGN.md §10):
@@ -333,7 +410,9 @@ export function registerAgent(
                 runId,
                 ord,
                 name: action.name,
-                type: action.type,
+                // invoke steps never reach an insert (handled+continue'd above); cast to the
+                // steps.type column union which predates the "invoke" member.
+                type: action.type as "tool" | "logic" | "manual" | "condition" | "delay" | "subflow",
                 status: "running",
                 startedAt: new Date(sStarted),
               })
@@ -360,11 +439,24 @@ export function registerAgent(
             return { stepId: sid, taskId: tid, sStarted };
           });
 
+          await writeRunLog(logCtx, "INFO", "step.wait", {
+            ord,
+            name: action.name,
+            taskId: initStep.taskId,
+            awaiting: "human",
+          });
+
           // P5-TEN-01 — pin the predicate to the issuing tenant so a leaked
           // taskId in another tenant cannot resume this run. tasks.ts:resolve
           // now includes auth.tenantId in the event payload.
+          // Per-tenant app: HITL resume listens on the tenant-namespaced
+          // `${slug}/task.resolved` (the resolve route sends it on the SAME
+          // tenant client). With one app per tenant the bare `task.resolved`
+          // would not be served by this tenant's app, so the name MUST be
+          // namespaced in lockstep with `routes/v1/tasks.ts`. The tenantId
+          // predicate stays as defense-in-depth.
           const resolved = await step.waitForEvent(`wait-task-${ord}`, {
-            event: "task.resolved",
+            event: `${tenantSlug}/task.resolved` as `${string}/${string}`,
             if: `async.data.taskId == "${initStep.taskId}" && async.data.tenantId == "${ctx.tenantId}"`,
             timeout: "7d",
           });
@@ -433,22 +525,69 @@ export function registerAgent(
         }
 
         // tool | logic: atomic step.run with auto-managed step row.
-        const stepOutcome = await step.run(action.name, async () => {
-          const sid = makeId("stp");
+        // Phase 1a — stable, idempotency-keyed Inngest step id. Falls back to the (sanitized)
+        // action name when no idempotency_key_from is declared, so existing manifests are unchanged.
+        const stepKey = stableStepId(action.name, (action as { idempotency_key_from?: string }).idempotency_key_from, stepScope);
+        // Phase 1 — per-step failure policy. on_error:"soft" → log + continue with default_result
+        // (the createJD fetch-clarifications pattern: a non-critical step that must not break the
+        // run). Otherwise a failed step fails the run. "park"/default → Inngest retries (unset).
+        const onErr = (action as { on_error?: "soft" | "terminal" }).on_error;
+        const softDefault = (action as { default_result?: unknown }).default_result ?? null;
+        let stepOutcome: { ok: boolean; data: unknown; tokensIn: number; tokensOut: number; durationMs: number };
+        try {
+        stepOutcome = await step.run(stepKey, async () => {
           const sStarted = Date.now();
           const dbInner = getDb();
-          dbInner
-            .insert(steps)
-            .values({
-              id: sid,
-              runId,
-              ord,
-              name: action.name,
-              type: action.type,
-              status: "running",
-              startedAt: new Date(sStarted),
-            })
-            .run();
+          // Upsert by (runId, ord). On an Inngest retry the failed body
+          // re-executes; reuse the existing row and bump `attempts` instead
+          // of inserting a phantom duplicate at the same ord.
+          const existing = dbInner
+            .select({ id: steps.id, attempts: steps.attempts })
+            .from(steps)
+            .where(and(eq(steps.runId, runId), eq(steps.ord, ord)))
+            .all()[0];
+          let sid: string;
+          let attempt: number;
+          if (existing) {
+            sid = existing.id;
+            attempt = (existing.attempts ?? 1) + 1;
+            dbInner
+              .update(steps)
+              .set({
+                status: "running",
+                attempts: attempt,
+                startedAt: new Date(sStarted),
+                endedAt: null,
+                durationMs: null,
+                error: null,
+              })
+              .where(eq(steps.id, sid))
+              .run();
+          } else {
+            sid = makeId("stp");
+            attempt = 1;
+            dbInner
+              .insert(steps)
+              .values({
+                id: sid,
+                runId,
+                ord,
+                name: action.name,
+                // invoke steps never reach an insert (handled+continue'd above); cast to the
+                // steps.type column union which predates the "invoke" member.
+                type: action.type as "tool" | "logic" | "manual" | "condition" | "delay" | "subflow",
+                status: "running",
+                startedAt: new Date(sStarted),
+                attempts: 1,
+              })
+              .run();
+          }
+          await writeRunLog(logCtx, attempt > 1 ? "WARN" : "DEBUG", "step.start", {
+            ord,
+            name: action.name,
+            type: action.type,
+            attempt,
+          });
           try {
             publish({
               type: "run.step.started",
@@ -489,6 +628,9 @@ export function registerAgent(
                 name: agent.name,
                 description: agent.description,
                 ontology_instructions: agent.ontology_instructions,
+                generated: (agent as { generated?: boolean }).generated,
+                codeExecuted: (agent as { codeExecuted?: boolean }).codeExecuted,
+                typescriptCode: agent.typescript_code,
                 tool_use: Array.isArray(agent.tool_use)
                   ? (agent.tool_use as Array<{
                       name: string;
@@ -497,7 +639,7 @@ export function registerAgent(
                     }>)
                   : undefined,
               },
-              tenantRegistry: ctx.tenantRegistry,
+              tenantRegistry: effectiveTenantRegistry,
               autoResolveManual: true,
             });
             const sEnded = Date.now();
@@ -530,6 +672,8 @@ export function registerAgent(
                 durationMs: sEnded - sStarted,
                 inputRef: stepInputRef,
                 outputRef: stepOutputRef,
+                provider: res.provider ?? null,
+                model: res.model ?? null,
                 tokensIn: res.tokensIn ?? null,
                 tokensOut: res.tokensOut ?? null,
               })
@@ -547,14 +691,37 @@ export function registerAgent(
                 stepType: action.type,
                 status: res.ok ? "ok" : "failed",
                 durationMs: sEnded - sStarted,
-                provider: null,
-                model: null,
+                provider: res.provider ?? null,
+                model: res.model ?? null,
                 tokensIn: res.tokensIn ?? null,
                 tokensOut: res.tokensOut ?? null,
                 error: null,
               });
             } catch {
               /* broadcast best-effort */
+            }
+            // Rich per-call logs so the run viewer reads like Inngest's trace:
+            // one llm.call line (provider/model/tokens) + one tool.call line
+            // per dispatched tool, before the step.ok summary.
+            if (res.provider || res.model) {
+              await writeRunLog(logCtx, "INFO", "llm.call", {
+                step: action.name,
+                provider: res.provider ?? "—",
+                model: res.model ?? "—",
+                tokens_in: res.tokensIn ?? 0,
+                tokens_out: res.tokensOut ?? 0,
+              });
+            }
+            const toolCalls = (res.meta as { toolCalls?: Array<{ name: string; isError?: boolean; durationMs?: number }> } | undefined)?.toolCalls;
+            if (Array.isArray(toolCalls)) {
+              for (const tc of toolCalls) {
+                await writeRunLog(logCtx, tc.isError ? "ERROR" : "INFO", "tool.call", {
+                  step: action.name,
+                  tool: tc.name,
+                  ok: tc.isError ? false : true,
+                  duration: `${tc.durationMs ?? 0}ms`,
+                });
+              }
             }
             return {
               ok: res.ok,
@@ -575,17 +742,43 @@ export function registerAgent(
               })
               .where(eq(steps.id, sid))
               .run();
+            await writeRunLog(logCtx, "ERROR", "step.fail", {
+              ord,
+              name: action.name,
+              attempt,
+              error: message,
+            });
             throw err;
           }
         });
+        } catch (stepErr) {
+          // Phase 1 — step.run threw after its own Inngest retries. Honor the per-step policy:
+          // soft → log + continue with the default; otherwise fail the run.
+          if (onErr === "soft") {
+            await writeRunLog(logCtx, "WARN", "step.soft-fail", { ord, name: action.name, error: stepErr instanceof Error ? stepErr.message : String(stepErr) });
+            lastResult = softDefault;
+            continue;
+          }
+          throw stepErr;
+        }
 
         if (!stepOutcome.ok) {
+          if (onErr === "soft") {
+            await writeRunLog(logCtx, "WARN", "step.soft-fail", { ord, name: action.name, reason: "ok=false" });
+            lastResult = softDefault;
+            continue;
+          }
           await failRun(runId, "step returned ok=false", startedAt);
           throw new Error(`step ${action.name} failed`);
         }
         tokensIn += stepOutcome.tokensIn;
         tokensOut += stepOutcome.tokensOut;
         lastResult = stepOutcome.data;
+
+        // Phase 1a — record a condition step's verdict so downstream depends_on actions branch on it.
+        if (action.type === "condition") {
+          gate.conditionTrue[action.name] = Boolean((stepOutcome.data as { evaluated?: boolean } | null)?.evaluated);
+        }
 
         await writeRunLog(logCtx, "INFO", "step.ok", {
           name: action.name,

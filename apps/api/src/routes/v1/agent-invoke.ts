@@ -23,7 +23,7 @@ import type { FastifyInstance } from "fastify";
 import { agentRegistry, RunCancelledError } from "@agentic/agents";
 import { PROVIDER_IDS, type ProviderId } from "@agentic/contracts";
 import { isLLMError } from "@agentic/llm-gateway";
-import { appendToLedger, inngest } from "@agentic/runtime";
+import { appendToLedger, getTenantInngest } from "@agentic/runtime";
 import { events, eventTypes, getDb } from "@agentic/db";
 import { and, eq } from "drizzle-orm";
 import { InvokeAgentBody } from "@agentic/contracts";
@@ -198,7 +198,7 @@ export async function agentInvokeRoutes(app: FastifyInstance): Promise<void> {
         }
 
         try {
-          await inngest.send({
+          await getTenantInngest(auth.tenantSlug).send({
             name: `${auth.tenantSlug}/${triggerEvent}` as `${string}/${string}`,
             data: inngestData,
           });

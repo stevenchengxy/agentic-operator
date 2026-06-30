@@ -6,7 +6,7 @@
  * mutating routes via `writeAudit`.
  */
 
-import { useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import { Badge, Empty, type BadgeTone } from "@/app/portal/components";
 import { useI18n } from "@/app/portal/lib/preferences-context";
 import { useAudit, type AuditRow } from "@/lib/hooks/useAudit";
@@ -15,10 +15,20 @@ import {
   LogSearch,
   MetaPill,
   TimeCell,
+  ExpandCaret,
+  DetailCell,
+  Field,
+  JsonView,
   tdStyle,
   thStyle,
   monoStyle,
 } from "./shared";
+
+/** A 403 from the admin-only `audit.read` permission, vs a real error. */
+function isPermissionError(msg: string | undefined): boolean {
+  if (!msg) return false;
+  return /forbidden|unauthorized|permission|audit\.read|403/i.test(msg);
+}
 
 /** Color the action by its domain prefix + intent. */
 function actionTone(action: string): BadgeTone {
@@ -45,8 +55,16 @@ function metaSummary(row: AuditRow): string {
 export function OperationLogTab() {
   const { t } = useI18n();
   const [q, setQ] = useState("");
+  const [open, setOpen] = useState<Set<string>>(new Set());
   const query = useAudit({ limit: 300 });
   const rows = query.data?.items ?? [];
+
+  const toggle = (id: string) =>
+    setOpen((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
 
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
@@ -76,13 +94,25 @@ export function OperationLogTab() {
       }
     >
       {query.isError ? (
-        <Empty title={t("logsExplorer.loadFailed")} hint={query.error?.message ?? ""} />
+        <Empty
+          title={
+            isPermissionError(query.error?.message)
+              ? t("logsExplorer.opForbidden")
+              : t("logsExplorer.loadFailed")
+          }
+          hint={
+            isPermissionError(query.error?.message)
+              ? t("logsExplorer.opForbiddenHint")
+              : query.error?.message ?? ""
+          }
+        />
       ) : rows.length === 0 && !query.isLoading ? (
         <Empty title={t("logsExplorer.opEmpty")} hint={t("logsExplorer.opEmptyHint")} />
       ) : (
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
             <tr>
+              <th style={{ ...thStyle, width: 28 }} />
               <th style={{ ...thStyle, width: 90 }}>{t("logsExplorer.colTime")}</th>
               <th style={thStyle}>{t("logsExplorer.colAction")}</th>
               <th style={thStyle}>{t("logsExplorer.colTarget")}</th>
@@ -91,34 +121,61 @@ export function OperationLogTab() {
             </tr>
           </thead>
           <tbody>
-            {filtered.map((r) => (
-              <tr key={r.id}>
-                <td style={tdStyle}>
-                  <TimeCell ms={r.at} />
-                </td>
-                <td style={tdStyle}>
-                  <Badge tone={actionTone(r.action)}>{r.action}</Badge>
-                </td>
-                <td style={tdStyle}>
-                  {r.targetType ? (
-                    <span style={monoStyle}>
-                      {r.targetType}
-                      {r.targetId ? `:${r.targetId.slice(0, 18)}` : ""}
-                    </span>
-                  ) : (
-                    <span style={monoStyle}>—</span>
+            {filtered.map((r) => {
+              const isOpen = open.has(r.id);
+              return (
+                <Fragment key={r.id}>
+                  <tr
+                    onClick={() => toggle(r.id)}
+                    style={{ cursor: "pointer" }}
+                    className={isOpen ? undefined : "hover-row"}
+                  >
+                    <td style={{ ...tdStyle, textAlign: "center" }}>
+                      <ExpandCaret open={isOpen} />
+                    </td>
+                    <td style={tdStyle}>
+                      <TimeCell ms={r.at} />
+                    </td>
+                    <td style={tdStyle}>
+                      <Badge tone={actionTone(r.action)}>{r.action}</Badge>
+                    </td>
+                    <td style={tdStyle}>
+                      {r.targetType ? (
+                        <span style={monoStyle}>
+                          {r.targetType}
+                          {r.targetId ? `:${r.targetId.slice(0, 18)}` : ""}
+                        </span>
+                      ) : (
+                        <span style={monoStyle}>—</span>
+                      )}
+                    </td>
+                    <td style={tdStyle}>
+                      <span style={monoStyle}>
+                        {r.actorUserId ? r.actorUserId.slice(0, 16) : t("logsExplorer.actorSystem")}
+                      </span>
+                    </td>
+                    <td style={{ ...tdStyle, color: "var(--text-3)", fontFamily: "var(--mono)", fontSize: 11 }}>
+                      {metaSummary(r) || "—"}
+                    </td>
+                  </tr>
+                  {isOpen && (
+                    <DetailCell colSpan={6}>
+                      <Field label={t("logsExplorer.colAction")}>{r.action}</Field>
+                      <Field label={t("logsExplorer.colTime")}>
+                        {r.at ? new Date(r.at).toLocaleString() : "—"}
+                      </Field>
+                      <Field label={t("logsExplorer.colTarget")}>
+                        {r.targetType ? `${r.targetType}${r.targetId ? `:${r.targetId}` : ""}` : "—"}
+                      </Field>
+                      <Field label={t("logsExplorer.colActor")}>
+                        {r.actorUserId ?? t("logsExplorer.actorSystem")}
+                      </Field>
+                      <JsonView label={t("logsExplorer.fullMeta")} value={r.meta} />
+                    </DetailCell>
                   )}
-                </td>
-                <td style={tdStyle}>
-                  <span style={monoStyle}>
-                    {r.actorUserId ? r.actorUserId.slice(0, 16) : t("logsExplorer.actorSystem")}
-                  </span>
-                </td>
-                <td style={{ ...tdStyle, color: "var(--text-3)", fontFamily: "var(--mono)", fontSize: 11 }}>
-                  {metaSummary(r) || "—"}
-                </td>
-              </tr>
-            ))}
+                </Fragment>
+              );
+            })}
           </tbody>
         </table>
       )}

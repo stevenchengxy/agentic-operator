@@ -1,39 +1,49 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { serve } from "inngest/fastify";
-import type { Inngest } from "inngest";
-import { getActiveHandler } from "../services/inngest-registry";
+import { appIdForTenant, SYSTEM_SLUG } from "@agentic/runtime";
+import { getHandlerForApp } from "../services/inngest-registry";
 
 /**
- * Register Inngest's serve adapter at /inngest. Inngest CLI auto-discovers
- * by hitting this URL during dev sync. The handler responds to GET/POST/PUT.
+ * Inngest serve adapter — ONE app per tenant.
  *
- * The route delegates to the MUTABLE handler held in `inngest-registry` so a
- * runtime re-register (deploy / undeploy / archive) swaps the served function
- * set without a restart. `bootstrapRuntime` seeds that registry via
- * `initInngestRegistry` before this route ever takes a request. If the
- * registry was never initialized (a partial test boot that wires the route
- * directly), we fall back to a STATIC handler built from `opts.functions`,
- * preserving the old behavior.
+ *   - `/inngest`         → the platform `__system` app (auto-discovered by the
+ *                          inngest-cli `-u .../inngest` flag).
+ *   - `/inngest/:slug`   → the tenant app `agentic-operator-<slug>`, registered
+ *                          explicitly via `inngest-sync.ts` PUT self-sync.
+ *
+ * Both routes delegate to the MUTABLE per-app handler held in
+ * `inngest-registry`, so a runtime re-register (deploy / agent enable-disable /
+ * archive / tenant onboarding) swaps the served function set for one app
+ * without a restart. The registry is seeded by `bootstrapRuntime` before this
+ * route takes a request.
  */
-export async function inngestRoute(
-  app: FastifyInstance,
-  opts: { client: Inngest; functions: unknown[] },
-) {
-  // Static fallback — only used if the mutable registry is uninitialized.
-  const staticHandler = serve({
-    client: opts.client,
-    functions: opts.functions as never,
-  });
-
+export async function inngestRoute(app: FastifyInstance): Promise<void> {
+  // Platform app at the base path.
   app.route({
     method: ["GET", "POST", "PUT"],
     url: "/inngest",
     handler: (req: FastifyRequest, reply: FastifyReply) => {
-      let handler: (req: FastifyRequest, reply: FastifyReply) => unknown;
-      try {
-        handler = getActiveHandler() as typeof handler;
-      } catch {
-        handler = staticHandler as unknown as typeof handler;
+      const handler = getHandlerForApp(appIdForTenant(SYSTEM_SLUG));
+      if (!handler) {
+        return reply
+          .code(503)
+          .send({ error: "inngest registry not initialized" });
+      }
+      return handler(req, reply);
+    },
+  });
+
+  // Per-tenant apps.
+  app.route({
+    method: ["GET", "POST", "PUT"],
+    url: "/inngest/:slug",
+    handler: (req: FastifyRequest, reply: FastifyReply) => {
+      const slug = (req.params as { slug: string }).slug;
+      const handler = getHandlerForApp(appIdForTenant(slug));
+      if (!handler) {
+        // Unknown / never-registered / hard-removed tenant.
+        return reply
+          .code(404)
+          .send({ error: `no inngest app registered for tenant '${slug}'` });
       }
       return handler(req, reply);
     },

@@ -68,6 +68,12 @@ export const RunRow = z.object({
    */
   testRun: z.boolean().optional(),
   /**
+   * Parent run id when this run was spawned as a subflow/child (or is a
+   * replay descendant). Lets the list paint a child/REPLAY badge and the
+   * trace tree fetch children via `?parentRunId=`. Null for top-level runs.
+   */
+  parentRunId: z.string().nullable().optional(),
+  /**
    * Resolved real payloads for the run-detail IO/Events tabs — the trigger
    * event payload (the run's INPUT) and the emitted event payload (its
    * OUTPUT). Detail-only: the list endpoint never reads payload files, so
@@ -93,6 +99,11 @@ export const StepRow = z.object({
   model: z.string().nullable(),
   tokensIn: z.number().nullable(),
   tokensOut: z.number().nullable(),
+  /**
+   * Execution attempt count. >1 means Inngest retried this step's body in
+   * place (the run viewer renders an "attempt N" badge). Defaults to 1.
+   */
+  attempts: z.number().optional(),
   // Resolved real input/output payloads for this step (run-detail only — the
   // list endpoint leaves these undefined). Powers the Timeline/Trace/IO tabs'
   // Inngest-style per-step 📥 input / 📤 output.
@@ -106,11 +117,28 @@ export const ListRunsQuery = z.object({
   status: z.string().optional(),
   agent: z.string().optional(),
   q: z.string().optional(),
+  /** Filter to a parent run's children (trace-tree lazy expand). */
+  parentRunId: z.string().optional(),
 });
+
+/**
+ * A human task this run is currently blocked on (HITL `waitForEvent`). Lets
+ * the run viewer show an Inngest-style "waiting for event/approval" state and
+ * deep-link to the task inbox instead of going dark.
+ */
+export const RunWaitingTask = z.object({
+  id: z.string(),
+  title: z.string(),
+  awaitingRole: z.string().nullable(),
+  createdAt: z.coerce.date().nullable(),
+});
+export type RunWaitingTask = z.infer<typeof RunWaitingTask>;
 
 export const GetRunResponse = z.object({
   run: RunRow,
   steps: z.array(StepRow),
+  /** Present + non-null while the run is blocked on a human task. */
+  waitingTask: RunWaitingTask.nullable().optional(),
 });
 
 export const ReplayRunResponse = z.object({

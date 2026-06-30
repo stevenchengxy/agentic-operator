@@ -59,7 +59,8 @@
                 "manual",
                 "condition",
                 "delay",
-                "subflow"
+                "subflow",
+                "invoke"
               ]
             },
             "condition": {
@@ -92,7 +93,34 @@
                 "type": "string"
               },
               "additionalProperties": {}
-            }
+            },
+            "depends_on": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "idempotency_key_from": {
+              "type": "string"
+            },
+            "invoke": {
+              "type": "string"
+            },
+            "invoke_input": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {}
+            },
+            "on_error": {
+              "type": "string",
+              "enum": [
+                "soft",
+                "terminal"
+              ]
+            },
+            "default_result": {}
           },
           "required": [],
           "additionalProperties": false,
@@ -172,6 +200,12 @@
         ]
       },
       "typescript_code": {},
+      "generated": {
+        "type": "boolean"
+      },
+      "codeExecuted": {
+        "type": "boolean"
+      },
       "cron": {},
       "cron_timezone": {}
     },

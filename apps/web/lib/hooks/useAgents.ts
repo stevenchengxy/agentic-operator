@@ -138,26 +138,32 @@ export function useDag(): UseQueryResult<DagPayload> {
   });
 }
 
-export interface FunnelStage {
-  stage: number;
-  count: number;
+export interface ThroughputAgent {
+  kebabId: string;
+  name: string;
+  title: string;
+  subjects: number;
+  runs: number;
 }
 
-export interface FunnelResult {
+export interface ThroughputResult {
   window: string;
   windowMs: number;
-  stages: FunnelStage[];
+  agents: ThroughputAgent[];
 }
 
 /**
- * Stage-funnel conversion counts (`GET /v1/funnel`). `window` is one of
- * "1h" | "24h" | "7d"; the backend echoes the resolved window back. Rides
- * the same SSE-driven count invalidation as the other dashboard reads.
+ * Per-agent throughput (`GET /v1/throughput`). For the live workflow, the
+ * distinct subjects + run count each agent processed in the window. `window`
+ * is "1h" | "24h" | "7d"; the backend echoes the resolved window back. Rides
+ * the same SSE-driven invalidation as the other dashboard reads.
  */
-export function useFunnel(window: "1h" | "24h" | "7d" = "24h"): UseQueryResult<FunnelResult> {
+export function useThroughput(
+  window: "1h" | "24h" | "7d" = "24h",
+): UseQueryResult<ThroughputResult> {
   return useQuery({
-    queryKey: ["workflows", "funnel", window] as const,
-    queryFn: () => callV1<FunnelResult>(`/v1/funnel?window=${window}`),
+    queryKey: ["workflows", "throughput", window] as const,
+    queryFn: () => callV1<ThroughputResult>(`/v1/throughput?window=${window}`),
     staleTime: 10_000,
   });
 }

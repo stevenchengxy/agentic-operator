@@ -1,0 +1,166 @@
+{
+  "domain": "Agents-generation",
+  "slug": "agents-gener-process-resume",
+  "spec": {
+    "key": "processResume",
+    "actionName": "processResume",
+    "slug": "agents-gener-process-resume",
+    "short": "ProcessResumeAgent",
+    "domainId": "Agents-generation",
+    "nameZh": "负责对下载完成并已入库的简历文件进行",
+    "kind": "llm",
+    "trigger": [
+      "RESUME_DOWNLOADED"
+    ],
+    "emit": [
+      "RESUME_PROCESSED",
+      "RESUME_LOCKED_CONFLICT"
+    ],
+    "tools": [
+      "fs.readFromInbox",
+      "parseResumeApi",
+      "ontology.fetchActionRules"
+    ],
+    "unresolvedTools": [],
+    "objects": [
+      "Resume",
+      "Candidate",
+      "Job_Requisition",
+      "Application",
+      "Employee",
+      "CSI_Department"
+    ],
+    "systemPrompt": "你是一个专业的简历自动化处理专家。你的核心职责是对已下载入库的简历文件执行全链路处理：解析结构化数据、候选人唯一性识别与锁定、完整性校验。\n\n工作流程：\n1. 接收输入：获取 `resume_file_path`、`job_requisition_id` 和 `recruiter_id`。\n2. 动态获取规则：调用 `ontology.fetchActionRules` 获取当前动作（`processResume`）的最新业务规则，包括候选人锁定规则、简历完整性要求等。\n3. 读取简历文件：使用 `fs.readFromInbox` 从存储系统读取简历文件（base64 格式）。\n4. 解析简历：使用 `parseResumeApi` 对简历进行结构化解析，提取姓名、手机号、教育经历、工作经历、技能标签等核心字段。\n5. 候选人唯一性识别与锁定：\n   - 基于姓名 + 手机号进行候选人唯一性识别。\n   - 检查候选人是否已被其他 Recruiter 锁定（`is_locked=true` 且 `employee_id` 不同）。\n   - 若存在锁定冲突：产出 `RESUME_LOCKED_CONFLICT` 事件，终止流程。\n   - 若无冲突：创建或更新候选人档案，执行锁定操作。\n6. 完整性校验：检查简历核心字段（姓名、手机号、教育经历、工作经历）是否完整。\n7. 产出结果：\n   - 处理成功 → 产出 `RESUME_PROCESSED` 事件，携带 `candidate_id`、`resume_id`、`process_status=处理成功`。\n   - 锁定冲突 → 产出 `RESUME_LOCKED_CONFLICT` 事件，携带冲突信息。\n\n决策依据：\n- 锁定冲突判断必须依赖动态规则，不可硬编码锁定逻辑。\n- 解析失败时产出 `process_status=解析错误`，不产出 RESUME_PROCESSED 事件。\n\n【前置条件（运行前必须满足；不满足则 fail-close 发拦截/失败事件，不要继续）】\n1. RESUME_DOWNLOADED事件已送达\n2. 简历文件(Resume.file_path)已存在且文件可读取\n3. 关联的招聘岗位(Job_Requisition)记录存在且job_requisition_id非空",
+    "userPrompt": "",
+    "designReasoning": "设计 processResume Agent，负责简历解析、候选人唯一性识别和锁定。这是简历处理链路的入口，需要解析简历文件并处理锁定冲突。",
+    "toolRationale": "fs.readFromInbox 用于读取简历文件；parseResumeApi 用于结构化解析简历；ontology.fetchActionRules 用于动态获取候选人锁定和完整性校验规则。",
+    "decisionLogic": "1. 接收 RESUME_DOWNLOADED 事件，提取 resume_file_path、job_requisition_id、recruiter_id。\n2. 调用 ontology.fetchActionRules 获取 processResume 的业务规则。\n3. 调用 fs.readFromInbox 读取简历文件（base64）。\n4. 调用 parseResumeApi 解析简历，提取结构化数据。\n5. 基于姓名+手机号检查候选人唯一性：\n   - 若候选人已存在且被其他 Recruiter 锁定 → emit RESUME_LOCKED_CONFLICT。\n   - 否则 → 创建/更新候选人档案，执行锁定。\n6. 校验简历完整性（姓名、手机号、教育经历、工作经历）。\n7. 创建 Application 记录（初始 status=待处理，stage=初筛）。\n8. emit RESUME_PROCESSED，携带 candidate_id、resume_id、process_status。",
+    "steps": [
+      {
+        "name": "step_1",
+        "description": "调用 fs.readFromInbox",
+        "tool": "fs.readFromInbox"
+      },
+      {
+        "name": "step_2",
+        "description": "调用 parseResumeApi",
+        "tool": "parseResumeApi"
+      },
+      {
+        "name": "step_3",
+        "description": "调用 ontology.fetchActionRules",
+        "tool": "ontology.fetchActionRules"
+      }
+    ],
+    "ruleRefs": [],
+    "retries": 3,
+    "hitl": false,
+    "confidence": 0.8,
+    "promptSource": "llm",
+    "inputSchema": [
+      {
+        "field": "resume_file_paths",
+        "type": "List<String>",
+        "description": "事件 RESUME_DOWNLOADED 的 payload 字段"
+      },
+      {
+        "field": "job_requisition_id",
+        "type": "String",
+        "source": "Job_Requisition.job_requisition_id",
+        "description": "该简历关联的招聘岗位唯一编号"
+      },
+      {
+        "field": "resume_file_path",
+        "type": "String",
+        "description": "已下载的简历文件在存储系统中的路径",
+        "source": "Resume.file_path"
+      },
+      {
+        "field": "recruiter_id",
+        "type": "String",
+        "description": "上传该简历的招聘专员唯一编号",
+        "source": "Employee.employee_id"
+      }
+    ],
+    "outputSchema": [
+      {
+        "field": "candidate_id",
+        "type": "String",
+        "description": "处理完成后创建或匹配的候选人唯一编号",
+        "source": "Candidate.candidate_id"
+      },
+      {
+        "field": "resume_id",
+        "type": "String",
+        "description": "处理完成的简历唯一编号",
+        "source": "Resume.resume_id"
+      },
+      {
+        "field": "process_status",
+        "type": "String",
+        "description": "简历处理结果状态：处理成功/锁定冲突/信息缺失/解析错误"
+      },
+      {
+        "field": "job_requisition_id",
+        "type": "String",
+        "description": "该简历关联的招聘岗位唯一编号，透传至下游匹配流程",
+        "source": "Job_Requisition.job_requisition_id"
+      }
+    ],
+    "stateBindings": [
+      {
+        "object": "Resume",
+        "reads": [],
+        "writes": [
+          "resume_id",
+          "work_experience",
+          "project_experience",
+          "education_experience",
+          "language_skills",
+          "file_path",
+          "is_original",
+          "skill_tags"
+        ]
+      },
+      {
+        "object": "Candidate",
+        "reads": [],
+        "writes": [
+          "candidate_id",
+          "is_locked",
+          "lock_start_time",
+          "id_number",
+          "name",
+          "nationality",
+          "gender",
+          "birth_date"
+        ]
+      },
+      {
+        "object": "Job_Requisition",
+        "reads": [
+          "job_requisition_id"
+        ],
+        "writes": []
+      },
+      {
+        "object": "Application",
+        "reads": [],
+        "writes": []
+      },
+      {
+        "object": "Employee",
+        "reads": [],
+        "writes": []
+      },
+      {
+        "object": "CSI_Department",
+        "reads": [],
+        "writes": []
+      }
+    ],
+    "generatedCode": "// 负责对下载完成并已入库的简历文件进行 — 由 Agent 工厂从本体动作 `processResume`(Agents-generation)生成。\n// trigger: RESUME_DOWNLOADED → emit: RESUME_PROCESSED | RESUME_LOCKED_CONFLICT\n// 参考脚手架：运行时按 workflow manifest 的 action[] 声明式调度执行（systemPrompt + 工具），\n// 【不直接运行这段 .ts 代码】——它是可读/可改的 agent 定义参考。真·CodeAct 执行路径用 codeExecuted 开关（默认关）。\n\n/** Input/Output schema — 依据本体 DataObjects 定义。 */\ninterface ProcessResumeAgentInput {\n  resume_file_paths: unknown; // 事件 RESUME_DOWNLOADED 的 payload 字段\n  job_requisition_id: string; // 该简历关联的招聘岗位唯一编号 (源: Job_Requisition.job_requisition_id)\n  resume_file_path: string; // 已下载的简历文件在存储系统中的路径 (源: Resume.file_path)\n  recruiter_id: string; // 上传该简历的招聘专员唯一编号 (源: Employee.employee_id)\n}\n\ninterface ProcessResumeAgentOutput {\n  candidate_id: string; // 处理完成后创建或匹配的候选人唯一编号 (源: Candidate.candidate_id)\n  resume_id: string; // 处理完成的简历唯一编号 (源: Resume.resume_id)\n  process_status: string; // 简历处理结果状态：处理成功/锁定冲突/信息缺失/解析错误\n  job_requisition_id: string; // 该简历关联的招聘岗位唯一编号，透传至下游匹配流程 (源: Job_Requisition.job_requisition_id)\n}\n\n/** System prompt — 工厂为【这一个】agent 亲自推理出来的。 */\nconst SYSTEM_PROMPT = `你是一个专业的简历自动化处理专家。你的核心职责是对已下载入库的简历文件执行全链路处理：解析结构化数据、候选人唯一性识别与锁定、完整性校验。\n\n工作流程：\n1. 接收输入：获取 \\`resume_file_path\\`、\\`job_requisition_id\\` 和 \\`recruiter_id\\`。\n2. 动态获取规则：调用 \\`ontology.fetchActionRules\\` 获取当前动作（\\`processResume\\`）的最新业务规则，包括候选人锁定规则、简历完整性要求等。\n3. 读取简历文件：使用 \\`fs.readFromInbox\\` 从存储系统读取简历文件（base64 格式）。\n4. 解析简历：使用 \\`parseResumeApi\\` 对简历进行结构化解析，提取姓名、手机号、教育经历、工作经历、技能标签等核心字段。\n5. 候选人唯一性识别与锁定：\n   - 基于姓名 + 手机号进行候选人唯一性识别。\n   - 检查候选人是否已被其他 Recruiter 锁定（\\`is_locked=true\\` 且 \\`employee_id\\` 不同）。\n   - 若存在锁定冲突：产出 \\`RESUME_LOCKED_CONFLICT\\` 事件，终止流程。\n   - 若无冲突：创建或更新候选人档案，执行锁定操作。\n6. 完整性校验：检查简历核心字段（姓名、手机号、教育经历、工作经历）是否完整。\n7. 产出结果：\n   - 处理成功 → 产出 \\`RESUME_PROCESSED\\` 事件，携带 \\`candidate_id\\`、\\`resume_id\\`、\\`process_status=处理成功\\`。\n   - 锁定冲突 → 产出 \\`RESUME_LOCKED_CONFLICT\\` 事件，携带冲突信息。\n\n决策依据：\n- 锁定冲突判断必须依赖动态规则，不可硬编码锁定逻辑。\n- 解析失败时产出 \\`process_status=解析错误\\`，不产出 RESUME_PROCESSED 事件。\n\n【前置条件（运行前必须满足；不满足则 fail-close 发拦截/失败事件，不要继续）】\n1. RESUME_DOWNLOADED事件已送达\n2. 简历文件(Resume.file_path)已存在且文件可读取\n3. 关联的招聘岗位(Job_Requisition)记录存在且job_requisition_id非空`;\n\nexport const processResumeAgent = defineAgent({\n  id: \"agents-gener-process-resume\",\n  name: \"ProcessResumeAgent\",\n  actor: [\"Agent\"],\n  trigger: [\"RESUME_DOWNLOADED\"],\n  emit: [\"RESUME_PROCESSED\",\"RESUME_LOCKED_CONFLICT\"],\n  tools: [\"fs.readFromInbox\",\"parseResumeApi\",\"ontology.fetchActionRules\"],\n  systemPrompt: SYSTEM_PROMPT,\n  async handler(input, ctx) {\n      // 调用工具 fs.readFromInbox\n      // const readFromInboxResult = await ctx.tools.run(\"fs.readFromInbox\", input);\n      // 调用工具 parseResumeApi\n      // const parseResumeApiResult = await ctx.tools.run(\"parseResumeApi\", input);\n      // 调用工具 ontology.fetchActionRules\n      // const fetchActionRulesResult = await ctx.tools.run(\"ontology.fetchActionRules\", input);\n      // 用本 agent 专属 system prompt 推理(决策核心)\n      const decision = await ctx.reason(SYSTEM_PROMPT, input);\n      // 决策分支（条件见 SYSTEM_PROMPT / decisionLogic）\n      if (decision.pass) {\n        await ctx.emit(\"RESUME_PROCESSED\", { ...input, ...decision });\n      } else {\n        await ctx.emit(\"RESUME_LOCKED_CONFLICT\", { ...input, ...decision });\n      }\n      return { ok: true };\n  },\n});\n",
+    "codeSource": "render"
+  },
+  "createdAt": "2026-06-30T06:43:28.963Z"
+}

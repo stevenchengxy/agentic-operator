@@ -26,6 +26,10 @@ import type {
 } from "@agentic/agent-kit";
 import type { ActionSpec } from "./manifest";
 import { getRuntimeGateway } from "./llm-host";
+import { makeGeneratedAgentPrompt } from "./generated-agent";
+import { runGeneratedCode } from "./codeact";
+import { evaluateCondition } from "./action-plan";
+import { isSandboxTenant, sandboxToolMode, sandboxToolStub, cassetteLookup } from "./sandbox-mode";
 import type {
   ChatContentBlock,
   ChatMessage,
@@ -60,6 +64,17 @@ interface AgentSlots {
    * `MAX_TOOL_USE_ITERS`).
    */
   tool_use?: ToolUseEntry[];
+  /**
+   * Agent Factory marker. When true, the agent's `logic` action runs the runtime's default
+   * generated-agent prompt (no hand-written tenant prompt required) and the tool-use loop
+   * advertises GLOBAL registry tools in addition to tenant tools — so a machine-generated agent
+   * referencing global tools (ontology.fetchActionRules, fs.*, …) can actually call them.
+   */
+  generated?: boolean;
+  /** #G — true CodeAct: when true (AI-written code), the logic action EXECUTES `typescriptCode`'s
+   *  handler in the sandbox instead of the default prompt. Gated (FACTORY_EXEC_GENERATED) + falls back. */
+  codeExecuted?: boolean;
+  typescriptCode?: string;
 }
 
 /** Hard cap on tool-use iterations per `logic` action. Anything above 8
@@ -221,7 +236,12 @@ async function callLLM(
   const tools: ToolDef[] = [];
   if (agent?.tool_use && agent.tool_use.length > 0) {
     for (const entry of agent.tool_use) {
-      const handler = tenantRegistry?.tools?.[entry.name];
+      // Tenant tool wins; for GENERATED agents, fall back to the global registry so their roster
+      // (ontology.fetchActionRules, fs.*, …) is actually advertised to the model. Hand-authored
+      // tenants keep the strict tenant-only behaviour (a stale declaration silently no-ops).
+      const handler =
+        tenantRegistry?.tools?.[entry.name] ??
+        (agent?.generated ? globalToolRegistry.get(entry.name) : undefined);
       if (!handler) continue;
       tools.push({
         name: entry.name,
@@ -486,6 +506,23 @@ export async function runAction(input: StepInput): Promise<StepOutput> {
   let result: StepOutput;
   switch (action.type) {
     case "tool": {
+      // T3 — sandbox interception: in the isolated `-sb` tenant, a Phase-1 `type:"tool"` step calls
+      // the real handler directly (no LLM in the loop), so without this it would hit RoboHire/etc.
+      // for real. mock (default) → stub; replay → recorded cassette (miss → stub); live → real.
+      if (isSandboxTenant(ctx.tenantSlug)) {
+        const mode = sandboxToolMode();
+        if (mode !== "live") {
+          const args = (ctx.event?.data ?? {}) as Record<string, unknown>;
+          const replayed = mode === "replay" ? await cassetteLookup(ctx.tenantSlug!, action.name, args) : undefined;
+          result = {
+            ok: true,
+            type: "tool",
+            data: replayed ?? sandboxToolStub(action.name),
+            meta: { tool: action.name, sandbox: true, toolMode: mode, replayed: replayed !== undefined },
+          };
+          break;
+        }
+      }
       // Same resolution chain as the LLM tool-use loop: tenant override
       // → global registry → legacy mock runTool fallback. Keeps the two
       // dispatch paths behaviourally aligned so an action declared as
@@ -523,6 +560,21 @@ export async function runAction(input: StepInput): Promise<StepOutput> {
       const tenantPrompt = tenantRegistry?.prompts?.[action.name];
       if (tenantPrompt) {
         result = await runTenantPrompt(ctx, tenantPrompt, agent, tenantRegistry);
+      } else if (agent?.generated) {
+        // #G — true CodeAct: when this generated agent has executable AI code, RUN it (gated,
+        // sandboxed, dry-run tools) so the verdict reflects the deployable code — not a
+        // re-interpretation. Any failure returns null → fall through to the default prompt.
+        const exec = agent.codeExecuted && agent.typescriptCode
+          ? await runGeneratedCode(agent.typescriptCode, (ctx?.event?.data ?? {}) as Record<string, unknown>, { systemPrompt: agent.ontology_instructions, tenantSlug: ctx?.tenantSlug })
+          : null;
+        if (exec) {
+          result = { ok: true, type: "logic", data: exec.data, meta: { codeExecuted: true, emitted: exec.emitted } };
+        } else {
+          // Generated agent: no hand-written tenant prompt by design. Run the default generated
+          // prompt — the agent's ontology_instructions ARE its system prompt; this feeds the event
+          // payload and lets the tool-use loop drive.
+          result = await runTenantPrompt(ctx, makeGeneratedAgentPrompt(action.name), agent, tenantRegistry);
+        }
       } else {
         // UC-V11-25 / AR-GAP-13 — strict mode. Boot-time validation in
         // `packages/runtime/src/bootstrap.ts` refuses to register a tenant
@@ -563,23 +615,15 @@ export async function runAction(input: StepInput): Promise<StepOutput> {
       break;
     }
     case "condition": {
-      // P1-RT-03: lightweight expression evaluator. The real evaluator lives
-      // in register.ts where it has access to step/event/agent context; the
-      // step-engine version returns the same shape so callers can branch on
-      // `data.evaluated` without case analysis on `type`.
+      // Phase 1a: the real, safe boolean evaluator (action-plan.ts) — supports path
+      // comparisons (==/!=/>/</>=/<=), presence, negation, &&/||, plus the legacy
+      // `lastResult == null` forms. Unparseable → false (deterministic, never throws).
+      // register.ts consumes `data.evaluated` to SKIP downstream dependsOn steps.
       const condition = (action as { condition?: string }).condition ?? "true";
-      // Minimal JS-ish evaluator: supports `lastResult == null`, `!= null`,
-      // and bare literals. Anything that doesn't parse cleanly is treated
-      // as `false` rather than throwing — keeps the engine deterministic.
-      let evaluated = false;
-      try {
-        if (/^true$/i.test(condition.trim())) evaluated = true;
-        else if (/lastResult\s*==\s*null/.test(condition)) evaluated = ctx.lastResult == null;
-        else if (/lastResult\s*!=\s*null/.test(condition)) evaluated = ctx.lastResult != null;
-        else evaluated = Boolean(condition);
-      } catch {
-        evaluated = false;
-      }
+      const evaluated = evaluateCondition(condition, {
+        lastResult: ctx.lastResult,
+        event: ctx.event,
+      });
       result = {
         ok: true,
         type: "condition",
@@ -618,6 +662,18 @@ export async function runAction(input: StepInput): Promise<StepOutput> {
           subflow: a.subflow ?? null,
           subflow_input: a.subflow_input ?? {},
         },
+      };
+      break;
+    }
+    default: {
+      // Phase 1a — `invoke` is handled synchronously in register.ts (step.invoke) and never
+      // reaches runAction. This default keeps the switch exhaustive over StepTypeEnum and
+      // returns a benign error result for any unexpected/ad-hoc type.
+      result = {
+        ok: false,
+        type: "logic",
+        data: null,
+        meta: { error: "unsupported_action_type", actionType: (action as { type?: string }).type },
       };
       break;
     }

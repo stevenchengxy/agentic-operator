@@ -120,6 +120,48 @@
       "when": 1780000000000,
       "tag": "0016_access_control",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "6",
+      "when": 1780050000000,
+      "tag": "0017_step_attempts",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "6",
+      "when": 1780100000000,
+      "tag": "0018_factory_tables",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "6",
+      "when": 1780150000000,
+      "tag": "0019_factory_runs_skills",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "6",
+      "when": 1780200000000,
+      "tag": "0020_factory_tools",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "6",
+      "when": 1780250000000,
+      "tag": "0021_factory_runs_soft_delete",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "6",
+      "when": 1780300000000,
+      "tag": "0022_factory_tools_schemas",
+      "breakpoints": true
     }
   ]
 }

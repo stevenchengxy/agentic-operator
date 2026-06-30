@@ -12,7 +12,7 @@
  * preserves the "Open agent" jump button + TEST RUN badge for testRun runs.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import {
@@ -23,6 +23,7 @@ import {
   Panel,
   StatusDot,
   CodeBlock,
+  CountUp,
   useToast,
   type StatusName,
 } from "@/app/portal/components";
@@ -35,6 +36,7 @@ import {
   useCancelRun,
   type RunListRow,
   type StepRow,
+  type RunWaitingTask,
 } from "@/lib/hooks/useRuns";
 import { useAgents, useAgent, type AgentListRow } from "@/lib/hooks/useAgents";
 // AgentCodeTab is owned by the heavy-views engineer (P2-FE-08/09). Imported
@@ -67,11 +69,12 @@ export default function RunDetailPage() {
   if (isLoading || !data)
     return <Empty title={t("runDetail.loadingRun")} hint={runId} />;
 
-  const { run, steps } = data;
+  const { run, steps, waitingTask } = data;
   return (
     <RunDetail
       run={run}
       steps={steps}
+      waitingTask={waitingTask ?? null}
       tab={tab}
       setTab={setTab}
       tenant={tenant}
@@ -82,12 +85,13 @@ export default function RunDetailPage() {
 interface RunDetailProps {
   run: RunListRow;
   steps: StepRow[];
+  waitingTask: RunWaitingTask | null;
   tab: Tab;
   setTab: (t: Tab) => void;
   tenant: string;
 }
 
-function RunDetail({ run, steps, tab, setTab, tenant }: RunDetailProps) {
+function RunDetail({ run, steps, waitingTask, tab, setTab, tenant }: RunDetailProps) {
   const { data: agents = [] } = useAgents();
   const router = useRouter();
   const toast = useToast();
@@ -334,14 +338,22 @@ function RunDetail({ run, steps, tab, setTab, tenant }: RunDetailProps) {
         />
         <StatCell
           label={t("runDetail.statSteps")}
-          value={steps.length > 0 ? String(steps.length) : "—"}
+          value={steps.length > 0 ? <CountUp value={steps.length} /> : "—"}
         />
         <StatCell
           label={t("runDetail.statTokens")}
-          value={`${fmtNum(run.tokensIn ?? 0)} · ${fmtNum(run.tokensOut ?? 0)}`}
+          value={
+            <>
+              <CountUp value={run.tokensIn ?? 0} format={fmtNum} /> ·{" "}
+              <CountUp value={run.tokensOut ?? 0} format={fmtNum} />
+            </>
+          }
         />
         <StatCell label={t("runDetail.statSubject")} value={run.subject ?? "—"} mono />
       </div>
+
+      {/* Live / waiting banner — Inngest-style "what's happening right now". */}
+      <RunLiveBanner run={run} waitingTask={waitingTask} tenant={tenant} setTab={setTab} />
 
       {/* Tabs */}
       <div
@@ -499,6 +511,108 @@ function StatCell({
   );
 }
 
+// ─── Live / waiting banner ───────────────────────────────────────────────────
+
+/**
+ * The "what's happening right now" strip — so an operator never has to open
+ * Inngest to see a run's live state. Three states:
+ *   - blocked on a human task  → amber, deep-links to the task inbox
+ *   - actively running a step  → signal, names the current step, jumps to logs
+ *   - otherwise                → nothing (terminal runs don't need a banner)
+ */
+function RunLiveBanner({
+  run,
+  waitingTask,
+  tenant,
+  setTab,
+}: {
+  run: RunListRow;
+  waitingTask: RunWaitingTask | null;
+  tenant: string;
+  setTab: (t: Tab) => void;
+}) {
+  const { t } = useI18n();
+
+  if (waitingTask) {
+    return (
+      <Link
+        href={`/portal/${tenant}/tasks?id=${encodeURIComponent(waitingTask.id)}` as never}
+        style={{ textDecoration: "none" }}
+      >
+        <div
+          className="rise"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+            padding: "12px 16px",
+            background: "color-mix(in srgb, var(--amber) 8%, var(--panel))",
+            border: "1px solid color-mix(in srgb, var(--amber) 35%, transparent)",
+            borderRadius: 8,
+            flexShrink: 0,
+          }}
+        >
+          <span className="health-pulse" style={{ color: "var(--amber)" }} />
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 13, color: "var(--text)", fontWeight: 500 }}>
+              {t("runDetail.waitingHuman")}
+            </div>
+            <div style={{ fontSize: 11.5, color: "var(--text-2)", marginTop: 1 }}>
+              {waitingTask.title}
+              {waitingTask.awaitingRole
+                ? ` · ${t("runDetail.awaitingRole", { role: waitingTask.awaitingRole })}`
+                : ""}
+            </div>
+          </div>
+          <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--amber)" }}>
+            {t("runDetail.openTask")} ↗
+          </span>
+        </div>
+      </Link>
+    );
+  }
+
+  if (run.status === "running") {
+    return (
+      <div
+        className="rise"
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 12,
+          padding: "12px 16px",
+          background: "color-mix(in srgb, var(--signal) 7%, var(--panel))",
+          border: "1px solid color-mix(in srgb, var(--signal) 30%, transparent)",
+          borderRadius: 8,
+          flexShrink: 0,
+        }}
+      >
+        <span className="health-pulse" style={{ color: "var(--signal)" }} />
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontSize: 13, color: "var(--text)", fontWeight: 500 }}>
+            {run.currentStepName
+              ? t("runDetail.nowRunningStep", {
+                  step: run.currentStepName,
+                  ord: run.currentStepOrd ?? "?",
+                  total: run.stepCount ?? "?",
+                })
+              : t("runDetail.nowRunning")}
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={() => setTab("logs")}
+          style={{ marginLeft: "auto", fontSize: 11, color: "var(--signal)", cursor: "pointer" }}
+        >
+          {t("runDetail.followLogs")} ↗
+        </button>
+      </div>
+    );
+  }
+
+  return null;
+}
+
 // ─── Timeline tab ────────────────────────────────────────────────────────────
 
 function TimelineTab({ steps, run }: { steps: StepRow[]; run: RunListRow }) {
@@ -563,8 +677,22 @@ function TimelineTab({ steps, run }: { steps: StepRow[]; run: RunListRow }) {
                   <StatusDot status={STATUS_TO_DOT[s.status] ?? "idle"} />
                 </div>
                 <div>
-                  <div className="mono" style={{ fontSize: 12, color: "var(--text)" }}>
-                    {s.name}
+                  <div
+                    style={{ display: "flex", alignItems: "center", gap: 6 }}
+                  >
+                    <span className="mono" style={{ fontSize: 12, color: "var(--text)" }}>
+                      {s.name}
+                    </span>
+                    {(s.attempts ?? 1) > 1 && (
+                      <Badge tone="amber" style={{ fontSize: 9 }}>
+                        {t("runDetail.attemptN", { n: s.attempts ?? 1 })}
+                      </Badge>
+                    )}
+                    {s.type === "manual" && s.status === "running" && (
+                      <Badge tone="amber" style={{ fontSize: 9 }}>
+                        {t("runDetail.waitingTag")}
+                      </Badge>
+                    )}
                   </div>
                   <div style={{ fontSize: 10.5, color: "var(--text-3)" }}>
                     {t("runDetail.stepN", { n: i + 1 })} · {s.type}
@@ -671,59 +799,164 @@ function StepIO({ label, value }: { label: string; value: unknown }) {
 
 // ─── Logs tab ────────────────────────────────────────────────────────────────
 
+type LogLevel = "DEBUG" | "INFO" | "WARN" | "ERROR";
+const LOG_LEVELS: LogLevel[] = ["DEBUG", "INFO", "WARN", "ERROR"];
+const LEVEL_COLOR: Record<LogLevel, string> = {
+  DEBUG: "var(--text-3)",
+  INFO: "var(--text-2)",
+  WARN: "var(--amber)",
+  ERROR: "var(--red)",
+};
+
+interface ParsedLogLine {
+  raw: string;
+  ts: string | null;
+  level: LogLevel;
+  event: string | null;
+  rest: string;
+}
+
+/** Parse the runtime's `<ts>  LEVEL  event  k=v k=v` format. */
+function parseLogLine(raw: string): ParsedLogLine {
+  if (raw.startsWith("# ")) {
+    return { raw, ts: null, level: "INFO", event: "system", rest: raw.slice(2) };
+  }
+  const m = raw.match(/^(\S+)\s+(DEBUG|INFO|WARN|ERROR)\s+(\S+)\s*(.*)$/);
+  if (m) {
+    return { raw, ts: m[1]!, level: m[2] as LogLevel, event: m[3]!, rest: m[4] ?? "" };
+  }
+  return { raw, ts: null, level: "INFO", event: null, rest: raw };
+}
+
+/**
+ * Per-run log viewer. Reads the SSE log stream at `/v1/runs/:id/logs`
+ * (one-shot, or `?follow=1` to live-tail), parses the structured line format,
+ * and offers level filtering, search, follow toggle, and download — so the
+ * run's full trace is observable in-app without opening Inngest.
+ */
 function LogsTab({ runId, tenant }: { runId: string; tenant: string }) {
-  // Real per-run log content via `/v1/runs/:runId/logs`. Previously this
-  // rendered a RAAS-specific sample log (matchResume/CAN-88412) regardless
-  // of which run the user opened.
   const { t } = useI18n();
   const [lines, setLines] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [follow, setFollow] = useState(false);
+  const [level, setLevel] = useState<LogLevel | "ALL">("ALL");
+  const [q, setQ] = useState("");
+  const scrollRef = useRef<HTMLPreElement | null>(null);
 
   useEffect(() => {
+    const ac = new AbortController();
     let cancelled = false;
     setLoading(true);
     setError(null);
     setLines([]);
-    // The api streams logs as SSE text/event-stream. Without ?follow=1 it
-    // sends the existing file content then closes the connection — perfect
-    // for a one-shot "show me the log" panel. We parse SSE frames so the
-    // operator sees the same lines that the server-side tail would emit.
-    fetch(`/v1/runs/${encodeURIComponent(runId)}/logs`, {
-      credentials: "same-origin",
-      headers: { Accept: "text/event-stream", "x-agentic-tenant": tenant },
-    })
-      .then(async (res) => {
-        if (!res.ok) throw new Error(`/v1/runs/${runId}/logs: HTTP ${res.status}`);
-        const text = await res.text();
-        if (cancelled) return;
-        const out: string[] = [];
-        // Frames look like:
-        //   event: log\n
-        //   data: <line>\n
-        //   \n
-        // Pull just the data lines from `event: log` frames.
-        let currentEvent: string | null = null;
-        for (const raw of text.split("\n")) {
-          if (raw.startsWith("event:")) currentEvent = raw.slice(6).trim();
-          else if (raw.startsWith("data:")) {
-            if (currentEvent === "log") out.push(raw.slice(5).trim());
-            else if (currentEvent === "info") out.push(`# ${raw.slice(5).trim()}`);
-          } else if (raw === "") currentEvent = null;
+
+    const url = `/v1/runs/${encodeURIComponent(runId)}/logs${follow ? "?follow=1" : ""}`;
+    (async () => {
+      try {
+        const res = await fetch(url, {
+          credentials: "same-origin",
+          headers: { Accept: "text/event-stream", "x-agentic-tenant": tenant },
+          signal: ac.signal,
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        if (!res.body) {
+          setLoading(false);
+          return;
         }
-        setLines(out);
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        setError(err instanceof Error ? err.message : String(err));
-      })
-      .finally(() => {
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+        let currentEvent: string | null = null;
+        // eslint-disable-next-line no-constant-condition
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done || cancelled) break;
+          buf += decoder.decode(value, { stream: true });
+          const frags = buf.split("\n");
+          buf = frags.pop() ?? "";
+          const batch: string[] = [];
+          for (const raw of frags) {
+            if (raw.startsWith("event:")) currentEvent = raw.slice(6).trim();
+            else if (raw.startsWith("data:")) {
+              if (currentEvent === "log") batch.push(raw.slice(5).trim());
+              else if (currentEvent === "info") batch.push(`# ${raw.slice(5).trim()}`);
+            } else if (raw === "") currentEvent = null;
+          }
+          if (batch.length && !cancelled) {
+            setLoading(false);
+            setLines((prev) => {
+              const next = [...prev, ...batch];
+              return next.length > 5000 ? next.slice(next.length - 5000) : next;
+            });
+          }
+        }
         if (!cancelled) setLoading(false);
-      });
+      } catch (err) {
+        if (cancelled || ac.signal.aborted) return;
+        setError(err instanceof Error ? err.message : String(err));
+        setLoading(false);
+      }
+    })();
+
     return () => {
       cancelled = true;
+      ac.abort();
     };
-  }, [runId, tenant]);
+  }, [runId, tenant, follow]);
+
+  const parsed = useMemo(() => lines.map(parseLogLine), [lines]);
+  const filtered = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    return parsed.filter(
+      (p) =>
+        (level === "ALL" || p.level === level) &&
+        (!needle || p.raw.toLowerCase().includes(needle)),
+    );
+  }, [parsed, level, q]);
+
+  // Auto-scroll to the newest line while following.
+  useEffect(() => {
+    if (follow && scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [filtered, follow]);
+
+  const counts = useMemo(() => {
+    const c: Record<string, number> = { ALL: parsed.length };
+    for (const lvl of LOG_LEVELS) c[lvl] = 0;
+    for (const p of parsed) c[p.level] = (c[p.level] ?? 0) + 1;
+    return c;
+  }, [parsed]);
+
+  function download() {
+    const blob = new Blob([lines.join("\n")], { type: "text/plain" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `${runId}.log`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+
+  const chip = (key: LogLevel | "ALL", label: string, color?: string) => (
+    <button
+      key={key}
+      type="button"
+      onClick={() => setLevel(key)}
+      style={{
+        fontSize: 10.5,
+        fontFamily: "var(--mono)",
+        padding: "3px 9px",
+        borderRadius: 99,
+        border: `1px solid ${level === key ? "var(--signal)" : "var(--border-2)"}`,
+        background: level === key ? "color-mix(in srgb, var(--signal) 10%, transparent)" : "transparent",
+        color: level === key ? "var(--signal)" : color ?? "var(--text-3)",
+        cursor: "pointer",
+      }}
+    >
+      {label} {counts[key] ?? 0}
+    </button>
+  );
 
   return (
     <Panel
@@ -733,27 +966,68 @@ function LogsTab({ runId, tenant }: { runId: string; tenant: string }) {
           ? t("runDetail.logsLoading")
           : error
             ? t("runDetail.logsError")
-            : t("runDetail.logsFileBacked")
+            : t("runDetail.logsLineCount", { count: filtered.length })
       }
       padded={false}
       action={
-        <Button small icon="external" tone="ghost">
-          {t("runDetail.openFile")}
-        </Button>
+        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          <Button
+            small
+            icon={follow ? "pause" : "play"}
+            tone={follow ? "primary" : "ghost"}
+            onClick={() => setFollow((v) => !v)}
+          >
+            {follow ? t("runDetail.logsFollowing") : t("runDetail.logsFollow")}
+          </Button>
+          <Button small icon="upload" tone="ghost" onClick={download}>
+            {t("runDetail.logsDownload")}
+          </Button>
+        </div>
       }
     >
+      {/* Controls: level chips + search */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          flexWrap: "wrap",
+          padding: "10px 14px",
+          borderBottom: "1px solid var(--border)",
+        }}
+      >
+        {chip("ALL", t("runDetail.logsAll"))}
+        {LOG_LEVELS.map((lvl) => chip(lvl, lvl, LEVEL_COLOR[lvl]))}
+        <input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder={t("runDetail.logsSearch")}
+          style={{
+            marginLeft: "auto",
+            minWidth: 180,
+            fontSize: 11.5,
+            fontFamily: "var(--mono)",
+            padding: "4px 10px",
+            background: "var(--bg-2)",
+            border: "1px solid var(--border)",
+            borderRadius: 6,
+            color: "var(--text)",
+          }}
+        />
+      </div>
+
       <pre
+        ref={scrollRef}
         style={{
           margin: 0,
           padding: 16,
           background: "var(--bg-2)",
           fontFamily: "var(--mono)",
           fontSize: 11.5,
-          lineHeight: 1.65,
-          color: "var(--text-2)",
+          lineHeight: 1.7,
           whiteSpace: "pre-wrap",
           wordBreak: "break-all",
-          maxHeight: 420,
+          maxHeight: 460,
           overflow: "auto",
         }}
       >
@@ -762,22 +1036,34 @@ function LogsTab({ runId, tenant }: { runId: string; tenant: string }) {
             {t("runDetail.logsFailedPrefix")} {error}
           </div>
         )}
-        {!error && lines.length === 0 && !loading && (
+        {!error && filtered.length === 0 && !loading && (
           <div style={{ color: "var(--text-3)" }}>{t("runDetail.logsEmpty")}</div>
         )}
-        {lines.map((line, i) => {
-          let color = "var(--text-2)";
-          if (line.includes("ERROR")) color = "var(--red)";
-          else if (line.includes(" WARN ")) color = "var(--amber)";
-          else if (line.includes("DEBUG")) color = "var(--text-3)";
-          else if (line.includes("emit") || line.includes("run.end"))
-            color = "var(--signal)";
-          return (
-            <div key={i} style={{ color }}>
-              {line}
-            </div>
-          );
-        })}
+        {filtered.map((p, i) => (
+          <div key={i} style={{ display: "flex", gap: 8 }}>
+            {p.ts && (
+              <span style={{ color: "var(--text-4)", flexShrink: 0 }}>
+                {p.ts.slice(11, 23)}
+              </span>
+            )}
+            <span
+              style={{
+                color: LEVEL_COLOR[p.level],
+                flexShrink: 0,
+                width: 42,
+                fontWeight: p.level === "ERROR" || p.level === "WARN" ? 600 : 400,
+              }}
+            >
+              {p.level}
+            </span>
+            {p.event && (
+              <span style={{ color: "var(--accent-text)", flexShrink: 0, minWidth: 90 }}>
+                {p.event}
+              </span>
+            )}
+            <span style={{ color: "var(--text-2)" }}>{p.rest}</span>
+          </div>
+        ))}
       </pre>
     </Panel>
   );

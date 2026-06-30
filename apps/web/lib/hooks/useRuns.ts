@@ -121,14 +121,26 @@ export interface StepRow {
   model: string | null;
   tokensIn: number | null;
   tokensOut: number | null;
+  /** Execution attempt count (>1 = retried in place). Defaults to 1. */
+  attempts?: number;
   /** Run-detail only: resolved real input/output payloads for this step. */
   input?: unknown;
   output?: unknown;
 }
 
+/** A human task the run is currently blocked on (HITL waitForEvent). */
+export interface RunWaitingTask {
+  id: string;
+  title: string;
+  awaitingRole: string | null;
+  createdAt: string | null;
+}
+
 export interface RunDetail {
   run: RunListRow;
   steps: StepRow[];
+  /** Present + non-null while the run is blocked on a human task. */
+  waitingTask?: RunWaitingTask | null;
 }
 
 export function useRun(id: string | null | undefined): UseQueryResult<RunDetail> {

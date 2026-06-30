@@ -184,14 +184,20 @@ export function Sidebar({ tenants, version = "v0.6.2" }: SidebarProps) {
         </NavGroup>
         <NavGroup label={t("nav.group.manage")}>
           <NavItem
+            href={`${base}/factory`}
+            icon="spark"
+            label={t("nav.factory")}
+            matchPrefix
+          />
+          <NavItem
             href={`${base}/deployments`}
             icon="deploy"
             label={t("nav.deployments")}
           />
           <NavItem
             href={`${base}/tools`}
-            icon="code"
-            label={t("nav.tools")}
+            icon="library"
+            label={t("nav.toolLibrary")}
             matchPrefix
           />
           <NavItem

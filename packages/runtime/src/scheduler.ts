@@ -27,7 +27,7 @@
  * agent's manifest to declare that event name in `trigger[]`.
  */
 
-import { inngest } from "./client";
+import { getTenantInngest } from "./client";
 import type { AgentSpec } from "./manifest";
 import type { InngestFunction } from "inngest";
 
@@ -84,7 +84,10 @@ function buildCronFn(
       ? agent.trigger[0]!
       : `__schedule.${agent.name}`;
 
-  return inngest.createFunction(
+  // Per-tenant app: the cron function lives on the tenant's own app and emits
+  // `${slug}/${triggerName}` onto the tenant client below, so it reaches the
+  // tenant's agent functions (same app + same namespaced event).
+  return getTenantInngest(tenantSlug).createFunction(
     {
       id,
       name: `Cron: ${agent.title ?? agent.name}`,

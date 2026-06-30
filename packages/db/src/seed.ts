@@ -44,6 +44,18 @@ const TENANT_FIXTURES = [
     color: "#65e0a3",
   },
   {
+    // Agents-generation — the agent-factory's input domain, grounded LIVE in
+    // AllmetaOntology (Studio :3500) rather than a local models/ folder. Seeded so
+    // it shows in the tenant switcher; its ontology is fetched live via
+    // AllmetaOntologySource and the factory generates the agents into it. Slug is
+    // lowercase-Latin (tenantSlugFromFolder convention); the Allmeta domain id is
+    // "Agents-generation" (resolved case-insensitively).
+    slug: "agents-generation",
+    name: "Agents-generation",
+    subtitle: "Agent factory · live AllmetaOntology 本体",
+    color: "#c4b5fd",
+  },
+  {
     slug: "support",
     name: "SupportFlow",
     subtitle: "Tier-1 ticket triage",

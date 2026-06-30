@@ -13,27 +13,31 @@ export const TenantCounts = z.object({
 export type TenantCounts = z.infer<typeof TenantCounts>;
 
 /**
- * Stage-funnel for the dashboard. For the tenant's LIVE workflow, each
- * pipeline stage (the numeric kebab-id prefix getDag derives) gets the
- * count of DISTINCT subjects whose runs reached it within the rolling
- * window — a conversion funnel, not a throughput count. Stages are sorted
- * ascending; the unstaged sentinel (stage 99) is excluded and test runs
- * never contribute.
+ * Per-agent throughput for the dashboard. For the tenant's LIVE workflow,
+ * each agent gets the count of DISTINCT subjects it processed and its run
+ * count within the rolling window. This is honest across every tenant
+ * shape (linear pipeline or not) — unlike a stage "funnel", which only made
+ * sense for staged tenants. Sorted by subjects desc; test runs never count.
  */
-export const FunnelStage = z.object({
-  stage: z.number(),
-  count: z.number(),
+export const ThroughputAgent = z.object({
+  kebabId: z.string(),
+  name: z.string(),
+  title: z.string(),
+  /** Distinct subjects this agent processed in the window. */
+  subjects: z.number(),
+  /** Total runs (incl. repeats on the same subject) in the window. */
+  runs: z.number(),
 });
-export type FunnelStage = z.infer<typeof FunnelStage>;
+export type ThroughputAgent = z.infer<typeof ThroughputAgent>;
 
-export const FunnelResult = z.object({
+export const ThroughputResult = z.object({
   /** Human window token echoed back: "1h" | "24h" | "7d". */
   window: z.string(),
   /** Window length in milliseconds (source of truth for the query). */
   windowMs: z.number(),
-  stages: z.array(FunnelStage),
+  agents: z.array(ThroughputAgent),
 });
-export type FunnelResult = z.infer<typeof FunnelResult>;
+export type ThroughputResult = z.infer<typeof ThroughputResult>;
 
 /** Health endpoint — unauthenticated, used by load balancers / `/api/health`. */
 export const HealthReport = z.object({

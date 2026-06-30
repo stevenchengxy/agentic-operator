@@ -1,0 +1,297 @@
+{
+  "domain": "Agents-generation",
+  "slug": "agents-gener-invite-internal-interview",
+  "spec": {
+    "key": "inviteInternalInterview",
+    "actionName": "inviteInternalInterview",
+    "slug": "agents-gener-invite-internal-interview",
+    "short": "InviteInternalInterviewAgent",
+    "domainId": "Agents-generation",
+    "nameZh": "针对需要内部面试的岗位，自动触发内部",
+    "kind": "llm",
+    "trigger": [
+      "INTERVIEW_INVITATION_REQUESTED"
+    ],
+    "emit": [
+      "INTERVIEW_INVITATION_SENT",
+      "INTERVIEW_INVITATION_FAILED"
+    ],
+    "tools": [
+      "inviteCandidateApi"
+    ],
+    "unresolvedTools": [],
+    "objects": [
+      "Interview_Record",
+      "Candidate",
+      "Resume",
+      "Job_Requisition",
+      "Employee",
+      "Application"
+    ],
+    "systemPrompt": "你是一个专业的内部面试邀约自动化专家。你的核心职责是针对通过简历匹配且需要内部面试的候选人，自动生成个性化的 AI 面试邀请邮件，并将邀约信息同步给招聘专员，确保候选人在推送客户前经过内部初筛。\n\n工作流程：\n1. 接收输入：获取 `candidate_id`、`job_requisition_id` 和 `application_id`（来自 INTERVIEW_INVITATION_REQUESTED 事件）。\n2. 读取候选人信息：获取候选人姓名、邮箱地址（Candidate.email）。\n3. 读取岗位信息：获取职位名称、面试要求等（Job_Requisition 相关字段）。\n4. 生成面试邀请：调用 `inviteCandidateApi` 生成个性化的 AI 面试邀请邮件内容，包含：\n   - 候选人姓名和应聘岗位信息。\n   - AI 面试链接和截止时间。\n   - 面试注意事项和准备建议。\n5. 发送邀请：将生成的邀请邮件发送至候选人邮箱。\n6. 创建面试记录：在系统中创建 `Interview_Record`（interview_type=内部面试，recording_url=AI面试链接）。\n7. 判定结果：\n   - 发送成功 → 产出 `INTERVIEW_INVITATION_SENT` 事件，携带 `interview_record_id` 和 `invitation_status=发送成功`。\n   - 发送失败（邮箱无效/邮件服务异常）→ 产出 `INTERVIEW_INVITATION_FAILED` 事件，携带失败原因。\n\n决策依据：\n- 候选人邮箱（Candidate.email）必须非空，否则直接产出 INTERVIEW_INVITATION_FAILED。\n- 面试邀请内容应根据岗位信息个性化定制，不使用通用模板。\n- 发送失败时必须记录失败原因，便于人工跟进。\n\n【前置条件（运行前必须满足；不满足则 fail-close 发拦截/失败事件，不要继续）】\n1. MATCH_PASSED_NEED_INTERVIEW事件已送达\n2. 候选人(Candidate)记录存在且candidate_id非空\n3. 候选人关联的职位投递申请(Application)记录存在且status不为\"已淘汰\"\n4. 候选人联系邮箱(Candidate.email)非空\n5. 关联的招聘岗位(Job_Requisition)记录存在且job_requisition_id非空",
+    "userPrompt": "",
+    "designReasoning": "设计最后一个 inviteInternalInterview Agent，负责生成并发送 AI 面试邀请邮件，触发内部面试流程。",
+    "toolRationale": "inviteCandidateApi 是核心工具，用于生成个性化的 AI 面试邀请邮件内容，并触发邮件发送流程。",
+    "decisionLogic": "1. 接收 INTERVIEW_INVITATION_REQUESTED 事件，提取 candidate_id、job_requisition_id、application_id。\n2. 检查 Candidate.email 是否非空：\n   - 为空 → emit INTERVIEW_INVITATION_FAILED，携带 reason=邮箱为空。\n3. 读取候选人信息和岗位信息。\n4. 调用 inviteCandidateApi 生成面试邀请邮件内容。\n5. 发送邮件：\n   - 成功 → 创建 Interview_Record，emit INTERVIEW_INVITATION_SENT，携带 interview_record_id 和 invitation_status=发送成功。\n   - 失败 → emit INTERVIEW_INVITATION_FAILED，携带失败原因。",
+    "steps": [
+      {
+        "name": "step_1",
+        "description": "调用 inviteCandidateApi",
+        "tool": "inviteCandidateApi"
+      }
+    ],
+    "ruleRefs": [],
+    "retries": 3,
+    "hitl": false,
+    "confidence": 0.8,
+    "promptSource": "llm",
+    "inputSchema": [
+      {
+        "field": "candidate_id",
+        "type": "String",
+        "source": "Candidate.candidate_id",
+        "description": "待邀约内部面试的候选人唯一编号"
+      },
+      {
+        "field": "job_requisition_id",
+        "type": "String",
+        "source": "Job_Requisition.job_requisition_id",
+        "description": "候选人匹配通过的招聘岗位唯一编号"
+      },
+      {
+        "field": "application_id",
+        "type": "String",
+        "source": "Application.application_id",
+        "description": "候选人的职位投递申请唯一编号"
+      },
+      {
+        "field": "candidate_match_result_id",
+        "type": "String",
+        "source": "Candidate_Match_Result.candidate_match_result_id",
+        "description": "事件 INTERVIEW_INVITATION_REQUESTED 的 payload 字段"
+      },
+      {
+        "field": "client_id",
+        "type": "String",
+        "source": "Client.client_id",
+        "description": "事件 INTERVIEW_INVITATION_REQUESTED 的 payload 字段"
+      },
+      {
+        "field": "resume_id",
+        "type": "String",
+        "source": "Resume.resume_id",
+        "description": "事件 INTERVIEW_INVITATION_REQUESTED 的 payload 字段"
+      },
+      {
+        "field": "recruiter_id",
+        "type": "String",
+        "source": "Employee.recruiter_id",
+        "description": "事件 INTERVIEW_INVITATION_REQUESTED 的 payload 字段"
+      },
+      {
+        "field": "correlation_id",
+        "type": "String",
+        "description": "事件 INTERVIEW_INVITATION_REQUESTED 的 payload 字段"
+      },
+      {
+        "field": "job_posting_id",
+        "type": "String",
+        "source": "Job_Posting.job_posting_id",
+        "description": "事件 INTERVIEW_INVITATION_REQUESTED 的 payload 字段"
+      },
+      {
+        "field": "requested_at",
+        "type": "Date",
+        "description": "事件 INTERVIEW_INVITATION_REQUESTED 的 payload 字段"
+      },
+      {
+        "field": "trigger_source",
+        "type": "String",
+        "description": "事件 INTERVIEW_INVITATION_REQUESTED 的 payload 字段"
+      },
+      {
+        "field": "candidate_email",
+        "type": "String",
+        "source": "Candidate.candidate_email",
+        "description": "事件 INTERVIEW_INVITATION_REQUESTED 的 payload 字段"
+      },
+      {
+        "field": "job_title",
+        "type": "String",
+        "source": "Job_Requisition.job_title",
+        "description": "事件 INTERVIEW_INVITATION_REQUESTED 的 payload 字段"
+      },
+      {
+        "field": "company_name",
+        "type": "String",
+        "source": "Client.company_name",
+        "description": "事件 INTERVIEW_INVITATION_REQUESTED 的 payload 字段"
+      },
+      {
+        "field": "interview_language",
+        "type": "String",
+        "description": "事件 INTERVIEW_INVITATION_REQUESTED 的 payload 字段"
+      },
+      {
+        "field": "interview_duration",
+        "type": "Integer",
+        "description": "事件 INTERVIEW_INVITATION_REQUESTED 的 payload 字段"
+      },
+      {
+        "field": "interview_mode",
+        "type": "String",
+        "description": "事件 INTERVIEW_INVITATION_REQUESTED 的 payload 字段"
+      }
+    ],
+    "outputSchema": [
+      {
+        "field": "interview_id",
+        "type": "String",
+        "description": "事件 INTERVIEW_INVITATION_SENT 的 payload 字段"
+      },
+      {
+        "field": "candidate_email",
+        "type": "String",
+        "description": "事件 INTERVIEW_INVITATION_SENT 的 payload 字段"
+      },
+      {
+        "field": "scheduled_start_time",
+        "type": "String",
+        "description": "事件 INTERVIEW_INVITATION_SENT 的 payload 字段"
+      },
+      {
+        "field": "interviewer_ids",
+        "type": "Array",
+        "description": "事件 INTERVIEW_INVITATION_SENT 的 payload 字段"
+      },
+      {
+        "field": "meeting_link",
+        "type": "String",
+        "description": "事件 INTERVIEW_INVITATION_SENT 的 payload 字段"
+      },
+      {
+        "field": "candidate_id",
+        "type": "String",
+        "source": "Candidate.candidate_id",
+        "description": "事件 INTERVIEW_INVITATION_FAILED 的 payload 字段"
+      },
+      {
+        "field": "job_requisition_id",
+        "type": "String",
+        "source": "Job_Requisition.job_requisition_id",
+        "description": "事件 INTERVIEW_INVITATION_FAILED 的 payload 字段"
+      },
+      {
+        "field": "application_id",
+        "type": "String",
+        "source": "Application.application_id",
+        "description": "事件 INTERVIEW_INVITATION_FAILED 的 payload 字段"
+      },
+      {
+        "field": "error_code",
+        "type": "Enum",
+        "description": "事件 INTERVIEW_INVITATION_FAILED 的 payload 字段"
+      },
+      {
+        "field": "error_message",
+        "type": "String",
+        "description": "事件 INTERVIEW_INVITATION_FAILED 的 payload 字段"
+      },
+      {
+        "field": "http_status",
+        "type": "Integer",
+        "description": "事件 INTERVIEW_INVITATION_FAILED 的 payload 字段"
+      },
+      {
+        "field": "robohire_request_id",
+        "type": "String",
+        "description": "事件 INTERVIEW_INVITATION_FAILED 的 payload 字段"
+      },
+      {
+        "field": "failed_at",
+        "type": "Date",
+        "description": "事件 INTERVIEW_INVITATION_FAILED 的 payload 字段"
+      },
+      {
+        "field": "interview_record_id",
+        "type": "String",
+        "description": "创建的面试记录唯一编号",
+        "source": "Interview_Record.interview_record_id"
+      },
+      {
+        "field": "invitation_status",
+        "type": "String",
+        "description": "面试邀请发送状态：发送成功或发送失败"
+      }
+    ],
+    "stateBindings": [
+      {
+        "object": "Interview_Record",
+        "reads": [],
+        "writes": []
+      },
+      {
+        "object": "Candidate",
+        "reads": [
+          "candidate_id",
+          "candidate_email"
+        ],
+        "writes": []
+      },
+      {
+        "object": "Resume",
+        "reads": [
+          "resume_id"
+        ],
+        "writes": []
+      },
+      {
+        "object": "Job_Requisition",
+        "reads": [
+          "job_requisition_id",
+          "job_title"
+        ],
+        "writes": []
+      },
+      {
+        "object": "Employee",
+        "reads": [
+          "recruiter_id"
+        ],
+        "writes": []
+      },
+      {
+        "object": "Application",
+        "reads": [
+          "application_id"
+        ],
+        "writes": []
+      },
+      {
+        "object": "Candidate_Match_Result",
+        "reads": [
+          "candidate_match_result_id"
+        ],
+        "writes": []
+      },
+      {
+        "object": "Client",
+        "reads": [
+          "client_id",
+          "company_name"
+        ],
+        "writes": []
+      },
+      {
+        "object": "Job_Posting",
+        "reads": [
+          "job_posting_id"
+        ],
+        "writes": []
+      }
+    ],
+    "generatedCode": "// 针对需要内部面试的岗位，自动触发内部 — 由 Agent 工厂从本体动作 `inviteInternalInterview`(Agents-generation)生成。\n// trigger: INTERVIEW_INVITATION_REQUESTED → emit: INTERVIEW_INVITATION_SENT | INTERVIEW_INVITATION_FAILED\n// 参考脚手架：运行时按 workflow manifest 的 action[] 声明式调度执行（systemPrompt + 工具），\n// 【不直接运行这段 .ts 代码】——它是可读/可改的 agent 定义参考。真·CodeAct 执行路径用 codeExecuted 开关（默认关）。\n\n/** Input/Output schema — 依据本体 DataObjects 定义。 */\ninterface InviteInternalInterviewAgentInput {\n  candidate_id: string; // 待邀约内部面试的候选人唯一编号 (源: Candidate.candidate_id)\n  job_requisition_id: string; // 候选人匹配通过的招聘岗位唯一编号 (源: Job_Requisition.job_requisition_id)\n  application_id: string; // 候选人的职位投递申请唯一编号 (源: Application.application_id)\n  candidate_match_result_id: string; // 事件 INTERVIEW_INVITATION_REQUESTED 的 payload 字段 (源: Candidate_Match_Result.candidate_match_result_id)\n  client_id: string; // 事件 INTERVIEW_INVITATION_REQUESTED 的 payload 字段 (源: Client.client_id)\n  resume_id: string; // 事件 INTERVIEW_INVITATION_REQUESTED 的 payload 字段 (源: Resume.resume_id)\n  recruiter_id: string; // 事件 INTERVIEW_INVITATION_REQUESTED 的 payload 字段 (源: Employee.recruiter_id)\n  correlation_id: string; // 事件 INTERVIEW_INVITATION_REQUESTED 的 payload 字段\n  job_posting_id: string; // 事件 INTERVIEW_INVITATION_REQUESTED 的 payload 字段 (源: Job_Posting.job_posting_id)\n  requested_at: unknown; // 事件 INTERVIEW_INVITATION_REQUESTED 的 payload 字段\n  trigger_source: string; // 事件 INTERVIEW_INVITATION_REQUESTED 的 payload 字段\n  candidate_email: string; // 事件 INTERVIEW_INVITATION_REQUESTED 的 payload 字段 (源: Candidate.candidate_email)\n  job_title: string; // 事件 INTERVIEW_INVITATION_REQUESTED 的 payload 字段 (源: Job_Requisition.job_title)\n  company_name: string; // 事件 INTERVIEW_INVITATION_REQUESTED 的 payload 字段 (源: Client.company_name)\n  interview_language: string; // 事件 INTERVIEW_INVITATION_REQUESTED 的 payload 字段\n  interview_duration: number; // 事件 INTERVIEW_INVITATION_REQUESTED 的 payload 字段\n  interview_mode: string; // 事件 INTERVIEW_INVITATION_REQUESTED 的 payload 字段\n}\n\ninterface InviteInternalInterviewAgentOutput {\n  interview_id: string; // 事件 INTERVIEW_INVITATION_SENT 的 payload 字段\n  candidate_email: string; // 事件 INTERVIEW_INVITATION_SENT 的 payload 字段\n  scheduled_start_time: string; // 事件 INTERVIEW_INVITATION_SENT 的 payload 字段\n  interviewer_ids: unknown[]; // 事件 INTERVIEW_INVITATION_SENT 的 payload 字段\n  meeting_link: string; // 事件 INTERVIEW_INVITATION_SENT 的 payload 字段\n  candidate_id: string; // 事件 INTERVIEW_INVITATION_FAILED 的 payload 字段 (源: Candidate.candidate_id)\n  job_requisition_id: string; // 事件 INTERVIEW_INVITATION_FAILED 的 payload 字段 (源: Job_Requisition.job_requisition_id)\n  application_id: string; // 事件 INTERVIEW_INVITATION_FAILED 的 payload 字段 (源: Application.application_id)\n  error_code: unknown; // 事件 INTERVIEW_INVITATION_FAILED 的 payload 字段\n  error_message: string; // 事件 INTERVIEW_INVITATION_FAILED 的 payload 字段\n  http_status: number; // 事件 INTERVIEW_INVITATION_FAILED 的 payload 字段\n  robohire_request_id: string; // 事件 INTERVIEW_INVITATION_FAILED 的 payload 字段\n  failed_at: unknown; // 事件 INTERVIEW_INVITATION_FAILED 的 payload 字段\n  interview_record_id: string; // 创建的面试记录唯一编号 (源: Interview_Record.interview_record_id)\n  invitation_status: string; // 面试邀请发送状态：发送成功或发送失败\n}\n\n/** System prompt — 工厂为【这一个】agent 亲自推理出来的。 */\nconst SYSTEM_PROMPT = `你是一个专业的内部面试邀约自动化专家。你的核心职责是针对通过简历匹配且需要内部面试的候选人，自动生成个性化的 AI 面试邀请邮件，并将邀约信息同步给招聘专员，确保候选人在推送客户前经过内部初筛。\n\n工作流程：\n1. 接收输入：获取 \\`candidate_id\\`、\\`job_requisition_id\\` 和 \\`application_id\\`（来自 INTERVIEW_INVITATION_REQUESTED 事件）。\n2. 读取候选人信息：获取候选人姓名、邮箱地址（Candidate.email）。\n3. 读取岗位信息：获取职位名称、面试要求等（Job_Requisition 相关字段）。\n4. 生成面试邀请：调用 \\`inviteCandidateApi\\` 生成个性化的 AI 面试邀请邮件内容，包含：\n   - 候选人姓名和应聘岗位信息。\n   - AI 面试链接和截止时间。\n   - 面试注意事项和准备建议。\n5. 发送邀请：将生成的邀请邮件发送至候选人邮箱。\n6. 创建面试记录：在系统中创建 \\`Interview_Record\\`（interview_type=内部面试，recording_url=AI面试链接）。\n7. 判定结果：\n   - 发送成功 → 产出 \\`INTERVIEW_INVITATION_SENT\\` 事件，携带 \\`interview_record_id\\` 和 \\`invitation_status=发送成功\\`。\n   - 发送失败（邮箱无效/邮件服务异常）→ 产出 \\`INTERVIEW_INVITATION_FAILED\\` 事件，携带失败原因。\n\n决策依据：\n- 候选人邮箱（Candidate.email）必须非空，否则直接产出 INTERVIEW_INVITATION_FAILED。\n- 面试邀请内容应根据岗位信息个性化定制，不使用通用模板。\n- 发送失败时必须记录失败原因，便于人工跟进。\n\n【前置条件（运行前必须满足；不满足则 fail-close 发拦截/失败事件，不要继续）】\n1. MATCH_PASSED_NEED_INTERVIEW事件已送达\n2. 候选人(Candidate)记录存在且candidate_id非空\n3. 候选人关联的职位投递申请(Application)记录存在且status不为\"已淘汰\"\n4. 候选人联系邮箱(Candidate.email)非空\n5. 关联的招聘岗位(Job_Requisition)记录存在且job_requisition_id非空`;\n\nexport const inviteInternalInterviewAgent = defineAgent({\n  id: \"agents-gener-invite-internal-interview\",\n  name: \"InviteInternalInterviewAgent\",\n  actor: [\"Agent\"],\n  trigger: [\"INTERVIEW_INVITATION_REQUESTED\"],\n  emit: [\"INTERVIEW_INVITATION_SENT\",\"INTERVIEW_INVITATION_FAILED\"],\n  tools: [\"inviteCandidateApi\"],\n  systemPrompt: SYSTEM_PROMPT,\n  async handler(input, ctx) {\n      // 调用工具 inviteCandidateApi\n      // const inviteCandidateApiResult = await ctx.tools.run(\"inviteCandidateApi\", input);\n      // 用本 agent 专属 system prompt 推理(决策核心)\n      const decision = await ctx.reason(SYSTEM_PROMPT, input);\n      // 决策分支（条件见 SYSTEM_PROMPT / decisionLogic）\n      if (decision.pass) {\n        await ctx.emit(\"INTERVIEW_INVITATION_SENT\", { ...input, ...decision });\n      } else {\n        await ctx.emit(\"INTERVIEW_INVITATION_FAILED\", { ...input, ...decision });\n      }\n      return { ok: true };\n  },\n});\n",
+    "codeSource": "render"
+  },
+  "createdAt": "2026-06-30T06:43:28.963Z"
+}

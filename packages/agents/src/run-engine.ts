@@ -267,6 +267,15 @@ export async function executeAgentRun<TInput, TOutput>(
       .where(eq(steps.id, stepId))
       .run();
 
+    await writeRunLog(logCtx, "INFO", "llm.call", {
+      step: "llm.call",
+      provider: response.provider,
+      model: response.model,
+      tokens_in: response.tokensIn ?? 0,
+      tokens_out: response.tokensOut ?? 0,
+      duration: `${stepEndedAt - startedAt}ms`,
+    });
+
     const output = await agent._parseOutput(response.text, ctx);
 
     const runEndedAt = Date.now();
@@ -348,6 +357,12 @@ export async function executeAgentRun<TInput, TOutput>(
       })
       .where(eq(steps.id, stepId))
       .run();
+
+    await writeRunLog(logCtx, "ERROR", "step.fail", {
+      step: "llm.call",
+      code: llm.code,
+      error: llm.message,
+    });
 
     const runEndedAt = Date.now();
     db.update(runs)

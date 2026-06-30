@@ -43,6 +43,7 @@ export {
 } from "./sparkline";
 export { ViewHeader, type ViewHeaderProps } from "./view-header";
 export { Button, type ButtonProps, type ButtonTone } from "./button";
+export { CountUp, GrowBar } from "./motion";
 
 export {
   SearchInput,

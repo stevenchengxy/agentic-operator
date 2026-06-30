@@ -85,8 +85,12 @@ interface InngestCapture {
  */
 function captureInngest(): { calls: InngestCapture[]; restore: () => void } {
   const calls: InngestCapture[] = [];
-  const original = inngest.send;
-  (inngest as unknown as { send: typeof inngest.send }).send = (async (
+  // Patch `Inngest.prototype.send` so we intercept EVERY per-tenant client —
+  // publishes now route through `getTenantInngest(slug)` (one app per tenant),
+  // not the __system singleton.
+  const proto = Object.getPrototypeOf(inngest) as { send: typeof inngest.send };
+  const original = proto.send;
+  proto.send = (async (
     payload: { name: string; data: Record<string, unknown> },
   ) => {
     calls.push({
@@ -98,7 +102,7 @@ function captureInngest(): { calls: InngestCapture[]; restore: () => void } {
   return {
     calls,
     restore: () => {
-      (inngest as unknown as { send: typeof inngest.send }).send = original;
+      proto.send = original;
     },
   };
 }

@@ -12,14 +12,14 @@
  * headers itself). Result: events paint the instant they happen.
  */
 
-import { useCallback, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { RunStreamEvent } from "@agentic/contracts";
 import { Icon } from "@/app/portal/components";
 import { useI18n } from "@/app/portal/lib/preferences-context";
 import { useTenant } from "@/app/portal/lib/use-tenant";
 import { useStream } from "@/lib/hooks/useStream";
 
-const MAX_LINES = 600;
+const MAX_LINES = 1000;
 
 interface Line {
   key: number;
@@ -27,7 +27,37 @@ interface Line {
   kind: string;
   color: string;
   text: string;
+  isError: boolean;
+  raw: RunStreamEvent;
 }
+
+/** Category filters for the console. ERROR is cross-cutting (a failed step is
+ *  both STEP and ERROR); the rest match the line's `kind`. */
+type Category = "ALL" | "ERROR" | "RUN" | "STEP" | "EVENT" | "TASK" | "DEPLOY";
+const CATEGORIES: Category[] = ["ALL", "ERROR", "RUN", "STEP", "EVENT", "TASK", "DEPLOY"];
+
+function isErrorEvent(ev: RunStreamEvent): boolean {
+  return (
+    ev.type === "run.failed" ||
+    (ev.type === "run.step.completed" && ev.status === "failed")
+  );
+}
+
+function matchesCategory(l: Line, cat: Category): boolean {
+  if (cat === "ALL") return true;
+  if (cat === "ERROR") return l.isError;
+  return l.kind === cat;
+}
+
+const CAT_COLOR: Record<Category, string> = {
+  ALL: "var(--text)",
+  ERROR: "var(--red)",
+  RUN: "var(--blue)",
+  STEP: "var(--green)",
+  EVENT: "var(--signal)",
+  TASK: "var(--amber)",
+  DEPLOY: "var(--violet)",
+};
 
 const C = {
   blue: "var(--blue)",
@@ -86,6 +116,7 @@ export function TerminalLogTab() {
   const tenant = useTenant();
   const [lines, setLines] = useState<Line[]>([]);
   const [paused, setPaused] = useState(false);
+  const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const pausedRef = useRef(false);
   const seqRef = useRef(0);
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -93,25 +124,80 @@ export function TerminalLogTab() {
 
   // Stable handler (functional setState + refs ⇒ no stale closure, no
   // re-subscribe). useStream captures this once at mount.
+  const [cat, setCat] = useState<Category>("ALL");
+
   const append = useCallback((ev: RunStreamEvent) => {
     if (pausedRef.current) return;
     const f = format(ev);
     setLines((prev) => {
       const next = [
         ...prev,
-        { key: seqRef.current++, at: ev.at, kind: f.kind, color: f.color, text: f.text },
+        { key: seqRef.current++, at: ev.at, kind: f.kind, color: f.color, text: f.text, isError: isErrorEvent(ev), raw: ev },
       ];
       return next.length > MAX_LINES ? next.slice(next.length - MAX_LINES) : next;
     });
   }, []);
 
+  const toggleLine = (key: number) =>
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      next.has(key) ? next.delete(key) : next.add(key);
+      return next;
+    });
+
+  // Backfill: seed the console from the persisted recent lifecycle so the
+  // terminal isn't empty when there's no live traffic (production mode) and
+  // survives tab switches. Then live events append on top via /livefeed.
+  const [backfilling, setBackfilling] = useState(true);
+  useEffect(() => {
+    let cancelled = false;
+    setBackfilling(true);
+    setLines([]);
+    fetch(`/v1/activity?limit=${MAX_LINES}`, {
+      credentials: "same-origin",
+      headers: { Accept: "application/json", "x-agentic-tenant": tenant },
+    })
+      .then((r) => r.json())
+      .then((body: { ok: boolean; data?: RunStreamEvent[] }) => {
+        if (cancelled || !body.ok || !body.data) return;
+        const seeded: Line[] = body.data.map((ev) => {
+          const f = format(ev);
+          return { key: seqRef.current++, at: ev.at, kind: f.kind, color: f.color, text: f.text, isError: isErrorEvent(ev), raw: ev };
+        });
+        // Put history before any live lines that arrived during the fetch.
+        setLines((prev) => {
+          const merged = [...seeded, ...prev];
+          return merged.length > MAX_LINES ? merged.slice(merged.length - MAX_LINES) : merged;
+        });
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setBackfilling(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [tenant]);
+
   // Stream the VIEWED tenant's activity through the unbuffered /livefeed proxy.
   useStream({ path: `/livefeed?tenant=${encodeURIComponent(tenant)}`, onEvent: append });
+
+  const counts = useMemo(() => {
+    const c: Record<Category, number> = {
+      ALL: lines.length, ERROR: 0, RUN: 0, STEP: 0, EVENT: 0, TASK: 0, DEPLOY: 0,
+    };
+    for (const l of lines) {
+      if (l.isError) c.ERROR++;
+      if (l.kind in c) c[l.kind as Category]++;
+    }
+    return c;
+  }, [lines]);
+  const filtered = useMemo(() => lines.filter((l) => matchesCategory(l, cat)), [lines, cat]);
 
   useLayoutEffect(() => {
     const el = scrollRef.current;
     if (el && autoScrollRef.current) el.scrollTop = el.scrollHeight;
-  }, [lines]);
+  }, [filtered]);
 
   function onScroll() {
     const el = scrollRef.current;
@@ -156,7 +242,9 @@ export function TerminalLogTab() {
           {paused ? t("logsExplorer.paused") : t("logsExplorer.live")}
         </span>
         <span style={{ fontSize: 11, color: "var(--text-3)", fontFamily: "var(--mono)" }}>
-          {t("logsExplorer.rowCount", { n: lines.length })}
+          {cat === "ALL"
+            ? t("logsExplorer.rowCount", { n: lines.length })
+            : `${filtered.length} / ${lines.length}`}
         </span>
         <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
           <button onClick={togglePause} style={termBtn}>
@@ -168,6 +256,43 @@ export function TerminalLogTab() {
             {t("logsExplorer.clear")}
           </button>
         </div>
+      </div>
+
+      {/* Category filter chips — classify by error / run / step / event / … */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          flexWrap: "wrap",
+          padding: "8px 24px",
+          borderBottom: "1px solid var(--border)",
+          flexShrink: 0,
+        }}
+      >
+        {CATEGORIES.map((c) => {
+          const active = cat === c;
+          const color = CAT_COLOR[c];
+          return (
+            <button
+              key={c}
+              type="button"
+              onClick={() => setCat(c)}
+              style={{
+                fontSize: 10.5,
+                fontFamily: "var(--mono)",
+                padding: "3px 9px",
+                borderRadius: 99,
+                cursor: "pointer",
+                border: `1px solid ${active ? color : "var(--border-2)"}`,
+                background: active ? `color-mix(in srgb, ${color} 14%, transparent)` : "transparent",
+                color: active ? color : "var(--text-3)",
+              }}
+            >
+              {t(`logsExplorer.cat_${c}`)} {counts[c]}
+            </button>
+          );
+        })}
       </div>
 
       <div
@@ -185,17 +310,61 @@ export function TerminalLogTab() {
         }}
       >
         {lines.length === 0 ? (
+          backfilling ? (
+            <div style={{ color: "var(--text-3)", padding: "20px 0" }}>
+              {t("logsExplorer.terminalLoading")}
+            </div>
+          ) : (
+            <div style={{ color: "var(--text-3)", padding: "20px 0", lineHeight: 1.8 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span className="live-dot green" />
+                {t("logsExplorer.terminalWaiting")}
+              </div>
+              <div style={{ fontSize: 11, color: "var(--text-4)", marginTop: 8, maxWidth: 560 }}>
+                {t("logsExplorer.terminalWaitingHint")}
+              </div>
+            </div>
+          )
+        ) : filtered.length === 0 ? (
           <div style={{ color: "var(--text-3)", padding: "20px 0" }}>
-            {t("logsExplorer.terminalWaiting")}
+            {t("logsExplorer.catEmpty", { cat: t(`logsExplorer.cat_${cat}`) })}
           </div>
         ) : (
-          lines.map((l) => (
-            <div key={l.key} style={{ display: "flex", gap: 10, whiteSpace: "pre-wrap" }}>
-              <span style={{ color: "var(--text-3)", flexShrink: 0 }}>{clock(l.at)}</span>
-              <span style={{ color: l.color, flexShrink: 0, width: 52, fontWeight: 500 }}>{l.kind}</span>
-              <span style={{ color: "var(--text-2)" }}>{l.text}</span>
-            </div>
-          ))
+          filtered.map((l) => {
+            const isOpen = expanded.has(l.key);
+            return (
+              <div key={l.key}>
+                <div
+                  onClick={() => toggleLine(l.key)}
+                  className="hover-row"
+                  style={{ display: "flex", gap: 10, whiteSpace: "pre-wrap", cursor: "pointer", borderRadius: 3 }}
+                >
+                  <span style={{ color: "var(--text-3)", flexShrink: 0 }}>{clock(l.at)}</span>
+                  <span style={{ color: l.color, flexShrink: 0, width: 52, fontWeight: 500 }}>{l.kind}</span>
+                  <span style={{ color: "var(--text-2)" }}>{l.text}</span>
+                </div>
+                {isOpen && (
+                  <pre
+                    className="rise"
+                    style={{
+                      margin: "4px 0 8px 62px",
+                      padding: "10px 12px",
+                      background: "var(--panel)",
+                      border: "1px solid var(--border)",
+                      borderRadius: 6,
+                      color: "var(--text-2)",
+                      fontSize: 11,
+                      lineHeight: 1.55,
+                      whiteSpace: "pre-wrap",
+                      wordBreak: "break-all",
+                    }}
+                  >
+                    {JSON.stringify(l.raw, null, 2)}
+                  </pre>
+                )}
+              </div>
+            );
+          })
         )}
       </div>
     </div>

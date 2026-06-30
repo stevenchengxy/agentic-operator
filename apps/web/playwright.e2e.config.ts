@@ -3,7 +3,7 @@
  *
  * This is a separate config from the Phase 2 pixel-diff harness
  * (`playwright.config.ts`) because E2E tests need a *running dev stack*
- * (api on :3540 + web on :3599 + optionally inngest on :8288), and they
+ * (api on :3540 + web on :3599 + optionally inngest on :8488), and they
  * write to the live SQLite. Mixing them into the same project would force
  * the visual suite to wait on the api boot too.
  *
@@ -64,7 +64,7 @@ export default defineConfig({
         webServer: [
           {
             // The repo-level `pnpm dev` concurrently launches web (3599),
-            // api (3540), and inngest dev (8288). It accepts a SIGTERM
+            // api (3540), and inngest dev (8488). It accepts a SIGTERM
             // cleanly via the wrapper.
             command: "pnpm dev",
             // Wait on the api /health endpoint — it's the slowest dep.

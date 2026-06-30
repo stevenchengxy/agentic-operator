@@ -27,12 +27,22 @@ export {
   type ToolCatalogEntry,
 } from "./registry";
 
+// ─── declarative HTTP tools (Phase 2 Tier A) — make brain-authored tools runtime-invocable ──
+export {
+  makeDeclarativeTool,
+  buildDeclarativeOverlay,
+  type DeclarativeToolDef,
+  type MakeDeclarativeToolOpts,
+} from "./declarative/http-tool";
+export { isPrivateHost, assertPublicUrl, safeFetch } from "./declarative/ssrf";
+
 // Re-export the category sub-packages so external consumers can import
 // the descriptors directly when they want (e.g. for tests).
 export * as robohire from "./robohire";
 export * as fs from "./fs";
 export * as http from "./http";
 export * as meta from "./meta";
+export * as ontology from "./ontology";
 
 // ─── (2) legacy runTool fallback — used by step-engine's type:"tool" path ──
 

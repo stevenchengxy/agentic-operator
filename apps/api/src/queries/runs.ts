@@ -136,13 +136,22 @@ function hydrateStepInfo(rows: Array<RunRow & { id: string }>): RunRow[] {
 
 export async function listRecentRuns(
   tenantSlug: string,
-  opts: { limit?: number; status?: string; agentName?: string; query?: string } = {},
+  opts: {
+    limit?: number;
+    status?: string;
+    agentName?: string;
+    query?: string;
+    parentRunId?: string;
+  } = {},
 ): Promise<RunRow[]> {
   const db = getDb();
   const tenantId = await resolveTenantId(tenantSlug);
   if (!tenantId) return [];
 
   const whereParts = [eq(runs.tenantId, tenantId)];
+  if (opts.parentRunId) {
+    whereParts.push(eq(runs.parentRunId, opts.parentRunId));
+  }
   const VALID_STATUSES = [
     "queued",
     "running",
@@ -186,6 +195,9 @@ export async function listRecentRuns(
       correlationId: runs.correlationId,
       errorMessage: runs.errorMessage,
       logPath: runs.logPath,
+      // Surfacing parentRunId lets the list render a REPLAY/child badge and
+      // lets the trace tree fetch a run's children via ?parentRunId=.
+      parentRunId: runs.parentRunId,
       // P2-FE-18 — `testRun` lets cold-loaded views render the TEST badge
       // without a follow-up SSE roundtrip. The column is non-null in the
       // schema (default false) but we still coerce defensively.
@@ -241,6 +253,7 @@ export async function getRun(
       correlationId: runs.correlationId,
       errorMessage: runs.errorMessage,
       logPath: runs.logPath,
+      parentRunId: runs.parentRunId,
       isTest: runs.isTest,
       // Real payloads for the run-detail IO/Events tabs: the trigger event is
       // the run's INPUT, the emitted event its OUTPUT. Resolved below.
@@ -297,6 +310,7 @@ export async function listSteps(runId: string): Promise<StepRow[]> {
       model: steps.model,
       tokensIn: steps.tokensIn,
       tokensOut: steps.tokensOut,
+      attempts: steps.attempts,
       inputRef: steps.inputRef,
       outputRef: steps.outputRef,
     })

@@ -2,23 +2,34 @@
 
 /**
  * Dashboard — control-plane overview, "management overview" redesign
- * (Layout A: health-first vertical narrative).
+ * (Layout A: health-first vertical narrative) with live motion.
  *
  * Read order top → bottom by importance:
  *   1. System-health hero    — one-line verdict (green/amber/red) from
  *                              /health + 24h error rate + high-priority tasks,
- *                              with inngest / sqlite / disk status chips.
+ *                              with a breathing status dot + subsystem chips.
  *   2. 4 KPI cards           — active runs · throughput · error rate · spend,
- *                              all real data (no estimated cost, no fake buckets).
+ *                              all real data; numbers count up, sparklines draw.
  *   3. Actionable middle     — left: active runs (cancellable) + pending HITL
  *                              tasks; right: live event stream (pausable).
- *   4. Cost + funnel         — spend-by-model (/v1/usage) + pipeline conversion
- *                              funnel (/v1/funnel, distinct subjects per stage).
+ *   4. Cost + throughput     — spend-by-model (/v1/usage) + per-agent
+ *                              throughput bars (/v1/throughput).
  *   5. Agent activity        — collapsed by default; secondary detail.
  *
- * Live data via canonical TanStack hooks. /v1/stream SSE is mounted once at
- * the shell root (useStream) and auto-invalidates every query below; the
- * "pause" control here freezes the event-stream panel's rendered window
+ * Motion (see global.css): staggered card entrance (.rise), hover lift
+ * (.dash-card), breathing verdict dot (.health-pulse), sparkline draw
+ * (.spark-draw), count-up numbers (<CountUp/>), and grow-in bars (<GrowBar/>).
+ *
+ * Data fixes vs the first pass:
+ *   - spend KPI now reads /v1/usage totals (matches the cost panel exactly —
+ *     no more $0.00 vs $0.03 disagreement).
+ *   - throughput KPI counts events in the last hour robustly (tolerates clock
+ *     skew) instead of the old broken bucket that read 0.
+ *   - the stage "funnel" (meaningless for non-linear tenants, rendered
+ *     "Stage 9/10/11") is replaced by honest per-agent throughput bars.
+ *
+ * /v1/stream SSE is mounted once at the shell root and auto-invalidates every
+ * query below; the "pause" control freezes the event panel's rendered window
  * without tearing down the global subscription.
  */
 
@@ -33,7 +44,8 @@ import {
   Sparkline,
   StatusDot,
   ViewHeader,
-  eventTone,
+  CountUp,
+  GrowBar,
   Th,
   Td,
   useToast,
@@ -45,31 +57,15 @@ import { useI18n } from "@/app/portal/lib/preferences-context";
 import {
   useAgents,
   useCounts,
-  useFunnel,
+  useThroughput,
   type AgentListRow,
+  type ThroughputAgent,
 } from "@/lib/hooks/useAgents";
 import { useEvents, type EventRow } from "@/lib/hooks/useEvents";
 import { useTasks, type TaskRow } from "@/lib/hooks/useTasks";
 import { useRuns, useCancelRun, type RunListRow } from "@/lib/hooks/useRuns";
 import { useHealth, fmtBytes } from "@/lib/hooks/useHealth";
 import { useUsage, useBudget } from "@/lib/hooks/useUsage";
-
-/**
- * Stage-label catalog — maps the numeric pipeline stage (kebab-id prefix the
- * DAG/funnel derive) to a stable i18n key suffix. The English/中文 strings
- * live in the dictionary at `dashboard.stage.*`; this map only routes the
- * number to a key. Stages without an entry fall back to "Stage N".
- */
-const STAGE_LABELS: Record<number, string> = {
-  0: "intake",
-  1: "analyze",
-  2: "jd",
-  3: "publish",
-  4: "resume",
-  5: "matchInterview",
-  6: "package",
-  7: "submit",
-};
 
 /** Narrowed view of an event row for the ticker. */
 interface EventItem {
@@ -143,7 +139,7 @@ export default function DashboardPage() {
   const tasksQuery = useTasks();
   const eventsQuery = useEvents({ limit: 200 });
   const runsQuery = useRuns({ limit: 200 });
-  const funnelQuery = useFunnel("24h");
+  const throughputQuery = useThroughput("24h");
   const usageQuery = useUsage();
   const budgetQuery = useBudget();
   const healthQuery = useHealth();
@@ -160,8 +156,6 @@ export default function DashboardPage() {
   );
   const liveRuns = runsQuery.data ?? [];
 
-  // First-load gate — keep panels from flashing zero-states before the
-  // primary queries resolve.
   const isPrimaryLoading =
     countsQuery.isLoading || runsQuery.isLoading || eventsQuery.isLoading;
   const primaryError =
@@ -174,7 +168,7 @@ export default function DashboardPage() {
       tasks={taskItems}
       eventStream={events}
       liveRuns={liveRuns}
-      funnel={funnelQuery.data?.stages ?? []}
+      throughput={throughputQuery.data?.agents ?? []}
       usage={usageQuery.data ?? null}
       usageError={Boolean(usageQuery.error)}
       budget={budgetQuery.data ?? null}
@@ -194,7 +188,7 @@ interface DashboardViewProps {
   tasks: TaskItem[];
   eventStream: EventItem[];
   liveRuns: RunListRow[];
-  funnel: Array<{ stage: number; count: number }>;
+  throughput: ThroughputAgent[];
   usage: { totals: { usdCents: number }; byModel: Array<{ key: string; usdCents: number }>; byDay: Array<{ usdCents: number }> } | null;
   usageError: boolean;
   budget: { monthlyUsdCap: number | null; usedUsdMonth: number; periodStart: number } | null;
@@ -210,7 +204,7 @@ function DashboardView({
   tasks,
   eventStream,
   liveRuns,
-  funnel,
+  throughput,
   usage,
   usageError,
   budget,
@@ -222,14 +216,9 @@ function DashboardView({
   const tenant = useTenant();
   const { t } = useI18n();
 
-  // Hydration gate — the dashboard is time-dependent (Date.now() bucketing,
-  // fmtAgo/fmtTime). Render a deterministic skeleton until mounted so SSR and
-  // first-client HTML match.
   const [hasMounted, setHasMounted] = useState(false);
   useEffect(() => setHasMounted(true), []);
 
-  // Event-stream pause. The global SSE subscription keeps running; pausing
-  // only freezes the rendered window so an operator can read it.
   const [streamLive, setStreamLive] = useState(true);
 
   // ── Derived metrics (all from authoritative sources) ──────────────────────
@@ -241,21 +230,32 @@ function DashboardView({
   const errorRatePct = completed24 > 0 ? (failed24 / completed24) * 100 : 0;
   const highTasks = tasks.filter((t) => t.priority === "high").length;
 
-  // Throughput — real per-minute buckets over the last 60 minutes.
+  // Throughput — events in the last hour. Tolerate ±1min clock skew between
+  // the server-stamped receivedAt and the client clock (the old strict
+  // [0,60min) bucket read 0 whenever the two drifted).
+  const eventsPerHr = useMemo(() => {
+    const now = Date.now();
+    let n = 0;
+    for (const e of eventStream) {
+      const age = now - e.at;
+      if (age >= -60_000 && age < 3_600_000) n++;
+    }
+    return n;
+  }, [eventStream]);
+  // Per-minute shape for the sparkline.
   const buckets = useMemo(() => {
     const now = Date.now();
     const bs = new Array(60).fill(0);
     eventStream.forEach((e) => {
       const ago = Math.floor((now - e.at) / 60_000);
-      if (ago >= 0 && ago < 60) bs[59 - ago]++;
+      const idx = ago < 0 ? 59 : ago < 60 ? 59 - ago : -1;
+      if (idx >= 0) bs[idx]++;
     });
     return bs;
   }, [eventStream]);
-  const eventsPerHr = useMemo(() => buckets.reduce((a, b) => a + b, 0), [buckets]);
 
-  // Spend — authoritative monthly figure from the budget row; spark from the
-  // per-day usage breakdown when available.
-  const spendCents = budget?.usedUsdMonth ?? usage?.totals.usdCents ?? 0;
+  // Spend — single source of truth: /v1/usage totals (same as the cost panel).
+  const spendCents = usage?.totals.usdCents ?? 0;
   const capCents = budget?.monthlyUsdCap ?? null;
   const budgetPct = capCents && capCents > 0 ? (spendCents / capCents) * 100 : null;
   const spendSpark = useMemo(
@@ -265,8 +265,7 @@ function DashboardView({
 
   // ── Health verdict ────────────────────────────────────────────────────────
   const healthFail =
-    !!health &&
-    (!health.inngest.ok || !health.sqlite.ok || !health.disk.ok);
+    !!health && (!health.inngest.ok || !health.sqlite.ok || !health.disk.ok);
   const verdict: Verdict = healthFail || healthError
     ? "down"
     : errorRatePct >= 5 || highTasks > 0
@@ -288,7 +287,6 @@ function DashboardView({
     return out;
   }, [eventStream]);
 
-  // Snapshot the window when paused so it stops updating visually.
   const [frozen, setFrozen] = useState<EventItem[] | null>(null);
   useEffect(() => {
     if (!streamLive && frozen === null) setFrozen(recentEvents);
@@ -420,26 +418,37 @@ function DashboardView({
           style={{
             display: "grid",
             gridTemplateColumns: "repeat(4, 1fr)",
-            gap: 12,
-            margin: "12px 0",
+            gap: 14,
+            margin: "14px 0",
           }}
         >
           <KPICard
+            delay={0.06}
             label={t("dashboard.kpiActiveRuns")}
-            value={runningCount}
+            value={<CountUp value={runningCount} />}
             sub={t("dashboard.kpiActiveSub", { ok: ok24, total: completed24 })}
             accent="var(--signal)"
             spark={buckets.slice(40)}
           />
           <KPICard
+            delay={0.1}
             label={t("dashboard.kpiThroughput")}
-            value={fmtNum(eventsPerHr)}
+            value={
+              <>
+                <CountUp value={eventsPerHr} />
+                <span style={{ fontSize: 14, color: "var(--text-3)" }}> /h</span>
+              </>
+            }
             sub={t("dashboard.kpiThroughputSub")}
             spark={buckets}
+            sparkColor="var(--blue)"
           />
           <KPICard
+            delay={0.14}
             label={t("dashboard.kpiErrorRate")}
-            value={`${errorRatePct.toFixed(1)}%`}
+            value={
+              <CountUp value={errorRatePct} format={(n) => `${n.toFixed(1)}%`} />
+            }
             sub={t("dashboard.kpiErrorRateSub", {
               failed: failed24,
               total: completed24,
@@ -448,13 +457,14 @@ function DashboardView({
             accent={errorRatePct >= 5 ? "var(--red)" : "var(--green)"}
           />
           <KPICard
+            delay={0.18}
             label={t("dashboard.kpiSpend")}
-            value={usd(spendCents)}
+            value={<CountUp value={spendCents} format={(n) => usd(n)} />}
             sub={
               budgetPct != null
                 ? t("dashboard.kpiBudgetSub", {
                     cap: usd(capCents),
-                    pct: budgetPct.toFixed(0),
+                    pct: budgetPct.toFixed(1),
                   })
                 : t("dashboard.kpiNoBudget")
             }
@@ -463,22 +473,11 @@ function DashboardView({
             sparkColor="var(--amber)"
             footer={
               budgetPct != null ? (
-                <div
-                  style={{
-                    height: 4,
-                    background: "var(--panel-3)",
-                    borderRadius: 99,
-                    marginTop: 8,
-                    overflow: "hidden",
-                  }}
-                >
-                  <div
-                    style={{
-                      height: "100%",
-                      width: `${Math.min(100, budgetPct)}%`,
-                      background:
-                        budgetPct >= 90 ? "var(--red)" : "var(--signal)",
-                    }}
+                <div style={{ marginTop: 10 }}>
+                  <GrowBar
+                    pct={budgetPct}
+                    height={5}
+                    color={budgetPct >= 90 ? "var(--red)" : "var(--signal)"}
                   />
                 </div>
               ) : undefined
@@ -487,9 +486,11 @@ function DashboardView({
         </div>
 
         {/* ③ Actionable middle */}
-        <div style={{ display: "grid", gridTemplateColumns: "1.45fr 1fr", gap: 12 }}>
-          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1.45fr 1fr", gap: 14 }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
             <Panel
+              className="rise dash-card"
+              style={{ animationDelay: "0.22s" }}
               title={t("dashboard.panelActiveRuns")}
               subtitle={t("dashboard.runningCount", { count: active.length })}
               action={
@@ -523,6 +524,8 @@ function DashboardView({
             </Panel>
 
             <Panel
+              className="rise dash-card"
+              style={{ animationDelay: "0.26s" }}
               title={t("dashboard.panelAwaitingHumans")}
               subtitle={t("dashboard.tasksCount", { count: tasks.length })}
               action={
@@ -539,6 +542,7 @@ function DashboardView({
           </div>
 
           <Panel
+            className="rise dash-card"
             title={t("dashboard.panelEventStream")}
             subtitle={streamLive ? t("dashboard.autoUpdating") : t("dashboard.paused")}
             action={
@@ -559,19 +563,19 @@ function DashboardView({
               </div>
             }
             padded={false}
-            style={{ minHeight: 320 }}
+            style={{ minHeight: 320, animationDelay: "0.3s" }}
           >
             <EventTicker events={shownEvents} live={streamLive} latestEventId={latestEventId} />
           </Panel>
         </div>
 
-        {/* ④ Cost + funnel */}
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 12 }}>
+        {/* ④ Cost + per-agent throughput */}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginTop: 14 }}>
           <Panel
+            className="rise dash-card"
+            style={{ animationDelay: "0.34s" }}
             title={t("dashboard.panelCost")}
-            subtitle={t("dashboard.costTotalLabel", {
-              total: usd(usage?.totals.usdCents),
-            })}
+            subtitle={t("dashboard.costTotalLabel", { total: usd(spendCents) })}
             action={
               <Link href={`/portal/${tenant}/settings/usage` as never} style={{ textDecoration: "none" }}>
                 <Button small icon="external" tone="ghost">
@@ -585,19 +589,22 @@ function DashboardView({
           </Panel>
 
           <Panel
-            title={t("dashboard.panelFunnel")}
-            subtitle={t("dashboard.funnelBySubject", { window: "24h" })}
-            padded
+            className="rise dash-card"
+            style={{ animationDelay: "0.38s" }}
+            title={t("dashboard.panelThroughput")}
+            subtitle={t("dashboard.throughputBy", { window: "24h" })}
+            padded={false}
           >
-            <StageFunnel stages={funnel} />
+            <ThroughputByAgent agents={throughput} tenant={tenant} />
           </Panel>
         </div>
 
         {/* ⑤ Agent activity — collapsed by default */}
-        <div style={{ marginTop: 12 }}>
+        <div style={{ marginTop: 14 }}>
           <button
             type="button"
             onClick={() => setShowAgents((v) => !v)}
+            className="dash-card"
             style={{
               width: "100%",
               textAlign: "left",
@@ -619,7 +626,7 @@ function DashboardView({
               : t("dashboard.agentActivityShow", { count: agents.length })}
           </button>
           {showAgents && (
-            <div style={{ marginTop: 12 }}>
+            <div className="rise" style={{ marginTop: 12 }}>
               <Panel title={t("dashboard.panelAgentActivity")} padded={false}>
                 <AgentActivityGrid items={agentActivity} tenant={tenant} />
               </Panel>
@@ -694,35 +701,33 @@ function HealthHero({
 
   return (
     <div
+      className="rise dash-card"
       style={{
         display: "flex",
         alignItems: "center",
         gap: 16,
-        padding: "16px 18px",
+        padding: "18px 20px",
         background: "var(--panel)",
         border: "1px solid var(--border)",
         borderLeft: `3px solid ${tone}`,
-        borderRadius: 10,
+        borderRadius: 12,
+        animationDelay: "0.02s",
       }}
     >
-      <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 13, minWidth: 0 }}>
         <span
-          style={{
-            width: 13,
-            height: 13,
-            borderRadius: 99,
-            background: tone,
-            boxShadow: `0 0 12px ${tone}`,
-            flex: "none",
-          }}
+          className="health-pulse"
+          style={{ color: tone, boxShadow: `0 0 12px ${tone}` }}
         />
         <div style={{ minWidth: 0 }}>
-          <div style={{ fontSize: 19, fontWeight: 600, color: "var(--text)" }}>{verdictLabel}</div>
+          <div style={{ fontSize: 21, fontWeight: 650, color: "var(--text)", letterSpacing: "0.01em" }}>
+            {verdictLabel}
+          </div>
           <div
             style={{
               fontSize: 12.5,
               color: "var(--text-2)",
-              marginTop: 2,
+              marginTop: 3,
               overflow: "hidden",
               textOverflow: "ellipsis",
               whiteSpace: "nowrap",
@@ -741,18 +746,18 @@ function HealthHero({
                 display: "flex",
                 flexDirection: "column",
                 gap: 3,
-                padding: "7px 11px",
+                padding: "8px 12px",
                 background: "var(--panel-2)",
                 border: "1px solid var(--border)",
-                borderRadius: 8,
-                minWidth: 92,
+                borderRadius: 10,
+                minWidth: 96,
               }}
             >
               <span
                 style={{
-                  fontSize: 9,
+                  fontSize: 8.5,
                   textTransform: "uppercase",
-                  letterSpacing: "0.08em",
+                  letterSpacing: "0.1em",
                   color: "var(--text-3)",
                   fontFamily: "var(--mono)",
                 }}
@@ -766,7 +771,7 @@ function HealthHero({
                   color: "var(--text-2)",
                   display: "flex",
                   alignItems: "center",
-                  gap: 5,
+                  gap: 6,
                 }}
               >
                 <StatusDot status={c.ok ? "ok" : "failed"} size={7} />
@@ -791,6 +796,7 @@ function KPICard({
   spark,
   sparkColor,
   footer,
+  delay = 0,
 }: {
   label: string;
   value: React.ReactNode;
@@ -800,22 +806,25 @@ function KPICard({
   spark?: number[];
   sparkColor?: string;
   footer?: React.ReactNode;
+  delay?: number;
 }) {
   return (
     <div
+      className="rise dash-card"
       style={{
         background: "var(--panel)",
         border: "1px solid var(--border)",
-        borderRadius: 8,
-        padding: "14px 16px",
+        borderRadius: 10,
+        padding: "15px 17px",
+        animationDelay: `${delay}s`,
       }}
     >
       <div
         style={{
-          fontSize: 10.5,
+          fontSize: 10,
           fontFamily: "var(--mono)",
           textTransform: "uppercase",
-          letterSpacing: "0.1em",
+          letterSpacing: "0.11em",
           color: "var(--text-3)",
         }}
       >
@@ -826,28 +835,35 @@ function KPICard({
           display: "flex",
           alignItems: "flex-end",
           justifyContent: "space-between",
-          marginTop: 6,
+          marginTop: 9,
         }}
       >
         <div
           style={{
-            fontSize: 26,
+            fontSize: 30,
             fontFamily: "var(--mono)",
-            fontWeight: 500,
-            letterSpacing: "-0.01em",
+            fontWeight: 550,
+            letterSpacing: "-0.02em",
+            lineHeight: 1,
             color: accent || "var(--text)",
           }}
         >
           {value}
         </div>
         {spark && spark.length > 0 && (
-          <Sparkline values={spark} width={70} height={26} color={sparkColor || accent || "var(--signal)"} />
+          <Sparkline
+            values={spark}
+            width={76}
+            height={28}
+            color={sparkColor || accent || "var(--signal)"}
+            animate
+          />
         )}
       </div>
       {sub && (
         <div
           style={{
-            marginTop: 4,
+            marginTop: 7,
             fontSize: 11,
             color: tone === "down" ? "var(--red)" : tone === "up" ? "var(--text-2)" : "var(--text-3)",
           }}
@@ -1113,28 +1129,32 @@ function EventTicker({
           key={e.id}
           style={{
             display: "grid",
-            gridTemplateColumns: "62px 1fr auto",
+            gridTemplateColumns: "14px 1fr auto",
             gap: 10,
             alignItems: "start",
-            padding: "8px 14px",
+            padding: "9px 14px",
             borderBottom: "1px solid var(--border)",
             fontSize: 12,
-            animation: live && e.id === latestEventId ? "tick 0.4s ease-out" : "none",
+            animation: live && e.id === latestEventId ? "tick 0.45s ease-out" : "none",
           }}
         >
-          <span className="mono" style={{ color: "var(--text-3)", fontSize: 10.5, marginTop: 2 }}>
-            {fmtTime(e.at)}
-          </span>
-          <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 0 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-              <Badge tone={eventTone(e.color)} style={{ fontSize: 9.5 }}>
-                {e.name}
-              </Badge>
-              <span style={{ color: "var(--text-3)", fontSize: 11 }}>·</span>
+          <span
+            style={{
+              width: 8,
+              height: 8,
+              marginTop: 4,
+              borderRadius: 99,
+              background: `var(--${e.color === "muted" ? "text-3" : e.color})`,
+              boxShadow: `0 0 7px var(--${e.color === "muted" ? "text-3" : e.color})`,
+            }}
+          />
+          <div style={{ display: "flex", flexDirection: "column", gap: 3, minWidth: 0 }}>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 8, minWidth: 0 }}>
+              <span style={{ color: "var(--text)", fontSize: 12 }}>{e.name}</span>
               <span
                 style={{
-                  color: "var(--text-2)",
-                  fontSize: 11,
+                  color: "var(--text-3)",
+                  fontSize: 10.5,
                   overflow: "hidden",
                   textOverflow: "ellipsis",
                   whiteSpace: "nowrap",
@@ -1145,8 +1165,12 @@ function EventTicker({
             </div>
             <EventConsumerStrip consumers={e.consumers} />
           </div>
-          <span className="mono" style={{ color: "var(--text-3)", fontSize: 10.5, marginTop: 2 }}>
-            {e.subject}
+          <span
+            className="mono"
+            style={{ color: "var(--text-4)", fontSize: 9.5, marginTop: 2, textAlign: "right" }}
+          >
+            <span style={{ color: "var(--text-3)" }}>{fmtTime(e.at)}</span>
+            {e.subject ? <div>{e.subject}</div> : null}
           </span>
         </div>
       ))}
@@ -1158,7 +1182,7 @@ function EventConsumerStrip({ consumers }: { consumers: EventItem["consumers"] }
   const { t } = useI18n();
   if (!consumers || consumers.length === 0) {
     return (
-      <span style={{ fontSize: 10.5, color: "var(--text-4)" }}>{t("dashboard.noSubscribers")}</span>
+      <span style={{ fontSize: 10, color: "var(--text-4)" }}>{t("dashboard.noSubscribers")}</span>
     );
   }
   return (
@@ -1167,12 +1191,11 @@ function EventConsumerStrip({ consumers }: { consumers: EventItem["consumers"] }
         display: "flex",
         flexWrap: "wrap",
         alignItems: "center",
-        gap: 6,
-        fontSize: 10.5,
+        gap: 5,
+        fontSize: 10,
         color: "var(--text-3)",
       }}
     >
-      <span>{t("dashboard.consumedBy")}</span>
       {consumers.map((c) => (
         <span
           key={c.runId}
@@ -1182,7 +1205,7 @@ function EventConsumerStrip({ consumers }: { consumers: EventItem["consumers"] }
             alignItems: "center",
             gap: 4,
             padding: "1px 6px",
-            borderRadius: 3,
+            borderRadius: 5,
             border: "1px solid var(--border)",
             background: "var(--panel-2)",
           }}
@@ -1263,7 +1286,7 @@ function CostByModel({
       {sorted.map((r) => (
         <div
           key={r.key}
-          style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 14px", fontSize: 11.5 }}
+          style={{ display: "flex", alignItems: "center", gap: 12, padding: "9px 16px", fontSize: 11.5 }}
         >
           <span
             className="mono"
@@ -1277,25 +1300,10 @@ function CostByModel({
           >
             {r.key || "—"}
           </span>
-          <span
-            style={{
-              flex: 1,
-              height: 7,
-              background: "var(--panel-3)",
-              borderRadius: 99,
-              overflow: "hidden",
-            }}
-          >
-            <span
-              style={{
-                display: "block",
-                height: "100%",
-                width: `${(r.usdCents / max) * 100}%`,
-                background: "var(--signal)",
-              }}
-            />
-          </span>
-          <span className="mono" style={{ width: 62, textAlign: "right", color: "var(--text)" }}>
+          <div style={{ flex: 1 }}>
+            <GrowBar pct={(r.usdCents / max) * 100} />
+          </div>
+          <span className="mono" style={{ width: 60, textAlign: "right", color: "var(--text)" }}>
             {usd(r.usdCents)}
           </span>
         </div>
@@ -1304,75 +1312,55 @@ function CostByModel({
   );
 }
 
-// ─── Stage funnel ────────────────────────────────────────────────────────────
+// ─── Per-agent throughput ────────────────────────────────────────────────────
 
-function StageFunnel({ stages }: { stages: Array<{ stage: number; count: number }> }) {
+function ThroughputByAgent({ agents, tenant }: { agents: ThroughputAgent[]; tenant: string }) {
   const { t } = useI18n();
-  if (stages.length === 0) {
-    return <Empty title={t("dashboard.noStages")} hint={t("dashboard.workflowNotLoaded")} />;
-  }
-  const max = Math.max(...stages.map((s) => s.count), 1);
+  const top = agents.slice(0, 8);
+  if (top.length === 0)
+    return <Empty title={t("dashboard.noThroughput")} hint={t("dashboard.workflowNotLoaded")} />;
+  const max = Math.max(...top.map((a) => a.subjects), 1);
   return (
-    <div style={{ display: "grid", gridTemplateColumns: `repeat(${stages.length}, 1fr)`, gap: 8 }}>
-      {stages.map((s, i) => {
-        const pct = s.count / max;
-        const prior = stages[i - 1]?.count;
-        const drop =
-          i > 0 && prior != null && prior > 0
-            ? (((prior - s.count) / prior) * 100).toFixed(0)
-            : null;
-        const labelKey = STAGE_LABELS[s.stage];
-        return (
-          <div key={s.stage} style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-              <span
-                style={{
-                  fontSize: 10,
-                  fontFamily: "var(--mono)",
-                  textTransform: "uppercase",
-                  color: "var(--text-3)",
-                  letterSpacing: "0.06em",
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
-                }}
-              >
-                {labelKey ? t(`dashboard.stage.${labelKey}`) : t("dashboard.stageFallback", { id: s.stage })}
-              </span>
-              {drop && Number(drop) > 0 && (
-                <span style={{ fontSize: 9.5, fontFamily: "var(--mono)", color: "var(--text-3)" }}>
-                  −{drop}%
-                </span>
-              )}
-            </div>
-            <div
-              style={{
-                height: 6,
-                background: "var(--panel-2)",
-                borderRadius: 1,
-                position: "relative",
-                overflow: "hidden",
-              }}
-            >
-              <div
-                style={{
-                  position: "absolute",
-                  left: 0,
-                  top: 0,
-                  bottom: 0,
-                  width: `${pct * 100}%`,
-                  background:
-                    "linear-gradient(90deg, var(--signal) 0%, var(--signal) 70%, color-mix(in srgb, var(--signal) 50%, transparent) 100%)",
-                  opacity: 0.3 + pct * 0.7,
-                }}
-              />
-            </div>
-            <div style={{ fontSize: 16, fontFamily: "var(--mono)", color: "var(--text)" }}>
-              {fmtNum(s.count)}
-            </div>
+    <div style={{ padding: "8px 0" }}>
+      {top.map((a) => (
+        <Link
+          key={a.kebabId}
+          href={`/portal/${tenant}/agents/${a.kebabId}` as never}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+            padding: "9px 16px",
+            fontSize: 11.5,
+            textDecoration: "none",
+          }}
+        >
+          <span
+            style={{
+              width: 150,
+              color: "var(--text-2)",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {a.title}
+          </span>
+          <div style={{ flex: 1 }}>
+            <GrowBar pct={(a.subjects / max) * 100} />
           </div>
-        );
-      })}
+          <span
+            className="mono"
+            style={{ width: 78, textAlign: "right", color: "var(--text)", whiteSpace: "nowrap" }}
+          >
+            {fmtNum(a.subjects)}
+            <span style={{ color: "var(--text-4)", fontSize: 10 }}>
+              {" "}
+              · {fmtNum(a.runs)}
+            </span>
+          </span>
+        </Link>
+      ))}
     </div>
   );
 }

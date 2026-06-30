@@ -45,10 +45,12 @@ export function rhBaseUrl(ctx: ToolContext): string {
   const c = readConfig(ctx);
   const fromConfig = (c.base_url ?? "").trim();
   if (fromConfig.length > 0) return fromConfig.replace(/\/$/, "");
-  const fromEnv = (process.env.ROBOHIRE_BASE_URL ?? "").trim();
+  // Accept either env name (ROBOHIRE_BASE_URL or ROBOHIRE_API_BASE_URL). Default is the gohire.top
+  // host (RoboHire-compatible, serves the same /api/v1/* endpoints).
+  const fromEnv = (process.env.ROBOHIRE_BASE_URL ?? process.env.ROBOHIRE_API_BASE_URL ?? "").trim();
   return fromEnv.length > 0
     ? fromEnv.replace(/\/$/, "")
-    : "https://api.robohire.io/api/v1";
+    : "https://api.gohire.top/api/v1";
 }
 
 export function rhAuthToken(ctx: ToolContext): string {

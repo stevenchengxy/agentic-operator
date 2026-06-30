@@ -13,6 +13,7 @@ import { runsLogsRoute } from "./routes/v1/runs-logs";
 import { tasksRoutes } from "./routes/v1/tasks";
 import { agentsRoutes } from "./routes/v1/agents";
 import { agentInvokeRoutes } from "./routes/v1/agent-invoke";
+import { agentFactoryRoutes } from "./routes/v1/agent-factory";
 import { deploymentsRoutes } from "./routes/v1/deployments";
 import { webhooksRoutes } from "./routes/v1/webhooks";
 import { artifactsRoutes } from "./routes/v1/artifacts";
@@ -32,6 +33,7 @@ import { authRoutes } from "./routes/v1/auth";
 import { membersRoutes } from "./routes/v1/members";
 import { adminUsersRoutes } from "./routes/v1/admin-users";
 import { stopDemoRunner } from "./services/demo-runner";
+import { stopAppReconciler } from "./services/inngest-sync";
 import { inngestRoute } from "./routes/inngest";
 import { bootstrapRuntime } from "./bootstrap";
 
@@ -96,13 +98,17 @@ export async function build() {
   // `POST /v1/demo/start` would NOT be drained on SIGTERM. The imported
   // `stopDemoRunner` from the demo-runner module reads the live
   // `_activeRunner` singleton, so it works for both code paths.
-  const { inngest, functions } = await bootstrapRuntime();
-  await inngestRoute(app, { client: inngest, functions });
+  // Runs boot: builds per-tenant Inngest apps + seeds the per-app registry that
+  // the `/inngest[/:slug]` routes delegate to. The route reads the registry per
+  // request, so it needs no bootstrap result handed in.
+  await bootstrapRuntime();
+  await inngestRoute(app);
 
   // Demo-runner stops cleanly on Fastify drain (SIGTERM / SIGINT route here
   // through `installGracefulShutdown`). No-op when nothing is running.
   app.addHook("onClose", async () => {
     stopDemoRunner();
+    stopAppReconciler();
   });
 
   // /v1 REST surface
@@ -114,6 +120,9 @@ export async function build() {
       await v1.register(tasksRoutes);
       await v1.register(agentsRoutes);
       await v1.register(agentInvokeRoutes);
+      // Agent Factory — autonomous brain SSE stream (generates business agents from
+      // a domain's models/ ontology, streamed live to the portal factory tab).
+      await v1.register(agentFactoryRoutes);
       await v1.register(deploymentsRoutes);
       await v1.register(webhooksRoutes);
       await v1.register(artifactsRoutes);

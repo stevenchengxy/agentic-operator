@@ -393,6 +393,13 @@ export const steps = sqliteTable(
     model: text("model"),
     tokensIn: integer("tokens_in"),
     tokensOut: integer("tokens_out"),
+    /**
+     * Execution attempt count. Inngest retries a failed `step.run` body in
+     * place; the runtime upserts by (run_id, ord) and bumps this so the run
+     * viewer can show "attempt 2 of 3" instead of duplicate step rows.
+     * Code-agent steps run synchronously and stay at 1.
+     */
+    attempts: integer("attempts").notNull().default(1),
   },
   (t) => ({
     runOrdIdx: index("steps_run_ord_idx").on(t.runId, t.ord),
@@ -756,6 +763,122 @@ export const eventsRelations = relations(events, ({ one }) => ({
   }),
 }));
 
+// ─── Agent Factory (brain conversations + failure reflections) ──────────────
+// The factory's durable state: a streaming-brain conversation (so a follow-up
+// message resumes mid-build) + per-domain failure/success reflections (so the next
+// run starts wiser). Backs the ConversationStore + ReflectionWriter ports.
+
+export const factoryConversations = sqliteTable(
+  "factory_conversations",
+  {
+    id: text("id").primaryKey(),
+    domain: text("domain").notNull(),
+    messagesJson: text("messages_json", { mode: "json" }).notNull(),
+    ctxJson: text("ctx_json", { mode: "json" }),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().default(now),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull().default(now),
+  },
+  (t) => ({
+    domainIdx: index("factory_conversations_domain_idx").on(t.domain),
+  }),
+);
+
+export const factoryReflections = sqliteTable(
+  "factory_reflections",
+  {
+    id: text("id").primaryKey(),
+    domain: text("domain").notNull(),
+    kind: text("kind").notNull(), // failure | success | caveat
+    summary: text("summary").notNull(),
+    rootCause: text("root_cause"),
+    lesson: text("lesson").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().default(now),
+  },
+  (t) => ({
+    domainIdx: index("factory_reflections_domain_idx").on(t.domain),
+  }),
+);
+
+// ─── Agent Factory run history + skills library ─────────────────────────────
+// factory_runs backs the 历史运行 sidebar (one row per brain run, with the full
+// transcript for read-only replay). factory_skills is the persistent skills library
+// (create_skill/use_skill + effectiveness scoring), backing the SkillStore port.
+
+export const factoryRuns = sqliteTable(
+  "factory_runs",
+  {
+    id: text("id").primaryKey(),
+    // tenant_id is NOT NULL + cascades (0021): factory runs are tenant-scoped like every other
+    // user-visible table, so listing/deleting can filter by tenant and deleting a tenant GCs its
+    // runs. (Was nullable + unfiltered, which leaked runs across tenants — see runs.ts/list).
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    domain: text("domain").notNull(),
+    goal: text("goal").notNull(),
+    status: text("status").notNull(), // finished | budget_exhausted | turns_exhausted | errored | incomplete | running
+    tokensUsed: integer("tokens_used").notNull().default(0),
+    turns: integer("turns").notNull().default(0),
+    agentsCount: integer("agents_count").notNull().default(0),
+    reachedTerminal: integer("reached_terminal", { mode: "boolean" }).notNull().default(false),
+    errorMessage: text("error_message"),
+    transcriptJson: text("transcript_json", { mode: "json" }),
+    // Soft delete (0021): the 历史运行 trash/clear sets this; listRuns hides non-null rows and a
+    // reconnect to a soft-deleted run replays a tombstone. Recoverable via restoreRun.
+    deletedAt: integer("deleted_at", { mode: "timestamp_ms" }),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().default(now),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull().default(now),
+  },
+  (t) => ({
+    domainIdx: index("factory_runs_domain_idx").on(t.domain, t.createdAt),
+    deletedAtIdx: index("factory_runs_deleted_at_idx").on(t.deletedAt),
+  }),
+);
+
+export const factorySkills = sqliteTable(
+  "factory_skills",
+  {
+    slug: text("slug").primaryKey(),
+    name: text("name").notNull(),
+    purpose: text("purpose").notNull(),
+    promptFragment: text("prompt_fragment").notNull().default(""),
+    tools: text("tools", { mode: "json" }).notNull(),
+    decisionRule: text("decision_rule").notNull().default(""),
+    domain: text("domain"), // null = cross-domain (general)
+    useCount: integer("use_count").notNull().default(0),
+    evalCount: integer("eval_count").notNull().default(0),
+    successCount: integer("success_count").notNull().default(0),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().default(now),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull().default(now),
+  },
+  (t) => ({
+    domainIdx: index("factory_skills_domain_idx").on(t.domain),
+  }),
+);
+
+export const factoryTools = sqliteTable(
+  "factory_tools",
+  {
+    name: text("name").primaryKey(),
+    description: text("description").notNull().default(""),
+    method: text("method").notNull().default("GET"),
+    urlTemplate: text("url_template").notNull().default(""),
+    headers: text("headers", { mode: "json" }),
+    bodyTemplate: text("body_template"),
+    sideEffect: text("side_effect").notNull().default("read"),
+    domain: text("domain"),
+    // R6 (0022): typed I/O contracts — the tool's args + return shape (also the egress contract
+    // for an external-platform handoff), so the step-engine can validate and agents agree on shapes.
+    paramsSchema: text("params_schema", { mode: "json" }),
+    returnsSchema: text("returns_schema", { mode: "json" }),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().default(now),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull().default(now),
+  },
+  (t) => ({
+    domainIdx: index("factory_tools_domain_idx").on(t.domain),
+  }),
+);
+
 // ─── Helper: full schema export for drizzle() ───────────────────────────────
 
 export const schema = {
@@ -783,6 +906,11 @@ export const schema = {
   agentMemoryShort,
   agentMemoryLong,
   idempotencyKeys,
+  factoryConversations,
+  factoryReflections,
+  factoryRuns,
+  factorySkills,
+  factoryTools,
   tenantsRelations,
   workflowsRelations,
   workflowVersionsRelations,

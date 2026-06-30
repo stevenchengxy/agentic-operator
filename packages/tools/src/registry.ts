@@ -48,6 +48,7 @@ import {
 } from "./fs";
 import { httpFetchTool } from "./http";
 import { ping } from "./meta";
+import { fetchActionRules } from "./ontology";
 
 /** Per-field metadata used to render args / returns tables. */
 export interface ToolFieldSchema {
@@ -117,8 +118,8 @@ const ROBOHIRE_CONFIG_SCHEMA: Record<string, ToolFieldSchema> = {
   },
   base_url: {
     type: "string",
-    default: "https://api.robohire.io/api/v1",
-    description: "Override the RoboHire API base URL.",
+    default: "https://api.gohire.top/api/v1",
+    description: "Override the RoboHire API base URL (default: the gohire.top RoboHire-compatible host).",
   },
   timeout_ms: { type: "number", default: 30000 },
 };
@@ -651,6 +652,31 @@ const REGISTRATIONS: ToolRegistration[] = [
       },
       aliases: ["monitorAndFetchRequirement", "pingProbe"],
       sourcePath: "packages/tools/src/meta/ping.ts",
+    },
+  },
+  {
+    descriptor: fetchActionRules,
+    catalog: {
+      name: "ontology.fetchActionRules",
+      category: "ontology",
+      summary: "Runtime: fetch the executor=Agent rules governing this action from the live ontology, so a rule-check agent folds against real, current rules.",
+      description:
+        "Bound automatically onto rule-check agents by the Agent Factory. At run time it pulls the rules for ctx.actionName from Allmeta (domain via config.domain or the tenant slug), filters to executor=Agent, flags the mandatory subset, and returns { rules, mandatory, count } so the agent folds fail-closed. Never bake rules into a prompt — call this instead.",
+      argsSchema: {},
+      argsExample: {},
+      configSchema: {
+        domain: { type: "string", description: "Ontology domain id (the factory attaches this; defaults to the tenant slug minus a -sb suffix)." },
+        action: { type: "string", description: "Override the action whose rules to fetch (defaults to ctx.actionName)." },
+      },
+      configExample: { domain: "Agents-generation" },
+      returnsSchema: {
+        rules: { type: "object[]", description: "executor=Agent rules for this action." },
+        mandatory: { type: "object[]", description: "the mandatory subset — fail-close on any of these." },
+        count: { type: "number" },
+        source: { type: "string", description: "allmeta | unconfigured | error:…" },
+      },
+      returnsExample: { rules: [], mandatory: [], count: 0, source: "allmeta" },
+      sourcePath: "packages/tools/src/ontology/fetch-action-rules.ts",
     },
   },
 ];

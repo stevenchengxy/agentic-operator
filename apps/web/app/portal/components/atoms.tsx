@@ -69,7 +69,10 @@ export interface BadgeProps {
 }
 
 export function Badge({ children, tone = "default", style }: BadgeProps) {
-  const t = BADGE_TONES[tone];
+  // Defense in depth: an unknown tone string (e.g. a stale name left over
+  // from a migration) must degrade to `default`, never read `.fg` off
+  // `undefined` and white-screen the whole page.
+  const t = BADGE_TONES[tone] ?? BADGE_TONES.default;
   return (
     <span
       style={{

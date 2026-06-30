@@ -1,11 +1,22 @@
-export { inngest, type EventMap } from "./client";
+export {
+  inngest,
+  getTenantInngest,
+  appIdForTenant,
+  allTenantClients,
+  SYSTEM_SLUG,
+  type EventMap,
+} from "./client";
 export { helloFn } from "./hello";
-export { registerAgent, type RegisterContext } from "./register";
+export { registerAgent, findMissingTenantPrompts, type RegisterContext } from "./register";
+export { makeGeneratedAgentPrompt } from "./generated-agent";
+export { runGeneratedCode } from "./codeact";
 // Agent migration — branch-emit: let a forked agent's final step pick which
 // declared `triggered_event` to emit (PASS/FAIL routing) instead of always [0].
 export { selectEmittedEvent } from "./emit-select";
 export {
   bootstrapAll,
+  bootstrapAllByTenant,
+  bootstrapTenantBySlug,
   bootstrapTenant,
   type TenantRegistries,
   type BootstrapTenantResult,

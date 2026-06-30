@@ -19,6 +19,8 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useParams } from "next/navigation";
+import Link from "next/link";
 import {
   Badge,
   Button,
@@ -26,32 +28,75 @@ import {
   FilterChip,
   Panel,
   ViewHeader,
+  useToast,
+  type BadgeTone,
 } from "@/app/portal/components";
 import {
   useTools,
+  useDeleteTool,
   type ToolCatalogEntry,
   type ToolFieldSchema,
 } from "@/lib/hooks/useTools";
 import { useI18n } from "@/app/portal/lib/preferences-context";
+import { CreateToolModal } from "./create-tool-modal";
 
 function slugifyAnchor(name: string): string {
   return "tool-" + name.replace(/[^a-zA-Z0-9._-]/g, "-").toLowerCase();
 }
 
+// ── side-effect classification (read/write/dual/call) — merged from the old 工具库 page so the
+// catalog filtering and the API reference live on ONE surface. The /v1/tools catalog carries no
+// sideEffect field, so derive it from the tool's name + category (matches the brain's toolSideEffect).
+type SE = "read" | "write" | "dual" | "call";
+const SE_META: Record<SE, { label: string; tone: BadgeTone; hint: string }> = {
+  read: { label: "读", tone: "green", hint: "只读取数据，不产生副作用" },
+  write: { label: "写", tone: "amber", hint: "写入/落库/发送——有持久副作用" },
+  dual: { label: "双写", tone: "violet", hint: "既读又写（同步/补全类）" },
+  call: { label: "调用", tone: "blue", hint: "调用外部 API（RoboHire / HTTP 等）" },
+};
+const SE_WRITE_RE = /(write|create|invite|send|post|delete|update|save|archive|upsert|put|deploy|register|push)/i;
+const SE_READ_RE = /(read|parse|get|list|fetch|health|match|search|describe|inspect|ping|load|probe|jd|resume)/i;
+function deriveSE(tool: ToolCatalogEntry): SE {
+  const n = tool.name;
+  const w = SE_WRITE_RE.test(n);
+  const r = SE_READ_RE.test(n);
+  if (w && r) return "dual";
+  if (w) return "write";
+  if (tool.category === "http" || (tool.category === "robohire" && !r)) return "call";
+  if (r) return "read";
+  return "call";
+}
+
 export default function ToolsPage() {
   const { t } = useI18n();
+  const params = useParams<{ tenant: string }>();
   const { data, isLoading, error } = useTools();
   const tools = data?.tools ?? [];
   const categories = data?.categories ?? [];
 
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState<string | "all">("all");
+  const [se, setSe] = useState<SE | "all">("all");
+  const [showCreate, setShowCreate] = useState(false);
   const scrollPaneRef = useRef<HTMLDivElement | null>(null);
+
+  // side-effect class per tool, computed once.
+  const seOf = useMemo(() => {
+    const m = new Map<string, SE>();
+    for (const tl of tools) m.set(tl.name, deriveSE(tl));
+    return m;
+  }, [tools]);
+  const seCounts = useMemo(() => {
+    const c: Record<SE, number> = { read: 0, write: 0, dual: 0, call: 0 };
+    for (const v of seOf.values()) c[v]++;
+    return c;
+  }, [seOf]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return tools.filter((t) => {
       if (category !== "all" && t.category !== category) return false;
+      if (se !== "all" && seOf.get(t.name) !== se) return false;
       if (!q) return true;
       const hay = [
         t.name,
@@ -66,7 +111,7 @@ export default function ToolsPage() {
         .toLowerCase();
       return hay.includes(q);
     });
-  }, [tools, query, category]);
+  }, [tools, query, category, se, seOf]);
 
   // Group filtered tools by category for the right-pane TOC.
   const grouped = useMemo(() => {
@@ -105,8 +150,9 @@ export default function ToolsPage() {
     <div
       style={{ display: "flex", flexDirection: "column", height: "100%" }}
     >
+      {showCreate && <CreateToolModal onClose={() => setShowCreate(false)} />}
       <ViewHeader
-        title={t("nav.tools")}
+        title={t("nav.toolLibrary")}
         subtitle={t("tools.subtitle")}
         badge={
           <Badge tone="signal">
@@ -156,6 +202,7 @@ export default function ToolsPage() {
               overflow: "auto",
             }}
           >
+            <Button tone="primary" icon="plus" onClick={() => setShowCreate(true)}>造工具</Button>
             <input
               type="search"
               value={query}
@@ -193,6 +240,16 @@ export default function ToolsPage() {
                   </FilterChip>
                 );
               })}
+            </div>
+
+            {/* side-effect filter (merged from 工具库) */}
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+              <FilterChip active={se === "all"} onClick={() => setSe("all")}>副作用·全部</FilterChip>
+              {(Object.keys(SE_META) as SE[]).map((k) => (
+                <FilterChip key={k} active={se === k} onClick={() => setSe(k)}>
+                  {SE_META[k].label} ({seCounts[k]})
+                </FilterChip>
+              ))}
             </div>
 
             <nav style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -257,6 +314,19 @@ export default function ToolsPage() {
                   </p>
                 </div>
 
+                {/* P3: where tools come from + the progressive doc→tool pipeline (cross-links the factory). */}
+                <Panel style={{ padding: "14px 16px", borderColor: "var(--signal)" }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text)", marginBottom: 6 }}>工具从哪来 · 不止这份目录</div>
+                  <ol style={{ margin: 0, paddingLeft: 18, fontSize: 12.5, color: "var(--text-2)", lineHeight: 1.7 }}>
+                    <li><strong>全局注册表</strong>：下面这些是任何租户都能在 manifest 的 <code className="mono">tool_use[]</code> 里直接绑定的内置工具。</li>
+                    <li><strong>渐进式发现</strong>：Agent 工厂的大脑会按某个 Ontology 动作的语义，用 <code className="mono">search_tools</code> 在这份库里【按需检索】最贴切的工具，而不是把整份目录背下来。</li>
+                    <li><strong>文档造工具</strong>：库里没有现成的，用户给一个公网 API 文档/网址，大脑就 <code className="mono">fetch_doc</code> 抓取 → <code className="mono">extract_api_schema</code> 自动提炼出方法/URL/入参/返回契约 → 核对后 <code className="mono">create_tool</code> 落地，立刻能被 agent 绑定，并持久化供以后复用。</li>
+                  </ol>
+                  <div style={{ marginTop: 8, fontSize: 12 }}>
+                    <Link href={`/portal/${params.tenant}/factory`} style={{ color: "var(--signal)", textDecoration: "none" }}>→ 去 Agent 工厂，让大脑按本体动作自动找/造工具</Link>
+                  </div>
+                </Panel>
+
                 {grouped.map(([cat, items]) => (
                   <section
                     key={cat}
@@ -281,6 +351,9 @@ export default function ToolsPage() {
 
 function ToolSection({ tool }: { tool: ToolCatalogEntry }) {
   const { t } = useI18n();
+  const del = useDeleteTool();
+  const toast = useToast();
+  const isCreated = tool.origin === "created";
   const manifestSnippet = useMemo(() => {
     const entry: Record<string, unknown> = {
       name: tool.name,
@@ -323,11 +396,16 @@ function ToolSection({ tool }: { tool: ToolCatalogEntry }) {
             {tool.name}
           </h3>
           <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <span title={SE_META[deriveSE(tool)].hint}><Badge tone={SE_META[deriveSE(tool)].tone}>{SE_META[deriveSE(tool)].label}</Badge></span>
             <Badge tone="muted">{tool.category}</Badge>
+            {isCreated && <Badge tone="signal">自建</Badge>}
             {tool.chainsWith && tool.chainsWith.length > 0 && (
               <Badge tone="signal">
                 {t("tools.chainsWith", { tools: tool.chainsWith.join(", ") })}
               </Badge>
+            )}
+            {isCreated && (
+              <Button small tone="ghost" icon="trash" disabled={del.isPending} onClick={() => { if (confirm(`删除自建工具「${tool.name}」？`)) del.mutate(tool.name, { onError: (e) => toast({ tone: "red", title: `删除失败：${(e as Error).message}` }) }); }}>删除</Button>
             )}
           </div>
         </div>

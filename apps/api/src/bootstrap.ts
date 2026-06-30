@@ -17,7 +17,8 @@
  */
 
 import {
-  bootstrapAll,
+  bootstrapAllByTenant,
+  bootstrapTenantBySlug,
   helloFn,
   inngest,
   setRuntimeGateway,
@@ -48,6 +49,7 @@ import {
   initInngestRegistry,
   reregisterInngest,
 } from "./services/inngest-registry";
+import { syncAllApps, startAppReconciler } from "./services/inngest-sync";
 import {
   applyDemoModeOverrides,
   describeDemoMode,
@@ -121,8 +123,26 @@ let cachedExpanded: TenantRegistries = {};
  * `bootstrapAll` is idempotent (upserts by primary key), so re-running it on a
  * live process only changes the returned function array, never the DB.
  */
-export async function rebuildTenantFns(): Promise<InngestFunction.Any[]> {
-  return bootstrapAll(cachedExpanded);
+export async function rebuildTenantFns(
+  slug?: string,
+): Promise<InngestFunction.Any[]> {
+  // Scoped to one tenant app when a slug is given (the registry's common path);
+  // no slug → every tenant's functions flat (back-compat for callers/tests that
+  // want the whole fleet).
+  if (slug) return bootstrapTenantBySlug(slug, cachedExpanded);
+  return [...(await bootstrapAllByTenant(cachedExpanded)).values()].flat();
+}
+
+/**
+ * Full per-tenant rebuild — every tenant's functions, grouped by slug. Used by
+ * `reregisterInngest({ scope: "tenant" })` with no slug (archive/restore that
+ * don't carry a slug, or a global refresh). The scoped single-slug path
+ * (`rebuildTenantFns`) is preferred for deploy / 上线·下线.
+ */
+export async function rebuildAllTenantFnsByTenant(): Promise<
+  Map<string, InngestFunction.Any[]>
+> {
+  return bootstrapAllByTenant(cachedExpanded);
 }
 
 /**
@@ -190,24 +210,46 @@ export async function bootstrapRuntime(): Promise<BootstrapResult> {
   // `rebuildTenantFns`.
   cachedExpanded = expanded;
 
-  // 4. Manifest-driven (RAAS etc) Inngest functions.
-  const tenantFns = await bootstrapAll(expanded);
+  // 4. Manifest-driven (RAAS etc) Inngest functions, GROUPED BY tenant so each
+  //    tenant becomes its own Inngest app (`agentic-operator-<slug>`).
+  const tenantFnsByTenant = await bootstrapAllByTenant(expanded);
+  const tenantFns = [...tenantFnsByTenant.values()].flat();
   const allFns = [helloFn, ...tenantFns];
   console.log(
-    `[bootstrap] api serving ${allFns.length} Inngest function(s) (${tenantFns.length} from tenant manifests)`,
+    `[bootstrap] api serving ${allFns.length} Inngest function(s) across ${tenantFnsByTenant.size} tenant app(s) + __system (${tenantFns.length} from tenant manifests)`,
   );
 
-  // 4a. Seed the MUTABLE Inngest registry so the `/inngest` route serves a
-  //     function set that `reregisterInngest()` can swap at runtime without a
-  //     restart. base = helloFn (+ any future platform fns); tenant = the
-  //     manifest fns just built; codeAgent = none yet (sync-invoked). Before
-  //     this call the registry was never initialized and every re-register
-  //     silently no-op'd — that's the gap this completes.
+  // 4a. Seed the MUTABLE per-app Inngest registry so each `/inngest[/:slug]`
+  //     route serves a function set that `reregisterInngest()` can swap at
+  //     runtime without a restart. The platform app (__system) carries helloFn
+  //     (systemBase); code agents are sync-invoked (none yet); every tenant
+  //     gets its own app entry. Before this the registry was never initialized
+  //     and every re-register silently no-op'd.
   initInngestRegistry({
-    client: inngest as Inngest.Any,
-    base: [helloFn],
-    codeAgent: [],
-    tenant: tenantFns,
+    systemBase: [helloFn],
+    systemCodeAgent: [],
+    tenants: [...tenantFnsByTenant.entries()].map(([slug, fns]) => ({
+      slug,
+      fns,
+    })),
+  });
+
+  // 4a-bis. Register every app's serve endpoint with the Inngest dev/cloud
+  //     server. The cli `-u .../inngest` auto-discovers ONLY the __system base
+  //     URL; each tenant app at `/inngest/<slug>` must be PUT-synced explicitly.
+  //     Best-effort + idempotent — a failed sync is logged, not fatal (the
+  //     reconciler / next boot re-syncs).
+  await syncAllApps({
+    info: (msg) => console.log(msg),
+    warn: (msg) => console.warn(msg),
+  });
+
+  // 4a-ter. Periodic reconciler: re-PUT any app the Inngest server has
+  //     forgotten (e.g. the dev server restarted out from under a still-running
+  //     api). Unref'd + no-op under test / when INNGEST_RECONCILE_MS=0.
+  startAppReconciler({
+    info: (msg) => console.log(msg),
+    warn: (msg) => console.warn(msg),
   });
 
   // 4. Crash recovery for the manifest-import wizard (per review C1).

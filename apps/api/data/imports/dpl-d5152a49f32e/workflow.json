@@ -1,0 +1,117 @@
+[
+  {
+    "id": "intake-v2",
+    "name": "intakeV2",
+    "title": "Intake V2",
+    "description": "Receives the inbound request.",
+    "actor": [
+      "Agent"
+    ],
+    "trigger": [
+      "REQUEST_RECEIVED_V2"
+    ],
+    "actions": [
+      {
+        "order": "1",
+        "name": "logRequest",
+        "description": "Log the inbound payload.",
+        "type": "tool"
+      }
+    ],
+    "triggered_event": [
+      "REQUEST_PARSED_V2"
+    ]
+  },
+  {
+    "id": "validate-payload-v2",
+    "name": "validatePayloadV2",
+    "title": "Validate Payload V2",
+    "description": "Sanity-check the parsed request.",
+    "actor": [
+      "Agent"
+    ],
+    "trigger": [
+      "REQUEST_PARSED_V2"
+    ],
+    "actions": [
+      {
+        "order": "1",
+        "name": "checkShape",
+        "description": "Ensure required fields are present.",
+        "type": "logic"
+      }
+    ],
+    "triggered_event": [
+      "PAYLOAD_VALID_V2"
+    ]
+  },
+  {
+    "id": "enrich-v2",
+    "name": "enrichV2",
+    "title": "Enrich V2",
+    "description": "Look up extra context.",
+    "actor": [
+      "Agent"
+    ],
+    "trigger": [
+      "PAYLOAD_VALID_V2"
+    ],
+    "actions": [
+      {
+        "order": "1",
+        "name": "fetchContext",
+        "description": "Pull related rows from the data warehouse.",
+        "type": "tool"
+      }
+    ],
+    "triggered_event": [
+      "ENRICHED_V2"
+    ]
+  },
+  {
+    "id": "decide-v2",
+    "name": "decideV2",
+    "title": "Decide V2",
+    "description": "Apply rules to pick an action.",
+    "actor": [
+      "Agent"
+    ],
+    "trigger": [
+      "ENRICHED_V2"
+    ],
+    "actions": [
+      {
+        "order": "1",
+        "name": "applyRules",
+        "description": "Score and select.",
+        "type": "logic"
+      }
+    ],
+    "triggered_event": [
+      "DECISION_READY_V2"
+    ]
+  },
+  {
+    "id": "notify-v2",
+    "name": "notifyV2",
+    "title": "Notify V2",
+    "description": "Send the decision out.",
+    "actor": [
+      "Agent"
+    ],
+    "trigger": [
+      "DECISION_READY_V2"
+    ],
+    "actions": [
+      {
+        "order": "1",
+        "name": "sendNotification",
+        "description": "Deliver via the notify channel.",
+        "type": "tool"
+      }
+    ],
+    "triggered_event": [
+      "NOTIFIED_V2"
+    ]
+  }
+]
