@@ -58,7 +58,11 @@ export function useBrainStream(req: BrainStreamRequest | null): UseBrainStreamRe
     // previous effect's cleanup already closed the EventSource, but a programmatic close does NOT
     // fire onerror/end, so we must reset run state here — otherwise `running` stays stuck true and
     // the composer locks in inject-mode, and `runId` keeps targeting the navigated-away run's /stop.
-    if (!req) { setRunning(false); setRunId(null); lastConvRef.current = null; return; }
+    // BUGFIX (新会话): also CLEAR the transcript here. Resetting req to null (新会话 / switch domain)
+    // must wipe the prior conversation's events — otherwise the old transcript lingers and it looks
+    // like a new conversation never started. (A history run sets `viewingRun`, which bypasses these
+    // live events, so clearing here is safe.)
+    if (!req) { setEvents([]); setRunning(false); setRunId(null); lastConvRef.current = null; return; }
     const isReconnect = !!req.reconnectRunId;
     if (!isReconnect && (!req.domain || !req.goal)) return;
     // #2a FIX: only wipe the transcript on a genuinely NEW conversation, or on a reconnect (where

@@ -37,12 +37,18 @@ export function DomainList({ domains, domain, query, setQuery, onSelect }: { dom
     <div>
       <div style={{ marginBottom: 6 }}><SearchInput value={query} onChange={setQuery} placeholder="搜索业务域…" ariaLabel="搜索业务域" /></div>
       {shown.length === 0 && <div style={{ fontSize: 11, color: "var(--text-4)", padding: "4px 2px" }}>没有匹配的业务域</div>}
-      {shown.map((d) => (
-        <button key={d.id} onClick={() => onSelect(d.id)} style={{ display: "block", width: "100%", textAlign: "left", padding: "7px 9px", marginBottom: 3, borderRadius: 7, border: "1px solid " + (d.id === domain ? "var(--signal)" : "transparent"), background: d.id === domain ? "var(--panel-2)" : "transparent", color: "var(--text)", cursor: "pointer", fontSize: 12.5 }}>
-          <div style={{ fontWeight: 600 }}>{d.name ?? d.id}</div>
-          {d.counts ? <div style={{ fontSize: 10, color: "var(--text-3)", fontFamily: "var(--mono)" }}>{d.counts.actions} 动作 · {d.counts.events} 事件</div> : null}
-        </button>
-      ))}
+      {shown.map((d) => {
+        const active = d.id === domain;
+        return (
+          <button key={d.id} className="factory-cta" onClick={() => onSelect(d.id)} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", textAlign: "left", padding: "8px 10px", marginBottom: 3, borderRadius: 8, border: "1px solid " + (active ? "var(--signal)" : "transparent"), background: active ? "var(--panel-2)" : "transparent", color: "var(--text)", cursor: "pointer", fontSize: 12.5 }}>
+            <span style={{ width: 3, alignSelf: "stretch", borderRadius: 2, background: active ? "var(--signal)" : "transparent", flexShrink: 0 }} />
+            <span style={{ minWidth: 0, flex: 1 }}>
+              <span style={{ display: "block", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.name ?? d.id}</span>
+              {d.counts ? <span style={{ display: "block", fontSize: 10, color: "var(--text-3)", marginTop: 1 }}>{d.counts.actions} 动作 · {d.counts.events} 事件</span> : null}
+            </span>
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -55,6 +61,20 @@ const STATUS_FILTERS: Array<{ key: string; label: string; match: (s: string) => 
 ];
 
 const statusColor = (s: string) => (s === "finished" || s === "done" ? "var(--green)" : /error|aborted/.test(s) ? "var(--red)" : s === "running" ? "var(--signal)" : "var(--amber)");
+const statusDotKind = (s: string): "ok" | "failed" | "running" | "idle" => (s === "finished" || s === "done" ? "ok" : /error|aborted/.test(s) ? "failed" : s === "running" ? "running" : "idle");
+// Human-readable status (was the raw "finished"/"error"/"exhausted" dev string in mono).
+const humanStatus = (s: string): string => (s === "finished" || s === "done" ? "已完成" : /error|aborted/.test(s) ? "失败" : s === "running" ? "运行中" : /incomplete|exhausted/.test(s) ? "未完成" : s);
+// Compact relative time so a run reads "3 分钟前", not a raw ISO / nothing.
+const relTime = (iso: string): string => {
+  const t = new Date(iso).getTime();
+  if (!t || Number.isNaN(t)) return "";
+  const s = Math.max(0, Math.floor((Date.now() - t) / 1000));
+  if (s < 60) return "刚刚";
+  if (s < 3600) return `${Math.floor(s / 60)} 分钟前`;
+  if (s < 86400) return `${Math.floor(s / 3600)} 小时前`;
+  if (s < 604800) return `${Math.floor(s / 86400)} 天前`;
+  return new Date(t).toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" });
+};
 
 export function HistoryList({ runs, viewingRunId, onOpen, onDelete, onClear, deletedRuns = [], showTrash = false, onToggleTrash, onRestore }: { runs: RunRow[]; viewingRunId: string | null; onOpen: (id: string) => void; onDelete: (id: string) => void; onClear: () => void; deletedRuns?: RunRow[]; showTrash?: boolean; onToggleTrash?: () => void; onRestore?: (id: string) => void }) {
   const [filter, setFilter] = useState("all");
@@ -66,22 +86,30 @@ export function HistoryList({ runs, viewingRunId, onOpen, onDelete, onClear, del
         {STATUS_FILTERS.map((s) => <FilterChip key={s.key} active={filter === s.key} onClick={() => setFilter(s.key)}>{s.label}</FilterChip>)}
       </div>
       {shown.length === 0 && <div style={{ fontSize: 11, color: "var(--text-4)" }}>{runs.length ? "没有匹配的运行" : "跑过的会出现在这里"}</div>}
-      {shown.map((r) => (
-        <div key={r.id} className="hover-row" style={{ display: "flex", gap: 7, alignItems: "center", padding: "6px 8px", marginBottom: 2, borderRadius: 6, border: "1px solid " + (viewingRunId === r.id ? "var(--signal)" : "transparent") }}>
-          <button onClick={() => onOpen(r.id)} style={{ display: "flex", gap: 7, alignItems: "center", flex: 1, minWidth: 0, textAlign: "left", background: "none", border: "none", cursor: "pointer", color: "var(--text-2)", padding: 0 }}>
-            <StatusDot status={r.status === "finished" || r.status === "done" ? "ok" : /error|aborted/.test(r.status) ? "failed" : r.status === "running" ? "running" : "idle"} size={6} />
-            <span style={{ minWidth: 0 }}>
-              <span style={{ display: "block", fontSize: 11.5, color: "var(--text)" }}>{r.agentsCount} agent · {r.turns} 轮 · {Math.round(r.tokensUsed / 1000)}k</span>
-              <span style={{ display: "block", fontSize: 10, color: statusColor(r.status), fontFamily: "var(--mono)" }}>{r.status}</span>
-            </span>
-          </button>
-          {r.status !== "running" && (
-            <button title="删除该运行（可在回收站恢复）" onClick={(e) => { e.stopPropagation(); onDelete(r.id); }} style={{ flexShrink: 0, display: "inline-flex", padding: 4, borderRadius: 5, background: "none", border: "none", cursor: "pointer", color: "var(--text-3)" }}>
-              <Icon name="trash" size={13} />
+      {shown.map((r) => {
+        const title = r.goal?.trim() || `${r.agentsCount} 个智能体的运行`;
+        const active = viewingRunId === r.id;
+        return (
+          <div key={r.id} className="hover-row" style={{ display: "flex", gap: 6, alignItems: "center", padding: "7px 9px", marginBottom: 2, borderRadius: 7, border: "1px solid " + (active ? "var(--signal)" : "transparent"), background: active ? "var(--panel-2)" : "transparent" }}>
+            <button onClick={() => onOpen(r.id)} style={{ display: "flex", flexDirection: "column", gap: 2, flex: 1, minWidth: 0, textAlign: "left", background: "none", border: "none", cursor: "pointer", padding: 0 }}>
+              <span style={{ display: "flex", gap: 6, alignItems: "center", minWidth: 0 }}>
+                <StatusDot status={statusDotKind(r.status)} size={6} />
+                <span style={{ minWidth: 0, fontSize: 12, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{title}</span>
+              </span>
+              <span style={{ fontSize: 10, color: "var(--text-3)", paddingLeft: 12 }}>
+                <span style={{ color: statusColor(r.status) }}>{humanStatus(r.status)}</span>
+                {r.createdAt && relTime(r.createdAt) ? ` · ${relTime(r.createdAt)}` : ""}
+                {r.agentsCount ? ` · ${r.agentsCount} 智能体` : ""}
+              </span>
             </button>
-          )}
-        </div>
-      ))}
+            {r.status !== "running" && (
+              <button title="删除该运行（可在回收站恢复）" onClick={(e) => { e.stopPropagation(); onDelete(r.id); }} style={{ flexShrink: 0, display: "inline-flex", padding: 4, borderRadius: 5, background: "none", border: "none", cursor: "pointer", color: "var(--text-4)" }}>
+                <Icon name="trash" size={12} />
+              </button>
+            )}
+          </div>
+        );
+      })}
       <div style={{ display: "flex", gap: 12, marginTop: 4, alignItems: "center" }}>
         {shown.some((r) => r.status !== "running") && (
           <button onClick={onClear} style={{ fontSize: 11, color: "var(--text-3)", background: "none", border: "none", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4 }}>
@@ -99,10 +127,10 @@ export function HistoryList({ runs, viewingRunId, onOpen, onDelete, onClear, del
         <div style={{ marginTop: 6, borderTop: "1px dashed var(--border)", paddingTop: 6 }}>
           {deletedRuns.length === 0 && <div style={{ fontSize: 11, color: "var(--text-4)" }}>回收站是空的</div>}
           {deletedRuns.map((r) => (
-            <div key={r.id} className="hover-row" style={{ display: "flex", gap: 7, alignItems: "center", padding: "6px 8px", marginBottom: 2, borderRadius: 6, opacity: 0.85 }}>
+            <div key={r.id} className="hover-row" style={{ display: "flex", gap: 7, alignItems: "center", padding: "6px 8px", marginBottom: 2, borderRadius: 6, opacity: 0.8 }}>
               <span style={{ flex: 1, minWidth: 0 }}>
-                <span style={{ display: "block", fontSize: 11.5, color: "var(--text-2)" }}>{r.agentsCount} agent · {r.turns} 轮 · {Math.round(r.tokensUsed / 1000)}k</span>
-                <span style={{ display: "block", fontSize: 10, color: "var(--text-4)", fontFamily: "var(--mono)" }}>{r.status} · 已删除</span>
+                <span style={{ display: "block", fontSize: 11.5, color: "var(--text-2)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.goal?.trim() || `${r.agentsCount} 个智能体的运行`}</span>
+                <span style={{ display: "block", fontSize: 10, color: "var(--text-4)" }}>{humanStatus(r.status)} · 已删除{r.createdAt && relTime(r.createdAt) ? ` · ${relTime(r.createdAt)}` : ""}</span>
               </span>
               <button title="恢复该运行" onClick={(e) => { e.stopPropagation(); onRestore?.(r.id); }} style={{ flexShrink: 0, fontSize: 11, color: "var(--signal)", background: "none", border: "1px solid var(--border)", borderRadius: 5, padding: "2px 8px", cursor: "pointer" }}>恢复</button>
             </div>

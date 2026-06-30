@@ -193,7 +193,12 @@ export default function FactoryPage() {
   // Reset the in-memory conversation view WITHOUT touching durable storage (so switching domains
   // keeps each domain's saved thread). 新会话 additionally drops the current domain's saved thread.
   const resetConversation = () => { setConv(""); setReq(null); setViewingRun(null); setSelectedSlug(null); setTab("flow"); setAnalysis(null); };
-  const newConversation = () => { try { localStorage.removeItem(convStoreKey(tenant, domain)); } catch { /* ignore */ } resetConversation(); };
+  const newConversation = () => {
+    // Drop this domain's saved thread AND the reconnect handle, so a fresh start isn't hijacked by
+    // the on-mount reconnect effect resurrecting the previous run.
+    try { localStorage.removeItem(convStoreKey(tenant, domain)); localStorage.removeItem(activeRunKey(tenant)); } catch { /* ignore */ }
+    resetConversation();
+  };
   const pickDomain = (id: string) => { setDomain(id); resetConversation(); };
   // Merge multiple uploaded ontology JSON files into one bundle. Each file may be a combined
   // object ({actions,events,rules,dataObjects}) OR a bare array (type inferred from the filename:
@@ -452,7 +457,7 @@ export default function FactoryPage() {
             ) : filteredBlocks.length === 0 ? (
               <div style={{ margin: "auto", fontSize: 12, color: "var(--text-4)" }}>该筛选下暂无内容</div>
             ) : (
-              filteredBlocks.map((b) => <div key={b.id} className="factory-block"><BlockView b={b} onDecide={decideTestCases} onBoundary={decideBoundary} onClarify={decideClarify} /></div>)
+              filteredBlocks.map((b) => <BlockView key={b.id} b={b} onDecide={decideTestCases} onBoundary={decideBoundary} onClarify={decideClarify} />)
             )}
           </div>
 
