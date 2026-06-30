@@ -229,21 +229,23 @@ export function BlockView({ b, onDecide, onBoundary, onClarify }: { b: Block; on
     case "plan": return <div className="rise" style={{ padding: "10px 12px", border: "1px solid var(--border)", borderRadius: 8, margin: "4px 0" }}><div style={{ fontSize: 12.5, fontWeight: 600, color: "var(--text)" }}>📋 方案 · {b.agents} 个 agent</div><div style={{ fontSize: 12, color: "var(--text-2)", marginTop: 3, lineHeight: 1.6 }}>{b.summary}</div></div>;
     case "validation": return <div className="rise" style={{ padding: "10px 12px", border: `1px solid ${b.ok ? "var(--green)" : "var(--amber)"}`, borderRadius: 8, margin: "4px 0" }}><div style={{ fontSize: 12.5, fontWeight: 600, color: b.ok ? "var(--green)" : "var(--amber)" }}>{b.ok ? "✓ 事件图闭合（含字段合同）" : "⚠ 事件图未闭合"}</div>{!b.ok && b.issues.slice(0, 5).map((i, k) => <div key={k} style={{ fontSize: 12, color: "var(--text-2)", marginTop: 3 }}>· {i}</div>)}</div>;
     case "sandbox": { const sev = b.ev as { appId?: string; functionsRegistered?: number; registeredIds?: string[]; agentRuns?: Array<{ agentSlug?: string; agentShort?: string; status?: string }> }; const sim = Boolean(b.ev.simulated); const ok = Boolean(b.ev.fullChainRan); const col = sim ? "var(--amber)" : ok ? "var(--green)" : "var(--amber)"; const title = b.ev.deployFailed ? "🧪 沙箱部署未生效" : sim ? (ok ? "🧪 沙箱（模拟）图闭包推断可跑通" : "🧪 沙箱（模拟）未闭合") : (ok ? "🧪 沙箱端到端真跑通 ✓" : "🧪 沙箱未完全跑通"); return <div className="rise" style={{ padding: "10px 12px", border: `1px solid ${col}`, borderRadius: 8, margin: "4px 0", background: "var(--panel-2)" }}><div style={{ fontSize: 12.5, fontWeight: 600, color: col }}>{title}</div><div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 }}>{chip(sim ? "⚠ 模拟·未真实执行" : "真实部署执行", sim ? "var(--amber)" : "var(--green)")}{chip(`部署 ${b.ev.functionsRegistered ?? 0}`)}{chip(`跑 ${b.ev.ran ?? 0}`)}{chip(`成功终态 ${b.ev.reachedSuccessTerminal ? "是" : "否"}`, b.ev.reachedSuccessTerminal ? "var(--green)" : "var(--amber)")}{Number(b.ev.externalTerminals ?? 0) > 0 ? chip(`${Number(b.ev.internalChains ?? 0)} 内部链 + ${Number(b.ev.externalTerminals)} 外部交接终态`, "var(--violet)") : null}</div>{sev.appId && <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px solid var(--border)" }}><div style={{ fontSize: 11.5, color: "var(--text-2)" }}>🚀 Inngest 沙箱 App：<span style={{ fontFamily: "var(--mono)", color: "var(--text)", fontWeight: 700 }}>{sev.appId}</span> · 注册 {sev.functionsRegistered ?? 0} 个函数{Array.isArray(sev.registeredIds) ? ` · 部署 ${sev.registeredIds.length} 个智能体` : ""}</div>{Array.isArray(sev.registeredIds) && sev.registeredIds.length > 0 && <div style={{ display: "flex", flexDirection: "column", gap: 3, marginTop: 6 }}>{sev.registeredIds.map((id: string, i: number) => { const ar = (sev.agentRuns ?? []).find((a) => a.agentSlug === id); const st = ar?.status; const ran = st === "ok" || st === "Completed"; const stCol = ran ? "var(--green)" : st === "running" ? "var(--blue)" : st ? "var(--amber)" : "var(--text-3)"; return <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, fontFamily: "var(--mono)" }}><span style={{ color: "var(--green)" }}>✓</span><span style={{ color: "var(--text)", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{ar?.agentShort || id}</span><span style={{ color: stCol, flexShrink: 0 }}>· {ar ? (ran ? "已注册·已跑通" : st === "running" ? "已注册·运行中" : `已注册·${st}`) : "已注册"}</span></div>; })}</div>}</div>}{Number(b.ev.externalTerminals ?? 0) > 0 && <div style={{ fontSize: 11, color: "var(--text-3)", marginTop: 5 }}>有 {Number(b.ev.externalTerminals)} 个 agent 的产出是交给外部平台消费的「外部交接终态」（如 JD_GENERATED→外部系统），算合法终态、不是断链。</div>}{sim && <div style={{ fontSize: 11, color: "var(--text-2)", marginTop: 5 }}>模拟＝按事件图闭包推断会跑通，未真实部署执行。设 FACTORY_REAL_DEPLOY=1 做真实验证。</div>}</div>; }
+    // Tier-3 narration: muted, borderless one-liners (no panel fill, no entrance animation) so they
+    // sit quietly beneath the tier-1/2 milestones. Container gap owns vertical rhythm.
     case "refine": return (
-      <div className="rise" style={{ fontSize: 12, color: "var(--text-2)", padding: "8px 12px", background: "var(--panel-2)", borderRadius: 8, margin: "2px 0" }}>
+      <div style={{ fontSize: 12, color: "var(--text-3)", padding: "3px 12px", lineHeight: 1.55 }}>
         🔧 精修「{b.action}」：{b.critique}
         {b.diff && (
-          <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginTop: 5 }}>
+          <span style={{ display: "inline-flex", gap: 5, flexWrap: "wrap", marginLeft: 6, verticalAlign: "middle" }}>
             {b.diff.systemPromptChanged && chip("改了 prompt", "var(--blue)")}
             {b.diff.decisionLogicChanged && chip("改了分支逻辑", "var(--violet)")}
             {b.diff.toolsAdded.map((t) => chip(`+${t}`, "var(--green)"))}
             {b.diff.toolsRemoved.map((t) => chip(`−${t}`, "var(--red)"))}
-          </div>
+          </span>
         )}
       </div>
     );
     case "score": return (
-      <div className="rise" style={{ padding: "9px 12px", border: `1px solid ${b.regression ? "var(--red)" : "var(--green)"}`, borderRadius: 8, margin: "2px 0", background: "var(--panel-2)" }}>
+      <div className="rise" style={{ padding: "9px 12px", border: `1px solid ${b.regression ? "var(--red)" : "var(--green)"}`, borderRadius: 10, background: "var(--panel-2)" }}>
         <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
           <span style={{ fontSize: 12.5, fontWeight: 600, color: "var(--text)" }}>📈 评分「{b.action}」</span>
           <span style={{ fontSize: 12, fontFamily: "var(--mono)", color: "var(--text-2)" }}>{b.prior} → {b.next}</span>
@@ -252,17 +254,17 @@ export function BlockView({ b, onDecide, onBoundary, onClarify }: { b: Block; on
         <DimBars dims={b.dims} />
       </div>
     );
-    case "revert": return <div className="rise" style={{ fontSize: 12, color: "var(--amber)", padding: "8px 12px", background: "var(--panel-2)", borderRadius: 8, margin: "2px 0" }}>↩ 回滚「{b.action}」到第 {b.toAttempt} 次精修之前（这轮精修退步了）。</div>;
-    case "skill": return <div className="rise" style={{ fontSize: 12, color: "var(--text-2)", padding: "8px 12px", background: "var(--panel-2)", borderRadius: 8, margin: "2px 0" }}>✨ 创造技能「{b.name}」：{b.purpose}</div>;
-    case "subagent": return <div className="rise" style={{ fontSize: 12, color: "var(--text-2)", padding: "8px 12px", border: "1px dashed var(--amber)", borderRadius: 8, margin: "2px 0" }}>🧠 子大脑：{b.task}{b.summary ? ` → ${b.summary.slice(0, 120)}` : "（进行中…）"}</div>;
+    case "revert": return <div style={{ fontSize: 12, color: "var(--text-3)", padding: "3px 12px", lineHeight: 1.55 }}><span style={{ color: "var(--amber)" }}>↩</span> 回滚「{b.action}」到第 {b.toAttempt} 次精修之前（这轮退步了）。</div>;
+    case "skill": return <div style={{ fontSize: 12, color: "var(--text-3)", padding: "3px 12px", lineHeight: 1.55 }}>✨ 创造技能「{b.name}」：{b.purpose}</div>;
+    case "subagent": return <div style={{ fontSize: 12, color: "var(--text-3)", padding: "3px 12px", lineHeight: 1.55 }}>🧠 子大脑：{b.task}{b.summary ? ` → ${b.summary.slice(0, 120)}` : "（进行中…）"}</div>;
     case "budget": return <div style={{ fontSize: 11, color: b.level === "high" ? "var(--amber)" : "var(--text-3)", fontFamily: "var(--mono)", padding: "2px 12px" }}>⏱ {b.text}</div>;
-    case "reflect": return <div className="rise" style={{ fontSize: 12, color: "var(--text-2)", padding: "8px 12px", background: "var(--panel-2)", borderRadius: 8, margin: "2px 0" }}>🧠 反思：{b.text}</div>;
+    case "reflect": return <div style={{ fontSize: 12, color: "var(--text-3)", padding: "3px 12px", lineHeight: 1.55 }}>🧠 反思：{b.text}</div>;
     case "catalog": return <div style={{ fontSize: 12, color: "var(--text-3)", fontFamily: "var(--mono)", padding: "2px 12px" }}>📖 {b.text}</div>;
-    case "toolnew": return <div className="rise" style={{ fontSize: 12, color: "var(--text-2)", padding: "8px 12px", background: "var(--panel-2)", borderRadius: 8, margin: "2px 0" }}>🔧 造工具「{b.name}」{b.desc ? `：${b.desc}` : ""}</div>;
+    case "toolnew": return <div style={{ fontSize: 12, color: "var(--text-3)", padding: "3px 12px", lineHeight: 1.55 }}>🔧 造工具「{b.name}」{b.desc ? `：${b.desc}` : ""}</div>;
     case "web": return <div style={{ fontSize: 12, color: "var(--text-3)", fontFamily: "var(--mono)", padding: "2px 12px" }}>🔍 检索「{b.query}」· {b.count} 条结果</div>;
     case "toolsearch": return <div style={{ fontSize: 12, color: "var(--text-3)", fontFamily: "var(--mono)", padding: "2px 12px" }}>🔎 工具搜索「{b.query}」· {b.count} 个候选</div>;
     case "toolschema": return <div style={{ fontSize: 12, color: "var(--text-3)", fontFamily: "var(--mono)", padding: "2px 12px" }}>🔗 解析出工具 {b.name}（{b.method || "?"} · {b.fields} 字段）</div>;
-    case "inspect": return <div className="rise" style={{ fontSize: 12, color: b.degraded ? "var(--amber)" : "var(--text-2)", padding: "8px 12px", background: "var(--panel-2)", borderRadius: 8, margin: "2px 0" }}>🔬 诊断 {b.agentSlug}：{b.status}{b.degraded ? " · 降级" : ""}{b.error ? ` · ${b.error.slice(0, 80)}` : ""}</div>;
+    case "inspect": return <div style={{ fontSize: 12, color: b.degraded ? "var(--amber)" : "var(--text-3)", padding: "3px 12px", lineHeight: 1.55 }}>🔬 诊断 {b.agentSlug}：{b.status}{b.degraded ? " · 降级" : ""}{b.error ? ` · ${b.error.slice(0, 80)}` : ""}</div>;
     case "code": return <div style={{ fontSize: 12, color: "var(--text-3)", fontFamily: "var(--mono)", padding: "2px 12px" }}>✍️ 为「{b.actionName}」{b.codeSource === "ai" ? "亲手写好代码（AI）" : "渲染脚手架代码"}</div>;
     case "done": return <div className="rise" style={{ padding: "10px 12px", border: `1px solid ${b.status === "finished" ? "var(--green)" : "var(--border)"}`, borderRadius: 8, margin: "6px 0", textAlign: "center", fontSize: 12.5, fontWeight: 600, color: b.status === "finished" ? "var(--green)" : "var(--text-2)" }}>{b.status === "finished" ? "✅ 交付完成" : `结束（${b.status}）`}</div>;
     case "error": return <div className="rise" style={{ padding: "10px 12px", border: "1px solid var(--red)", borderRadius: 8, margin: "4px 0", fontSize: 12.5, color: "var(--red)" }}>⚠ {b.text}</div>;

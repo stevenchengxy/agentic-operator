@@ -92,10 +92,11 @@ export function RunSummary({ blocks, lastBudget, analysis, analyzing, canAnalyze
         </div>
       </Panel>
 
-      <Ledger title="构建计划" items={plans} empty="还没规划" />
-      <Ledger title="修订记录" items={refines} empty="还没修订" />
-      <Ledger title="学到的经验（反思）" items={reflects} empty="还没反思" />
-      <Ledger title="技能" items={skills} empty="本次没造技能" />
+      {/* Empty ledgers don't render — no more bordered "还没…" placeholder panels cluttering 总结. */}
+      {plans.length > 0 && <Ledger title="构建计划" items={plans} empty="还没规划" />}
+      {refines.length > 0 && <Ledger title="修订记录" items={refines} empty="还没修订" />}
+      {reflects.length > 0 && <Ledger title="学到的经验（反思）" items={reflects} empty="还没反思" />}
+      {skills.length > 0 && <Ledger title="技能" items={skills} empty="本次没造技能" />}
     </div>
   );
 }

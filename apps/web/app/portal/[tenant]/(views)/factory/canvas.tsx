@@ -15,7 +15,7 @@ import { Empty } from "@/app/portal/components";
 import type { AgentCardData, FactoryStageId, StageState } from "./model";
 
 // ── stage rail (compact, always-pinned progress) ──────────────────────────────────
-const STATUS_COLOR: Record<string, string> = { idle: "var(--text-3)", active: "var(--signal)", ok: "var(--green)", error: "var(--red)" };
+const STATUS_COLOR: Record<string, string> = { idle: "var(--text-3)", active: "var(--signal)", ok: "var(--green)", error: "var(--red)", warn: "var(--amber)" };
 
 export function StageRail({ stages, current, running, refineCount }: { stages: StageState[]; current: FactoryStageId | null; running: boolean; refineCount: number }) {
   const reached = stages.reduce((mx, s, i) => (s.status !== "idle" ? i : mx), -1);
@@ -30,7 +30,7 @@ export function StageRail({ stages, current, running, refineCount }: { stages: S
           return (
             <Fragment key={s.id}>
               {i > 0 && <span style={{ color: "var(--border-2)", fontSize: 10 }}>›</span>}
-              <span className={isActive ? "fct-stage-active" : undefined} title={s.label} style={{ flex: "1 1 0", textAlign: "center", fontSize: 11, whiteSpace: "nowrap", padding: "3px 4px", borderRadius: 20, border: `1px solid ${on ? col : "var(--border)"}`, background: s.status === "active" || isActive ? "var(--panel-2)" : "transparent", color: on ? col : "var(--text-3)" }}>
+              <span className={isActive ? "fct-stage-active" : undefined} title={s.label} style={{ flex: "1 1 0", textAlign: "center", fontSize: 11, whiteSpace: "nowrap", padding: "3px 4px", borderRadius: 20, border: `1px solid ${on ? col : "var(--border)"}`, background: s.status === "active" || isActive ? "var(--panel-2)" : "transparent", color: on ? col : "var(--text-3)", transition: "color 0.3s ease, border-color 0.3s ease, background 0.3s ease" }}>
                 {s.status === "ok" ? "✓ " : s.status === "error" ? "✗ " : ""}{s.label}
               </span>
             </Fragment>

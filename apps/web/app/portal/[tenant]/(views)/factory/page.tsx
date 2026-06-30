@@ -121,7 +121,7 @@ export default function FactoryPage() {
   useEffect(() => { try { const v = localStorage.getItem(`ao:factory:leftOpen:${tenant}`); if (v != null) setLeftOpen(v === "1"); } catch { /* ignore */ } }, [tenant]);
   const toggleLeft = () => setLeftOpen((o) => { const n = !o; try { localStorage.setItem(`ao:factory:leftOpen:${tenant}`, n ? "1" : "0"); } catch { /* ignore */ } return n; });
 
-  const { events: liveEvents, running, runId } = useBrainStream(req);
+  const { events: liveEvents, running, runId, error: streamError } = useBrainStream(req);
   useEffect(() => { if (!running && req) refreshRuns(); }, [running, req, refreshRuns]);
   useEffect(() => {
     try {
@@ -421,10 +421,10 @@ export default function FactoryPage() {
           <CollapsibleSection title="业务域" storageKey={`ao:factory:sec:domains:${tenant}`}>
             <DomainList domains={domains} domain={domain} query={domainQuery} setQuery={setDomainQuery} onSelect={pickDomain} />
           </CollapsibleSection>
-          <CollapsibleSection title="历史运行" badge={<span style={{ fontSize: 10, color: "var(--text-3)" }}>{runs.length}</span>} storageKey={`ao:factory:sec:runs:${tenant}`}>
+          <CollapsibleSection title="历史运行" defaultOpen={false} badge={<span style={{ fontSize: 10, color: "var(--text-3)" }}>{runs.length}</span>} storageKey={`ao:factory:sec:runs:${tenant}`}>
             <HistoryList runs={runs} viewingRunId={viewingRun?.id ?? null} onOpen={openRun} onDelete={deleteRunUi} onClear={clearRunsUi} deletedRuns={deletedRuns} showTrash={showTrash} onToggleTrash={toggleTrash} onRestore={restoreRunUi} />
           </CollapsibleSection>
-          <CollapsibleSection title="已生成 · 草稿" badge={<span style={{ fontSize: 10, color: "var(--text-3)" }}>{drafts.length}</span>} storageKey={`ao:factory:sec:drafts:${tenant}`}>
+          <CollapsibleSection title="已生成 · 草稿" defaultOpen={false} badge={<span style={{ fontSize: 10, color: "var(--text-3)" }}>{drafts.length}</span>} storageKey={`ao:factory:sec:drafts:${tenant}`}>
             <DraftList drafts={drafts} promoting={promoting} promoteMsg={promoteMsg} onPromote={promote} />
           </CollapsibleSection>
           <HealthStrip checks={healthChecks} />
@@ -437,13 +437,16 @@ export default function FactoryPage() {
               ⚠ LLM 网关未配置 —— 大脑无法运行。请在 <code style={{ fontFamily: "var(--mono)" }}>.env</code> 设置 <code style={{ fontFamily: "var(--mono)" }}>CUSTOM_LLM_BASE_URL</code> + <code style={{ fontFamily: "var(--mono)" }}>CUSTOM_LLM_API_KEY</code>（或 <code style={{ fontFamily: "var(--mono)" }}>OPENAI_API_KEY</code>），重启 API 后生效。
             </div>
           )}
+          {streamError && (
+            <div role="alert" style={{ margin: 12, marginBottom: 0, padding: "10px 12px", border: "1px solid var(--red)", borderRadius: 10, background: "var(--panel-2)", fontSize: 12.5, color: "var(--red)", lineHeight: 1.6 }}>⚠ {streamError}</div>
+          )}
           {!isHero && (
-            <div style={{ display: "flex", gap: 5, alignItems: "center", padding: "8px 14px", borderBottom: "1px solid var(--border)", flexWrap: "wrap" }}>
+            <div style={{ display: "flex", gap: 5, alignItems: "center", padding: "8px 16px", borderBottom: "1px solid var(--border)", flexWrap: "wrap" }}>
               <span style={{ fontSize: 10.5, color: "var(--text-3)", fontFamily: "var(--mono)", marginRight: 2 }}>筛选</span>
               {TRANSCRIPT_FILTERS.map((f) => <FilterChip key={f.key} active={transcriptFilter === f.key} onClick={() => setTranscriptFilter(f.key)}>{f.label}</FilterChip>)}
             </div>
           )}
-          <div ref={feedRef} style={{ flex: 1, overflow: "auto", padding: 20, display: "flex", flexDirection: "column", gap: 2 }}>
+          <div ref={feedRef} style={{ flex: 1, overflow: "auto", padding: 16, display: "flex", flexDirection: "column", gap: 7 }}>
             {isHero ? (
               <div className="rise" style={{ margin: "auto", maxWidth: 580, textAlign: "center" }}>
                 <div style={{ fontSize: 30, marginBottom: 10 }}>⚡</div>
