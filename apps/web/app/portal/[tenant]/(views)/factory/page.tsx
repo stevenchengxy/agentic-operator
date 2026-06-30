@@ -20,7 +20,7 @@ import { tenantHeader } from "@/lib/hooks/tenant-header";
 import { useBrainStream, activeRunKey, type BrainEvent } from "@/lib/hooks/useBrainStream";
 import { isStopIntent } from "@/lib/factory-intent";
 import { CodeBox, FullModal } from "./atoms";
-import { BlockView, TRANSCRIPT_FILTERS, filterBlocks } from "./transcript";
+import { TranscriptFeed, TRANSCRIPT_FILTERS, filterBlocks } from "./transcript";
 import { StageRail, EventGraph } from "./canvas";
 import { BrainFlow } from "./brain-flow";
 import { ActivityLog } from "./activity-log";
@@ -457,7 +457,7 @@ export default function FactoryPage() {
             ) : filteredBlocks.length === 0 ? (
               <div style={{ margin: "auto", fontSize: 12, color: "var(--text-4)" }}>该筛选下暂无内容</div>
             ) : (
-              filteredBlocks.map((b) => <BlockView key={b.id} b={b} onDecide={decideTestCases} onBoundary={decideBoundary} onClarify={decideClarify} />)
+              <TranscriptFeed blocks={filteredBlocks} grouped={transcriptFilter === "all"} onDecide={decideTestCases} onBoundary={decideBoundary} onClarify={decideClarify} />
             )}
           </div>
 
@@ -535,7 +535,7 @@ export default function FactoryPage() {
           </div>
           <div style={{ display: "flex", borderBottom: "1px solid var(--border)", alignItems: "center" }}>
             {([["flow", `智能体${agents.length ? ` · ${agents.length}` : ""}`], ["brain", "大脑"], ["test", `测试${testCaseList.length || sandboxRuns.length ? ` · ${testCaseList.length || sandboxRuns.length}` : ""}`], ["summary", "总结"]] as Array<["flow" | "brain" | "test" | "summary", string]>).map(([k, label]) => (
-              <button key={k} onClick={() => { setTab(k); setSelectedSlug(null); }} style={{ flex: "1 0 auto", padding: "9px 6px", fontSize: 11.5, fontWeight: 600, whiteSpace: "nowrap", background: "none", border: "none", borderBottom: tab === k ? "2px solid var(--signal)" : "2px solid transparent", color: tab === k ? "var(--text)" : "var(--text-3)", cursor: "pointer" }}>{label}</button>
+              <button key={k} onClick={() => { setTab(k); setSelectedSlug(null); }} style={{ flex: "1 0 auto", padding: "9px 6px", fontSize: 11.5, fontWeight: 600, whiteSpace: "nowrap", background: "none", border: "none", borderBottom: tab === k ? "2px solid var(--signal)" : "2px solid transparent", color: tab === k ? "var(--text)" : "var(--text-3)", cursor: "pointer", transition: "color 0.15s ease, border-color 0.15s ease" }}>{label}</button>
             ))}
             {(tab === "flow" || tab === "brain") && (
               <button title="全屏查看" onClick={() => setFullscreen(tab === "brain" ? "brain" : "flow")} style={{ padding: "0 10px", background: "none", border: "none", cursor: "pointer", color: "var(--text-3)", display: "inline-flex", alignItems: "center" }}>

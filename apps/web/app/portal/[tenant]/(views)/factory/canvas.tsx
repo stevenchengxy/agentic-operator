@@ -40,7 +40,7 @@ export function StageRail({ stages, current, running, refineCount }: { stages: S
       <div style={{ position: "relative", height: 3, borderRadius: 2, background: "var(--border)", marginTop: 7 }}>
         <div style={{ position: "absolute", left: 0, top: 0, height: 3, borderRadius: 2, width: `${pct}%`, background: "var(--signal)", transition: "width 0.4s ease" }} />
       </div>
-      {refineCount > 0 && <div style={{ fontSize: 10.5, color: "var(--amber)", fontFamily: "var(--mono)", marginTop: 5 }}>↺ 校验 → 设计 修订回环 ×{refineCount}</div>}
+      {refineCount > 0 && <div style={{ fontSize: 10.5, color: "var(--amber)", marginTop: 5 }}>↺ 修订回环 ×{refineCount}</div>}
     </div>
   );
 }
