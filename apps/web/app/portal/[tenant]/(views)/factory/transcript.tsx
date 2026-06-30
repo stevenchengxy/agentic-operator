@@ -128,8 +128,13 @@ function CompactionBlock({ b }: { b: Extract<Block, { kind: "compaction" }> }) {
 function ClarifyCard({ b, onSubmit }: { b: Extract<Block, { kind: "clarify" }>; onSubmit?: (answer: string) => void }) {
   const [text, setText] = useState("");
   const [sent, setSent] = useState(false);
+  // Two-step: pick an option (highlights it) → a CONFIRM bar appears → confirm to submit. A single
+  // click never auto-commits (the old bug: clicking any option fired immediately, so it looked like
+  // the recommended one got chosen + executed). `selected` is the option index awaiting confirmation.
+  const [selected, setSelected] = useState<number | null>(null);
   const pending = b.awaiting && !sent;
   const submit = (answer: string) => { if (!answer.trim() || !onSubmit || !pending) return; setSent(true); onSubmit(answer.trim()); };
+  const chosen = selected != null ? b.options?.[selected] : undefined;
   return (
     <div className="rise" style={{ padding: "12px 14px", border: `1px solid ${pending ? "var(--violet)" : "var(--border)"}`, borderRadius: 10, margin: "6px 0", background: "var(--panel-2)" }}>
       <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text)", marginBottom: 4 }}>❓ 大脑在问你{pending ? "" : "（已回答）"}</div>
@@ -137,11 +142,22 @@ function ClarifyCard({ b, onSubmit }: { b: Extract<Block, { kind: "clarify" }>; 
       {b.context && <div style={{ fontSize: 12, color: "var(--text-3)", marginTop: 4, lineHeight: 1.5 }}>{b.context}</div>}
       {b.options && b.options.length > 0 && (
         <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8 }}>
-          {b.options.map((o, i) => (
-            <button key={i} disabled={!pending} onClick={() => submit(o.value)} style={{ textAlign: "left", padding: "7px 10px", borderRadius: 8, cursor: pending ? "pointer" : "default", border: `1px solid ${o.recommended ? "var(--green)" : "var(--border)"}`, background: o.recommended ? "var(--panel-3)" : "var(--panel)", color: "var(--text)", fontSize: 12.5 }}>
-              {o.recommended && <span style={{ color: "var(--green)", marginRight: 6, fontSize: 11 }}>★ 推荐</span>}{o.label}
-            </button>
-          ))}
+          {b.options.map((o, i) => {
+            const isSel = selected === i;
+            return (
+              <button key={i} disabled={!pending} onClick={() => setSelected(i)} style={{ textAlign: "left", padding: "7px 10px", borderRadius: 8, cursor: pending ? "pointer" : "default", border: isSel ? "2px solid var(--violet)" : `1px solid ${o.recommended ? "var(--green)" : "var(--border)"}`, background: isSel ? "var(--panel-3)" : o.recommended ? "var(--panel-3)" : "var(--panel)", color: "var(--text)", fontSize: 12.5 }}>
+                {o.recommended && <span style={{ color: "var(--green)", marginRight: 6, fontSize: 11 }}>★ 推荐</span>}{o.label}
+                {isSel && <span style={{ color: "var(--violet)", marginLeft: 8, fontSize: 11, fontWeight: 700 }}>✓ 已选</span>}
+              </button>
+            );
+          })}
+          {pending && chosen && (
+            <div style={{ display: "flex", gap: 8, marginTop: 2, alignItems: "center", flexWrap: "wrap" }}>
+              <span style={{ fontSize: 12, color: "var(--text-2)" }}>确认选「{chosen.label.length > 28 ? chosen.label.slice(0, 27) + "…" : chosen.label}」？</span>
+              <Button tone="primary" onClick={() => submit(chosen.value)}>确认</Button>
+              <Button tone="ghost" onClick={() => setSelected(null)}>取消</Button>
+            </div>
+          )}
         </div>
       )}
       {pending && (

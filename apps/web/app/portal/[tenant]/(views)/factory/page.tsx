@@ -107,7 +107,11 @@ export default function FactoryPage() {
   const refreshDomains = useCallback(() => apiGet<{ domains: DomainRow[]; gatewayConfigured?: boolean }>("/v1/agent-factory/domains").then((d) => { if (!d) return; setDomains(d.domains); setGatewayOk(d.gatewayConfigured !== false); }), []);
   useEffect(() => { void refreshDomains(); }, [refreshDomains]);
   useEffect(() => {
-    if (domain || !domains.length) return;
+    if (!domains.length) return;
+    // Keep a VALID selection; re-pick if `domain` is empty OR stale (no longer in the list — e.g. a
+    // previously-selected deployment artifact that's now hidden). Without this, a stale domain id
+    // makes every send hit read_ontology on a non-existent domain → the brain dies with no output.
+    if (domain && domains.some((d) => d.id === domain)) return;
     let pick = domains[0]!.id;
     try { const last = localStorage.getItem(lastDomainKey(tenant)); if (last && domains.some((d) => d.id === last)) pick = last; } catch { /* ignore */ }
     setDomain(pick);
@@ -214,12 +218,35 @@ export default function FactoryPage() {
     return bundle;
   };
 
+  // Infer intent from the file CONTENT, not just the extension (the user wants the AI to figure out
+  // what an uploaded doc IS): ontology-shaped JSON (actions/events/rules/dataObjects, or an array of
+  // action-like objects) → treat as an ONTOLOGY to generate from; anything else (a tool/API doc, an
+  // OpenAPI spec, prose) → a TOOL DOC for the brain to reason about + create_tool. The chip lets the
+  // user flip the guess (intent override).
+  const classifyAttachment = (name: string, text: string): "ontology" | "tooldoc" => {
+    const t = text.trim();
+    if (t.startsWith("{") || t.startsWith("[")) {
+      try {
+        const j: unknown = JSON.parse(t);
+        if (j && typeof j === "object" && !Array.isArray(j)) {
+          const o = j as Record<string, unknown>;
+          if (o.actions || o.action || o.events || o.event || o.rules || o.dataObjects || o.objects || o.entities) return "ontology";
+        }
+        if (Array.isArray(j) && j.length && j[0] && typeof j[0] === "object") {
+          const first = j[0] as Record<string, unknown>;
+          if (first.trigger || first.triggered_event || first.actor || first.target_objects || /action|event|rule|object|entit|ontolog/i.test(name)) return "ontology";
+        }
+      } catch { /* not JSON → a tool/prose doc */ }
+    }
+    return "tooldoc";
+  };
+
   const onAttachFiles = async (files: FileList | null) => {
     if (!files) return;
     const next = [...attached];
     for (const f of Array.from(files)) {
       const text = await f.text().catch(() => "");
-      if (text) next.push({ name: f.name, text, kind: f.name.toLowerCase().endsWith(".json") ? "ontology" : "tooldoc" });
+      if (text) next.push({ name: f.name, text, kind: classifyAttachment(f.name, text) });
     }
     setAttached(next);
     const firstOnto = next.find((a) => a.kind === "ontology");
@@ -436,7 +463,8 @@ export default function FactoryPage() {
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
                     {attached.map((a, i) => (
                       <span key={i} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, padding: "2px 8px", borderRadius: 12, border: `1px solid ${a.kind === "ontology" ? "var(--green)" : "var(--violet)"}`, color: "var(--text-2)" }}>
-                        {a.kind === "ontology" ? "📦 本体" : "📄 工具文档"}·{a.name.length > 22 ? a.name.slice(0, 21) + "…" : a.name}
+                        <button onClick={() => setAttached(attached.map((x, j) => (j === i ? { ...x, kind: x.kind === "ontology" ? "tooldoc" : "ontology" } : x)))} title="AI 猜的类型——点一下切换：本体 ⇄ 工具文档" style={{ background: "none", border: "none", color: a.kind === "ontology" ? "var(--green)" : "var(--violet)", cursor: "pointer", fontSize: 11, padding: 0, fontWeight: 600 }}>{a.kind === "ontology" ? "📦 本体" : "📄 工具文档"}</button>
+                        ·{a.name.length > 20 ? a.name.slice(0, 19) + "…" : a.name}
                         <button onClick={() => setAttached(attached.filter((_, j) => j !== i))} style={{ background: "none", border: "none", color: "var(--text-3)", cursor: "pointer", fontSize: 12, padding: 0 }}>✕</button>
                       </span>
                     ))}

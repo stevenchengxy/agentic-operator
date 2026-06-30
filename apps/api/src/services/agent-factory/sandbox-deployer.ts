@@ -12,9 +12,10 @@
 // observed; the deploy itself (functions registered) is verifiable from the commit.
 
 import path from "node:path";
+import { readFileSync } from "node:fs";
 import type { SandboxDeployer, SandboxDeployResult, GeneratedAgentSpec, OntologyAction, AgentRunIO } from "@agentic/agent-factory";
 import { compileGraph, verifyGraph, projectPlanToActions, verificationPolicy, synthesizeMockExternalAgents, caseOutcomeFromRuns, chainVerdictByKind } from "@agentic/agent-factory";
-import { getDb, tenants, runs, agents, events, eq, and, desc } from "@agentic/db";
+import { getDb, tenants, runs, agents, steps, events, eq, and, desc, asc } from "@agentic/db";
 import { gt } from "drizzle-orm";
 import { makeId } from "@agentic/shared";
 import { getTenantInngest, appIdForTenant } from "@agentic/runtime";
@@ -136,10 +137,12 @@ export function mapToManifest(specs: GeneratedAgentSpec[]): unknown[] {
       // without a hand-written tenant prompt package. THIS is what makes generated functions
       // actually execute on Inngest (not just register).
       generated: true,
-      // #G — true CodeAct: when the brain hand-wrote AI code, EXECUTE it in the sandbox (gated by
-      // FACTORY_EXEC_GENERATED, dry-run tools, falls back to the default prompt). Rendered code
-      // (codeSource !== "ai") stays declarative.
-      codeExecuted: s.codeSource === "ai",
+      // #G — true CodeAct: EXECUTE generated code in the sandbox when the brain hand-wrote AI code
+      // (codeSource==="ai") OR the auto-rendered code passed compile + the security lint
+      // (spec.codeExecuted, set by renderExecutableCode). Gated by FACTORY_EXEC_GENERATED + the -sb
+      // tenant guard, and runGeneratedCode never throws — it returns null on any failure so the
+      // runtime falls back to the proven declarative path. Code that can't compile/lint stays declarative.
+      codeExecuted: s.codeSource === "ai" || s.codeExecuted === true,
       // R14: the runtime ontology.fetchActionRules tool needs the domain (+ action) to fetch the
       // executor=Agent rules for THIS action — attach it via tool_use config so it resolves live.
       tool_use: tools.map((t) => (t === "ontology.fetchActionRules" ? { name: t, config: { domain: s.domainId, action: s.actionName } } : { name: t })),
@@ -271,7 +274,13 @@ export class ManifestSandboxDeployer implements SandboxDeployer {
     const ranAgent = (s: GeneratedAgentSpec) => observed.completedAgents.has(s.short || s.nameZh); // manifest name = short||nameZh
     const distinctRan = cv.expectedToRun.filter(ranAgent).length;
     const verdictDegraded = cv.expectedToRun.filter((s) => !s.tools?.length && !s.hitl).map((s) => s.short);
-    const reachedSuccessTerminal = cv.successTerminals.length > 0 && observed.completedAgents.size > 0;
+    // A run must have ACTUALLY EMITTED a success-terminal event — not merely "the graph defines some
+    // success terminal AND any agent ran" (which would be true even for a chain that only emitted FAIL
+    // events). This makes reachedSuccessTerminal a trustworthy signal, so the finish gate's
+    // "reachedSuccessTerminal && zero-degraded" timing-fallback can't accept a genuinely-broken chain.
+    const successTermSet = new Set(cv.successTerminals);
+    const emittedSuccess = [...perSubject.values()].flat().some((r) => r.emittedEvent != null && successTermSet.has(r.emittedEvent));
+    const reachedSuccessTerminal = emittedSuccess && observed.completedAgents.size > 0;
     // T1 — when cases carried kinds AND we attributed real per-subject runs, the per-kind verdict
     // (reject→FAIL counts as pass) drives 跑通; else fall back to the proven aggregate gate.
     const aggregateChainRan = functionsRegistered > 0 && cv.expectedToRun.every(ranAgent) && observed.failed === 0 && verdictDegraded.length === 0;
@@ -348,19 +357,36 @@ export class ManifestSandboxDeployer implements SandboxDeployer {
     // ULID and chokes on our `run-<hex>` ids ("ulid: bad data size"). The portal run page is
     // tenant-scoped via the URL slug (tenant-header.ts derives x-agentic-tenant), so the sandbox
     // (`<domain>-sb`) run resolves correctly.
+    // Resolve the REAL per-agent I/O from step artifacts (steps.input_ref / output_ref are absolute
+    // JSON sidecar paths written by the runtime) — so the sandbox panel shows each agent's actual
+    // input + output, not nulls. Best-effort + sync (better-sqlite3 + readFileSync); a missing file
+    // just leaves it null. First step's input ≈ the trigger payload; last step's output ≈ the result.
+    const readJson = (p: string | null): Record<string, unknown> | null => {
+      if (!p) return null;
+      try { return JSON.parse(readFileSync(p, "utf8")) as Record<string, unknown>; } catch { return null; }
+    };
+    const runIO = (runId: string): { input: Record<string, unknown> | null; output: Record<string, unknown> | null } => {
+      try {
+        const ss = getDb().select({ inputRef: steps.inputRef, outputRef: steps.outputRef }).from(steps).where(eq(steps.runId, runId)).orderBy(asc(steps.ord)).all();
+        const input = ss.find((s) => s.inputRef)?.inputRef ?? null;
+        const output = [...ss].reverse().find((s) => s.outputRef)?.outputRef ?? null;
+        return { input: readJson(input), output: readJson(output) };
+      } catch { return { input: null, output: null }; }
+    };
     return rows.map((r) => {
       const spec = specs.find((s) => s.short === r.agentName || s.slug === r.agentName);
+      const io = runIO(r.runId);
       return {
         agentSlug: spec?.slug ?? r.agentName ?? r.runId,
         agentShort: spec?.nameZh ?? r.agentName ?? "agent",
         status: r.status,
         degraded: false,
         triggerEvent: r.subject,
-        inputPayload: null,
+        inputPayload: io.input,
         tools: spec?.tools ?? [],
         outputEvent: spec?.emit?.[0] ?? null,
         reasoning: "",
-        outputPayload: null,
+        outputPayload: io.output,
         runId: r.runId,
         url: `/portal/${encodeURIComponent(tenantSlug)}/runs/${encodeURIComponent(r.runId)}`,
       };
@@ -384,8 +410,16 @@ export class ManifestSandboxDeployer implements SandboxDeployer {
     return false;
   }
 
-  private async pollRuns(tenantId: string, since: Date, expected: number, maxMs = 12_000): Promise<{ ran: number; failed: number; rows: Array<{ id: string; status: string }>; completedAgents: Set<string> }> {
-    const deadline = Date.now() + maxMs;
+  private async pollRuns(tenantId: string, since: Date, expected: number, maxMs?: number): Promise<{ ran: number; failed: number; rows: Array<{ id: string; status: string }>; completedAgents: Set<string> }> {
+    // WAIT for the whole fired chain to settle before sampling. The agents run async on Inngest and
+    // a rule-gate cascade (each ontology.fetchActionRules is slow) appears gradually; a too-short
+    // window samples while runs are still `running` → ran=0/partial → fullChainRan=false → finish
+    // loops forever (the brain re-runs the sandbox endlessly). Scale by chain length; env-overridable.
+    // In tests (no real Inngest execution → runs never settle) keep the OLD short window so the suite
+    // doesn't block on the full wait; in production wait long + adaptive for the real async cascade.
+    const isTest = process.env.NODE_ENV === "test";
+    const base = maxMs ?? (isTest ? 12_000 : (Number(process.env.FACTORY_SANDBOX_POLL_MS) || 45_000));
+    const deadline = Date.now() + (isTest ? base : Math.min(120_000, Math.max(base, expected * 7_000)));
     let rows: Array<{ id: string; status: string; agentName: string | null }> = [];
     while (Date.now() < deadline) {
       try {

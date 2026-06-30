@@ -15,6 +15,9 @@ export interface AcceptanceSandbox {
   functionsRegistered?: number;
   ran?: number;
   fullChainRan?: boolean;
+  /** the chain reached a SUCCESS (non-failish) terminal — strong evidence even when fullChainRan
+   *  flickers false because slow rule-gate agents were still `running` at snapshot time. */
+  reachedSuccessTerminal?: boolean;
   degradedAgents?: string[];
   simulated?: boolean;
 }
@@ -40,7 +43,11 @@ export function acceptanceReport(specs: GeneratedAgentSpec[], ontology: DomainOn
     { key: "coverage", label: "覆盖全部 Agent 动作", pass: !!ontology && gap.length === 0, detail: gap.length ? `还差：${gap.join("、")}` : `${agentActions.length} 个全覆盖` },
     { key: "tools_resolve", label: "所有工具都能解析", pass: unresolved.length === 0, detail: unresolved.length ? `未解析：${unresolved.map((s) => s.short).join("、")}` : "无未解析工具" },
     { key: "real_register", label: "真实注册（非模拟）", pass: !!sandbox && sandbox.simulated === false && reg >= Math.max(1, realSpecs.length), detail: sandbox ? (sandbox.simulated ? "上次是模拟验证" : `注册 ${reg} 个函数`) : "未跑沙箱" },
-    { key: "chain_ran", label: "链路端到端跑通", pass: !!sandbox?.fullChainRan && (sandbox?.degradedAgents?.length ?? 0) === 0, detail: sandbox ? `跑 ${sandbox.ran ?? 0}${(sandbox.degradedAgents?.length ?? 0) ? ` · 降级 ${sandbox.degradedAgents!.join("、")}` : ""}` : "未跑沙箱" },
+    // Pass on fullChainRan OR reachedSuccessTerminal (both with zero degraded). reachedSuccessTerminal
+    // means the fired chain reached a non-failish terminal; with verify_chain (static closure) +
+    // zero degraded that's sufficient — fullChainRan alone can flicker false purely on snapshot timing
+    // (slow ontology.fetchActionRules), which used to dead-loop finish.
+    { key: "chain_ran", label: "链路端到端跑通", pass: (!!sandbox?.fullChainRan || !!sandbox?.reachedSuccessTerminal) && (sandbox?.degradedAgents?.length ?? 0) === 0, detail: sandbox ? `跑 ${sandbox.ran ?? 0}${sandbox.fullChainRan ? "·整链通" : sandbox.reachedSuccessTerminal ? "·达成功终态" : ""}${(sandbox.degradedAgents?.length ?? 0) ? ` · 降级 ${sandbox.degradedAgents!.join("、")}` : ""}` : "未跑沙箱" },
     { key: "rule_gates", label: "规则闸已绑 fetchActionRules", pass: gatesUnbound.length === 0, detail: gatesUnbound.length ? `未绑：${gatesUnbound.map((s) => s.short).join("、")}` : "已绑或无规则闸" },
     { key: "typed_payloads", label: "I/O 都从 event_data 类型化", pass: specs.length > 0 && noPayload.length === 0, detail: noPayload.length ? `无 schema：${noPayload.map((s) => s.short).join("、")}` : "全部已类型化" },
     { key: "has_code", label: "所有 agent 都有代码", pass: specs.length > 0 && noCode.length === 0, detail: noCode.length ? `缺代码：${noCode.map((s) => s.short).join("、")}` : "全部已生成代码" },
@@ -58,6 +65,7 @@ export interface SandboxEvidenceLike {
   ranAgents?: string[];
   registeredIds?: string[];
   fullChainRan?: boolean;
+  reachedSuccessTerminal?: boolean;
   degradedAgents?: string[];
   simulated?: boolean;
 }
@@ -78,6 +86,7 @@ export function acceptanceGate(
         functionsRegistered: sandbox.functionsRegistered ?? sandbox.deployed,
         ran: sandbox.ran ?? sandbox.agentsRan,
         fullChainRan: sandbox.fullChainRan,
+        reachedSuccessTerminal: sandbox.reachedSuccessTerminal,
         degradedAgents: sandbox.degradedAgents ?? [],
         simulated: sandbox.simulated,
       }

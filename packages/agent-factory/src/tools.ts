@@ -239,7 +239,23 @@ function buildSpec(
 }
 
 const cardOf = (s: GeneratedAgentSpec) => ({ slug: s.slug, actionName: s.actionName, short: s.short, nameZh: s.nameZh, trigger: s.trigger, emit: s.emit, tools: s.tools, unresolved: s.unresolvedTools });
-const designOf = (s: GeneratedAgentSpec) => ({ reasoning: s.designReasoning ?? "", systemPrompt: s.systemPrompt, toolRationale: s.toolRationale ?? "", decisionLogic: s.decisionLogic ?? "", code: s.generatedCode, codeSource: s.codeSource });
+const designOf = (s: GeneratedAgentSpec) => ({ reasoning: s.designReasoning ?? "", systemPrompt: s.systemPrompt, toolRationale: s.toolRationale ?? "", decisionLogic: s.decisionLogic ?? "", code: s.generatedCode, codeSource: s.codeSource, codeExecuted: s.codeExecuted ?? false });
+
+/** Render the spec's reference .ts AND grade whether it can truly EXECUTE (CodeAct) in the sandbox:
+ *  the rendered code must COMPILE (TS) and pass the security lint (no child_process/fs/net/eval).
+ *  When it does, codeExecuted=true → the runtime runs the generated handler (with automatic
+ *  declarative fallback if runGeneratedCode returns null), so "generated code" actually executes
+ *  instead of being a dead scaffold. When it fails either check, the agent stays declarative. */
+async function renderExecutableCode(spec: GeneratedAgentSpec): Promise<void> {
+  spec.generatedCode = specToAgentCode(spec);
+  const code = spec.generatedCode ?? "";
+  try {
+    const v = await validateAgentCode(code);
+    spec.codeExecuted = v.ok && lintGeneratedToolCode(code).ok;
+  } catch {
+    spec.codeExecuted = false;
+  }
+}
 
 /** The dynamic rule-fetch instruction floored onto rule-check agents. */
 const RULE_FETCH_INSTRUCTION =
@@ -455,9 +471,11 @@ const design_agent: BrainTool = {
     if (plan.length) spec.plan = plan;
     spec.unresolvedTools = grounded.unresolved;
     spec.stateBindings = deriveStateBindings(action, ctx.ontology); // R5
-    // auto-render readable code so every agent HAS code (codegen_agent can override w/ AI code)
-    spec.generatedCode = specToAgentCode(spec);
+    // auto-render readable code so every agent HAS code (codegen_agent can override w/ AI code), and
+    // GRADE it so a compilable+safe render actually EXECUTES in the sandbox (true CodeAct), not just
+    // sits there as a scaffold — this is what makes "生成的 code" really run.
     spec.codeSource = "render";
+    await renderExecutableCode(spec);
 
     // warnings
     const promptText = `${systemPrompt}\n${authored.decisionLogic}`;
@@ -473,6 +491,7 @@ const design_agent: BrainTool = {
     ctx.lastSandbox = null;
     ctx.emit({ t: "agent.created", spec: cardOf(spec), design: designOf(spec) });
     ctx.emit({ t: "code", actionName: name, code: spec.generatedCode ?? "", codeSource: "render" });
+    const execNote = spec.codeExecuted ? " · ⚙ 代码已校验+安全检查通过，沙箱将真实执行（CodeAct）" : " · 📄 代码为可读脚手架（声明式执行）";
 
     const agentActionNames = ctx.ontology.actions.filter((a) => a.actor.includes("Agent")).map((a) => a.name);
     const done = new Set(ctx.specs.map((s) => s.actionName));
@@ -488,7 +507,7 @@ const design_agent: BrainTool = {
       (plan.length ? ` · 🧭 已采纳 ${plan.length} 步可重放 plan（每步独立 step.run）` : " · 💡 建议补一份多步 plan（每个外部/写入步骤独立可重放）");
     return {
       ok: true,
-      summary: `已提交「${spec.nameZh}」(${agentActionNames.length - remaining.length}/${agentActionNames.length}) · 工具 ${spec.tools.length} 个 · 已渲染代码${warn}`,
+      summary: `已提交「${spec.nameZh}」(${agentActionNames.length - remaining.length}/${agentActionNames.length}) · 工具 ${spec.tools.length} 个 · 已渲染代码${execNote}${warn}`,
       output: { committed: spec.short, tools: spec.tools, unresolved: spec.unresolvedTools, done: agentActionNames.length - remaining.length, total: agentActionNames.length, remaining, needsCodegen: false },
     };
   },
@@ -567,8 +586,8 @@ const refine_agent: BrainTool = {
     if (typeof args.decision_logic === "string") spec.decisionLogic = args.decision_logic;
     if (Array.isArray(args.input_schema)) spec.inputSchema = parseIoSchema(args.input_schema);
     if (Array.isArray(args.output_schema)) spec.outputSchema = parseIoSchema(args.output_schema);
-    // re-render code unless the user hand-wrote AI code
-    if (spec.codeSource !== "ai") spec.generatedCode = specToAgentCode(spec);
+    // re-render + re-grade code unless the user hand-wrote AI code (a refined spec → fresh executable render)
+    if (spec.codeSource !== "ai") await renderExecutableCode(spec);
     ctx.lastSandbox = null;
 
     const newDims = scoreSpec(spec, history.length + 1);
@@ -603,7 +622,7 @@ const revert_refine: BrainTool = {
     spec.systemPrompt = last.priorSpecSnapshot.systemPrompt;
     spec.tools = [...last.priorSpecSnapshot.tools];
     spec.decisionLogic = last.priorSpecSnapshot.decisionLogic;
-    if (spec.codeSource !== "ai") spec.generatedCode = specToAgentCode(spec);
+    if (spec.codeSource !== "ai") await renderExecutableCode(spec);
     ctx.lastSandbox = null;
     ctx.emit({ t: "revert", actionName: name, revertedToAttempt: last.attemptNumber - 1 });
     ctx.emit({ t: "agent.created", spec: cardOf(spec), design: designOf(spec) });
@@ -729,12 +748,23 @@ const sandbox_run: BrainTool = {
     ctx.spent.sandboxRuns += 1;
     const res = await ctx.ports.sandbox.deployAndObserve(ctx.domain, ctx.specs, {
       dryRun: args.dry_run === true,
-      testCases: (ctx.testCases ?? []).map((c) => ({ entryEvent: c.entryEvent, payload: c.payload })),
+      testCases: (ctx.testCases ?? []).map((c) => ({ entryEvent: c.entryEvent, payload: applyTestDataOverrides(c.payload, ctx.testDataOverrides) })),
       // #D: thread the user's boundary classification so an external-handoff emit counts as a
       // legitimate terminal in the verdict — not a broken chain (matches validate_graph).
       boundaryEvents: (ctx.boundaryEvents ?? []).map((b) => ({ event: b.event, kind: b.kind })),
     });
-    ctx.lastSandbox = { specsFingerprint: specsFingerprint(ctx.specs), deployed: res.functionsRegistered, agentsRan: res.ran, ranAgents: res.runs.map((r) => r.id), reachedTerminal: res.reachedSuccessTerminal || res.fullChainRan, reachedSuccessTerminal: res.reachedSuccessTerminal, fullChainRan: res.fullChainRan, degradedAgents: res.degradedAgents, simulated: res.simulated ?? false, ts: Date.now() };
+    const sbFp = specsFingerprint(ctx.specs);
+    const fresh = { specsFingerprint: sbFp, deployed: res.functionsRegistered, agentsRan: res.ran, ranAgents: res.runs.map((r) => r.id), reachedTerminal: res.reachedSuccessTerminal || res.fullChainRan, reachedSuccessTerminal: res.reachedSuccessTerminal, fullChainRan: res.fullChainRan, degradedAgents: res.degradedAgents, simulated: res.simulated ?? false, ts: Date.now() };
+    // Keep the STRONGEST evidence across same-fingerprint runs — snapshot-timing flakiness (a re-run
+    // that samples too early → ran=0 → reachedSuccessTerminal=false) must NOT downgrade a prior pass,
+    // or finish dead-loops. A spec change bumps the fingerprint → start fresh (no stale credit).
+    const prev = ctx.lastSandbox;
+    // OR the success signals (timing flakiness mustn't downgrade a prior pass) but keep the FRESH
+    // degradedAgents — degradation is purely spec-derived (an agent with no tools/hitl), identical
+    // across same-fingerprint runs, so never carry a stale "clean" value forward over a new run.
+    ctx.lastSandbox = prev && prev.specsFingerprint === sbFp
+      ? { ...fresh, reachedSuccessTerminal: fresh.reachedSuccessTerminal || prev.reachedSuccessTerminal, fullChainRan: fresh.fullChainRan || prev.fullChainRan, reachedTerminal: fresh.reachedTerminal || prev.reachedTerminal }
+      : fresh;
     ctx.emit({
       t: "sandbox",
       ran: res.ran,
@@ -1196,7 +1226,15 @@ const finish: BrainTool = {
     if (!ctx.lastSandbox) return { ok: false, summary: "finish 前必须先 sandbox_run 真跑一次验证。" };
     if (ctx.lastSandbox.specsFingerprint !== fp) return { ok: false, summary: "agent 在上次沙箱后又改过——证据过期，请重新 sandbox_run。" };
     if (ctx.lastSandbox.deployed === 0) return { ok: false, summary: "上次沙箱没真部署成功（0 函数）。" };
-    if (!ctx.lastSandbox.fullChainRan) return { ok: false, summary: "上次沙箱没端到端跑到成功终态——先修到能跑通。" };
+    // Accept fullChainRan OR (reachedSuccessTerminal && zero degraded). fullChainRan can flicker false
+    // purely on SNAPSHOT TIMING — a slow rule-gate cascade (ontology.fetchActionRules) is still
+    // `running` when the poll samples — even though the chain DID reach a success terminal. Requiring
+    // fullChainRan alone dead-looped finish (re-sandbox → another early snapshot → reject → forever).
+    // The poll window is also extended now, so fullChainRan is usually reliable; this is the
+    // legitimate-timing fallback, and acceptanceGate still enforces zero-degraded + the rest.
+    if (!ctx.lastSandbox.fullChainRan && !(ctx.lastSandbox.reachedSuccessTerminal && (ctx.lastSandbox.degradedAgents?.length ?? 0) === 0)) {
+      return { ok: false, summary: "上次沙箱既没整链跑通、也没到成功终态——先修到能跑通（或确认是真断点而非快照时机）。" };
+    }
     // R2: a SIMULATED pass is graph-closure inference, not a real deploy+run — don't accept it as
     // delivery. Tell the user to start the Inngest stack and re-run; escape hatch for standalone dev.
     if (ctx.lastSandbox.simulated && process.env.FACTORY_ALLOW_SIMULATED_FINISH !== "1") {
@@ -1262,6 +1300,83 @@ const ask_user: BrainTool = {
     ctx.awaitingClarify = true;
     ctx.emit({ t: "clarify", question, options, context, awaitingAnswer: true });
     return { ok: true, summary: `已向用户提问并【暂停等待回答】：「${question}」。用户回答后我会把答案发给你，你再继续——别在等待时调别的工具。`, output: { question, options, awaitingAnswer: true } };
+  },
+};
+
+// supply_test_data — contact / credential / id fields (an interview email, a callback URL, an API
+// key, a real candidate id) should NOT be tested with demo placeholders (candidate@example.com,
+// `<field>_demo`): the run "passes" but never reflects the real integration. This detects such
+// fields and asks the user for REAL values, then threads them into the fired test payloads (still
+// via the mock gateway — nothing is actually sent). Reuses the clarify park: SCAN-and-ask first,
+// then the brain parses the answer and calls again with `values`.
+const REAL_DATA_FIELD = /e?-?mail|邮箱|recipient|收件|notify|通知|webhook|callback|回调|\bphone\b|mobile|\btel\b|手机|api[_-]?key|access[_-]?token|\bsecret\b|credential|凭证|账号|account_id/i;
+const DEMO_VALUE = /example\.com|_demo\b|^13800138000$|^Alex Chen$|^demo|占位/i;
+const isDemoValue = (v: unknown): boolean => typeof v === "string" && DEMO_VALUE.test(v);
+
+/** Fields across the designed agents' inputSchema (and the authored test payloads) that read like
+ *  real contact/credential/id and aren't already user-overridden — the ones worth asking about. */
+function scanRealDataNeeds(ctx: BrainCtx): Array<{ field: string; type: string; sample?: string; agents: string[] }> {
+  const needs = new Map<string, { field: string; type: string; sample?: string; agents: Set<string> }>();
+  for (const s of ctx.specs) {
+    for (const io of s.inputSchema ?? []) {
+      if (!REAL_DATA_FIELD.test(io.field)) continue;
+      const cur = needs.get(io.field) ?? { field: io.field, type: io.type, agents: new Set<string>() };
+      cur.agents.add(s.short || s.nameZh);
+      needs.set(io.field, cur);
+    }
+  }
+  for (const tc of ctx.testCases ?? []) {
+    for (const [k, v] of Object.entries(tc.payload)) {
+      const n = needs.get(k);
+      if (n && isDemoValue(v)) n.sample = String(v);
+    }
+  }
+  const overridden = ctx.testDataOverrides ?? {};
+  return [...needs.values()].filter((n) => !(n.field in overridden)).map((n) => ({ field: n.field, type: n.type, sample: n.sample, agents: [...n.agents] }));
+}
+
+/** Apply the user's real values onto a test payload — only keys the payload already carries (so we
+ *  never inject foreign fields the canonical event_data doesn't define). */
+export function applyTestDataOverrides(payload: Record<string, unknown>, overrides?: Record<string, unknown>): Record<string, unknown> {
+  if (!overrides || !Object.keys(overrides).length) return payload;
+  const out = { ...payload };
+  for (const k of Object.keys(overrides)) if (k in out) out[k] = overrides[k];
+  return out;
+}
+
+const supply_test_data: BrainTool = {
+  name: "supply_test_data",
+  description:
+    "测试用例里有【真实联系/凭证/ID 类字段】(面试邀约 email、回调 URL、API key、真实候选人 ID 等) 时，别用 demo 占位——调它。不带 values：它会扫出这些字段并【暂停问用户】要真实值；用户回答后，你把回答解析成 {字段名:真实值} 再带 values 调一次，把真实值织进测试 payload（仍走 mock 网关，不会真发邮件/请求）。用户若回复『用占位』就直接 sandbox_run。",
+  parameters: params({
+    values: { type: "object", description: "用户给的 {字段名:真实值}（从用户回答解析）。不传=先扫描+问用户。" },
+  }),
+  async execute(args, ctx) {
+    if (!ctx.testCases?.length) return { ok: false, summary: "还没 generate_test_cases——先造测试用例，再补真实数据。" };
+    const values = args.values && typeof args.values === "object" && !Array.isArray(args.values) ? (args.values as Record<string, unknown>) : null;
+    // APPLY mode — store overrides + thread into every test payload that carries the field.
+    if (values && Object.keys(values).length) {
+      ctx.testDataOverrides = { ...(ctx.testDataOverrides ?? {}), ...values };
+      let touched = 0;
+      for (const tc of ctx.testCases) {
+        const before = JSON.stringify(tc.payload);
+        tc.payload = applyTestDataOverrides(tc.payload, values);
+        if (JSON.stringify(tc.payload) !== before) touched++;
+      }
+      ctx.awaitingClarify = false;
+      ctx.emit({ t: "test.cases", cases: ctx.testCases, awaitingApproval: ctx.awaitingApproval ?? false });
+      const shown = Object.entries(values).map(([k, v]) => `${k}=${String(v).slice(0, 48)}`).join("、");
+      return { ok: true, summary: `已把真实数据织进 ${touched} 条测试用例：${shown}。现在可以 sandbox_run。`, output: { applied: values, touched } };
+    }
+    // SCAN + ASK mode — find real-data fields still on placeholders and park for the user's values.
+    const needs = scanRealDataNeeds(ctx);
+    if (!needs.length) return { ok: true, summary: "没有需要真实值的联系/凭证类字段——demo 值即可，直接 sandbox_run。", output: { needs: [] } };
+    const lines = needs.map((n) => `· ${n.field}${n.sample ? `（现为占位「${n.sample}」）` : ""} — 用于 ${n.agents.join("、")}`).join("\n");
+    const question = `这些字段是真实联系/凭证/ID 类，建议用真实值替代占位让测试更可信（仍走 mock 不会真发）：\n${lines}\n请按「字段: 值」逐行回复；或回复『用占位』沿用 demo。`;
+    ctx.clarifyPrompt = { question, options: [{ label: "用占位值即可", value: "用占位" }], context: "补全测试真实数据" };
+    ctx.awaitingClarify = true;
+    ctx.emit({ t: "clarify", question, options: ctx.clarifyPrompt.options, context: ctx.clarifyPrompt.context, awaitingAnswer: true });
+    return { ok: true, summary: `已【暂停】请用户补 ${needs.length} 个真实字段：${needs.map((n) => n.field).join("、")}。用户回答后→解析成 {字段:值}→supply_test_data(values=…)；若回复『用占位』就直接 sandbox_run。`, output: { needs, awaitingAnswer: true } };
   },
 };
 
@@ -1357,6 +1472,7 @@ export const FACTORY_TOOLS: BrainTool[] = [
   propose_boundary_events,
   verify_chain,
   generate_test_cases,
+  supply_test_data,
   sandbox_run,
   inspect_run,
   read_spec,

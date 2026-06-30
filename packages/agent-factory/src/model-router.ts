@@ -78,11 +78,17 @@ export function modelChain(tier: ModelTier, env: Record<string, string | undefin
   return out.length ? out : [base];
 }
 
-/** Pick a tier from the brain's live context: cheap/fast while reading + planning, strong once
- *  it's designing/coding/refining/validating (where output quality matters most). Heuristic, not
- *  hardcoded routing — any turn can still call any tool; this only sets the model budget. */
-export function tierForContext(ctx: { specs: { length: number }; currentPlan: unknown }): ModelTier {
-  if (ctx.specs.length > 0) return "hard"; // designing / coding / refining / validating
-  if (ctx.currentPlan) return "default"; // plan exists, about to design
-  return "fast"; // reading ontology / initial planning
+/** Pick a tier from the brain's live PHASE so the per-turn driver model tracks task difficulty
+ *  instead of being pinned to one model. The old version was a ONE-WAY RATCHET — `specs.length > 0
+ *  → "hard"` meant that once the FIRST agent was designed, EVERY remaining turn (validate, sandbox,
+ *  finish, small refines) stayed "hard" and so always served the hard chain's first model
+ *  (sonnet-4.6). Now: reading → fast, planning → default, actively DESIGNING the planned agents →
+ *  hard (each agent's prompt/logic is the heavy reasoning), and once the planned set is designed the
+ *  lighter remaining work drops back to default. Heavy critic work (review/codegen/diagnosis) already
+ *  routes to its own tier inside the tools, so this only sets the conductor's per-turn budget. */
+export function tierForContext(ctx: { specs: { length: number }; currentPlan: Record<string, unknown> | null }): ModelTier {
+  if (!ctx.currentPlan && ctx.specs.length === 0) return "fast"; // reading the ontology
+  if (ctx.specs.length === 0) return "default"; // a plan exists, about to design
+  const planned = Array.isArray(ctx.currentPlan?.agents) ? (ctx.currentPlan!.agents as unknown[]).length : 0;
+  return planned > 0 && ctx.specs.length < planned ? "hard" : "default"; // hard WHILE designing, else default
 }

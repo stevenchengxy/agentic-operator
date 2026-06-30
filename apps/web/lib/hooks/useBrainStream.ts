@@ -83,7 +83,27 @@ export function useBrainStream(req: BrainStreamRequest | null): UseBrainStreamRe
     const es = new EventSource(`/factory-stream?${qs.toString()}`, { withCredentials: true });
     esRef.current = es;
 
+    // SILENCE WATCHDOG — a reconnect can attach to a ZOMBIE run (in the live registry but its driver
+    // died, so it emits nothing) or a hung run; without this `running` stays true forever and the
+    // composer is locked in inject-mode (the "发送没反应" lock). If no frame arrives for a long while,
+    // give up: unlock the composer + clear the stored active run so the user can start fresh. Reset
+    // on every frame, so a genuinely-active run (which streams think/tool frames continuously, and
+    // emits a keepalive at worst) never trips it.
+    const SILENCE_MS = 60_000;
+    let watchdog: ReturnType<typeof setTimeout> | null = null;
+    const armWatchdog = () => {
+      if (watchdog) clearTimeout(watchdog);
+      watchdog = setTimeout(() => {
+        setRunning(false);
+        persistActive(req.tenant, null);
+        setError("该运行已无响应（可能是之前中断的运行）——已解锁，可重新开始。");
+        es.close();
+      }, SILENCE_MS);
+    };
+    armWatchdog();
+
     es.onmessage = (e: MessageEvent) => {
+      armWatchdog(); // any frame (incl. keepalive) proves the stream is alive
       try {
         const ev = JSON.parse(e.data) as BrainEvent;
         if (ev.t === "run.started" || ev.t === "run") {
@@ -104,15 +124,18 @@ export function useBrainStream(req: BrainStreamRequest | null): UseBrainStreamRe
       }
     };
     es.addEventListener("end", () => {
+      if (watchdog) clearTimeout(watchdog);
       setRunning(false);
       es.close();
     });
     es.onerror = () => {
+      if (watchdog) clearTimeout(watchdog);
       setRunning(false);
       es.close();
     };
 
     return () => {
+      if (watchdog) clearTimeout(watchdog);
       es.close();
       esRef.current = null;
     };

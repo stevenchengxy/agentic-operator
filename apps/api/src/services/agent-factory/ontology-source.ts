@@ -143,11 +143,14 @@ export class ManifestOntologySource implements OntologySource {
           counts: { actions: actions.length, events: events.length, objects: objects.length, rules: rules.length, workflow: workflow.length },
         };
       })
-      // Hide throwaway SANDBOX tenants from the picker (`-sb`: each sandbox_run writes a new
-      // workflow_vN.json — pure noise). The OTHER artifact case — a promoted workflow-only folder
-      // (e.g. `agents-generation-v1`) shadowing a live Allmeta domain — is handled in the COMPOSITE
-      // (Allmeta wins for a shared id), so a legit local-only 0-ontology domain still shows here.
-      .filter((d) => !/-sb$/.test(d.id));
+      // Hide DEPLOYMENT ARTIFACTS from the factory picker (they're not ontology SOURCES):
+      //   · `-sb` = throwaway sandbox tenants (each sandbox_run writes a new workflow_vN.json).
+      //   · ontology-LESS folders = a PROMOTED workflow (only workflow*.json, no actions/events/
+      //     objects/rules) — e.g. `agents-generation-v1`, which otherwise shadows live Allmeta
+      //     `Agents-generation` in BOTH listDomains AND the composite's local-folder routing.
+      // A real local ontology folder (RAAS-v1, zhaopin-v1 with events, …) has ≥1 source list, so it
+      // is KEPT and keeps routing to local (no regression — Allmeta does NOT take over RAAS-v1).
+      .filter((d) => !/-sb$/.test(d.id) && d.counts.actions + d.counts.events + d.counts.objects + d.counts.rules > 0);
   }
 
   async fetchOntology(domainId: string): Promise<DomainOntology> {

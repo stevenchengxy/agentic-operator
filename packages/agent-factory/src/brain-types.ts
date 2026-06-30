@@ -264,6 +264,9 @@ export interface BrainCtx {
   research: Array<{ query: string; findings: string }>;
   /** test cases the brain authored (generate_test_cases); fired by sandbox_run after approval. */
   testCases?: TestCase[];
+  /** real values the USER supplied (supply_test_data) to replace demo placeholders for contact /
+   *  credential / id fields (e.g. a real interview email) — applied into the fired test payloads. */
+  testDataOverrides?: Record<string, unknown>;
   /** true while parked waiting for the user's 执行/重新生成 decision on the test cases. */
   awaitingApproval?: boolean;
   /** boundary events the user CLASSIFIED (external handoff / terminal / break) — graph

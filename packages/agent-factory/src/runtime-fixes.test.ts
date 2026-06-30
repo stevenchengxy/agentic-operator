@@ -37,8 +37,12 @@ describe("tierForContext (#7 — difficulty heuristic)", () => {
   it("is default once a plan exists but nothing is designed", () => {
     expect(tierForContext({ specs: [], currentPlan: { v: 1 } })).toBe("default");
   });
-  it("is hard the moment any spec is being designed/coded", () => {
-    expect(tierForContext({ specs: [{}], currentPlan: { v: 1 } })).toBe("hard");
+  it("is hard WHILE actively designing the planned agents (specs < planned)", () => {
+    expect(tierForContext({ specs: [{}], currentPlan: { v: 1, agents: [{}, {}, {}] } })).toBe("hard");
+  });
+  it("drops back to default once the planned set is fully designed (no longer a one-way ratchet)", () => {
+    // 3 planned, 3 designed → post-design work (validate / sandbox / finish) → default, not stuck on hard.
+    expect(tierForContext({ specs: [{}, {}, {}], currentPlan: { v: 1, agents: [{}, {}, {}] } })).toBe("default");
   });
 });
 
