@@ -21,35 +21,44 @@ export class CompositeOntologySource implements OntologySource {
     private readonly manifest: OntologySource,
   ) {}
 
-  // Memoized per instance (the composite is built per run/request) — the Allmeta domain set doesn't
-  // change mid-run, and fetchActionRules is called per-action, so we must not re-hit Allmeta each time.
-  private _allmetaIds?: Promise<Set<string>>;
-  /** Normalized ids Allmeta LIVE-serves (empty if Allmeta is down → degrade to local). */
-  private allmetaIds(): Promise<Set<string>> {
-    if (!this._allmetaIds) {
-      this._allmetaIds = this.allmeta
-        .listDomains()
-        .then((ds) => new Set(ds.map((d) => normDomainId(d.id))))
-        .catch(() => new Set<string>());
+  /** Normalized ids of domains backed by a local models/ folder (a REAL ontology folder — the
+   *  manifest source already drops `-sb` + ontology-less deployment artifacts, so a stale promoted
+   *  artifact like `agents-generation-v1` is NOT here and therefore routes to live Allmeta). */
+  private async localIds(): Promise<Set<string>> {
+    try {
+      const local = await this.manifest.listDomains();
+      return new Set(local.map((d) => normDomainId(d.id)));
+    } catch {
+      return new Set();
     }
-    return this._allmetaIds;
   }
 
-  /** A domain routes to Allmeta when Allmeta serves it — so a live domain WINS over a stale local
-   *  promoted/sandbox artifact of the same id (was: "served by Allmeta unless a local folder exists",
-   *  which let the artifact `agents-generation-v1` shadow live `Agents-generation`). */
+  /** A domain is served by Allmeta unless it has a (real) local folder. Local ontology folders keep
+   *  winning (they may be richer / hand-tuned, e.g. RAAS-v1) — we only let Allmeta serve a domain
+   *  whose local presence is a DEPLOYMENT ARTIFACT that the manifest source already filtered out. */
   private async isAllmetaDomain(domainId: string): Promise<boolean> {
-    return (await this.allmetaIds()).has(normDomainId(domainId));
+    return !(await this.localIds()).has(normDomainId(domainId));
   }
 
   async listDomains() {
-    // Allmeta (LIVE) first; local folders only for ids Allmeta does NOT serve — so a stale promoted
-    // artifact never shadows the live domain, while local-only domains still show. Allmeta down →
-    // remote=[] → local-only (unchanged degrade path).
-    const remote = await this.allmeta.listDomains().catch(() => []);
-    const remoteIds = new Set(remote.map((d) => normDomainId(d.id)));
+    // Manifest first so local domains keep their cheap counts; append Allmeta domains not already
+    // present (the manifest source drops `-sb` + artifact folders, so a live domain like
+    // `Agents-generation` is no longer shadowed). Allmeta failures degrade to local-only.
     const local = await this.manifest.listDomains().catch(() => []);
-    return [...remote, ...local.filter((d) => !remoteIds.has(normDomainId(d.id)))];
+    const seen = new Set(local.map((d) => normDomainId(d.id)));
+    let remote: Awaited<ReturnType<OntologySource["listDomains"]>> = [];
+    try {
+      remote = await this.allmeta.listDomains();
+    } catch {
+      remote = [];
+    }
+    const merged = [...local];
+    for (const d of remote) {
+      if (seen.has(normDomainId(d.id))) continue;
+      seen.add(normDomainId(d.id));
+      merged.push(d);
+    }
+    return merged;
   }
 
   async fetchOntology(domainId: string): Promise<DomainOntology> {
