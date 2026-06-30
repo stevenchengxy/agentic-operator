@@ -28,7 +28,7 @@ import { AgentInspector } from "./inspector";
 import { AgentCardList, SandboxIOPanel } from "./agent-cards";
 import { RunSummary } from "./run-summary";
 import { CollapsibleSection, DomainList, HistoryList, DraftList, HealthStrip } from "./left-rail";
-import { toBlocks, deriveAgents, deriveScores, deriveStages, deriveBrainFlow, deriveAgentVersions, STAGE_ORDER, STAGE_LABELS, type DomainRow, type RunRow, type DraftRow, type AgentIO, type AgentCardData, type Block } from "./model";
+import { toBlocks, deriveAgents, deriveScores, deriveStages, deriveBrainFlow, deriveAgentVersions, type DomainRow, type RunRow, type DraftRow, type AgentIO, type AgentCardData, type Block } from "./model";
 
 const SAMPLE_GOALS = [
   "为这个业务域生成能真正跑通的智能体，并试运行验证整条事件链。",
@@ -241,6 +241,19 @@ export default function FactoryPage() {
     return "tooldoc";
   };
 
+  // Derive a human domain name from a file name — but NOT from a raw split-export like
+  // "actions_v0_1_005_6agents" (that landed verbatim in the name field and read as a spurious
+  // duplicate chip). Versioned exports → "" (leave the placeholder); clean names → titled.
+  const cleanDomainName = (filename: string): string => {
+    const base = filename.replace(/\.[^.]+$/, "");
+    if (/_v\d/i.test(base)) return ""; // versioned ontology export → no clean human name
+    const stem = base
+      .replace(/^(actions?|events?|rules?|data[_-]?objects?|objects?|entit(?:y|ies))[_-]+/i, "")
+      .replace(/[_-]+/g, " ")
+      .trim();
+    return /[a-z一-鿿]{2,}/i.test(stem) ? stem : "";
+  };
+
   const onAttachFiles = async (files: FileList | null) => {
     if (!files) return;
     const next = [...attached];
@@ -250,7 +263,10 @@ export default function FactoryPage() {
     }
     setAttached(next);
     const firstOnto = next.find((a) => a.kind === "ontology");
-    if (firstOnto && !ontologyName.trim()) setOntologyName(firstOnto.name.replace(/\.[^.]+$/, ""));
+    if (firstOnto && !ontologyName.trim()) {
+      const clean = cleanDomainName(firstOnto.name);
+      if (clean) setOntologyName(clean);
+    }
     if (fileRef.current) fileRef.current.value = "";
   };
 
@@ -424,22 +440,19 @@ export default function FactoryPage() {
           )}
           <div ref={feedRef} style={{ flex: 1, overflow: "auto", padding: 20, display: "flex", flexDirection: "column", gap: 2 }}>
             {isHero ? (
-              <div style={{ margin: "auto", maxWidth: 640, textAlign: "center" }}>
-                <div style={{ fontSize: 28, marginBottom: 8 }}>⚡</div>
-                <h2 style={{ fontSize: 20, fontWeight: 700, color: "var(--text)", margin: "0 0 8px" }}>自主智能体工厂</h2>
-                <p style={{ fontSize: 13, color: "var(--text-2)", lineHeight: 1.7, margin: "0 0 16px" }}>给一个目标，大脑会自己 <b>读取本体 → 规划 → 设计 → 校验 → 沙箱验证</b>，全程把推理和每一步操作展示给你看。</p>
-                <div style={{ display: "flex", gap: 6, justifyContent: "center", flexWrap: "wrap", marginBottom: 20 }}>
-                  {STAGE_ORDER.map((s, i) => (<span key={s} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11.5, color: "var(--text-3)" }}>{i > 0 && <span style={{ color: "var(--border-2)" }}>→</span>}<span style={{ border: "1px solid var(--border)", borderRadius: 14, padding: "3px 10px" }}>{STAGE_LABELS[s]}</span></span>))}
-                </div>
+              <div className="rise" style={{ margin: "auto", maxWidth: 580, textAlign: "center" }}>
+                <div style={{ fontSize: 30, marginBottom: 10 }}>⚡</div>
+                <h2 style={{ fontSize: 21, fontWeight: 700, color: "var(--text)", margin: "0 0 8px", letterSpacing: "-0.01em" }}>自主智能体工厂</h2>
+                <p style={{ fontSize: 13.5, color: "var(--text-3)", lineHeight: 1.6, margin: "0 0 22px" }}>描述目标或上传本体，自动生成、验证并交付可运行的智能体。</p>
                 <div style={{ fontSize: 11, color: "var(--text-3)", textAlign: "left", marginBottom: 8 }}>试试这些目标</div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                  {SAMPLE_GOALS.map((g) => <button key={g} onClick={() => setGoal(g)} style={{ textAlign: "left", padding: "10px 12px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--panel-2)", color: "var(--text-2)", cursor: "pointer", fontSize: 12.5, lineHeight: 1.5 }}>{g}</button>)}
+                  {SAMPLE_GOALS.map((g) => <button key={g} className="factory-cta" onClick={() => setGoal(g)} style={{ textAlign: "left", padding: "11px 13px", borderRadius: 9, border: "1px solid var(--border)", background: "var(--panel-2)", color: "var(--text-2)", cursor: "pointer", fontSize: 12.5, lineHeight: 1.5 }}>{g}</button>)}
                 </div>
               </div>
             ) : filteredBlocks.length === 0 ? (
               <div style={{ margin: "auto", fontSize: 12, color: "var(--text-4)" }}>该筛选下暂无内容</div>
             ) : (
-              filteredBlocks.map((b) => <BlockView key={b.id} b={b} onDecide={decideTestCases} onBoundary={decideBoundary} onClarify={decideClarify} />)
+              filteredBlocks.map((b) => <div key={b.id} className="factory-block"><BlockView b={b} onDecide={decideTestCases} onBoundary={decideBoundary} onClarify={decideClarify} /></div>)
             )}
           </div>
 
@@ -450,7 +463,7 @@ export default function FactoryPage() {
             ) : running ? (
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                 <div style={{ display: "flex", gap: 8 }}>
-                  <input value={injectText} onChange={(e) => setInjectText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") inject(); }} placeholder="运行中——随时打字介入：纠偏 / 提要求 / 给提示（输入「停止」可中止运行）…离开页面也会继续跑" style={{ flex: 1, fontSize: 13, padding: "8px 10px", background: "var(--panel-2)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 8 }} />
+                  <input value={injectText} onChange={(e) => setInjectText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") inject(); }} placeholder="运行中，可随时打字介入（输入「停止」中止）" style={{ flex: 1, fontSize: 13, padding: "8px 10px", background: "var(--panel-2)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 8 }} />
                   <Button onClick={inject} disabled={!injectText.trim()}>介入 ↵</Button>
                   <Button icon="pause" tone="danger" onClick={stop}>停止</Button>
                 </div>
@@ -459,25 +472,44 @@ export default function FactoryPage() {
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                 {/* attachments: ontology JSON (→ 本地业务域) + 工具文档 (→ 大脑造工具进本域库) */}
-                {attached.length > 0 && (
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
-                    {attached.map((a, i) => (
-                      <span key={i} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, padding: "2px 8px", borderRadius: 12, border: `1px solid ${a.kind === "ontology" ? "var(--green)" : "var(--violet)"}`, color: "var(--text-2)" }}>
-                        <button onClick={() => setAttached(attached.map((x, j) => (j === i ? { ...x, kind: x.kind === "ontology" ? "tooldoc" : "ontology" } : x)))} title="AI 猜的类型——点一下切换：本体 ⇄ 工具文档" style={{ background: "none", border: "none", color: a.kind === "ontology" ? "var(--green)" : "var(--violet)", cursor: "pointer", fontSize: 11, padding: 0, fontWeight: 600 }}>{a.kind === "ontology" ? "📦 本体" : "📄 工具文档"}</button>
-                        ·{a.name.length > 20 ? a.name.slice(0, 19) + "…" : a.name}
-                        <button onClick={() => setAttached(attached.filter((_, j) => j !== i))} style={{ background: "none", border: "none", color: "var(--text-3)", cursor: "pointer", fontSize: 12, padding: 0 }}>✕</button>
-                      </span>
-                    ))}
-                    {attached.some((a) => a.kind === "ontology") && (
-                      <input value={ontologyName} onChange={(e) => setOntologyName(e.target.value)} placeholder="本体名字（= 业务域名）" style={{ fontSize: 11.5, padding: "3px 8px", background: "var(--panel-2)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 6, width: 180 }} />
-                    )}
-                  </div>
-                )}
+                {attached.length > 0 && (() => {
+                  // Ontology files (actions/events/rules/dataObjects of one bundle) merge into ONE
+                  // business domain — show a SINGLE chip, not N duplicate-looking ones. Tool docs stay
+                  // individual (each is its own source). This removes the "duplicate chip" confusion.
+                  const onto = attached.filter((a) => a.kind === "ontology");
+                  const docs = attached.filter((a) => a.kind === "tooldoc");
+                  const clip = (s: string) => (s.length > 22 ? s.slice(0, 21) + "…" : s);
+                  return (
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+                      {onto.length > 0 && (
+                        <span className="factory-cta" style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11, padding: "3px 9px", borderRadius: 12, border: "1px solid var(--green)", color: "var(--text-2)" }}>
+                          <span style={{ color: "var(--green)", fontWeight: 600 }}>📦 本体</span>
+                          ·{onto.length === 1 ? clip(onto[0]!.name) : `${onto.length} 个文件 · 合并为一个业务域`}
+                          <button onClick={() => setAttached(attached.filter((a) => a.kind !== "ontology"))} title="移除本体" style={{ background: "none", border: "none", color: "var(--text-3)", cursor: "pointer", fontSize: 12, padding: 0 }}>✕</button>
+                        </span>
+                      )}
+                      {docs.map((a) => {
+                        const idx = attached.indexOf(a);
+                        return (
+                          <span key={idx} className="factory-cta" style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11, padding: "3px 9px", borderRadius: 12, border: "1px solid var(--violet)", color: "var(--text-2)" }}>
+                            <span style={{ color: "var(--violet)", fontWeight: 600 }}>📄 工具文档</span>
+                            ·{clip(a.name)}
+                            <button onClick={() => setAttached(attached.map((x, j) => (j === idx ? { ...x, kind: "ontology" } : x)))} title="改为本体" style={{ background: "none", border: "none", color: "var(--text-3)", cursor: "pointer", fontSize: 12, padding: 0 }}>↔</button>
+                            <button onClick={() => setAttached(attached.filter((_, j) => j !== idx))} title="移除" style={{ background: "none", border: "none", color: "var(--text-3)", cursor: "pointer", fontSize: 12, padding: 0 }}>✕</button>
+                          </span>
+                        );
+                      })}
+                      {onto.length > 0 && (
+                        <input value={ontologyName} onChange={(e) => setOntologyName(e.target.value)} placeholder="业务域名字（可留空）" style={{ fontSize: 11.5, padding: "3px 8px", background: "var(--panel-2)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 6, width: 160 }} />
+                      )}
+                    </div>
+                  );
+                })()}
                 {composerErr && <div style={{ fontSize: 11.5, color: "var(--red)" }}>{composerErr}</div>}
                 <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
                   <input ref={fileRef} type="file" multiple accept=".json,.txt,.md,.markdown,.html,.htm,.csv,application/json,text/*" style={{ display: "none" }} onChange={(e) => void onAttachFiles(e.target.files)} />
-                  <button onClick={() => fileRef.current?.click()} title="上传本体 JSON（可多文件分 actions/events/rules/dataObjects）或工具文档（大脑据此造工具进本域工具库）" style={{ fontSize: 16, lineHeight: 1, padding: "8px 10px", background: "var(--panel-2)", color: "var(--text-2)", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer" }}>📎</button>
-                  <textarea value={goal} onChange={(e) => setGoal(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void submit(); }} placeholder={convId ? "继续这场对话（大脑保留上下文，不重跑流水线）。⌘/Ctrl+Enter 发送。" : attached.length ? "可选：补充目标。已附带文件，⌘/Ctrl+Enter 发送即处理。" : "描述你要工厂做什么（⌘/Ctrl+Enter 发送）。也可点 📎 上传本体 JSON / 工具文档。"} rows={2} style={{ flex: 1, resize: "none", fontSize: 13, padding: "8px 10px", background: "var(--panel-2)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 8, fontFamily: "var(--sans)" }} />
+                  <button className="factory-cta" onClick={() => fileRef.current?.click()} title="上传本体 JSON 或工具文档" style={{ fontSize: 16, lineHeight: 1, padding: "8px 10px", background: "var(--panel-2)", color: "var(--text-2)", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer" }}>📎</button>
+                  <textarea value={goal} onChange={(e) => setGoal(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void submit(); }} placeholder={convId ? "继续对话…  ⌘/Ctrl+Enter 发送" : attached.length ? "可补充目标（可留空）…  ⌘/Ctrl+Enter 发送" : "描述你要做什么，或点 📎 上传本体 …  ⌘/Ctrl+Enter 发送"} rows={2} style={{ flex: 1, resize: "none", fontSize: 13, padding: "8px 10px", background: "var(--panel-2)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 8, fontFamily: "var(--sans)" }} />
                   <Button icon="spark" tone="primary" onClick={() => void submit()} disabled={running || !domain || (!goal.trim() && attached.length === 0)}>{convId ? "发送" : "开始"}</Button>
                 </div>
               </div>
