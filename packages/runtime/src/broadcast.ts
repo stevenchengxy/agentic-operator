@@ -60,6 +60,12 @@ function getChannel(tenantId: string): EventEmitter {
  * are caught + logged so a buggy SSE handler can't break the runtime.
  */
 export function publish(event: RunStreamEvent): void {
+  __fanoutMirror(event); // #SCALE-FANOUT — cross-instance mirror when a bridge is configured
+  __deliverLocal(event);
+}
+
+/** Deliver to THIS instance's subscribers only (no bridge mirror — used for remote-origin events). */
+function __deliverLocal(event: RunStreamEvent): void {
   const ch = getChannel(event.tenantId);
   try {
     ch.emit("event", event);
@@ -107,4 +113,24 @@ export function __subscriberCount(tenantId: string): number {
 export function __resetForTest(): void {
   for (const ch of channels.values()) ch.removeAllListeners("event");
   channels.clear();
+}
+
+// #SCALE-FANOUT — pluggable cross-instance fanout bridge: publish() mirrors every event to the bridge
+// (e.g. Redis pub/sub), and bridge-delivered events from OTHER instances re-enter the local
+// subscriber set. No bridge configured = exactly today's single-instance behavior.
+export interface FanoutBridge {
+  publish(event: unknown): void;
+  /** register the callback that delivers REMOTE events into this instance. */
+  onRemote(cb: (event: unknown) => void): void;
+}
+let fanoutBridge: FanoutBridge | null = null;
+export function setFanoutBridge(bridge: FanoutBridge | null): void {
+  fanoutBridge = bridge;
+  bridge?.onRemote((event) => {
+    // deliver remote events locally WITHOUT re-publishing to the bridge (no loops).
+    try { __deliverLocal(event as RunStreamEvent); } catch { /* best-effort */ }
+  });
+}
+export function __fanoutMirror(event: unknown): void {
+  try { fanoutBridge?.publish(event); } catch { /* bridge best-effort */ }
 }

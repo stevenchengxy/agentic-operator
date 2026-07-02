@@ -51,4 +51,15 @@ export class FsAgentDraftStore implements AgentDraftStore {
     }
     return out.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
   }
+
+  /** Delete one generated-function draft (user declined it before promotion). Slug is sanitized
+   *  the same way it was written; returns false if it wasn't there. */
+  async delete(domain: string, slug: string): Promise<boolean> {
+    try {
+      await fs.unlink(path.join(draftsDir(domain), `${safe(slug)}.json`));
+      return true;
+    } catch {
+      return false;
+    }
+  }
 }

@@ -22,6 +22,29 @@ import type {
 import { LLMError, isLLMError } from "./errors";
 import { assertBudgetAvailable, recordActualSpend } from "./budget";
 
+
+// ── G6 双推理面统一遥测（附录 B）——系统 B 的推理面也进 llm_calls ────────────────────
+// stream-gateway（系统 A）早已全量落表；这里给运行时面同款钩子：apps/api 在构造单例时
+// setGatewayCallSink(writeLlmCall 适配器)，每次 chat() 成/败都出一条记录。best-effort。
+
+export interface GatewayCallRecord {
+  provider: string;
+  requestedModel?: string;
+  servedModel?: string;
+  latencyMs: number;
+  tokensIn?: number | null;
+  tokensOut?: number | null;
+  ok: boolean;
+  failureReason?: string;
+  purpose?: string;
+  tenantId?: string;
+}
+
+let gatewayCallSink: ((rec: GatewayCallRecord) => void) | null = null;
+export function setGatewayCallSink(fn: ((rec: GatewayCallRecord) => void) | null): void {
+  gatewayCallSink = fn;
+}
+
 export class LLMGateway {
   private readonly providers = new Map<ProviderId, ProviderAdapter>();
 
@@ -70,6 +93,23 @@ export class LLMGateway {
    * Throws LLMError on terminal failure (last provider's error).
    */
   async chat(req: ChatRequest): Promise<ChatResponse> {
+    const started = Date.now();
+    try {
+      const res = await this.chatInner(req);
+      try {
+        gatewayCallSink?.({ provider: res.provider, requestedModel: req.model ?? undefined, servedModel: res.model, latencyMs: Date.now() - started, tokensIn: res.tokensIn ?? null, tokensOut: res.tokensOut ?? null, ok: true, purpose: req.purpose, tenantId: req.tenantId });
+      } catch { /* telemetry best-effort */ }
+      return res;
+    } catch (err) {
+      try {
+        const le = err as { provider?: string; code?: string; message?: string };
+        gatewayCallSink?.({ provider: le?.provider ?? "unknown", requestedModel: req.model ?? undefined, latencyMs: Date.now() - started, ok: false, failureReason: (le?.code ?? le?.message ?? String(err)).slice(0, 120), purpose: req.purpose, tenantId: req.tenantId });
+      } catch { /* telemetry best-effort */ }
+      throw err;
+    }
+  }
+
+  private async chatInner(req: ChatRequest): Promise<ChatResponse> {
     const providers = this.resolveProviderChain(req);
     const timeoutMs = req.timeoutMs ?? this.config.timeoutMs;
     // Env-supplied model wins over adapter's catalog default when caller didn't specify.

@@ -20,8 +20,11 @@ import { requirePermission } from "../../plugins/rbac";
 import { makeFactoryPorts, listRuns, getRun, deleteRun, restoreRun, deleteRunsByDomain, listAgentDrafts } from "../../services/agent-factory";
 import { promoteDrafts } from "../../services/agent-factory/promote";
 import { FsUploadedOntologyStore } from "../../services/agent-factory/uploaded-ontology-store";
-import { pushHumanMessage } from "../../services/agent-factory/mailbox";
+import { FsAgentDraftStore } from "../../services/agent-factory/agent-draft-store";
+import { pushHumanMessage, peekHumanMessages } from "../../services/agent-factory/mailbox";
 import { startRun, subscribeRun, abortRun, readDurableRun, forceFinalizeAborted, sweepZombieRuns, isActiveRun } from "../../services/agent-factory/run-registry";
+import { listReportJobs, startOntologyReportJob, deleteReportJob, type ReportFormat } from "../../services/agent-factory/report-jobs";
+import { listDeclarativeTools, deleteDeclarativeTool } from "../../services/agent-factory/declarative-tool";
 
 const frame = (data: unknown): string => `data: ${JSON.stringify(data)}\n\n`;
 
@@ -115,6 +118,17 @@ export async function agentFactoryRoutes(app: FastifyInstance) {
     return reply.ok({ drafts: await listAgentDrafts(domain) });
   });
 
+  // Delete a single generated-function DRAFT before it's promoted (user declined it). File-based
+  // draft store; never touches live agents. domain required to scope the delete.
+  app.delete<{ Params: { slug: string }; Querystring: { domain?: string } }>("/agent-factory/drafts/:slug", async (req, reply) => {
+    requirePermission(req, "agents.invoke");
+    const domain = String(req.query.domain ?? "").trim();
+    if (!domain) return reply.fail("bad_request", "domain 必填", 400);
+    const removed = await new FsAgentDraftStore().delete(domain, decodeURIComponent(req.params.slug));
+    if (!removed) return reply.fail("not_found", "没有这个草稿。", 404);
+    return reply.ok({ deleted: true, slug: req.params.slug });
+  });
+
   // Promote a domain's finished drafts → real running Fleet agents. EXPLICIT (never
   // auto) and ADDITIVE (merges into the tenant's live workflow, never clobbers it).
   app.post<{ Body: { domain?: string; slugs?: string[] } }>("/agent-factory/drafts/promote", async (req, reply) => {
@@ -163,6 +177,80 @@ export async function agentFactoryRoutes(app: FastifyInstance) {
     return reply.ok({ deleted: true, id: req.params.id });
   });
 
+  // ── Ops sidebar backend (任务 tab) ──────────────────────────────────────────────────────────────
+  // Unified BACKGROUND snapshot across the tenant: factory runs (all domains, running first) with a
+  // liveness flag, plus report jobs. One poll target for the Claude-desktop-style 后台 section.
+  app.get("/agent-factory/background", async (req, reply) => {
+    requirePermission(req, "agents.read");
+    const tenantId = req.auth?.tenantId;
+    sweepZombieRuns(null, tenantId);
+    const runs = listRuns(null, tenantId, 12).map((r) => ({
+      ...r,
+      live: r.status === "running" && isActiveRun(r.id),
+    }));
+    return reply.ok({ runs, jobs: listReportJobs(tenantId) });
+  });
+
+  // 领域报告 — kick off an ontology-analysis report job (HTML / PDF / both). Detached like a
+  // factory run: this returns immediately; progress + artifact links surface via /background.
+  app.post<{ Body: { domain?: string; format?: string; focus?: string } }>("/agent-factory/report", async (req, reply) => {
+    requirePermission(req, "agents.invoke");
+    if (!req.auth) return reply.fail("unauthorized", "需要租户上下文", 401);
+    const domain = String(req.body?.domain ?? "").trim();
+    if (!domain) return reply.fail("bad_request", "domain 必填", 400);
+    const format = String(req.body?.format ?? "html");
+    if (!["html", "pdf", "both"].includes(format)) return reply.fail("bad_request", "format 须为 html | pdf | both", 400);
+    if (!isGatewayConfigured()) return reply.fail("not_configured", "LLM 网关未配置——报告 agent 无法运行。", 503);
+    const focus = req.body?.focus ? String(req.body.focus).slice(0, 500) : undefined;
+    const job = startOntologyReportJob({
+      tenantId: req.auth.tenantId,
+      tenantSlug: req.auth.tenantSlug,
+      domain,
+      format: format as ReportFormat,
+      focus,
+    });
+    return reply.ok({ job });
+  });
+
+  // Clear a finished report job from the background panel (running jobs are refused —
+  // no abort path exists, so hiding an in-flight job would misreport reality).
+  app.delete<{ Params: { id: string } }>("/agent-factory/report/:id", async (req, reply) => {
+    requirePermission(req, "agents.invoke");
+    const deleted = deleteReportJob(req.params.id, req.auth?.tenantId);
+    if (!deleted) return reply.fail("not_found", "没有这个报告任务（或它仍在运行）。", 404);
+    return reply.ok({ deleted: true, id: req.params.id });
+  });
+
+  // 生成的工具 — the brain's create_tool output is already persisted to factory_tools; these two
+  // endpoints close the "存入工具库？" ask-user loop: list what exists (the sidebar cross-references
+  // tool.created events from the live run) and delete what the user declines to keep.
+  app.get("/agent-factory/generated-tools", async (req, reply) => {
+    requirePermission(req, "agents.read");
+    return reply.ok({ tools: listDeclarativeTools(req.auth?.tenantSlug) });
+  });
+
+  app.delete<{ Params: { name: string } }>("/agent-factory/generated-tools/:name", async (req, reply) => {
+    // agents.invoke (not agents.write) — consistent with the rest of the factory mutation
+    // surface (runs DELETE / drafts promote / stop / inject); an operator who can drive the
+    // factory can also decline the tools it just created.
+    requirePermission(req, "agents.invoke");
+    const name = decodeURIComponent(req.params.name);
+    const deleted = deleteDeclarativeTool(name, req.auth?.tenantSlug);
+    if (!deleted) return reply.fail("not_found", "没有这个工具（或它属于其它租户）。", 404);
+    return reply.ok({ deleted: true, name });
+  });
+
+  // 介入通道 peek — how many injected messages the brain hasn't drained yet, so the sidebar can
+  // show "N 条介入待大脑读取" instead of leaving the user guessing whether their input landed.
+  app.get<{ Querystring: { conversation?: string } }>("/agent-factory/mailbox", async (req, reply) => {
+    requirePermission(req, "agents.read");
+    const conversation = String(req.query.conversation ?? "").trim();
+    if (!conversation) return reply.fail("bad_request", "conversation 必填", 400);
+    // Tenant-scoped peek: a guessed foreign conversation id reads as empty, never as
+    // another tenant's live-run metadata.
+    return reply.ok(peekHumanMessages(conversation, req.auth?.tenantId));
+  });
+
   // HITL: inject a human message / a test-case decision into a running brain.
   app.post<{ Body: { conversation?: string; text?: string } }>("/agent-factory/inject", async (req, reply) => {
     requirePermission(req, "agents.invoke");
@@ -173,7 +261,7 @@ export async function agentFactoryRoutes(app: FastifyInstance) {
     // this now. Either way we queue it (a resumed conversation drains pending messages on its next
     // turn), but we report `active` so the UI can tell the user "delivered now" vs "saved for next
     // continue" instead of silently swallowing an inject into a mailbox no driver is reading.
-    pushHumanMessage(conversation, text);
+    pushHumanMessage(conversation, text, req.auth?.tenantId);
     return reply.ok({ queued: true, active: isActiveRun(conversation) });
   });
 

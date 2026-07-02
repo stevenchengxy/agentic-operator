@@ -83,9 +83,16 @@ describe("duplicateSideEffectSteps — per-step durability", () => {
 });
 
 describe("verificationPolicy", () => {
-  it("defaults to mock model + mock tools + advisory judge (free, deterministic, no side effects)", () => {
+  it("#REDESIGN P1b — defaults to REAL model + GATED tools in production (拒绝 mock)", () => {
     const p = verificationPolicy({});
-    expect(p).toEqual({ realModel: false, toolMode: "mock", budgetTokens: 0, judgeIsBlocking: false });
+    expect(p).toEqual({ realModel: true, toolMode: "gated", budgetTokens: 0, judgeIsBlocking: false });
+  });
+  it("keeps mock model + mock tools under NODE_ENV=test (free/deterministic CI)", () => {
+    const p = verificationPolicy({ NODE_ENV: "test" });
+    expect(p).toMatchObject({ realModel: false, toolMode: "mock" });
+  });
+  it("FACTORY_SANDBOX_REAL_MODEL=0 forces mock model even in production", () => {
+    expect(verificationPolicy({ FACTORY_SANDBOX_REAL_MODEL: "0" }).realModel).toBe(false);
   });
   it("honors explicit opt-ins", () => {
     const p = verificationPolicy({ FACTORY_SANDBOX_REAL_MODEL: "1", FACTORY_SANDBOX_TOOL_MODE: "replay", FACTORY_SANDBOX_BUDGET_TOKENS: "500000" });

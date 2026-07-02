@@ -122,7 +122,16 @@ export function useBrainStream(req: BrainStreamRequest | null): UseBrainStreamRe
           setRunning(false);
           persistActive(req.tenant, null);
         }
-        setEvents((prev) => (prev.length > 4000 ? [...prev.slice(-3500), ev] : [...prev, ev]));
+        // Cap the client buffer, but NEVER drop structural frames: think/model deltas are
+        // ~90% of the stream, while agent.created / tool.created / sandbox / stage frames
+        // are what deriveAgents/deriveWorkers/ask-cards fold over — trimming those made
+        // worker cards + pending tool confirmations silently vanish on long runs.
+        setEvents((prev) => {
+          if (prev.length <= 4000) return [...prev, ev];
+          const cut = prev.length - 3000;
+          const head = prev.slice(0, cut).filter((e) => e.t !== "think" && e.t !== "model");
+          return [...head, ...prev.slice(cut), ev];
+        });
       } catch {
         /* ignore keepalive / malformed frame */
       }

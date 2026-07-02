@@ -49,6 +49,8 @@ import {
 import { httpFetchTool } from "./http";
 import { ping } from "./meta";
 import { fetchActionRules } from "./ontology";
+import { svgChart } from "./viz";
+import { htmlToPdfTool } from "./report";
 
 /** Per-field metadata used to render args / returns tables. */
 export interface ToolFieldSchema {
@@ -654,6 +656,93 @@ const REGISTRATIONS: ToolRegistration[] = [
       sourcePath: "packages/tools/src/meta/ping.ts",
     },
   },
+  // ── viz.* ───────────────────────────────────────────────────────────────
+  {
+    descriptor: svgChart,
+    catalog: {
+      name: "viz.svgChart",
+      category: "viz",
+      summary:
+        "Deterministic inline-SVG chart renderer (bar / donut / line / flow) — embed the returned svg verbatim in HTML reports.",
+      description:
+        "The numbers→geometry step is computed server-side so axes and proportions are always correct (LLM-freehand SVG charts routinely are not). Pure + deterministic: same spec, same SVG. Pairs with fs.writeHtmlToArchive / report.htmlToPdf for report generation.",
+      argsSchema: {
+        kind: { type: "'bar'|'donut'|'line'|'flow'", required: true },
+        title: { type: "string" },
+        data: {
+          type: "Array<{label: string, value: number}>",
+          description: "Required for bar/donut/line.",
+        },
+        steps: {
+          type: "string[]",
+          description: "Required for flow — the ordered step labels.",
+        },
+        width: { type: "number", description: "SVG width in px (default 480–640 by kind)." },
+        palette: { type: "string[]", description: "Override the default color palette." },
+      },
+      argsExample: {
+        kind: "bar",
+        title: "各动作绑定工具数",
+        data: [
+          { label: "简历解析", value: 3 },
+          { label: "简历匹配", value: 2 },
+        ],
+      },
+      configSchema: {},
+      returnsSchema: {
+        svg: { type: "string", description: "Self-contained <svg>…</svg> markup." },
+        width: { type: "number" },
+        height: { type: "number" },
+      },
+      returnsExample: { svg: "<svg xmlns=…></svg>", width: 640, height: 94 },
+      chainsWith: ["fs.writeHtmlToArchive", "report.htmlToPdf"],
+      sourcePath: "packages/tools/src/viz/svg-chart.ts",
+    },
+  },
+
+  // ── report.* ────────────────────────────────────────────────────────────
+  {
+    descriptor: htmlToPdfTool,
+    catalog: {
+      name: "report.htmlToPdf",
+      category: "report",
+      summary:
+        "Render an HTML document to data/<subdir>/<tenant>/<id>.{html,pdf} via local headless Chrome (no bundled Chromium).",
+      description:
+        "Persists the HTML alongside the printed PDF so a missing Chrome degrades to 'HTML only', never data loss. Chrome discovery: CHROME_PATH env → common macOS/Linux install paths. Errors carry the fix instruction verbatim.",
+      argsSchema: {
+        html: {
+          type: "string",
+          required: true,
+          description: "HTML body or full document. Aliases: `body`, `report`.",
+        },
+        title: { type: "string", description: "Used in the auto-wrapped <title>." },
+      },
+      argsExample: { html: "<h1>领域分析</h1><p>…</p>", title: "Ontology 分析报告" },
+      configSchema: {
+        subdir: { type: "string", default: "reports" },
+        id_prefix: { type: "string", default: "report" },
+        lang: { type: "string", default: "zh-CN" },
+        timeout_ms: { type: "number", default: 60000 },
+      },
+      configExample: { subdir: "reports", id_prefix: "ontology" },
+      returnsSchema: {
+        id: { type: "string" },
+        htmlPath: { type: "string" },
+        pdfPath: { type: "string" },
+        bytes: { type: "number", description: "PDF size in bytes." },
+      },
+      returnsExample: {
+        id: "report-20260702120000-a1b2c3",
+        htmlPath: "/abs/data/reports/raas/report-20260702120000-a1b2c3.html",
+        pdfPath: "/abs/data/reports/raas/report-20260702120000-a1b2c3.pdf",
+        bytes: 48213,
+      },
+      chainsWith: ["viz.svgChart"],
+      sourcePath: "packages/tools/src/report/pdf.ts",
+    },
+  },
+
   {
     descriptor: fetchActionRules,
     catalog: {

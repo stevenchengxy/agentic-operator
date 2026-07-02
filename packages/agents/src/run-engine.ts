@@ -230,6 +230,8 @@ export async function executeAgentRun<TInput, TOutput>(
       messages,
       provider,
       model: model ?? undefined,
+      // G6 telemetry tag — the runtime face's llm_calls rows carry who asked.
+      purpose: `agent:${agent.name}`,
     });
 
     // Cooperative cancel checkpoint #2 — between the LLM response and

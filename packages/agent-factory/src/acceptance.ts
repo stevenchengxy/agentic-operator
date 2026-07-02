@@ -18,6 +18,8 @@ export interface AcceptanceSandbox {
   /** the chain reached a SUCCESS (non-failish) terminal — strong evidence even when fullChainRan
    *  flickers false because slow rule-gate agents were still `running` at snapshot time. */
   reachedSuccessTerminal?: boolean;
+  /** #REDESIGN P1 — spec shorts whose GENERATED CODE actually ran (not fell back to declarative). */
+  codeRanAgents?: string[];
   degradedAgents?: string[];
   simulated?: boolean;
 }
@@ -33,11 +35,27 @@ export function acceptanceReport(specs: GeneratedAgentSpec[], ontology: DomainOn
   const agentActions = ontology ? ontology.actions.filter((a) => a.actor.includes("Agent")).map((a) => a.name) : [];
   const gap = ontology ? coverageGap(ontology.actions, specs.map((s) => s.actionName)) : agentActions;
   const unresolved = specs.filter((s) => (s.unresolvedTools ?? []).length);
-  const noPayload = specs.filter((s) => !(s.inputSchema?.length) && !(s.outputSchema?.length));
+  // Sub-agents are invoke-only helpers (invoked with the parent's data) — exempt from typed-payload
+  // + ontology coverage, but still must have code + resolve their tools like any deliverable.
+  const noPayload = specs.filter((s) => !s.isSubAgent).filter((s) => !(s.inputSchema?.length) && !(s.outputSchema?.length));
   const noCode = specs.filter((s) => !((s.generatedCode ?? "").trim())); // finish() enforces code — the bar must surface it too
   const gatesUnbound = specs.filter((s) => isRuleGate(s) && !s.tools.includes("ontology.fetchActionRules"));
   const reg = sandbox?.registeredIds?.length ?? sandbox?.functionsRegistered ?? 0;
   const realSpecs = specs.filter((s) => !/-mock-/.test(s.slug)); // mocks are sandbox stand-ins, not deliverables
+  // #NEST — every SUB-AGENT must be referenced by some parent's plan `invoke` step (no orphans that
+  // deploy but nothing calls). invoke targets the sub's `short` (= its manifest name).
+  const subAgents = specs.filter((s) => s.isSubAgent);
+  const invokedTargets = new Set(specs.flatMap((s) => (s.plan ?? []).filter((p) => p.kind === "invoke" && p.invoke).map((p) => p.invoke as string)));
+  const orphanSubs = subAgents.filter((s) => !invokedTargets.has(s.short));
+  // A parent invoke whose target isn't a deployed spec = a dangling call that soft-fails at runtime
+  // (e.g. the sub was refined/reverted away). Catch it at finish, not silently in production.
+  const allShorts = new Set(specs.map((s) => s.short));
+  const danglingInvokes = [...invokedTargets].filter((t) => !allShorts.has(t));
+  // #REDESIGN P1 — code-delivered agents (codeExecuted) whose generated code did NOT actually run in
+  // the sandbox (fell back to declarative). A real sandbox must prove the code ran, or finish is a lie.
+  const codeSpecs = specs.filter((s) => s.codeExecuted);
+  const ranSet = new Set(sandbox?.codeRanAgents ?? []);
+  const codeFellBack = sandbox && !sandbox.simulated ? codeSpecs.filter((s) => !ranSet.has(s.short)) : [];
 
   const criteria: AcceptanceCriterion[] = [
     { key: "coverage", label: "覆盖全部 Agent 动作", pass: !!ontology && gap.length === 0, detail: gap.length ? `还差：${gap.join("、")}` : `${agentActions.length} 个全覆盖` },
@@ -51,6 +69,8 @@ export function acceptanceReport(specs: GeneratedAgentSpec[], ontology: DomainOn
     { key: "rule_gates", label: "规则闸已绑 fetchActionRules", pass: gatesUnbound.length === 0, detail: gatesUnbound.length ? `未绑：${gatesUnbound.map((s) => s.short).join("、")}` : "已绑或无规则闸" },
     { key: "typed_payloads", label: "I/O 都从 event_data 类型化", pass: specs.length > 0 && noPayload.length === 0, detail: noPayload.length ? `无 schema：${noPayload.map((s) => s.short).join("、")}` : "全部已类型化" },
     { key: "has_code", label: "所有 agent 都有代码", pass: specs.length > 0 && noCode.length === 0, detail: noCode.length ? `缺代码：${noCode.map((s) => s.short).join("、")}` : "全部已生成代码" },
+    { key: "sub_agents_bound", label: "子 agent 都被父 invoke·无悬空调用", pass: orphanSubs.length === 0 && danglingInvokes.length === 0, detail: danglingInvokes.length ? `悬空 invoke（目标不存在）：${danglingInvokes.join("、")}` : subAgents.length ? (orphanSubs.length ? `孤儿子 agent（没被 invoke）：${orphanSubs.map((s) => s.short).join("、")}` : `${subAgents.length} 个子 agent 均已被父调用`) : "无子 agent" },
+    { key: "code_really_ran", label: "生成代码真的执行（非回退声明式）", pass: codeFellBack.length === 0, detail: codeFellBack.length ? `标了执行代码但回退了声明式（没真跑）：${codeFellBack.map((s) => s.short).join("、")}` : codeSpecs.length ? `${codeSpecs.length} 个代码型 agent 的代码均真跑` : "无代码执行型 agent（声明式）" },
   ];
   return { criteria, allPass: criteria.every((c) => c.pass) };
 }
@@ -66,6 +86,7 @@ export interface SandboxEvidenceLike {
   registeredIds?: string[];
   fullChainRan?: boolean;
   reachedSuccessTerminal?: boolean;
+  codeRanAgents?: string[];
   degradedAgents?: string[];
   simulated?: boolean;
 }
@@ -87,6 +108,7 @@ export function acceptanceGate(
         ran: sandbox.ran ?? sandbox.agentsRan,
         fullChainRan: sandbox.fullChainRan,
         reachedSuccessTerminal: sandbox.reachedSuccessTerminal,
+        codeRanAgents: sandbox.codeRanAgents,
         degradedAgents: sandbox.degradedAgents ?? [],
         simulated: sandbox.simulated,
       }

@@ -23,6 +23,9 @@ import {
   inngest,
   setRuntimeGateway,
   setRuntimeMetrics,
+  setMemoryDriver,
+  createLocalVectorDriver,
+  openaiEmbedder,
   type TenantRegistries,
 } from "@agentic/runtime";
 import type { Inngest, InngestFunction } from "inngest";
@@ -42,6 +45,7 @@ import type { TenantRegistry } from "@agentic/agent-kit";
 import { getMcpManager, type McpServerConfig } from "@agentic/mcp";
 import { buildSkillTools, type SkillDescriptor } from "@agentic/skills";
 import { getLLMGateway } from "./services/llm";
+import { wireLlmTelemetry } from "./services/agent-factory/llm-telemetry";
 import { metrics } from "./services/metrics";
 import { reconcileImports } from "./services/reconcile-imports";
 import { getDb, pruneRolledBackDeployments } from "@agentic/db";
@@ -183,6 +187,32 @@ export async function bootstrapRuntime(): Promise<BootstrapResult> {
   const gateway = getLLMGateway();
   setAgentGateway(gateway);
   setRuntimeGateway(gateway);
+  // Vector-recall memory: register a real driver so ctx.memory.search() returns cosine-ranked hits
+  // instead of NoMemoryDriverError. Prefer a gateway embed model when MEMORY_EMBED_MODEL is set,
+  // else the self-contained local (offline, deterministic) embedder. Opt out with MEMORY_VECTOR=off.
+  if (process.env.MEMORY_VECTOR !== "off") {
+    const embed = openaiEmbedder() ?? undefined;
+    setMemoryDriver(createLocalVectorDriver(embed ? { embed } : {}));
+    // #SCALE-PGVECTOR — upgrade vector recall to Postgres/pgvector when AGENTIC_PGVECTOR_URL is set
+    // (the local driver above stays as the degradation target; SQLite remains system of record).
+    try {
+      const { wirePgVectorMemory } = await import("./services/memory-pgvector");
+      await wirePgVectorMemory();
+    } catch { /* inert */ }
+    console.log(`[bootstrap] memory vector driver — ${embed ? `gateway(${process.env.MEMORY_EMBED_MODEL})` : "local"} embeddings`);
+  }
+  // #P0-3 — persist raw LLM telemetry (model/routing/latency/size) to the llm_calls table.
+  wireLlmTelemetry();
+  // #SCALE-FANOUT — cross-instance SSE fanout via Redis (inert without REDIS_URL + ioredis).
+  try {
+    const { wireRedisFanout } = await import("./services/fanout-redis");
+    void wireRedisFanout();
+  } catch { /* inert */ }
+  // #SCALE-RESUME — re-attach factory runs interrupted by a crash/restart (conversation checkpoint).
+  try {
+    const { autoResumeCrashedRuns } = await import("./services/agent-factory/run-registry");
+    autoResumeCrashedRuns();
+  } catch { /* best-effort */ }
   // UC-V11-22 / AR-GAP-07 — wire the prometheus metrics registry into
   // the manifest engine. Without this the registry exists but
   // `runs_total`, `run_duration_ms` stay flat for any traffic the

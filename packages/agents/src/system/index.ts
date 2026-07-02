@@ -6,3 +6,13 @@
  */
 
 import "./test-agent";
+import "./report-agent";
+
+export {
+  ReportAgent,
+  extractHtmlDocument,
+  substituteCharts,
+  type ReportInput,
+  type ReportOutput,
+  type ReportChart,
+} from "./report-agent";

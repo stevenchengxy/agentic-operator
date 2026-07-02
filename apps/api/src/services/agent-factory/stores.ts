@@ -5,11 +5,35 @@
 // survive a server restart); the reflection writer makes each run start wiser.
 // better-sqlite3 is synchronous — no `await` on the drizzle calls.
 
-import { getDb, factoryConversations, factoryReflections, factoryRuns, factorySkills, factoryTools, eq, and, or, desc, sql } from "@agentic/db";
+import { getDb, factoryConversations, factoryReflections, factoryRuns, factorySkills, factoryTools, acceptanceScores, toolStats, eq, and, or, desc, sql } from "@agentic/db";
 import { isNull, isNotNull } from "drizzle-orm";
 import { makeId } from "@agentic/shared";
-import type { ConversationStore, ReflectionWriter, SkillStore, LibrarySkill, ToolStore, DeclarativeTool } from "@agentic/agent-factory";
+import type { ConversationStore, ReflectionWriter, SkillStore, LibrarySkill, ToolStore, DeclarativeTool, AcceptanceRecorder } from "@agentic/agent-factory";
 import { drainHumanMessages as drainMailbox } from "./mailbox";
+
+// #P1-6 — persist per-criterion acceptance verdicts (one row per criterion per run) for trend
+// dashboards. Fail-safe: never throws back into the finish gate.
+export class DrizzleAcceptanceRecorder implements AcceptanceRecorder {
+  async record(runId: string, domain: string, tenantId: string | undefined, criteria: Array<{ key: string; label: string; pass: boolean; detail: string }>): Promise<void> {
+    try {
+      const db = getDb();
+      for (const c of criteria) {
+        db.insert(acceptanceScores).values({
+          id: makeId("art"),
+          runId,
+          tenantId: tenantId ?? null,
+          domain,
+          criterionKey: c.key,
+          label: c.label,
+          pass: c.pass,
+          detail: c.detail,
+        }).run();
+      }
+    } catch {
+      /* acceptance telemetry best-effort */
+    }
+  }
+}
 
 /** Persistent AI-authored tool library (Tool-Smith create_tool). */
 export class DrizzleToolStore implements ToolStore {
@@ -192,7 +216,16 @@ export function recordRunStart(domain: string, goal: string, tenantId: string | 
   }
   try {
     const now = new Date();
-    getDb().insert(factoryRuns).values({ id, tenantId, domain, goal, status: "running", createdAt: now, updatedAt: now }).run();
+    // #CRASH-CKPT — UPSERT, not insert-and-swallow: a FOLLOW-UP message reuses the conversation's
+    // run id, and the old silent PK-conflict left the row on its previous terminal status ("done").
+    // autoResumeCrashedRuns() only re-attaches rows stuck "running", so a follow-up killed mid-run
+    // was INVISIBLE to crash-resume (and the history list lied). Flipping the row back to running
+    // makes resume + UI truthful; recordRunFinish overwrites with the new verdict as before.
+    getDb()
+      .insert(factoryRuns)
+      .values({ id, tenantId, domain, goal, status: "running", createdAt: now, updatedAt: now })
+      .onConflictDoUpdate({ target: factoryRuns.id, set: { status: "running", goal, errorMessage: null, deletedAt: null, updatedAt: now } })
+      .run();
   } catch {
     /* best-effort */
   }
@@ -310,5 +343,24 @@ export function listRunningRuns(domain: string | null, tenantId?: string): Array
     return rows.map((r) => ({ id: r.id, createdAt: r.createdAt instanceof Date ? r.createdAt.getTime() : new Date(r.createdAt as unknown as string).getTime() }));
   } catch {
     return [];
+  }
+}
+
+// #SCALE-TOOLS — per-tool sandbox effectiveness store (upsert counts; ranking demotes empirically).
+export class DrizzleToolStatsStore {
+  async record(toolName: string, ok: boolean): Promise<void> {
+    try {
+      getDb()
+        .insert(toolStats)
+        .values({ toolName, invoked: 1, succeeded: ok ? 1 : 0 })
+        .onConflictDoUpdate({ target: toolStats.toolName, set: { invoked: sql`${toolStats.invoked} + 1`, succeeded: sql`${toolStats.succeeded} + ${ok ? 1 : 0}`, updatedAt: new Date() } })
+        .run();
+    } catch { /* best-effort */ }
+  }
+  async successRates(): Promise<Record<string, { invoked: number; succeeded: number }>> {
+    try {
+      const rows = getDb().select().from(toolStats).all();
+      return Object.fromEntries(rows.map((r) => [r.toolName, { invoked: r.invoked, succeeded: r.succeeded }]));
+    } catch { return {}; }
   }
 }

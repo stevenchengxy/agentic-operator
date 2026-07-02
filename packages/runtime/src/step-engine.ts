@@ -24,12 +24,13 @@ import type {
   ToolContext,
   ToolDescriptor,
 } from "@agentic/agent-kit";
+import type { MemoryHandle } from "@agentic/agent-sdk";
 import type { ActionSpec } from "./manifest";
 import { getRuntimeGateway } from "./llm-host";
 import { makeGeneratedAgentPrompt } from "./generated-agent";
 import { runGeneratedCode } from "./codeact";
 import { evaluateCondition } from "./action-plan";
-import { isSandboxTenant, sandboxToolMode, sandboxToolStub, cassetteLookup } from "./sandbox-mode";
+import { isSandboxTenant, sandboxToolMode, sandboxToolStub, cassetteLookup, toolDispatchDecision, gatedWriteMarker, injectedFault, faultResult } from "./sandbox-mode";
 import type {
   ChatContentBlock,
   ChatMessage,
@@ -115,6 +116,13 @@ export interface StepInput {
    */
   runId?: string;
   stepOrd?: number;
+  /**
+   * #REDESIGN FU1 — the REAL durable MemoryHandle for this run (createMemoryHandle), threaded from the
+   * delivered adapter (register.ts). Passed into generated-code execution so a deployed agent's handler
+   * gets persistent vector-recall memory instead of an ephemeral map. Undefined for pure-runtime/test
+   * callers → codeact falls back to an in-process handle.
+   */
+  memory?: MemoryHandle;
 }
 
 export interface StepOutput {
@@ -336,6 +344,7 @@ async function callLLM(
         lastResult:
           toolCalls.length > 0 ? toolCalls[toolCalls.length - 1]!.output : ctx?.lastResult,
         config: toolConfig,
+        memory: ctx?.memory, // #P0-1 — durable memory reaches each tool in the tool-use loop
       };
 
       const startedAt = Date.now();
@@ -348,14 +357,29 @@ async function callLLM(
             `tool '${call.name}' not registered for this tenant and not found in global registry`,
           );
         }
-        // Merge the model's tool-call input into the context so handlers
-        // that prefer args over ctx.event.data have a single read site.
-        const handlerCtx = { ...callCtx, event: { name: `tool:${call.name}`, data: call.input } };
-        const r = await handler.handler(handlerCtx);
-        outputData = r.data;
-        outputBody = stringifyToolPayload(r.data);
-        totalIn += r.tokensIn ?? 0;
-        totalOut += r.tokensOut ?? 0;
+        // #REDESIGN P1b — the LLM tool-use loop must honour sandbox gating too (not just the
+        // type:"tool" plan path): in a `-sb` tenant, READS run live, external WRITES are gated
+        // (marker, not fired) unless FACTORY_SANDBOX_ALLOW_WRITES=1; mock/replay short-circuit.
+        const sbDecision = isSandboxTenant(callCtx.tenantSlug) ? toolDispatchDecision(call.name, sandboxToolMode()) : "live";
+        if (sbDecision !== "live") {
+          const replayed = sbDecision === "replay" ? await cassetteLookup(callCtx.tenantSlug!, call.name, call.input) : undefined;
+          outputData = sbDecision === "gate" ? gatedWriteMarker(call.name, call.input) : (replayed ?? sandboxToolStub(call.name));
+          const faultLoop = injectedFault(ctx?.event?.data, call.name); // #W3-FAULT — poisoned tool in the LLM loop
+          if (faultLoop) outputData = faultResult(call.name, faultLoop.kind);
+          // #W1-9 — make the sandbox decision VISIBLE in the artifact: a mocked/gated call must never
+          // read like a real one in the run trace.
+          if (outputData && typeof outputData === "object") (outputData as Record<string, unknown>).__sbDecision = sbDecision;
+          outputBody = stringifyToolPayload(outputData);
+        } else {
+          // Merge the model's tool-call input into the context so handlers
+          // that prefer args over ctx.event.data have a single read site.
+          const handlerCtx = { ...callCtx, event: { name: `tool:${call.name}`, data: call.input } };
+          const r = await handler.handler(handlerCtx);
+          outputData = r.data;
+          outputBody = stringifyToolPayload(r.data);
+          totalIn += r.tokensIn ?? 0;
+          totalOut += r.tokensOut ?? 0;
+        }
       } catch (err) {
         isError = true;
         outputBody = JSON.stringify({
@@ -510,15 +534,25 @@ export async function runAction(input: StepInput): Promise<StepOutput> {
       // the real handler directly (no LLM in the loop), so without this it would hit RoboHire/etc.
       // for real. mock (default) → stub; replay → recorded cassette (miss → stub); live → real.
       if (isSandboxTenant(ctx.tenantSlug)) {
+        // #W3-FAULT — an injected fault (from a kind:"fault" test case's __fault payload marker) beats
+        // every dispatch mode: return a failing result so the step's onError policy is EXERCISED.
+        const fault = injectedFault(ctx.event?.data, action.name);
+        if (fault) {
+          result = { ok: false, type: "tool", data: faultResult(action.name, fault.kind), meta: { tool: action.name, sandbox: true, injectedFault: fault.kind } };
+          break;
+        }
         const mode = sandboxToolMode();
-        if (mode !== "live") {
+        // #REDESIGN P1b — gated: READ tools run live (real integration, fall through below); external
+        // WRITES are gated (real payload recorded, not fired) unless FACTORY_SANDBOX_ALLOW_WRITES=1.
+        const decision = toolDispatchDecision(action.name, mode);
+        if (decision !== "live") {
           const args = (ctx.event?.data ?? {}) as Record<string, unknown>;
-          const replayed = mode === "replay" ? await cassetteLookup(ctx.tenantSlug!, action.name, args) : undefined;
+          const replayed = decision === "replay" ? await cassetteLookup(ctx.tenantSlug!, action.name, args) : undefined;
           result = {
             ok: true,
             type: "tool",
-            data: replayed ?? sandboxToolStub(action.name),
-            meta: { tool: action.name, sandbox: true, toolMode: mode, replayed: replayed !== undefined },
+            data: decision === "gate" ? gatedWriteMarker(action.name, args) : (replayed ?? sandboxToolStub(action.name)),
+            meta: { tool: action.name, sandbox: true, toolMode: mode, decision, replayed: replayed !== undefined },
           };
           break;
         }
@@ -565,7 +599,7 @@ export async function runAction(input: StepInput): Promise<StepOutput> {
         // sandboxed, dry-run tools) so the verdict reflects the deployable code — not a
         // re-interpretation. Any failure returns null → fall through to the default prompt.
         const exec = agent.codeExecuted && agent.typescriptCode
-          ? await runGeneratedCode(agent.typescriptCode, (ctx?.event?.data ?? {}) as Record<string, unknown>, { systemPrompt: agent.ontology_instructions, tenantSlug: ctx?.tenantSlug })
+          ? await runGeneratedCode(agent.typescriptCode, (ctx?.event?.data ?? {}) as Record<string, unknown>, { systemPrompt: agent.ontology_instructions, tenantSlug: ctx?.tenantSlug, memory: input.memory, runId: input.runId })
           : null;
         if (exec) {
           result = { ok: true, type: "logic", data: exec.data, meta: { codeExecuted: true, emitted: exec.emitted } };

@@ -26,7 +26,9 @@ export type IdPrefix =
   | "iss"
   | "cnv"
   | "rfl"
-  | "frn";
+  | "frn"
+  | "llm"
+  | "rpt";
 
 export function makeId(prefix: IdPrefix): string {
   const uuid = crypto.randomUUID().replace(/-/g, "");

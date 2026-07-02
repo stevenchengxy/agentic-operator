@@ -108,6 +108,16 @@ export async function build() {
   // through `installGracefulShutdown`). No-op when nothing is running.
   app.addHook("onClose", async () => {
     stopDemoRunner();
+    // #SCALE-FANOUT — quit Redis fanout clients so SIGTERM drains instead of hanging on sockets.
+    try {
+      const { stopRedisFanout } = await import("./services/fanout-redis");
+      await stopRedisFanout();
+    } catch { /* inert when never wired */ }
+    // #SCALE-PGVECTOR — drain the pgvector pool.
+    try {
+      const { stopPgVectorMemory } = await import("./services/memory-pgvector");
+      await stopPgVectorMemory();
+    } catch { /* inert when never wired */ }
     stopAppReconciler();
   });
 

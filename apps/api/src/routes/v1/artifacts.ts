@@ -25,7 +25,14 @@ export async function artifactsRoutes(app: FastifyInstance) {
     }
     reply
       .header("Content-Type", row.kind ?? "application/octet-stream")
-      .header("Content-Length", String(row.size));
+      .header("Content-Length", String(row.size))
+      .header("X-Content-Type-Options", "nosniff");
+    // HTML artifacts are LLM/agent-authored (e.g. factory reports) — render them in a
+    // sandboxed, script-less, unique origin so a hostile artifact can never execute at
+    // the portal origin (stored-XSS chokepoint). Static report HTML/SVG/CSS is unaffected.
+    if ((row.kind ?? "").startsWith("text/html")) {
+      reply.header("Content-Security-Policy", "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:");
+    }
     return reply.send(createReadStream(row.path));
   });
 }

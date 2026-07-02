@@ -85,6 +85,8 @@ export interface ToolCall {
 }
 
 export interface ChatRequest {
+  /** G6 telemetry tag: who/why (e.g. "agent:reportGenerator", "step-engine:matchResume"). */
+  purpose?: string;
   /** Conversation history. Must contain at least one user-role message. */
   messages: ChatMessage[];
   /** Provider-native model name. Falls back to gateway default. */

@@ -144,4 +144,58 @@ describe("deriveContractGraph", () => {
     const gap = g.issues.find((i) => i.kind === "payload_gap");
     expect(gap).toMatchObject({ event: "RESUME_PROCESSED", missingFields: ["salary_expectation"] });
   });
+
+  // #COMMS Hole 1 — an untyped internal event now carries WHAT the consumers need (legibility).
+  it("untyped_event reports the consumers + the fields they expect (not just the producer)", () => {
+    const g = deriveContractGraph(
+      [
+        spec({ actionName: "a", trigger: ["E_IN"], emit: ["E_MID"] }), // untyped producer
+        spec({ actionName: "b", trigger: ["E_MID"], emit: ["E_OUT"], inputSchema: [{ field: "job_requisition_id", type: "string" }] }),
+      ],
+      "rec",
+    );
+    const u = g.issues.find((i) => i.kind === "untyped_event" && i.event === "E_MID");
+    expect(u).toMatchObject({ consumers: ["b"], expectedFields: ["job_requisition_id"] });
+    expect(contractIssueStrings(g).some((s) => s.includes("job_requisition_id"))).toBe(true);
+  });
+
+  // #COMMS Hole 2 — a field used across an edge that the ontology's canonical event_data doesn't
+  // declare (AI-invented / off-contract) is surfaced, but SOFT (doesn't fail the graph — the runtime
+  // envelope carries it; it's a hygiene signal).
+  it("flags a NON-CANONICAL field (off the ontology's event_data) as a soft warning", () => {
+    const eventFields = new Map([["RESUME_PROCESSED", [{ field: "candidate_id", type: "string" }]]]);
+    const g = deriveContractGraph(
+      [
+        // producer + consumer both use `resume_score`, which the event's canonical event_data omits
+        spec({ actionName: "parseResume", trigger: ["RESUME_DOWNLOADED"], emit: ["RESUME_PROCESSED"], outputSchema: [{ field: "candidate_id", type: "string" }, { field: "resume_score", type: "number" }] }),
+        spec({ actionName: "matchResume", trigger: ["RESUME_PROCESSED"], emit: ["MATCH_PASSED"], inputSchema: [{ field: "candidate_id", type: "string" }, { field: "resume_score", type: "number" }] }),
+      ],
+      "rec",
+      eventFields,
+    );
+    // no payload_gap (resume_score IS provided by the producer) → contract still OK...
+    expect(g.issues.filter((i) => i.kind === "payload_gap")).toHaveLength(0);
+    expect(g.ok).toBe(true); // non_canonical is soft
+    // ...but the off-contract field is now VISIBLE (was silently accepted before).
+    const nc = g.issues.filter((i) => i.kind === "non_canonical_field");
+    expect(nc.length).toBeGreaterThan(0);
+    expect(nc.every((i) => i.fields.includes("resume_score"))).toBe(true);
+    expect(nc.some((i) => i.side === "producer") && nc.some((i) => i.side === "consumer")).toBe(true);
+    expect(contractIssueStrings(g).some((s) => s.includes("超出本体约定") && s.includes("resume_score"))).toBe(true);
+    // the offending agents are refinable
+    const map = contractAgentIssueMap(g);
+    expect(Object.keys(map)).toEqual(expect.arrayContaining(["parseResume", "matchResume"]));
+  });
+
+  it("does NOT flag non-canonical when the event has no canonical contract (nothing to be off)", () => {
+    const g = deriveContractGraph(
+      [
+        spec({ actionName: "a", trigger: ["E_IN"], emit: ["E_MID"], outputSchema: [{ field: "whatever", type: "string" }] }),
+        spec({ actionName: "b", trigger: ["E_MID"], emit: ["E_OUT"], inputSchema: [{ field: "whatever", type: "string" }] }),
+      ],
+      "rec",
+      // no eventFields map → no canonical contract for E_MID
+    );
+    expect(g.issues.some((i) => i.kind === "non_canonical_field")).toBe(false);
+  });
 });

@@ -17,6 +17,7 @@ import type { FastifyInstance } from "fastify";
 import { listGlobalTools } from "@agentic/tools";
 import { safeFetch, chatOnce, isGatewayConfigured, modelChain, type DeclarativeTool } from "@agentic/agent-factory";
 import { listDeclarativeTools, saveDeclarativeTool, deleteDeclarativeTool } from "../../services/agent-factory/declarative-tool";
+import { DrizzleToolStatsStore } from "../../services/agent-factory/stores";
 import { requirePermission } from "../../plugins/rbac";
 
 interface FieldSchema { type: string; required?: boolean; description?: string; default?: unknown }
@@ -66,8 +67,17 @@ export async function toolsRoutes(app: FastifyInstance): Promise<void> {
   // ── GET: the unified catalog (global + created) ──────────────────────────────
   app.get("/tools", async (req, reply) => {
     requirePermission(req, "tools.read");
-    const globals = listGlobalTools().map((t) => ({ ...t, origin: "global" as const }));
-    const created = listDeclarativeTools(req.auth?.tenantSlug).map(declToCatalogEntry);
+    // #SCALE-TOOLS — join empirical sandbox effectiveness so the library shows each tool's real
+    // success rate (and flags demoted ones), not just its static contract.
+    const stats = await new DrizzleToolStatsStore().successRates();
+    const rate = (name: string): { invoked: number; succeeded: number; successRate: number } | Record<string, never> => {
+      const st = stats[name];
+      return st && st.invoked > 0 ? { invoked: st.invoked, succeeded: st.succeeded, successRate: st.succeeded / st.invoked } : {};
+    };
+    const globals = listGlobalTools().map((t) => ({ ...t, origin: "global" as const, ...rate(t.name) }));
+    // Object.assign (not spread) so declToCatalogEntry's Record<string, unknown> index signature —
+    // which carries `category` — survives the enrichment (object-spread would drop it → no category).
+    const created = listDeclarativeTools(req.auth?.tenantSlug).map(declToCatalogEntry).map((t) => Object.assign(t, rate(String(t.name))));
     const tools = [...globals, ...created];
     return reply.ok({
       tools,

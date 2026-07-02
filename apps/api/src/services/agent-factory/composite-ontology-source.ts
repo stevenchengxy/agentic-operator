@@ -18,7 +18,7 @@ import { normDomainId } from "./allmeta-ontology-source";
 export class CompositeOntologySource implements OntologySource {
   constructor(
     private readonly allmeta: OntologySource,
-    private readonly manifest: OntologySource,
+    private readonly manifest: OntologySource & { listArtifactDomains?: () => Promise<Array<{ id: string; name: string; counts: { actions: number; events: number; objects: number; rules: number; workflow: number } }>> },
   ) {}
 
   /** Normalized ids of domains backed by a local models/ folder (a REAL ontology folder — the
@@ -58,13 +58,34 @@ export class CompositeOntologySource implements OntologySource {
       seen.add(normDomainId(d.id));
       merged.push(d);
     }
+    // DEGRADED FALLBACK — Allmeta configured but returned nothing (unreachable): surface the local
+    // promoted workflow artifacts so the factory keeps its domains instead of collapsing to the 2
+    // hand-authored local ontologies. Tagged source:"snapshot" so listDomains stays typed; the
+    // per-domain fetch derives a thin ontology from the workflow agents.
+    if (!remote.length && this.manifest.listArtifactDomains) {
+      const artifacts = await this.manifest.listArtifactDomains().catch(() => []);
+      for (const d of artifacts) {
+        if (seen.has(normDomainId(d.id))) continue;
+        seen.add(normDomainId(d.id));
+        merged.push(d);
+      }
+    }
     return merged;
   }
 
   async fetchOntology(domainId: string): Promise<DomainOntology> {
-    return (await this.isAllmetaDomain(domainId))
-      ? this.allmeta.fetchOntology(domainId)
-      : this.manifest.fetchOntology(domainId);
+    if (!(await this.isAllmetaDomain(domainId))) return this.manifest.fetchOntology(domainId);
+    try {
+      return await this.allmeta.fetchOntology(domainId);
+    } catch (e) {
+      // Allmeta down → degrade to the local promoted artifact (manifest derives thin actions from
+      // the workflow agents). Surfaces the same domain listDomains showed as a fallback, coherently.
+      try {
+        return await this.manifest.fetchOntology(domainId);
+      } catch {
+        throw e; // no local artifact either → the original Allmeta error is the honest one
+      }
+    }
   }
 
   async fetchActionRules(domainId: string, actionName: string): Promise<unknown[]> {

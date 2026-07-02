@@ -42,6 +42,8 @@ import {
   useTenants,
   type TenantListItem,
 } from "@/lib/hooks/useTenants";
+import { useTenant } from "@/app/portal/lib/use-tenant";
+import { DomainSyncPanel } from "./domain-sync";
 
 const DEFAULT_COLORS = [
   "#d0ff00",
@@ -147,6 +149,7 @@ function useRestoreTenant() {
 }
 
 export default function TenantsPage() {
+  const activeTenant = useTenant();
   const [includeArchived, setIncludeArchived] = useState(false);
   const [editTarget, setEditTarget] = useState<TenantListItem | null>(null);
   const [archiveTarget, setArchiveTarget] = useState<TenantListItem | null>(
@@ -191,6 +194,10 @@ export default function TenantsPage() {
           </Badge>
         }
       />
+
+      <div style={{ marginBottom: 14 }}>
+        <DomainSyncPanel activeTenant={activeTenant} />
+      </div>
 
       <div
         style={{

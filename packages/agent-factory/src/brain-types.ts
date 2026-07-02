@@ -32,6 +32,10 @@ export type AgentDesignLite = {
   decisionLogic: string;
   code?: string;
   codeSource?: "ai" | "render";
+  /** #REDESIGN FU3 — graded truly executable (CodeAct): compiled + AST-linted + load-probed. When
+   *  false the runtime executes it declaratively; `probeReason` says why the code was rejected. */
+  codeExecuted?: boolean;
+  probeReason?: string;
 };
 
 /** An explicit plan artifact the brain produces after read_ontology and before
@@ -64,6 +68,11 @@ export type ScoreDims = {
 export type RefineAttempt = {
   attemptNumber: number;
   priorSpecSnapshot: { systemPrompt: string; tools: string[]; decisionLogic?: string };
+  /** #W1 — FULL deep snapshot of the prior spec (schemas/plan/code included) so revert_refine is a
+   *  complete rollback, not the 3-field partial one that left half-reverted schema state. */
+  fullSnapshot?: Record<string, unknown>;
+  /** #W1 — this attempt's score delta, for convergence detection (two near-zero deltas → stop). */
+  delta?: number;
   critique: string;
   changes: string;
 };
@@ -75,7 +84,7 @@ export type TestCase = {
   id: string;
   name: string;
   scenario: string;
-  kind: "pass" | "reject" | "edge";
+  kind: "pass" | "reject" | "edge" | "fault";
   entryEvent: string;
   payload: Record<string, unknown>;
   expectedOutcome: string;
@@ -151,6 +160,11 @@ export type BrainEvent =
       events: string[];
       appId?: string;
       functionsRegistered?: number;
+      /** the function ids actually registered on the sandbox app this commit (= agent slugs) —
+       *  proof of WHICH agents deployed, surfaced in the UI as the per-app registration list. */
+      registeredIds?: string[];
+      /** #REDESIGN P1a — spec shorts whose GENERATED CODE actually EXECUTED (真跑, not fell back). */
+      codeRanAgents?: string[];
       deployed?: number;
       fullChainRan?: boolean;
       deployFailed?: boolean;
@@ -163,6 +177,14 @@ export type BrainEvent =
       agentRuns?: AgentRunIO[];
       /** the approved test cases that were fired (Feature: test-case loop). */
       cases?: Array<{ name: string; entryEvent: string; payload: Record<string, unknown> }>;
+      /** #W3-FAULT — per-fired-case verdict by KIND (pass/reject/edge/fault). A fault case PASSES
+       *  precisely when the chain REFUSED to reach a success terminal under an injected tool fault
+       *  (proving error propagation, not silent success). Surfaced as per-kind verdict chips. */
+      caseVerdicts?: {
+        allPass: boolean;
+        results: Array<{ kind: string; pass: boolean; reason: string }>;
+        byKind: Record<string, { total: number; passed: number }>;
+      };
       /** TRUE = a graph-closure SIMULATION, not a real Inngest deploy+run. The UI must
        *  badge it so a simulated pass is never mistaken for a verified real deploy. */
       simulated?: boolean;
@@ -183,7 +205,7 @@ export type BrainEvent =
   // stage; "ok"/"error" = its tool settled. Drives the live-canvas stage rail + health strip
   // directly, instead of every consumer re-inferring a stage from heterogeneous event types.
   | { t: "stage"; stage: FactoryStage; status: "active" | "ok" | "error"; detail?: string }
-  | { t: "test.cases"; cases: TestCase[]; awaitingApproval: boolean }
+  | { t: "test.cases"; cases: TestCase[]; awaitingApproval: boolean; coverage?: { required: string[]; covered: string[]; backfilled: string[]; uncoveredNeedingData: string[] } }
   | { t: "test.decision"; decision: "approve" | "regenerate"; note?: string }
   // Boundary events the brain proposes for the user to classify (external handoff /
   // terminal / break). awaitingDecision=true → the conductor is PARKED for the choice.
@@ -193,7 +215,7 @@ export type BrainEvent =
   // conductor PARKS (awaitingAnswer) until the user supplies a free-text answer or picks an
   // option (one may be the AI's recommendation). Keeps generation flexible, not rigid.
   | { t: "clarify"; question: string; options?: Array<{ label: string; value: string; recommended?: boolean }>; context?: string; awaitingAnswer: boolean }
-  | { t: "reflect"; kind: string; lesson: string }
+  | { t: "reflect"; kind: string; lesson: string; count?: number }
   // #7 — which model served this turn + the difficulty tier it was routed to (annotated in the
   // activity log). The router picks fast/default/hard from the live context, config-driven.
   | { t: "model"; model: string; tier: string; turn: number }
@@ -243,7 +265,9 @@ export interface BrainCtx {
    *  (the Allmeta graph changed under already-built specs) instead of silently swapping ground truth. */
   ontologySig?: string;
   budget: { maxTokens: number | null; maxTurns: number };
-  spent: { tokens: number; turns: number; sandboxRuns: number };
+  spent: { tokens: number; turns: number; sandboxRuns: number;
+    /** #W2-STAGE — token spend attributed to the current pipeline stage (admission-gated state machine). */
+    stageTokens?: Record<string, number> };
   /** explicit BuildPlan (create_plan sets it; design/refine read it). */
   currentPlan: BuildPlan | null;
   /** the domain's tool grounding catalog (built from the ontology's tool_use on read). */
@@ -258,6 +282,9 @@ export interface BrainCtx {
   rulesByAction?: Record<string, Array<{ id: string; name: string; summary: string }>>;
   /** per-action refinement history (refine snapshots + critiques; read by refine/revert/read_spec). */
   attemptHistory: Record<string, RefineAttempt[]>;
+  /** #W2-HITL — human messages drained but TAGGED for a different gate: re-queued here so the right
+   *  gate consumes them next tick instead of the wrong gate eating (and mis-parsing) them. */
+  pendingHuman?: string[];
   /** skills the brain authored this run (woven into generated agents). */
   createdSkills: Array<{ name: string; purpose: string; promptFragment: string; tools: string[]; decisionRule: string }>;
   /** facts gathered via web_search (fed into agent prompts as grounding). */
@@ -291,6 +318,8 @@ export interface BrainCtx {
     reachedTerminal: boolean;
     reachedSuccessTerminal: boolean;
     fullChainRan: boolean;
+    /** #REDESIGN P1 — spec shorts whose generated code actually executed (not fell back). */
+    codeRanAgents?: string[];
     degradedAgents: string[];
     /** R2: true = graph-closure SIMULATION (Inngest not reachable), not a real deploy+run.
      *  The finish gate refuses simulated evidence unless FACTORY_ALLOW_SIMULATED_FINISH=1. */
@@ -301,6 +330,15 @@ export interface BrainCtx {
   lastValidation: { agentIssueMap: Record<string, unknown[]>; ok: boolean } | null;
   /** authoritative directives a human injected mid-run (HITL). */
   humanDirectives: string[];
+  /** the intent gate's structured reading of the user's goal(s) — APPENDED per new goal so the
+   *  conversation's intent history accumulates. Fold-surviving + serialized via serializeCtx. */
+  userIntent?: string;
+  /** capability_resolve 的决策表摘要（复用/组合/新造 per action，G1 能力解析门）——设计阶段
+   *  持续引用「先选型再制造」的结论。Fold-surviving + serialized via serializeCtx. */
+  capabilityResolution?: string;
+  /** the brain's explicit, AI-synthesized understanding of the ontology (understand_ontology) —
+   *  kept so the design phase reasons over a digested model, not a raw re-read ("读了就忘"). */
+  ontologyUnderstanding?: string;
   /** reflections loaded on start from prior runs of this domain. */
   priorReflections: ReflectionLite[];
   /** the conversation key (durability) + abort signal (client disconnect). */

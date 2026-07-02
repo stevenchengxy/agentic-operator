@@ -10,6 +10,26 @@ export { helloFn } from "./hello";
 export { registerAgent, findMissingTenantPrompts, type RegisterContext } from "./register";
 export { makeGeneratedAgentPrompt } from "./generated-agent";
 export { runGeneratedCode } from "./codeact";
+// #REDESIGN FU1 — the delivered-tier AgentRuntime adapter (power-strip contract).
+export { makeDeliveredRuntime, type DeliveredRuntimeDeps } from "./delivered-runtime";
+// #COMMS — inter-agent message envelope: carry-forward payload assembler + content-addressed offload.
+export {
+  assembleEmitPayload,
+  rehydratePayload, rehydratePayloadAsync,
+  extractBusinessFields,
+  isBlobRef,
+  type BlobRef,
+  type EnvelopeMeta,
+  type AssembleInput,
+  type AssembleResult,
+} from "./message-envelope";
+export { putBlob, getBlob, resolveBlobRef, resolveBlobRefAsync, replicateBlob, fetchBlobRemote, makeBlobOffloader, blobDir } from "./blob-store";
+export { setBlobRemoteBackend, activeBlobBackend, blobBackendStatus, makeS3Backend, makeHttpBackend, resetBlobBackendCache, type BlobRemoteBackend } from "./blob-backend";
+export { sigV4Sign, amzNow, EMPTY_PAYLOAD_SHA256 } from "./sigv4";
+// #SCALE-TRACE — ambient trace context (ALS) for nested tools/logs.
+export { runWithTraceContext, getTraceContext, type TraceContext } from "./trace-context";
+// #P1-1 — durable event-store causality queries.
+export { getCausalityChain, getStoredEvent, type StoredEvent } from "./event-store-query";
 // Agent migration — branch-emit: let a forked agent's final step pick which
 // declared `triggered_event` to emit (PASS/FAIL routing) instead of always [0].
 export { selectEmittedEvent } from "./emit-select";
@@ -75,10 +95,32 @@ export {
   setMemoryDriver,
   getMemoryDriver,
 } from "./memory";
+export {
+  createLocalVectorDriver,
+  openaiEmbedder,
+  localEmbed,
+  cosine,
+  type Embedder,
+  type LocalVectorDriverOpts,
+} from "./memory-driver-local";
+// #REDESIGN P1b — sandbox tool-dispatch gating (read live / write gated).
+export {
+  sandboxToolMode,
+  isSandboxTenant,
+  isWriteTool,
+  sandboxWritesAllowed,
+  toolDispatchDecision,
+  gatedWriteMarker,
+  sandboxToolStub,
+  type SandboxToolMode,
+  injectedFault,
+  faultResult,
+} from "./sandbox-mode";
 // P1-RT-05 / UC-14 — Broadcast / SSE stream surface. Tests + the /v1/stream
 // route consume these under explicit `*StreamEvent(s)` / `__broadcast*`
 // aliases; the underlying `broadcast.ts` uses the shorter symbols. Both
 // names are re-exported so callers don't need to know the internal name.
+export { setFanoutBridge, type FanoutBridge } from "./broadcast"; // #SCALE-FANOUT
 export {
   publish,
   publish as publishStreamEvent,

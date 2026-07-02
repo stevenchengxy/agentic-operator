@@ -150,7 +150,11 @@ async function authorTestCases(ctx: BrainCtx): Promise<TestCase[]> {
  *  AND sandbox_run's first-run auto-gate. */
 export async function proposeTestCases(ctx: BrainCtx): Promise<BrainToolResult> {
   ctx.emit({ t: "subagent.start", task: "造全流程测试用例" });
-  const cases = await authorTestCases(ctx);
+  const authored = await authorTestCases(ctx);
+  // #W2-4 — enforce the coverage matrix HERE (single source of truth): backfill safe cells (incl. the
+  // fault-injection cell for tooled entry agents) + surface data-needing gaps, so BOTH call sites
+  // (generate_test_cases + sandbox_run's auto-gate) get a covered, fault-carrying suite + coverage report.
+  const { cases, coverage } = ensureCoverage(ctx, authored);
   ctx.testCases = cases;
   ctx.awaitingApproval = true;
   const kinds = cases.reduce<Record<string, number>>((m, c) => {
@@ -159,12 +163,89 @@ export async function proposeTestCases(ctx: BrainCtx): Promise<BrainToolResult> 
   }, {});
   const kindStr = Object.entries(kinds).map(([k, n]) => `${k}×${n}`).join(" · ");
   ctx.emit({ t: "subagent.done", task: "造全流程测试用例", summary: `生成 ${cases.length} 个用例(${kindStr})` });
-  ctx.emit({ t: "test.cases", cases, awaitingApproval: true });
+  ctx.emit({ t: "test.cases", cases, awaitingApproval: true, coverage });
+  const covNote = coverage.uncoveredNeedingData.length
+    ? ` · ⚠ 覆盖矩阵缺 ${coverage.uncoveredNeedingData.length} 格需真实数据的用例(${coverage.uncoveredNeedingData.slice(0, 3).join("、")})`
+    : " · 覆盖矩阵齐 ✓";
   return {
     ok: true,
-    summary: `已生成 ${cases.length} 个全流程测试用例(${kindStr})并展示给用户确认。【现在暂停,等用户点「执行」或「重新生成」——不要继续调别的工具】。用户确认后我会把决策作为消息发给你,你再调 sandbox_run 用这些用例真实跑通。`,
-    output: { cases, awaitingApproval: true },
+    summary: `已生成 ${cases.length} 个全流程测试用例(${kindStr})${coverage.backfilled.length ? ` · 矩阵补位 ${coverage.backfilled.length} 例` : ""}${covNote}并展示给用户确认。【现在暂停,等用户点「执行」或「重新生成」——不要继续调别的工具】。用户确认后我会把决策作为消息发给你,你再调 sandbox_run 用这些用例真实跑通。`,
+    output: { cases, awaitingApproval: true, coverage },
   };
+}
+
+
+// #W2-4 — CONTRACT-DRIVEN COVERAGE MATRIX. The LLM used to author cases narratively; nothing
+// guaranteed every (entry event → happy), every rule-gate (reject), or every multi-branch agent had a
+// case — so allPass could be a false positive. This computes the REQUIRED cells, BACKFILLS the safe
+// ones deterministically (happy per uncovered entry, golden-style), and REPORTS the cells that need
+// authored data (reject per rule gate, branch per multi-emit agent) so the brain regenerates honestly
+// instead of shipping a hollow "all pass".
+export function ensureCoverage(ctx: BrainCtx, cases: TestCase[]): { cases: TestCase[]; coverage: { required: string[]; covered: string[]; backfilled: string[]; uncoveredNeedingData: string[] } } {
+  const specs = ctx.specs;
+  const entries = ctx.ontology ? computeEntryEvents(ctx) : [];
+  const required: string[] = [];
+  const covered: string[] = [];
+  const backfilled: string[] = [];
+  const needData: string[] = [];
+  const base = deriveBaseFixture(ctx);
+  const out = [...cases];
+  // happy per entry event — backfillable deterministically.
+  for (const e of entries) {
+    const cell = `happy:${e}`;
+    required.push(cell);
+    if (out.some((c) => c.kind === "pass" && c.entryEvent === e)) covered.push(cell);
+    else {
+      out.push({ id: `tc_fill_${out.length + 1}`, name: `${e} · 覆盖矩阵补位(happy)`, scenario: `矩阵要求每个入口事件至少一条通过用例`, kind: "pass", entryEvent: e, payload: base, expectedOutcome: "走到成功终态" });
+      backfilled.push(cell);
+    }
+  }
+  // reject per rule gate — needs rule-violating DATA we must not fabricate blindly: report, don't invent.
+  for (const sp of specs) {
+    if (!sp.tools.includes("ontology.fetchActionRules")) continue;
+    const cell = `reject:${sp.actionName}`;
+    required.push(cell);
+    if (out.some((c) => c.kind === "reject")) covered.push(cell);
+    else needData.push(cell);
+  }
+  // #W3-FAULT — fault per tooled ENTRY agent: BACKFILLABLE deterministically (base fixture + __fault
+  // marker; step-engine injects the failure at dispatch, sandbox-only). Verifies the failure path is
+  // wired: a poisoned tool must not produce a clean success terminal. Entry agents only — the marker
+  // rides the ENTRY payload, so mid-chain agents' faults need authored cases (reported, not faked).
+  for (const sp of specs) {
+    if (!sp.tools.length) continue;
+    const entry = (sp.trigger ?? []).find((t) => entries.includes(t));
+    if (!entry) continue;
+    const cell = `fault:${sp.actionName}`;
+    required.push(cell);
+    if (out.some((c) => c.kind === "fault" && c.entryEvent === entry)) { covered.push(cell); continue; }
+    out.push({
+      id: `tc_fault_${out.length + 1}`,
+      name: `${sp.short} · 故障注入(${sp.tools[0]})`,
+      scenario: `注入 ${sp.tools[0]} 超时故障，验证失败路径接线：不得在工具中毒时仍产出成功终态`,
+      kind: "fault",
+      entryEvent: entry,
+      payload: { ...base, __fault: { tool: sp.tools[0], kind: "timeout" } },
+      expectedOutcome: "优雅处理（不崩溃、不假成功）",
+    });
+    backfilled.push(cell);
+  }
+  // branch per multi-emit agent — same: report so the author covers each outcome path.
+  for (const sp of specs) {
+    const emits = (sp.emit ?? []).filter((x) => x && x !== "—");
+    if (emits.length >= 2) {
+      const cell = `branch:${sp.actionName}(${emits.join("|")})`;
+      required.push(cell);
+      if (out.filter((c) => c.entryEvent && (sp.trigger ?? []).includes(c.entryEvent)).length >= 2) covered.push(cell);
+      else needData.push(cell);
+    }
+  }
+  return { cases: out, coverage: { required, covered, backfilled, uncoveredNeedingData: needData } };
+}
+
+function computeEntryEvents(ctx: BrainCtx): string[] {
+  const emitted = new Set(ctx.specs.flatMap((s) => s.emit ?? []));
+  return [...new Set(ctx.specs.flatMap((s) => s.trigger ?? []))].filter((t) => t && !emitted.has(t));
 }
 
 export const generate_test_cases: BrainTool = {
@@ -174,6 +255,8 @@ export const generate_test_cases: BrainTool = {
   parameters: params({}),
   async execute(_args, ctx) {
     if (!ctx.specs.length) return { ok: false, summary: "还没有 agent 可测,先 design_agent。" };
+    // #W2-4 — proposeTestCases now owns the coverage matrix (backfill + report), so both entry points
+    // stay in lockstep. No second ensureCoverage pass here (it was idempotent, but double-work).
     return proposeTestCases(ctx);
   },
 };

@@ -18,7 +18,8 @@
       "MATCH_FAILED"
     ],
     "tools": [
-      "matchResumeApi"
+      "matchResumeApi",
+      "fs.appendToLog"
     ],
     "unresolvedTools": [],
     "objects": [
@@ -33,16 +34,21 @@
       "Salary_Scheme",
       "Candidate_Expectation"
     ],
-    "systemPrompt": "你是一个专业的简历智能匹配评估专家。你的核心职责是对已通过规则校验的候选人简历，与目标招聘岗位进行深度智能匹配评估，给出量化评分和推荐建议，决定候选人是否进入面试或推荐环节。\n\n工作流程：\n1. 接收输入：获取 `candidate_id`、`resume_id` 和 `job_requisition_id`（来自 MATCH_RULE_CHECK_PASSED 事件）。\n2. 读取数据：获取候选人简历的结构化内容（工作经历、教育背景、技能标签等）和岗位要求（必备技能、加分项、学历要求、工作年限等）。\n3. 执行智能匹配：调用 `matchResumeApi` 对简历文本和 JD 文本进行综合匹配评分，获取：\n   - 整体匹配得分（overall_match_score）\n   - 各维度评分明细（技能匹配、学历匹配、经验匹配等）\n   - 匹配等级（overall_match_grade）\n   - 匹配总结（overall_fit_summary）\n4. 判定结果（依据匹配得分和岗位要求）：\n   - 匹配通过且需要内部面试（岗位设置了内部面试流程）→ 产出 `MATCH_PASSED_NEED_INTERVIEW` 事件。\n   - 匹配通过但不需要内部面试（可直接推荐客户）→ 产出 `MATCH_PASSED_NO_INTERVIEW` 事件。\n   - 匹配未通过（得分低于阈值或硬性条件不满足）→ 产出 `MATCH_FAILED` 事件。\n5. 更新记录：\n   - 写入 `Candidate_Match_Result`（overall_match_score、overall_fit_verdict、overall_fit_summary、overall_match_grade）。\n   - 更新 `Application`（matching_score、status、stage）。\n\n决策依据：\n- 匹配通过/不通过的阈值依赖 matchResumeApi 返回的评分结果和岗位的 pass_threshold 配置。\n- 是否需要内部面试依赖岗位的 interview_process 字段（是否包含内部面试环节）。\n- 硬性条件（如学历、工作年限）不符合时直接判为不匹配，无论技能得分多高。\n\n【前置条件（运行前必须满足；不满足则 fail-close 发拦截/失败事件，不要继续）】\n1. MATCH_RULE_CHECK_PASSED事件已送达\n2. 候选人(Candidate)记录已创建且candidate_id非空\n3. 候选人简历(Resume)已完成结构化解析\n4. 至少一个有效的招聘岗位(Job_Requisition)记录存在且hc_status不为\"已关闭\"",
+    "systemPrompt": "你是简历智能匹配评估专家。你的职责是对通过规则检查的候选人简历进行多维度匹配评估，判断候选人是否符合招聘岗位要求。\n\n评估维度包括：\n1. 【硬性要求比对】：学历要求、工作年限、必备技能（must_have_skills）逐项核对。\n2. 【加分项评估】：nice_to_have_skills 匹配度评估。\n3. 【薪资期望匹配】：候选人薪资期望与岗位薪资范围的匹配度。\n4. 【多维度评分】：通过 plan 中的 invoke 步骤调用子 Agent `agents-gener-match-resume-sub-compute-match-dimensions` 计算各维度得分。\n5. 【综合评分】：调用 matchResumeApi 获取 AI 综合匹配分数，注意真实分数在 overallMatchScore.score 字段（非顶层 matchScore），需显式校验非空。\n\n匹配结果决策：\n- 匹配分数 ≥ 阈值且硬性要求全部满足 → 判定\"匹配\"\n  - 若岗位需要内部面试（interview_mode 包含内部面试）→ emit MATCH_PASSED_NEED_INTERVIEW\n  - 否则 → emit MATCH_PASSED_NO_INTERVIEW\n- 匹配分数 < 阈值或硬性要求不满足 → 判定\"不匹配\" → emit MATCH_FAILED\n\n请务必校验 matchResumeApi 返回的关键字段非空，空值视为失败，不得假装成功。\n\n【前置条件（运行前必须满足；不满足则 fail-close 发拦截/失败事件，不要继续）】\n1. MATCH_RULE_CHECK_PASSED事件已送达\n2. 候选人(Candidate)记录已创建且candidate_id非空\n3. 候选人简历(Resume)已完成结构化解析\n4. 至少一个有效的招聘岗位(Job_Requisition)记录存在且hc_status不为\"已关闭\"",
     "userPrompt": "",
-    "designReasoning": "设计 matchResume Agent，负责对通过规则校验的候选人进行智能匹配评估，使用 matchResumeApi 进行评分，并根据结果产出三种不同的事件。",
-    "toolRationale": "matchResumeApi 是核心工具，用于对简历文本和 JD 文本进行智能匹配评分，返回综合评分和各维度分析结果。",
-    "decisionLogic": "1. 接收 MATCH_RULE_CHECK_PASSED 事件，提取 candidate_id、resume_id、job_requisition_id。\n2. 读取候选人简历文本和岗位 JD 文本。\n3. 调用 matchResumeApi，传入 {resume: 简历文本, jd: JD文本}，获取匹配评分。\n4. 根据评分判定：\n   a. 得分 >= 阈值 且 岗位有内部面试流程 → emit MATCH_PASSED_NEED_INTERVIEW\n   b. 得分 >= 阈值 且 岗位无内部面试流程 → emit MATCH_PASSED_NO_INTERVIEW\n   c. 得分 < 阈值 或 硬性条件不满足 → emit MATCH_FAILED\n5. 写入 Candidate_Match_Result 和更新 Application 记录。",
+    "designReasoning": "同理，matchResume 的 plan 字段也缺失，导致 invoke 悬空。重新提交带有完整 plan（包含 invoke 步骤）的规格。",
+    "toolRationale": "",
+    "decisionLogic": "1. 接收 MATCH_RULE_CHECK_PASSED 事件，获取 candidate_id、resume_id、job_requisition_id。\n2. 读取候选人简历结构化数据和岗位需求数据。\n3. invoke 子 Agent `agents-gener-match-resume-sub-compute-match-dimensions` 执行多维度评分计算。\n4. 调用 matchResumeApi 获取 AI 综合匹配分数，校验 overallMatchScore.score 非空。\n5. 综合评分决策：匹配/不匹配。\n6. 更新 Candidate_Match_Result 和 Application 记录。\n7. 根据岗位是否需要内部面试，emit 对应事件。",
     "steps": [
       {
         "name": "step_1",
         "description": "调用 matchResumeApi",
         "tool": "matchResumeApi"
+      },
+      {
+        "name": "step_2",
+        "description": "调用 fs.appendToLog",
+        "tool": "fs.appendToLog"
       }
     ],
     "ruleRefs": [],
@@ -55,19 +61,19 @@
         "field": "candidate_id",
         "type": "String",
         "source": "Candidate.candidate_id",
-        "description": "待匹配的候选人唯一编号"
+        "description": "候选人唯一编号。"
       },
       {
         "field": "resume_id",
         "type": "String",
         "source": "Resume.resume_id",
-        "description": "待匹配的候选人简历唯一编号"
+        "description": "候选人简历唯一编号。"
       },
       {
         "field": "job_requisition_id",
         "type": "String",
         "source": "Job_Requisition.job_requisition_id",
-        "description": "候选人待匹配的招聘岗位编号"
+        "description": "岗位编号。"
       },
       {
         "field": "client_id",
@@ -115,12 +121,45 @@
       {
         "field": "match_results",
         "type": "List<JSON>",
-        "description": "候选人与岗位的匹配结果列表，包含匹配状态、得分、各维度评分明细、推荐建议"
+        "description": "候选人与岗位的匹配结果列表。"
       },
       {
         "field": "overall_status",
         "type": "String",
-        "description": "候选人整体匹配状态：匹配或不匹配"
+        "description": "候选人整体匹配状态，值为匹配或不匹配。"
+      }
+    ],
+    "plan": [
+      {
+        "stepId": "compute-dimensions",
+        "kind": "invoke",
+        "invoke": "agents-gener-match-resume-sub-compute-match-dimensions",
+        "idempotencyKeyFrom": "candidate_id",
+        "onError": "soft",
+        "defaultResult": "{\"total_score\": 0}",
+        "timeoutS": 10,
+        "description": "计算多维度匹配得分"
+      },
+      {
+        "stepId": "get-ai-score",
+        "kind": "tool",
+        "tool": "matchResumeApi",
+        "idempotencyKeyFrom": "candidate_id",
+        "onError": "terminal",
+        "description": "获取AI综合匹配分数"
+      },
+      {
+        "stepId": "log-match",
+        "kind": "tool",
+        "tool": "fs.appendToLog",
+        "idempotencyKeyFrom": "candidate_id",
+        "onError": "soft",
+        "description": "记录匹配日志"
+      },
+      {
+        "stepId": "decision-and-emit",
+        "kind": "logic",
+        "description": "综合决策与事件分发"
       }
     ],
     "stateBindings": [
@@ -216,8 +255,9 @@
         "writes": []
       }
     ],
-    "generatedCode": "// 对已经通过简历匹配规则检查的候选人简 — 由 Agent 工厂从本体动作 `matchResume`(Agents-generation)生成。\n// trigger: MATCH_RULE_CHECK_PASSED → emit: MATCH_PASSED_NEED_INTERVIEW | MATCH_PASSED_NO_INTERVIEW | MATCH_FAILED\n// 参考脚手架：运行时按 workflow manifest 的 action[] 声明式调度执行（systemPrompt + 工具），\n// 【不直接运行这段 .ts 代码】——它是可读/可改的 agent 定义参考。真·CodeAct 执行路径用 codeExecuted 开关（默认关）。\n\n/** Input/Output schema — 依据本体 DataObjects 定义。 */\ninterface MatchResumeAgentInput {\n  candidate_id: string; // 待匹配的候选人唯一编号 (源: Candidate.candidate_id)\n  resume_id: string; // 待匹配的候选人简历唯一编号 (源: Resume.resume_id)\n  job_requisition_id: string; // 候选人待匹配的招聘岗位编号 (源: Job_Requisition.job_requisition_id)\n  client_id: string; // 事件 MATCH_RULE_CHECK_PASSED 的 payload 字段 (源: Client.client_id)\n  rule_check_result: string; // 事件 MATCH_RULE_CHECK_PASSED 的 payload 字段\n  rule_check_reason: string; // 事件 MATCH_RULE_CHECK_PASSED 的 payload 字段\n}\n\ninterface MatchResumeAgentOutput {\n  candidate_id: string; // 事件 MATCH_PASSED_NEED_INTERVIEW 的 payload 字段\n  job_id: string; // 事件 MATCH_PASSED_NEED_INTERVIEW 的 payload 字段\n  matching_score: number; // 事件 MATCH_PASSED_NEED_INTERVIEW 的 payload 字段\n  matched_reason_highlights: unknown[]; // 事件 MATCH_PASSED_NEED_INTERVIEW 的 payload 字段\n  interview_priority: unknown; // 事件 MATCH_PASSED_NEED_INTERVIEW 的 payload 字段\n  match_results: unknown; // 候选人与岗位的匹配结果列表，包含匹配状态、得分、各维度评分明细、推荐建议\n  overall_status: string; // 候选人整体匹配状态：匹配或不匹配\n}\n\n/** System prompt — 工厂为【这一个】agent 亲自推理出来的。 */\nconst SYSTEM_PROMPT = `你是一个专业的简历智能匹配评估专家。你的核心职责是对已通过规则校验的候选人简历，与目标招聘岗位进行深度智能匹配评估，给出量化评分和推荐建议，决定候选人是否进入面试或推荐环节。\n\n工作流程：\n1. 接收输入：获取 \\`candidate_id\\`、\\`resume_id\\` 和 \\`job_requisition_id\\`（来自 MATCH_RULE_CHECK_PASSED 事件）。\n2. 读取数据：获取候选人简历的结构化内容（工作经历、教育背景、技能标签等）和岗位要求（必备技能、加分项、学历要求、工作年限等）。\n3. 执行智能匹配：调用 \\`matchResumeApi\\` 对简历文本和 JD 文本进行综合匹配评分，获取：\n   - 整体匹配得分（overall_match_score）\n   - 各维度评分明细（技能匹配、学历匹配、经验匹配等）\n   - 匹配等级（overall_match_grade）\n   - 匹配总结（overall_fit_summary）\n4. 判定结果（依据匹配得分和岗位要求）：\n   - 匹配通过且需要内部面试（岗位设置了内部面试流程）→ 产出 \\`MATCH_PASSED_NEED_INTERVIEW\\` 事件。\n   - 匹配通过但不需要内部面试（可直接推荐客户）→ 产出 \\`MATCH_PASSED_NO_INTERVIEW\\` 事件。\n   - 匹配未通过（得分低于阈值或硬性条件不满足）→ 产出 \\`MATCH_FAILED\\` 事件。\n5. 更新记录：\n   - 写入 \\`Candidate_Match_Result\\`（overall_match_score、overall_fit_verdict、overall_fit_summary、overall_match_grade）。\n   - 更新 \\`Application\\`（matching_score、status、stage）。\n\n决策依据：\n- 匹配通过/不通过的阈值依赖 matchResumeApi 返回的评分结果和岗位的 pass_threshold 配置。\n- 是否需要内部面试依赖岗位的 interview_process 字段（是否包含内部面试环节）。\n- 硬性条件（如学历、工作年限）不符合时直接判为不匹配，无论技能得分多高。\n\n【前置条件（运行前必须满足；不满足则 fail-close 发拦截/失败事件，不要继续）】\n1. MATCH_RULE_CHECK_PASSED事件已送达\n2. 候选人(Candidate)记录已创建且candidate_id非空\n3. 候选人简历(Resume)已完成结构化解析\n4. 至少一个有效的招聘岗位(Job_Requisition)记录存在且hc_status不为\"已关闭\"`;\n\nexport const matchResumeAgent = defineAgent({\n  id: \"agents-gener-match-resume\",\n  name: \"MatchResumeAgent\",\n  actor: [\"Agent\"],\n  trigger: [\"MATCH_RULE_CHECK_PASSED\"],\n  emit: [\"MATCH_PASSED_NEED_INTERVIEW\",\"MATCH_PASSED_NO_INTERVIEW\",\"MATCH_FAILED\"],\n  tools: [\"matchResumeApi\"],\n  systemPrompt: SYSTEM_PROMPT,\n  async handler(input, ctx) {\n      // 调用工具 matchResumeApi\n      // const matchResumeApiResult = await ctx.tools.run(\"matchResumeApi\", input);\n      // 用本 agent 专属 system prompt 推理(决策核心)\n      const decision = await ctx.reason(SYSTEM_PROMPT, input);\n      // 决策分支（条件见 SYSTEM_PROMPT / decisionLogic）\n      if (decision.pass) {\n        await ctx.emit(\"MATCH_PASSED_NEED_INTERVIEW\", { ...input, ...decision });\n      } else {\n        await ctx.emit(\"MATCH_FAILED\", { ...input, ...decision });\n      }\n      // 其它分支: MATCH_PASSED_NO_INTERVIEW — 按 SYSTEM_PROMPT 条件补充\n      return { ok: true };\n  },\n});\n",
-    "codeSource": "render"
+    "codeSource": "render",
+    "generatedCode": "// 对已经通过简历匹配规则检查的候选人简 — 由 Agent 工厂从本体动作 `matchResume`(Agents-generation)生成。\n// trigger: MATCH_RULE_CHECK_PASSED → emit: MATCH_PASSED_NEED_INTERVIEW | MATCH_PASSED_NO_INTERVIEW | MATCH_FAILED\n// 参考脚手架：运行时按 workflow manifest 的 action[] 声明式调度执行（systemPrompt + 工具），\n// 【不直接运行这段 .ts 代码】——它是可读/可改的 agent 定义参考。真·CodeAct 执行路径用 codeExecuted 开关（默认关）。\n\n/** Input/Output schema — 依据本体 DataObjects 定义。 */\ninterface MatchResumeAgentInput {\n  candidate_id: string; // 候选人唯一编号。 (源: Candidate.candidate_id)\n  resume_id: string; // 候选人简历唯一编号。 (源: Resume.resume_id)\n  job_requisition_id: string; // 岗位编号。 (源: Job_Requisition.job_requisition_id)\n  client_id: string; // 事件 MATCH_RULE_CHECK_PASSED 的 payload 字段 (源: Client.client_id)\n  rule_check_result: string; // 事件 MATCH_RULE_CHECK_PASSED 的 payload 字段\n  rule_check_reason: string; // 事件 MATCH_RULE_CHECK_PASSED 的 payload 字段\n}\n\ninterface MatchResumeAgentOutput {\n  candidate_id: string; // 事件 MATCH_PASSED_NEED_INTERVIEW 的 payload 字段\n  job_id: string; // 事件 MATCH_PASSED_NEED_INTERVIEW 的 payload 字段\n  matching_score: number; // 事件 MATCH_PASSED_NEED_INTERVIEW 的 payload 字段\n  matched_reason_highlights: unknown[]; // 事件 MATCH_PASSED_NEED_INTERVIEW 的 payload 字段\n  interview_priority: unknown; // 事件 MATCH_PASSED_NEED_INTERVIEW 的 payload 字段\n  match_results: unknown; // 候选人与岗位的匹配结果列表。\n  overall_status: string; // 候选人整体匹配状态，值为匹配或不匹配。\n}\n\n/** System prompt — 工厂为【这一个】agent 亲自推理出来的。 */\nconst SYSTEM_PROMPT = `你是简历智能匹配评估专家。你的职责是对通过规则检查的候选人简历进行多维度匹配评估，判断候选人是否符合招聘岗位要求。\n\n评估维度包括：\n1. 【硬性要求比对】：学历要求、工作年限、必备技能（must_have_skills）逐项核对。\n2. 【加分项评估】：nice_to_have_skills 匹配度评估。\n3. 【薪资期望匹配】：候选人薪资期望与岗位薪资范围的匹配度。\n4. 【多维度评分】：通过 plan 中的 invoke 步骤调用子 Agent \\`agents-gener-match-resume-sub-compute-match-dimensions\\` 计算各维度得分。\n5. 【综合评分】：调用 matchResumeApi 获取 AI 综合匹配分数，注意真实分数在 overallMatchScore.score 字段（非顶层 matchScore），需显式校验非空。\n\n匹配结果决策：\n- 匹配分数 ≥ 阈值且硬性要求全部满足 → 判定\"匹配\"\n  - 若岗位需要内部面试（interview_mode 包含内部面试）→ emit MATCH_PASSED_NEED_INTERVIEW\n  - 否则 → emit MATCH_PASSED_NO_INTERVIEW\n- 匹配分数 < 阈值或硬性要求不满足 → 判定\"不匹配\" → emit MATCH_FAILED\n\n请务必校验 matchResumeApi 返回的关键字段非空，空值视为失败，不得假装成功。\n\n【前置条件（运行前必须满足；不满足则 fail-close 发拦截/失败事件，不要继续）】\n1. MATCH_RULE_CHECK_PASSED事件已送达\n2. 候选人(Candidate)记录已创建且candidate_id非空\n3. 候选人简历(Resume)已完成结构化解析\n4. 至少一个有效的招聘岗位(Job_Requisition)记录存在且hc_status不为\"已关闭\"`;\n\nexport const matchResumeAgent = defineAgent({\n  id: \"agents-gener-match-resume\",\n  name: \"MatchResumeAgent\",\n  actor: [\"Agent\"],\n  trigger: [\"MATCH_RULE_CHECK_PASSED\"],\n  emit: [\"MATCH_PASSED_NEED_INTERVIEW\",\"MATCH_PASSED_NO_INTERVIEW\",\"MATCH_FAILED\"],\n  tools: [\"matchResumeApi\",\"fs.appendToLog\"],\n  systemPrompt: SYSTEM_PROMPT,\n  async handler(input, ctx) {\n      // 调用工具 matchResumeApi\n      // const matchResumeApiResult = await ctx.tools.run(\"matchResumeApi\", input);\n      // 调用工具 fs.appendToLog\n      // const appendToLogResult = await ctx.tools.run(\"fs.appendToLog\", input);\n      // 用本 agent 专属 system prompt 推理(决策核心)\n      const decision = await ctx.reason(SYSTEM_PROMPT, input);\n      // 决策分支（条件见 SYSTEM_PROMPT / decisionLogic）\n      if (decision.pass) {\n        await ctx.emit(\"MATCH_PASSED_NEED_INTERVIEW\", { ...input, ...decision });\n      } else {\n        await ctx.emit(\"MATCH_FAILED\", { ...input, ...decision });\n      }\n      // 其它分支: MATCH_PASSED_NO_INTERVIEW — 按 SYSTEM_PROMPT 条件补充\n      return { ok: true };\n  },\n});\n",
+    "codeExecuted": true
   },
-  "createdAt": "2026-06-30T06:43:28.963Z"
+  "createdAt": "2026-07-01T03:46:27.698Z"
 }

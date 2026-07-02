@@ -1,0 +1,74 @@
+{
+  "domain": "Agents-generation",
+  "slug": "agents-gener-process-resume-sub-lock-candidate-ownership",
+  "spec": {
+    "key": "processResume__lock-candidate-ownership",
+    "actionName": "processResume__lock-candidate-ownership",
+    "slug": "agents-gener-process-resume-sub-lock-candidate-ownership",
+    "short": "agents-gener-process-resume-sub-lock-candidate-ownership",
+    "domainId": "Agents-generation",
+    "nameZh": "负责对下载完成并已入库的简历文件进行·子[lock-candidate]",
+    "kind": "llm",
+    "trigger": [
+      "agents-gener-process-resume-sub-lock-candidate-ownership.invoked"
+    ],
+    "emit": [],
+    "tools": [],
+    "unresolvedTools": [],
+    "objects": [],
+    "systemPrompt": "你是候选人归属锁定专家。你的职责是：基于已解析的候选人姓名和手机号，检查系统中是否已存在该候选人记录，并判断是否存在归属锁定冲突。\n判断逻辑：\n1. 若系统中不存在该候选人（姓名+手机号均未匹配），则为新候选人，允许锁定，返回 lock_status=ok。\n2. 若系统中存在该候选人且归属于当前 recruiter，则更新锁定时间，返回 lock_status=ok。\n3. 若系统中存在该候选人但归属于其他 recruiter，则返回 lock_status=conflict，携带冲突的 recruiter_id。\n确保每个候选人有且只能归属一名 Recruiter，防止多人同时跟进同一候选人。",
+    "userPrompt": "",
+    "steps": [],
+    "ruleRefs": [],
+    "retries": 1,
+    "hitl": false,
+    "confidence": 1,
+    "promptSource": "llm",
+    "inputSchema": [
+      {
+        "field": "candidate_name",
+        "type": "String",
+        "description": "候选人姓名"
+      },
+      {
+        "field": "candidate_phone",
+        "type": "String",
+        "description": "候选人手机号"
+      },
+      {
+        "field": "recruiter_id",
+        "type": "String",
+        "description": "当前操作的 Recruiter ID"
+      },
+      {
+        "field": "job_requisition_id",
+        "type": "String",
+        "description": "岗位编号"
+      }
+    ],
+    "outputSchema": [
+      {
+        "field": "lock_status",
+        "type": "String",
+        "description": "ok 或 conflict"
+      },
+      {
+        "field": "candidate_id",
+        "type": "String",
+        "description": "匹配到的候选人 ID，新候选人时为新生成的 ID"
+      },
+      {
+        "field": "conflict_recruiter_id",
+        "type": "String",
+        "description": "冲突时已锁定该候选人的 Recruiter ID"
+      }
+    ],
+    "designReasoning": "父「负责对下载完成并已入库的简历文件进行」的子任务分解：lock-candidate-ownership",
+    "isSubAgent": true,
+    "parentAction": "processResume",
+    "parentTask": "lock-candidate-ownership",
+    "generatedCode": "// 负责对下载完成并已入库的简历文件进行·子[lock-candidate] — 由 Agent 工厂从本体动作 `processResume__lock-candidate-ownership`(Agents-generation)生成。\n// trigger: agents-gener-process-resume-sub-lock-candidate-ownership.invoked → emit: (terminal)\n// 参考脚手架：运行时按 workflow manifest 的 action[] 声明式调度执行（systemPrompt + 工具），\n// 【不直接运行这段 .ts 代码】——它是可读/可改的 agent 定义参考。真·CodeAct 执行路径用 codeExecuted 开关（默认关）。\n\n/** Input/Output schema — 依据本体 DataObjects 定义。 */\ninterface agents-gener-process-resume-sub-lock-candidate-ownershipInput {\n  candidate_name: string; // 候选人姓名\n  candidate_phone: string; // 候选人手机号\n  recruiter_id: string; // 当前操作的 Recruiter ID\n  job_requisition_id: string; // 岗位编号\n}\n\ninterface agents-gener-process-resume-sub-lock-candidate-ownershipOutput {\n  lock_status: string; // ok 或 conflict\n  candidate_id: string; // 匹配到的候选人 ID，新候选人时为新生成的 ID\n  conflict_recruiter_id: string; // 冲突时已锁定该候选人的 Recruiter ID\n}\n\n/** System prompt — 工厂为【这一个】agent 亲自推理出来的。 */\nconst SYSTEM_PROMPT = `你是候选人归属锁定专家。你的职责是：基于已解析的候选人姓名和手机号，检查系统中是否已存在该候选人记录，并判断是否存在归属锁定冲突。\n判断逻辑：\n1. 若系统中不存在该候选人（姓名+手机号均未匹配），则为新候选人，允许锁定，返回 lock_status=ok。\n2. 若系统中存在该候选人且归属于当前 recruiter，则更新锁定时间，返回 lock_status=ok。\n3. 若系统中存在该候选人但归属于其他 recruiter，则返回 lock_status=conflict，携带冲突的 recruiter_id。\n确保每个候选人有且只能归属一名 Recruiter，防止多人同时跟进同一候选人。`;\n\nexport const agents-gener-process-resume-sub-lock-candidate-ownershipAgent = defineAgent({\n  id: \"agents-gener-process-resume-sub-lock-candidate-ownership\",\n  name: \"agents-gener-process-resume-sub-lock-candidate-ownership\",\n  actor: [\"Agent\"],\n  trigger: [\"agents-gener-process-resume-sub-lock-candidate-ownership.invoked\"],\n  emit: [],\n  tools: [],\n  systemPrompt: SYSTEM_PROMPT,\n  async handler(input, ctx) {\n      // (此 agent 不依赖外部工具)\n      // 用本 agent 专属 system prompt 推理(决策核心)\n      const decision = await ctx.reason(SYSTEM_PROMPT, input);\n      await ctx.emit(\"DONE\", { ...input, ...decision });\n      return { ok: true };\n  },\n});\n",
+    "codeExecuted": false
+  },
+  "createdAt": "2026-07-01T03:46:27.698Z"
+}

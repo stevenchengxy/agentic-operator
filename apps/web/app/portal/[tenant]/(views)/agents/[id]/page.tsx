@@ -35,6 +35,8 @@ import {
   useAgents,
   useInvokeAgent,
   useSetAgentEnabled,
+  useRenameAgent,
+  useDeleteAgent,
   type AgentDetail,
   type AgentListRow,
 } from "@/lib/hooks/useAgents";
@@ -343,8 +345,11 @@ function AgentDetail({
   allRuns: RunListRow[];
 }) {
   const { t } = useI18n();
+  const router = useRouter();
   const invoke = useInvokeAgent();
   const setEnabled = useSetAgentEnabled();
+  const rename = useRenameAgent();
+  const del = useDeleteAgent();
   const [tab, setTab] = useState<"config" | "io" | "code" | "versions" | "runs">("config");
   const [editing, setEditing] = useState(false);
   // "Run with input…" dialog. Decoupled from the default "Test run" path
@@ -358,7 +363,6 @@ function AgentDetail({
   // covers the in-flight window; this covers the brief gap between
   // mutation success and a possible second click.
   const [testCooldown, setTestCooldown] = useState(false);
-  void tenant; // tenant is in URL via the layout
 
   if (!agent) return <Empty title={t("agentDetail.notFound")} />;
 
@@ -463,6 +467,38 @@ function AgentDetail({
                     : enabled
                       ? t("agentDetail.disable")
                       : t("agentDetail.enable")}
+                </Button>
+                <Button
+                  small
+                  disabled={rename.isPending}
+                  onClick={() => {
+                    const next = window.prompt("重命名智能体（显示名）：", agent!.title);
+                    if (next && next.trim() && next.trim() !== agent!.title) rename.mutate({ kebabId: agent!.id, title: next.trim() });
+                  }}
+                  title="重命名（改显示名，不影响事件路由）"
+                >
+                  重命名
+                </Button>
+                <Button
+                  small
+                  icon="trash"
+                  tone="danger"
+                  disabled={del.isPending}
+                  onClick={() => {
+                    if (!window.confirm(`删除智能体「${agent!.title}」？\n若它有运行历史，将改为下线并移出服务集（可稍后彻底删除）。`)) return;
+                    del.mutate(
+                      { kebabId: agent!.id },
+                      {
+                        onSuccess: (r) => {
+                          if (r.deleted) router.push(`/portal/${tenant}/agents` as never);
+                          else window.alert(r.note ?? "已下线。");
+                        },
+                      },
+                    );
+                  }}
+                  title="从 Fleet 删除该智能体"
+                >
+                  {del.isPending ? "…" : "删除"}
                 </Button>
                 <Button
                   small

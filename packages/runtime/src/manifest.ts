@@ -131,6 +131,10 @@ export const AgentSchema = z
     trigger: z.array(z.string()),
     actions: z.array(ActionSchema),
     triggered_event: z.array(z.string()),
+    // #P0-4 — compensation: the event to emit if this agent's run FAILS after it may have caused
+    // side-effects (e.g. PAYMENT_INITIATED → this agent fails → emit PAYMENT_CANCELLED so downstream
+    // can undo). Fired once (idempotent) on a hard failure. Optional — no-op when unset.
+    compensation_event: emptyStringToUndef,
     input_data: z.record(z.string(), z.unknown()).optional(),
     ontology_instructions: emptyStringToUndef,
     tool_use: toolUseSchema,

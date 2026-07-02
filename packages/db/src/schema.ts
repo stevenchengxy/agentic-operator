@@ -339,6 +339,10 @@ export const runs = sqliteTable(
     tokensOut: integer("tokens_out"),
     model: text("model"),
     emittedEventId: text("emitted_event_id"),
+    /** #REDESIGN P1 — execution receipt: did this agent's GENERATED CODE actually run (true) vs fall
+     *  back to the declarative/prompt path (false)? Null = declarative agent (no code to run). The
+     *  finish gate requires every codeExecuted agent to have a run with code_ran=true. */
+    codeRan: integer("code_ran", { mode: "boolean" }),
     errorMessage: text("error_message"),
     logPath: text("log_path"),
     correlationId: text("correlation_id").notNull(),
@@ -634,6 +638,11 @@ export const agentMemoryLong = sqliteTable(
     subject: text("subject").notNull(),
     key: text("key").notNull(),
     valueJson: text("value_json").notNull(),
+    /** #SCALE-MEM — pre-computed embedding (JSON float array), written at put() time so search never
+     *  re-embeds static values. NULL = compute-on-demand (back-compat / embedder changed). */
+    embeddingJson: text("embedding_json"),
+    /** #SCALE-MEM — TTL: rows past expiresAt are excluded from reads + GC'd lazily. NULL = no expiry. */
+    expiresAt: integer("expires_at", { mode: "timestamp_ms" }),
     createdAt: integer("created_at", { mode: "timestamp_ms" })
       .notNull()
       .default(now),
@@ -796,6 +805,104 @@ export const factoryReflections = sqliteTable(
   },
   (t) => ({
     domainIdx: index("factory_reflections_domain_idx").on(t.domain),
+  }),
+);
+
+// #P0-3 — raw LLM telemetry: one row per LLM call (the factory brain + its review/design tools).
+// Closes the biggest observability gap from the architecture audit — per-call model / routing /
+// latency / size were ephemeral (in-memory streaming only), so spend + regression + router validation
+// weren't auditable. Also carries the model-routing decision (requested vs served + fallback) so a
+// separate model_routing table isn't needed for single-instance.
+export const llmCalls = sqliteTable(
+  "llm_calls",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id"),
+    domain: text("domain"),
+    /** the brain conversation / run this call belongs to. */
+    conversationId: text("conversation_id"),
+    /** caller tag: understand | plan | critique | design | review | codegen | fast | … */
+    purpose: text("purpose"),
+    /** model requested (first of the fallback chain) vs the one that actually served. */
+    requestedModel: text("requested_model"),
+    servedModel: text("served_model"),
+    provider: text("provider"),
+    /** true when the served model differs from the requested (a fallback occurred). */
+    fallback: integer("fallback", { mode: "boolean" }),
+    promptChars: integer("prompt_chars"),
+    completionChars: integer("completion_chars"),
+    /** approx token counts (chars/4) when exact usage isn't returned by the streaming path. */
+    approxTokensIn: integer("approx_tokens_in"),
+    approxTokensOut: integer("approx_tokens_out"),
+    latencyMs: integer("latency_ms"),
+    ok: integer("ok", { mode: "boolean" }),
+    failureReason: text("failure_reason"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().default(now),
+  },
+  (t) => ({
+    domainIdx: index("llm_calls_domain_idx").on(t.domain),
+    convIdx: index("llm_calls_conversation_idx").on(t.conversationId),
+    modelIdx: index("llm_calls_served_model_idx").on(t.servedModel),
+  }),
+);
+
+// #P1-1 — durable, queryable event store. The NDJSON ledger is per-instance/per-date and not
+// queryable; this mirrors every emitted inter-agent event into a DB row with the FULL payload inline
+// (small now thanks to content-addressed blob offload) + causation lineage (causationId), so
+// cross-agent causality is queryable + replay-safe across restarts. Foundation for horizontal scale.
+export const eventStore = sqliteTable(
+  "event_store",
+  {
+    id: text("id").primaryKey(), // == the emitted event id (evt-…)
+    tenantId: text("tenant_id"),
+    name: text("name").notNull(),
+    subject: text("subject"),
+    sourceRunId: text("source_run_id"),
+    sourceAgent: text("source_agent"),
+    /** the event id that CAUSED this one (its trigger) — walk this to reconstruct a causality chain. */
+    causationId: text("causation_id"),
+    correlationId: text("correlation_id"),
+    /** full assembled payload inline (blob offload keeps this small). */
+    payloadJson: text("payload_json"),
+    ts: integer("ts", { mode: "timestamp_ms" }).notNull().default(now),
+  },
+  (t) => ({
+    subjectIdx: index("event_store_subject_idx").on(t.subject),
+    causationIdx: index("event_store_causation_idx").on(t.causationId),
+    corrIdx: index("event_store_correlation_idx").on(t.correlationId),
+  }),
+);
+
+// #SCALE-TOOLS — per-tool sandbox effectiveness (invoked/succeeded). Feeds ranking demotion: a tool
+// that keeps failing in real sandbox runs stops being recommended (empirical, not just semantic).
+export const toolStats = sqliteTable(
+  "tool_stats",
+  {
+    toolName: text("tool_name").primaryKey(),
+    invoked: integer("invoked").notNull().default(0),
+    succeeded: integer("succeeded").notNull().default(0),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull().default(now),
+  },
+);
+
+// #P1-6 — denormalized acceptance verdicts, one row per criterion per run. Acceptance was computed
+// on-demand from the transcript JSON (no table), so pass-rate trends required replaying transcripts.
+export const acceptanceScores = sqliteTable(
+  "acceptance_scores",
+  {
+    id: text("id").primaryKey(),
+    runId: text("run_id").notNull(),
+    tenantId: text("tenant_id"),
+    domain: text("domain"),
+    criterionKey: text("criterion_key").notNull(),
+    label: text("label"),
+    pass: integer("pass", { mode: "boolean" }).notNull(),
+    detail: text("detail"),
+    computedAt: integer("computed_at", { mode: "timestamp_ms" }).notNull().default(now),
+  },
+  (t) => ({
+    runIdx: index("acceptance_scores_run_idx").on(t.runId),
+    domainIdx: index("acceptance_scores_domain_idx").on(t.domain),
   }),
 );
 

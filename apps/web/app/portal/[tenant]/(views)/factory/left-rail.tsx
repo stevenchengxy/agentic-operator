@@ -150,11 +150,11 @@ export function HealthStrip({ checks }: { checks: Array<{ ok: boolean | undefine
   );
 }
 
-export function DraftList({ drafts, promoting, promoteMsg, onPromote }: { drafts: DraftRow[]; promoting: boolean; promoteMsg: string; onPromote: (slugs?: string[]) => void }) {
+export function DraftList({ drafts, promoting, promoteMsg, onPromote, onDelete }: { drafts: DraftRow[]; promoting: boolean; promoteMsg: string; onPromote: (slugs?: string[]) => void; onDelete?: (slug: string) => void }) {
   // R4: per-draft selection (track EXCLUDED so it survives draft-list updates); default all in.
   // Mock-platform drafts (slug contains "-mock-") default OUT — they're sandbox stand-ins.
   const [excluded, setExcluded] = useState<Set<string>>(new Set());
-  if (drafts.length === 0) return <div style={{ fontSize: 11, color: "var(--text-4)" }}>跑通后生成的 agent 会出现在这里，勾选后可晋升上线</div>;
+  if (drafts.length === 0) return <div style={{ fontSize: 11, color: "var(--text-4)" }}>跑通后生成的 agent 会出现在这里，勾选后可晋升上线或删除</div>;
   const isMock = (slug: string) => /-mock-/.test(slug);
   const isOn = (slug: string) => !excluded.has(slug) && !isMock(slug);
   const toggle = (slug: string) => setExcluded((prev) => { const n = new Set(prev); if (n.has(slug)) n.delete(slug); else n.add(slug); return n; });
@@ -162,13 +162,18 @@ export function DraftList({ drafts, promoting, promoteMsg, onPromote }: { drafts
   return (
     <>
       {drafts.map((d) => (
-        <label key={d.slug} style={{ display: "flex", gap: 7, alignItems: "flex-start", padding: "6px 8px", marginBottom: 3, borderRadius: 6, border: "1px solid var(--border)", background: "var(--panel-2)", cursor: "pointer" }}>
-          <input type="checkbox" checked={isOn(d.slug)} onChange={() => toggle(d.slug)} style={{ marginTop: 2 }} />
-          <span style={{ minWidth: 0 }}>
-            <span style={{ display: "block", fontSize: 11.5, color: "var(--text)" }}>{d.spec?.nameZh ?? d.spec?.short ?? d.slug}{isMock(d.slug) ? " · 模拟桩" : ""}</span>
-            <span style={{ display: "block", fontSize: 10, color: "var(--text-3)", fontFamily: "var(--mono)" }}>{(d.spec?.tools ?? []).length} 工具{d.spec?.actionName ? ` · ${d.spec.actionName}` : ""}</span>
-          </span>
-        </label>
+        <div key={d.slug} style={{ display: "flex", gap: 7, alignItems: "flex-start", padding: "6px 8px", marginBottom: 3, borderRadius: 6, border: "1px solid var(--border)", background: "var(--panel-2)" }}>
+          <label style={{ display: "flex", gap: 7, alignItems: "flex-start", flex: 1, minWidth: 0, cursor: "pointer" }}>
+            <input type="checkbox" checked={isOn(d.slug)} onChange={() => toggle(d.slug)} style={{ marginTop: 2 }} />
+            <span style={{ minWidth: 0 }}>
+              <span style={{ display: "block", fontSize: 11.5, color: "var(--text)" }}>{d.spec?.nameZh ?? d.spec?.short ?? d.slug}{isMock(d.slug) ? " · 模拟桩" : ""}</span>
+              <span style={{ display: "block", fontSize: 10, color: "var(--text-3)", fontFamily: "var(--mono)" }}>{(d.spec?.tools ?? []).length} 工具{d.spec?.actionName ? ` · ${d.spec.actionName}` : ""}</span>
+            </span>
+          </label>
+          {onDelete && (
+            <button title="删除该草稿（不影响已上线的 agent）" onClick={() => onDelete(d.slug)} style={{ flexShrink: 0, padding: 3, borderRadius: 5, background: "none", border: "none", cursor: "pointer", color: "var(--text-4)", fontSize: 12 }}>🗑</button>
+          )}
+        </div>
       ))}
       <button onClick={() => onPromote(selected)} disabled={promoting || selected.length === 0} title="把勾选的草稿合并进本租户的工作流并注册为真实运行的 agent（不会覆盖已有 agent）" style={{ width: "100%", marginTop: 6, padding: "7px 9px", borderRadius: 7, border: "1px solid var(--green)", background: "transparent", color: "var(--green)", cursor: promoting || selected.length === 0 ? "default" : "pointer", fontSize: 12, opacity: promoting || selected.length === 0 ? 0.5 : 1 }}>
         {promoting ? "晋升中…" : `↑ 晋升选中上线（${selected.length}）`}

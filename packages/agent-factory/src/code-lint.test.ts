@@ -50,4 +50,33 @@ describe("lintGeneratedToolCode", () => {
     expect(lintGeneratedToolCode(`import { Worker } from "node:worker_threads";`).ok).toBe(false);
     expect(lintGeneratedToolCode(`import vm from "node:vm";`).ok).toBe(false);
   });
+
+  // #REDESIGN FU2 — the AST lint removes the raw-text FALSE POSITIVES the old regex tripped on: a
+  // local variable named `vm`, or a module name appearing only inside a comment/string, is NOT an
+  // actual import/require and must pass.
+  it("does NOT false-positive on a local var named vm or a module name in a comment", () => {
+    const code = `
+      // never touch child_process here — use the sandbox
+      export default async function handler(input) {
+        const vm = { render: (x) => x };
+        const note = "fs and http are provided as tools";
+        return { out: vm.render(String(input.name ?? "") + note) };
+      }
+    `;
+    expect(lintGeneratedToolCode(code).ok).toBe(true);
+  });
+
+  // #REDESIGN FU2 — the AST lint catches EVASION a substring scan misses: a module name assembled by
+  // concatenation and passed to a dynamic require, or the import-equals form.
+  it("flags obfuscated dynamic require and import-equals", () => {
+    expect(lintGeneratedToolCode(`const n = "child" + "_process"; const cp = require(n); cp.exec("x");`).ok).toBe(false);
+    expect(lintGeneratedToolCode(`import cp = require("child_process");`).ok).toBe(false);
+  });
+
+  // #REDESIGN FU2 — broader dangerous builtins the old regex let through (dns/os/tls/cluster/…).
+  it("flags dns, os, tls, cluster imports", () => {
+    for (const m of ["node:dns", "node:os", "node:tls", "node:cluster"]) {
+      expect(lintGeneratedToolCode(`import x from "${m}";`).ok).toBe(false);
+    }
+  });
 });

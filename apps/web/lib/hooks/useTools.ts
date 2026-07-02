@@ -39,6 +39,10 @@ export interface ToolCatalogEntry {
   sourcePath: string;
   /** "global" = built-in @agentic/tools; "created" = a persisted declarative 造工具 tool. */
   origin?: "global" | "created";
+  /** #SCALE-TOOLS — empirical sandbox effectiveness from tool_stats (present once the tool has run). */
+  invoked?: number;
+  succeeded?: number;
+  successRate?: number;
 }
 
 export interface ToolCatalogPayload {

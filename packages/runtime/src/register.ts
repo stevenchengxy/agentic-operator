@@ -32,6 +32,7 @@ import {
   agents,
   agentVersions,
   events,
+  eventStore,
   runs,
   steps,
   tasks as tasksTable,
@@ -42,7 +43,14 @@ import { eq, and } from "drizzle-orm";
 
 import type { TenantRegistry, ToolDescriptor } from "@agentic/agent-kit";
 import type { InngestFunction } from "inngest";
-import { getRuntimeMetrics } from "./llm-host";
+import { getRuntimeMetrics, getRuntimeGateway } from "./llm-host";
+import { globalToolRegistry } from "@agentic/tools";
+import { createMemoryHandle } from "./memory";
+import { makeDeliveredRuntime } from "./delivered-runtime";
+import { runWithTraceContext } from "./trace-context";
+// #COMMS — inter-agent message envelope: carry-forward payload assembler + content-addressed offload.
+import { assembleEmitPayload, rehydratePayloadAsync } from "./message-envelope";
+import { makeBlobOffloader, resolveBlobRefAsync } from "./blob-store";
 
 export interface RegisterContext {
   tenantId: string;
@@ -216,7 +224,13 @@ export function registerAgent(
       triggers,
     },
     async ({ event, step, logger }) => {
-      const data = (event.data ?? {}) as Record<string, unknown>;
+      // #COMMS — rehydrate content-addressed blob refs so this run's handlers see REAL values (the
+      // wire/storage stayed small; the active run resolves on demand). No-op when there are no refs.
+      // Async resolution: local fs first, then the shared backend (#SCALE-BLOB) — so on a multi-
+      // instance deploy a blob written by instance A rehydrates on instance B.
+      const data = await rehydratePayloadAsync((event.data ?? {}) as Record<string, unknown>, async (ref) => (await resolveBlobRefAsync(ref)) ?? ref);
+      // #COMMS — offloader for oversized OUTBOUND fields (content-addressed, dedup by sha256).
+      const offloader = makeBlobOffloader();
       const subject = typeof data.subject === "string" ? data.subject : null;
       const triggerEventId =
         typeof data.__triggerEventId === "string"
@@ -339,19 +353,78 @@ export function registerAgent(
           ? { ...ctx.tenantRegistry, tools: { ...(ctx.tenantRegistry?.tools ?? {}), ...ctx.declarativeTools } }
           : ctx.tenantRegistry;
 
+      // #REDESIGN FU1 — the DELIVERED-tier AgentRuntime (power-strip contract). register.ts is the
+      // delivered adapter: it constructs the SAME `AgentRuntime` socket the CodeAct tier does, backed
+      // by durable primitives. `memory` is the REAL createMemoryHandle (persists across runs) and is
+      // threaded into generated-code execution below — the one durable capability legal inside a
+      // `step.run` body. emit/invoke are the durable ACTION-level ops (register already runs those via
+      // step.sendEvent / step.invoke); here they log/resolve for observability + the promotion path
+      // (they are NOT invoked from inside a step.run — Inngest forbids nested steps).
+      const deliveredRuntime = makeDeliveredRuntime({
+        agentName: agent.name,
+        tenantSlug,
+        correlationId,
+        subject: subject ?? undefined,
+        memory: createMemoryHandle({ tenantId: ctx.tenantId, agentName: agent.name, subject: subject ?? "", runId }),
+        reason: async (sp, inp) => {
+          const gw = getRuntimeGateway();
+          if (!gw) return { ok: true };
+          const r = await gw
+            .chat({ messages: [{ role: "system", content: sp }, { role: "user", content: JSON.stringify(inp ?? {}) }], tenantSlug })
+            .catch(() => null);
+          if (!r) return { ok: true };
+          try { return JSON.parse(r.text); } catch { return { text: r.text, ok: true }; }
+        },
+        toolRun: async (name, toolArgs) => {
+          const t = effectiveTenantRegistry?.tools?.[name] ?? globalToolRegistry.get(name);
+          if (!t) return { __error: `tool ${name} not registered` };
+          try {
+            const r = await t.handler({ agentName: agent.name, actionName: name, correlationId, tenantSlug, event: { name, data: (toolArgs ?? {}) as Record<string, unknown> } } as never);
+            return (r as { data?: unknown })?.data ?? r;
+          } catch (e) { return { __error: (e as Error).message }; }
+        },
+        emit: (evName, payload) => { void writeRunLog(logCtx, "INFO", "delivered.emit", { event: evName, payload }); },
+        invoke: async (ref) => { void ctx.resolveFunction?.(ref); return null; /* durable invoke is a type:"invoke" action; see the loop below */ },
+        log: (level, msg, data) => { try { logger[level]?.(msg, data as object) ?? logger.info(msg, data as object); } catch { /* best-effort */ } },
+      });
+
       let tokensIn = 0;
       let tokensOut = 0;
       let lastResult: unknown = null;
+      // #REDESIGN P1 — execution receipt. Set true when a logic action's GENERATED CODE actually ran
+      // (runGeneratedCode returned non-null); stays false if it fell back to the declarative/prompt
+      // path. Persisted to runs.code_ran at finalize so the finish gate can require real execution.
+      let codeRan = false;
+      // #REDESIGN P1b — the REAL model that served this run (last step that reported one), so the run
+      // records the actual model instead of a hardcoded "mock-model-v1".
+      let runModel: string | null = null;
       // Phase 1a — real branching: a condition step records its boolean here; a downstream
       // action that dependsOn a false condition (or a skipped step) is SKIPPED, not run.
       const gate: GateState = { conditionTrue: {}, skipped: new Set<string>() };
+
+      // #P0-4 — compensation: emit the agent's declared compensation_event ONCE on a hard failure
+      // (idempotent step id) so a run that failed after side-effects can be undone downstream (the
+      // canonical PAYMENT_INITIATED → PAYMENT_CANCELLED case). No-op when compensation_event is unset.
+      const emitCompensation = async (reason: string): Promise<void> => {
+        const comp = agent.compensation_event;
+        if (!comp) return;
+        // #W1-2 — NEVER wrap step.* in try/catch: Inngest orchestrates via control-flow exceptions,
+        // and swallowing them can corrupt replay. step.sendEvent is durable + idempotent by its id, so
+        // Inngest itself retries transient failures — that IS the "best-effort" mechanism. Only the
+        // run-log write (a plain fs op) stays best-effort.
+        await step.sendEvent(`compensate.${runId}`, {
+          name: `${tenantSlug}/${comp}` as `${string}/${string}`,
+          data: withCorrelation(correlationId, { subject: subject ?? undefined, source_agent: agent.name, source_run: runId, __compensation: true, reason: reason.slice(0, 200) }),
+        });
+        await writeRunLog(logCtx, "WARN", "run.compensate", { event: comp, reason: reason.slice(0, 200) }).catch(() => {});
+      };
 
       for (let i = 0; i < agent.actions.length; i++) {
         const action = agent.actions[i]!;
         const ord = i + 1;
         // Scope for stable idempotency-keyed step ids + (later) invoke input resolution.
         const stepScope = {
-          event: { name: event.name, data: (event.data ?? {}) as Record<string, unknown> },
+          event: { name: event.name, data },
           subject: subject ?? undefined,
           lastResult,
         };
@@ -390,6 +463,31 @@ export function registerAgent(
           }
           lastResult = invoked.data ?? null;
           await writeRunLog(logCtx, invoked.softFailed ? "WARN" : "INFO", "step.invoke", { ord, name: action.name, target: targetRef, softFailed: invoked.softFailed, timedOut: invoked.timedOut });
+          continue;
+        }
+
+        if (action.type === "subflow") {
+          // #P1-3 — subflow FANOUT: the manifest's `subflow` names a child event; emit it so a sibling
+          // agent handles it in parallel. Fire-and-forget (async fanout) — the child's result flows back
+          // via ITS own emitted event, not synchronously (that's what `invoke` is for). step.sendEvent is
+          // idempotent + runs at the handler top level (not inside step.run), so it's replay-safe.
+          const a = action as { subflow?: string; subflow_input?: Record<string, unknown> };
+          const target = (a.subflow ?? "").trim();
+          if (target) {
+            await step.sendEvent(`subflow.${stableStepId(action.name, (action as { idempotency_key_from?: string }).idempotency_key_from, stepScope)}`, {
+              name: `${tenantSlug}/${target}` as `${string}/${string}`,
+              data: withCorrelation(correlationId, {
+                ...(a.subflow_input ?? {}),
+                ...(lastResult && typeof lastResult === "object" && !Array.isArray(lastResult) ? (lastResult as Record<string, unknown>) : {}), // #W1-5 arrays would flatten to numeric keys
+                subject: subject ?? undefined,
+                source_agent: agent.name,
+                source_run: runId,
+              }),
+            });
+            await writeRunLog(logCtx, "INFO", "step.subflow", { ord, name: action.name, target });
+          } else {
+            await writeRunLog(logCtx, "WARN", "step.subflow", { ord, name: action.name, reason: "no subflow target declared" });
+          }
           continue;
         }
 
@@ -604,7 +702,7 @@ export function registerAgent(
           }
 
           try {
-            const res = await runAction({
+            const res = await runWithTraceContext({ correlationId, agentName: agent.name, tenantSlug, runId }, () => runAction({
               ctx: {
                 agentName: agent.name,
                 actionName: action.name,
@@ -613,9 +711,12 @@ export function registerAgent(
                 tenantSlug,
                 event: {
                   name: event.name,
-                  data: (event.data ?? {}) as Record<string, unknown>,
+                  data,
                 },
                 lastResult,
+                // #P0-1 — durable scoped memory reaches tenant tools (the production code path), not
+                // just generated code. Same handle threaded via StepInput.memory for generated code.
+                memory: deliveredRuntime.memory,
               },
               action,
               // Hand the step engine the slots it needs for prompt assembly
@@ -641,7 +742,12 @@ export function registerAgent(
               },
               tenantRegistry: effectiveTenantRegistry,
               autoResolveManual: true,
-            });
+              // #REDESIGN FU1 — real durable memory for generated-code execution (delivered tier).
+              memory: deliveredRuntime.memory,
+            })); // #SCALE-TRACE — ambient correlationId/agentName/tenantSlug/runId for nested tools/logs
+            // #REDESIGN P1 — receipt: the generated handler actually executed (didn't fall back).
+            if ((res.meta as { codeExecuted?: boolean } | undefined)?.codeExecuted === true) codeRan = true;
+            if (res.model) runModel = res.model;
             const sEnded = Date.now();
             // Persist this step's INPUT (what flowed in — the prior step's
             // result + the trigger event) and OUTPUT (what it returned) so the
@@ -755,10 +861,29 @@ export function registerAgent(
           // Phase 1 — step.run threw after its own Inngest retries. Honor the per-step policy:
           // soft → log + continue with the default; otherwise fail the run.
           if (onErr === "soft") {
-            await writeRunLog(logCtx, "WARN", "step.soft-fail", { ord, name: action.name, error: stepErr instanceof Error ? stepErr.message : String(stepErr) });
+            const errMsg = stepErr instanceof Error ? stepErr.message : String(stepErr);
+            await writeRunLog(logCtx, "WARN", "step.soft-fail", { ord, name: action.name, error: errMsg });
+            // #SCALE-ANALYSIS — optional agent-aware error reflection (AGENTIC_ERROR_ANALYSIS=1): one
+            // memoized LLM pass over the failure so the run log carries a DIAGNOSIS, not just the raw
+            // error. Inside its own step.run (we're at handler level here) → replay-safe; best-effort.
+            if (process.env.AGENTIC_ERROR_ANALYSIS === "1") {
+              try {
+                const advice = await step.run(`error-analysis-${ord}`, async () => {
+                  const gw = getRuntimeGateway();
+                  if (!gw) return null;
+                  const r = await gw.chat({ messages: [
+                    { role: "system", content: "你是运行时错误分析器。判断这个失败是【业务失败/外部依赖临时故障/输入数据问题/配置问题】哪一类,一句话给处置建议(重试/跳过/修数据/修配置)。只输出一句中文。" },
+                    { role: "user", content: `agent=${agent.name} step=${action.name} error=${errMsg.slice(0, 400)} lastResult=${JSON.stringify(lastResult ?? {}).slice(0, 400)}` },
+                  ], tenantSlug }).catch(() => null);
+                  return r?.text?.slice(0, 300) ?? null;
+                });
+                if (advice) await writeRunLog(logCtx, "INFO", "step.error-analysis", { ord, name: action.name, advice });
+              } catch { /* analysis never affects the run */ }
+            }
             lastResult = softDefault;
             continue;
           }
+          await emitCompensation(stepErr instanceof Error ? stepErr.message : String(stepErr));
           throw stepErr;
         }
 
@@ -769,6 +894,7 @@ export function registerAgent(
             continue;
           }
           await failRun(runId, "step returned ok=false", startedAt);
+          await emitCompensation(`step ${action.name} returned ok=false`);
           throw new Error(`step ${action.name} failed`);
         }
         tokensIn += stepOutcome.tokensIn;
@@ -795,17 +921,39 @@ export function registerAgent(
       // `_emit`/`event`/`next_event` field on its result; validated against the
       // declared list, falling back to [0] for every single-outcome agent.
       const emittedName = selectEmittedEvent(agent.triggered_event, lastResult);
+      // #COMMS — assemble the outbound payload: carry-forward the inbound business fields (so nothing
+      // the final step forgot to echo is LOST), unify to top-level (matching external-trigger shape),
+      // offload oversized fields to content-addressed refs (keeps the wire + ledger small), keep
+      // last_result for back-compat, stamp _meta provenance. Deterministic given (data, lastResult) so
+      // recomputing outside step.run is replay-safe; blob writes are idempotent (content-addressed).
+      const assembled = emittedName
+        ? assembleEmitPayload({
+            incoming: data,
+            lastResult,
+            meta: {
+              subject: subject ?? undefined,
+              correlationId,
+              causationId: triggerEventId ?? correlationId,
+              producedBy: agent.name,
+              sourceRun: runId,
+            },
+            offload: offloader,
+          })
+        : null;
+      if (assembled && (assembled.carried.length || assembled.offloaded.length || assembled.missing.length)) {
+        await writeRunLog(logCtx, assembled.missing.length ? "WARN" : "INFO", "emit.envelope", {
+          event: emittedName,
+          carried: assembled.carried, // inbound fields rescued from loss
+          offloaded: assembled.offloaded, // oversized fields moved to content-addressed refs
+          missing: assembled.missing, // declared contract fields absent (a data gap)
+        });
+      }
       const finalize = await step.run("finalize", async () => {
         const dbInner = getDb();
         let emittedEventId: string | null = null;
         if (emittedName) {
           emittedEventId = makeId("evt");
-          const payload = {
-            source_agent: agent.name,
-            source_run: runId,
-            subject,
-            last_result: lastResult,
-          };
+          const payload = assembled?.payload ?? {}; // #W1-12 — no non-null assertion; guard is if(emittedName) but keep this decoupled
           const payloadRef = await appendToLedger(tenantSlug, {
             id: emittedEventId,
             name: emittedName,
@@ -824,6 +972,31 @@ export function registerAgent(
               payloadRef,
             })
             .run();
+          // #P1-1 — mirror into the durable, queryable event store: full assembled payload inline
+          // (small thanks to blob offload) + causation lineage, so cross-agent causality is queryable
+          // + replay-safe across restarts (unlike the per-instance NDJSON ledger). Best-effort.
+          try {
+            dbInner
+              .insert(eventStore)
+              .values({
+                id: emittedEventId,
+                tenantId: ctx.tenantId,
+                name: emittedName,
+                subject: subject ?? null,
+                sourceRunId: runId,
+                sourceAgent: agent.name,
+                causationId: triggerEventId ?? null,
+                correlationId,
+                payloadJson: (() => {
+                  const j = JSON.stringify(assembled?.payload ?? {});
+                  // #W1-14 — no SILENT truncation: oversize payloads store a marker so audits see the cut.
+                  return j.length > 200_000 ? JSON.stringify({ __truncated: true, bytes: j.length, head: j.slice(0, 180_000) }) : j;
+                })(),
+              })
+              .run();
+          } catch {
+            /* durable event store best-effort — never fails the run */
+          }
           try {
             publish({
               type: "event.emitted",
@@ -848,8 +1021,12 @@ export function registerAgent(
             durationMs: endedAtMs - startedAtMs,
             tokensIn,
             tokensOut,
-            model: "mock-model-v1",
+            // #REDESIGN P1b — record the REAL model that served the run (falls back to the run's own
+            // recorded model, else the configured default), not a hardcoded "mock-model-v1".
+            model: runModel ?? "unknown",
             emittedEventId,
+            // #REDESIGN P1 — execution receipt (see the run-scoped `codeRan`).
+            codeRan,
           })
           .where(eq(runs.id, runId))
           .run();
@@ -880,7 +1057,8 @@ export function registerAgent(
           m.runs.inc({
             tenant: tenantSlug,
             agent: agent.name,
-            model: "mock-model-v1",
+            // #W1-3 — real served model (was a hardcoded "mock-model-v1" that made per-model metrics lie).
+            model: runModel ?? "unknown",
             status: "ok",
           });
           m.runDuration?.observe(endedAtMs - startedAtMs, {
@@ -897,11 +1075,10 @@ export function registerAgent(
       if (emittedName && finalize.emittedEventId) {
         await step.sendEvent(`emit.${emittedName}`, {
           name: `${tenantSlug}/${emittedName}` as `${string}/${string}`,
+          // #COMMS — the unified, carry-forward, offloaded payload (same object written to the ledger),
+          // plus this event's id for downstream lineage.
           data: withCorrelation(correlationId, {
-            source_agent: agent.name,
-            source_run: runId,
-            subject: subject ?? undefined,
-            last_result: lastResult,
+            ...(assembled?.payload ?? {}),
             __triggerEventId: finalize.emittedEventId,
           }),
         });
@@ -961,7 +1138,8 @@ export function registerAgent(
             m.runs.inc({
               tenant: tenantSlug,
               agent: agent.name,
-              model: "mock-model-v1",
+              // #W1-3 — real served model on the failure path too.
+              model: runModel ?? "unknown",
               status: "failed",
             });
           }

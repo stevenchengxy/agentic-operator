@@ -26,6 +26,17 @@ export interface MockSynthOpts {
  *  mock agent that fires on the upstream handoff (a dangling internal emit) — or the fired entries
  *  when there's no handoff — and emits the orphan trigger, closing the chain. Mock slugs contain
  *  "-mock-" so acceptanceReport excludes them from the real-deliverable count. */
+/** #REDESIGN P1b — the external-INPUT events a chain depends on: consumed by an internal agent but
+ *  produced by neither an internal agent nor a fired entry (an external platform would send them).
+ *  Instead of a MOCK producer agent, the deployer FIRES these directly as real entries (zero mock),
+ *  so the chain closes on real events. Same set synthesizeMockExternalAgents used to stub. */
+export function externalInputEvents(specs: GeneratedAgentSpec[], opts: MockSynthOpts): string[] {
+  const produced = new Set(specs.flatMap((s) => s.emit ?? []).filter(Boolean));
+  const consumed = new Set(specs.flatMap((s) => s.trigger ?? []).filter(Boolean));
+  const fired = new Set(opts.firedEntries ?? []);
+  return [...consumed].filter((e) => e && e !== "—" && !produced.has(e) && !fired.has(e));
+}
+
 export function synthesizeMockExternalAgents(specs: GeneratedAgentSpec[], opts: MockSynthOpts): GeneratedAgentSpec[] {
   const produced = new Set(specs.flatMap((s) => s.emit ?? []).filter(Boolean));
   const consumed = new Set(specs.flatMap((s) => s.trigger ?? []).filter(Boolean));
@@ -76,7 +87,7 @@ export interface ObservedRun {
 }
 
 export interface CaseRunOutcomeShape {
-  kind: "pass" | "reject" | "edge";
+  kind: "pass" | "reject" | "edge" | "fault";
   reachedSuccessTerminal: boolean;
   reachedFailTerminal: boolean;
   crashed: boolean;
@@ -92,7 +103,7 @@ const FAILISH_EVENT_RE = /FAIL|REJECT|ERROR|CONFLICT|DENIED|FAILED/i;
  *  routed at all (broken wiring). A failed-status run OR a FAILish emitted event = reached a fail
  *  terminal (a clean reject path). A success-terminal emit = reached success. */
 export function caseOutcomeFromRuns(
-  kind: "pass" | "reject" | "edge",
+  kind: "pass" | "reject" | "edge" | "fault",
   runs: ObservedRun[],
   opts: { successTerminals: string[]; degraded?: boolean },
 ): CaseRunOutcomeShape {

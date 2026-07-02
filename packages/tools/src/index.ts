@@ -43,6 +43,13 @@ export * as fs from "./fs";
 export * as http from "./http";
 export * as meta from "./meta";
 export * as ontology from "./ontology";
+export * as viz from "./viz";
+export * as report from "./report";
+
+// Named exports for server-side (non-tool) reuse — the report pipeline in
+// apps/api renders charts + prints PDFs through these directly.
+export { renderSvgChart, type SvgChartSpec, type ChartDatum } from "./viz";
+export { htmlToPdf, htmlFileToPdf, findChrome, reportArchiveDir } from "./report";
 
 // ─── (2) legacy runTool fallback — used by step-engine's type:"tool" path ──
 

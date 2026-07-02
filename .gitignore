@@ -40,8 +40,21 @@ data/logs/*
 .idea
 *.swp
 
-# Claude Code worktrees (isolated branches; never tracked)
-.claude/worktrees/
+# Claude Code local tooling: preview launch config, session settings, worktrees.
+# Local-only — never committed (contains machine-specific paths, no source value).
+.claude/
+
+# Generated deliverables / working docs — architecture books, deep-analysis reports,
+# audits and session design specs are RENDERED artifacts, not source; kept local, not
+# committed (they bloat the repo and are re-generatable from code).
+docs/*.html
+docs/design/agent-factory-redesign.md
+docs/design/factory-ops-sidebar-and-report-agent.md
+
+# Runtime output under apps/api/data — tenant ontology uploads, generated analysis
+# reports + their job sidecars. Pure runtime, never source (mirrors the root data/ rule).
+apps/api/data/factory-ontologies/
+apps/api/data/reports/
 
 # logs
 npm-debug.log*
@@ -63,6 +76,12 @@ models/mi*-v*/
 # committed before this rule landed; run `git rm -r --cached models/__system-v1`
 # to untrack them in a dedicated cleanup commit.)
 models/__system-v1/workflow_v*.json
+
+# `-sb` SANDBOX tenant model dirs — each sandbox_run writes a fresh workflow_vN.json,
+# so these accumulate by the hundred (v1…v150+). Pure runtime/test output, never source
+# (mirrors the __system rule above). Covers agents-generation-sb-v1, sbruntest-sb-v1,
+# raas-sb-v1, zhaopin-sb-v1, insightlab-sb-v1, liveruntest-sb-v1, …
+models/*-sb-v*/
 
 # brainstorm visual companion
 .superpowers/

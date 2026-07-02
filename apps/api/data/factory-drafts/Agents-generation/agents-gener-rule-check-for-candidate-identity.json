@@ -16,7 +16,8 @@
       "CANDIDATE_IDENTITY_CHECKED"
     ],
     "tools": [
-      "ontology.fetchActionRules"
+      "ontology.fetchActionRules",
+      "fs.appendToLog"
     ],
     "unresolvedTools": [],
     "objects": [
@@ -24,16 +25,21 @@
       "Resume",
       "Candidate_Identity_Result"
     ],
-    "systemPrompt": "你是一个专业的候选人身份去重校验专家。你的核心职责是在候选人入库前，按照系统规则对候选人进行身份唯一性判定，防止重复建档。\n\n工作流程：\n1. 接收输入：获取 `candidate_id` 和 `resume_id`（来自 RESUME_PROCESSED 事件）。\n2. 动态获取规则：必须调用 `ontology.fetchActionRules` 获取当前动作（`ruleCheckForCandidateIdentity`）的最新业务规则，特别是\"同一候选人判定规则\"的三级优先级逻辑。\n3. 按规则执行三级比对（优先级顺序严格按动态规则执行）：\n   - 第一级：手机号精确匹配（最高优先级）。\n   - 第二级：姓名 + 邮箱联合匹配。\n   - 第三级：六字段弱信号匹配（姓名+出生日期+性别+学历+毕业院校+专业等）。\n4. 判定结果：\n   - 命中任意级别 → `same_person=true`，记录 `same_as_candidate_id`，将新简历挂到已有候选人档案（一人多简历）。\n   - 六字段弱匹配 → 标记 `dedup_action=pending-review`，需人工复核。\n   - 未命中 → `same_person=false`，建新候选人档案。\n5. 写入 `Candidate_Identity_Result` 记录（包含 `same_person`、`same_as_candidate_id`、`matched_rule_id`、`dedup_action`、`needs_review`、`decision_reason`）。\n6. 产出 `CANDIDATE_IDENTITY_CHECKED` 事件（soft-fail，不阻断主流程）。\n\n决策依据：\n- 所有比对规则必须从 `ontology.fetchActionRules` 动态获取，绝不硬编码。\n- 本检查为 soft-fail，无论结果如何都产出 CANDIDATE_IDENTITY_CHECKED 事件，不阻断后续流程。\n\n【前置条件（运行前必须满足；不满足则 fail-close 发拦截/失败事件，不要继续）】\n1. RESUME_PROCESSED 事件已送达\n2. 候选人（Candidate）记录已创建且 candidate_id 非空\n3. 候选人简历（Resume）已完成 RoboHire 结构化解析\n4. 候选人姓名/手机号等核心字段可用",
+    "systemPrompt": "你是候选人身份去重专家。你的职责是在候选人入库前，按照动态获取的规则（9-15 同一候选人判定规则）执行三级优先级身份比对：\n- 第一级（最高优先级）：手机号完全匹配\n- 第二级：姓名 + 邮箱同时匹配\n- 第三级（弱信号）：六字段综合比对（姓名、性别、出生日期、学历、毕业学校、专业）\n\n判定逻辑：\n1. 逐级比对，命中任一级即判定为同一人。\n2. 判为同一人时：新简历的 candidate_id 指向已有候选人（一人多简历），不重复建档。\n3. 第三级弱信号命中时：标记 dedup_action=pending-review，需人工复核。\n4. 未命中任何级别时：判定为新候选人，建新档案。\n\n本检查为 soft-fail，不阻断主流程，但必须写入 Candidate_Identity_Result 审计记录。\n请务必动态获取最新规则后再执行比对，不得将规则写死。\n\n【规则动态抓取机制（系统强制补全，运行时执行）】\n① 从触发事件 payload 识别本次要校验的对象与上下文；② 绑定并调用 ontology.fetchActionRules 按【当前 action + 上下文】实时抓取适用规则（绝不把规则写进本 prompt）；③ 逐条核对，命中任一强制(mandatory)规则即发失败事件并落库；④ 数据不足时 fail-close 保守拦截。\n\n【前置条件（运行前必须满足；不满足则 fail-close 发拦截/失败事件，不要继续）】\n1. RESUME_PROCESSED 事件已送达\n2. 候选人（Candidate）记录已创建且 candidate_id 非空\n3. 候选人简历（Resume）已完成 RoboHire 结构化解析\n4. 候选人姓名/手机号等核心字段可用",
     "userPrompt": "",
-    "designReasoning": "设计 ruleCheckForCandidateIdentity Agent，负责候选人身份去重，执行三级优先级规则（手机号>姓名+邮箱>六字段），这是规则校验类动作，必须使用 ontology.fetchActionRules 动态获取规则。",
-    "toolRationale": "ontology.fetchActionRules 是规则校验类 Agent 的必备工具，用于动态获取三级去重规则，确保规则不被硬编码。",
-    "decisionLogic": "1. 接收 RESUME_PROCESSED 事件，提取 candidate_id 和 resume_id。\n2. 调用 ontology.fetchActionRules 获取 ruleCheckForCandidateIdentity 的规则（三级优先级去重规则）。\n3. 按规则执行三级比对：\n   a. 手机号匹配 → same_person=true，dedup_action=merge\n   b. 姓名+邮箱匹配 → same_person=true，dedup_action=merge\n   c. 六字段弱匹配 → same_person=true，dedup_action=pending-review，needs_review=true\n   d. 无匹配 → same_person=false，dedup_action=new-record\n4. 写入 Candidate_Identity_Result 记录。\n5. emit CANDIDATE_IDENTITY_CHECKED，携带 same_person 和 same_as_candidate_id。",
+    "designReasoning": "设计 ruleCheckForCandidateIdentity Agent，负责候选人身份去重规则检查，使用三级优先级比对逻辑。",
+    "toolRationale": "ontology.fetchActionRules 动态获取身份去重规则，fs.appendToLog 写入审计日志。",
+    "decisionLogic": "1. 接收 RESUME_PROCESSED 事件，获取 candidate_id 和 resume_id。\n2. 动态获取身份去重规则（ontology.fetchActionRules）。\n3. 读取候选人基本信息（姓名、手机号、邮箱等）。\n4. 按三级优先级逐级比对系统中已有候选人。\n5. 写入 Candidate_Identity_Result 审计记录。\n6. emit CANDIDATE_IDENTITY_CHECKED 事件，携带判定结果。",
     "steps": [
       {
         "name": "step_1",
         "description": "调用 ontology.fetchActionRules",
         "tool": "ontology.fetchActionRules"
+      },
+      {
+        "name": "step_2",
+        "description": "调用 fs.appendToLog",
+        "tool": "fs.appendToLog"
       }
     ],
     "ruleRefs": [],
@@ -50,14 +56,14 @@
       {
         "field": "candidate_id",
         "type": "String",
-        "description": "本次入库的候选人唯一编号",
-        "source": "Candidate.candidate_id"
+        "description": "本次入库的候选人唯一编号。",
+        "source": "Candidate"
       },
       {
         "field": "resume_id",
         "type": "String",
-        "description": "本次解析的简历唯一编号",
-        "source": "Resume.resume_id"
+        "description": "本次解析的简历唯一编号。",
+        "source": "Resume"
       }
     ],
     "outputSchema": [
@@ -76,13 +82,13 @@
       {
         "field": "same_person",
         "type": "Boolean",
-        "description": "是否判定为与系统中已有候选人为同一人"
+        "description": "是否判定为与系统中已有候选人为同一人。"
       },
       {
         "field": "same_as_candidate_id",
         "type": "String",
         "source": "Candidate.same_as_candidate_id",
-        "description": "命中重复时指向的已有候选人编号；非重复时为空"
+        "description": "命中重复时指向的已有候选人编号；非重复时为空。"
       },
       {
         "field": "matched_rule_id",
@@ -98,6 +104,29 @@
         "field": "needs_review",
         "type": "Boolean",
         "description": "事件 CANDIDATE_IDENTITY_CHECKED 的 payload 字段"
+      }
+    ],
+    "plan": [
+      {
+        "stepId": "fetch-rules",
+        "kind": "tool",
+        "tool": "ontology.fetchActionRules",
+        "idempotencyKeyFrom": "candidate_id",
+        "onError": "soft",
+        "description": "动态获取身份去重规则"
+      },
+      {
+        "stepId": "dedup-check",
+        "kind": "logic",
+        "description": "按三级优先级执行身份比对"
+      },
+      {
+        "stepId": "write-audit-log",
+        "kind": "tool",
+        "tool": "fs.appendToLog",
+        "idempotencyKeyFrom": "candidate_id",
+        "onError": "soft",
+        "description": "写入身份判定审计日志"
       }
     ],
     "stateBindings": [
@@ -128,8 +157,9 @@
         ]
       }
     ],
-    "generatedCode": "// 候选人入库前的身份去重规则检查（Ru — 由 Agent 工厂从本体动作 `ruleCheckForCandidateIdentity`(Agents-generation)生成。\n// trigger: RESUME_PROCESSED → emit: CANDIDATE_IDENTITY_CHECKED\n// 参考脚手架：运行时按 workflow manifest 的 action[] 声明式调度执行（systemPrompt + 工具），\n// 【不直接运行这段 .ts 代码】——它是可读/可改的 agent 定义参考。真·CodeAct 执行路径用 codeExecuted 开关（默认关）。\n\n/** Input/Output schema — 依据本体 DataObjects 定义。 */\ninterface RuleCheckForCandidateIdentityAgentInput {\n  fix_result: string; // 事件 RESUME_PROCESSED 的 payload 字段\n  candidate_id: string; // 本次入库的候选人唯一编号 (源: Candidate.candidate_id)\n  resume_id: string; // 本次解析的简历唯一编号 (源: Resume.resume_id)\n}\n\ninterface RuleCheckForCandidateIdentityAgentOutput {\n  candidate_id: string; // 事件 CANDIDATE_IDENTITY_CHECKED 的 payload 字段 (源: Candidate.candidate_id)\n  resume_id: string; // 事件 CANDIDATE_IDENTITY_CHECKED 的 payload 字段 (源: Resume.resume_id)\n  same_person: boolean; // 是否判定为与系统中已有候选人为同一人\n  same_as_candidate_id: string; // 命中重复时指向的已有候选人编号；非重复时为空 (源: Candidate.same_as_candidate_id)\n  matched_rule_id: string; // 事件 CANDIDATE_IDENTITY_CHECKED 的 payload 字段\n  dedup_action: string; // 事件 CANDIDATE_IDENTITY_CHECKED 的 payload 字段\n  needs_review: boolean; // 事件 CANDIDATE_IDENTITY_CHECKED 的 payload 字段\n}\n\n/** System prompt — 工厂为【这一个】agent 亲自推理出来的。 */\nconst SYSTEM_PROMPT = `你是一个专业的候选人身份去重校验专家。你的核心职责是在候选人入库前，按照系统规则对候选人进行身份唯一性判定，防止重复建档。\n\n工作流程：\n1. 接收输入：获取 \\`candidate_id\\` 和 \\`resume_id\\`（来自 RESUME_PROCESSED 事件）。\n2. 动态获取规则：必须调用 \\`ontology.fetchActionRules\\` 获取当前动作（\\`ruleCheckForCandidateIdentity\\`）的最新业务规则，特别是\"同一候选人判定规则\"的三级优先级逻辑。\n3. 按规则执行三级比对（优先级顺序严格按动态规则执行）：\n   - 第一级：手机号精确匹配（最高优先级）。\n   - 第二级：姓名 + 邮箱联合匹配。\n   - 第三级：六字段弱信号匹配（姓名+出生日期+性别+学历+毕业院校+专业等）。\n4. 判定结果：\n   - 命中任意级别 → \\`same_person=true\\`，记录 \\`same_as_candidate_id\\`，将新简历挂到已有候选人档案（一人多简历）。\n   - 六字段弱匹配 → 标记 \\`dedup_action=pending-review\\`，需人工复核。\n   - 未命中 → \\`same_person=false\\`，建新候选人档案。\n5. 写入 \\`Candidate_Identity_Result\\` 记录（包含 \\`same_person\\`、\\`same_as_candidate_id\\`、\\`matched_rule_id\\`、\\`dedup_action\\`、\\`needs_review\\`、\\`decision_reason\\`）。\n6. 产出 \\`CANDIDATE_IDENTITY_CHECKED\\` 事件（soft-fail，不阻断主流程）。\n\n决策依据：\n- 所有比对规则必须从 \\`ontology.fetchActionRules\\` 动态获取，绝不硬编码。\n- 本检查为 soft-fail，无论结果如何都产出 CANDIDATE_IDENTITY_CHECKED 事件，不阻断后续流程。\n\n【前置条件（运行前必须满足；不满足则 fail-close 发拦截/失败事件，不要继续）】\n1. RESUME_PROCESSED 事件已送达\n2. 候选人（Candidate）记录已创建且 candidate_id 非空\n3. 候选人简历（Resume）已完成 RoboHire 结构化解析\n4. 候选人姓名/手机号等核心字段可用`;\n\nexport const ruleCheckForCandidateIdentityAgent = defineAgent({\n  id: \"agents-gener-rule-check-for-candidate-identity\",\n  name: \"RuleCheckForCandidateIdentityAgent\",\n  actor: [\"Agent\"],\n  trigger: [\"RESUME_PROCESSED\"],\n  emit: [\"CANDIDATE_IDENTITY_CHECKED\"],\n  tools: [\"ontology.fetchActionRules\"],\n  systemPrompt: SYSTEM_PROMPT,\n  async handler(input, ctx) {\n      // 调用工具 ontology.fetchActionRules\n      // const fetchActionRulesResult = await ctx.tools.run(\"ontology.fetchActionRules\", input);\n      // 用本 agent 专属 system prompt 推理(决策核心)\n      const decision = await ctx.reason(SYSTEM_PROMPT, input);\n      await ctx.emit(\"CANDIDATE_IDENTITY_CHECKED\", { ...input, ...decision });\n      return { ok: true };\n  },\n});\n",
-    "codeSource": "render"
+    "codeSource": "render",
+    "generatedCode": "// 候选人入库前的身份去重规则检查（Ru — 由 Agent 工厂从本体动作 `ruleCheckForCandidateIdentity`(Agents-generation)生成。\n// trigger: RESUME_PROCESSED → emit: CANDIDATE_IDENTITY_CHECKED\n// 参考脚手架：运行时按 workflow manifest 的 action[] 声明式调度执行（systemPrompt + 工具），\n// 【不直接运行这段 .ts 代码】——它是可读/可改的 agent 定义参考。真·CodeAct 执行路径用 codeExecuted 开关（默认关）。\n\n/** Input/Output schema — 依据本体 DataObjects 定义。 */\ninterface RuleCheckForCandidateIdentityAgentInput {\n  fix_result: string; // 事件 RESUME_PROCESSED 的 payload 字段\n  candidate_id: string; // 本次入库的候选人唯一编号。 (源: Candidate)\n  resume_id: string; // 本次解析的简历唯一编号。 (源: Resume)\n}\n\ninterface RuleCheckForCandidateIdentityAgentOutput {\n  candidate_id: string; // 事件 CANDIDATE_IDENTITY_CHECKED 的 payload 字段 (源: Candidate.candidate_id)\n  resume_id: string; // 事件 CANDIDATE_IDENTITY_CHECKED 的 payload 字段 (源: Resume.resume_id)\n  same_person: boolean; // 是否判定为与系统中已有候选人为同一人。\n  same_as_candidate_id: string; // 命中重复时指向的已有候选人编号；非重复时为空。 (源: Candidate.same_as_candidate_id)\n  matched_rule_id: string; // 事件 CANDIDATE_IDENTITY_CHECKED 的 payload 字段\n  dedup_action: string; // 事件 CANDIDATE_IDENTITY_CHECKED 的 payload 字段\n  needs_review: boolean; // 事件 CANDIDATE_IDENTITY_CHECKED 的 payload 字段\n}\n\n/** System prompt — 工厂为【这一个】agent 亲自推理出来的。 */\nconst SYSTEM_PROMPT = `你是候选人身份去重专家。你的职责是在候选人入库前，按照动态获取的规则（9-15 同一候选人判定规则）执行三级优先级身份比对：\n- 第一级（最高优先级）：手机号完全匹配\n- 第二级：姓名 + 邮箱同时匹配\n- 第三级（弱信号）：六字段综合比对（姓名、性别、出生日期、学历、毕业学校、专业）\n\n判定逻辑：\n1. 逐级比对，命中任一级即判定为同一人。\n2. 判为同一人时：新简历的 candidate_id 指向已有候选人（一人多简历），不重复建档。\n3. 第三级弱信号命中时：标记 dedup_action=pending-review，需人工复核。\n4. 未命中任何级别时：判定为新候选人，建新档案。\n\n本检查为 soft-fail，不阻断主流程，但必须写入 Candidate_Identity_Result 审计记录。\n请务必动态获取最新规则后再执行比对，不得将规则写死。\n\n【规则动态抓取机制（系统强制补全，运行时执行）】\n① 从触发事件 payload 识别本次要校验的对象与上下文；② 绑定并调用 ontology.fetchActionRules 按【当前 action + 上下文】实时抓取适用规则（绝不把规则写进本 prompt）；③ 逐条核对，命中任一强制(mandatory)规则即发失败事件并落库；④ 数据不足时 fail-close 保守拦截。\n\n【前置条件（运行前必须满足；不满足则 fail-close 发拦截/失败事件，不要继续）】\n1. RESUME_PROCESSED 事件已送达\n2. 候选人（Candidate）记录已创建且 candidate_id 非空\n3. 候选人简历（Resume）已完成 RoboHire 结构化解析\n4. 候选人姓名/手机号等核心字段可用`;\n\nexport const ruleCheckForCandidateIdentityAgent = defineAgent({\n  id: \"agents-gener-rule-check-for-candidate-identity\",\n  name: \"RuleCheckForCandidateIdentityAgent\",\n  actor: [\"Agent\"],\n  trigger: [\"RESUME_PROCESSED\"],\n  emit: [\"CANDIDATE_IDENTITY_CHECKED\"],\n  tools: [\"ontology.fetchActionRules\",\"fs.appendToLog\"],\n  systemPrompt: SYSTEM_PROMPT,\n  async handler(input, ctx) {\n      // 调用工具 ontology.fetchActionRules\n      // const fetchActionRulesResult = await ctx.tools.run(\"ontology.fetchActionRules\", input);\n      // 调用工具 fs.appendToLog\n      // const appendToLogResult = await ctx.tools.run(\"fs.appendToLog\", input);\n      // 用本 agent 专属 system prompt 推理(决策核心)\n      const decision = await ctx.reason(SYSTEM_PROMPT, input);\n      await ctx.emit(\"CANDIDATE_IDENTITY_CHECKED\", { ...input, ...decision });\n      return { ok: true };\n  },\n});\n",
+    "codeExecuted": true
   },
-  "createdAt": "2026-06-30T06:43:28.963Z"
+  "createdAt": "2026-07-01T03:46:27.698Z"
 }

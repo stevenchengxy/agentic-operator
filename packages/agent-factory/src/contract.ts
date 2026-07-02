@@ -55,7 +55,13 @@ export type EventContract = {
 
 export type ContractIssue =
   | { kind: "payload_gap"; event: string; missingFields: string[]; consumers: string[]; producers: string[] }
-  | { kind: "untyped_event"; event: string; producers: string[] };
+  // #COMMS — Hole 1: an untyped event now carries WHAT the consumers need, so the risk is legible
+  // (before, an untyped producer with expecting consumers surfaced no field names at all).
+  | { kind: "untyped_event"; event: string; producers: string[]; consumers: string[]; expectedFields: string[] }
+  // #COMMS — Hole 2: a field used ACROSS an edge that the event's canonical event_data doesn't declare
+  // (AI-invented / off-ontology). The runtime envelope now carries it, but it's a hygiene signal: either
+  // the ontology under-declares the event, or the agent is off-contract. Soft (doesn't fail the graph).
+  | { kind: "non_canonical_field"; event: string; fields: string[]; side: "producer" | "consumer"; agents: string[] };
 
 export type ContractGraph = {
   domain: string;
@@ -130,16 +136,30 @@ export function deriveContractGraph(specs: GeneratedAgentSpec[], domain: string,
     };
   });
 
+  const uniq = (xs: string[]): string[] => [...new Set(xs.filter(Boolean))];
   const issues: ContractIssue[] = [];
   for (const e of events) {
+    const expectedNames = uniq(e.expectedFields.map((f) => f.field));
     if (e.payloadGaps.length) {
       issues.push({ kind: "payload_gap", event: e.name, missingFields: e.payloadGaps, consumers: e.consumers, producers: e.producers });
     }
     // An internal (non-entry, non-failure) event whose producer declared NO output
     // fields is "free JSON" — the consumer is reading an untyped payload. Skip
     // failure events (often signal-only) and pure entry events (external shape).
+    // #COMMS Hole 1: attach WHAT the consumers expect so the untyped risk is legible.
     if (e.producers.length && e.consumers.length && e.providedFields.length === 0 && !e.isFailure) {
-      issues.push({ kind: "untyped_event", event: e.name, producers: e.producers });
+      issues.push({ kind: "untyped_event", event: e.name, producers: e.producers, consumers: e.consumers, expectedFields: expectedNames });
+    }
+    // #COMMS Hole 2: fields used across the edge that the event's CANONICAL event_data doesn't declare.
+    // Only meaningful when a canonical contract exists for the event (else there's nothing to be off).
+    const canonical = eventFields?.get(e.name);
+    if (canonical && canonical.length) {
+      const canonicalNames = new Set(canonical.map((f) => f.field));
+      // providedFields = canonical ∪ producer outputs → filtering out canonical leaves producer-only fields.
+      const prodOff = uniq(e.providedFields.map((f) => f.field).filter((f) => f && !canonicalNames.has(f)));
+      const consOff = uniq(expectedNames.filter((f) => !canonicalNames.has(f)));
+      if (prodOff.length) issues.push({ kind: "non_canonical_field", event: e.name, fields: prodOff, side: "producer", agents: e.producers });
+      if (consOff.length) issues.push({ kind: "non_canonical_field", event: e.name, fields: consOff, side: "consumer", agents: e.consumers });
     }
   }
 
@@ -151,20 +171,28 @@ export function deriveContractGraph(specs: GeneratedAgentSpec[], domain: string,
 
 /** Human-readable issue lines (Chinese, business-language) for the brain + UI. */
 export function contractIssueStrings(graph: ContractGraph): string[] {
-  return graph.issues.map((i) =>
-    i.kind === "payload_gap"
-      ? `字段缺口：事件「${i.event}」的下游需要 [${i.missingFields.join("、")}] 字段，但上游(${i.producers.join("、") || "无"})没有产出`
-      : `字段未约定：事件「${i.event}」的上游(${i.producers.join("、")})没说明会产出哪些字段`,
-  );
+  return graph.issues.map((i) => {
+    if (i.kind === "payload_gap") {
+      return `字段缺口：事件「${i.event}」的下游需要 [${i.missingFields.join("、")}] 字段，但上游(${i.producers.join("、") || "无"})没有产出`;
+    }
+    if (i.kind === "untyped_event") {
+      const need = i.expectedFields.length ? `，但下游(${i.consumers.join("、")})要读 [${i.expectedFields.join("、")}]` : "";
+      return `字段未约定：事件「${i.event}」的上游(${i.producers.join("、")})没说明会产出哪些字段${need}`;
+    }
+    // non_canonical_field
+    const who = i.side === "producer" ? "上游" : "下游";
+    return `字段超出本体约定：事件「${i.event}」的${who}(${i.agents.join("、")})用到了本体 event_data 未声明的字段 [${i.fields.join("、")}]（运行时靠 envelope 携带；建议补进本体或核对是否写错字段名）`;
+  });
 }
 
-/** Map each offending agent (producer of a gapped/untyped event) → its issues,
- *  so the brain can refine the exact offender (same shape as verifyGraph's). */
+/** Map each offending agent → its issues, so the brain can refine the exact offender (same shape as
+ *  verifyGraph's). Covers producers (gap/untyped) and the agents on either side of a non-canonical field. */
 export function contractAgentIssueMap(graph: ContractGraph): Record<string, ContractIssue[]> {
   const map: Record<string, ContractIssue[]> = {};
   for (const issue of graph.issues) {
-    for (const producer of issue.producers) {
-      (map[producer] ??= []).push(issue);
+    const owners = issue.kind === "non_canonical_field" ? issue.agents : issue.producers;
+    for (const owner of owners) {
+      (map[owner] ??= []).push(issue);
     }
   }
   return map;

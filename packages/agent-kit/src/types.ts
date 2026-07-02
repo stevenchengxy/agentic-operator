@@ -51,6 +51,22 @@ export interface ToolContext {
    * tool — handlers should fall back to env defaults in that case.
    */
   config?: Record<string, unknown>;
+  /**
+   * #P0-1 — durable, scoped memory (run / subject / tenant) so a tool can PERSIST + RECALL across
+   * steps and runs. Threaded from the delivered adapter (register.ts → step-engine). Structurally
+   * compatible with `@agentic/agent-sdk`'s `MemoryHandle` (kept inline so agent-kit needn't depend on
+   * agent-sdk). `undefined` for pure-runtime/test callers — handlers treat memory as optional.
+   */
+  memory?: ToolMemoryHandle;
+}
+
+/** Minimal memory-handle surface a tool can use. A real `@agentic/agent-sdk` MemoryHandle is
+ *  structurally assignable to this (get/put/delete identical; search's MemoryHit[] ⊆ unknown[]). */
+export interface ToolMemoryHandle {
+  get<T = unknown>(key: string, scope?: "run" | "subject" | "tenant"): Promise<T | null>;
+  put<T = unknown>(key: string, value: T, scope?: "run" | "subject" | "tenant"): Promise<void>;
+  delete(key: string, scope?: "run" | "subject" | "tenant"): Promise<void>;
+  search(query: string, k: number): Promise<unknown[]>;
 }
 
 /**

@@ -398,6 +398,15 @@ function ToolSection({ tool }: { tool: ToolCatalogEntry }) {
           <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
             <span title={SE_META[deriveSE(tool)].hint}><Badge tone={SE_META[deriveSE(tool)].tone}>{SE_META[deriveSE(tool)].label}</Badge></span>
             <Badge tone="muted">{tool.category}</Badge>
+            {/* #SCALE-TOOLS — empirical sandbox effectiveness: green ≥70%, red below (the ranking
+                actually demotes <70% w/ ≥3 runs, so a red badge = "won't be recommended"). */}
+            {typeof tool.successRate === "number" && (tool.invoked ?? 0) > 0 && (
+              <span title={`沙箱里被 ${tool.invoked} 次调用，成功 ${tool.succeeded}。低于 70%（≥3 次）时排序会自动降权。`}>
+                <Badge tone={tool.successRate >= 0.7 ? "green" : "red"}>
+                  沙箱成功率 {Math.round(tool.successRate * 100)}% · {tool.invoked}次{tool.successRate < 0.7 && (tool.invoked ?? 0) >= 3 ? " · 已降权" : ""}
+                </Badge>
+              </span>
+            )}
             {isCreated && <Badge tone="signal">自建</Badge>}
             {tool.chainsWith && tool.chainsWith.length > 0 && (
               <Badge tone="signal">

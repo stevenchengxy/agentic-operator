@@ -153,6 +153,27 @@ export class ManifestOntologySource implements OntologySource {
       .filter((d) => !/-sb$/.test(d.id) && d.counts.actions + d.counts.events + d.counts.objects + d.counts.rules > 0);
   }
 
+  /** DEGRADED FALLBACK (Allmeta-down): the workflow-only "artifact" folders that listDomains hides
+   *  because they normally route to live Allmeta (a PROMOTED deployment). When Allmeta is
+   *  unreachable the composite surfaces these so the factory isn't gutted — fetchOntology derives a
+   *  thin ontology from the workflow agents. Excludes `-sb` sandboxes + `__system`. */
+  async listArtifactDomains() {
+    return this.folders()
+      .filter((folder) => {
+        const slug = tenantSlugFromFolder(folder);
+        if (/-sb$/.test(slug) || slug === "__system") return false;
+        const dir = path.join(this.root, folder);
+        const ont = ["actions", "events", "objects", "rules"].reduce((n, k) => n + unwrap(readJson(pickVersioned(dir, k)), k === "objects" || k === "rules" ? "payload" : k).length, 0);
+        if (ont > 0) return false; // has a real ontology → already in listDomains
+        return unwrap(readJson(pickVersioned(dir, "workflow")), "agents").length > 0; // workflow-only artifact
+      })
+      .map((folder) => {
+        const dir = path.join(this.root, folder);
+        const workflow = unwrap(readJson(pickVersioned(dir, "workflow")), "agents");
+        return { id: tenantSlugFromFolder(folder), name: folder, counts: { actions: workflow.length, events: 0, objects: 0, rules: 0, workflow: workflow.length } };
+      });
+  }
+
   async fetchOntology(domainId: string): Promise<DomainOntology> {
     const folder = this.folderFor(domainId);
     if (!folder) throw new Error(`本体源里找不到业务域「${domainId}」——models/ 下没有匹配的目录。`);

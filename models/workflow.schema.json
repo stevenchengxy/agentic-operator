@@ -145,6 +145,7 @@
           "type": "string"
         }
       },
+      "compensation_event": {},
       "input_data": {
         "type": "object",
         "propertyNames": {

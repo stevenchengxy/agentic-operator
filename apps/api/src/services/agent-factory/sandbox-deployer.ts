@@ -14,7 +14,7 @@
 import path from "node:path";
 import { readFileSync } from "node:fs";
 import type { SandboxDeployer, SandboxDeployResult, GeneratedAgentSpec, OntologyAction, AgentRunIO } from "@agentic/agent-factory";
-import { compileGraph, verifyGraph, projectPlanToActions, verificationPolicy, synthesizeMockExternalAgents, caseOutcomeFromRuns, chainVerdictByKind } from "@agentic/agent-factory";
+import { compileGraph, verifyGraph, projectPlanToActions, verificationPolicy, synthesizeMockExternalAgents, externalInputEvents, caseOutcomeFromRuns, chainVerdictByKind } from "@agentic/agent-factory";
 import { getDb, tenants, runs, agents, steps, events, eq, and, desc, asc } from "@agentic/db";
 import { gt } from "drizzle-orm";
 import { makeId } from "@agentic/shared";
@@ -31,7 +31,7 @@ const RUN_FAILED = /fail|cancel|abort|error/i;
 
 // ── DryRun (default) ──────────────────────────────────────────────────────────
 export class DryRunSandboxDeployer implements SandboxDeployer {
-  async deployAndObserve(domain: string, specs: GeneratedAgentSpec[], opts?: { testCases?: Array<{ entryEvent: string; payload: Record<string, unknown>; kind?: "pass" | "reject" | "edge" }>; boundaryEvents?: Boundary }): Promise<SandboxDeployResult> {
+  async deployAndObserve(domain: string, specs: GeneratedAgentSpec[], opts?: { testCases?: Array<{ entryEvent: string; payload: Record<string, unknown>; kind?: "pass" | "reject" | "edge" | "fault" }>; boundaryEvents?: Boundary }): Promise<SandboxDeployResult> {
     const actions = specsToActions(domain, specs);
     const graph = compileGraph(actions, { domainId: domain });
     // #D: boundary-aware verdict — external-handoff emits are legitimate terminals, externally
@@ -85,7 +85,10 @@ export class DryRunSandboxDeployer implements SandboxDeployer {
 
 // ── Real deploy (opt-in) ──────────────────────────────────────────────────────
 function specsToActions(domain: string, specs: GeneratedAgentSpec[]): OntologyAction[] {
-  return specs.map((s) => ({ id: s.slug, name: s.actionName, actor: s.hitl ? ["Human"] : ["Agent"], trigger: s.trigger ?? [], triggered_event: s.emit ?? [], target_objects: s.objects ?? [], tool_use: s.tools ?? [], system_prompt: s.systemPrompt, user_prompt: s.userPrompt }));
+  // Sub-agents are invoke-only helpers with a SYNTHETIC trigger (`${slug}.invoked`, never event-fired)
+  // — exclude them from the event GRAPH so their trigger isn't treated as an entry event (which would
+  // pollute entryEvents/fireList/mock-synthesis). They still DEPLOY via mapToManifest (separate path).
+  return specs.filter((s) => !(s as { isSubAgent?: boolean }).isSubAgent).map((s) => ({ id: s.slug, name: s.actionName, actor: s.hitl ? ["Human"] : ["Agent"], trigger: s.trigger ?? [], triggered_event: s.emit ?? [], target_objects: s.objects ?? [], tool_use: s.tools ?? [], system_prompt: s.systemPrompt, user_prompt: s.userPrompt }));
 }
 
 type Boundary = Array<{ event: string; kind: string }>;
@@ -110,7 +113,10 @@ export function chainVerdict(specs: GeneratedAgentSpec[], graph: ReturnType<type
       .filter((s) => (s.trigger ?? []).length > 0 && (s.trigger ?? []).every((t) => !internallyProduced.has(t) && !fired.has(t)))
       .map((s) => s.actionName),
   );
-  const expectedToRun = specs.filter((s) => !externallyEntered.has(s.actionName));
+  // Sub-agents are invoke-only helpers (synthetic trigger, never event-fired) — they don't run as
+  // event-chain nodes, so exclude them from expectedToRun (else fullChainRan waits forever for a node
+  // that only fires via step.invoke inside its parent).
+  const expectedToRun = specs.filter((s) => !externallyEntered.has(s.actionName) && !(s as { isSubAgent?: boolean }).isSubAgent);
   const successTerminals = [...new Set([...graph.terminalEvents, ...external])].filter((e) => !FAILISH.test(e));
   const externalTerminals = specs.filter((s) => (s.emit ?? []).some((e) => external.has(e) && !FAILISH.test(e))).length;
   return { v, reachable, externallyEntered, expectedToRun, successTerminals, externalTerminals };
@@ -185,7 +191,7 @@ export class ManifestSandboxDeployer implements SandboxDeployer {
     return { tenantId: id, tenantSlug: slug };
   }
 
-  async deployAndObserve(domain: string, specs: GeneratedAgentSpec[], opts?: { testCases?: Array<{ entryEvent: string; payload: Record<string, unknown>; kind?: "pass" | "reject" | "edge" }>; boundaryEvents?: Boundary }): Promise<SandboxDeployResult> {
+  async deployAndObserve(domain: string, specs: GeneratedAgentSpec[], opts?: { testCases?: Array<{ entryEvent: string; payload: Record<string, unknown>; kind?: "pass" | "reject" | "edge" | "fault" }>; boundaryEvents?: Boundary }): Promise<SandboxDeployResult> {
     const ctx = this.ensureTenant(domain);
     const appId = `sandbox-${ctx.tenantSlug}`;
     // Phase 3 — surface the verification posture (determinism + cost). Defaults are safe: mock
@@ -198,7 +204,11 @@ export class ManifestSandboxDeployer implements SandboxDeployer {
     // in the isolated sandbox. Mock slugs contain "-mock-" (excluded from the real-deliverable count).
     const graph = compileGraph(specsToActions(domain, specs), { domainId: domain });
     const plannedEntries = (opts?.testCases?.length ? opts.testCases.map((c) => c.entryEvent) : graph.entryEvents).filter(Boolean);
-    const mockAgents = synthesizeMockExternalAgents(specs, { domainId: domain, firedEntries: plannedEntries, terminals: graph.terminalEvents });
+    // #REDESIGN P1b — ZERO mock by default: don't synthesize fake external-platform PRODUCER agents.
+    // Instead the external-INPUT events are FIRED as real entries below (real events close the chain).
+    // Legacy mock stubs stay available behind FACTORY_SANDBOX_MOCK_EXTERNAL=1 (and in tests).
+    const mockExternalEnabled = process.env.FACTORY_SANDBOX_MOCK_EXTERNAL === "1" || process.env.NODE_ENV === "test";
+    const mockAgents = mockExternalEnabled ? synthesizeMockExternalAgents(specs, { domainId: domain, firedEntries: plannedEntries, terminals: graph.terminalEvents }) : [];
     if (mockAgents.length) console.info(`[sandbox] synthesized ${mockAgents.length} mock external-platform agent(s): ${mockAgents.map((m) => m.slug).join(", ")}`);
     const allSpecs = [...specs, ...mockAgents];
     const manifest = mapToManifest(allSpecs);
@@ -236,10 +246,23 @@ export class ManifestSandboxDeployer implements SandboxDeployer {
     // case KIND so the outcome is judged per-kind (reject reaching FAIL = pass). Namespaced
     // `${slug}/${ev}` to match the registered triggers.
     const sbSubject = (ev: string) => ev.replace(/[^A-Za-z0-9]/g, "-").slice(0, 24);
-    const fireList: Array<{ ev: string; payload: Record<string, unknown>; kind?: "pass" | "reject" | "edge"; subject: string }> =
+    const fireList: Array<{ ev: string; payload: Record<string, unknown>; kind?: "pass" | "reject" | "edge" | "fault"; subject: string }> =
       opts?.testCases && opts.testCases.length
         ? opts.testCases.slice(0, 4).map((c, i) => ({ ev: c.entryEvent, payload: c.payload, kind: c.kind, subject: `sb-${i}-${sbSubject(c.entryEvent)}` }))
         : graph.entryEvents.slice(0, 3).map((ev, i) => ({ ev, payload: {} as Record<string, unknown>, kind: undefined, subject: `sb-${i}-${sbSubject(ev)}` }));
+    // #REDESIGN P1b — when NOT mocking, FIRE the external-INPUT events (consumed internally but never
+    // produced internally / fired) as REAL entries so the chain closes on real events, no mock agent.
+    // Base the payload on the first fired case (so supply_test_data real values thread in).
+    if (!mockExternalEnabled) {
+      const firedNow = fireList.map((f) => f.ev);
+      const extInputs = externalInputEvents(specs, { domainId: domain, firedEntries: firedNow, terminals: graph.terminalEvents });
+      // Fire with an EMPTY payload — an external-input event has its OWN canonical event_data schema
+      // (different from the entry case), so reusing the entry payload would send WRONG fields. The
+      // consuming agent should be robust to minimal data (the real external platform populates it);
+      // supply_test_data threads real values into the ENTRY cases, not these.
+      extInputs.slice(0, 4).forEach((ev, i) => fireList.push({ ev, payload: {}, kind: undefined, subject: `sb-ext-${i}-${sbSubject(ev)}` }));
+      if (extInputs.length) console.info(`[sandbox] firing ${Math.min(extInputs.length, 4)} external-input event(s) as REAL entries (no mock): ${extInputs.slice(0, 4).join(", ")}`);
+    }
     // R2: capture each fire result instead of swallowing it, so a failed send is visible.
     const fires: Array<{ event: string; ok: boolean; error?: string }> = [];
     try {
@@ -287,6 +310,9 @@ export class ManifestSandboxDeployer implements SandboxDeployer {
     const fullChainRan = caseVerdicts && haveSubjectData ? functionsRegistered > 0 && caseVerdicts.allPass : aggregateChainRan;
     // 5) reconstruct per-agent REAL I/O from the runs (+ agent) rows.
     const agentRuns = this.collectAgentRuns(ctx.tenantId, since, specs, ctx.tenantSlug);
+    // #REDESIGN P1 — which agents' GENERATED CODE actually EXECUTED (runs.code_ran=true), not fell
+    // back to declarative. The finish gate requires every codeExecuted spec to appear here.
+    const codeRanAgents = this.collectCodeRanAgents(ctx.tenantId, since, specs);
 
     return {
       appId,
@@ -295,6 +321,7 @@ export class ManifestSandboxDeployer implements SandboxDeployer {
       deployed: specs.length,
       reachedSuccessTerminal,
       fullChainRan,
+      codeRanAgents,
       degradedAgents: verdictDegraded,
       runs: observed.rows,
       agentRuns,
@@ -339,6 +366,24 @@ export class ManifestSandboxDeployer implements SandboxDeployer {
   /** Reconstruct per-agent real I/O from the sandbox tenant's runs (joined to the
    *  agent for its name). Payload bodies live behind step artifact refs (not resolved
    *  here); status + trigger subject + real runId are the concrete evidence. */
+  /** #REDESIGN P1 — the spec shorts whose GENERATED CODE actually EXECUTED (runs.code_ran=true) in
+   *  this window. The finish gate requires every codeExecuted spec to appear here (else the code
+   *  fell back to the declarative path and "跑通" is a lie for a code-delivered agent). */
+  private collectCodeRanAgents(tenantId: string, since: Date, specs: GeneratedAgentSpec[]): string[] {
+    try {
+      const rows = getDb()
+        .select({ agentName: agents.name })
+        .from(runs)
+        .leftJoin(agents, eq(agents.id, runs.agentId))
+        .where(and(eq(runs.tenantId, tenantId), gt(runs.startedAt, since), eq(runs.codeRan, true)))
+        .all();
+      const ranNames = new Set(rows.map((r) => r.agentName).filter(Boolean) as string[]);
+      return specs.filter((s) => ranNames.has(s.short) || ranNames.has(s.nameZh)).map((s) => s.short);
+    } catch {
+      return [];
+    }
+  }
+
   private collectAgentRuns(tenantId: string, since: Date, specs: GeneratedAgentSpec[], tenantSlug: string): AgentRunIO[] {
     let rows: Array<{ runId: string; status: string; subject: string | null; agentName: string | null }> = [];
     try {

@@ -29,7 +29,7 @@ export type Block =
   | { kind: "refine"; id: string; action: string; critique: string; diff?: RefineDiff }
   | { kind: "score"; id: string; action: string; prior: number; next: number; delta: number; regression: boolean; dims: ScoreDims }
   | { kind: "revert"; id: string; action: string; toAttempt: number }
-  | { kind: "testcases"; id: string; cases: Array<{ name: string; kind: string; scenario: string; entryEvent: string; expectedOutcome: string; payload?: Record<string, unknown> }>; awaiting: boolean }
+  | { kind: "testcases"; id: string; cases: Array<{ name: string; kind: string; scenario: string; entryEvent: string; expectedOutcome: string; payload?: Record<string, unknown> }>; awaiting: boolean; coverage?: { required: string[]; covered: string[]; backfilled: string[]; uncoveredNeedingData: string[] } }
   | { kind: "boundarycases"; id: string; proposals: Array<{ event: string; suggestedKind: string; why: string; producers: string[]; consumer?: string; payloadContract?: string }>; awaiting: boolean }
   | { kind: "boundarydecided"; id: string; events: Array<{ event: string; kind: string; consumer?: string; payloadContract?: string }> }
   | { kind: "clarify"; id: string; question: string; options?: Array<{ label: string; value: string; recommended?: boolean }>; context?: string; awaiting: boolean }
@@ -62,7 +62,19 @@ export function toBlocks(events: BrainEvent[]): Block[] {
     switch (e.t) {
       case "model": currentModel = String(e.model ?? ""); currentTier = String(e.tier ?? ""); break;
       case "think": buf += String(e.delta ?? ""); break;
-      case "message": flush(); blocks.push({ kind: "message", id, text: String(e.text ?? "") }); break;
+      case "message": {
+        // A no-tool-call turn streams its content as think DELTAS and then lands the SAME text as
+        // the message event — flushing both rendered the reply twice (thought bubble + message).
+        // If the pending think buffer IS this message (or its prefix — stream may cut early), drop
+        // the buffer and keep only the message. Genuine reasoning that differs still flushes.
+        const text = String(e.text ?? "");
+        const b = buf.trim();
+        const m = text.trim();
+        if (b && m && (b === m || m.startsWith(b) || b.startsWith(m))) buf = "";
+        flush();
+        blocks.push({ kind: "message", id, text });
+        break;
+      }
       case "tool.call": flush(); blocks.push({ kind: "tool", id: String(e.id ?? id), name: String(e.name ?? ""), reasoning: String(e.reasoning ?? ""), input: e.input, model: currentModel || undefined, tier: currentTier || undefined }); break;
       case "tool.result": { const tb = [...blocks].reverse().find((b) => b.kind === "tool" && b.id === String(e.id)) as Extract<Block, { kind: "tool" }> | undefined; if (tb) { tb.ok = Boolean(e.ok); tb.summary = String(e.summary ?? ""); tb.output = e.output ? String(e.output) : undefined; } break; }
       case "plan": flush(); blocks.push({ kind: "plan", id, summary: String((e.plan as Record<string, unknown>)?.summary ?? ""), agents: ((e.plan as Record<string, unknown>)?.agents as unknown[])?.length ?? 0 }); break;
@@ -73,7 +85,7 @@ export function toBlocks(events: BrainEvent[]): Block[] {
       // movement + rollbacks were invisible. Now they render in the transcript + run summary.
       case "score.delta": flush(); blocks.push({ kind: "score", id, action: String(e.actionName ?? ""), prior: Number(e.priorTotal ?? 0), next: Number(e.newTotal ?? 0), delta: Number(e.delta ?? 0), regression: Boolean(e.regression), dims: (e.dimensions as ScoreDims) ?? ZERO_DIMS }); break;
       case "revert": flush(); blocks.push({ kind: "revert", id, action: String(e.actionName ?? ""), toAttempt: Number(e.revertedToAttempt ?? 0) }); break;
-      case "test.cases": flush(); blocks.push({ kind: "testcases", id, cases: ((e.cases as Array<Record<string, unknown>>) ?? []).map((c) => ({ name: String(c.name ?? ""), kind: String(c.kind ?? "pass"), scenario: String(c.scenario ?? ""), entryEvent: String(c.entryEvent ?? ""), expectedOutcome: String(c.expectedOutcome ?? ""), payload: (c.payload as Record<string, unknown>) ?? undefined })), awaiting: Boolean(e.awaitingApproval) }); break;
+      case "test.cases": flush(); blocks.push({ kind: "testcases", id, cases: ((e.cases as Array<Record<string, unknown>>) ?? []).map((c) => ({ name: String(c.name ?? ""), kind: String(c.kind ?? "pass"), scenario: String(c.scenario ?? ""), entryEvent: String(c.entryEvent ?? ""), expectedOutcome: String(c.expectedOutcome ?? ""), payload: (c.payload as Record<string, unknown>) ?? undefined })), awaiting: Boolean(e.awaitingApproval), coverage: (e.coverage as { required: string[]; covered: string[]; backfilled: string[]; uncoveredNeedingData: string[] }) ?? undefined }); break;
       case "test.decision": {
         flush();
         const tcb = [...blocks].reverse().find((b) => b.kind === "testcases") as Extract<Block, { kind: "testcases" }> | undefined;
@@ -93,7 +105,14 @@ export function toBlocks(events: BrainEvent[]): Block[] {
       case "compaction": flush(); blocks.push({ kind: "compaction", id, summary: String(e.summary ?? ""), state: String(e.state ?? "") }); break;
       case "skill.created": flush(); blocks.push({ kind: "skill", id, name: String(e.name ?? ""), purpose: String(e.purpose ?? "") }); break;
       case "subagent.start": flush(); blocks.push({ kind: "subagent", id, task: String(e.task ?? "") }); break;
-      case "subagent.done": { const sb = [...blocks].reverse().find((b) => b.kind === "subagent" && !(b as Extract<Block, { kind: "subagent" }>).summary) as Extract<Block, { kind: "subagent" }> | undefined; if (sb) sb.summary = String(e.summary ?? ""); break; }
+      case "subagent.done": {
+        // Prefer TASK-matched pairing: parallel specialists (四维分治) finish in random order, so
+        // "last unsummarized" alone would attach summaries to the wrong cards.
+        const open = [...blocks].reverse().filter((b): b is Extract<Block, { kind: "subagent" }> => b.kind === "subagent" && !(b as Extract<Block, { kind: "subagent" }>).summary);
+        const sb = open.find((b) => b.task === String(e.task ?? "")) ?? open[0];
+        if (sb) sb.summary = String(e.summary ?? "");
+        break;
+      }
       case "budget": blocks.push({ kind: "budget", id, text: `已用 ${e.turn}/${e.maxTurns} 轮 · ${Math.round(Number(e.tokens) / 1000)}k tokens · ${e.specsBuilt} agent`, level: String(e.level ?? "ok") }); break;
       case "reflect": flush(); blocks.push({ kind: "reflect", id, text: String(e.lesson ?? "") }); break;
       case "catalog": flush(); blocks.push({ kind: "catalog", id, text: `读到本体：${e.actions} 动作（${e.agentActions} 个要造 agent）· ${e.events} 事件` }); break;
@@ -113,14 +132,14 @@ export function toBlocks(events: BrainEvent[]): Block[] {
 }
 
 // ── agents ──────────────────────────────────────────────────────────────────────
-export interface AgentCardData { slug: string; actionName: string; short: string; nameZh: string; trigger: string[]; emit: string[]; tools: string[]; reasoning?: string; systemPrompt?: string; decisionLogic?: string; code?: string; codeSource?: string }
+export interface AgentCardData { slug: string; actionName: string; short: string; nameZh: string; trigger: string[]; emit: string[]; tools: string[]; reasoning?: string; systemPrompt?: string; decisionLogic?: string; code?: string; codeSource?: string; codeExecuted?: boolean; probeReason?: string }
 export function deriveAgents(events: BrainEvent[]): AgentCardData[] {
   const map = new Map<string, AgentCardData>();
   for (const e of events) {
     if (e.t !== "agent.created") continue;
     const s = e.spec as Record<string, unknown>;
     const d = (e.design as Record<string, unknown>) ?? {};
-    map.set(String(s.slug), { slug: String(s.slug), actionName: String(s.actionName ?? ""), short: String(s.short ?? ""), nameZh: String(s.nameZh ?? ""), trigger: (s.trigger as string[]) ?? [], emit: (s.emit as string[]) ?? [], tools: (s.tools as string[]) ?? [], reasoning: d.reasoning ? String(d.reasoning) : undefined, systemPrompt: d.systemPrompt ? String(d.systemPrompt) : undefined, decisionLogic: d.decisionLogic ? String(d.decisionLogic) : undefined, code: d.code ? String(d.code) : undefined, codeSource: d.codeSource ? String(d.codeSource) : undefined });
+    map.set(String(s.slug), { slug: String(s.slug), actionName: String(s.actionName ?? ""), short: String(s.short ?? ""), nameZh: String(s.nameZh ?? ""), trigger: (s.trigger as string[]) ?? [], emit: (s.emit as string[]) ?? [], tools: (s.tools as string[]) ?? [], reasoning: d.reasoning ? String(d.reasoning) : undefined, systemPrompt: d.systemPrompt ? String(d.systemPrompt) : undefined, decisionLogic: d.decisionLogic ? String(d.decisionLogic) : undefined, code: d.code ? String(d.code) : undefined, codeSource: d.codeSource ? String(d.codeSource) : undefined, codeExecuted: d.codeExecuted === true, probeReason: d.probeReason ? String(d.probeReason) : undefined });
   }
   return [...map.values()];
 }

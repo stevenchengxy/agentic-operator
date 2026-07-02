@@ -18,7 +18,9 @@ import type { Block, ScoreDims } from "./model";
 // code-render, catalog/budget ticks) buries the moments that matter. The milestone view folds
 // consecutive routine blocks into ONE expandable "思考与操作 · N 步" cluster, so the thread reads
 // as: brain message → plan → agent decisions → validation → sandbox verdict → HITL gates → done.
-const NOISE_KINDS = new Set<Block["kind"]>(["think", "tool", "web", "toolsearch", "toolschema", "inspect", "code", "catalog", "budget", "compaction"]);
+// PROCESS 块（大脑的思考/工具/反思/评分等过程）默认折叠，只有大脑对你说的话（message）、里程碑
+// （plan/validation/sandbox）、结束/出错、待决策门保持可见——聊天区读起来是对话，不是刷屏日志。
+const NOISE_KINDS = new Set<Block["kind"]>(["think", "tool", "web", "toolsearch", "toolschema", "inspect", "code", "catalog", "budget", "compaction", "reflect", "score", "refine", "revert", "subagent", "skill", "toolnew", "boundarydecided"]);
 export const isNoiseBlock = (k: Block["kind"]) => NOISE_KINDS.has(k);
 
 // ── transcript filter (salvaged 轨迹) ──────────────────────────────────────────────
@@ -84,7 +86,9 @@ function BoundaryCard({ proposals, awaiting, onSubmit }: { proposals: Array<{ ev
   const [rows, setRows] = useState(() => proposals.map((p) => ({ event: p.event, kind: p.suggestedKind, consumer: p.consumer ?? "", payloadContract: p.payloadContract ?? "" })));
   const [sent, setSent] = useState(false);
   const set = (i: number, patch: Partial<{ kind: string; consumer: string; payloadContract: string }>) => setRows((r) => r.map((x, j) => (j === i ? { ...x, ...patch } : x)));
-  const pending = awaiting && !sent;
+  // Actionable only with a wired callback — passive history otherwise (InteractionDock owns the
+  // action; avoids the same decision being submittable in two places).
+  const pending = awaiting && !sent && !!onSubmit;
   const kinds: Array<[string, string, string]> = [["external", "外部交接", "var(--blue)"], ["terminal", "终态", "var(--green)"], ["break", "真断点", "var(--red)"]];
   return (
     <div className="rise" style={{ padding: "12px 14px", border: `1px solid ${pending ? "var(--amber)" : "var(--border)"}`, borderRadius: 10, margin: "6px 0", background: "var(--panel-2)" }}>
@@ -140,7 +144,10 @@ function ClarifyCard({ b, onSubmit }: { b: Extract<Block, { kind: "clarify" }>; 
   // click never auto-commits (the old bug: clicking any option fired immediately, so it looked like
   // the recommended one got chosen + executed). `selected` is the option index awaiting confirmation.
   const [selected, setSelected] = useState<number | null>(null);
-  const pending = b.awaiting && !sent;
+  // Actionable ONLY when a submit callback is wired. The InteractionDock (pinned above the
+  // composer) is the single action surface; the transcript keeps this card as passive history
+  // (no callback → no input controls) so the same question isn't answerable in two places.
+  const pending = b.awaiting && !sent && !!onSubmit;
   const submit = (answer: string) => { if (!answer.trim() || !onSubmit || !pending) return; setSent(true); onSubmit(answer.trim()); };
   const chosen = selected != null ? b.options?.[selected] : undefined;
   return (
@@ -202,14 +209,25 @@ export function BlockView({ b, onDecide, onBoundary, onClarify }: { b: Block; on
         </div>
       );
     case "testcases": {
-      const tone = (k: string) => (k === "pass" ? "var(--green)" : k === "reject" ? "var(--amber)" : "var(--blue)");
+      // #W3-FAULT — fault gets its own violet tone + label so an error-propagation case reads
+      // distinctly from a happy-path/reject/edge case.
+      const tone = (k: string) => (k === "pass" ? "var(--green)" : k === "reject" ? "var(--amber)" : k === "fault" ? "var(--violet, #a78bfa)" : "var(--blue)");
+      const kindLabel = (k: string) => (k === "pass" ? "正常通过" : k === "reject" ? "规则拦截" : k === "edge" ? "边界" : k === "fault" ? "⚡故障注入" : k);
+      const cov = b.coverage;
       return (
         <div className="rise" style={{ padding: "12px 14px", border: `1px solid ${b.awaiting ? "var(--amber)" : "var(--border)"}`, borderRadius: 10, margin: "6px 0", background: "var(--panel-2)" }}>
           <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text)", marginBottom: 8 }}>🧪 测试用例（{b.cases.length}）{b.awaiting ? " · 待你确认" : ""}</div>
+          {cov && (
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8, alignItems: "center" }}>
+              {chip(`覆盖 ${cov.covered.length}/${cov.required.length} 格`, cov.uncoveredNeedingData.length ? "var(--amber)" : "var(--green)")}
+              {cov.backfilled.length > 0 && chip(`矩阵补位 ${cov.backfilled.length}`, "var(--blue)")}
+              {cov.uncoveredNeedingData.length > 0 && <span style={{ fontSize: 11, color: "var(--amber)" }}>⚠ 缺 {cov.uncoveredNeedingData.length} 格需真实数据（{cov.uncoveredNeedingData.slice(0, 3).join("、")}）</span>}
+            </div>
+          )}
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {b.cases.map((c, i) => (
               <div key={i} style={{ borderLeft: `3px solid ${tone(c.kind)}`, paddingLeft: 10 }}>
-                <div style={{ fontSize: 12.5, fontWeight: 600, color: "var(--text)" }}>{chip(c.kind, tone(c.kind))} {c.name}</div>
+                <div style={{ fontSize: 12.5, fontWeight: 600, color: "var(--text)" }}>{chip(kindLabel(c.kind), tone(c.kind))} {c.name}</div>
                 <div style={{ fontSize: 12, color: "var(--text-2)", marginTop: 2, lineHeight: 1.5 }}>{c.scenario}</div>
                 <div style={{ fontSize: 11, color: "var(--text-3)", fontFamily: "var(--mono)", marginTop: 2 }}>入口 {c.entryEvent} · 预期 {c.expectedOutcome}</div>
               </div>
@@ -228,7 +246,7 @@ export function BlockView({ b, onDecide, onBoundary, onClarify }: { b: Block; on
     case "tool": { const pending = b.ok === undefined; return <div className="rise" style={{ display: "flex", gap: 8, alignItems: "flex-start", padding: "8px 12px", background: "var(--panel-2)", borderRadius: 8, margin: "4px 0" }}><StatusDot status={pending ? "running" : b.ok ? "ok" : "failed"} size={7} /><div style={{ flex: 1, minWidth: 0 }}><div style={{ fontSize: 12.5, fontWeight: 600, color: "var(--text)", fontFamily: "var(--mono)" }}>{b.name}<span style={{ marginLeft: 8, fontSize: 11, fontWeight: 400, color: pending ? "var(--text-3)" : b.ok ? "var(--green)" : "var(--red)" }}>{pending ? "运行中…" : b.ok ? "✓" : "✗"}</span></div>{b.reasoning && <div style={{ fontSize: 12, color: "var(--text-2)", marginTop: 2 }}>{b.reasoning}</div>}{b.summary && <div style={{ fontSize: 12, color: "var(--text-3)", marginTop: 3, lineHeight: 1.5 }}>{b.summary}</div>}</div></div>; }
     case "plan": return <div className="rise" style={{ padding: "10px 12px", border: "1px solid var(--border)", borderRadius: 8, margin: "4px 0" }}><div style={{ fontSize: 12.5, fontWeight: 600, color: "var(--text)" }}>📋 方案 · {b.agents} 个 agent</div><div style={{ fontSize: 12, color: "var(--text-2)", marginTop: 3, lineHeight: 1.6 }}>{b.summary}</div></div>;
     case "validation": return <div className="rise" style={{ padding: "10px 12px", border: `1px solid ${b.ok ? "var(--green)" : "var(--amber)"}`, borderRadius: 8, margin: "4px 0" }}><div style={{ fontSize: 12.5, fontWeight: 600, color: b.ok ? "var(--green)" : "var(--amber)" }}>{b.ok ? "✓ 事件图闭合（含字段合同）" : "⚠ 事件图未闭合"}</div>{!b.ok && b.issues.slice(0, 5).map((i, k) => <div key={k} style={{ fontSize: 12, color: "var(--text-2)", marginTop: 3 }}>· {i}</div>)}</div>;
-    case "sandbox": { const sev = b.ev as { appId?: string; functionsRegistered?: number; registeredIds?: string[]; agentRuns?: Array<{ agentSlug?: string; agentShort?: string; status?: string }> }; const sim = Boolean(b.ev.simulated); const ok = Boolean(b.ev.fullChainRan); const col = sim ? "var(--amber)" : ok ? "var(--green)" : "var(--red)"; const title = b.ev.deployFailed ? "🧪 沙箱部署未生效" : sim ? (ok ? "🧪 沙箱（模拟）图闭包推断可跑通" : "🧪 沙箱（模拟）未闭合") : (ok ? "🧪 沙箱端到端真跑通 ✓" : "🧪 沙箱未完全跑通"); return <div className="rise" style={{ padding: "10px 12px", border: `1px solid ${col}`, borderRadius: 8, margin: "4px 0", background: "var(--panel-2)" }}><div style={{ fontSize: 12.5, fontWeight: 600, color: col }}>{title}</div><div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 }}>{chip(sim ? "⚠ 模拟·未真实执行" : "真实部署执行", sim ? "var(--amber)" : "var(--green)")}{chip(`部署 ${b.ev.functionsRegistered ?? 0}`)}{chip(`跑 ${b.ev.ran ?? 0}`)}{chip(`成功终态 ${b.ev.reachedSuccessTerminal ? "是" : "否"}`, b.ev.reachedSuccessTerminal ? "var(--green)" : "var(--amber)")}{Number(b.ev.externalTerminals ?? 0) > 0 ? chip(`${Number(b.ev.internalChains ?? 0)} 内部链 + ${Number(b.ev.externalTerminals)} 外部交接终态`, "var(--blue)") : null}</div>{sev.appId && <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px solid var(--border)" }}><div style={{ fontSize: 11.5, color: "var(--text-2)" }}>🚀 Inngest 沙箱 App：<span style={{ fontFamily: "var(--mono)", color: "var(--text)", fontWeight: 700 }}>{sev.appId}</span> · 注册 {sev.functionsRegistered ?? 0} 个函数{Array.isArray(sev.registeredIds) ? ` · 部署 ${sev.registeredIds.length} 个智能体` : ""}</div>{Array.isArray(sev.registeredIds) && sev.registeredIds.length > 0 && <div style={{ display: "flex", flexDirection: "column", gap: 3, marginTop: 6 }}>{sev.registeredIds.map((id: string, i: number) => { const ar = (sev.agentRuns ?? []).find((a) => a.agentSlug === id); const st = ar?.status; const ran = st === "ok" || st === "Completed"; const stCol = ran ? "var(--green)" : st === "running" ? "var(--blue)" : st ? "var(--amber)" : "var(--text-3)"; return <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, fontFamily: "var(--mono)" }}><span style={{ color: "var(--green)" }}>✓</span><span style={{ color: "var(--text)", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{ar?.agentShort || id}</span><span style={{ color: stCol, flexShrink: 0 }}>· {ar ? (ran ? "已注册·已跑通" : st === "running" ? "已注册·运行中" : `已注册·${st}`) : "已注册"}</span></div>; })}</div>}</div>}{Number(b.ev.externalTerminals ?? 0) > 0 && <div style={{ fontSize: 11, color: "var(--text-3)", marginTop: 5 }}>有 {Number(b.ev.externalTerminals)} 个 agent 的产出是交给外部平台消费的「外部交接终态」（如 JD_GENERATED→外部系统），算合法终态、不是断链。</div>}{sim && <div style={{ fontSize: 11, color: "var(--text-2)", marginTop: 5 }}>模拟＝按事件图闭包推断会跑通，未真实部署执行。设 FACTORY_REAL_DEPLOY=1 做真实验证。</div>}</div>; }
+    case "sandbox": { const sev = b.ev as { appId?: string; functionsRegistered?: number; registeredIds?: string[]; codeRanAgents?: string[]; agentRuns?: Array<{ agentSlug?: string; agentShort?: string; status?: string }>; caseVerdicts?: { allPass: boolean; results: Array<{ kind: string; pass: boolean; reason: string }>; byKind: Record<string, { total: number; passed: number }> } }; const sim = Boolean(b.ev.simulated); const ok = Boolean(b.ev.fullChainRan); const col = sim ? "var(--amber)" : ok ? "var(--green)" : "var(--red)"; const title = b.ev.deployFailed ? "🧪 沙箱部署未生效" : sim ? (ok ? "🧪 沙箱（模拟）图闭包推断可跑通" : "🧪 沙箱（模拟）未闭合") : (ok ? "🧪 沙箱端到端真跑通 ✓" : "🧪 沙箱未完全跑通"); return <div className="rise" style={{ padding: "10px 12px", border: `1px solid ${col}`, borderRadius: 8, margin: "4px 0", background: "var(--panel-2)" }}><div style={{ fontSize: 12.5, fontWeight: 600, color: col }}>{title}</div><div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 }}>{chip(sim ? "⚠ 模拟·未真实执行" : "真实部署执行", sim ? "var(--amber)" : "var(--green)")}{chip(`部署 ${b.ev.functionsRegistered ?? 0}`)}{chip(`跑 ${b.ev.ran ?? 0}`)}{chip(`成功终态 ${b.ev.reachedSuccessTerminal ? "是" : "否"}`, b.ev.reachedSuccessTerminal ? "var(--green)" : "var(--amber)")}{Number(b.ev.externalTerminals ?? 0) > 0 ? chip(`${Number(b.ev.internalChains ?? 0)} 内部链 + ${Number(b.ev.externalTerminals)} 外部交接终态`, "var(--blue)") : null}</div>{sev.appId && <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px solid var(--border)" }}><div style={{ fontSize: 11.5, color: "var(--text-2)" }}>🚀 Inngest 沙箱 App：<span style={{ fontFamily: "var(--mono)", color: "var(--text)", fontWeight: 700 }}>{sev.appId}</span> · 注册 {sev.functionsRegistered ?? 0} 个函数{Array.isArray(sev.registeredIds) ? ` · 部署 ${sev.registeredIds.length} 个智能体` : ""}</div>{Array.isArray(sev.registeredIds) && sev.registeredIds.length > 0 && <div style={{ display: "flex", flexDirection: "column", gap: 3, marginTop: 6 }}>{sev.registeredIds.map((id: string, i: number) => { const ar = (sev.agentRuns ?? []).find((a) => a.agentSlug === id); const st = ar?.status; const ran = st === "ok" || st === "Completed"; const stCol = ran ? "var(--green)" : st === "running" ? "var(--blue)" : st ? "var(--amber)" : "var(--text-3)"; const codeReallyRan = (sev.codeRanAgents ?? []).some((s) => s === ar?.agentShort || s === id); return <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, fontFamily: "var(--mono)" }}><span style={{ color: "var(--green)" }}>✓</span><span style={{ color: "var(--text)", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{ar?.agentShort || id}</span><span style={{ color: stCol, flexShrink: 0 }}>· {ar ? (ran ? "已注册·已跑通" : st === "running" ? "已注册·运行中" : `已注册·${st}`) : "已注册"}</span>{!sim ? <span title={codeReallyRan ? "生成代码在沙箱里真实执行（CodeAct）" : "走声明式执行（未跑生成代码）"} style={{ flexShrink: 0, fontWeight: 700, color: codeReallyRan ? "var(--violet, #a78bfa)" : "var(--text-3)" }}>· {codeReallyRan ? "⚙代码真跑" : "声明式"}</span> : null}</div>; })}</div>}</div>}{sev.caseVerdicts && Array.isArray(sev.caseVerdicts.results) && sev.caseVerdicts.results.length > 0 && (() => { const vk = sev.caseVerdicts!; const kindLabel = (k: string) => (k === "pass" ? "正常通过" : k === "reject" ? "规则拦截" : k === "edge" ? "边界" : k === "fault" ? "⚡故障注入" : k); const kindTone = (k: string) => (k === "pass" ? "var(--green)" : k === "reject" ? "var(--amber)" : k === "fault" ? "var(--violet, #a78bfa)" : "var(--blue)"); const faults = vk.results.filter((r) => r.kind === "fault"); return <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px solid var(--border)" }}><div style={{ fontSize: 11.5, color: "var(--text-2)", marginBottom: 5 }}>🔬 用例判定 · 逐类<span style={{ marginLeft: 6, color: vk.allPass ? "var(--green)" : "var(--amber)", fontWeight: 700 }}>{vk.allPass ? "全类通过" : "有未通过类"}</span></div><div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>{Object.entries(vk.byKind).filter(([, s]) => s.total > 0).map(([k, s]) => <span key={k}>{chip(`${kindLabel(k)} ${s.passed}/${s.total}`, s.passed === s.total ? kindTone(k) : "var(--red)")}</span>)}</div>{faults.length > 0 && <div style={{ fontSize: 11, color: faults.every((f) => f.pass) ? "var(--text-3)" : "var(--red)", marginTop: 6, lineHeight: 1.5 }}>{faults.every((f) => f.pass) ? "⚡ 故障注入通过：注入工具故障后，事件链正确拒绝抵达成功终态（证明错误会被传播、不会静默成功）。" : `⚡ 故障注入未通过：${faults.find((f) => !f.pass)?.reason ?? "注入故障下仍抵达成功终态"}`}</div>}</div>; })()}{Number(b.ev.externalTerminals ?? 0) > 0 && <div style={{ fontSize: 11, color: "var(--text-3)", marginTop: 5 }}>有 {Number(b.ev.externalTerminals)} 个 agent 的产出是交给外部平台消费的「外部交接终态」（如 JD_GENERATED→外部系统），算合法终态、不是断链。</div>}{sim && <div style={{ fontSize: 11, color: "var(--text-2)", marginTop: 5 }}>模拟＝按事件图闭包推断会跑通，未真实部署执行。设 FACTORY_REAL_DEPLOY=1 做真实验证。</div>}</div>; }
     // Tier-3 narration: muted, borderless one-liners (no panel fill, no entrance animation) so they
     // sit quietly beneath the tier-1/2 milestones. Container gap owns vertical rhythm.
     case "refine": return (
@@ -274,7 +292,7 @@ export function BlockView({ b, onDecide, onBoundary, onClarify }: { b: Block; on
 // ── collapsed cluster of routine (think/tool) blocks ───────────────────────────────────
 function NoiseCluster({ blocks }: { blocks: Block[] }) {
   const [open, setOpen] = useState(false);
-  const thinks = blocks.filter((b) => b.kind === "think").length;
+  const thinks = blocks.filter((b) => b.kind === "think" || b.kind === "reflect").length;
   const ops = blocks.length - thinks;
   const label = thinks && ops ? `思考 ${thinks} · 操作 ${ops}` : thinks ? `思考 ${thinks} 步` : `操作 ${ops} 步`;
   return (
@@ -297,9 +315,8 @@ export function TranscriptFeed({ blocks, grouped, onDecide, onBoundary, onClarif
   let buf: Block[] = [];
   const flush = () => {
     if (!buf.length) return;
-    // A lone routine block isn't worth a cluster — render it inline; 2+ collapse.
-    if (buf.length === 1) out.push(<BlockView key={buf[0]!.id} b={buf[0]!} />);
-    else out.push(<NoiseCluster key={`cluster-${buf[0]!.id}`} blocks={buf} />);
+    // 过程块一律折叠（哪怕只有一条思考/反思）——聊天区默认只见大脑的回答与里程碑，思考按需展开。
+    out.push(<NoiseCluster key={`cluster-${buf[0]!.id}`} blocks={buf} />);
     buf = [];
   };
   for (const b of blocks) {

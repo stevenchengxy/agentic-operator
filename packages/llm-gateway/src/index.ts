@@ -35,3 +35,5 @@ export type {
   ToolDef,
   ToolCall,
 } from "./types";
+
+export { setGatewayCallSink, type GatewayCallRecord } from "./gateway";

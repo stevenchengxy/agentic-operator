@@ -6,12 +6,13 @@
 // via ctx.ports, so the same loop runs in any runtime. Token cost is uncapped (the user
 // vetoed hard caps); MAX_TURNS is the only runaway backstop + a soft cost meter nudges.
 
-import { streamTurn, chatOnce, isGatewayConfigured, type ChatMsg, type ToolSchema } from "./stream-gateway";
+import { streamTurn, chatOnce, isGatewayConfigured, setLlmCallContext, type ChatMsg, type ToolSchema } from "./stream-gateway";
 import { systemPrompt } from "./system-prompt";
 import { FACTORY_TOOLS, SUBAGENT_TOOLS } from "./tools";
 import type { BrainEvent, BrainTool, BrainCtx, ReflectionLite, BoundaryEvent, FactoryStage } from "./brain-types";
 import type { FactoryPorts } from "./ports";
 import { isStopIntent } from "./intent";
+import { parseUserIntent } from "./specialists";
 import { modelChain, tierForContext } from "./model-router";
 import { warmModelCatalog } from "./model-catalog";
 import { resolveBrainLang } from "./i18n";
@@ -55,6 +56,15 @@ function buildStateSummary(ctx: BrainCtx): string {
   if (ctx.lastValidation) lines.push(`上次校验: ${ctx.lastValidation.ok ? "闭合✓" : "未闭合"}`);
   if (ctx.lastSandbox) lines.push(`上次沙箱: 部署${ctx.lastSandbox.deployed}·跑${ctx.lastSandbox.agentsRan}·${ctx.lastSandbox.fullChainRan ? "端到端通✓" : "未通"}`);
   if (ctx.createdSkills.length) lines.push(`本次创造技能: ${ctx.createdSkills.map((s) => s.name).join("、")}`);
+  // The AI's DIGESTED understanding of the ontology (understand_ontology) is reasoning the brain
+  // owes itself — keep it verbatim through a fold so the design phase still reasons over the
+  // understood model after early turns compact away ("读了就忘" insurance).
+  if (ctx.ontologyUnderstanding) lines.push(`本体理解(AI 消化结论·understand_ontology): ${ctx.ontologyUnderstanding.slice(0, 700)}`);
+  // The intent gate's reading of WHAT THE USER WANTS — the one thing the brain must never
+  // forget, however long the run gets. Appended per goal, kept verbatim through every fold.
+  if (ctx.userIntent) lines.push(`用户意图(意图门·逐条累积): ${ctx.userIntent.slice(0, 500)}`);
+  // capability_resolve 的选型结论（复用/组合/新造）——设计阶段的"别造重复轮子"依据。
+  if (ctx.capabilityResolution) lines.push(`能力解析(选型优先于制造): ${ctx.capabilityResolution.slice(0, 600)}`);
   if (ctx.humanDirectives.length) lines.push(`人工介入指令: ${ctx.humanDirectives.join(" / ")}`);
   // Open-problems anchor (ported from old AO): the work STILL OWED, kept verbatim so it never
   // compacts away — after a fold the brain reasons from a live problem list, not just counts.
@@ -102,6 +112,18 @@ async function maybeCompact(messages: ChatMsg[], ctx: BrainCtx): Promise<boolean
   if (process.env.FACTORY_COMPACT_ABSTRACTIVE !== "0" && isGatewayConfigured() && dropped.length > 4) {
     const narrative = await summarizeDropped(dropped, ctx).catch(() => "");
     if (narrative.trim()) summaryText += `\n\n【折叠轮次的推理脉络（摘要，仅供延续决策）】\n${narrative.trim()}`;
+    else {
+      // #W2 — summarization failed (rate-limit/timeout): DON'T silently drop the reasoning narrative.
+      // Deterministic fallback: keep the tail of the dropped assistant turns verbatim + surface a
+      // visible warning so "reasoning continuity degraded" is legible, not invisible.
+      const tail = dropped
+        .filter((m) => m.role === "assistant")
+        .slice(-3)
+        .map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content)).slice(0, 400))
+        .join("\n---\n");
+      if (tail) summaryText += `\n\n【折叠轮次的原文尾段（摘要生成失败的确定性兜底）】\n${tail}`;
+      ctx.emit({ t: "reflect", kind: "compact-fallback", lesson: "压缩摘要 LLM 调用失败——已用确定性截断兜底，推理连续性可能受损。" });
+    }
   }
   const summary: ChatMsg = { role: "system", content: summaryText };
   messages.length = 0;
@@ -139,12 +161,57 @@ const STAGE_OF_TOOL: Record<string, FactoryStage> = {
   revert_refine: "design",
   validate_graph: "validate",
   review_agent: "validate",
+  review_context: "validate",
+  review_completeness: "validate",
   verify_chain: "validate",
   propose_boundary_events: "validate",
   generate_test_cases: "sandbox",
   sandbox_run: "sandbox",
   inspect_run: "sandbox",
   finish: "deliver",
+};
+
+// #W2-STAGE — the OUTER STAGE STATE MACHINE: phaseFor was a display signal; these are ADMISSION
+// GATES. A stage-bearing tool is refused with a structured steer unless its stage's entry conditions
+// hold — the pipeline order is enforced by structure, not by system-prompt prose ("别跳过"). ReAct
+// stays free INSIDE a stage; only cross-stage jumps are gated. Read-only/info tools are never gated.
+export function stageAdmission(toolName: string, ctx: BrainCtx): string | null {
+  const stage = STAGE_OF_TOOL[toolName];
+  if (!stage) return null; // non-stage tools (info/skill/tool-smith/HITL) are always admitted
+  switch (stage) {
+    case "read":
+      return null;
+    case "plan":
+      return ctx.ontology ? null : `[阶段闸门] ${toolName} 属于 PLAN 阶段——入口条件未满足：还没 read_ontology。先读本体。`;
+    case "design":
+      if (!ctx.ontology) return `[阶段闸门] ${toolName} 属于 DESIGN 阶段——先 read_ontology。`;
+      if (toolName === "design_agent" && !ctx.currentPlan) return `[阶段闸门] design_agent 需要先有分解计划——先 create_plan（并建议 critique_plan 挑战它），再逐个设计。`;
+      return null;
+    case "validate":
+      return ctx.specs.length ? null : `[阶段闸门] ${toolName} 属于 VALIDATE 阶段——还没有任何已设计 agent 可审。先 design_agent。`;
+    case "sandbox":
+      if (!ctx.specs.length) return `[阶段闸门] ${toolName} 属于 SANDBOX 阶段——先 design_agent。`;
+      if (toolName === "sandbox_run" && !ctx.lastValidation) return `[阶段闸门] sandbox_run 前先 validate_graph（事件图闭合 + 字段合同）——没校验就部署是在浪费一次真实沙箱。`;
+      return null;
+    case "deliver":
+      return ctx.lastSandbox ? null : `[阶段闸门] finish 属于 DELIVER 阶段——还没有沙箱证据。先 generate_test_cases → sandbox_run。`;
+  }
+  return null;
+}
+
+// #W2-STAGE — per-stage token budgets. DEFAULT OFF (0 = unlimited) per user 2026-07-02
+// («token预算取消，设置最高预算»): live Allmeta domains routinely exceeded the old 50k/80k
+// READ/PLAN defaults, so the «超出 token 预算——已提示收敛» nudge fired every run and steered the
+// brain for no reason. A deployment that WANTS budgets re-enables per stage via
+// FACTORY_STAGE_BUDGET_<STAGE>=<tokens>; the admission gates (stageAdmission) — which are about
+// ORDER, not spend — are untouched.
+const STAGE_BUDGETS: Record<string, number> = {
+  read: envInt("FACTORY_STAGE_BUDGET_READ", 0),
+  plan: envInt("FACTORY_STAGE_BUDGET_PLAN", 0),
+  design: envInt("FACTORY_STAGE_BUDGET_DESIGN", 0),
+  validate: envInt("FACTORY_STAGE_BUDGET_VALIDATE", 0),
+  sandbox: envInt("FACTORY_STAGE_BUDGET_SANDBOX", 0),
+  deliver: envInt("FACTORY_STAGE_BUDGET_DELIVER", 0),
 };
 
 // Runaway backstop, not the real bound. Auto-compaction keeps context bounded. Env-overridable (#9c).
@@ -184,17 +251,21 @@ function freshCtx(domain: string, goal: string, ports: FactoryPorts, emit: (e: B
 const spawnSubagentTool: BrainTool = {
   name: "spawn_subagent",
   description: "派一个隔离的子大脑做聚焦子任务（只读研究：read_ontology / describe_domain / web_search / inspect_run 等，不能部署也不能改 agent）。完成后回传它的总结。某个子问题要独立深入分析、又不想污染主对话时用。",
-  parameters: { type: "object", properties: { reasoning: { type: "string", description: "为什么要派子大脑" }, task: { type: "string", description: "交给子大脑的聚焦子任务" } }, required: ["reasoning", "task"], additionalProperties: false },
+  parameters: { type: "object", properties: { reasoning: { type: "string", description: "为什么要派子大脑" }, task: { type: "string", description: "交给子大脑的聚焦子任务" }, tools: { type: "array", items: { type: "string" }, description: "#W3-2 可选:限定子大脑只能用这些工具(作用域工具集,避免 38 个全量工具污染其决策);不传=默认只读集" } }, required: ["reasoning", "task"], additionalProperties: false },
   async execute(args, ctx) {
     const task = String(args.task ?? "").trim();
     if (!task) return { ok: false, summary: "task 不能为空。" };
+    // #W3-2 — scoped toolset: filter the sub-brain's tools to the requested subset (of the read-only
+    // sub-agent set) so a narrow research task isn't confused by the full catalog.
+    const toolFilter = Array.isArray(args.tools) ? new Set((args.tools as string[]).map(String)) : null;
+    const scopedTools = toolFilter ? SUBAGENT_TOOLS.filter((t) => toolFilter.has(t.name)) : undefined;
     ctx.emit({ t: "subagent.start", task });
     let summary = "";
     try {
       // R9: propagate depth so the spawned sub-brain gets the depth-bounded toolset (it may
       // fan out one more level until MAX_SUBAGENT_DEPTH, then read-only). No explicit `tools`
       // override here — runBrain picks the right set from isSubAgent + depth.
-      for await (const ev of runBrain({ domain: ctx.domain, goal: task, ports: ctx.ports, signal: ctx.signal, isSubAgent: true, depth: (ctx.subagentDepth ?? 0) + 1 })) {
+      for await (const ev of runBrain({ domain: ctx.domain, goal: task, ports: ctx.ports, signal: ctx.signal, isSubAgent: true, depth: (ctx.subagentDepth ?? 0) + 1, ...(scopedTools?.length ? { tools: scopedTools } : {}) })) {
         if (ev.t === "message") summary = ev.text;
       }
     } catch (e) {
@@ -256,6 +327,9 @@ export async function* runBrain(opts: {
   ctx.signal = opts.signal;
   ctx.conversationId = opts.conversationId;
   ctx.subagentDepth = depth;
+  // #P0-3 — bind LLM telemetry to this run so every chatOnce records against the right conversation/
+  // domain (single-instance: one brain run at a time). No-op unless a sink is wired at bootstrap.
+  setLlmCallContext({ conversationId: opts.conversationId, domain: opts.domain });
 
   const toolSchemas: ToolSchema[] = tools.map((t) => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.parameters } }));
   const byName = new Map(tools.map((t) => [t.name, t]));
@@ -279,6 +353,21 @@ export async function* runBrain(opts: {
     messages[0] = { role: "system", content: systemPrompt(opts.domain, priorReflections, lang) };
   }
 
+  // ── INTENT GATE（意图门）— understand the user before executing them. Every new goal
+  // (fresh run OR a resumed conversation's follow-up) gets a fast structured read:
+  // [类型] 目标 ｜ 约束 ｜ 期望产物 — APPENDED to ctx.userIntent so the conversation's intent
+  // history accumulates. Fold-surviving (buildStateSummary) + restart-surviving (serializeCtx).
+  // Skipped for sub-brains (machine-authored goals); fail-safe inside parseUserIntent: an LLM
+  // hiccup degrades to recording the raw goal — the gate never blocks a run.
+  if (!opts.isSubAgent && isGatewayConfigured() && opts.goal.trim()) {
+    const before = ctx.userIntent;
+    ctx.userIntent = await parseUserIntent(opts.goal, ctx.userIntent);
+    if (ctx.userIntent && ctx.userIntent !== before) {
+      const latest = ctx.userIntent.split("\n").pop() ?? ctx.userIntent;
+      emit({ t: "reflect", kind: "intent", lesson: `意图理解：${latest.replace(/^\+\s*/, "")}` });
+    }
+  }
+
   let finishedOk = false;
   // COMPLETION GUARD: the brain must design ALL Agent actions before stopping. When it
   // chats mid-generation (no tool call) with coverage still incomplete, nudge it on
@@ -293,7 +382,16 @@ export async function* runBrain(opts: {
   const PARK_MAX_TICKS = 150; // ~3 min of polling before auto-approving the test cases
 
   try {
+    // #W2 — duplicate-call breaker state (consecutive same tool+args).
+    let lastToolSig = "";
+    let dupCount = 0;
+    // #W2-STAGE — current stage for token attribution + one-shot budget steers.
+    let currentStage: FactoryStage = "read";
+    const stageBudgetWarned = new Set<string>();
     for (let turn = 0; turn < MAX_TURNS; turn++) {
+      // #W1-1 — re-assert THIS run's telemetry context every turn (concurrent runs share the module
+      // global; per-turn re-assert + per-call entry snapshot bounds misattribution to a same-instant race).
+      setLlmCallContext({ conversationId: opts.conversationId, domain: opts.domain });
       if (opts.signal?.aborted) break;
 
       // #9: once read_ontology has loaded the ontology, re-resolve the language from its CONTENT
@@ -308,13 +406,27 @@ export async function* runBrain(opts: {
         }
       }
 
+      // #W2-HITL — gate tag routing: a drained message TAGGED for a DIFFERENT gate must be
+      // RE-QUEUED (ctx.pendingHuman), never consumed by the wrong gate. Before this fix the clarify
+      // gate's "any free text counts" greedily ate [测试用例决策]/[边界事件决策] messages → the right
+      // gate then timed out into its auto-fallback (wrong decision).
+      const GATE_TAG = { approval: /^\[测试用例决策/, boundary: /^\[边界事件决策\]/, clarify: /^\[澄清回答\]/ };
+      const drainRouted = async (): Promise<string[]> => {
+        const fresh = opts.conversationId ? await opts.ports.conversation.drainHumanMessages(opts.conversationId).catch(() => []) : [];
+        const all = [...(ctx.pendingHuman ?? []), ...fresh];
+        ctx.pendingHuman = [];
+        return all;
+      };
+      const requeueFor = (msgs: string[]) => { if (msgs.length) (ctx.pendingHuman ??= []).push(...msgs); };
+
       // TEST-CASE APPROVAL GATE — if the brain proposed test cases, PARK here (poll the
       // mailbox, no LLM turn consumed) until the user clicks 执行/重新生成. The run is in
       // the background, so parking survives navigation — the user can return and decide.
       if (!opts.isSubAgent && ctx.awaitingApproval && opts.conversationId) {
-        const human = await opts.ports.conversation.drainHumanMessages(opts.conversationId).catch(() => []);
+        const human = await drainRouted();
         let decided: null | { decision: "approve" | "regenerate"; note: string } = null;
         for (const text of human) {
+          if (GATE_TAG.boundary.test(text) || GATE_TAG.clarify.test(text)) { requeueFor([text]); continue; } // #W2-HITL
           const m = text.match(/^\[测试用例决策[:：]\s*(执行|approve|重新生成|regenerate)\]\s*([\s\S]*)$/i);
           if (m) decided = { decision: /执行|approve/i.test(m[1]!) ? "approve" : "regenerate", note: (m[2] ?? "").trim() };
           else {
@@ -349,9 +461,10 @@ export async function* runBrain(opts: {
       // events, PARK polling the mailbox until the user submits their per-event classification
       // (external handoff / terminal / break) + external contracts.
       if (!opts.isSubAgent && ctx.awaitingBoundary && opts.conversationId) {
-        const human = await opts.ports.conversation.drainHumanMessages(opts.conversationId).catch(() => []);
+        const human = await drainRouted();
         let decided: BoundaryEvent[] | null = null;
         for (const text of human) {
+          if (GATE_TAG.approval.test(text) || GATE_TAG.clarify.test(text)) { requeueFor([text]); continue; } // #W2-HITL
           const m = text.match(/^\[边界事件决策\]\s*([\s\S]+)$/);
           if (m) {
             try {
@@ -402,12 +515,13 @@ export async function* runBrain(opts: {
       // text via `[澄清回答] …`, or just a message). Mirrors the test-case / boundary gates;
       // a park timeout falls back to the AI's recommended option so a run never hangs forever.
       if (!opts.isSubAgent && ctx.awaitingClarify && opts.conversationId) {
-        const human = await opts.ports.conversation.drainHumanMessages(opts.conversationId).catch(() => []);
+        const human = await drainRouted();
         let answer: string | null = null;
         for (const text of human) {
+          if (GATE_TAG.approval.test(text) || GATE_TAG.boundary.test(text)) { requeueFor([text]); continue; } // #W2-HITL — was greedily eaten here
           const m = text.match(/^\[澄清回答\]\s*([\s\S]+)$/);
           if (m) answer = m[1]!.trim();
-          else { answer = text.trim(); } // any free reply while parked counts as the answer
+          else { answer = text.trim(); } // any UNTAGGED free reply while parked counts as the answer
         }
         if (!answer && parkTicks >= PARK_MAX_TICKS) {
           const rec = ctx.clarifyPrompt?.options?.find((o) => o.recommended);
@@ -425,6 +539,19 @@ export async function* runBrain(opts: {
         ctx.awaitingClarify = false;
         ctx.clarifyPrompt = undefined;
         ctx.humanDirectives.push(`澄清「${q}」→ ${answer}`);
+        // If this was a supply_test_data request, capture any "field: value" lines into the test-data
+        // overrides directly — so real values (e.g. a real interview email) thread into the fired
+        // payloads even if the brain doesn't explicitly re-call supply_test_data. Safe: the overrides
+        // only replace keys ALREADY present in a test payload (applyTestDataOverrides), so unrelated
+        // clarify answers are no-ops.
+        if (q.includes("真实联系") || q.includes("真实值") || /字段/.test(q)) {
+          for (const line of answer.split(/\n+/)) {
+            const kv = line.match(/^\s*([A-Za-z_][\w.]*)\s*[:：=]\s*(.+?)\s*$/);
+            const key = kv?.[1];
+            const val = kv?.[2]?.trim();
+            if (key && val && val !== "用占位") (ctx.testDataOverrides ??= {})[key] = val;
+          }
+        }
         messages.push({ role: "user", content: `[用户澄清回答] 针对你的问题「${q}」，用户回答：${answer}。据此继续，别再重复问同样的问题。` });
         yield { t: "message", text: `✅ 收到你的回答：${answer}` };
       }
@@ -488,7 +615,19 @@ export async function* runBrain(opts: {
       for await (const ev of streamTurn(messages, groundedSchemas, { signal: opts.signal, models: modelChain(tier) })) {
         if (ev.t === "think") yield { t: "think", delta: ev.delta };
         else if (ev.t === "model") yield { t: "model", model: ev.model, tier, turn: turn + 1 };
-        else if (ev.t === "usage") ctx.spent.tokens += ev.promptTokens + ev.completionTokens;
+        else if (ev.t === "usage") {
+          ctx.spent.tokens += ev.promptTokens + ev.completionTokens;
+          // #W2-STAGE — attribute this turn's spend to the current stage; steer ONCE when a stage
+          // blows its budget (converge/escalate, don't grind inside the stage).
+          const st = (ctx.spent.stageTokens ??= {});
+          st[currentStage] = (st[currentStage] ?? 0) + ev.promptTokens + ev.completionTokens;
+          const budget = STAGE_BUDGETS[currentStage];
+          if (budget && st[currentStage]! > budget && !stageBudgetWarned.has(currentStage)) {
+            stageBudgetWarned.add(currentStage);
+            messages.push({ role: "system", content: `[阶段预算] ${currentStage.toUpperCase()} 阶段已花 ${Math.round(st[currentStage]! / 1000)}k tokens（预算 ${Math.round(budget / 1000)}k）。别在本阶段继续磨：要么收敛进入下一阶段，要么 verify_chain/analyze_failure 定位真问题后换思路。` });
+            yield { t: "message", text: `⚠ ${currentStage.toUpperCase()} 阶段超出 token 预算——已提示收敛。` };
+          }
+        }
         else if (ev.t === "tool_calls") {
           pendingCalls = ev.calls;
           assistantContent = ev.content;
@@ -539,6 +678,10 @@ export async function* runBrain(opts: {
 
       let finished = false;
       for (const call of pendingCalls) {
+        // #W2 — consecutive-identical-call breaker: the same tool with the same args twice in a row is
+        // grinding; a third is refused outright with a structured steer (no silent token burn).
+        const dupSig = `${call.name}:${call.args ?? ""}`;
+        if (dupSig === lastToolSig) dupCount += 1; else { dupCount = 0; lastToolSig = dupSig; }
         let args: Record<string, unknown> = {};
         try {
           args = JSON.parse(call.args || "{}");
@@ -554,8 +697,16 @@ export async function* runBrain(opts: {
         if (stage) yield { t: "stage", stage, status: "active" };
 
         const tool = byName.get(call.name);
+        if (STAGE_OF_TOOL[call.name]) currentStage = STAGE_OF_TOOL[call.name]!; // #W2-STAGE attribution
+        // #W2-STAGE — admission gate: refuse a stage-jumping tool with a structured steer (this is the
+        // phaseFor→control upgrade; order enforced by structure, not prompt prose).
+        const admission = stageAdmission(call.name, ctx);
         let result;
-        if (!tool) result = { ok: false, summary: `未知工具 ${call.name}` };
+        if (admission) {
+          result = { ok: false, summary: admission };
+        } else if (dupCount >= 2) {
+          result = { ok: false, summary: `重复调用检测：你已连续 ${dupCount + 1} 次用【完全相同的参数】调用 ${call.name}——重复不会改变结果。改变输入、换工具（verify_chain/analyze_failure/ask_user），或 revert 后换思路。` };
+        } else if (!tool) result = { ok: false, summary: `未知工具 ${call.name}` };
         else {
           try {
             result = await tool.execute(args, ctx);
@@ -611,6 +762,18 @@ export async function* runBrain(opts: {
             }
           }
         }
+      }
+
+      // #CRASH-CKPT — checkpoint EVERY turn, not only at run end. The end-of-run `finally` save
+      // covers normal exits and parks, but a mid-run PROCESS DEATH (tsx-watch restart on a file
+      // edit, manual pnpm-dev restart, crash) used to lose every turn since the last interaction —
+      // the «思考过程突然中断且无法续跑» incident: a follow-up build died mid-stream with its
+      // conversation checkpoint still frozen at the PREVIOUS interaction. One SQLite upsert per
+      // turn is cheap; crash-resume then continues from the latest completed turn.
+      if (opts.conversationId) {
+        await opts.ports.conversation
+          .save(opts.conversationId, { domain: opts.domain, messages: messages as unknown[], ctx: serializeCtx(ctx) })
+          .catch(() => {});
       }
 
       if (finished) break;

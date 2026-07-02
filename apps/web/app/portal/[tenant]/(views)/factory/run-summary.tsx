@@ -29,10 +29,17 @@ function ReviewList({ label, items, color }: { label: string; items: unknown; co
 export function RunSummary({ blocks, lastBudget, analysis, analyzing, canAnalyze, onAnalyze }: { blocks: Block[]; lastBudget?: Record<string, unknown>; analysis?: Record<string, unknown> | null; analyzing?: boolean; canAnalyze?: boolean; onAnalyze?: () => void }) {
   const plans = pick(blocks, "plan").map((b) => b.summary);
   const refines = pick(blocks, "refine").map((b) => `${b.action}：${b.critique}`);
-  const reflects = pick(blocks, "reflect").map((b) => b.text);
+  const allReflects = pick(blocks, "reflect").map((b) => b.text);
+  // 意图门的结论单独成区（大脑对"你要什么"的理解——理解偏了应该当场看见），不混在普通反思里。
+  const intents = allReflects.filter((t) => t.startsWith("意图理解：")).map((t) => t.replace(/^意图理解：/, ""));
+  const reflects = allReflects.filter((t) => !t.startsWith("意图理解："));
+  // 你的介入记录（[人工介入] 的回执消息），与意图并排——共同构成"大脑记住的你"。
+  const interventions = pick(blocks, "message").map((b) => b.text).filter((t) => t.startsWith("🧑 收到你的介入")).map((t) => t.replace(/^🧑 收到你的介入：「?/, "").replace(/」?——下一步会纳入。$/, ""));
   const skills = pick(blocks, "skill").map((b) => b.name);
   const scores = pick(blocks, "score");
   const reverts = pick(blocks, "revert");
+  // 认知专家（四维分治等轻通道派生）的完成情况——工厂内部多 agent 系统的工作痕迹。
+  const specialists = pick(blocks, "subagent").filter((b) => b.task.startsWith("认知专家"));
 
   const a = analysis && !analysis.error ? analysis : null;
   const score = a ? Number(a.score) || 0 : 0;
@@ -40,6 +47,40 @@ export function RunSummary({ blocks, lastBudget, analysis, analyzing, canAnalyze
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      {(intents.length > 0 || interventions.length > 0) && (
+        <Panel title="大脑对你的理解" padded={false}>
+          <div style={{ display: "flex", flexDirection: "column" }}>
+            {intents.map((t, i) => (
+              <div key={`i-${i}`} style={{ display: "flex", gap: 8, padding: "8px 12px", borderTop: i ? "1px solid var(--border)" : "none", fontSize: 12, lineHeight: 1.55 }}>
+                <span title="意图门解析" style={{ flexShrink: 0, color: "var(--signal)" }}>🎯</span>
+                <span style={{ color: "var(--text-2)" }}>{t}</span>
+              </div>
+            ))}
+            {interventions.map((t, i) => (
+              <div key={`v-${i}`} style={{ display: "flex", gap: 8, padding: "8px 12px", borderTop: intents.length || i ? "1px solid var(--border)" : "none", fontSize: 12, lineHeight: 1.55 }}>
+                <span title="你的介入" style={{ flexShrink: 0 }}>🧑</span>
+                <span style={{ color: "var(--text-2)" }}>{t}</span>
+              </div>
+            ))}
+            <div style={{ padding: "6px 12px", fontSize: 10.5, color: "var(--text-4)", borderTop: "1px solid var(--border)" }}>意图与介入是折叠幸存者——对话再长、重启多少次，大脑都记得。</div>
+          </div>
+        </Panel>
+      )}
+
+      {specialists.length > 0 && (
+        <Panel title="认知专家（工厂内部派生）" padded={false}>
+          <div style={{ display: "flex", flexDirection: "column" }}>
+            {specialists.map((s, i) => (
+              <div key={i} style={{ display: "flex", gap: 8, padding: "8px 12px", borderTop: i ? "1px solid var(--border)" : "none", fontSize: 12, lineHeight: 1.55 }}>
+                <span style={{ flexShrink: 0 }}>🧩</span>
+                <span style={{ color: "var(--text)", flexShrink: 0 }}>{s.task.replace(/^认知专家 · /, "")}</span>
+                <span style={{ color: "var(--text-3)", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.summary ?? "进行中…"}</span>
+              </div>
+            ))}
+          </div>
+        </Panel>
+      )}
+
       <Panel title="AI 运行评审">
         <div style={{ padding: 12 }}>
           {!a && (

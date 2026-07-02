@@ -10,9 +10,9 @@
 # native-module guard via `pnpm dev`'s predev hook.
 #
 # Standard ports (must match package.json predev + next.config.mjs):
-#   web :3599 · api :3540 · inngest :8288  (+ 8289 / 50052 / 50053 helpers)
+#   web :3599 · api :3540 · inngest :8488  (+ 8489 / 50152 / 50153 helpers)
 #
-# Usage:  pnpm restart            # or: ./scripts/restart-dev.sh
+# Usage:  pnpm restart            # or: pnpm dev:restart · ./scripts/restart-dev.sh
 #
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -20,7 +20,9 @@ ROOT="$(pwd -P)"
 
 WEB_PORT=3599
 API_PORT=3540
-PORTS="${WEB_PORT},${API_PORT},8288,8289,50052,50053"
+# inngest dev + its connect helpers — MUST match package.json's `dev` (-p 8488
+# --connect-gateway-port 8489 --connect-gateway-grpc-port 50152 --connect-executor-grpc-port 50153).
+PORTS="${WEB_PORT},${API_PORT},8488,8489,50152,50153"
 
 echo "[restart] switching to Node 26 (better-sqlite3 ABI)…"
 export NVM_DIR="$HOME/.nvm"
@@ -40,7 +42,7 @@ echo "[restart] freeing ports ${PORTS}…"
 lsof -ti:"${PORTS}" 2>/dev/null | xargs kill -9 2>/dev/null || true
 sleep 1
 
-echo "[restart] starting dev stack (web :${WEB_PORT} · api :${API_PORT} · inngest :8288)…"
+echo "[restart] starting dev stack (web :${WEB_PORT} · api :${API_PORT} · inngest :8488)…"
 # `pnpm dev`'s predev re-runs ensure:native + frees the same ports, so this is
 # idempotent. exec so Ctrl-C goes straight to the stack.
 exec pnpm dev

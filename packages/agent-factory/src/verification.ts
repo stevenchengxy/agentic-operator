@@ -8,7 +8,7 @@
 // durability. The optional LLM-judge / real-model layers are non-reproducible by construction and
 // are advisory-only (gated by env), never the blocking verdict — see verificationPolicy().
 
-export type CaseKind = "pass" | "reject" | "edge";
+export type CaseKind = "pass" | "reject" | "edge" | "fault";
 
 export interface CaseRunOutcome {
   kind: CaseKind;
@@ -38,6 +38,12 @@ export function caseVerdict(o: CaseRunOutcome): { pass: boolean; reason: string 
         : { pass: false, reason: "reject case did not reach a fail terminal (it should be blocked)" };
     case "edge":
       return { pass: true, reason: "completed without crash (graceful)" };
+    case "fault":
+      // #W3-FAULT — an injected tool fault must be handled GRACEFULLY: no crash, and the chain must
+      // NOT claim a clean success terminal while a tool it depends on was poisoned.
+      return !o.reachedSuccessTerminal
+        ? { pass: true, reason: "fault handled gracefully (no false success with a poisoned tool)" }
+        : { pass: false, reason: "reached a success terminal DESPITE an injected tool fault — the failure path is not wired" };
     default:
       return { pass: false, reason: `unknown case kind ${String((o as { kind?: unknown }).kind)}` };
   }
@@ -56,6 +62,7 @@ export function chainVerdictByKind(outcomes: CaseRunOutcome[]): ChainVerdict {
     pass: { total: 0, passed: 0 },
     reject: { total: 0, passed: 0 },
     edge: { total: 0, passed: 0 },
+    fault: { total: 0, passed: 0 },
   };
   const results = outcomes.map((o) => {
     const v = caseVerdict(o);
@@ -152,20 +159,27 @@ export interface VerificationPolicy {
   /** use a real LLM in the sandbox (default false — mock-model-v1 keeps runs free + deterministic) */
   realModel: boolean;
   /** tool dispatch mode: "mock" (dry stubs), "replay" (cassettes), "live" (real vendor sandbox) */
-  toolMode: "mock" | "replay" | "live";
+  toolMode: "mock" | "replay" | "live" | "gated";
   /** hard aggregate output-token budget for one factory verification run (0 = unbounded/mock) */
   budgetTokens: number;
   /** the LLM cite-the-field judge is advisory only — never the blocking CI verdict */
   judgeIsBlocking: boolean;
 }
 
-/** Resolve the verification policy from env. Safe defaults: mock model + mock tools + advisory
- *  judge, so the default sandbox run stays free, deterministic, and side-effect-free. Real model /
- *  live tools require an explicit opt-in + a budget. */
+/** Resolve the verification policy from env.
+ *  #REDESIGN P1b — REAL by default (拒绝 mock): the sandbox uses the REAL gateway model so the
+ *  reasoning that runs in verification is the same that runs in production. LLM calls have no
+ *  external side-effects, so this is safe to default on. TESTS (NODE_ENV=test) keep the mock model
+ *  for free, deterministic, offline CI. Escape hatch: FACTORY_SANDBOX_REAL_MODEL=0 forces mock.
+ *  Tool side-effects stay gated (write-gating is the next P1b step): default tool mode is still
+ *  "mock" for external WRITES until the read-live / write-gated split lands. */
 export function verificationPolicy(env: Record<string, string | undefined> = process.env): VerificationPolicy {
-  const realModel = env.FACTORY_SANDBOX_REAL_MODEL === "1";
-  const toolModeRaw = (env.FACTORY_SANDBOX_TOOL_MODE ?? "mock").toLowerCase();
-  const toolMode = toolModeRaw === "replay" || toolModeRaw === "live" ? (toolModeRaw as "replay" | "live") : "mock";
+  const isTest = env.NODE_ENV === "test";
+  const realModel = isTest ? env.FACTORY_SANDBOX_REAL_MODEL === "1" : env.FACTORY_SANDBOX_REAL_MODEL !== "0";
+  // Mirror runtime sandboxToolMode: default "gated" in production (read live / write gated), "mock"
+  // in tests. Explicit replay/live/mock honoured.
+  const toolModeRaw = (env.FACTORY_SANDBOX_TOOL_MODE ?? (isTest ? "mock" : "gated")).toLowerCase();
+  const toolMode = ["replay", "live", "mock", "gated"].includes(toolModeRaw) ? (toolModeRaw as VerificationPolicy["toolMode"]) : (isTest ? "mock" : "gated");
   const budgetTokens = Number(env.FACTORY_SANDBOX_BUDGET_TOKENS ?? "0") || 0;
   return {
     realModel,

@@ -89,5 +89,10 @@ export const HealthReport = z.object({
    * undefined as `false`.
    */
   demoMode: z.boolean().optional(),
+  // #SCALE — which pluggable backends are live: blob "fs" | "fs+http" | "fs+s3" | "fs+<custom>";
+  // fanout "local" | "redis". Lets ops confirm a config-flip took effect from one curl.
+  blobBackend: z.string().optional(),
+  fanout: z.string().optional(),
+  memoryDriver: z.string().optional(),
 });
 export type HealthReport = z.infer<typeof HealthReport>;

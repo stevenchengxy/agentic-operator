@@ -41,7 +41,10 @@ const EVICT_AFTER_MS = 10 * 60_000;
 // #5/#6: the persisted transcript the activity log + AI reviewer read. Raised + configurable so a
 // long run's narrative (incl. the sandbox/done outcome) isn't lost; when exceeded we keep the most
 // RECENT events (the outcome) rather than dropping new ones.
-const MAX_BUFFER = Number(process.env.FACTORY_RUN_BUFFER_MAX) || 30000;
+// #P0-6 — raised 30k→100k (configurable) so long factory runs keep far more of their reasoning before
+// any fold; and on overflow we DON'T silently drop — we fold deterministically (a marker event records
+// how many early events were compacted), so the audit trail shows the gap instead of vanishing.
+const MAX_BUFFER = Number(process.env.FACTORY_RUN_BUFFER_MAX) || 100_000;
 
 export function isActiveRun(runId: string): boolean {
   const r = runsReg.get(runId);
@@ -56,7 +59,16 @@ function emit(r: ActiveRun, e: BrainEvent): void {
   // sandbox result + done — is never lost on a very long run (the old `< MAX` guard dropped the
   // tail, hiding exactly what the reviewer needs).
   r.events.push(e);
-  if (r.events.length > MAX_BUFFER) r.events.splice(0, r.events.length - MAX_BUFFER);
+  if (r.events.length > MAX_BUFFER) {
+    // #P0-6 — deterministic fold: instead of silently dropping the oldest events, remove them but
+    // leave a single marker so a reviewer sees "N early events were compacted" rather than a gap that
+    // reads as if nothing happened. The fold is idempotent (a prior marker's count is rolled forward).
+    const overflow = r.events.length - MAX_BUFFER;
+    const dropped = r.events.splice(0, overflow);
+    const priorFold = dropped.find((d) => (d as { t?: string }).t === "reflect" && String((d as { kind?: string }).kind) === "buffer-fold");
+    const priorCount = priorFold ? Number((priorFold as { count?: number }).count ?? 0) : 0;
+    r.events.unshift({ t: "reflect", kind: "buffer-fold", lesson: `已折叠 ${priorCount + overflow} 条早期事件（超出 ${MAX_BUFFER} 缓冲上限）`, count: priorCount + overflow }); // #W1-15 typed (count is on the reflect member now)
+  }
   for (const cb of r.subscribers) {
     try {
       cb(e);
@@ -216,4 +228,31 @@ export function sweepZombieRuns(domain: string | null, tenantId?: string): numbe
     }
   }
   return swept;
+}
+
+// #SCALE-RESUME — crash-safety without moving the brain onto Inngest: on api boot, every factory_runs
+// row stuck "running" (the process died mid-run) is AUTO-RESUMED via its conversation checkpoint —
+// serializeCtx persisted the full ctx (specs/plan/parked HITL gates included), so the brain picks up
+// where it crashed instead of leaving a zombie for the user to manually 继续. Opt out: FACTORY_AUTORESUME=0.
+export function autoResumeCrashedRuns(): number {
+  if (process.env.FACTORY_AUTORESUME === "0") return 0;
+  const { getDb, factoryRuns, eq, and } = require("@agentic/db") as typeof import("@agentic/db");
+  const { isNull } = require("drizzle-orm") as typeof import("drizzle-orm");
+  let resumed = 0;
+  try {
+    const rows = getDb()
+      .select({ id: factoryRuns.id, domain: factoryRuns.domain, goal: factoryRuns.goal, tenantId: factoryRuns.tenantId })
+      .from(factoryRuns)
+      .where(and(eq(factoryRuns.status, "running"), isNull(factoryRuns.deletedAt)))
+      .all();
+    for (const r of rows) {
+      if (isActiveRun(r.id)) continue; // already live in this process
+      try {
+        startRun({ domain: r.domain, goal: r.goal ?? "(crash-resume)", tenantId: r.tenantId ?? undefined, conversationId: r.id, runId: r.id });
+        resumed += 1;
+      } catch { /* one bad row never blocks the rest */ }
+    }
+    if (resumed) console.log(`[factory] crash-resume — re-attached ${resumed} interrupted run(s) from their conversation checkpoints`);
+  } catch { /* boot resume best-effort */ }
+  return resumed;
 }

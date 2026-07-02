@@ -59,6 +59,42 @@ export async function validateAgentCode(code: string): Promise<{ ok: boolean; er
   }
 }
 
+/**
+ * #REDESIGN FU3 — the PROBE stage of the reviewLoop. Compile (validateAgentCode) proves the code
+ * type-checks; this proves it actually LOADS and exposes a CALLABLE handler — the same structural
+ * gate `runGeneratedCode` (codeact.ts) applies before it will execute. Transpile → run in a `new
+ * Function` shim with a capturing `defineAgent` → confirm a `handler` function surfaced. The handler
+ * is NOT invoked here (that needs a gateway + tools); this only rejects code that compiles but has no
+ * runnable handler (a common codegen failure that a compile check alone lets through as "executable").
+ * Never throws — returns `{ loads:false, reason }` on any failure so the grade degrades gracefully.
+ */
+export async function probeAgentModule(code: string): Promise<{ loads: boolean; reason?: string }> {
+  if (!code || code.trim().length < 40) return { loads: false, reason: "代码过短/为空" };
+  try {
+    const ts = await import("typescript");
+    const js = ts.transpileModule(code, {
+      compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },
+    }).outputText;
+    let captured: { handler?: unknown } | null = null;
+    const defineAgent = (cfg: { handler?: unknown }) => { captured = cfg; return cfg; };
+    const requireShim = (id: string): unknown => (id === "@agentic/runtime" ? { defineAgent } : {});
+    const moduleObj = { exports: {} as Record<string, unknown> };
+    // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
+    const factory = new Function("require", "exports", "module", "defineAgent", js) as (
+      r: (id: string) => unknown, e: Record<string, unknown>, m: { exports: Record<string, unknown> }, d: (c: { handler?: unknown }) => unknown,
+    ) => void;
+    factory(requireShim, moduleObj.exports, moduleObj, defineAgent);
+    const def =
+      (captured as { handler?: unknown } | null) ??
+      (Object.values(moduleObj.exports).find((v) => v && typeof v === "object" && typeof (v as { handler?: unknown }).handler === "function") as { handler?: unknown } | undefined) ??
+      null;
+    if (!def || typeof def.handler !== "function") return { loads: false, reason: "加载后没有可调用的 handler（defineAgent 未导出/handler 缺失）" };
+    return { loads: true };
+  } catch (e) {
+    return { loads: false, reason: `加载探针失败：${(e as Error).message.slice(0, 80)}` };
+  }
+}
+
 function escapeTemplate(s: string): string {
   return s.replace(/\\/g, "\\\\").replace(/`/g, "\\`").replace(/\$\{/g, "\\${");
 }

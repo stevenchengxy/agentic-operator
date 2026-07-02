@@ -21,6 +21,7 @@ import { useBrainStream, activeRunKey, type BrainEvent } from "@/lib/hooks/useBr
 import { isStopIntent } from "@/lib/factory-intent";
 import { CodeBox, FullModal } from "./atoms";
 import { TranscriptFeed, TRANSCRIPT_FILTERS, filterBlocks } from "./transcript";
+import { InteractionDock } from "./interaction-dock"; // #W3-UI unified pending-interaction surface
 import { StageRail, EventGraph } from "./canvas";
 import { BrainFlow } from "./brain-flow";
 import { ActivityLog } from "./activity-log";
@@ -28,6 +29,9 @@ import { AgentInspector } from "./inspector";
 import { AgentCardList, SandboxIOPanel } from "./agent-cards";
 import { RunSummary } from "./run-summary";
 import { CollapsibleSection, DomainList, HistoryList, DraftList, HealthStrip } from "./left-rail";
+import { BackgroundPanel } from "./background-panel";
+import { OntologyManager } from "./ontology-manager";
+import { SystemMap } from "./system-map";
 import { toBlocks, deriveAgents, deriveScores, deriveStages, deriveBrainFlow, deriveAgentVersions, type DomainRow, type RunRow, type DraftRow, type AgentIO, type AgentCardData, type Block } from "./model";
 
 const SAMPLE_GOALS = [
@@ -75,20 +79,21 @@ export default function FactoryPage() {
   const [goal, setGoal] = useState("");
   const [injectText, setInjectText] = useState("");
   // composer attachments: ontology JSON files (merged → a local domain) + tool docs (→ the brain builds tools).
-  const [attached, setAttached] = useState<Array<{ name: string; text: string; kind: "ontology" | "tooldoc" }>>([]);
-  const [ontologyName, setOntologyName] = useState("");
+  const [attached, setAttached] = useState<Array<{ name: string; text: string; kind: "tooldoc" }>>([]);
   const [composerErr, setComposerErr] = useState("");
   const fileRef = useRef<HTMLInputElement | null>(null);
   const [injectNote, setInjectNote] = useState("");
   const [req, setReq] = useState<{ tenant: string; domain?: string; goal?: string; conversation?: string; reconnectRunId?: string; nonce: number } | null>(null);
   const [viewingRun, setViewingRun] = useState<{ id: string; transcript: BrainEvent[] } | null>(null);
-  const [tab, setTab] = useState<"flow" | "brain" | "test" | "summary">("flow");
+  const [tab, setTab] = useState<"flow" | "brain" | "test" | "summary" | "bg">("flow");
+  const [ontoMgrOpen, setOntoMgrOpen] = useState(false); // 本地本体管理 modal
   const [deliverView, setDeliverView] = useState<"cards" | "graph">("cards"); // #F — agent card list default
-  const [brainView, setBrainView] = useState<"flow" | "log">("flow");
+  const [brainView, setBrainView] = useState<"flow" | "log" | "map">("flow");
   const [selectedSlug, setSelectedSlug] = useState<string | null>(null);
   const [transcriptFilter, setTranscriptFilter] = useState("all");
   const [leftOpen, setLeftOpen] = useState(true);
-  const [fullscreen, setFullscreen] = useState<null | "flow" | "brain">(null);
+  const [fullscreen, setFullscreen] = useState<null | "flow" | "brain" | "test" | "summary" | "bg">(null);
+  const [rightOpen, setRightOpen] = useState(true);
   const [analysis, setAnalysis] = useState<Record<string, unknown> | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
   const [modal, setModal] = useState<{ title: string; body: React.ReactNode } | null>(null);
@@ -114,12 +119,22 @@ export default function FactoryPage() {
     if (domain && domains.some((d) => d.id === domain)) return;
     let pick = domains[0]!.id;
     try { const last = localStorage.getItem(lastDomainKey(tenant)); if (last && domains.some((d) => d.id === last)) pick = last; } catch { /* ignore */ }
+    // 业务领域页「去工厂生成」直达：?domain=<id> 优先于 localStorage（一次性，读后即清）。
+    try {
+      const q = new URLSearchParams(window.location.search).get("domain");
+      if (q && domains.some((d) => d.id === q)) {
+        pick = q;
+        window.history.replaceState(null, "", window.location.pathname);
+      }
+    } catch { /* ignore */ }
     setDomain(pick);
   }, [domains, domain, tenant]);
   useEffect(() => { refreshRuns(); }, [refreshRuns]);
   useEffect(() => { refreshDrafts(); }, [refreshDrafts, runs]);
   useEffect(() => { try { const v = localStorage.getItem(`ao:factory:leftOpen:${tenant}`); if (v != null) setLeftOpen(v === "1"); } catch { /* ignore */ } }, [tenant]);
   const toggleLeft = () => setLeftOpen((o) => { const n = !o; try { localStorage.setItem(`ao:factory:leftOpen:${tenant}`, n ? "1" : "0"); } catch { /* ignore */ } return n; });
+  useEffect(() => { try { const v = localStorage.getItem(`ao:factory:rightOpen:${tenant}`); if (v != null) setRightOpen(v === "1"); } catch { /* ignore */ } }, [tenant]);
+  const toggleRight = () => setRightOpen((o) => { const n = !o; try { localStorage.setItem(`ao:factory:rightOpen:${tenant}`, n ? "1" : "0"); } catch { /* ignore */ } return n; });
 
   const { events: liveEvents, running, runId, error: streamError } = useBrainStream(req);
   useEffect(() => { if (!running && req) refreshRuns(); }, [running, req, refreshRuns]);
@@ -200,34 +215,11 @@ export default function FactoryPage() {
     resetConversation();
   };
   const pickDomain = (id: string) => { setDomain(id); resetConversation(); };
-  // Merge multiple uploaded ontology JSON files into one bundle. Each file may be a combined
-  // object ({actions,events,rules,dataObjects}) OR a bare array (type inferred from the filename:
-  // *event*/*rule*/*object|entity*/else actions). So you can drop actions.json + events.json +
-  // rules.json + dataObjects.json separately and they fuse into one local business domain.
-  const mergeOntologyFiles = (files: Array<{ name: string; text: string }>) => {
-    const bundle: Record<"actions" | "events" | "rules" | "dataObjects", unknown[]> = { actions: [], events: [], rules: [], dataObjects: [] };
-    const put = (k: keyof typeof bundle, v: unknown) => { if (Array.isArray(v)) bundle[k].push(...v); };
-    for (const f of files) {
-      let json: unknown;
-      try { json = JSON.parse(f.text); } catch { continue; }
-      if (Array.isArray(json)) {
-        const n = f.name.toLowerCase();
-        const k = /event/.test(n) ? "events" : /rule/.test(n) ? "rules" : /object|entit|dataobject/.test(n) ? "dataObjects" : "actions";
-        put(k, json);
-      } else if (json && typeof json === "object") {
-        const o = json as Record<string, unknown>;
-        put("actions", o.actions ?? o.action); put("events", o.events ?? o.event);
-        put("rules", o.rules ?? o.rule); put("dataObjects", o.dataObjects ?? o.objects ?? o.entities);
-      }
-    }
-    return bundle;
-  };
 
-  // Infer intent from the file CONTENT, not just the extension (the user wants the AI to figure out
-  // what an uploaded doc IS): ontology-shaped JSON (actions/events/rules/dataObjects, or an array of
-  // action-like objects) → treat as an ONTOLOGY to generate from; anything else (a tool/API doc, an
-  // OpenAPI spec, prose) → a TOOL DOC for the brain to reason about + create_tool. The chip lets the
-  // user flip the guess (intent override).
+  // Classify an attachment by CONTENT: ontology-shaped JSON (actions/events/rules/dataObjects,
+  // or an array of action-like objects) is routed to the left「本地本体」panel (single upload home,
+  // no composer/left duplication); anything else (tool/API doc, OpenAPI, prose) is a TOOL DOC the
+  // brain reads + turns into tools via create_tool.
   const classifyAttachment = (name: string, text: string): "ontology" | "tooldoc" => {
     const t = text.trim();
     if (t.startsWith("{") || t.startsWith("[")) {
@@ -246,73 +238,44 @@ export default function FactoryPage() {
     return "tooldoc";
   };
 
-  // Derive a human domain name from a file name — but NOT from a raw split-export like
-  // "actions_v0_1_005_6agents" (that landed verbatim in the name field and read as a spurious
-  // duplicate chip). Versioned exports → "" (leave the placeholder); clean names → titled.
-  const cleanDomainName = (filename: string): string => {
-    const base = filename.replace(/\.[^.]+$/, "");
-    if (/_v\d/i.test(base)) return ""; // versioned ontology export → no clean human name
-    const stem = base
-      .replace(/^(actions?|events?|rules?|data[_-]?objects?|objects?|entit(?:y|ies))[_-]+/i, "")
-      .replace(/[_-]+/g, " ")
-      .trim();
-    return /[a-z一-鿿]{2,}/i.test(stem) ? stem : "";
-  };
-
   const onAttachFiles = async (files: FileList | null) => {
     if (!files) return;
+    setComposerErr("");
     const next = [...attached];
+    const rejected: string[] = [];
     for (const f of Array.from(files)) {
       const text = await f.text().catch(() => "");
-      if (text) next.push({ name: f.name, text, kind: classifyAttachment(f.name, text) });
+      if (!text) continue;
+      // 本体 JSON 归左侧「本地本体 · 上传/管理」统一处理——曲别针只收工具/参考文档，避免两处重复上传。
+      if (classifyAttachment(f.name, text) === "ontology") { rejected.push(f.name); continue; }
+      next.push({ name: f.name, text, kind: "tooldoc" });
     }
     setAttached(next);
-    const firstOnto = next.find((a) => a.kind === "ontology");
-    if (firstOnto && !ontologyName.trim()) {
-      const clean = cleanDomainName(firstOnto.name);
-      if (clean) setOntologyName(clean);
-    }
+    if (rejected.length) setComposerErr(`${rejected.map((n) => `「${n}」`).join("、")} 看起来是本体文件——请用左栏「📦 本地本体 · 上传/管理」上传（会成为可选业务域）。`);
     if (fileRef.current) fileRef.current.value = "";
   };
 
   const submit = async () => {
     if (running) return;
     setComposerErr("");
-    const onto = attached.filter((a) => a.kind === "ontology");
-    const docs = attached.filter((a) => a.kind === "tooldoc");
-    let runDomain = domain;
-    // 1) ontology files → create a reusable LOCAL business domain, switch to it.
-    if (onto.length) {
-      const bundle = mergeOntologyFiles(onto);
-      if (!bundle.actions.length) { setComposerErr("上传的本体文件里没有任何 action（actions），无法作为业务域。"); return; }
-      const nm = ontologyName.trim() || onto[0]!.name.replace(/\.[^.]+$/, "") || "上传本体";
-      try {
-        const r = await fetch("/v1/agent-factory/ontology-upload", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json", Accept: "application/json", ...tenantHeader() }, body: JSON.stringify({ name: nm, ontology: bundle }) });
-        const b = await r.json();
-        if (!b?.ok) { setComposerErr(`本体上传失败：${b?.error?.message ?? ""}`); return; }
-        runDomain = b.data.uploaded.id;
-        await refreshDomains();
-        setDomain(runDomain);
-      } catch (e) { setComposerErr(`本体上传失败：${(e as Error).message}`); return; }
-    }
-    if (!runDomain) { setComposerErr("请先在左侧选一个业务域，或上传一份本体文件。"); return; }
-    if (!goal.trim() && !docs.length && !onto.length) return;
-    // 2) tool docs → a directive + the doc text composed into the goal, so the brain reads, reasons,
-    //    and uses create_tool to build the needed tools INTO this domain's tool library.
+    const docs = attached; // 曲别针只收工具/参考文档；本体在左栏「本地本体」上传
+    const runDomain = domain;
+    if (!runDomain) { setComposerErr("请先在左侧选一个业务域，或在左栏「本地本体」上传一份本体。"); return; }
+    if (!goal.trim() && !docs.length) return;
+    // tool docs → a directive + the doc text composed into the goal, so the brain reads, reasons,
+    // and uses create_tool to build the needed tools INTO this domain's tool library.
     let finalGoal = goal.trim();
     if (docs.length) {
-      const block = docs.map((d, i) => `--- 工具文档 ${i + 1}：${d.name} ---\n${d.text.slice(0, 3000)}`).join("\n\n");
-      finalGoal = `【附带 ${docs.length} 份工具文档：请先阅读、推理，用 create_tool 把其中可用的 API 整合成工具、存进本业务域的工具库，再继续生成/验证 agents】\n\n${block}\n\n${finalGoal || "据此为本业务域生成能真正跑通的智能体并验证整条事件链。"}`;
-    } else if (!finalGoal && onto.length) {
-      finalGoal = "读取我刚上传的本体，为本业务域生成能真正跑通的智能体并试运行验证整条事件链。";
+      const block = docs.map((d, i) => `--- 文档 ${i + 1}：${d.name} ---\n${d.text.slice(0, 3000)}`).join("\n\n");
+      finalGoal = `【附带 ${docs.length} 份文档：请先阅读、推理，用 create_tool 把其中可用的 API 整合成工具、存进本业务域的工具库，再继续生成/验证 agents】\n\n${block}\n\n${finalGoal || "据此为本业务域生成能真正跑通的智能体并验证整条事件链。"}`;
     }
-    // 3) start the run.
+    // start the run.
     setViewingRun(null); setSelectedSlug(null);
     let conv = convRef.current;
     if (!conv || runDomain !== domain) { conv = `factory-${tenant}-${runDomain}-${Date.now()}`; setConv(conv); }
     try { localStorage.setItem(convStoreKey(tenant, runDomain), conv); localStorage.setItem(lastDomainKey(tenant), runDomain); } catch { /* ignore */ }
     setReq({ tenant, domain: runDomain, goal: finalGoal, conversation: conv, nonce: Date.now() });
-    setGoal(""); setAttached([]); setOntologyName("");
+    setGoal(""); setAttached([]);
   };
   const inject = async () => {
     const text = injectText.trim();
@@ -378,6 +341,11 @@ export default function FactoryPage() {
     } catch (e) { setAnalysis({ error: (e as Error).message }); }
     finally { setAnalyzing(false); }
   };
+  const deleteDraftUi = async (slug: string) => {
+    if (!domain || !window.confirm("删除这个生成的草稿？（不影响已晋升上线的 agent）")) return;
+    await apiSend(`/v1/agent-factory/drafts/${encodeURIComponent(slug)}?domain=${encodeURIComponent(domain)}`, "DELETE");
+    refreshDrafts();
+  };
   const promote = async (slugs?: string[]) => {
     if (!domain || promoting || !drafts.length) return;
     setPromoting(true); setPromoteMsg("");
@@ -392,6 +360,82 @@ export default function FactoryPage() {
 
   const isHero = blocks.length === 0 && !viewingRun;
 
+  // Claude-style working indicator: while the run is live, one pinned row under the feed tells
+  // the user WHAT the brain is doing right now (thinking / which tool / sandbox), with breathing
+  // dots — instead of the feed just going quiet between frames.
+  const workingLabel = useMemo(() => {
+    if (!running || viewingRun) return null;
+    for (let i = events.length - 1; i >= 0 && i > events.length - 40; i--) {
+      const e = events[i]!;
+      if (e.t === "tool.result" || e.t === "message" || e.t === "done") break; // last act finished → generic label
+      if (e.t === "tool.call") {
+        const n = String(e.name ?? "");
+        if (n === "sandbox_run") return "部署沙箱并试运行…";
+        if (n === "generate_report") return "生成领域分析报告…";
+        return `调用 ${n}…`;
+      }
+      if (e.t === "think") return "思考中…";
+    }
+    return "工作中…";
+  }, [running, viewingRun, events]);
+
+  // Right-pane tab body, extracted so the SAME content renders inline AND in the fullscreen modal
+  // (every tab + its SVG graphs get 全屏, not just 交付图/大脑). `full` relaxes height caps so
+  // graphs use the whole modal.
+  const renderTabBody = (full: boolean) => {
+    if (tab === "bg")
+      return (
+        <BackgroundPanel
+          inline
+          tenant={tenant}
+          domain={domain}
+          events={events}
+          running={running}
+          convId={convId}
+          viewingRunId={viewingRun?.id ?? null}
+          liveRunId={runId}
+          awaitingHint={awaitingHint}
+          onSelectAgent={(slug) => { setTab("flow"); setSelectedSlug(slug); }}
+          onReconnectRun={(id) => {
+            // runId === conversationId by design — sync the conversation too, else chat
+            // interventions after 连接查看 silently target a stale (or empty) thread.
+            setViewingRun(null); setSelectedSlug(null); setConv(id);
+            setReq({ tenant, reconnectRunId: id, nonce: Date.now() });
+          }}
+        />
+      );
+    if (tab === "summary") return <RunSummary blocks={blocks} lastBudget={lastBudget} analysis={analysis} analyzing={analyzing} canAnalyze={!!(viewingRun?.id || (runId && !running))} onAnalyze={analyzeRunUi} />;
+    if (tab === "test") return <SandboxIOPanel testCases={testCaseList} agentRuns={sandboxRuns} />;
+    if (tab === "brain") {
+      return (
+        <div>
+          <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+            {([["flow", "决策流"], ["map", "系统全景"], ["log", "活动日志"]] as Array<["flow" | "log" | "map", string]>).map(([k, label]) => (
+              <button key={k} onClick={() => setBrainView(k)} style={{ fontSize: 11.5, padding: "3px 12px", borderRadius: 20, cursor: "pointer", border: `1px solid ${brainView === k ? "var(--signal)" : "var(--border)"}`, background: brainView === k ? "var(--panel-2)" : "transparent", color: brainView === k ? "var(--text)" : "var(--text-3)" }}>{label}</button>
+            ))}
+          </div>
+          {brainView === "log" ? <ActivityLog blocks={blocks} />
+            : brainView === "map" ? <SystemMap events={events} agents={agents} running={running} onSelectAgent={(slug) => { setTab("flow"); setSelectedSlug(slug); }} />
+            : <BrainFlow steps={brainSteps} running={running} />}
+        </div>
+      );
+    }
+    if (selectedAgent) return <AgentInspector agent={selectedAgent} io={selectedIo} score={selectedScore} versions={agentVersions.get(selectedAgent.slug) ?? []} onBack={() => setSelectedSlug(null)} onShowCode={showCode} onRegenerate={regenerateAgent} />;
+    return (
+      <div>
+        <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+          {([["cards", "卡片列表"], ["graph", "事件图"]] as Array<["cards" | "graph", string]>).map(([k, label]) => (
+            <button key={k} onClick={() => setDeliverView(k)} style={{ fontSize: 11.5, padding: "3px 12px", borderRadius: 20, cursor: "pointer", border: `1px solid ${deliverView === k ? "var(--signal)" : "var(--border)"}`, background: deliverView === k ? "var(--panel-2)" : "transparent", color: deliverView === k ? "var(--text)" : "var(--text-3)" }}>{label}</button>
+          ))}
+        </div>
+        {deliverView === "cards"
+          ? <AgentCardList agents={agents} degraded={degraded} ioByShort={ioByShort} onShowCode={showCode} onRegenerate={regenerateAgent} onSelect={setSelectedSlug} />
+          : <div style={full ? { height: "78vh" } : undefined}><EventGraph agents={agents} scores={scores} degraded={degraded} selectedSlug={selectedSlug} onSelect={setSelectedSlug} /></div>}
+      </div>
+    );
+  };
+  const TAB_TITLE: Record<string, string> = { flow: "智能体 · 交付", brain: "大脑", test: "测试 · 沙箱 I/O", summary: "总结", bg: "后台任务" };
+
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
       <ViewHeader
@@ -399,7 +443,6 @@ export default function FactoryPage() {
         subtitle={t("factory.subtitle")}
         action={
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <Button icon={leftOpen ? "chevron-left" : "chevron-right"} onClick={toggleLeft}>{leftOpen ? "收起栏" : "展开栏"}</Button>
             {running && <Badge tone="signal">运行中</Badge>}
             {viewingRun && <Badge tone="muted">查看历史</Badge>}
             <Button icon="plus" onClick={newConversation}>新会话</Button>
@@ -407,25 +450,42 @@ export default function FactoryPage() {
         }
       />
       {modal && <FullModal title={modal.title} onClose={() => setModal(null)}>{modal.body}</FullModal>}
+      {ontoMgrOpen && (
+        <FullModal title="本地本体 · 上传与管理" onClose={() => setOntoMgrOpen(false)}>
+          <OntologyManager currentDomain={domain} onDomainsChanged={() => void refreshDomains()} />
+        </FullModal>
+      )}
       {fullscreen && (
-        <FullModal title={fullscreen === "brain" ? "大脑 · 决策流" : "交付图 · 智能体事件流"} onClose={() => setFullscreen(null)}>
-          {fullscreen === "brain"
-            ? (brainView === "log" ? <ActivityLog blocks={blocks} /> : <BrainFlow steps={brainSteps} running={running} />)
-            : <EventGraph agents={agents} scores={scores} degraded={degraded} selectedSlug={selectedSlug} onSelect={setSelectedSlug} />}
+        <FullModal title={`${TAB_TITLE[fullscreen] ?? "全屏"} · 全屏`} onClose={() => setFullscreen(null)}>
+          {renderTabBody(true)}
         </FullModal>
       )}
 
-      <div style={{ flex: 1, display: "grid", gridTemplateColumns: `${leftOpen ? "238px" : "0px"} 1fr 420px`, minHeight: 0, transition: "grid-template-columns 0.2s ease" }}>
+      <div style={{ flex: 1, position: "relative", display: "grid", gridTemplateColumns: `${leftOpen ? "238px" : "0px"} 1fr ${rightOpen ? "420px" : "0px"}`, minHeight: 0, transition: "grid-template-columns 0.2s ease" }}>
+        {/* 栏收起/展开：手柄贴在各自分隔线上（不再挤在页头，方向不再歧义）。 */}
+        <button
+          title={leftOpen ? "收起左栏" : "展开左栏"}
+          onClick={toggleLeft}
+          style={{ position: "absolute", left: leftOpen ? 238 : 0, top: "50%", transform: leftOpen ? "translate(-50%, -50%)" : "translateY(-50%)", zIndex: 5, width: 18, height: 48, borderRadius: leftOpen ? 9 : "0 9px 9px 0", border: "1px solid var(--border)", background: "var(--panel)", color: "var(--text-3)", cursor: "pointer", fontSize: 12, lineHeight: 1, padding: 0, transition: "left 0.2s ease" }}
+        >{leftOpen ? "‹" : "›"}</button>
+        <button
+          title={rightOpen ? "收起右栏" : "展开右栏"}
+          onClick={toggleRight}
+          style={{ position: "absolute", right: rightOpen ? 420 : 0, top: "50%", transform: rightOpen ? "translate(50%, -50%)" : "translateY(-50%)", zIndex: 5, width: 18, height: 48, borderRadius: rightOpen ? 9 : "9px 0 0 9px", border: "1px solid var(--border)", background: "var(--panel)", color: "var(--text-3)", cursor: "pointer", fontSize: 12, lineHeight: 1, padding: 0, transition: "right 0.2s ease" }}
+        >{rightOpen ? "›" : "‹"}</button>
         {/* ── left rail ── */}
         <div style={{ borderRight: leftOpen ? "1px solid var(--border)" : "none", overflow: "auto", padding: leftOpen ? 12 : 0, display: leftOpen ? "flex" : "none", flexDirection: "column", gap: 14 }}>
           <CollapsibleSection title="业务域" storageKey={`ao:factory:sec:domains:${tenant}`}>
             <DomainList domains={domains} domain={domain} query={domainQuery} setQuery={setDomainQuery} onSelect={pickDomain} />
+            <button onClick={() => setOntoMgrOpen(true)} className="factory-cta" style={{ marginTop: 6, width: "100%", textAlign: "left", fontSize: 11, padding: "5px 8px", borderRadius: 7, border: "1px dashed var(--border)", background: "none", color: "var(--text-3)", cursor: "pointer" }}>
+              📦 本地本体 · 上传 / 管理
+            </button>
           </CollapsibleSection>
           <CollapsibleSection title="历史运行" defaultOpen={false} badge={<span style={{ fontSize: 10, color: "var(--text-3)" }}>{runs.length}</span>} storageKey={`ao:factory:sec:runs:${tenant}`}>
             <HistoryList runs={runs} viewingRunId={viewingRun?.id ?? null} onOpen={openRun} onDelete={deleteRunUi} onClear={clearRunsUi} deletedRuns={deletedRuns} showTrash={showTrash} onToggleTrash={toggleTrash} onRestore={restoreRunUi} />
           </CollapsibleSection>
           <CollapsibleSection title="已生成 · 草稿" defaultOpen={false} badge={<span style={{ fontSize: 10, color: "var(--text-3)" }}>{drafts.length}</span>} storageKey={`ao:factory:sec:drafts:${tenant}`}>
-            <DraftList drafts={drafts} promoting={promoting} promoteMsg={promoteMsg} onPromote={promote} />
+            <DraftList drafts={drafts} promoting={promoting} promoteMsg={promoteMsg} onPromote={promote} onDelete={deleteDraftUi} />
           </CollapsibleSection>
           <HealthStrip checks={healthChecks} />
         </div>
@@ -460,9 +520,23 @@ export default function FactoryPage() {
             ) : filteredBlocks.length === 0 ? (
               <div style={{ margin: "auto", fontSize: 12, color: "var(--text-4)" }}>该筛选下暂无内容</div>
             ) : (
-              <TranscriptFeed blocks={filteredBlocks} grouped={transcriptFilter === "all"} onDecide={decideTestCases} onBoundary={decideBoundary} onClarify={decideClarify} />
+              <TranscriptFeed blocks={filteredBlocks} grouped={transcriptFilter === "all"} />
+            )}
+            {workingLabel && (
+              <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 2px 0", flexShrink: 0 }}>
+                <span style={{ display: "inline-flex", gap: 3, alignItems: "center" }}>
+                  <span className="chat-typing-dot" /><span className="chat-typing-dot" /><span className="chat-typing-dot" />
+                </span>
+                <span style={{ fontSize: 11.5, color: "var(--text-3)" }}>{workingLabel}</span>
+              </div>
             )}
           </div>
+
+          {/* #W3-UI — unified InteractionDock: the ONE pinned action surface for any pending
+              clarify / test-case approval / boundary decision. The transcript renders the same
+              blocks as PASSIVE history (no callbacks → no duplicate input), so a question is
+              answerable in exactly one place. Matches the backend's #W2-HITL tag routing. */}
+          {!viewingRun && running && <InteractionDock blocks={blocks} onClarify={decideClarify} onDecide={decideTestCases} onBoundary={decideBoundary} />}
 
           {/* composer (业务域 selector removed — pick the domain in the left sidebar) */}
           <div style={{ borderTop: "1px solid var(--border)", padding: 12, display: "flex", flexDirection: "column", gap: 8 }}>
@@ -479,37 +553,18 @@ export default function FactoryPage() {
               </div>
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                {/* attachments: ontology JSON (→ 本地业务域) + 工具文档 (→ 大脑造工具进本域库) */}
+                {/* 曲别针只收工具/参考文档（📄）——本体统一走左栏「本地本体 · 上传/管理」，不再两处重复。 */}
                 {attached.length > 0 && (() => {
-                  // Ontology files (actions/events/rules/dataObjects of one bundle) merge into ONE
-                  // business domain — show a SINGLE chip, not N duplicate-looking ones. Tool docs stay
-                  // individual (each is its own source). This removes the "duplicate chip" confusion.
-                  const onto = attached.filter((a) => a.kind === "ontology");
-                  const docs = attached.filter((a) => a.kind === "tooldoc");
                   const clip = (s: string) => (s.length > 22 ? s.slice(0, 21) + "…" : s);
                   return (
                     <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
-                      {onto.length > 0 && (
-                        <span className="factory-cta" style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11, padding: "3px 9px", borderRadius: 12, border: "1px solid var(--green)", color: "var(--text-2)" }}>
-                          <span style={{ color: "var(--green)", fontWeight: 600 }}>📦 本体</span>
-                          ·{onto.length === 1 ? clip(onto[0]!.name) : `${onto.length} 个文件 · 合并为一个业务域`}
-                          <button onClick={() => setAttached(attached.filter((a) => a.kind !== "ontology"))} title="移除本体" style={{ background: "none", border: "none", color: "var(--text-3)", cursor: "pointer", fontSize: 12, padding: 0 }}>✕</button>
+                      {attached.map((a, idx) => (
+                        <span key={idx} className="factory-cta" style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11, padding: "3px 9px", borderRadius: 12, border: "1px solid var(--violet)", color: "var(--text-2)" }}>
+                          <span style={{ color: "var(--violet)", fontWeight: 600 }}>📄 文档</span>
+                          ·{clip(a.name)}
+                          <button onClick={() => setAttached(attached.filter((_, j) => j !== idx))} title="移除" style={{ background: "none", border: "none", color: "var(--text-3)", cursor: "pointer", fontSize: 12, padding: 0 }}>✕</button>
                         </span>
-                      )}
-                      {docs.map((a) => {
-                        const idx = attached.indexOf(a);
-                        return (
-                          <span key={idx} className="factory-cta" style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11, padding: "3px 9px", borderRadius: 12, border: "1px solid var(--violet)", color: "var(--text-2)" }}>
-                            <span style={{ color: "var(--violet)", fontWeight: 600 }}>📄 工具文档</span>
-                            ·{clip(a.name)}
-                            <button onClick={() => setAttached(attached.map((x, j) => (j === idx ? { ...x, kind: "ontology" } : x)))} title="改为本体" style={{ background: "none", border: "none", color: "var(--text-3)", cursor: "pointer", fontSize: 12, padding: 0 }}>↔</button>
-                            <button onClick={() => setAttached(attached.filter((_, j) => j !== idx))} title="移除" style={{ background: "none", border: "none", color: "var(--text-3)", cursor: "pointer", fontSize: 12, padding: 0 }}>✕</button>
-                          </span>
-                        );
-                      })}
-                      {onto.length > 0 && (
-                        <input value={ontologyName} onChange={(e) => setOntologyName(e.target.value)} placeholder="业务域名字（可留空）" style={{ fontSize: 11.5, padding: "3px 8px", background: "var(--panel-2)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 6, width: 160 }} />
-                      )}
+                      ))}
                     </div>
                   );
                 })()}
@@ -517,7 +572,7 @@ export default function FactoryPage() {
                 <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
                   <input ref={fileRef} type="file" multiple accept=".json,.txt,.md,.markdown,.html,.htm,.csv,application/json,text/*" style={{ display: "none" }} onChange={(e) => void onAttachFiles(e.target.files)} />
                   <button className="factory-cta" onClick={() => fileRef.current?.click()} title="上传本体 JSON 或工具文档" style={{ fontSize: 16, lineHeight: 1, padding: "8px 10px", background: "var(--panel-2)", color: "var(--text-2)", border: "1px solid var(--border)", borderRadius: 8, cursor: "pointer" }}>📎</button>
-                  <textarea value={goal} onChange={(e) => setGoal(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void submit(); }} placeholder={convId ? "继续对话…  ⌘/Ctrl+Enter 发送" : attached.length ? "可补充目标（可留空）…  ⌘/Ctrl+Enter 发送" : "描述你要做什么，或点 📎 上传本体 …  ⌘/Ctrl+Enter 发送"} rows={2} style={{ flex: 1, resize: "none", fontSize: 13, padding: "8px 10px", background: "var(--panel-2)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 8, fontFamily: "var(--sans)" }} />
+                  <textarea value={goal} onChange={(e) => setGoal(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) void submit(); }} placeholder={convId ? "继续对话…  ⌘/Ctrl+Enter 发送" : attached.length ? "可补充目标（可留空）…  ⌘/Ctrl+Enter 发送" : "描述你要做什么，或点 📎 附上工具/参考文档 …  ⌘/Ctrl+Enter 发送"} rows={2} style={{ flex: 1, resize: "none", fontSize: 13, padding: "8px 10px", background: "var(--panel-2)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 8, fontFamily: "var(--sans)" }} />
                   <Button icon="spark" tone="primary" onClick={() => void submit()} disabled={running || !domain || (!goal.trim() && attached.length === 0)}>{convId ? "发送" : "开始"}</Button>
                 </div>
               </div>
@@ -525,57 +580,29 @@ export default function FactoryPage() {
           </div>
         </div>
 
-        {/* ── right pane: pinned stage rail + 3 tabs (交付图 / 大脑 / 总结) ── */}
+        {/* ── right pane: pinned stage rail + 4 tabs (智能体 / 大脑 / 测试 / 总结), 可收起 + 每 tab 全屏 ── */}
+        {rightOpen && (
         <div style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
           {/* pinned at-a-glance stage rail — always visible above the tabs */}
           <div style={{ padding: "10px 12px", borderBottom: "1px solid var(--border)" }}>
             <StageRail stages={stages} current={current} running={running} refineCount={refineCount} />
             {awaitingHint && (
               <div style={{ marginTop: 7, fontSize: 11.5, color: "var(--amber)", display: "flex", alignItems: "center", gap: 6 }}>
-                <span className="health-pulse" style={{ color: "var(--amber)", width: 9, height: 9 }} />等你决定：{awaitingHint}
+                <span className="health-pulse" style={{ color: "var(--amber)", width: 9, height: 9 }} />等你决定：{awaitingHint}（在中间聊天区回答）
               </div>
             )}
           </div>
           <div style={{ display: "flex", borderBottom: "1px solid var(--border)", alignItems: "center" }}>
-            {([["flow", `智能体${agents.length ? ` · ${agents.length}` : ""}`], ["brain", "大脑"], ["test", `测试${testCaseList.length || sandboxRuns.length ? ` · ${testCaseList.length || sandboxRuns.length}` : ""}`], ["summary", "总结"]] as Array<["flow" | "brain" | "test" | "summary", string]>).map(([k, label]) => (
+            {([["flow", `智能体${agents.length ? ` · ${agents.length}` : ""}`], ["brain", "大脑"], ["test", `测试${testCaseList.length || sandboxRuns.length ? ` · ${testCaseList.length || sandboxRuns.length}` : ""}`], ["summary", "总结"], ["bg", `${awaitingHint ? "● " : ""}后台`]] as Array<["flow" | "brain" | "test" | "summary" | "bg", string]>).map(([k, label]) => (
               <button key={k} onClick={() => { setTab(k); setSelectedSlug(null); }} style={{ flex: "1 0 auto", padding: "9px 6px", fontSize: 11.5, fontWeight: 600, whiteSpace: "nowrap", background: "none", border: "none", borderBottom: tab === k ? "2px solid var(--signal)" : "2px solid transparent", color: tab === k ? "var(--text)" : "var(--text-3)", cursor: "pointer", transition: "color 0.15s ease, border-color 0.15s ease" }}>{label}</button>
             ))}
-            {(tab === "flow" || tab === "brain") && (
-              <button title="全屏查看" onClick={() => setFullscreen(tab === "brain" ? "brain" : "flow")} style={{ padding: "0 10px", background: "none", border: "none", cursor: "pointer", color: "var(--text-3)", display: "inline-flex", alignItems: "center" }}>
-                <Icon name="external" size={14} />
-              </button>
-            )}
+            <button title="全屏查看当前标签" onClick={() => setFullscreen(tab)} style={{ padding: "0 10px", background: "none", border: "none", cursor: "pointer", color: "var(--text-3)", display: "inline-flex", alignItems: "center" }}>
+              <Icon name="external" size={14} />
+            </button>
           </div>
-          <div style={{ flex: 1, overflow: "auto", padding: 12 }}>
-            {tab === "summary" ? (
-              <RunSummary blocks={blocks} lastBudget={lastBudget} analysis={analysis} analyzing={analyzing} canAnalyze={!!(viewingRun?.id || (runId && !running))} onAnalyze={analyzeRunUi} />
-            ) : tab === "test" ? (
-              <SandboxIOPanel testCases={testCaseList} agentRuns={sandboxRuns} />
-            ) : tab === "brain" ? (
-              <div>
-                <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
-                  {([["flow", "决策流"], ["log", "活动日志"]] as Array<["flow" | "log", string]>).map(([k, label]) => (
-                    <button key={k} onClick={() => setBrainView(k)} style={{ fontSize: 11.5, padding: "3px 12px", borderRadius: 20, cursor: "pointer", border: `1px solid ${brainView === k ? "var(--signal)" : "var(--border)"}`, background: brainView === k ? "var(--panel-2)" : "transparent", color: brainView === k ? "var(--text)" : "var(--text-3)" }}>{label}</button>
-                  ))}
-                </div>
-                {brainView === "log" ? <ActivityLog blocks={blocks} /> : <BrainFlow steps={brainSteps} running={running} />}
-              </div>
-            ) : selectedAgent ? (
-              <AgentInspector agent={selectedAgent} io={selectedIo} score={selectedScore} versions={agentVersions.get(selectedAgent.slug) ?? []} onBack={() => setSelectedSlug(null)} onShowCode={showCode} onRegenerate={regenerateAgent} />
-            ) : (
-              <div>
-                <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
-                  {([["cards", "卡片列表"], ["graph", "事件图"]] as Array<["cards" | "graph", string]>).map(([k, label]) => (
-                    <button key={k} onClick={() => setDeliverView(k)} style={{ fontSize: 11.5, padding: "3px 12px", borderRadius: 20, cursor: "pointer", border: `1px solid ${deliverView === k ? "var(--signal)" : "var(--border)"}`, background: deliverView === k ? "var(--panel-2)" : "transparent", color: deliverView === k ? "var(--text)" : "var(--text-3)" }}>{label}</button>
-                  ))}
-                </div>
-                {deliverView === "cards"
-                  ? <AgentCardList agents={agents} degraded={degraded} ioByShort={ioByShort} onShowCode={showCode} onRegenerate={regenerateAgent} onSelect={setSelectedSlug} />
-                  : <EventGraph agents={agents} scores={scores} degraded={degraded} selectedSlug={selectedSlug} onSelect={setSelectedSlug} />}
-              </div>
-            )}
-          </div>
+          <div style={{ flex: 1, overflow: "auto", padding: 12 }}>{renderTabBody(false)}</div>
         </div>
+        )}
       </div>
     </div>
   );

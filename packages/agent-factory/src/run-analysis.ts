@@ -7,7 +7,7 @@
 // digest-only result when no gateway is configured.
 
 import type { BrainEvent } from "./brain-types";
-import { chatOnce, isGatewayConfigured } from "./stream-gateway";
+import { chatJson, isGatewayConfigured } from "./stream-gateway";
 import { modelChain } from "./model-router";
 import { detectLang, resolveBrainLang } from "./i18n";
 
@@ -205,9 +205,7 @@ export async function analyzeRun(events: BrainEvent[], opts: { signal?: AbortSig
         '只输出 JSON：{"score":number(0-100),"summary":string,"strengths":string[],"problems":string[],"suggestions":string[]}。problems/suggestions 必须具体到环节、动作、甚至某一轮(如「IntakeResume 第2轮精修把工具删错了」)。全部中文。不要任何其它文字。';
   try {
     let served = "";
-    const text = await chatOnce(sys, digest, { temperature: 0.3, maxTokens: 2600, signal: opts.signal, models: modelChain("review"), onModel: (m) => { served = m; } });
-    const m = text.match(/\{[\s\S]*\}/);
-    const j = m ? (JSON.parse(m[0]) as Record<string, unknown>) : null;
+    const j = await chatJson<Record<string, unknown>>(sys, digest, { temperature: 0.3, maxTokens: 6000, signal: opts.signal, models: modelChain("review"), purpose: "run_analysis", onModel: (m) => { served = m; } });
     if (!j) return FALLBACK(digest, rounds);
     const arr = (v: unknown) => (Array.isArray(v) ? v.map(String) : []);
     return {

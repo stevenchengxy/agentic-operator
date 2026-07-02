@@ -167,6 +167,18 @@ export interface GeneratedAgentSpec {
    *  TRUE = opt-in "true CodeAct": the runtime transpiles + runs the AI-authored handler
    *  instead of action[] dispatch (the executed path is deferred — flag reserved for it). */
   codeExecuted?: boolean;
+  /** #REDESIGN FU3 — when the reviewLoop PROBE stage rejected the code (compiles+lints but doesn't
+   *  load a callable handler), why. Surfaced in the design card so the failure is legible instead of
+   *  silently downgrading to declarative. Undefined when the probe passed. */
+  probeReason?: string;
+  /** #NEST — this spec is a SUB-AGENT (a deployable helper invoked synchronously by a parent via a
+   *  plan `kind:"invoke"` step), NOT an ontology Agent-action. Excluded from coverage + event-graph
+   *  closure (it has no ontology trigger); still a real registered function the parent invokes. */
+  isSubAgent?: boolean;
+  /** the parent spec's actionName that invokes this sub-agent (set on the sub-agent). */
+  parentAction?: string;
+  /** the subtask this sub-agent handles — its reason for existing (design_subagent / promotion). */
+  parentTask?: string;
 }
 
 /** One AI-authored I/O field, grounded in a DataObject property where possible. */

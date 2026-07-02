@@ -17,7 +17,8 @@
       "MATCH_RULE_CHECK_FAILED"
     ],
     "tools": [
-      "ontology.fetchActionRules"
+      "ontology.fetchActionRules",
+      "fs.appendToLog"
     ],
     "unresolvedTools": [],
     "objects": [
@@ -28,16 +29,21 @@
       "Client",
       "Client_Department"
     ],
-    "systemPrompt": "你是一个专业的简历匹配前置规则校验专家。你的核心职责是在候选人进入正式简历匹配环节前，执行公司通用规则和客户定制规则的合规性检查，确保只有符合条件的候选人才能进入匹配流程。\n\n工作流程：\n1. 接收输入：获取 `candidate_id`、`resume_id` 和 `job_requisition_id`（来自 RESUME_PROCESSED 事件）。\n2. 动态获取规则：必须调用 `ontology.fetchActionRules` 获取当前动作（`ruleCheckForMatchResume`）的最新业务规则，包括公司通用规则和客户定制规则。\n3. 执行规则校验（依据动态获取的规则逐项检查）：\n   - 候选人状态检查：是否在黑名单中、是否处于锁定冲突状态。\n   - 岗位状态检查：Job_Requisition.hc_status 是否为\"已关闭\"。\n   - 内推奖金资格冲突检查（规则 9-7）：全局部门冲突（HR/招聘部门）和局部决策冲突（推荐人是否为该候选人的面试官）。\n   - 客户定制规则：离职冷却期、学历类型限制、行业黑名单等（从 Client_Preference 和 Client_Department 获取）。\n4. 判定结果：\n   - 所有规则通过 → `result=通过`，产出 `MATCH_RULE_CHECK_PASSED` 事件。\n   - 任意规则未通过 → `result=未通过`，记录 `reason`，产出 `MATCH_RULE_CHECK_FAILED` 事件。\n5. 写入 `Candidate_Match_Result` 记录（包含 `rule_check_result` 和 `rule_check_reason`）。\n\n决策依据：\n- 所有规则必须从 `ontology.fetchActionRules` 动态获取，绝不硬编码任何具体规则条件。\n- 规则校验是强制闸口（hard gate），未通过则流程终止，不进入匹配环节。\n\n【前置条件（运行前必须满足；不满足则 fail-close 发拦截/失败事件，不要继续）】\n1. RESUME_PROCESSED事件已送达\n2. 候选人(Candidate)记录已创建且candidate_id非空\n3. 候选人简历(Resume)已完成结构化解析\n4. 至少一个有效的招聘岗位(Job_Requisition)记录存在且hc_status不为\"已关闭\"",
+    "systemPrompt": "你是简历匹配前置规则检查专家。你的职责是在候选人进入简历匹配环节前，执行全面的规则合规性检查，确保只有符合条件的候选人才能进入匹配流程。\n\n你必须动态获取最新规则后再执行检查，绝不能将规则写死。检查范围包括：\n1. 【公司通用规则】：适用于所有候选人的基础规则，如黑名单检查、候选人状态检查等。\n2. 【客户定制规则】：根据目标岗位的客户和部门，获取并执行客户特有的招聘规则，如离职冷却期、学历类型限制、行业排除等。\n3. 【岗位状态检查】：确认目标岗位 hc_status 不为\"已关闭\"。\n\n检查结果：\n- 通过：发出 MATCH_RULE_CHECK_PASSED 事件，候选人进入匹配流程。\n- 未通过：发出 MATCH_RULE_CHECK_FAILED 事件，记录失败原因，通知招聘专员。\n\n【规则动态抓取机制（系统强制补全，运行时执行）】\n① 从触发事件 payload 识别本次要校验的对象与上下文；② 绑定并调用 ontology.fetchActionRules 按【当前 action + 上下文】实时抓取适用规则（绝不把规则写进本 prompt）；③ 逐条核对，命中任一强制(mandatory)规则即发失败事件并落库；④ 数据不足时 fail-close 保守拦截。\n\n【前置条件（运行前必须满足；不满足则 fail-close 发拦截/失败事件，不要继续）】\n1. RESUME_PROCESSED事件已送达\n2. 候选人(Candidate)记录已创建且candidate_id非空\n3. 候选人简历(Resume)已完成结构化解析\n4. 至少一个有效的招聘岗位(Job_Requisition)记录存在且hc_status不为\"已关闭\"",
     "userPrompt": "",
-    "designReasoning": "设计 ruleCheckForMatchResume Agent，负责简历匹配前的规则校验，包括公司通用规则和客户定制规则。这是规则校验类动作，必须使用 ontology.fetchActionRules 动态获取规则。",
-    "toolRationale": "ontology.fetchActionRules 是规则校验类 Agent 的必备工具，用于动态获取公司通用规则和客户定制规则，确保规则不被硬编码。",
-    "decisionLogic": "1. 接收 RESUME_PROCESSED 事件，提取 candidate_id、resume_id、job_requisition_id。\n2. 调用 ontology.fetchActionRules 获取 ruleCheckForMatchResume 的规则。\n3. 逐项执行规则校验：\n   a. 候选人黑名单状态检查\n   b. 岗位 hc_status 检查（不为\"已关闭\"）\n   c. 内推奖金资格冲突检查（全局部门冲突 + 局部决策冲突）\n   d. 客户定制规则（离职冷却期、学历类型等）\n4. 若全部通过 → emit MATCH_RULE_CHECK_PASSED，携带 candidate_id、resume_id、job_requisition_id。\n5. 若任意未通过 → emit MATCH_RULE_CHECK_FAILED，携带 reason。\n6. 写入 Candidate_Match_Result 记录。",
+    "designReasoning": "设计 ruleCheckForMatchResume Agent，负责简历匹配前的规则检查，包括公司通用规则和客户定制规则。",
+    "toolRationale": "ontology.fetchActionRules 动态获取匹配前置规则，fs.appendToLog 记录检查结果。",
+    "decisionLogic": "1. 接收 CANDIDATE_IDENTITY_CHECKED 事件，获取 candidate_id、resume_id、job_requisition_id。\n2. 动态获取规则（ontology.fetchActionRules）。\n3. 执行公司通用规则检查（黑名单、候选人状态等）。\n4. 执行客户定制规则检查（离职冷却期、学历类型、行业排除等）。\n5. 检查岗位状态（hc_status 不为\"已关闭\"）。\n6. 记录检查结果到 Candidate_Match_Result。\n7. 若通过，emit MATCH_RULE_CHECK_PASSED；若未通过，emit MATCH_RULE_CHECK_FAILED。",
     "steps": [
       {
         "name": "step_1",
         "description": "调用 ontology.fetchActionRules",
         "tool": "ontology.fetchActionRules"
+      },
+      {
+        "name": "step_2",
+        "description": "调用 fs.appendToLog",
+        "tool": "fs.appendToLog"
       }
     ],
     "ruleRefs": [],
@@ -54,19 +60,19 @@
       {
         "field": "candidate_id",
         "type": "String",
-        "description": "待匹配的候选人唯一编号",
+        "description": "候选人唯一编号。",
         "source": "Candidate.candidate_id"
       },
       {
         "field": "resume_id",
         "type": "String",
-        "description": "待匹配的候选人简历唯一编号",
+        "description": "候选人简历唯一编号。",
         "source": "Resume.resume_id"
       },
       {
         "field": "job_requisition_id",
         "type": "String",
-        "description": "待匹配的招聘岗位编号",
+        "description": "岗位编号。",
         "source": "Job_Requisition.job_requisition_id"
       }
     ],
@@ -113,12 +119,35 @@
       {
         "field": "result",
         "type": "String",
-        "description": "规则检查的综合结果：通过或未通过"
+        "description": "规则检查结果，可选值为「通过」或「未通过」。"
       },
       {
         "field": "reason",
         "type": "String",
-        "description": "规则检查结果的原因解释"
+        "description": "规则检查结果的原因解释。"
+      }
+    ],
+    "plan": [
+      {
+        "stepId": "fetch-rules",
+        "kind": "tool",
+        "tool": "ontology.fetchActionRules",
+        "idempotencyKeyFrom": "candidate_id",
+        "onError": "terminal",
+        "description": "动态获取匹配前置规则"
+      },
+      {
+        "stepId": "run-rule-check",
+        "kind": "logic",
+        "description": "执行公司通用规则和客户定制规则检查"
+      },
+      {
+        "stepId": "write-check-result",
+        "kind": "tool",
+        "tool": "fs.appendToLog",
+        "idempotencyKeyFrom": "candidate_id",
+        "onError": "soft",
+        "description": "记录规则检查结果"
       }
     ],
     "stateBindings": [
@@ -165,8 +194,9 @@
         ]
       }
     ],
-    "generatedCode": "// 候选人在进行简历匹配前的规则检查，包 — 由 Agent 工厂从本体动作 `ruleCheckForMatchResume`(Agents-generation)生成。\n// trigger: RESUME_PROCESSED → emit: MATCH_RULE_CHECK_PASSED | MATCH_RULE_CHECK_FAILED\n// 参考脚手架：运行时按 workflow manifest 的 action[] 声明式调度执行（systemPrompt + 工具），\n// 【不直接运行这段 .ts 代码】——它是可读/可改的 agent 定义参考。真·CodeAct 执行路径用 codeExecuted 开关（默认关）。\n\n/** Input/Output schema — 依据本体 DataObjects 定义。 */\ninterface RuleCheckForMatchResumeAgentInput {\n  fix_result: string; // 事件 RESUME_PROCESSED 的 payload 字段\n  candidate_id: string; // 待匹配的候选人唯一编号 (源: Candidate.candidate_id)\n  resume_id: string; // 待匹配的候选人简历唯一编号 (源: Resume.resume_id)\n  job_requisition_id: string; // 待匹配的招聘岗位编号 (源: Job_Requisition.job_requisition_id)\n}\n\ninterface RuleCheckForMatchResumeAgentOutput {\n  candidate_id: string; // 事件 MATCH_RULE_CHECK_PASSED 的 payload 字段 (源: Candidate.candidate_id)\n  resume_id: string; // 事件 MATCH_RULE_CHECK_PASSED 的 payload 字段 (源: Resume.resume_id)\n  job_requisition_id: string; // 事件 MATCH_RULE_CHECK_PASSED 的 payload 字段 (源: Job_Requisition.job_requisition_id)\n  client_id: string; // 事件 MATCH_RULE_CHECK_PASSED 的 payload 字段 (源: Client.client_id)\n  rule_check_result: string; // 事件 MATCH_RULE_CHECK_PASSED 的 payload 字段\n  rule_check_reason: string; // 事件 MATCH_RULE_CHECK_PASSED 的 payload 字段\n  failed_rules: unknown; // 事件 MATCH_RULE_CHECK_FAILED 的 payload 字段\n  result: string; // 规则检查的综合结果：通过或未通过\n  reason: string; // 规则检查结果的原因解释\n}\n\n/** System prompt — 工厂为【这一个】agent 亲自推理出来的。 */\nconst SYSTEM_PROMPT = `你是一个专业的简历匹配前置规则校验专家。你的核心职责是在候选人进入正式简历匹配环节前，执行公司通用规则和客户定制规则的合规性检查，确保只有符合条件的候选人才能进入匹配流程。\n\n工作流程：\n1. 接收输入：获取 \\`candidate_id\\`、\\`resume_id\\` 和 \\`job_requisition_id\\`（来自 RESUME_PROCESSED 事件）。\n2. 动态获取规则：必须调用 \\`ontology.fetchActionRules\\` 获取当前动作（\\`ruleCheckForMatchResume\\`）的最新业务规则，包括公司通用规则和客户定制规则。\n3. 执行规则校验（依据动态获取的规则逐项检查）：\n   - 候选人状态检查：是否在黑名单中、是否处于锁定冲突状态。\n   - 岗位状态检查：Job_Requisition.hc_status 是否为\"已关闭\"。\n   - 内推奖金资格冲突检查（规则 9-7）：全局部门冲突（HR/招聘部门）和局部决策冲突（推荐人是否为该候选人的面试官）。\n   - 客户定制规则：离职冷却期、学历类型限制、行业黑名单等（从 Client_Preference 和 Client_Department 获取）。\n4. 判定结果：\n   - 所有规则通过 → \\`result=通过\\`，产出 \\`MATCH_RULE_CHECK_PASSED\\` 事件。\n   - 任意规则未通过 → \\`result=未通过\\`，记录 \\`reason\\`，产出 \\`MATCH_RULE_CHECK_FAILED\\` 事件。\n5. 写入 \\`Candidate_Match_Result\\` 记录（包含 \\`rule_check_result\\` 和 \\`rule_check_reason\\`）。\n\n决策依据：\n- 所有规则必须从 \\`ontology.fetchActionRules\\` 动态获取，绝不硬编码任何具体规则条件。\n- 规则校验是强制闸口（hard gate），未通过则流程终止，不进入匹配环节。\n\n【前置条件（运行前必须满足；不满足则 fail-close 发拦截/失败事件，不要继续）】\n1. RESUME_PROCESSED事件已送达\n2. 候选人(Candidate)记录已创建且candidate_id非空\n3. 候选人简历(Resume)已完成结构化解析\n4. 至少一个有效的招聘岗位(Job_Requisition)记录存在且hc_status不为\"已关闭\"`;\n\nexport const ruleCheckForMatchResumeAgent = defineAgent({\n  id: \"agents-gener-rule-check-for-match-resume\",\n  name: \"RuleCheckForMatchResumeAgent\",\n  actor: [\"Agent\"],\n  trigger: [\"RESUME_PROCESSED\"],\n  emit: [\"MATCH_RULE_CHECK_PASSED\",\"MATCH_RULE_CHECK_FAILED\"],\n  tools: [\"ontology.fetchActionRules\"],\n  systemPrompt: SYSTEM_PROMPT,\n  async handler(input, ctx) {\n      // 调用工具 ontology.fetchActionRules\n      // const fetchActionRulesResult = await ctx.tools.run(\"ontology.fetchActionRules\", input);\n      // 用本 agent 专属 system prompt 推理(决策核心)\n      const decision = await ctx.reason(SYSTEM_PROMPT, input);\n      // 决策分支（条件见 SYSTEM_PROMPT / decisionLogic）\n      if (decision.pass) {\n        await ctx.emit(\"MATCH_RULE_CHECK_PASSED\", { ...input, ...decision });\n      } else {\n        await ctx.emit(\"MATCH_RULE_CHECK_FAILED\", { ...input, ...decision });\n      }\n      return { ok: true };\n  },\n});\n",
-    "codeSource": "render"
+    "codeSource": "render",
+    "generatedCode": "// 候选人在进行简历匹配前的规则检查，包 — 由 Agent 工厂从本体动作 `ruleCheckForMatchResume`(Agents-generation)生成。\n// trigger: RESUME_PROCESSED → emit: MATCH_RULE_CHECK_PASSED | MATCH_RULE_CHECK_FAILED\n// 参考脚手架：运行时按 workflow manifest 的 action[] 声明式调度执行（systemPrompt + 工具），\n// 【不直接运行这段 .ts 代码】——它是可读/可改的 agent 定义参考。真·CodeAct 执行路径用 codeExecuted 开关（默认关）。\n\n/** Input/Output schema — 依据本体 DataObjects 定义。 */\ninterface RuleCheckForMatchResumeAgentInput {\n  fix_result: string; // 事件 RESUME_PROCESSED 的 payload 字段\n  candidate_id: string; // 候选人唯一编号。 (源: Candidate.candidate_id)\n  resume_id: string; // 候选人简历唯一编号。 (源: Resume.resume_id)\n  job_requisition_id: string; // 岗位编号。 (源: Job_Requisition.job_requisition_id)\n}\n\ninterface RuleCheckForMatchResumeAgentOutput {\n  candidate_id: string; // 事件 MATCH_RULE_CHECK_PASSED 的 payload 字段 (源: Candidate.candidate_id)\n  resume_id: string; // 事件 MATCH_RULE_CHECK_PASSED 的 payload 字段 (源: Resume.resume_id)\n  job_requisition_id: string; // 事件 MATCH_RULE_CHECK_PASSED 的 payload 字段 (源: Job_Requisition.job_requisition_id)\n  client_id: string; // 事件 MATCH_RULE_CHECK_PASSED 的 payload 字段 (源: Client.client_id)\n  rule_check_result: string; // 事件 MATCH_RULE_CHECK_PASSED 的 payload 字段\n  rule_check_reason: string; // 事件 MATCH_RULE_CHECK_PASSED 的 payload 字段\n  failed_rules: unknown; // 事件 MATCH_RULE_CHECK_FAILED 的 payload 字段\n  result: string; // 规则检查结果，可选值为「通过」或「未通过」。\n  reason: string; // 规则检查结果的原因解释。\n}\n\n/** System prompt — 工厂为【这一个】agent 亲自推理出来的。 */\nconst SYSTEM_PROMPT = `你是简历匹配前置规则检查专家。你的职责是在候选人进入简历匹配环节前，执行全面的规则合规性检查，确保只有符合条件的候选人才能进入匹配流程。\n\n你必须动态获取最新规则后再执行检查，绝不能将规则写死。检查范围包括：\n1. 【公司通用规则】：适用于所有候选人的基础规则，如黑名单检查、候选人状态检查等。\n2. 【客户定制规则】：根据目标岗位的客户和部门，获取并执行客户特有的招聘规则，如离职冷却期、学历类型限制、行业排除等。\n3. 【岗位状态检查】：确认目标岗位 hc_status 不为\"已关闭\"。\n\n检查结果：\n- 通过：发出 MATCH_RULE_CHECK_PASSED 事件，候选人进入匹配流程。\n- 未通过：发出 MATCH_RULE_CHECK_FAILED 事件，记录失败原因，通知招聘专员。\n\n【规则动态抓取机制（系统强制补全，运行时执行）】\n① 从触发事件 payload 识别本次要校验的对象与上下文；② 绑定并调用 ontology.fetchActionRules 按【当前 action + 上下文】实时抓取适用规则（绝不把规则写进本 prompt）；③ 逐条核对，命中任一强制(mandatory)规则即发失败事件并落库；④ 数据不足时 fail-close 保守拦截。\n\n【前置条件（运行前必须满足；不满足则 fail-close 发拦截/失败事件，不要继续）】\n1. RESUME_PROCESSED事件已送达\n2. 候选人(Candidate)记录已创建且candidate_id非空\n3. 候选人简历(Resume)已完成结构化解析\n4. 至少一个有效的招聘岗位(Job_Requisition)记录存在且hc_status不为\"已关闭\"`;\n\nexport const ruleCheckForMatchResumeAgent = defineAgent({\n  id: \"agents-gener-rule-check-for-match-resume\",\n  name: \"RuleCheckForMatchResumeAgent\",\n  actor: [\"Agent\"],\n  trigger: [\"RESUME_PROCESSED\"],\n  emit: [\"MATCH_RULE_CHECK_PASSED\",\"MATCH_RULE_CHECK_FAILED\"],\n  tools: [\"ontology.fetchActionRules\",\"fs.appendToLog\"],\n  systemPrompt: SYSTEM_PROMPT,\n  async handler(input, ctx) {\n      // 调用工具 ontology.fetchActionRules\n      // const fetchActionRulesResult = await ctx.tools.run(\"ontology.fetchActionRules\", input);\n      // 调用工具 fs.appendToLog\n      // const appendToLogResult = await ctx.tools.run(\"fs.appendToLog\", input);\n      // 用本 agent 专属 system prompt 推理(决策核心)\n      const decision = await ctx.reason(SYSTEM_PROMPT, input);\n      // 决策分支（条件见 SYSTEM_PROMPT / decisionLogic）\n      if (decision.pass) {\n        await ctx.emit(\"MATCH_RULE_CHECK_PASSED\", { ...input, ...decision });\n      } else {\n        await ctx.emit(\"MATCH_RULE_CHECK_FAILED\", { ...input, ...decision });\n      }\n      return { ok: true };\n  },\n});\n",
+    "codeExecuted": true
   },
-  "createdAt": "2026-06-30T06:43:28.963Z"
+  "createdAt": "2026-07-01T03:46:27.698Z"
 }

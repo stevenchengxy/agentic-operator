@@ -91,6 +91,10 @@ export function PortalChrome({
   const tenants: TenantOption[] = liveItems
     ? liveItems
         .filter((t) => t.archivedAt == null)
+        // #REDESIGN — 业务领域 = REAL business domains only, consistent with the Agent Factory's
+        // 业务域 list. Hide internal sandbox tenants (`<domain>-sb`, the factory's throwaway deploy
+        // targets) + the platform System tenant — they're not user-facing domains.
+        .filter((t) => !t.slug.endsWith("-sb") && t.slug !== "__system" && t.slug.toLowerCase() !== "system")
         .map((t) => ({
           id: t.slug,
           name: t.name,

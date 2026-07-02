@@ -199,6 +199,38 @@ export function useSetAgentEnabled() {
   });
 }
 
+/** Rename an agent's display title: `PATCH /v1/agents/:kebab { title }`. */
+export function useRenameAgent() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { kebabId: string; title: string }) =>
+      callV1<{ kebabId: string; title: string }>(`/v1/agents/${encodeURIComponent(vars.kebabId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: vars.title }),
+      }),
+    onSettled: (_data, _err, vars) => {
+      void client.invalidateQueries({ queryKey: AGENT_KEYS.list });
+      void client.invalidateQueries({ queryKey: AGENT_KEYS.detail(vars.kebabId) });
+    },
+  });
+}
+
+/** Delete an agent: `DELETE /v1/agents/:kebab` (soft-disables if it has run history unless force). */
+export function useDeleteAgent() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { kebabId: string; force?: boolean }) =>
+      callV1<{ kebabId: string; deleted: boolean; disabled: boolean; runCount: number; note?: string }>(
+        `/v1/agents/${encodeURIComponent(vars.kebabId)}${vars.force ? "?force=1" : ""}`,
+        { method: "DELETE" },
+      ),
+    onSettled: () => {
+      void client.invalidateQueries({ queryKey: AGENT_KEYS.list });
+    },
+  });
+}
+
 /** Invoke an agent: `POST /v1/agents/:name/invoke`. */
 export function useInvokeAgent() {
   const client = useQueryClient();

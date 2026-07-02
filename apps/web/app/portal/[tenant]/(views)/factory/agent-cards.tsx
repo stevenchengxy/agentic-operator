@@ -49,7 +49,9 @@ function AgentCard({ a, st, onShowCode, onRegenerate, onSelect }: { a: AgentCard
       <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
         <button onClick={() => onSelect?.(a.slug)} style={{ fontSize: 13.5, fontWeight: 700, color: "var(--text)", background: "none", border: "none", cursor: "pointer", padding: 0, textAlign: "left" }}>{a.nameZh || a.short}</button>
         <span style={{ fontSize: 9.5, fontFamily: "var(--mono)", color: "var(--text-3)" }}>{a.actionName || a.slug}</span>
-        <span style={{ marginLeft: "auto", fontSize: 10.5, fontWeight: 700, color: st.color, border: `1px solid ${st.color}`, borderRadius: 6, padding: "1px 7px" }}>{st.label}</span>
+        {/* #REDESIGN FU3 — reviewLoop execution grade: ⚙ CodeAct (编译+安全+加载探针 → 沙箱真跑) vs 📄 声明式. */}
+        <span title={a.codeExecuted ? "代码已过 编译+安全+加载探针，沙箱真实执行（CodeAct）" : `声明式执行${a.probeReason ? `（代码未过加载探针：${a.probeReason}）` : ""}`} style={{ marginLeft: "auto", fontSize: 10, fontWeight: 700, color: a.codeExecuted ? "var(--violet, #a78bfa)" : "var(--text-3)", border: `1px solid ${a.codeExecuted ? "var(--violet, #a78bfa)" : "var(--border)"}`, borderRadius: 6, padding: "1px 7px" }}>{a.codeExecuted ? "⚙ CodeAct" : "📄 声明式"}</span>
+        <span style={{ fontSize: 10.5, fontWeight: 700, color: st.color, border: `1px solid ${st.color}`, borderRadius: 6, padding: "1px 7px" }}>{st.label}</span>
       </div>
       <div style={{ marginTop: 6 }}><MiniSvg a={a} /></div>
       {a.tools.length > 0 && <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginTop: 4 }}>{a.tools.slice(0, 6).map((t) => chip("🔧 " + t, "var(--text-2)"))}</div>}

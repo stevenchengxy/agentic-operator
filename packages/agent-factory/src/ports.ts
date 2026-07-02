@@ -39,6 +39,9 @@ export interface SandboxDeployResult {
   deployed: number;
   reachedSuccessTerminal: boolean;
   fullChainRan: boolean;
+  /** #REDESIGN P1 — spec shorts whose GENERATED CODE actually EXECUTED (runs.code_ran=true), not
+   *  fell back to declarative. finish requires every codeExecuted spec to be here. */
+  codeRanAgents?: string[];
   degradedAgents: string[];
   runs: Array<{ id: string; status: string }>;
   /** per-agent REAL I/O reconstructed after the run settled (Feature: agent-io). */
@@ -86,7 +89,7 @@ export interface SandboxDeployer {
       dryRun?: boolean;
       // T1: a test case may carry its KIND so the deployer fires it on a distinct subject and
       // judges its outcome per-kind (reject reaching a FAIL terminal = pass).
-      testCases?: Array<{ entryEvent: string; payload: Record<string, unknown>; kind?: "pass" | "reject" | "edge" }>;
+      testCases?: Array<{ entryEvent: string; payload: Record<string, unknown>; kind?: "pass" | "reject" | "edge" | "fault" }>;
       /** #D — the user's boundary classification, threaded to the verdict so an external-handoff
        *  emit (consumed by an external platform) counts as a legitimate terminal, not a broken chain. */
       boundaryEvents?: Array<{ event: string; kind: string }>;
@@ -221,6 +224,45 @@ export interface FactoryPorts {
   /** optional: when absent, finish() doesn't persist drafts (agents live only in the
    *  transcript). When wired, a finished run writes durable, promotable agent drafts. */
   drafts?: AgentDraftStore;
+  /** optional (#SCALE-TOOLS): record per-tool sandbox outcomes so ranking can demote empirically
+   *  failing tools. No-op when unwired; fail-safe. */
+  toolStats?: { record(toolName: string, ok: boolean): Promise<void>; successRates(): Promise<Record<string, { invoked: number; succeeded: number }>> };
+  /** optional (P1-6): persist per-criterion acceptance verdicts so pass-rate can be trended without
+   *  replaying transcripts. No-op when unwired; fail-safe (never throws into the finish gate). */
+  acceptance?: AcceptanceRecorder;
+  /** optional: the domain-analysis REPORT pipeline (reportGenerator agent → HTML/PDF artifacts).
+   *  Wired by the api to report-jobs; when absent, generate_report refuses with a clear message
+   *  (the brain must never hand-write a full report into the chat as a fallback). */
+  report?: ReportRunner;
+  /** optional: 系统 B 的舰队目录（已交付/已启用的 functions）——capability_resolve 的「复用面」。
+   *  Wired by the api; absent → resolution honestly skips the fleet face (never guesses). */
+  fleet?: FleetCatalog;
+}
+
+/** Delivered functions visible to the GENERATION system for reuse resolution (G1, 附录 B)。
+ *  G2 回流飞轮：条目可携带近期【生产】运行战绩（prodRuns/prodFailRate，系统 B → 系统 A），
+ *  capability_resolve 在复用判定旁展示，让"复用一个正在生产上翻车的 agent"当场可见。 */
+export interface FleetCatalog {
+  list(): Promise<Array<{ kebabId: string; name: string; title?: string; enabled: boolean; trigger: string[]; emit: string[]; prodRuns?: number; prodFailRate?: number }>>;
+}
+
+/** Starts/polls an ontology-analysis report job. Artifacts download at /v1/artifacts/:id and the
+ *  job is visible in the portal's 后台任务 panel (report-jobs is the single implementation). */
+export interface ReportRunner {
+  start(opts: { domain: string; format: "html" | "pdf" | "both"; focus?: string }): Promise<{ id: string }>;
+  status(id: string): Promise<{
+    status: "running" | "done" | "error";
+    phase?: string;
+    error?: string;
+    note?: string;
+    title?: string;
+    artifacts: Array<{ id: string; kind: string; label: string; size: number }>;
+  } | null>;
+}
+
+/** #P1-6 — records one row per acceptance criterion per run (for trend dashboards). */
+export interface AcceptanceRecorder {
+  record(runId: string, domain: string, tenantId: string | undefined, criteria: Array<{ key: string; label: string; pass: boolean; detail: string }>): Promise<void>;
 }
 
 /** The real global tool registry surfaced to the factory (config-injected, see FactoryPorts.toolRegistry). */

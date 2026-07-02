@@ -12,6 +12,7 @@
     "predev": "pnpm run ensure:native && (lsof -ti:3599,3540,8488,8489,50152,50153 | xargs kill -9 2>/dev/null; exit 0)",
     "dev": "concurrently -n web,api,inngest -c blue,green,magenta \"pnpm --filter @agentic/web run dev\" \"pnpm --filter @agentic/api run dev\" \"npx -y inngest-cli@latest dev -u http://localhost:3540/inngest -p 8488 --connect-gateway-port 8489 --connect-gateway-grpc-port 50152 --connect-executor-grpc-port 50153\"",
     "dev:restart": "bash scripts/restart-dev.sh",
+    "restart": "bash scripts/restart-dev.sh",
     "prebuild": "pnpm run ensure:native",
     "build": "turbo run build",
     "lint": "turbo run lint",

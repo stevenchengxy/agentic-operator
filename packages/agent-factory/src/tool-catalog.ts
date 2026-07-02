@@ -59,6 +59,10 @@ export interface RealTool {
   aliases?: string[];
   configKeys?: string[];
   category?: string;
+  /** #SCALE-TOOLS — empirical sandbox success rate (0..1) from tool_stats; undefined = no data yet. */
+  successRate?: number;
+  /** total sandbox invocations behind successRate (demotion needs >=3 to avoid noise). */
+  invoked?: number;
 }
 
 /** #C — semantic ranking (restored from old AO): score each REAL tool by token-overlap of the
@@ -68,8 +72,12 @@ export interface RealTool {
 export function rankRealTools(action: OntologyAction, realTools: RealTool[], limit = 4): string[] {
   if (!realTools.length) return [];
   const actToks = tokens(action.name);
+  // #SCALE-TOOLS — EMPIRICAL DEMOTION: a tool that keeps failing in real sandbox runs (<70% success,
+  // >=3 invocations) drops out of recommendations even if it matches semantically.
+  const demoted = new Set(realTools.filter((t) => (t.invoked ?? 0) >= 3 && (t.successRate ?? 1) < 0.7).map((t) => t.name));
   const objToks = new Set((action.target_objects ?? []).flatMap((o) => [...tokens(String(o))]));
   const scored = realTools
+    .filter((t) => !demoted.has(t.name))
     .map((t) => {
       const bare = t.name.includes(".") ? t.name.slice(t.name.indexOf(".") + 1) : t.name;
       const nameToks = new Set([...tokens(bare), ...(t.aliases ?? []).flatMap((a) => [...tokens(a)])]);
