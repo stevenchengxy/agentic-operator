@@ -24,6 +24,9 @@ export {
   type RunModuleProcOpts,
   type ScrubEnvOpts,
 } from "./module-runner-proc";
+// #P6 (full) — strongest tier: real Docker container isolation (--network none, --read-only, caps dropped,
+// non-root, memory/cpu/pids caps). Falls back to the child-process runner when Docker is unavailable.
+export { runGeneratedModuleContainer, dockerAvailable, _resetDockerProbe, type RunModuleContainerOpts } from "./module-runner-container";
 // #REDESIGN FU1 — the delivered-tier AgentRuntime adapter (power-strip contract).
 export { makeDeliveredRuntime, type DeliveredRuntimeDeps } from "./delivered-runtime";
 // #COMMS — inter-agent message envelope: carry-forward payload assembler + content-addressed offload.
