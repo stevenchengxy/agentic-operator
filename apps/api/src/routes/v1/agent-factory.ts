@@ -118,6 +118,18 @@ export async function agentFactoryRoutes(app: FastifyInstance) {
     return reply.ok({ drafts: await listAgentDrafts(domain) });
   });
 
+  // #P1b — fetch the DEPLOYABLE ts_function_module code for one draft (the actual function code,
+  // inngest.createFunction 形态, to download/copy). Rendered from the spec if not persisted yet.
+  app.get<{ Querystring: { domain?: string; slug?: string } }>("/agent-factory/drafts/code", async (req, reply) => {
+    requirePermission(req, "agents.read");
+    const domain = String(req.query.domain ?? "").trim();
+    const slug = String(req.query.slug ?? "").trim();
+    if (!domain || !slug) return reply.fail("bad_request", "domain 和 slug 必填", 400);
+    const code = await new FsAgentDraftStore().getCode(domain, slug);
+    if (code == null) return reply.fail("not_found", "没有这个草稿。", 404);
+    return reply.ok({ domain, slug, code, filename: `${slug}.ts` });
+  });
+
   // Delete a single generated-function DRAFT before it's promoted (user declined it). File-based
   // draft store; never touches live agents. domain required to scope the delete.
   app.delete<{ Params: { slug: string }; Querystring: { domain?: string } }>("/agent-factory/drafts/:slug", async (req, reply) => {
