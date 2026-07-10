@@ -538,6 +538,14 @@ function loadLiveSnapshot(ctx: TenantCtx): LiveSnapshot {
   };
 }
 
+/** The tenant's current LIVE workflow agents (the raw committed manifest array). Exported
+ *  for the factory's draft-promotion merge: promoting agents must be ADDITIVE — keep all of
+ *  the tenant's existing agents and only add/replace by id — never clobber the live workflow
+ *  the way a throwaway sandbox tenant can be replaced. Empty array for a first-time tenant. */
+export function loadLiveManifest(ctx: TenantCtx): unknown[] {
+  return loadLiveSnapshot(ctx).agents as unknown[];
+}
+
 function liveSnapshotForLint(live: LiveSnapshot): LiveWorkflowSnapshot {
   const events = new Set<string>();
   for (const a of live.agents) {
@@ -1544,7 +1552,13 @@ export async function commit(
       tenantSlug: ctx.tenantSlug,
       scope: "tenant",
     });
-    inngestCount = r.fnCount;
+    // #INNGEST-FIX(B1) — report THIS tenant's own app fn count, not the whole-fleet total. A scoped
+    // reregister sets appFnCount = the tenant app's fns; using fnCount (all apps summed) made
+    // inngest_fns_registered ~60+ instead of ~5, which broke the sandbox's waitForAppReady (its
+    // per-app probe could never reach a fleet-wide expected count → appReady always false → real
+    // agent failures misattributed as "environment problem, don't refine the agent"). No-slug full
+    // rebuilds leave appFnCount undefined → falls back to fnCount (unchanged).
+    inngestCount = r.appFnCount ?? r.fnCount;
   } catch (err) {
     // Re-register failure is recoverable but observable. Audit + log; the
     // next process boot reads from disk and re-registers.

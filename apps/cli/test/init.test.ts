@@ -98,7 +98,7 @@ describe("agentic init", () => {
     // Drive the CLI-style command through runInit with mocked context.
     const ctx = {
       args: parseArgs(["init", "BAD-SLUG"]),
-      apiUrl: "http://localhost:3501",
+      apiUrl: "http://localhost:3540",
       apiToken: "",
       stdout: {
         write: () => true,

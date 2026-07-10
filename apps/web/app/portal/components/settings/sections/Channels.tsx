@@ -11,18 +11,20 @@
 import { Button, Panel } from "@/app/portal/components";
 import { Field, SelectIn, TextIn, Toggle } from "@/app/portal/components/settings/atoms";
 import { SETTINGS_INTEGRATIONS } from "@/app/portal/components/settings/data";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 
 export function ChannelsSection() {
+  const { t } = useI18n();
   const channels = SETTINGS_INTEGRATIONS.filter((i) => i.kind.startsWith("Channel"));
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
       <Panel
-        title={`Connected channels · ${channels.length}`}
-        subtitle="Where the workflow posts job openings + sources candidates."
+        title={t("channels.connectedTitle", { n: channels.length })}
+        subtitle={t("channels.connectedSubtitle")}
         padded={false}
         action={
           <Button small icon="plus" tone="primary">
-            Connect channel
+            {t("channels.connectChannel")}
           </Button>
         }
       >
@@ -51,25 +53,25 @@ export function ChannelsSection() {
               <div style={{ fontSize: 11, color: "var(--text-3)" }}>{c.detail}</div>
             </div>
             <Button small tone="ghost">
-              Configure
+              {t("channels.configure")}
             </Button>
           </div>
         ))}
       </Panel>
 
-      <Panel title="Default routing" padded>
-        <Field label="Primary channel" hint="First channel to receive new job posts.">
+      <Panel title={t("channels.defaultRouting")} padded>
+        <Field label={t("channels.primaryChannel")} hint={t("channels.primaryChannelHint")}>
           <SelectIn value="zhilian" options={channels.map((c) => ({ value: c.id, label: c.name }))} />
         </Field>
-        <Field label="Fallback channel" hint="Used if the primary fails or hits quota.">
+        <Field label={t("channels.fallbackChannel")} hint={t("channels.fallbackChannelHint")}>
           <SelectIn value="boss" options={channels.map((c) => ({ value: c.id, label: c.name }))} />
         </Field>
-        <Field label="Daily post cap (per channel)" hint="Soft cap. Set 0 to disable throttling.">
-          <TextIn value="20" mono suffix="posts" />
+        <Field label={t("channels.dailyPostCap")} hint={t("channels.dailyPostCapHint")}>
+          <TextIn value="20" mono suffix={t("channels.postsSuffix")} />
         </Field>
         <Field
-          label="Throttle on quota"
-          hint="Pause posting to a channel automatically when it reports ≥90% quota use."
+          label={t("channels.throttleOnQuota")}
+          hint={t("channels.throttleOnQuotaHint")}
         >
           <Toggle value onChange={() => {}} />
         </Field>

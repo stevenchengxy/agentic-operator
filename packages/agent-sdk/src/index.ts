@@ -15,6 +15,16 @@ export type {
 } from "./memory";
 export {
   type MemoryDriver,
+  type MemoryMirrorRow,
   type MemoryHit,
+  type MemorySearchScope,
   NoMemoryDriverError,
 } from "./memory-driver";
+// #REDESIGN P2 — the power-strip contract both tiers implement.
+export {
+  type AgentRuntime,
+  type UnifiedAgentContract,
+  type AgentTier,
+  type SpawnResult,
+  isAgentRuntime,
+} from "./contract";

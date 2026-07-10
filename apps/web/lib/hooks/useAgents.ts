@@ -138,6 +138,99 @@ export function useDag(): UseQueryResult<DagPayload> {
   });
 }
 
+export interface ThroughputAgent {
+  kebabId: string;
+  name: string;
+  title: string;
+  subjects: number;
+  runs: number;
+}
+
+export interface ThroughputResult {
+  window: string;
+  windowMs: number;
+  agents: ThroughputAgent[];
+}
+
+/**
+ * Per-agent throughput (`GET /v1/throughput`). For the live workflow, the
+ * distinct subjects + run count each agent processed in the window. `window`
+ * is "1h" | "24h" | "7d"; the backend echoes the resolved window back. Rides
+ * the same SSE-driven invalidation as the other dashboard reads.
+ */
+export function useThroughput(
+  window: "1h" | "24h" | "7d" = "24h",
+): UseQueryResult<ThroughputResult> {
+  return useQuery({
+    queryKey: ["workflows", "throughput", window] as const,
+    queryFn: () => callV1<ThroughputResult>(`/v1/throughput?window=${window}`),
+    staleTime: 10_000,
+  });
+}
+
+/**
+ * Enable / disable an agent: `PATCH /v1/agents/:kebab { enabled }`.
+ *
+ * 下线 (disable) flips the row + re-registers the tenant so a manifest agent's
+ * Inngest function is dropped from the live serve handler without a restart;
+ * 上线 (enable) reverses it. Invalidates the agent list + detail so the toggle
+ * reflects the new state immediately.
+ */
+export function useSetAgentEnabled() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { kebabId: string; enabled: boolean }) =>
+      callV1<{
+        kebabId: string;
+        name: string;
+        kind: "code" | "manifest";
+        enabled: boolean;
+        reregistered: boolean;
+        fnCount?: number;
+      }>(`/v1/agents/${encodeURIComponent(vars.kebabId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: vars.enabled }),
+      }),
+    onSettled: (_data, _err, vars) => {
+      void client.invalidateQueries({ queryKey: AGENT_KEYS.list });
+      void client.invalidateQueries({ queryKey: AGENT_KEYS.detail(vars.kebabId) });
+    },
+  });
+}
+
+/** Rename an agent's display title: `PATCH /v1/agents/:kebab { title }`. */
+export function useRenameAgent() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { kebabId: string; title: string }) =>
+      callV1<{ kebabId: string; title: string }>(`/v1/agents/${encodeURIComponent(vars.kebabId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: vars.title }),
+      }),
+    onSettled: (_data, _err, vars) => {
+      void client.invalidateQueries({ queryKey: AGENT_KEYS.list });
+      void client.invalidateQueries({ queryKey: AGENT_KEYS.detail(vars.kebabId) });
+    },
+  });
+}
+
+/** Delete an agent: `DELETE /v1/agents/:kebab` (soft-disables if it has run history unless force). */
+export function useDeleteAgent() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: { kebabId: string; force?: boolean }) =>
+      callV1<{ kebabId: string; deleted: boolean; disabled: boolean; runCount: number; note?: string }>(
+        `/v1/agents/${encodeURIComponent(vars.kebabId)}${vars.force ? "?force=1" : ""}`,
+        { method: "DELETE" },
+      ),
+    onSettled: () => {
+      void client.invalidateQueries({ queryKey: AGENT_KEYS.list });
+    },
+  });
+}
+
 /** Invoke an agent: `POST /v1/agents/:name/invoke`. */
 export function useInvokeAgent() {
   const client = useQueryClient();

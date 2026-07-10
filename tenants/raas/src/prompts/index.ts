@@ -101,23 +101,53 @@ export const recordAndValidateResult = definePrompt({
 
 // ── createJD ─────────────────────────────────────────────────────────────────
 
+// Migrated from the old `createJD` production agent (server/inngest/agents/
+// create-jd-agent.ts). The old agent flattened ~40 requisition/spec/
+// clarification fields (buildPromptFromRequirement) and stitched a Markdown JD
+// (assembleJdContent). In the new app there is no partner-Postgres: the
+// clarified requirement arrives in the trigger event / previous step output,
+// so the prompt reads it from `ctxBundle(ctx)` and produces the JD directly.
 export const generateJDContent = definePrompt({
   name: "generateJDContent",
-  description: "Draft a complete job description from a clarified requirement.",
+  description:
+    "Draft a complete, platform-ready job description from a clarified hiring requirement.",
   system:
-    "You are a job-description writer. Given a clarified requirement and a template, produce a polished JD with title, top 5 search keywords, responsibilities, requirements, company blurb, comp, and logistics.",
+    "你是一名资深招聘内容专家，为中国招聘市场（前程无忧 / 智联 / BOSS 直聘 / 猎聘 / 企业官网）撰写规范、合规、有吸引力的职位描述（JD）。" +
+    "输入是一份已澄清的招聘需求（岗位、部门、职级、技能、年限、学历、薪资带、工作地点、用工方式、招聘人数、紧急度、原始职责、澄清记录等；字段可能中英混合或部分缺失）。" +
+    "规则：(1) 标题简洁可检索，含核心岗位 + 关键限定（如『高级 Java 后端工程师（上海）』）；" +
+    "(2) 给出恰好 5 个最优搜索关键词，覆盖岗位同义词 + 核心技能，用于渠道投放；" +
+    "(3) 职责与任职要求拆成清晰要点，区分硬性要求（must-have）与加分项（nice-to-have），忠实于输入、不臆造未提供的技能或年限；" +
+    "(4) 薪资忠实于输入：给出区间则保留，缺失写『面议』，不得编造数字；" +
+    "(5) 合规：不得包含年龄 / 性别 / 婚育 / 地域 / 院校歧视等违反《就业促进法》的措辞，并剔除任何个人隐私信息（PII）；" +
+    "(6) 产出完整 Markdown 正文 jd_content，结构固定为：## 职位概述 / ## 岗位职责 / ## 任职要求 / ## 公司介绍 / ## 薪资福利 / ## 工作安排。",
   template: (ctx) =>
-    `Write the JD.\n\n${ctxBundle(ctx)}\n\nReturn JSON: { "title": string, "keywords": string[], "responsibilities": string[], "requirements": string[], "company": string, "compensation": string, "logistics": string }.`,
+    `基于以下已澄清的招聘需求，生成一份可直接发布的标准化 JD。\n\n${ctxBundle(ctx)}\n\n` +
+    `只返回 JSON（不要额外解释或 Markdown 代码块），结构：\n` +
+    `{\n` +
+    `  "title": string,              // 可检索的职位标题\n` +
+    `  "keywords": string[],         // 恰好 5 个搜索关键词\n` +
+    `  "responsibilities": string[], // 岗位职责要点\n` +
+    `  "must_have": string[],        // 硬性任职要求\n` +
+    `  "nice_to_have": string[],     // 加分项\n` +
+    `  "company": string,            // 公司介绍（输入缺失则简短中性表述）\n` +
+    `  "compensation": string,       // 薪资福利（忠实于输入，缺失写 "面议"）\n` +
+    `  "logistics": string,          // 工作地点 / 用工方式 / 工作时间\n` +
+    `  "jd_content": string          // 上述内容拼成的完整 Markdown 正文\n` +
+    `}`,
 });
 
 export const handleRequisitionMapping = definePrompt({
   name: "handleRequisitionMapping",
   description:
-    "Decide how to map requirements to job postings (1-to-many / many-to-1).",
+    "Decide how clarified requirements map to job postings (1-to-many / many-to-1).",
   system:
-    "You are a recruiting-operations planner. Decide whether requirements should aggregate into one posting or fan out into several customized postings per channel.",
+    "你是招聘运营规划专家。给定一个或多个已澄清的招聘需求与刚生成的 JD，判定『需求 ↔ 职位发布』的映射关系：" +
+    "同一客户、相同岗位的多个需求可聚合为一个职位发布（many-to-1）；同一需求若需面向不同渠道定制，则拆为多个发布版本（1-to-many）。" +
+    "posting_key 需稳定且可读；仅依据输入判断，信息不足时默认 1:1，并在 rationale 说明聚合 / 拆分理由。",
   template: (ctx) =>
-    `Plan requisition-to-posting mapping.\n\n${ctxBundle(ctx)}\n\nReturn JSON: { "mapping": [{ "posting_key": string, "requirement_ids": string[], "channel": string | null, "variant_note": string | null }] }.`,
+    `规划需求与职位发布的映射。\n\n${ctxBundle(ctx)}\n\n` +
+    `只返回 JSON：\n` +
+    `{ "mapping": [ { "posting_key": string, "requirement_ids": string[], "channel": string | null, "variant_note": string | null } ], "rationale": string }`,
 });
 
 // ── assignRecruitTasks ───────────────────────────────────────────────────────
@@ -134,35 +164,64 @@ export const assignRecruitTasks = definePrompt({
 
 // ── processResume ────────────────────────────────────────────────────────────
 
+// Migrated from the old ResumeParser agent's completeness gate. Its input
+// (`ctx.lastResult`) is the candidateDedupLookup result, which carries
+// candidate_id / lock_conflict / is_new plus the extracted name/phone/email.
 export const validateCompleteness = definePrompt({
   name: "validateCompleteness",
-  description: "Check resume completeness and emit a missing-fields list.",
+  description: "Check resume completeness and surface a missing-fields list.",
   system:
-    "You are a resume-parsing validator. Confirm the extracted candidate profile has the required fields (name, phone, education, work history, projects). List anything missing.",
+    "你是简历解析质检员。核对已解析的候选人档案是否具备必填字段：姓名、手机号、邮箱、教育经历、工作经历、项目经历。" +
+    "原样透传上一步查重结果中的 candidate_id、lock_conflict、is_new。只依据输入判断，缺失项如实列出，不臆造数据。",
   template: (ctx) =>
-    `Validate this candidate profile.\n\n${ctxBundle(ctx)}\n\nReturn JSON: { "complete": boolean, "missing_fields": string[] }.`,
+    `校验候选人档案完整性。\n\n${ctxBundle(ctx)}\n\n` +
+    `只返回 JSON：\n` +
+    `{ "complete": boolean, "missing_fields": string[], "candidate_id": string | null, "lock_conflict": boolean }`,
 });
 
+// Routing gate. Emits one of the node's two triggered_event values via `_emit`
+// (the runtime's branch-emit reads it). lock_conflict OR missing info →
+// RESUME_INFO_MISSING (退回 Recruiter); otherwise RESUME_PROCESSED.
 export const validateCandidacy = definePrompt({
   name: "validateCandidacy",
   description:
-    "Decide whether to create a candidate record or terminate due to a lock conflict.",
+    "Route the resume: RESUME_PROCESSED when complete & unlocked, else RESUME_INFO_MISSING.",
   system:
-    "You are a candidate-intake gatekeeper. Given the completeness check + any existing lock state, decide to proceed (create record), terminate (locked elsewhere), or hold (wait for missing info).",
+    "你是候选人入库门禁。依据上一步的完整性校验结果决定流转：" +
+    "(a) 若 lock_conflict 为真 → 该候选人已被其他 Recruiter 锁定，退回并提示冲突；" +
+    "(b) 否则若信息完整（complete 为真且无缺失项）→ 放行进入后续匹配；" +
+    "(c) 否则信息缺失 → 退回 Recruiter 补充。" +
+    "必须在 `_emit` 字段给出最终事件名（只能是 RESUME_PROCESSED 或 RESUME_INFO_MISSING），运行时据此路由下游。",
   template: (ctx) =>
-    `Decide next action for this candidate.\n\n${ctxBundle(ctx)}\n\nReturn JSON: { "decision": "create" | "terminate" | "hold", "reason": string, "candidate_id": string | null }.`,
+    `决定候选人下一步流转。\n\n${ctxBundle(ctx)}\n\n` +
+    `只返回 JSON：\n` +
+    `{\n` +
+    `  "_emit": "RESUME_PROCESSED" | "RESUME_INFO_MISSING",  // 路由事件\n` +
+    `  "decision": "proceed" | "info_missing" | "lock_conflict",\n` +
+    `  "candidate_id": string | null,\n` +
+    `  "missing_fields": string[],\n` +
+    `  "reason": string\n` +
+    `}`,
 });
 
 // ── ruleCheckerForClientResume ───────────────────────────────────────────────
 
+// Migrated from the old RuleCheck agent's rule-evaluator. IMPORTANT: this LLM
+// step evaluates each client rule INDEPENDENTLY; it does NOT decide the overall
+// verdict — the deterministic, fail-closed `foldRuleDecision` tool (next action)
+// owns that, so an LLM outage can never silently pass a candidate.
 export const ruleCheckerForClientResume = definePrompt({
   name: "检查客户规则",
   description:
-    "Apply client-specific resume rules and emit pass/fail with rationale.",
+    "Evaluate each client resume rule independently and report a per-rule status (the fold step decides the verdict).",
   system:
-    "You are a client-rules compliance checker. Apply the client's specific resume rules (e.g. background restrictions, certification requirements, exclusion criteria) to the candidate and produce a pass/fail with reasons.",
+    "你是客户规则合规审查员。对照该客户的简历规则（背景限制、资质/证书要求、排除条件、竞业/红线等，规则集见上下文）逐条独立评估候选人简历。" +
+    "对每条规则给出 status：pass（明确满足）/ fail（明确违反，必须引用简历中的具体字段或证据）/ insufficient_info（简历未提供足以判断的信息，不要猜测）。" +
+    "只做逐条判定，不要给出整体通过/不通过结论（由后续确定性折叠决定）。规则集为空时返回空数组。",
   template: (ctx) =>
-    `Apply client rules to this candidate's resume.\n\n${ctxBundle(ctx)}\n\nReturn JSON: { "passed": boolean, "rule_violations": [{ "rule": string, "detail": string }], "notes": string }.`,
+    `逐条评估客户规则。\n\n${ctxBundle(ctx)}\n\n` +
+    `只返回 JSON：\n` +
+    `{ "rule_results": [ { "rule_id": string, "status": "pass" | "fail" | "insufficient_info", "reason": string, "evidence": string | null } ] }`,
 });
 
 // ── matchResume ──────────────────────────────────────────────────────────────
@@ -197,15 +256,49 @@ export const evaluateBonusAndCheckReflux = definePrompt({
     `Score bonus attributes and check reflux rules.\n\n${ctxBundle(ctx)}\n\nReturn JSON: { "match_score": number, "bonus_factors": string[], "reflux_blocked": boolean, "reflux_reason": string | null }.`,
 });
 
+// New routing action (replaces the old generateMatchResult tool — matchResumeApi
+// can't be a direct type:tool action without {resume,jd}; it's advertised in the
+// node's tool_use[] for this step to call instead). Aggregates the three checks
+// and emits one of the node's three outcomes via `_emit` (branch-emit).
+export const decideMatchOutcome = definePrompt({
+  name: "decideMatchOutcome",
+  description:
+    "Aggregate compliance + hard-requirement + bonus results into a final match decision; route via _emit.",
+  system:
+    "你是终审匹配决策官。综合前序检查（红线/黑名单、硬性条件、加分与回流冷静期）的结论，给出候选人与岗位的最终匹配结论。" +
+    "可调用 matchResumeApi（传入 {resume, jd} 文本）获取 RoboHire 量化打分作为参考，但最终判定以合规与硬性条件为先：" +
+    "(a) 命中黑名单 / 红线，或回流冷静期未过，或硬性条件不达标 → 不通过（MATCH_FAILED）；" +
+    "(b) 合规且硬性达标、综合评分高、需进一步面试核实 → 通过需面试（MATCH_PASSED_NEED_INTERVIEW）；" +
+    "(c) 合规且硬性达标、已足够明确、无需面试即可推进 → 通过免面试（MATCH_PASSED_NO_INTERVIEW）。" +
+    "必须在 `_emit` 给出三者之一，运行时据此路由；合规存疑时从严判定为不通过。",
+  template: (ctx) =>
+    `给出最终匹配结论。\n\n${ctxBundle(ctx)}\n\n` +
+    `只返回 JSON：\n` +
+    `{\n` +
+    `  "_emit": "MATCH_PASSED_NEED_INTERVIEW" | "MATCH_PASSED_NO_INTERVIEW" | "MATCH_FAILED",\n` +
+    `  "match_score": number,\n` +
+    `  "compliance_blocked": boolean,\n` +
+    `  "decision_reason": string\n` +
+    `}`,
+});
+
 // ── inviteInternalInterview ──────────────────────────────────────────────────
 
+// Migrated from the old InterviewInviter content-assembly. Output field names
+// are fixed so the next action (sendInvitationEmail) can deliver them.
 export const generateInterviewInvitation = definePrompt({
   name: "generateInterviewInvitation",
-  description: "Compose a personalized interview invitation.",
+  description:
+    "Compose a personalized interview invitation (recipient + subject + body) for delivery.",
   system:
-    "You are an interview-coordination assistant. Write a personalized interview invitation including instructions, scheduling window, and reminders. Return the invite content plus a stable invite_link placeholder.",
+    "你是面试协调助理。为通过匹配的候选人撰写个性化的面试邀请。" +
+    "可调用 inviteCandidateApi 生成邀请正文初稿（仅生成、不投递）再润色。" +
+    "邀请需包含：称呼、岗位与公司、面试形式（线上 / 线下 / AI 面试）、时间窗口与截止日期、参与方式或链接占位、以及礼貌的确认请求。" +
+    "语气专业友好；从上下文提取候选人邮箱或手机号作为收件人；不要编造未提供的时间或地点（缺失则用占位并注明需确认）。",
   template: (ctx) =>
-    `Compose an interview invitation.\n\n${ctxBundle(ctx)}\n\nReturn JSON: { "subject": string, "body": string, "deadline_days": number, "invite_link_placeholder": string }.`,
+    `撰写面试邀请。\n\n${ctxBundle(ctx)}\n\n` +
+    `只返回 JSON（字段名固定，供下一步投递读取）：\n` +
+    `{ "to": string, "subject": string, "body": string, "deadline_days": number, "invite_link_placeholder": string }`,
 });
 
 export const notifyRecruiter = definePrompt({
@@ -357,6 +450,7 @@ export const raasPrompts: Record<string, PromptDescriptor> = {
   validateRedlineAndBlacklist,
   matchHardRequirements,
   evaluateBonusAndCheckReflux,
+  decideMatchOutcome,
   // inviteInternalInterview
   generateInterviewInvitation,
   notifyRecruiter,

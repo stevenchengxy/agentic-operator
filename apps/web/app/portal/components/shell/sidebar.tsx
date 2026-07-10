@@ -20,6 +20,7 @@ import { useAgents } from "@/lib/hooks/useAgents";
 import { useRuns } from "@/lib/hooks/useRuns";
 import { useTasks } from "@/lib/hooks/useTasks";
 import { useHealth, fmtBytes } from "@/lib/hooks/useHealth";
+import { useCan } from "@/lib/hooks/useMe";
 import {
   useDemoStatus,
   useStartDemo,
@@ -29,6 +30,7 @@ import { StatusDot } from "../atoms";
 import { Logo } from "./logo";
 import { NavGroup, NavItem } from "./nav";
 import { TenantSwitcher, type TenantOption } from "./tenant-switcher";
+import { useI18n } from "../../lib/preferences-context";
 
 export interface SidebarProps {
   tenants: TenantOption[];
@@ -38,6 +40,8 @@ export interface SidebarProps {
 export function Sidebar({ tenants, version = "v0.6.2" }: SidebarProps) {
   const tenantSlug = useTenant();
   const base = `/portal/${tenantSlug}`;
+  const { t } = useI18n();
+  const can = useCan();
   const { data: agents = [] } = useAgents();
   const { data: runs = [] } = useRuns({ limit: 200 });
   const { data: tasks = [] } = useTasks();
@@ -135,71 +139,93 @@ export function Sidebar({ tenants, version = "v0.6.2" }: SidebarProps) {
       <TenantSwitcher tenants={tenants} />
 
       <nav style={{ padding: "10px 8px", flex: 1, overflow: "auto" }}>
-        <NavGroup label="Run">
+        <NavGroup label={t("nav.group.run")}>
           <NavItem
             href={`${base}/dashboard`}
             icon="dashboard"
-            label="Dashboard"
+            label={t("nav.dashboard")}
           />
           <NavItem
             href={`${base}/workflows`}
             icon="workflow"
-            label="Workflows"
+            label={t("nav.workflows")}
           />
           <NavItem
             href={`${base}/agents`}
             icon="agent"
-            label="Agents"
+            label={t("nav.agents")}
             count={agents.length || null}
             matchPrefix
           />
           <NavItem
             href={`${base}/runs`}
             icon="run"
-            label="Runs"
+            label={t("nav.runs")}
             liveCount={runningCount}
             matchPrefix
           />
         </NavGroup>
-        <NavGroup label="Observe">
+        <NavGroup label={t("nav.group.observe")}>
           <NavItem
             href={`${base}/events`}
             icon="event"
-            label="Events"
+            label={t("nav.events")}
             matchPrefix
           />
           <NavItem
             href={`${base}/tasks`}
             icon="task"
-            label="Human tasks"
+            label={t("nav.tasks")}
             count={tasks.length || null}
             highlight={tasks.length > 0}
             matchPrefix
           />
-          <NavItem href={`${base}/logs`} icon="logs" label="Logs" />
+          <NavItem href={`${base}/logs`} icon="logs" label={t("nav.logs")} />
+          <NavItem
+            href={`${base}/reasoning`}
+            icon="spark"
+            label={t("nav.reasoning")}
+            matchPrefix
+          />
         </NavGroup>
-        <NavGroup label="Manage">
+        <NavGroup label={t("nav.group.manage")}>
+          <NavItem
+            href={`${base}/factory`}
+            icon="spark"
+            label={t("nav.factory")}
+            matchPrefix
+          />
           <NavItem
             href={`${base}/deployments`}
             icon="deploy"
-            label="Deployments"
+            label={t("nav.deployments")}
           />
           <NavItem
             href={`${base}/tools`}
-            icon="code"
-            label="Agentic Tools"
+            icon="library"
+            label={t("nav.toolLibrary")}
             matchPrefix
           />
           <NavItem
             href={`${base}/tenants`}
             icon="agent"
-            label="Tenants"
+            label={t("nav.tenants")}
             matchPrefix
           />
+          {/* P6-AUTH — Access & roles. Shown only to tenant admins (members.read)
+            * and platform superadmins; viewers/operators never see it. */}
+          {can("members.read") ? (
+            <NavItem
+              href={`${base}/access`}
+              icon="human"
+              label={t("nav.access")}
+              matchPrefix
+            />
+          ) : null}
           <NavItem
             href={`${base}/settings`}
             icon="settings"
-            label="Settings"
+            label={t("nav.settings")}
             matchPrefix
           />
         </NavGroup>
@@ -236,6 +262,7 @@ export function Sidebar({ tenants, version = "v0.6.2" }: SidebarProps) {
  * tokens via the demo loop, regardless of how `.env` is configured.
  */
 function DemoToggle() {
+  const { t } = useI18n();
   const { data: status } = useDemoStatus();
   const start = useStartDemo();
   const stop = useStopDemo();
@@ -250,8 +277,11 @@ function DemoToggle() {
 
   const stats = status?.stats;
   const title = running
-    ? `Demo ON — provider=${status?.llmProvider ?? "?"}, events fired=${stats?.eventsFired ?? 0}. Click to stop.`
-    : `Demo OFF. Click to start the synthetic-traffic loop (LLM auto-swapped to mock; no real tokens spent).`;
+    ? t("sidebarComp.demoOnTitle", {
+        provider: status?.llmProvider ?? "?",
+        events: stats?.eventsFired ?? 0,
+      })
+    : t("sidebarComp.demoOffTitle");
 
   if (running) {
     return (

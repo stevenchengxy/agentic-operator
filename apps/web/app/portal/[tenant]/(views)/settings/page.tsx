@@ -29,11 +29,13 @@ import {
 } from "@/app/portal/components";
 import { useTenant } from "@/app/portal/lib/use-tenant";
 import { useSession } from "@/app/portal/lib/session-context";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 import {
   SETTINGS_SECTIONS,
   type SettingsSectionId,
 } from "@/app/portal/components/settings/data";
 import { WorkspaceSection } from "@/app/portal/components/settings/sections/Workspace";
+import { AppearanceSection } from "@/app/portal/components/settings/sections/Appearance";
 import { PeopleSection } from "@/app/portal/components/settings/sections/People";
 import { ModelsSection } from "@/app/portal/components/settings/sections/Models";
 import { ChannelsSection } from "@/app/portal/components/settings/sections/Channels";
@@ -67,6 +69,7 @@ export default function SettingsPage() {
   const router = useRouter();
   const tenant = useTenant();
   const session = useSession();
+  const { t } = useI18n();
   const operatorName = session?.name ?? "—";
 
   function pick(id: SettingsSectionId) {
@@ -81,28 +84,28 @@ export default function SettingsPage() {
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
       <ViewHeader
-        title="Settings"
+        title={t("settings.title")}
         subtitle={
           <>
-            Workspace{" "}
+            {t("settingsPage.workspaceLabel")}{" "}
             <span className="mono" style={{ color: "var(--text)" }}>
               {tenant}
             </span>{" "}
-            · region{" "}
+            · {t("settingsPage.regionLabel")}{" "}
             <span className="mono" style={{ color: "var(--text)" }}>
               {REGION}
             </span>{" "}
-            · operator{" "}
+            · {t("settingsPage.operatorLabel")}{" "}
             <span style={{ color: "var(--text)" }}>{operatorName}</span>
           </>
         }
         badge={<Badge tone="muted">v0.6.2</Badge>}
         action={[
           <Button key="docs" small icon="external" tone="ghost">
-            Settings docs
+            {t("settings.docs")}
           </Button>,
           <Button key="exp" small icon="upload">
-            Export config
+            {t("settings.export")}
           </Button>,
         ]}
       />
@@ -137,6 +140,7 @@ export default function SettingsPage() {
           <div style={{ padding: 24, maxWidth: 1080 }}>
             <SectionHeader section={sec} />
             {section === "workspace" && <WorkspaceSection />}
+            {section === "appearance" && <AppearanceSection />}
             {section === "people" && <PeopleSection />}
             {section === "models" && <ModelsSection />}
             {section === "channels" && <ChannelsSection />}
@@ -163,6 +167,7 @@ function SectionNavItem({
   active: boolean;
   onClick: () => void;
 }) {
+  const { t } = useI18n();
   return (
     <button
       onClick={onClick}
@@ -194,7 +199,7 @@ function SectionNavItem({
             fontWeight: active ? 500 : 400,
           }}
         >
-          {section.label}
+          {t(`settings.section.${section.id}`)}
         </div>
         <div
           style={{
@@ -206,7 +211,7 @@ function SectionNavItem({
             textOverflow: "ellipsis",
           }}
         >
-          {section.hint}
+          {t(`settings.hint.${section.id}`)}
         </div>
       </div>
     </button>
@@ -214,10 +219,11 @@ function SectionNavItem({
 }
 
 function SectionHeader({ section }: { section: (typeof SETTINGS_SECTIONS)[number] }) {
+  const { t } = useI18n();
   return (
     <div style={{ marginBottom: 18 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-        <Icon name={section.icon} size={14} style={{ color: "var(--signal)" }} />
+        <Icon name={section.icon} size={14} style={{ color: "var(--accent-text)" }} />
         <span
           style={{
             fontSize: 11,
@@ -227,7 +233,7 @@ function SectionHeader({ section }: { section: (typeof SETTINGS_SECTIONS)[number
             color: "var(--text-3)",
           }}
         >
-          Settings · {section.label}
+          {t("settings.title")} · {t(`settings.section.${section.id}`)}
         </span>
       </div>
       <h2
@@ -240,9 +246,11 @@ function SectionHeader({ section }: { section: (typeof SETTINGS_SECTIONS)[number
           color: "var(--text)",
         }}
       >
-        {section.label}
+        {t(`settings.section.${section.id}`)}
       </h2>
-      <div style={{ marginTop: 4, fontSize: 12.5, color: "var(--text-2)" }}>{section.hint}</div>
+      <div style={{ marginTop: 4, fontSize: 12.5, color: "var(--text-2)" }}>
+        {t(`settings.hint.${section.id}`)}
+      </div>
     </div>
   );
 }

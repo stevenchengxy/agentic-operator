@@ -20,6 +20,7 @@ import {
   Button,
   Empty,
   Icon,
+  StatusDot,
   ViewHeader,
   SearchInput,
   FilterChip,
@@ -27,10 +28,17 @@ import {
   Th,
   Td,
   eventTone,
+  useToast,
 } from "@/app/portal/components";
 import { fmtAgo, fmtBytes, fmtTime } from "@/app/portal/lib/format";
 import { useTenant } from "@/app/portal/lib/use-tenant";
-import { useEvents, type EventRow } from "@/lib/hooks/useEvents";
+import { useI18n } from "@/app/portal/lib/preferences-context";
+import {
+  useEvent,
+  useEvents,
+  useReplayEvent,
+  type EventRow,
+} from "@/lib/hooks/useEvents";
 import { useDag, type DagAgent } from "@/lib/hooks/useAgents";
 import { PublishEventModal } from "@/app/portal/components/events/PublishEventModal";
 
@@ -62,6 +70,7 @@ function fromApiRow(r: EventRow): EventItem {
 }
 
 export default function EventsPage() {
+  const { t } = useI18n();
   const eventsQuery = useEvents({ limit: 200 });
   const dagQuery = useDag();
   const apiEvents = eventsQuery.data ?? [];
@@ -135,28 +144,36 @@ export default function EventsPage() {
     return () => clearInterval(id);
   }, [liveStream]);
 
-  const selected = selectedId
+  // `selected` is what the LIST highlights (explicit click, else the first
+  // filtered row). `explicitSel` is ONLY a real click — used by the detail
+  // panel so that selecting an event TYPE (no instance) can show the
+  // type-level producer→consumer summary instead of falling back to row[0].
+  const explicitSel = selectedId
     ? stream.find((e) => e.id === selectedId)
-    : filtered[0];
+    : null;
+  const selected = explicitSel ?? filtered[0];
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
       <ViewHeader
-        title="Events"
-        subtitle={`${filtered.length} events · ${eventTypes.length} event types · ${
-          liveStream ? "live tail" : "paused"
-        }`}
+        title={t("nav.events")}
+        subtitle={t("events.subtitle", {
+          count: filtered.length,
+          types: eventTypes.length,
+          state: liveStream ? t("events.liveTail") : t("events.paused"),
+        })}
         badge={
           liveStream ? (
             <Badge tone="signal">
-              <span className="live-dot" style={{ width: 5, height: 5 }} /> LIVE
+              <span className="live-dot" style={{ width: 5, height: 5 }} />{" "}
+              {t("events.live")}
             </Badge>
           ) : null
         }
         action={
           <div style={{ display: "flex", gap: 6 }}>
             <Button icon="replay" small>
-              Replay window
+              {t("events.replayWindow")}
             </Button>
             <Button
               icon="run"
@@ -164,7 +181,7 @@ export default function EventsPage() {
               small
               onClick={() => setPublishOpen(true)}
             >
-              Publish event
+              {t("events.publishEvent")}
             </Button>
           </div>
         }
@@ -203,20 +220,20 @@ export default function EventsPage() {
           <SearchInput
             value={query}
             onChange={setQuery}
-            placeholder="event, subject, id…"
+            placeholder={t("events.searchPlaceholder")}
           />
           <FilterGroup
-            title="Category"
+            title={t("events.category")}
             value={catFilter}
             onChange={setCatFilter}
             options={[
-              { id: "all", label: "All" },
-              { id: "agent", label: "Agent" },
-              { id: "human", label: "Human" },
-              { id: "data", label: "Data" },
-              { id: "external", label: "External" },
-              { id: "alert", label: "Alert" },
-              { id: "system", label: "System" },
+              { id: "all", label: t("events.catAll") },
+              { id: "agent", label: t("events.catAgent") },
+              { id: "human", label: t("events.catHuman") },
+              { id: "data", label: t("events.catData") },
+              { id: "external", label: t("events.catExternal") },
+              { id: "alert", label: t("events.catAlert") },
+              { id: "system", label: t("events.catSystem") },
             ]}
           />
           <div style={{ marginTop: 18 }}>
@@ -230,13 +247,16 @@ export default function EventsPage() {
                 marginBottom: 8,
               }}
             >
-              Event type
+              {t("events.eventType")}
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
               <EventTypeRow
                 active={typeFilter === "all"}
-                onClick={() => setTypeFilter("all")}
-                name="All event types"
+                onClick={() => {
+                  setTypeFilter("all");
+                  setSelectedId(null);
+                }}
+                name={t("events.allEventTypes")}
                 count={stream.length}
               />
               {eventTypes.map((et) => {
@@ -245,7 +265,13 @@ export default function EventsPage() {
                   <EventTypeRow
                     key={et.name}
                     active={typeFilter === et.name}
-                    onClick={() => setTypeFilter(et.name)}
+                    // Selecting a TYPE clears any instance selection so the
+                    // right panel shows the type-level producer→consumer
+                    // summary; click a firing in the list for its payload.
+                    onClick={() => {
+                      setTypeFilter(et.name);
+                      setSelectedId(null);
+                    }}
                     name={et.name}
                     color={et.color}
                     count={count}
@@ -283,7 +309,7 @@ export default function EventsPage() {
                 color: "var(--text-3)",
               }}
             >
-              SHOWING
+              {t("events.showing")}
             </span>
             <span
               className="mono"
@@ -305,15 +331,19 @@ export default function EventsPage() {
           </div>
           {eventsQuery.isError ? (
             <Empty
-              title="Failed to load events"
-              hint={eventsQuery.error?.message ?? "api unreachable on :3501"}
+              title={t("events.loadFailed")}
+              hint={eventsQuery.error?.message ?? t("events.apiUnreachable")}
             />
           ) : eventsQuery.isLoading && stream.length === 0 ? (
-            <Empty title="Loading events…" hint="" />
+            <Empty title={t("events.loading")} hint="" />
           ) : filtered.length === 0 ? (
             <Empty
-              title={stream.length === 0 ? "No events yet" : "No events"}
-              hint={stream.length === 0 ? "Events appear here as agents fire them." : "Try a broader filter"}
+              title={stream.length === 0 ? t("events.noneYet") : t("events.none")}
+              hint={
+                stream.length === 0
+                  ? t("events.noneYetHint")
+                  : t("events.broaderFilter")
+              }
             />
           ) : (
             <table
@@ -325,11 +355,11 @@ export default function EventsPage() {
             >
               <thead>
                 <tr>
-                  <Th>Time</Th>
-                  <Th>Event</Th>
-                  <Th>Source</Th>
-                  <Th>Subject</Th>
-                  <Th>Size</Th>
+                  <Th>{t("events.colTime")}</Th>
+                  <Th>{t("events.colEvent")}</Th>
+                  <Th>{t("events.colSource")}</Th>
+                  <Th>{t("events.colSubject")}</Th>
+                  <Th>{t("events.colSize")}</Th>
                 </tr>
               </thead>
               <tbody>
@@ -406,10 +436,18 @@ export default function EventsPage() {
             background: "var(--panel)",
           }}
         >
-          {selected ? (
+          {explicitSel ? (
+            <EventDetail event={explicitSel} agents={agents} />
+          ) : typeFilter !== "all" ? (
+            <EventTypeSummary
+              eventName={typeFilter}
+              agents={agents}
+              stream={stream}
+            />
+          ) : selected ? (
             <EventDetail event={selected} agents={agents} />
           ) : (
-            <Empty title="Select an event" />
+            <Empty title={t("events.selectAnEvent")} />
           )}
         </aside>
       </div>
@@ -522,6 +560,7 @@ function EventTypeRow({
 }
 
 function Histogram({ buckets }: { buckets: number[] }) {
+  const { t } = useI18n();
   const max = Math.max(1, ...buckets);
   return (
     <div>
@@ -543,7 +582,7 @@ function Histogram({ buckets }: { buckets: number[] }) {
                 i === buckets.length - 1
                   ? "var(--signal)"
                   : v > 0
-                    ? `rgba(208,255,0,${0.25 + (v / max) * 0.55})`
+                    ? `color-mix(in srgb, var(--signal) ${(0.25 + (v / max) * 0.55) * 100}%, transparent)`
                     : "var(--border)",
             }}
           />
@@ -559,9 +598,135 @@ function Histogram({ buckets }: { buckets: number[] }) {
           color: "var(--text-3)",
         }}
       >
-        <span>60m ago</span>
-        <span>events / minute · peak {max}</span>
-        <span>now</span>
+        <span>{t("events.histStart")}</span>
+        <span>{t("events.histAxis", { max })}</span>
+        <span>{t("events.histNow")}</span>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Type-level producer→event→consumer summary. Shown when an event TYPE is
+ * selected in the left rail but no specific instance — surfaces, at a glance,
+ * who PRODUCES (emits) the event, who CONSUMES (triggers on) it, how many times
+ * it has fired (in the loaded window), and the most recent firings. Producers /
+ * consumers are derived from the live DAG (declared emits/triggers).
+ */
+function EventTypeSummary({
+  eventName,
+  agents,
+  stream,
+}: {
+  eventName: string;
+  agents: DagAgent[];
+  stream: EventItem[];
+}) {
+  const { t } = useI18n();
+  const tenant = useTenant();
+  const emitters = useMemo(
+    () => agents.filter((a) => a.emits.includes(eventName)),
+    [agents, eventName],
+  );
+  const listeners = useMemo(
+    () => agents.filter((a) => a.triggers.includes(eventName)),
+    [agents, eventName],
+  );
+  const instances = useMemo(
+    () => stream.filter((e) => e.name === eventName),
+    [stream, eventName],
+  );
+  const recent = instances.slice(0, 6);
+  const color = instances[0]?.color ?? "muted";
+  const category = instances[0]?.category ?? "";
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column" }}>
+      <header style={{ padding: "14px 18px", borderBottom: "1px solid var(--border)" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+          <Badge tone={eventTone(color)}>{eventName}</Badge>
+          {category && (
+            <span style={{ fontSize: 11, color: "var(--text-3)", fontFamily: "var(--mono)" }}>
+              {category}
+            </span>
+          )}
+        </div>
+        <div style={{ fontSize: 11.5, color: "var(--text-3)", lineHeight: 1.5 }}>
+          {t("events.typeSummaryHint")}
+        </div>
+        <div style={{ marginTop: 10, display: "flex", gap: 18 }}>
+          <TypeStat label={t("events.statProducers")} value={emitters.length} />
+          <TypeStat label={t("events.statConsumers")} value={listeners.length} />
+          <TypeStat label={t("events.statFired")} value={instances.length} />
+        </div>
+      </header>
+
+      <Section title={t("events.sectionEmitters", { count: emitters.length })}>
+        {emitters.length === 0 ? (
+          <span style={{ fontSize: 11.5, color: "var(--text-3)" }}>{t("events.noEmitter")}</span>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            {emitters.map((a) => (
+              <AgentLinkRow key={a.id} agent={a} tenant={tenant} />
+            ))}
+          </div>
+        )}
+      </Section>
+
+      <Section title={t("events.sectionListeners", { count: listeners.length })}>
+        {listeners.length === 0 ? (
+          <span style={{ fontSize: 11.5, color: "var(--text-3)" }}>{t("events.noListeners")}</span>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            {listeners.map((a) => (
+              <AgentLinkRow key={a.id} agent={a} tenant={tenant} />
+            ))}
+          </div>
+        )}
+      </Section>
+
+      <Section title={t("events.sectionRecentFirings", { count: instances.length })}>
+        {recent.length === 0 ? (
+          <span style={{ fontSize: 11.5, color: "var(--text-3)" }}>{t("events.noFirings")}</span>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+            {recent.map((e) => (
+              <div
+                key={e.id}
+                style={{
+                  display: "flex",
+                  gap: 10,
+                  fontSize: 11,
+                  fontFamily: "var(--mono)",
+                  color: "var(--text-3)",
+                  padding: "3px 0",
+                }}
+              >
+                <span title={new Date(e.at).toLocaleString()}>{fmtAgo(e.at)}</span>
+                <span style={{ color: "var(--text-2)" }}>{e.subject || "—"}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </Section>
+    </div>
+  );
+}
+
+function TypeStat({ label, value }: { label: string; value: number }) {
+  return (
+    <div>
+      <div style={{ fontSize: 18, fontFamily: "var(--mono)", color: "var(--text)" }}>{value}</div>
+      <div
+        style={{
+          fontSize: 9.5,
+          fontFamily: "var(--mono)",
+          textTransform: "uppercase",
+          letterSpacing: "0.08em",
+          color: "var(--text-3)",
+        }}
+      >
+        {label}
       </div>
     </div>
   );
@@ -574,7 +739,30 @@ function EventDetail({
   event: EventItem;
   agents: DagAgent[];
 }) {
+  const { t } = useI18n();
   const tenant = useTenant();
+  // Fetch the REAL payload + actual consumers (the runs this instance fired).
+  const detail = useEvent(event.id);
+  const realPayload = detail.data?.payload;
+  const consumers = detail.data?.consumers ?? [];
+  const replay = useReplayEvent();
+  const toast = useToast();
+  async function handleReplay() {
+    try {
+      const r = await replay.mutateAsync(event.id);
+      toast({
+        tone: "signal",
+        title: t("events.replayQueued"),
+        description: r.new_event_id,
+      });
+    } catch (e) {
+      toast({
+        tone: "red",
+        title: t("events.replayFailed"),
+        description: e instanceof Error ? e.message : "",
+      });
+    }
+  }
   const emitters = useMemo(
     () => agents.filter((a) => a.emits.includes(event.name)),
     [agents, event.name],
@@ -635,7 +823,7 @@ function EventDetail({
         </div>
       </header>
 
-      <Section title="Source">
+      <Section title={t("events.sectionSource")}>
         {source ? (
           <Link
             href={`/portal/${tenant}/agents/${source.kebabId}` as never}
@@ -667,15 +855,15 @@ function EventDetail({
           </Link>
         ) : (
           <span style={{ fontSize: 12, color: "var(--text-3)" }}>
-            External / system
+            {t("events.externalSystem")}
           </span>
         )}
       </Section>
 
-      <Section title={`Emitters · ${emitters.length}`}>
+      <Section title={t("events.sectionEmitters", { count: emitters.length })}>
         {emitters.length === 0 ? (
           <span style={{ fontSize: 11.5, color: "var(--text-3)" }}>
-            No agent declared as emitter.
+            {t("events.noEmitter")}
           </span>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
@@ -686,10 +874,12 @@ function EventDetail({
         )}
       </Section>
 
-      <Section title={`Downstream listeners · ${listeners.length}`}>
+      <Section
+        title={t("events.sectionListeners", { count: listeners.length })}
+      >
         {listeners.length === 0 ? (
           <span style={{ fontSize: 11.5, color: "var(--text-3)" }}>
-            Terminal event — no agents listen.
+            {t("events.noListeners")}
           </span>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
@@ -700,23 +890,65 @@ function EventDetail({
         )}
       </Section>
 
-      <Section title="Payload">
-        <CodeBlock>
-          {JSON.stringify(
-            {
-              event_id: event.id,
-              name: event.name,
-              ts: new Date(event.at).toISOString(),
-              tenant,
-              source: source
-                ? { agent_id: source.kebabId, agent: source.name }
-                : "external",
-              subject: event.subject,
-            },
-            null,
-            2,
-          )}
-        </CodeBlock>
+      {/* Actual consumption — the runs this specific event instance fired
+          (real data), distinct from the DAG-declared listeners above. */}
+      <Section title={t("events.sectionConsumedBy", { count: consumers.length })}>
+        {consumers.length === 0 ? (
+          <span style={{ fontSize: 11.5, color: "var(--text-3)" }}>
+            {detail.isLoading ? t("events.loadingDetail") : t("events.noConsumers")}
+          </span>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            {consumers.map((c) => (
+              <Link
+                key={c.runId}
+                href={`/portal/${tenant}/runs/${c.runId}` as never}
+                style={{ textDecoration: "none" }}
+              >
+                <button
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                    padding: "7px 10px",
+                    width: "100%",
+                    background: "var(--panel-2)",
+                    border: "1px solid var(--border)",
+                    borderRadius: 4,
+                    textAlign: "left",
+                  }}
+                >
+                  <StatusDot status={(c.status as never) ?? "idle"} size={6} />
+                  <span style={{ fontSize: 12, color: "var(--text)" }}>
+                    {c.agentTitle || c.agentName || c.runId}
+                  </span>
+                  <span
+                    className="mono"
+                    style={{ marginLeft: "auto", fontSize: 10.5, color: "var(--text-3)" }}
+                  >
+                    {c.status}
+                  </span>
+                  <Icon name="external" size={11} style={{ color: "var(--text-3)" }} />
+                </button>
+              </Link>
+            ))}
+          </div>
+        )}
+      </Section>
+
+      {/* The REAL payload (resolved from the ledger), not a reconstruction. */}
+      <Section title={t("events.sectionPayload")}>
+        {detail.isLoading ? (
+          <span style={{ fontSize: 11.5, color: "var(--text-3)" }}>
+            {t("events.loadingDetail")}
+          </span>
+        ) : realPayload == null ? (
+          <span style={{ fontSize: 11.5, color: "var(--text-3)" }}>
+            {t("events.noPayload")}
+          </span>
+        ) : (
+          <CodeBlock>{JSON.stringify(realPayload, null, 2)}</CodeBlock>
+        )}
       </Section>
 
       <div
@@ -727,10 +959,16 @@ function EventDetail({
           borderTop: "1px solid var(--border)",
         }}
       >
-        <Button icon="replay" tone="primary" style={{ flex: 1 }}>
-          Replay event
+        <Button
+          icon="replay"
+          tone="primary"
+          style={{ flex: 1 }}
+          onClick={handleReplay}
+          disabled={replay.isPending}
+        >
+          {replay.isPending ? t("events.replaying") : t("events.replayEvent")}
         </Button>
-        <Button icon="external">Inngest console</Button>
+        <Button icon="external">{t("events.inngestConsole")}</Button>
       </div>
     </div>
   );

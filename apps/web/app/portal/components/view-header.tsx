@@ -22,6 +22,7 @@ export function ViewHeader({
 }: ViewHeaderProps) {
   return (
     <header
+      className="rise"
       style={{
         display: "flex",
         alignItems: "center",

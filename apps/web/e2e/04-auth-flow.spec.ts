@@ -48,7 +48,7 @@ test.describe("P4-TEST-04: auth flow E2E", () => {
 
     // Make an in-page fetch so the dev cookie attached by the layout
     // sign-in path rides on the same origin. The Next rewrite under
-    // /v1/* proxies to apps/api on :3501.
+    // /v1/* proxies to apps/api on :3540.
     const result = await page.evaluate(async () => {
       const res = await fetch("/v1/agents?kind=all", {
         credentials: "include",

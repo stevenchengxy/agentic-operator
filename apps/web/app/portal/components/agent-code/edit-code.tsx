@@ -31,6 +31,7 @@ import {
   useToast,
 } from "@/app/portal/components";
 import { useTenant } from "@/app/portal/lib/use-tenant";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 import { useDeployTenantCode } from "@/lib/hooks/useTenantCode";
 import { AGENT_SAMPLE_TS_CODE } from "./samples";
 import { buildTar, gzipToBase64, type TarFile } from "./tar";
@@ -52,6 +53,7 @@ export function AgentCodeEdit({
 }) {
   const tenant = useTenant();
   const toast = useToast();
+  const { t } = useI18n();
   const deploy = useDeployTenantCode(tenant);
 
   const initial = agent.typescript_code || AGENT_SAMPLE_TS_CODE;
@@ -96,20 +98,20 @@ export function AgentCodeEdit({
       await deploy.mutateAsync({
         version,
         tarballBase64,
-        note: note || `In-portal edit of ${agent.name}`,
+        note: note || t("editCode.defaultNote", { name: agent.name }),
       });
 
       toast({
         tone: "signal",
-        title: "Code agent deployed",
+        title: t("editCode.toastDeployedTitle"),
         description: `${agent.name} @ ${version}`,
       });
       onClose?.();
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Unknown error";
+      const msg = err instanceof Error ? err.message : t("editCode.unknownError");
       toast({
         tone: "red",
-        title: "Deploy failed",
+        title: t("editCode.toastDeployFailedTitle"),
         description: msg,
       });
     }
@@ -140,7 +142,7 @@ export function AgentCodeEdit({
       >
         <Panel
           title="typescript_code"
-          subtitle={`${agent.name}.ts · ${dirty ? "modified" : "clean"}`}
+          subtitle={`${agent.name}.ts · ${dirty ? t("editCode.modified") : t("editCode.clean")}`}
           padded={false}
           style={{
             flex: 1,
@@ -150,14 +152,14 @@ export function AgentCodeEdit({
           }}
           action={
             <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-              {dirty && <Badge tone="amber">DIRTY</Badge>}
+              {dirty && <Badge tone="amber">{t("editCode.dirty")}</Badge>}
               <Button
                 small
                 tone="ghost"
                 onClick={handleRevert}
                 disabled={!dirty || deploy.isPending}
               >
-                Revert
+                {t("editCode.revert")}
               </Button>
               <Button
                 small
@@ -166,11 +168,11 @@ export function AgentCodeEdit({
                 onClick={handleDeploy}
                 disabled={!dirty || deploy.isPending}
               >
-                {deploy.isPending ? "Deploying…" : "Deploy"}
+                {deploy.isPending ? t("editCode.deploying") : t("editCode.deploy")}
               </Button>
               {onClose && (
                 <Button small icon="x" tone="ghost" onClick={onClose}>
-                  Close
+                  {t("editCode.close")}
                 </Button>
               )}
             </div>
@@ -204,8 +206,8 @@ export function AgentCodeEdit({
           minHeight: 0,
         }}
       >
-        <Panel title="Deploy" padded style={{ height: "100%" }}>
-          <Label>Version</Label>
+        <Panel title={t("editCode.deploy")} padded style={{ height: "100%" }}>
+          <Label>{t("editCode.versionLabel")}</Label>
           <input
             value={version}
             onChange={(e) => setVersion(e.target.value)}
@@ -213,29 +215,29 @@ export function AgentCodeEdit({
             style={inputStyle}
           />
           <div style={{ marginTop: 4, fontSize: 10.5, color: "var(--text-3)" }}>
-            Must be unique; the server refuses an existing version with 409.
+            {t("editCode.versionHelp")}
           </div>
 
           <div style={{ height: 12 }} />
-          <Label>Change note</Label>
+          <Label>{t("editCode.changeNoteLabel")}</Label>
           <textarea
             rows={3}
             value={note}
             onChange={(e) => setNote(e.target.value)}
-            placeholder="What changed?"
+            placeholder={t("editCode.changeNotePlaceholder")}
             style={{ ...inputStyle, fontFamily: "var(--sans)", resize: "vertical" as const }}
           />
 
           <div style={{ marginTop: 16 }}>
-            <DeployInfoRow label="Tenant" value={tenant} />
-            <DeployInfoRow label="Agent" value={agent.name} />
+            <DeployInfoRow label={t("editCode.rowTenant")} value={tenant} />
+            <DeployInfoRow label={t("editCode.rowAgent")} value={agent.name} />
             <DeployInfoRow
-              label="Entry"
+              label={t("editCode.rowEntry")}
               value={`src/agents/${agent.name}.ts`}
             />
             <DeployInfoRow
-              label="Bundle"
-              value={`${(code.length / 1024).toFixed(1)} KB (tar+gzip)`}
+              label={t("editCode.rowBundle")}
+              value={`${(code.length / 1024).toFixed(1)} ${t("editCode.bundleUnit")}`}
             />
           </div>
 
@@ -251,10 +253,9 @@ export function AgentCodeEdit({
               lineHeight: 1.55,
             }}
           >
-            Deploy uploads a 2-file tarball: <span className="mono">agentic.json</span>{" "}
-            + <span className="mono">{`src/agents/${agent.name}.ts`}</span>. The
-            backend type-checks, extracts atomically, and re-registers Inngest
-            functions on success.
+            {t("editCode.infoPart1")} <span className="mono">agentic.json</span>{" "}
+            + <span className="mono">{`src/agents/${agent.name}.ts`}</span>
+            {t("editCode.infoPart2")}
           </div>
         </Panel>
       </div>

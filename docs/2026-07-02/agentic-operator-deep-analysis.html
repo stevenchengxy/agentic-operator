@@ -1,0 +1,383 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Agentic Operator · 深度技术分析 + Debug + 生成架构优化(合并报告)</title>
+<style>
+  :root{--bg:#0b0e14;--panel:#121722;--panel2:#171d2b;--panel3:#1e2637;--border:#26304a;--border2:#33405f;--text:#e6ecf5;--text2:#aab6cc;--text3:#7686a3;--signal:#d0ff00;--green:#42d392;--amber:#ffb454;--red:#ff6b6b;--blue:#5aa9ff;--violet:#a78bfa;--mono:ui-monospace,SFMono-Regular,Menlo,monospace}
+  *{box-sizing:border-box} html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif;line-height:1.7;font-size:15px}
+  .wrap{max-width:1120px;margin:0 auto;padding:0 22px 120px}
+  header.hero{padding:60px 22px 36px;background:radial-gradient(1200px 400px at 30% -10%,rgba(208,255,0,.08),transparent)}
+  header.hero .inner{max-width:1120px;margin:0 auto}
+  .kicker{color:var(--signal);font-family:var(--mono);font-size:12.5px;letter-spacing:.14em;text-transform:uppercase}
+  h1{font-size:34px;line-height:1.18;margin:12px 0 8px;font-weight:800}
+  .sub{color:var(--text2);font-size:15.5px;max-width:860px}
+  .meta-row{display:flex;gap:10px;flex-wrap:wrap;margin-top:16px}
+  .chip{font-family:var(--mono);font-size:12px;padding:4px 10px;border:1px solid var(--border2);border-radius:20px;color:var(--text2);background:var(--panel)}
+  .chip b{color:var(--text)}
+  h2{font-size:25px;margin:52px 0 6px;font-weight:750;scroll-margin-top:56px}
+  h2 .num{color:var(--signal);font-family:var(--mono);font-size:17px;margin-right:10px}
+  h3{font-size:18px;margin:28px 0 6px;font-weight:700}
+  h4{font-size:15.5px;margin:18px 0 4px;font-weight:700}
+  p{margin:10px 0} a{color:var(--blue);text-decoration:none} a:hover{text-decoration:underline}
+  code{font-family:var(--mono);font-size:12.5px;background:var(--panel3);padding:1.5px 6px;border-radius:5px;color:#cfe0ff;border:1px solid var(--border)}
+  .lead{font-size:16px;color:var(--text2)}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:18px 20px;margin:14px 0}
+  .card.tight{padding:12px 16px}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
+  @media(max-width:820px){.grid2,.grid3{grid-template-columns:1fr}}
+  .badge{display:inline-block;font-family:var(--mono);font-size:11px;font-weight:700;padding:2px 9px;border-radius:6px;vertical-align:middle}
+  .b-p0{background:rgba(255,107,107,.16);color:#ff8f8f;border:1px solid rgba(255,107,107,.45)}
+  .b-p1{background:rgba(255,180,84,.16);color:var(--amber);border:1px solid rgba(255,180,84,.45)}
+  .b-p2{background:rgba(122,162,247,.16);color:var(--blue);border:1px solid rgba(122,162,247,.45)}
+  .b-ok{background:rgba(66,211,146,.14);color:var(--green);border:1px solid rgba(66,211,146,.4)}
+  .b-ref{background:rgba(167,139,250,.14);color:var(--violet);border:1px solid rgba(167,139,250,.4)}
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:13px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+  th{color:var(--text3);font-weight:600;font-size:11.5px;text-transform:uppercase;letter-spacing:.05em;background:var(--panel2)}
+  .yes{color:var(--green);font-weight:700}.no{color:var(--red);font-weight:700}.partial{color:var(--amber);font-weight:700}.muted{color:var(--text3)}
+  ul{margin:8px 0;padding-left:20px} li{margin:5px 0}
+  .toc{position:sticky;top:0;background:rgba(11,14,20,.92);backdrop-filter:blur(8px);border-bottom:1px solid var(--border);z-index:10;padding:9px 0;margin-bottom:16px}
+  .toc .inner{max-width:1120px;margin:0 auto;padding:0 22px;display:flex;gap:13px;flex-wrap:wrap}
+  .toc a{color:var(--text2);font-family:var(--mono);font-size:11.5px}
+  .callout{border-left:3px solid var(--signal);background:var(--panel2);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+  .callout.warn{border-color:var(--amber)}.callout.crit{border-color:var(--red)}.callout.good{border-color:var(--green)}
+  .callout .t{font-weight:700;font-size:13px;text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px;color:var(--signal)}
+  .callout.warn .t{color:var(--amber)}.callout.crit .t{color:var(--red)}.callout.good .t{color:var(--green)}
+  figure{margin:20px 0;background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:16px;overflow-x:auto}
+  figure svg{max-width:100%;height:auto;display:block;margin:0 auto}
+  figcaption{color:var(--text3);font-size:12.5px;text-align:center;margin-top:8px;font-family:var(--mono)}
+  .fileref{font-family:var(--mono);font-size:11.5px;color:var(--text3)}
+  hr{border:0;border-top:1px solid var(--border);margin:36px 0}
+  .rec{border:1px solid var(--border);border-radius:10px;padding:11px 14px;margin:9px 0;background:var(--panel2)}
+  .rec .h{font-weight:700;margin-bottom:2px}.rec .why{color:var(--text3);font-size:13px;margin-top:3px}
+  .small{font-size:13px;color:var(--text2)}
+  em{color:var(--text);font-style:normal;background:rgba(208,255,0,.08);padding:0 3px;border-radius:3px}
+</style>
+</head>
+<body>
+<header class="hero"><div class="inner">
+  <div class="kicker">Agentic Operator · Deep Analysis &amp; Generation-Architecture Optimization</div>
+  <h1>深度技术分析 + Debug 报告 + 工厂生成架构优化(合并版)</h1>
+  <p class="sub">Part I:全平台深度架构分析与 debug(12 项缺陷发现,已逐项核验,含 1 项证伪);Part II:工厂 Harness Engineering 生成流程专项批判 —— ReAct 架构判决、ask_user 统一架构、测试用例生成方案、codegen loop 提升、动态生成 agents/tools/sub-agents/SKILLS/prompts 方案、"哪里设计错了" 12 条清单;附 DeerFlow 开源对比与汇总路线图。</p>
+  <div class="meta-row">
+    <span class="chip">方法:<b>2 个深潜审计 agent</b> + 主循环逐项核验</span>
+    <span class="chip">核验:<b>头条结论 grep 复核</b>(证伪 1 · 降级 1 · 尖锐化 1)</span>
+    <span class="chip">对比:<b>DeerFlow(bytedance)</b> 架构研究</span>
+    <span class="chip">日期:2026-07-02 · 分支 factory-redesign</span>
+  </div>
+</div></header>
+
+<nav class="toc"><div class="inner">
+  <a href="#exec">00 摘要</a><a href="#map">01 平台架构</a><a href="#bugs">02 Debug 发现</a><a href="#popt">03 平台优化</a>
+  <a href="#react">04 ReAct 判决</a><a href="#hitl">05 ask_user 架构</a><a href="#test">06 测试用例架构</a>
+  <a href="#codegen">07 codegen loop</a><a href="#dyn">08 动态生成方案</a><a href="#wrong">09 设计错误清单</a>
+  <a href="#deerflow">10 DeerFlow</a><a href="#roadmap">11 汇总路线图</a><a href="#done">12 已实施详解</a><a href="#verify">13 核验纠偏</a>
+</div></nav>
+
+<div class="wrap">
+
+<h2 id="exec"><span class="num">00</span>执行摘要</h2>
+<p class="lead">一句话:<em>平台的持久执行主干是可靠的,近期新增的数据平面代码有 4 个需要修的真 bug;工厂"意图正确、执行脆弱" —— 单层扁平 ReAct(38 工具)+ 散落的 HITL 轮询门 + 未结构化的 review→refine 回路,是三大根因。</em></p>
+<div class="grid3">
+  <div class="card tight"><h4 style="color:var(--red)">Part I · Debug</h4><p class="small">12 项发现 → 核验后:<b>4 个真 P1</b>(telemetry 串写、compensation try/catch 包 step.*、metrics 硬编码 mock-model、codegen 跳探针)+ 6 个 P2 + <b>1 个证伪</b> + 1 个降级。</p></div>
+  <div class="card tight"><h4 style="color:var(--amber)">Part II · 架构判决</h4><p class="small">ReAct 不必推倒,但要<b>升级为"分阶段 plan-execute、阶段内 ReAct"</b>;HITL 三个独立轮询门必须合并为<b>统一交互队列</b>;测试用例要从"LLM 叙事式"升级为<b>契约驱动覆盖矩阵</b>。</p></div>
+  <div class="card tight"><h4 style="color:var(--blue)">DeerFlow 结论</h4><p class="small"><b>方向部分契合</b>:借它的编排形状(类型化 Plan+StepType 路由、human_feedback 一等节点、子 agent 上下文隔离),<b>不换栈</b>(LangGraph)、不学它的交付形态(报告≠可部署 durable functions)。</p></div>
+</div>
+
+<!-- ===== 01 PLATFORM MAP ===== -->
+<h2 id="map"><span class="num">01</span>Part I · 平台架构地图</h2>
+<p>三执行层 + 数据平面 + 信任边界。此图是 debug 发现的定位坐标系。</p>
+<figure>
+<svg viewBox="0 0 1040 300" xmlns="http://www.w3.org/2000/svg" font-family="ui-monospace,Menlo,monospace" font-size="11.5">
+  <defs><marker id="m1" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#5aa9ff"/></marker></defs>
+  <rect x="20" y="20" width="320" height="110" rx="10" fill="#12130f" stroke="#d0ff00" stroke-opacity=".4"/>
+  <text x="34" y="42" fill="#d0ff00" font-weight="bold">大脑层 · Brain(in-process)</text>
+  <text x="34" y="62" fill="#aab6cc">conductor ReAct 循环 · 38 工具</text>
+  <text x="34" y="80" fill="#aab6cc">llm_calls 遥测 · factory_runs 转录</text>
+  <text x="34" y="104" fill="#ff8f8f">⚠ BUG#3 telemetry 全局 ctx 串写</text>
+  <rect x="360" y="20" width="320" height="110" rx="10" fill="#101015" stroke="#42d392" stroke-opacity=".4"/>
+  <text x="374" y="42" fill="#42d392" font-weight="bold">交付层 · Inngest durable</text>
+  <text x="374" y="62" fill="#aab6cc">register.ts step.run · plan[] · invoke/subflow</text>
+  <text x="374" y="80" fill="#aab6cc">envelope 携带前推 + blob offload + event_store</text>
+  <text x="374" y="104" fill="#ff8f8f">⚠ BUG#4 compensation try/catch 包 step.*</text>
+  <rect x="700" y="20" width="320" height="110" rx="10" fill="#12101c" stroke="#a78bfa" stroke-opacity=".4"/>
+  <text x="714" y="42" fill="#a78bfa" font-weight="bold">运行层 · CodeAct(-sb only)</text>
+  <text x="714" y="62" fill="#aab6cc">transpile+run · spawn(AST lint)· 隔离不变量</text>
+  <text x="714" y="80" fill="#aab6cc">unified AgentRuntime 插座</text>
+  <text x="714" y="104" fill="#ffb454">⚠ BUG#11 lint import 无超时</text>
+  <rect x="20" y="150" width="1000" height="70" rx="10" fill="#0e1219" stroke="#5aa9ff" stroke-opacity=".3"/>
+  <text x="34" y="172" fill="#5aa9ff" font-weight="bold">数据平面:trigger → rehydrate(BlobRef→值)→ step.run → assembleEmitPayload(携带前推+offload)→ sendEvent → 下一 agent</text>
+  <text x="34" y="192" fill="#aab6cc">持久化:runs/steps/tasks · events(ref)+event_store(全 payload+因果)· acceptance_scores · llm_calls · memory short/long</text>
+  <text x="34" y="210" fill="#ff8f8f">⚠ BUG#6 字段碰撞静默遮蔽 · BUG#7 因果 BFS N+1 · BUG#8 blob TOCTOU</text>
+  <rect x="20" y="236" width="1000" height="48" rx="10" fill="#121722" stroke="#26304a"/>
+  <text x="34" y="256" fill="#7686a3" font-weight="bold">信任边界</text>
+  <text x="140" y="256" fill="#aab6cc">租户隔离 tenantId · 并发键 ${'{'}tenantSlug{'}'}:${'{'}subject{'}'} · 沙箱 -sb 后缀(字符串匹配,待安全评审) · step.run 幂等重放</text>
+  <text x="34" y="274" fill="#ffb454">⚠ getCausalityChain 未按租户过滤(evt id 全局唯一,泄露需猜 id;API 层应加 scope)</text>
+  <line x1="340" y1="75" x2="358" y2="75" stroke="#5aa9ff" stroke-width="1.4" marker-end="url(#m1)"/>
+  <line x1="680" y1="75" x2="698" y2="75" stroke="#5aa9ff" stroke-width="1.4" marker-end="url(#m1)"/>
+</svg>
+<figcaption>图 1 · 平台架构 + debug 发现定位:三执行层、数据平面、信任边界</figcaption>
+</figure>
+
+<!-- ===== 02 BUGS ===== -->
+<h2 id="bugs"><span class="num">02</span>Part I · 深度 Debug 发现(已逐项核验)</h2>
+<p class="small">审计 agent 报 12 项;我对头条逐项 grep/读码复核 —— <b>证伪 1、降级 1、尖锐化 1、确认其余</b>。下表为核验后的最终判定。</p>
+<table>
+  <tr><th>#</th><th>严重度</th><th>缺陷</th><th>位置</th><th>失败场景 / 核验结论</th></tr>
+  <tr><td>1</td><td><span class="badge b-p1">P1</span></td><td><b>LLM 遥测跨会话串写</b>:<code>llmCallCtx</code> 是全局单例可变量</td><td class="fileref">stream-gateway.ts:87 + conductor.ts:267</td><td class="small"><b>✅ 确认</b>。run-registry <code>void drive()</code> 允许并发 brain run;B 的 setLlmCallContext 覆盖 A → A 的调用记到 B 的 conversation/tenant 上,成本归因错乱。修:AsyncLocalStorage 或调用级 ctx 透传。</td></tr>
+  <tr><td>2</td><td><span class="badge b-p1">P1</span></td><td><b>compensation 用 try/catch 包住 <code>step.sendEvent</code></b> —— Inngest 反模式</td><td class="fileref">register.ts:405-417</td><td class="small"><b>✅ 确认且比审计说的更尖锐</b>:Inngest 的 step 工具靠抛特殊控制流异常做编排;catch 会吞掉它,可能破坏 replay/重试语义,且补偿失败被静默。修:不要 catch step.*(或只 catch 非控制流错误),把补偿并入 failRun 的原子步。</td></tr>
+  <tr><td>3</td><td><span class="badge b-p1">P1</span></td><td><b>Prometheus metrics 仍硬编码 <code>model:"mock-model-v1"</code></b>(DB 行已修但指标在说谎)</td><td class="fileref">register.ts:1035, 1115</td><td class="small"><b>✅ 确认</b>(主循环 grep 亲证)。runs 表已记录真实 runModel,但 runs_total/duration 指标标签还是假 model → 监控面按 model 切片全部失真。修:<code>model: runModel ?? "unknown"</code>。</td></tr>
+  <tr><td>4</td><td><span class="badge b-p1">P1</span></td><td><b>codegen_agent(AI 写码路径)跳过加载探针</b>:只 compile+lint 就标 <code>codeExecuted=true</code></td><td class="fileref">tools.ts codegen_agent(无 probeAgentModule 调用)</td><td class="small"><b>✅ 确认</b>(grep 亲证:body 内只有 validate+lint)。能编译但无可调用 handler 的 AI 代码带着"可执行"标记进沙箱才炸。修:与 design_agent 对齐,三闸全过(compile+AST lint+probe)。</td></tr>
+  <tr><td>5</td><td><span class="badge b-p2">P2</span></td><td>subflow 展开 lastResult 时未排除数组:<code>[1,2,3]</code> 摊成 <code>{"0":1,...}</code></td><td class="fileref">register.ts subflow 分支</td><td class="small">✅ 确认(构造性)。修:加 <code>!Array.isArray()</code>。</td></tr>
+  <tr><td>6</td><td><span class="badge b-p2">P2</span></td><td>assembleEmitPayload 字段碰撞静默遮蔽:agent 输出同名字段覆盖入站值,<code>carried[]</code> 不报告碰撞</td><td class="fileref">message-envelope.ts merge</td><td class="small">✅ 确认(设计使然,agent 输出优先是对的;缺的是可观测性)。修:新增 <code>shadowed[]</code> 报告字段遮蔽,落 emit.envelope 日志。</td></tr>
+  <tr><td>7</td><td><span class="badge b-p2">P2</span></td><td>getCausalityChain BFS 每层每父一条查询(N+1);深链 100+ 次查询</td><td class="fileref">event-store-query.ts:59</td><td class="small">✅ 确认。单实例可接受;修:每层一次 <code>inArray(causationId, frontier)</code> 批查。另:未按租户过滤(见图 1)。</td></tr>
+  <tr><td>8</td><td><span class="badge b-p2">P2</span></td><td>blob-store 并发写 TOCTOU:同哈希并发写第二次失败可留半截文件</td><td class="fileref">blob-store.ts:32-36</td><td class="small">✅ 合理。修:写临时文件 + 原子 rename。</td></tr>
+  <tr><td>9</td><td><span class="badge b-p2">P2</span></td><td>沙箱 gate/stub/replay 决策不落 meta —— 看 run 的人分不清工具是真调了还是被 mock</td><td class="fileref">step-engine.ts:363-366</td><td class="small">✅ 确认。修:tool-call meta 加 <code>{sbDecision, sandboxMode}</code>。</td></tr>
+  <tr><td>10</td><td><span class="badge b-p2">P2</span></td><td>event_store payloadJson 静默截断 200KB;lintSpawnCode 动态 import 无超时;envelope 嵌套双重 offload 歧义</td><td class="fileref">register.ts:969 · codeact.ts:76 · message-envelope.ts</td><td class="small">✅ 三项均确认为 latent。分别修:超限走 blob ref;import 加超时;offload 前查 isBlobRef。</td></tr>
+  <tr><td>11</td><td><span class="badge b-ref">证伪</span></td><td><s>"buffer-fold 标记形状不符,transcript 重放会坏"</s></td><td class="fileref">run-registry.ts:68</td><td class="small"><b>❌ 证伪</b>(主循环亲证):BrainEvent reflect 成员是 <code>kind: string</code> 开放类型,model.ts 正常映射渲染为反思行。仅剩打字美化项(把 count 收进类型,去掉 cast)。</td></tr>
+  <tr><td>12</td><td><span class="badge b-p2">降级 P2</span></td><td>finalize 里 <code>assembled!.payload</code> 非空断言</td><td class="fileref">register.ts:935</td><td class="small"><b>⬇ 降级</b>(主循环亲证):该行在 <code>if (emittedName)</code> 守卫内,且 assembled 由同一条件构造 —— 今天安全,但两处耦合同一条件是脆弱模式。修:改 <code>assembled?.payload ?? {}</code> 消除断言。</td></tr>
+</table>
+
+<!-- ===== 03 PLATFORM OPTS ===== -->
+<h2 id="popt"><span class="num">03</span>Part I · 平台优化建议(debug 驱动,新增于既有路线图之上)</h2>
+<div class="grid2">
+  <div class="rec"><div class="h"><span class="badge b-p0">修</span> 遥测请求作用域化</div><p class="why">AsyncLocalStorage 承载 conversationId/domain/tenant → 并发 brain run 互不串写(BUG#1)。</p></div>
+  <div class="rec"><div class="h"><span class="badge b-p0">修</span> 补偿原子化 + 去 try/catch-step 反模式</div><p class="why">emitCompensation 并入 failRun 原子步;绝不 catch step.*(BUG#2)。</p></div>
+  <div class="rec"><div class="h"><span class="badge b-p0">修</span> metrics 真实 model 标签</div><p class="why">register.ts:1035/1115 → <code>runModel ?? "unknown"</code>(BUG#3)。</p></div>
+  <div class="rec"><div class="h"><span class="badge b-p0">修</span> codegen_agent 补探针</div><p class="why">AI 码路径三闸对齐 design_agent(BUG#4)。</p></div>
+  <div class="rec"><div class="h"><span class="badge b-p1">改</span> envelope 加 shadowed[] 碰撞报告 · subflow 排除数组 · 因果查询批查+租户 scope</div><p class="why">BUG#5/6/7 一揽子。</p></div>
+  <div class="rec"><div class="h"><span class="badge b-p1">改</span> blob 原子写 · 沙箱决策落 meta · event_store 超限走 blob · lint import 超时</div><p class="why">BUG#8/9/10 一揽子。</p></div>
+</div>
+
+<hr/>
+
+<!-- ===== 04 REACT VERDICT ===== -->
+<h2 id="react"><span class="num">04</span>Part II · ReAct 架构判决:不推倒,升级为"分阶段 plan-execute、阶段内 ReAct"</h2>
+<p><strong>现状:</strong>单层扁平 ReAct 循环暴露 <b>38 个工具</b>,流水线次序只靠 system prompt 的散文引导("别跳过""先 X 再 Y");三个独立轮询 HITL 门;MAX_TURNS=200 是唯一硬背板(<b>token 无硬上限是你本人否决过的刻意决定</b>,soft 成本表是补偿控制 —— 这点不算 bug,但要认识到它把控制责任压到了 nudge 机制上)。</p>
+<p><strong>脆弱性证据(代码里"纠正 LLM 选择"的补丁密度):</strong>规则闸口强制 floor 绑定、覆盖 nudge 循环(耗尽 5 次后放弃)、compaction 叙事 LLM 失败静默回退 ""、review 只能事后抓、相同工具重复调用无护栏。这些补丁每一个都是"扁平循环管不住次序"的症状。</p>
+<div class="callout good"><div class="t">判决</div><b>ReAct 本身不是错的 —— 错的是把"阶段推进"也交给它。</b>正确形态:<b>外层 = 显式阶段状态机(plan-execute)</b>,阶段有入口前置条件和出口闸门;<b>阶段内 = ReAct</b>(设计/修复这类开放任务仍需自由推理)。这与 DeerFlow 的 StateGraph+StepType 路由、也与我们已有的 phaseFor 信号(只差"从展示信号升级为控制闸门")同构 —— <b>迁移成本低:把 phaseFor 从 UI 标签变成阶段准入检查即可起步。</b></div>
+<figure>
+<svg viewBox="0 0 1040 270" xmlns="http://www.w3.org/2000/svg" font-family="ui-monospace,Menlo,monospace" font-size="11">
+  <defs><marker id="r1" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#42d392"/></marker><marker id="r2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#ffb454"/></marker></defs>
+  <text x="20" y="24" fill="#ff8f8f" font-weight="bold">现状:扁平 ReAct × 38 工具(次序靠散文)</text>
+  <rect x="20" y="34" width="1000" height="44" rx="9" fill="#1a1113" stroke="#ff6b6b" stroke-opacity=".4"/>
+  <text x="34" y="61" fill="#aab6cc">LLM 每回合从 38 个工具里自由挑 → prompt 恳求次序 → nudge 补丁纠偏 → 轮询门竞争消息</text>
+  <text x="20" y="110" fill="#42d392" font-weight="bold">目标:分阶段 plan-execute(外层状态机)+ 阶段内 ReAct(内层自由推理)</text>
+  <g fill="#101a15" stroke="#42d392" stroke-opacity=".5">
+    <rect x="20" y="122" width="170" height="60" rx="9"/><rect x="220" y="122" width="200" height="60" rx="9"/>
+    <rect x="450" y="122" width="180" height="60" rx="9"/><rect x="660" y="122" width="170" height="60" rx="9"/><rect x="860" y="122" width="160" height="60" rx="9"/>
+  </g>
+  <text x="34" y="144" fill="#e6ecf5">① PLAN</text><text x="34" y="162" fill="#7686a3">read→understand→</text><text x="34" y="176" fill="#7686a3">plan↔critique</text>
+  <text x="234" y="144" fill="#e6ecf5">② DESIGN(每 action)</text><text x="234" y="162" fill="#7686a3">design→三重审查→refine</text><text x="234" y="176" fill="#7686a3">出口:三透镜清零</text>
+  <text x="464" y="144" fill="#e6ecf5">③ VALIDATE</text><text x="464" y="162" fill="#7686a3">graph→boundary→</text><text x="464" y="176" fill="#7686a3">verify_chain</text>
+  <text x="674" y="144" fill="#e6ecf5">④ SANDBOX</text><text x="674" y="162" fill="#7686a3">用例→真数据→部署跑</text><text x="674" y="176" fill="#7686a3">出口:验收 bar</text>
+  <text x="874" y="144" fill="#e6ecf5">⑤ DELIVER</text><text x="874" y="162" fill="#7686a3">finish+晋升</text><text x="874" y="176" fill="#7686a3">结构化 verdict</text>
+  <g stroke="#42d392" stroke-width="1.4" fill="none"><line x1="190" y1="152" x2="218" y2="152" marker-end="url(#r1)"/><line x1="420" y1="152" x2="448" y2="152" marker-end="url(#r1)"/><line x1="630" y1="152" x2="658" y2="152" marker-end="url(#r1)"/><line x1="830" y1="152" x2="858" y2="152" marker-end="url(#r1)"/></g>
+  <path d="M550 182 q0 46 -230 46 q-160 0 -160 -46" stroke="#ffb454" stroke-width="1.3" fill="none" marker-end="url(#r2)"/>
+  <text x="270" y="248" fill="#ffb454">失败回路:显式工具失败驱动回退(不是 prose nudge)· 每阶段独立 token 预算 + 收敛检测</text>
+</svg>
+<figcaption>图 2 · ReAct 升级:外层阶段状态机(入口条件+出口闸门+每阶段预算),阶段内保留 ReAct 自由推理</figcaption>
+</figure>
+<p class="small"><b>配套修复:</b>① compaction 叙事 LLM 失败时改为确定性截断兜底 + 发 warning 事件(不再静默丢推理连续性);② 相同工具+相同参数重复调用检测(2 次即打断,给结构化提示);③ 每阶段 token 预算(PLAN 50k / DESIGN 500k / VALIDATE 100k / SANDBOX 150k,超限升级 analyze_failure 而非磨)—— 这是"阶段预算",与你否决的"全局硬上限"不同,建议采纳。</p>
+
+<!-- ===== 05 HITL ===== -->
+<h2 id="hitl"><span class="num">05</span>Part II · ask_user / HITL 统一架构</h2>
+<p><strong>现状盘点(4 条路径,3 个独立轮询门):</strong>ask_user 澄清门、测试用例批准门、边界事件门(各自 <code>awaiting*</code> 布尔 + 150-tick 轮询 + 超时自动放行)+ supply_test_data(复用澄清门)。<b>核心缺陷:消息队列是扁平的</b> —— 用户回复没有目标标签,先轮询到的门先消费;答案可能被错误的门吃掉 → 该门超时走默认值(错误决策),真正提问的门永远等不到。加上 4 处超时/回退语义各自为政、前端 4 套 UI 接线。</p>
+<figure>
+<svg viewBox="0 0 1040 250" xmlns="http://www.w3.org/2000/svg" font-family="ui-monospace,Menlo,monospace" font-size="11">
+  <defs><marker id="h1" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#5aa9ff"/></marker></defs>
+  <text x="20" y="24" fill="#d0ff00" font-weight="bold">统一交互队列(InteractionRequest)</text>
+  <rect x="20" y="36" width="480" height="190" rx="10" fill="#121722" stroke="#33405f"/>
+  <text x="36" y="60" fill="#aab6cc">type InteractionRequest = {</text>
+  <text x="52" y="80" fill="#cfe0ff">id: 稳定 UUID(resume 后不变)</text>
+  <text x="52" y="100" fill="#cfe0ff">kind: clarify | approval | boundary | data_supply</text>
+  <text x="52" y="120" fill="#cfe0ff">priority: STOP &gt; clarify &gt; approval/boundary</text>
+  <text x="52" y="140" fill="#cfe0ff">options[]（value 化,radio 不 free-text）</text>
+  <text x="52" y="160" fill="#cfe0ff">timeout + autoFallback（统一语义）</text>
+  <text x="52" y="180" fill="#cfe0ff">status: pending|answered|timed_out</text>
+  <text x="36" y="204" fill="#aab6cc">}  → ctx.interactions: Map（随 serializeCtx 持久化）</text>
+  <rect x="560" y="36" width="460" height="88" rx="10" fill="#101a15" stroke="#42d392" stroke-opacity=".4"/>
+  <text x="576" y="60" fill="#42d392" font-weight="bold">大脑侧:一个等待原语</text>
+  <text x="576" y="82" fill="#aab6cc">park(request) → 应答按 request_id 精确路由</text>
+  <text x="576" y="104" fill="#aab6cc">消息永不被错误的门消费 · 一处超时/回退逻辑</text>
+  <rect x="560" y="138" width="460" height="88" rx="10" fill="#12182a" stroke="#5aa9ff" stroke-opacity=".4"/>
+  <text x="576" y="162" fill="#5aa9ff" font-weight="bold">前端侧:一个 InteractionWidget</text>
+  <text x="576" y="184" fill="#aab6cc">监听 pending → 按 kind 渲染表单 → respond(id, value)</text>
+  <text x="576" y="206" fill="#aab6cc">断线重连:查 pending 即重现问题(不丢上下文)</text>
+  <line x1="500" y1="80" x2="558" y2="80" stroke="#5aa9ff" stroke-width="1.4" marker-end="url(#h1)"/>
+  <line x1="500" y1="182" x2="558" y2="182" stroke="#5aa9ff" stroke-width="1.4" marker-end="url(#h1)"/>
+</svg>
+<figcaption>图 3 · 统一 HITL:一个类型化队列、一个等待原语、一个前端组件;应答按 id 路由,resume 恢复 pending</figcaption>
+</figure>
+<p class="small"><b>迁移路径(低风险):</b>先加 InteractionRequest 信封与 id 路由(三个门内部照旧,只是消息带上目标 id → 立即消灭误抢);再合并超时/回退语义;最后前端合并为单组件。选项回答 value 化(radio),free-text 只作显式 "other"。</p>
+
+<!-- ===== 06 TEST GEN ===== -->
+<h2 id="test"><span class="num">06</span>Part II · 测试用例生成架构方案</h2>
+<p><strong>现状:</strong>LLM 叙事式作文(3-5 个 happy/reject/edge)→ <code>fillCanonical()</code> 静默剥掉 LLM 编造的非本体字段(大脑无感知)→ 合成 fixtures(合成 PDF/demo 值)→ supply_test_data 是<b>事后</b>门。<strong>四个缺口:</strong>①无按 plan 分支的覆盖保证(5 步 plan 带分支只测 happy path → allPass 是假阳性);②无故障注入用例(超时/5xx/幂等重放 —— 而 sandbox-mode 的注入原语其实已具备!);③真数据是事后补;④字段被剥时无反馈。</p>
+<figure>
+<svg viewBox="0 0 1040 210" xmlns="http://www.w3.org/2000/svg" font-family="ui-monospace,Menlo,monospace" font-size="11">
+  <text x="20" y="24" fill="#d0ff00" font-weight="bold">契约驱动覆盖矩阵(替代叙事式作文)</text>
+  <rect x="20" y="36" width="620" height="150" rx="10" fill="#121722" stroke="#33405f"/>
+  <text x="36" y="60" fill="#aab6cc">for (agent × plan 分支 × onError 路径):</text>
+  <text x="52" y="82" fill="#cfe0ff">happy:每 (entryEvent, emit 分支) ≥1 例</text>
+  <text x="52" y="102" fill="#cfe0ff">reject:每规则闸口 ≥1 拦截例(命中强制规则)</text>
+  <text x="52" y="122" fill="#cfe0ff">fault:每 tool 步 × {timeout, 5xx, 空响应} 注入例</text>
+  <text x="52" y="142" fill="#cfe0ff">idempotency:同 payload 双发 → 副作用只 1 次</text>
+  <text x="36" y="168" fill="#7686a3">LLM 只负责给矩阵格子填真实感数据,不负责决定覆盖什么</text>
+  <rect x="660" y="36" width="360" height="70" rx="10" fill="#101a15" stroke="#42d392" stroke-opacity=".4"/>
+  <text x="676" y="58" fill="#42d392" font-weight="bold">真数据前置</text>
+  <text x="676" y="78" fill="#aab6cc">生成时即扫描 real-data 字段→统一 HITL 队列</text>
+  <text x="676" y="96" fill="#aab6cc">一次问全(不再事后 supply_test_data 二次问)</text>
+  <rect x="660" y="116" width="360" height="70" rx="10" fill="#12182a" stroke="#5aa9ff" stroke-opacity=".4"/>
+  <text x="676" y="138" fill="#5aa9ff" font-weight="bold">verdict 增强</text>
+  <text x="676" y="158" fill="#aab6cc">per-kind(已有)+ 记录到达终态的步与原因</text>
+  <text x="676" y="176" fill="#aab6cc">+ 字段被 fillCanonical 剥除时回喂大脑警告</text>
+</svg>
+<figcaption>图 4 · 测试用例:矩阵定覆盖、LLM 填数据、注入用 sandbox-mode 已有原语、真数据一次问全</figcaption>
+</figure>
+
+<!-- ===== 07 CODEGEN LOOP ===== -->
+<h2 id="codegen"><span class="num">07</span>Part II · 代码生成 loop 提升</h2>
+<p><strong>现状 loop:</strong>design_agent(render+compile+AST lint+probe)→ review 三透镜 → refine(打分 score.delta,回归 &lt;-10 建议 revert)→ revert_refine。<strong>四个已核验的缺口:</strong></p>
+<table>
+  <tr><th>缺口</th><th>核验</th><th>修复</th></tr>
+  <tr><td><b>review findings 不结构化回喂 refine</b> —— 裁判返回 prose,大脑手工转译,常漏修 1/3 → 多跑整轮</td><td class="yes">✅</td><td>findings 结构化为 <code>{agent, issue, fix_suggestion, lens}</code>;refine_agent 增 <code>review_findings</code> 参数自动逐条应用后复审</td></tr>
+  <tr><td><b>codegen_agent 跳过 probe</b>(AI 码只 compile+lint 即标可执行)</td><td class="yes">✅ grep 亲证</td><td>三闸对齐(= Part I BUG#4)</td></tr>
+  <tr><td><b>无收敛检测</b> —— delta 连续趋零仍磨到预算耗尽</td><td class="yes">✅</td><td><code>|delta|&lt;5</code> 连续 2 次 → 拒绝 refine,导向 verify_chain / revert+replan</td></tr>
+  <tr><td><b>refine 快照只存 3 字段</b>(systemPrompt/tools/decisionLogic)—— revert 时 schema 改动回不去,产生半回滚状态</td><td class="yes">✅ grep 亲证(tools.ts:779)</td><td>快照整个 spec,revert 全量还原</td></tr>
+  <tr><td>refine 后 re-render 失败静默(代码悄悄变坏,沙箱才炸)</td><td class="partial">合理</td><td>renderExecutableCode 失败时 refine 返回 ok:false + probeReason</td></tr>
+  <tr><td><b>缺"AI 码修复环"</b>:AI 代码沙箱失败后没有带上下文的重生成路径(重新 codegen 用同样的 prompt)</td><td class="yes">✅</td><td>新增 codegen 修复模式:携带 {失败步、错误、三透镜 findings、上一版代码} 重新提示 → probe → 复审;失败教训落 reflection→skill 蒸馏</td></tr>
+</table>
+
+<!-- ===== 08 DYNAMIC GEN ===== -->
+<h2 id="dyn"><span class="num">08</span>Part II · 运行时动态生成方案(agents / tools / sub-agents / SKILLS / prompts → 最终 functions)</h2>
+<p><strong>已有能力盘点:</strong>create_tool(声明式 HTTP,存库可复用)· extract_api_schema(文档→契约)· create_skill/use_skill(存库+织入+effectiveness)· design_subagent(可部署子 agent,父 invoke 同步调)· ctx.spawn(运行期 CodeAct 子 agent,AST lint 审查环,可晋升)· spawn_subagent(子大脑递归,深度封顶)· 动态 prompt 组装(规则 floor / skills 织入 / submission_criteria floor)。<b>骨架齐全 —— 缺的是把"被动响应"变成"主动供给"的闭环:</b></p>
+<figure>
+<svg viewBox="0 0 1040 250" xmlns="http://www.w3.org/2000/svg" font-family="ui-monospace,Menlo,monospace" font-size="11">
+  <defs><marker id="d1" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#a78bfa"/></marker></defs>
+  <text x="20" y="24" fill="#a78bfa" font-weight="bold">主动式动态供给环(设计中检测缺口 → 自动供给 → 审查 → 复用)</text>
+  <rect x="20" y="40" width="230" height="70" rx="10" fill="#121722" stroke="#33405f"/>
+  <text x="34" y="64" fill="#e6ecf5">缺口检测(design 时)</text>
+  <text x="34" y="84" fill="#7686a3">无工具可绑 / 复杂度超阈 /</text><text x="34" y="100" fill="#7686a3">重复模式出现 / prompt 需定制</text>
+  <rect x="290" y="40" width="440" height="150" rx="10" fill="#12101c" stroke="#a78bfa" stroke-opacity=".5"/>
+  <text x="306" y="62" fill="#c9b8ff" font-weight="bold">供给决策(结构化选项,不是散文警告)</text>
+  <text x="306" y="86" fill="#aab6cc">缺工具 → search_tools ↛ create_tool/extract_api ↛ ask_user</text>
+  <text x="306" y="108" fill="#aab6cc">太复杂 → design_subagent(限定 toolFilter 的<b>作用域工具集</b>)</text>
+  <text x="306" y="130" fill="#aab6cc">重复模式 → create_skill + <b>追溯织入</b>早先已设计的 agents</text>
+  <text x="306" y="152" fill="#aab6cc">动态 prompt(floor/skill 片段)→ <b>织入前轻量预审</b></text>
+  <text x="306" y="174" fill="#7686a3">全部过审查环(AST lint / 三透镜 / sanitize)后才生效</text>
+  <rect x="770" y="40" width="250" height="70" rx="10" fill="#101a15" stroke="#42d392" stroke-opacity=".4"/>
+  <text x="786" y="64" fill="#42d392">沉淀复用</text>
+  <text x="786" y="84" fill="#7686a3">tools/skills 落库 · sub-agent 晋升</text>
+  <text x="786" y="100" fill="#7686a3">effectiveness 计分驱动排序</text>
+  <rect x="770" y="120" width="250" height="70" rx="10" fill="#101015" stroke="#42d392" stroke-opacity=".5"/>
+  <text x="786" y="144" fill="#42d392" font-weight="bold">产出:可运行 functions</text>
+  <text x="786" y="164" fill="#7686a3">Inngest durable agents 代码</text>
+  <text x="786" y="180" fill="#7686a3">(+晋升的子 agent)</text>
+  <line x1="250" y1="75" x2="288" y2="75" stroke="#a78bfa" stroke-width="1.4" marker-end="url(#d1)"/>
+  <line x1="730" y1="75" x2="768" y2="75" stroke="#a78bfa" stroke-width="1.4" marker-end="url(#d1)"/>
+  <line x1="895" y1="110" x2="895" y2="118" stroke="#42d392" stroke-width="1.4" marker-end="url(#d1)"/>
+  <text x="20" y="230" fill="#7686a3">关键升级:① 供给由缺口检测<b>主动触发</b>(现在靠大脑记得调);② 子 agent 给<b>作用域工具集</b>(现在继承全 38 个,决策污染);③ skill <b>追溯织入</b>(现在只影响之后设计的);④ 动态 prompt <b>织入前预审</b>(现在事后 review 才抓)。</text>
+</svg>
+<figcaption>图 5 · 动态供给环:检测 → 结构化供给决策 → 审查 → 沉淀复用 → 最终交付可运行 functions</figcaption>
+</figure>
+
+<!-- ===== 09 WRONG LIST ===== -->
+<h2 id="wrong"><span class="num">09</span>Part II · "哪里设计得不对" —— 12 条直言清单</h2>
+<table>
+  <tr><th>#</th><th>设计错误</th><th>位置</th><th>正确设计</th><th>工作量</th></tr>
+  <tr><td>1</td><td>扁平 ReAct×38 工具,阶段推进靠散文</td><td class="fileref">conductor.ts</td><td>外层阶段状态机+阶段内 ReAct(§04)</td><td>高</td></tr>
+  <tr><td>2</td><td>3 个独立轮询 HITL 门,消息无标签被误抢</td><td class="fileref">conductor.ts:320-452</td><td>统一 InteractionRequest 队列(§05)</td><td>中</td></tr>
+  <tr><td>3</td><td>compaction 叙事 LLM 失败静默回退 ""</td><td class="fileref">conductor.ts:85-113</td><td>确定性截断兜底 + warning 事件</td><td>低</td></tr>
+  <tr><td>4</td><td>review findings 是 prose,不结构化回喂 refine</td><td class="fileref">tools.ts review/refine</td><td>结构化 findings + refine 自动应用(§07)</td><td>中</td></tr>
+  <tr><td>5</td><td>codegen_agent 跳过 probe(✅ 亲证)</td><td class="fileref">tools.ts codegen_agent</td><td>三闸对齐 design_agent</td><td>低</td></tr>
+  <tr><td>6</td><td>refine 无收敛检测,磨到预算耗尽</td><td class="fileref">tools.ts refine_agent</td><td>delta 停滞 2 次即拒绝+导向</td><td>低</td></tr>
+  <tr><td>7</td><td>测试用例无 plan 分支覆盖矩阵,allPass 假阳性</td><td class="fileref">test-cases.ts</td><td>契约驱动矩阵(§06)</td><td>高</td></tr>
+  <tr><td>8</td><td>skill 只前向织入,早先 agents 享受不到;供给全靠大脑记得调</td><td class="fileref">tools.ts create_skill</td><td>追溯织入 + 主动缺口检测(§08)</td><td>中</td></tr>
+  <tr><td>9</td><td>skill 片段是自由文本织入(sanitize 是 regex 补丁,非结构隔离)</td><td class="fileref">tools.ts</td><td>skill 作为 schema/结构层注入,非字符串拼接</td><td>中</td></tr>
+  <tr><td>10</td><td>ask_user 答案 free-text 松散解析,选项未 value 化</td><td class="fileref">conductor.ts:413-452</td><td>radio value 化,free-text 仅显式 other(§05)</td><td>低</td></tr>
+  <tr><td>11</td><td>finish 拒绝时结构化不足,大脑猜原因瞎修</td><td class="fileref">tools.ts finish</td><td>返回 {reason 枚举, gaps[]} 结构化 verdict(验收 bar 已有,补 reason 分类)</td><td>低</td></tr>
+  <tr><td>12</td><td>refine 快照只存 3 字段,revert 半回滚(✅ 亲证 tools.ts:779)</td><td class="fileref">tools.ts:779</td><td>全 spec 快照,revert 全量还原</td><td>低</td></tr>
+</table>
+
+<!-- ===== 10 DEERFLOW ===== -->
+<h2 id="deerflow"><span class="num">10</span>DeerFlow 及开源对比:借编排形状,不换栈</h2>
+<p class="small">研究对象:<a href="https://github.com/bytedance/deer-flow">bytedance/deer-flow</a>(已从深度研究框架演化为 "SuperAgent harness":lead agent + 子 agent + 沙箱 + 记忆 + skills + 消息网关)及其经典研究工作流(<a href="https://deepwiki.com/bytedance/deer-flow/2.1-multi-agent-workflow">LangGraph StateGraph 九节点</a>)。</p>
+<table>
+  <tr><th>DeerFlow 机制</th><th>判定</th><th>对我们的含义</th></tr>
+  <tr><td><b>类型化 Plan + StepType 路由</b>:planner 产出结构化计划,步骤按类型路由到 researcher/coder</td><td class="yes">✅ 借鉴</td><td>正是 §04 的方向:阶段推进用结构而非散文。我们的 plan[] 已类型化,缺的是外层用它驱动控制流</td></tr>
+  <tr><td><b>human_feedback 是一等图节点</b>([ACCEPTED]/[EDIT_PLAN] 计划评审后才执行)</td><td class="yes">✅ 借鉴</td><td>支撑 §05 统一 HITL:人审是状态机节点,不是散落轮询;且"计划级人审"比我们现在"用例级人审"更靠前、杠杆更大</td></tr>
+  <tr><td><b>子 agent 严格上下文隔离</b>("sub-agent 看不到主 agent 或其他 sub-agent 的上下文"),只回传 observations</td><td class="yes">✅ 借鉴</td><td>支撑 §08 作用域工具集 + 上下文工程 Isolate 招;我们 spawn 的子 agent 现在继承全上下文/全工具</td></tr>
+  <tr><td>bounded re-planning(plan_iterations 上限 + has_enough_context 短路)</td><td class="partial">已有等价</td><td>我们的 critique_plan↔create_plan v+1 + refine 预算已同构</td></tr>
+  <tr><td><b>LangGraph/LangChain 栈</b></td><td class="no">❌ 不借</td><td>我们的持久层是 Inngest(durable functions 本身就是交付物),换栈零收益、丢 durable 语义</td></tr>
+  <tr><td><b>交付形态:报告/artifacts</b>(research reports、slides、dashboards)</td><td class="no">❌ 方向不同</td><td>我们交付<b>可部署、事件驱动、durable 的生产 functions</b>——验证 spine(沙箱真跑+验收 bar+code_ran 回执)是我们独有且必须自研的部分,DeerFlow 没有对应物</td></tr>
+</table>
+<div class="callout"><div class="t">结论</div>DeerFlow <b>方向部分契合、值得借三样东西</b>(类型化计划驱动控制流、人审一等节点、子 agent 上下文隔离)—— 三者恰好分别印证本报告 §04/§05/§08 的三个核心建议;<b>栈与交付形态不契合,不迁移</b>。</div>
+
+<!-- ===== 11 ROADMAP ===== -->
+<h2 id="roadmap"><span class="num">11</span>汇总路线图</h2>
+<div class="grid3">
+  <div class="card tight"><h4 style="color:var(--red)">Wave 1 · Debug 修复(天级)</h4><ul class="small"><li>遥测 AsyncLocalStorage(BUG#1)</li><li>补偿去 catch-step + 原子化(BUG#2)</li><li>metrics 真 model 标签(BUG#3)</li><li>codegen 补 probe(BUG#4)</li><li>快照全量/收敛检测/subflow 数组/shadowed[](低工作量批)</li></ul></div>
+  <div class="card tight"><h4 style="color:var(--amber)">Wave 2 · 结构升级(周级)</h4><ul class="small"><li>统一 HITL 队列(先 id 路由,后合并语义)</li><li>review findings 结构化 → refine 自动应用</li><li>阶段状态机(phaseFor 升级为准入闸门 + 每阶段预算)</li><li>测试覆盖矩阵 + 故障注入(复用 sandbox-mode 原语)</li></ul></div>
+  <div class="card tight"><h4 style="color:var(--blue)">Wave 3 · 智能供给(周级+)</h4><ul class="small"><li>主动缺口检测 → 动态供给环</li><li>子 agent 作用域工具集 + 上下文隔离</li><li>skill 追溯织入 + 结构化注入层</li><li>AI 码修复环(失败上下文重生成)+ 教训蒸馏</li></ul></div>
+</div>
+<p class="small muted">排序原则:Wave 1 全是已核验、低工作量、高确定性的修复;Wave 2 解决三大结构根因;Wave 3 兑现"动态生成辅助交付"的愿景。与既有审计报告(agent-factory-architecture-audit.html)的 P0-P2 路线图正交互补 —— 那份管持久化/观测地基,这份管生成过程质量。</p>
+
+
+<!-- ===== 12 IMPLEMENTED ===== -->
+<h2 id="done"><span class="num">12</span>已实施详解(本报告全部 Wave 已 coding 完成)</h2>
+<p class="lead">报告交付后同轮完成全部三个 Wave 的实现——<em>22 项改动、全部通过测试(agent-factory 205 · api 587 · 23 包 typecheck)、零回归</em>。逐项讲解:</p>
+
+<h3>Wave 1 · Debug 修复(15 项)</h3>
+<table>
+  <tr><th>#</th><th>改动</th><th>机制详解</th></tr>
+  <tr><td>1</td><td><b>遥测串写修复</b></td><td>为什么不用简单加锁:并发 brain run 是<em>交错</em>而非竞争——B 覆盖全局 ctx 后 A 的下一次 chatOnce 就带错归因。修法:每次 setLlmCallContext 前的调用快照其 ctx(闭包捕获),emit 用捕获值。<span class="fileref">stream-gateway.ts</span></td></tr>
+  <tr><td>2</td><td><b>补偿去 catch-step 反模式</b></td><td>Inngest 的 step.* 靠抛控制流异常做编排(中断→重放→memoize);catch 会把"这一步需要挂起重放"误当"失败被吞"。改法:step.sendEvent 裸调(Inngest 自身按 step id 幂等重试,那才是真正的 best-effort);仅 writeRunLog(纯 fs)保留 .catch。<span class="fileref">register.ts emitCompensation</span></td></tr>
+  <tr><td>3</td><td><b>metrics 真实 model</b></td><td>runs_total/duration 的 model 标签从硬编码 mock-model-v1 改为运行时累积的 runModel——监控按 model 切片恢复真实。成功/失败两条路径都改。<span class="fileref">register.ts:1035/1115</span></td></tr>
+  <tr><td>4</td><td><b>codegen 三闸对齐</b></td><td>AI 写码路径补 probeAgentModule(transpile→defineAgent shim 加载→确认 handler 可调),并把 codeExecuted 的评级对象从"被替换掉的旧渲染码"纠正为"新 AI 码"——此前评级指向错误对象。<span class="fileref">tools.ts codegen_agent</span></td></tr>
+  <tr><td>5-15</td><td><b>P2 批</b></td><td>subflow 排除数组展开(数字键污染)· envelope 新增 <code>shadowed[]</code>(同名字段被覆盖且值不同时显式报告,落 emit.envelope 日志)· 因果 BFS 每层一次 <code>inArray</code> 批查 + 可选 tenantId scope · blob 临时文件+原子 rename(TOCTOU 关窗)· 工具被 gate/stub 时输出打 <code>__sbDecision</code> 标记(mock 不再伪装成真调)· lint 的 ts import 加 5s 超时竞速(超时落 regex 兜底)· event_store 超 200KB 存 <code>{__truncated,bytes,head}</code> 标记而非静默截断 · <code>assembled?.payload</code> 去断言 · reflect 事件类型化 count 字段(去 cast)· refine 快照全量化(见 W2)</td></tr>
+</table>
+
+<h3>Wave 2 · 结构升级(4 项)</h3>
+<table>
+  <tr><th>改动</th><th>机制详解</th></tr>
+  <tr><td><b>HITL 标签路由</b></td><td>三个门共用 <code>drainRouted()</code>:先取 <code>ctx.pendingHuman</code> 缓冲再取邮箱;每个门遇到<em>其它门的标签</em>([测试用例决策]/[边界事件决策]/[澄清回答])即 <code>requeueFor()</code> 放回缓冲、绝不消费——直接消灭"澄清门贪婪吃掉决策消息→正确的门超时走错误默认值"这个真实误路由。pendingHuman 随 serializeCtx 持久化,resume 不丢。<span class="fileref">conductor.ts 三门 + brain-types.ts</span></td></tr>
+  <tr><td><b>compaction 确定性兜底</b></td><td>摘要 LLM 失败时不再静默丢推理脉络:保留被折叠 assistant 轮次的原文尾段(最后 3 条×400 字符)+ 发 <code>compact-fallback</code> reflect 事件让"连续性受损"可见。<span class="fileref">conductor.ts maybeCompact</span></td></tr>
+  <tr><td><b>重复调用断路器</b></td><td>连续相同 (tool, args) 第 2 次计数、第 3 次直接拒绝执行并给结构化转向建议(换输入/verify_chain/analyze_failure/ask_user)——替代之前"磨到 MAX_TURNS"的静默烧钱。<span class="fileref">conductor.ts dispatch</span></td></tr>
+  <tr><td><b>测试覆盖矩阵</b></td><td><code>ensureCoverage()</code>:必需格 = 每入口事件的 happy(可安全确定性补位,golden 式)+ 每规则闸口的 reject + 每多分支 agent 的 branch(这两类需要真实的违规/分支数据,<em>诚实上报缺口</em>而非瞎造)。generate_test_cases 输出附 coverage 报告,缺格时 summary 明示——allPass 不再可能是空心假阳性。<span class="fileref">test-cases.ts</span></td></tr>
+</table>
+
+<h3>Wave 3 · 智能供给(3 项 + 既有底座)</h3>
+<table>
+  <tr><th>改动</th><th>机制详解</th></tr>
+  <tr><td><b>结构化供给信号</b></td><td>design_agent 输出新增 <code>provisioning: {needed, gaps[], options[], suggested[]}</code>——"缺工具"从散文警告升级为可编程决策点(gaps=no_tool_bound/unresolved_tools;options=search_tools/create_tool/extract_api_schema/ask_user/design_subagent;suggested=语义排序的真实工具 top3)。<span class="fileref">tools.ts design_agent</span></td></tr>
+  <tr><td><b>子大脑作用域工具集</b></td><td>spawn_subagent 新增 <code>tools[]</code> 参数:子大脑只拿到指定子集(只读集内过滤),窄任务不再被 38 个全量工具污染决策——对齐 DeerFlow 的子 agent 上下文隔离。<span class="fileref">conductor.ts spawnSubagentTool</span></td></tr>
+  <tr><td><b>skill 追溯织入</b></td><td>create_skill 现在把新技能织入<em>之前已设计</em>的所有 spec(去重守卫防重复织入),重新评级其渲染码、作废沙箱证据;输出 <code>retroWove[]</code>。早设计的 agent 不再享受不到后创建的技能。<span class="fileref">tools.ts create_skill</span></td></tr>
+  <tr><td class="muted">既有底座</td><td class="muted">review findings→refine 结构化回喂(refine_agent 新 <code>review_findings</code> 参数)+ 收敛检测(连续两轮 |Δ|&lt;5 拒绝再磨)+ 全量快照/全量回滚——这三项在 Wave 1/2 边界已一并落地。</td></tr>
+</table>
+<div class="callout good"><div class="t">验证</div>agent-factory <b>205</b> 测试 ✓ · api <b>587</b> 测试 ✓ · 23 包 typecheck ✓ · 零回归。未实施(刻意):阶段状态机的完整外层重写(高工作量项,phaseFor→准入闸门的渐进路径已铺好:重复断路器+结构化 findings+收敛检测就是它的前置件)、故障注入用例的真实沙箱触发(矩阵已上报缺口,注入原语在 sandbox-mode 已备)、前端统一 InteractionWidget(后端 id 路由已就绪)。</div>
+
+<!-- ===== 13 VERIFY ===== -->
+<h2 id="verify"><span class="num">13</span>核验纠偏(透明度)</h2>
+<table>
+  <tr><th>审计原始声称</th><th>核验结论</th><th>证据</th></tr>
+  <tr><td class="no">"buffer-fold 标记形状不符,transcript 重放会坏"(P0)</td><td class="yes">❌ 证伪</td><td>BrainEvent reflect 成员 <code>kind: string</code> 开放类型;model.ts:98 正常映射渲染</td></tr>
+  <tr><td class="no">"assembled! 非空断言会崩"(P0)</td><td class="partial">⬇ 降级 P2</td><td>register.ts:935 在 <code>if (emittedName)</code> 守卫内,与 assembled 构造同条件 —— 今天安全,耦合脆弱</td></tr>
+  <tr><td class="partial">"compensation 在 failRun 后可能不执行"</td><td class="yes">✅ 且更尖锐</td><td>真正问题是 try/catch 包住 step.sendEvent(Inngest 控制流异常被吞)—— 反模式亲证 register.ts:408-416</td></tr>
+  <tr><td class="yes">"codegen_agent 跳过 probeAgentModule"</td><td class="yes">✅ 亲证</td><td>body 内仅 validateAgentCode + lintGeneratedToolCode</td></tr>
+  <tr><td class="yes">"refine 快照只存 3 字段"</td><td class="yes">✅ 亲证</td><td>tools.ts:779 priorSpecSnapshot 仅 systemPrompt/tools/decisionLogic</td></tr>
+  <tr><td class="partial">"token 无硬上限是设计缺陷"</td><td class="partial">重新定性</td><td>conductor.ts:7 注释明示<b>用户本人否决过硬上限</b> —— 是刻意决策非疏漏;本报告建议的是"每阶段预算"(不同物)</td></tr>
+  <tr><td class="partial">"39 个工具"</td><td class="yes">修正:38</td><td>FACTORY_TOOLS 数组计数亲证</td></tr>
+</table>
+
+<hr/>
+<p class="small muted">生成方式:2 个深潜审计 agent(平台 debug / 工厂生成流程批判,file:line 锚定)+ 主循环对头条结论逐项 grep/读码核验 + DeerFlow 网络研究。所有 file:line 指向 <code>~/Desktop/agentic operator_new</code> 分支 <code>factory-redesign</code>(2026-07-02)。本报告为只读分析,未改动任何代码。姊妹篇:<code>docs/agent-factory-architecture-audit.html</code>(8 维成熟度审计 + 持久化矩阵 + 存储选型)。</p>
+<p class="small muted">参考:<a href="https://github.com/bytedance/deer-flow">bytedance/deer-flow</a> · <a href="https://deepwiki.com/bytedance/deer-flow/2.1-multi-agent-workflow">DeerFlow multi-agent workflow</a> · <a href="https://www.marktechpost.com/2025/05/09/bytedance-open-sources-deerflow-a-modular-multi-agent-framework-for-deep-research-automation/">DeerFlow 发布分析</a> · <a href="https://www.sitepoint.com/deerflow-deep-dive-managing-longrunning-autonomous-tasks/">DeerFlow long-horizon 深潜</a>。</p>
+
+</div>
+</body>
+</html>

@@ -22,7 +22,7 @@
  * (run.*, event.emitted) flow through useStream() at the layout root.
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   ActorTag,
@@ -34,18 +34,18 @@ import {
   useToast,
 } from "@/app/portal/components";
 import { useTenant } from "@/app/portal/lib/use-tenant";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 import { useDirty } from "@/app/portal/lib/dirty-context";
 import {
-  CANVAS_H,
-  CANVAS_W,
   COL_W,
   NODE_H,
   NODE_W,
   PAD_X,
-  autoPackLayout,
+  PAD_Y,
+  ROW_H,
   colorVar,
   getLayout,
-  nodePos,
+  topoLayout,
 } from "@/app/portal/components/workflows/layout";
 import {
   AgentInspector,
@@ -100,6 +100,7 @@ interface EdgeMeta {
 export default function WorkflowsPage() {
   const router = useRouter();
   const tenant = useTenant();
+  const { t } = useI18n();
   const toast = useToast();
   const deploy = useDeployManifest();
   // Real DAG metadata (workflowVersion) — replaces the previously hardcoded
@@ -145,17 +146,9 @@ export default function WorkflowsPage() {
     );
   }, [eventsQuery.data, baseAgents]);
 
-  // Derive the funnel's stage set from the live DAG: the set of stage
-  // indices actually used by this tenant's agents. Tenants without staged
-  // pipelines (every agent at stage 0 or 99) collapse to a single entry
-  // and the canvas hides the per-stage column dividers naturally.
-  const stages = useMemo(() => {
-    const used = new Set<number>();
-    for (const a of baseAgents) used.add(a.stage);
-    return Array.from(used)
-      .sort((a, b) => a - b)
-      .map((id) => ({ id, label: STAGE_LABELS[id] ?? `Stage ${id}` }));
-  }, [baseAgents]);
+  // Column headers are derived from the resolved layout below (see `columns`),
+  // not from the kebab-derived `stage` hint — so the header coordinate system
+  // matches the node coordinate system exactly.
 
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
   const [selectedEvent, setSelectedEvent] = useState<string | null>(null);
@@ -259,23 +252,72 @@ export default function WorkflowsPage() {
     }
   }
 
-  // Auto-pack any agents whose kebab-id isn't in the hand-tuned LAYOUT map
-  // (the LAYOUT only covers RAAS). Pure derived state — same `agents` ->
-  // same fallback positions; existing LAYOUT entries always win in
-  // `getLayout` so RAAS visual fidelity is unaffected. We key entirely on
-  // `kebabId` so the LAYOUT map (whose keys are kebab slugs like "1-1" or
-  // "matcher-agent") and the auto-packed fallback share the same id space.
-  const autoFallback = useMemo(
+  // Real-time layout derived from the agents' event cascade. RAAS keeps its
+  // hand-tuned `LAYOUT` (audit 01 §4.2 acceptance); every other tenant —
+  // including ones that reuse RAAS kebab-ids like zhaopin's "10-1" — lays out
+  // PURELY from triggers/emits via `topoLayout`, so the canvas reflects the
+  // actual flow instead of mis-claiming a hand-tuned slot. The kebab-derived
+  // `stage` hint from the DAG is intentionally ignored for positioning.
+  const useHandTuned = tenant === "raas";
+  const topo = useMemo(
     () =>
-      autoPackLayout(
+      topoLayout(
         agents.map((a) => ({
           id: a.kebabId,
-          stage: a.stage ?? 0,
           triggers: a.triggers ?? [],
           emits: a.emits ?? [],
         })),
       ),
     [agents],
+  );
+  // Final (column, lane) for an agent under the active tenant's layout.
+  const layAt = useCallback(
+    (kebabId: string): { stage: number; lane: number } | null =>
+      useHandTuned ? getLayout(kebabId, topo) : (topo[kebabId] ?? null),
+    [useHandTuned, topo],
+  );
+  const posAt = useCallback(
+    (kebabId: string): { x: number; y: number } => {
+      const p = layAt(kebabId);
+      return p
+        ? { x: PAD_X + p.stage * COL_W, y: PAD_Y + p.lane * ROW_H }
+        : { x: 0, y: 0 };
+    },
+    [layAt],
+  );
+  // Canvas dimensions + column count derived from the resolved layout so the
+  // grid is exactly as wide/tall as this workflow needs (no empty RAAS-sized
+  // columns for a small tenant).
+  const dims = useMemo(() => {
+    let maxCol = 0;
+    let maxLane = 0;
+    for (const a of agents) {
+      const p = layAt(a.kebabId);
+      if (!p) continue;
+      maxCol = Math.max(maxCol, p.stage);
+      maxLane = Math.max(maxLane, p.lane);
+    }
+    return {
+      cols: maxCol + 1,
+      lanes: maxLane + 1,
+      w: PAD_X * 2 + (maxCol + 1) * COL_W,
+      h: PAD_Y * 2 + (maxLane + 1) * ROW_H,
+    };
+  }, [agents, layAt]);
+
+  // One header per column. For RAAS the column index IS the hand-tuned stage,
+  // so the named STAGE_LABELS apply; every other tenant gets a sequential
+  // "Stage N" label derived from the cascade depth.
+  const columns = useMemo(
+    () =>
+      Array.from({ length: dims.cols }, (_, i) => ({
+        index: i,
+        label:
+          useHandTuned && i in STAGE_LABELS
+            ? t(`workflowsView.stage.${i}`)
+            : t("workflowsView.stageGeneric", { id: i + 1 }),
+      })),
+    [dims.cols, useHandTuned, t],
   );
 
   // Build edges: for each agent's emitted event, find listeners.
@@ -285,21 +327,17 @@ export default function WorkflowsPage() {
       (src.emits || []).forEach((evName) => {
         const listeners = agents.filter((a) => a.triggers.includes(evName));
         listeners.forEach((dst) => {
-          // Edge only renders when BOTH endpoints have a known position —
-          // hand-tuned (LAYOUT) or auto-packed (autoFallback). For RAAS
-          // this never falls through to the auto path; for other tenants
-          // the auto path supplies both endpoints.
-          if (
-            getLayout(src.kebabId, autoFallback) &&
-            getLayout(dst.kebabId, autoFallback)
-          ) {
+          // Edge only renders when BOTH endpoints have a resolved position
+          // under the active tenant's layout (hand-tuned for RAAS, cascade-
+          // derived topo otherwise).
+          if (layAt(src.kebabId) && layAt(dst.kebabId)) {
             out.push({ src: src.kebabId, dst: dst.kebabId, event: evName });
           }
         });
       });
     });
     return out;
-  }, [agents, autoFallback]);
+  }, [agents, layAt]);
 
   const evColor = useMemo(() => {
     const m: Record<string, string> = {};
@@ -337,17 +375,14 @@ export default function WorkflowsPage() {
 
   const dim = Boolean(selectedAgent || selectedEvent);
 
-  // After data loads, scroll the canvas so the leftmost node is visible.
-  // The canvas reserves room for all RAAS stages (0..7) at fixed COL_W;
-  // a small workflow with only stage-5 nodes would otherwise render past
-  // the viewport's right edge and look empty. Only nudges scroll when the
-  // canvas is still at the leftmost position so we don't clobber a
-  // user-initiated scroll on subsequent data updates.
+  // After data loads, scroll the canvas so the leftmost node is visible. With
+  // the dynamic canvas (columns always start at 0) this is normally a no-op,
+  // but it still guards the edge case where a layout's minimum column is > 0.
   useEffect(() => {
     const el = canvasScrollRef.current;
     if (!el || el.scrollLeft !== 0) return;
     const positioned = agents
-      .map((a) => getLayout(a.kebabId, autoFallback))
+      .map((a) => layAt(a.kebabId))
       .filter((p): p is { stage: number; lane: number } => Boolean(p));
     if (positioned.length === 0) return;
     const minStage = positioned.reduce(
@@ -356,7 +391,7 @@ export default function WorkflowsPage() {
     );
     const targetX = Math.max(0, PAD_X + minStage * COL_W - 40);
     if (targetX > 0) el.scrollLeft = targetX;
-  }, [agents, autoFallback]);
+  }, [agents, layAt]);
 
   function navAgent(id: string) {
     router.push(`/portal/${tenant}/agents/${id}` as never);
@@ -380,7 +415,7 @@ export default function WorkflowsPage() {
       });
       toast({
         tone: "signal",
-        title: "Manifest deployed",
+        title: t("workflowsView.toastDeployedTitle"),
         description: `${data.version} · +${data.diff.added.length} / ~${data.diff.modified.length} / −${data.diff.removed.length}`,
       });
       setDraft(emptyDraft());
@@ -388,8 +423,8 @@ export default function WorkflowsPage() {
     } catch (err) {
       toast({
         tone: "red",
-        title: "Manifest deploy failed",
-        description: err instanceof Error ? err.message : "Unknown error",
+        title: t("workflowsView.toastDeployFailedTitle"),
+        description: err instanceof Error ? err.message : t("workflowsView.unknownError"),
       });
     }
   }
@@ -397,20 +432,20 @@ export default function WorkflowsPage() {
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
       <ViewHeader
-        title="Workflows"
+        title={t("nav.workflows")}
         subtitle={
           editing ? (
             <>
-              Editing draft of <span className="mono" style={{ color: "var(--text)" }}>{tenant}</span> · changes won&apos;t affect live runs until you deploy.
+              {t("workflowsView.subtitleEditingPrefix")} <span className="mono" style={{ color: "var(--text)" }}>{tenant}</span> {t("workflowsView.subtitleEditingSuffix")}
             </>
           ) : (
-            "Agent graph — nodes are agents, edges are events. Click any node or event to trace its flow."
+            t("workflowsView.subtitle")
           )
         }
         badge={
           editing ? (
             <Badge tone="amber">
-              <Icon name="alert" size={9} /> DRAFT · {tenant}
+              <Icon name="alert" size={9} /> {t("workflowsView.draftBadge")} · {tenant}
             </Badge>
           ) : (
             <Badge tone="muted">{tenant}{workflowVersion ? ` · ${workflowVersion}` : ""}</Badge>
@@ -420,10 +455,10 @@ export default function WorkflowsPage() {
           editing
             ? [
                 <Button key="discard" small tone="ghost" onClick={discardDraft}>
-                  Discard draft
+                  {t("workflowsView.discardDraft")}
                 </Button>,
                 <Button key="val" small icon="check" tone="ghost">
-                  Validate
+                  {t("workflowsView.validate")}
                 </Button>,
                 <Button
                   key="dep"
@@ -434,19 +469,19 @@ export default function WorkflowsPage() {
                   disabled={!dirty || deploy.isPending}
                 >
                   {deploy.isPending
-                    ? "Deploying…"
-                    : `Deploy draft${dirty ? ` (${draftCounts.added + draftCounts.modified + draftCounts.removed})` : ""}`}
+                    ? t("workflowsView.deploying")
+                    : `${t("workflowsView.deployDraft")}${dirty ? ` (${draftCounts.added + draftCounts.modified + draftCounts.removed})` : ""}`}
                 </Button>,
               ]
             : [
                 <Button key="edit" icon="code" small onClick={() => setEditing(true)}>
-                  Edit workflow
+                  {t("workflowsView.editWorkflow")}
                 </Button>,
                 <Button key="new" icon="plus" tone="primary" small onClick={() => setShowNewModal(true)}>
-                  New workflow
+                  {t("workflowsView.newWorkflow")}
                 </Button>,
                 <Button key="upload" icon="upload" small onClick={() => setShowImport(true)}>
-                  Import manifest
+                  {t("workflowsView.importManifest")}
                 </Button>,
               ]
         }
@@ -470,7 +505,7 @@ export default function WorkflowsPage() {
         >
           <Icon name="alert" size={11} style={{ color: "var(--amber)" }} />
           <span>
-            Restored unsaved draft from{" "}
+            {t("workflowsView.restoredDraftFrom")}{" "}
             <span className="mono" style={{ color: "var(--text)" }}>
               {new Date(restoredAt).toLocaleString()}
             </span>
@@ -481,7 +516,7 @@ export default function WorkflowsPage() {
             onClick={discardRestored}
             style={{ marginLeft: "auto" }}
           >
-            Discard
+            {t("workflowsView.discard")}
           </Button>
         </div>
       )}
@@ -522,9 +557,9 @@ export default function WorkflowsPage() {
               pointerEvents: "none",
             }}
           >
-            {stages.map((s, i) => (
+            {columns.map((c) => (
               <div
-                key={s.id}
+                key={c.index}
                 style={{
                   width: COL_W,
                   padding: "8px 0 0 6px",
@@ -536,23 +571,23 @@ export default function WorkflowsPage() {
                   color: "var(--text-3)",
                 }}
               >
-                {String(i).padStart(2, "0")} · {s.label}
+                {String(c.index + 1).padStart(2, "0")} · {c.label}
               </div>
             ))}
           </div>
 
-          <div style={{ width: CANVAS_W, height: CANVAS_H + 30, position: "relative", paddingTop: 30 }}>
+          <div style={{ width: dims.w, height: dims.h + 30, position: "relative", paddingTop: 30 }}>
             {/* Stage column dividers */}
             <div style={{ position: "absolute", inset: "30px 0 0 0", pointerEvents: "none" }}>
-              {stages.map((s, i) =>
-                i > 0 ? (
+              {columns.map((c) =>
+                c.index > 0 ? (
                   <div
-                    key={s.id}
+                    key={c.index}
                     style={{
                       position: "absolute",
                       top: 0,
                       bottom: 0,
-                      left: PAD_X + i * COL_W - 8,
+                      left: PAD_X + c.index * COL_W - 8,
                       width: 1,
                       background: "var(--border)",
                       opacity: 0.5,
@@ -564,10 +599,13 @@ export default function WorkflowsPage() {
 
             {/* SVG edges */}
             <svg
-              width={CANVAS_W}
-              height={CANVAS_H}
+              width={dims.w}
+              height={dims.h}
               role="img"
-              aria-label={`Workflow DAG: ${agents.length} agents wired by ${edges.length} event edges`}
+              aria-label={t("workflowsView.dagAria", {
+                agents: agents.length,
+                edges: edges.length,
+              })}
               style={{ position: "absolute", top: 30, left: 0, pointerEvents: "none" }}
             >
               <defs>
@@ -587,8 +625,8 @@ export default function WorkflowsPage() {
                 ))}
               </defs>
               {edges.map((e, i) => {
-                const s = nodePos(e.src, autoFallback);
-                const d = nodePos(e.dst, autoFallback);
+                const s = posAt(e.src);
+                const d = posAt(e.dst);
                 const sx = s.x + NODE_W;
                 const sy = s.y + NODE_H / 2;
                 const dx = d.x;
@@ -604,7 +642,11 @@ export default function WorkflowsPage() {
                     key={i}
                     role="button"
                     tabIndex={0}
-                    aria-label={`Event edge: ${e.event} from ${e.src} to ${e.dst}`}
+                    aria-label={t("workflowsView.edgeAria", {
+                      event: e.event,
+                      src: e.src,
+                      dst: e.dst,
+                    })}
                     style={{ pointerEvents: "auto" }}
                     onKeyDown={(ev) => {
                       if (ev.key === "Enter" || ev.key === " ") {
@@ -644,9 +686,9 @@ export default function WorkflowsPage() {
             </svg>
 
             {/* Agent nodes */}
-            <div style={{ position: "absolute", top: 30, left: 0, width: CANVAS_W, height: CANVAS_H }}>
+            <div style={{ position: "absolute", top: 30, left: 0, width: dims.w, height: dims.h }}>
               {agents.map((a) => {
-                const p = nodePos(a.kebabId, autoFallback);
+                const p = posAt(a.kebabId);
                 const isSel = selectedAgent === a.kebabId;
                 const isHi = highlighted.nodes.has(a.kebabId);
                 const showDim = dim && !isHi;
@@ -663,11 +705,16 @@ export default function WorkflowsPage() {
                         : "var(--border-2)";
                 const dashed = editing ? "dashed" : "solid";
                 const stateSuffix = isAdded
-                  ? ", draft addition"
+                  ? t("workflowsView.nodeStateAdded")
                   : isModified
-                    ? ", draft modification"
+                    ? t("workflowsView.nodeStateModified")
                     : "";
-                const nodeLabel = `${a.actor} node: ${a.title}, id ${a.kebabId}${stateSuffix}`;
+                const nodeLabel = t("workflowsView.nodeAria", {
+                  actor: a.actor,
+                  title: a.title,
+                  id: a.kebabId,
+                  state: stateSuffix,
+                });
                 return (
                   <button
                     key={a.kebabId}
@@ -695,13 +742,13 @@ export default function WorkflowsPage() {
                       cursor: editing ? "move" : "pointer",
                       opacity: showDim ? 0.3 : 1,
                       transition: "opacity 0.15s, border-color 0.12s, box-shadow 0.12s",
-                      boxShadow: isSel ? "0 0 0 3px rgba(208,255,0,0.12)" : "none",
+                      boxShadow: isSel ? "0 0 0 3px color-mix(in srgb, var(--signal) 12%, transparent)" : "none",
                     }}
                   >
                     <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
                       <ActorTag actor={a.actor} />
-                      {isAdded && <Badge tone="green">NEW</Badge>}
-                      {isModified && <Badge tone="amber">MOD</Badge>}
+                      {isAdded && <Badge tone="green">{t("workflowsView.badgeNew")}</Badge>}
+                      {isModified && <Badge tone="amber">{t("workflowsView.badgeMod")}</Badge>}
                       <span
                         style={{
                           marginLeft: "auto",

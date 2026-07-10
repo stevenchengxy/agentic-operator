@@ -230,6 +230,8 @@ export async function executeAgentRun<TInput, TOutput>(
       messages,
       provider,
       model: model ?? undefined,
+      // G6 telemetry tag — the runtime face's llm_calls rows carry who asked.
+      purpose: `agent:${agent.name}`,
     });
 
     // Cooperative cancel checkpoint #2 — between the LLM response and
@@ -266,6 +268,15 @@ export async function executeAgentRun<TInput, TOutput>(
       })
       .where(eq(steps.id, stepId))
       .run();
+
+    await writeRunLog(logCtx, "INFO", "llm.call", {
+      step: "llm.call",
+      provider: response.provider,
+      model: response.model,
+      tokens_in: response.tokensIn ?? 0,
+      tokens_out: response.tokensOut ?? 0,
+      duration: `${stepEndedAt - startedAt}ms`,
+    });
 
     const output = await agent._parseOutput(response.text, ctx);
 
@@ -348,6 +359,12 @@ export async function executeAgentRun<TInput, TOutput>(
       })
       .where(eq(steps.id, stepId))
       .run();
+
+    await writeRunLog(logCtx, "ERROR", "step.fail", {
+      step: "llm.call",
+      code: llm.code,
+      error: llm.message,
+    });
 
     const runEndedAt = Date.now();
     db.update(runs)

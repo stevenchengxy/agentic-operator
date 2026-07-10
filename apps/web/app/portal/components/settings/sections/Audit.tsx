@@ -25,6 +25,7 @@ import {
 } from "@/app/portal/components";
 import { fmtAgo } from "@/lib/format";
 import { SETTINGS_AUDIT_FALLBACK } from "@/app/portal/components/settings/data";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 
 /**
  * Shape returned by `GET /v1/audit`. `at` is unix-ms.
@@ -119,6 +120,7 @@ function isRecord(x: unknown): x is Record<string, unknown> {
 }
 
 export function AuditSection() {
+  const { t } = useI18n();
   const [rows, setRows] = useState<AuditRow[]>(() =>
     SETTINGS_AUDIT_FALLBACK.map(normalizeFallbackRow),
   );
@@ -202,16 +204,16 @@ export function AuditSection() {
 
   return (
     <Panel
-      title={`Audit log · ${filtered.length}`}
+      title={t("auditSection.panelTitle", { count: filtered.length })}
       subtitle={
         usingApi
-          ? "Live · /v1/audit · most recent first"
-          : "Read-only · workspace mutations land here within a few seconds"
+          ? t("auditSection.subtitleLive")
+          : t("auditSection.subtitleReadOnly")
       }
       padded={false}
       action={
         <Button small icon="upload" tone="ghost">
-          Export CSV
+          {t("auditSection.exportCsv")}
         </Button>
       }
     >
@@ -224,33 +226,33 @@ export function AuditSection() {
           alignItems: "center",
         }}
       >
-        <SearchInput value={q} onChange={setQ} placeholder="actor, action, target…" />
+        <SearchInput value={q} onChange={setQ} placeholder={t("auditSection.searchPlaceholder")} />
         <FilterChip active={filter === "all"} onClick={() => setFilter("all")}>
-          All
+          {t("auditSection.filterAll")}
         </FilterChip>
         <FilterChip active={filter === "deploy"} onClick={() => setFilter("deploy")}>
-          Deploys
+          {t("auditSection.filterDeploys")}
         </FilterChip>
         <FilterChip active={filter === "key"} onClick={() => setFilter("key")}>
-          Keys
+          {t("auditSection.filterKeys")}
         </FilterChip>
         <FilterChip active={filter === "agent"} onClick={() => setFilter("agent")}>
-          Agents
+          {t("auditSection.filterAgents")}
         </FilterChip>
         <FilterChip active={filter === "member"} onClick={() => setFilter("member")}>
-          Members
+          {t("auditSection.filterMembers")}
         </FilterChip>
       </div>
       {filtered.length === 0 ? (
-        <Empty title="No audit entries match" />
+        <Empty title={t("auditSection.emptyTitle")} />
       ) : (
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
           <thead>
             <tr style={{ borderBottom: "1px solid var(--border)" }}>
-              <Th>When</Th>
-              <Th>Actor</Th>
-              <Th>Action</Th>
-              <Th>Target</Th>
+              <Th>{t("auditSection.colWhen")}</Th>
+              <Th>{t("auditSection.colActor")}</Th>
+              <Th>{t("auditSection.colAction")}</Th>
+              <Th>{t("auditSection.colTarget")}</Th>
               <Th style={{ width: 40 }}>{""}</Th>
             </tr>
           </thead>
@@ -280,7 +282,7 @@ export function AuditSection() {
                         <button
                           onClick={() => setExpanded(isOpen ? null : a.id)}
                           aria-expanded={isOpen}
-                          title={isOpen ? "Hide diff" : "Show diff"}
+                          title={isOpen ? t("auditSection.hideDiff") : t("auditSection.showDiff")}
                           style={{
                             padding: "2px 6px",
                             fontSize: 10.5,
@@ -292,7 +294,7 @@ export function AuditSection() {
                             cursor: "pointer",
                           }}
                         >
-                          {isOpen ? "−" : "+"} diff
+                          {isOpen ? "−" : "+"} {t("auditSection.diffLabel")}
                         </button>
                       )}
                     </Td>
@@ -320,7 +322,7 @@ export function AuditSection() {
           }}
         >
           <Button small icon="logs" onClick={loadMore} disabled={loading}>
-            {loading ? "Loading…" : "Load older entries"}
+            {loading ? t("auditSection.loading") : t("auditSection.loadOlder")}
           </Button>
         </div>
       )}
@@ -397,6 +399,7 @@ function DiffSide({
   rows: DiffRow[];
   tone: "red" | "green";
 }) {
+  const { t } = useI18n();
   const color = tone === "red" ? "var(--red)" : "var(--green)";
   return (
     <div
@@ -415,7 +418,7 @@ function DiffSide({
           borderBottom: "1px solid var(--border)",
         }}
       >
-        {label}
+        {t(`auditSection.${label}`)}
       </div>
       {rows.length === 0 ? (
         <div
@@ -426,7 +429,7 @@ function DiffSide({
             fontFamily: "var(--mono)",
           }}
         >
-          (no fields)
+          {t("auditSection.noFields")}
         </div>
       ) : (
         <div style={{ padding: "8px 0" }}>

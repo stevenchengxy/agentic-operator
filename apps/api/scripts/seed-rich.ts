@@ -545,7 +545,8 @@ export async function runSeedRich(opts: {
 // Only run when invoked as a CLI (`pnpm seed:rich`). When imported by the
 // demo-mode bootstrap, the export above is used instead so the api can keep
 // the process alive after seeding completes.
-const isMain = import.meta.url === `file://${process.argv[1]}`;
+const isMain =
+  !!process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href;
 if (isMain) {
   runSeedRich()
     .then((result) => {

@@ -8,6 +8,7 @@ import {
   ModalOverlay,
 } from "@/app/portal/components";
 import { useTenants } from "@/lib/hooks/useTenants";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 
 const WORKFLOW_TEMPLATES = [
   { id: "raas", name: "RAAS · Recruitment", desc: "22-agent pipeline: sync → JD → match → submit", agents: 22, events: 33, color: "#d0ff00" },
@@ -19,6 +20,7 @@ const WORKFLOW_TEMPLATES = [
 ];
 
 export function NewWorkflowModal({ onClose }: { onClose: () => void }) {
+  const { t } = useI18n();
   const tenantsQuery = useTenants();
   // Tenant switcher dropdown. Empty list while the query is in-flight or
   // when the api is unreachable — chrome.tsx surfaces the api-down banner
@@ -57,16 +59,16 @@ export function NewWorkflowModal({ onClose }: { onClose: () => void }) {
         }}
       >
         <header style={{ display: "flex", alignItems: "center", gap: 10, padding: "14px 18px", borderBottom: "1px solid var(--border)" }}>
-          <Icon name="workflow" size={14} style={{ color: "var(--signal)" }} />
+          <Icon name="workflow" size={14} style={{ color: "var(--accent-text)" }} />
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 14, color: "var(--text)", fontWeight: 500 }}>New workflow</div>
+            <div style={{ fontSize: 14, color: "var(--text)", fontWeight: 500 }}>{t("newWorkflowModal.title")}</div>
             <div style={{ fontSize: 11, color: "var(--text-3)" }}>
-              Workflows are versioned per-tenant. You&apos;ll be able to deploy to staging before prod.
+              {t("newWorkflowModal.subtitle")}
             </div>
           </div>
           <button
             onClick={onClose}
-            aria-label="Close new workflow modal"
+            aria-label={t("newWorkflowModal.closeAria")}
             style={{ color: "var(--text-3)" }}
           >
             <Icon name="x" size={13} />
@@ -74,22 +76,22 @@ export function NewWorkflowModal({ onClose }: { onClose: () => void }) {
         </header>
 
         <div style={{ padding: 18, overflow: "auto", flex: 1 }}>
-          <SectionLabel>Start from</SectionLabel>
+          <SectionLabel>{t("newWorkflowModal.startFrom")}</SectionLabel>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, marginBottom: 20 }}>
-            <PathCard active={path === "blank"} onClick={() => setPath("blank")} icon="plus" title="Blank canvas" sub="Start with one trigger agent and build out from there." />
-            <PathCard active={path === "template"} onClick={() => setPath("template")} icon="workflow" title="From template" sub="Pre-built workflows for common patterns." />
-            <PathCard active={path === "import"} onClick={() => setPath("import")} icon="upload" title="Import manifest" sub="Drop a workflow.json + actions.json." />
+            <PathCard active={path === "blank"} onClick={() => setPath("blank")} icon="plus" title={t("newWorkflowModal.blankTitle")} sub={t("newWorkflowModal.blankSub")} />
+            <PathCard active={path === "template"} onClick={() => setPath("template")} icon="workflow" title={t("newWorkflowModal.templateTitle")} sub={t("newWorkflowModal.templateSub")} />
+            <PathCard active={path === "import"} onClick={() => setPath("import")} icon="upload" title={t("newWorkflowModal.importTitle")} sub={t("newWorkflowModal.importSub")} />
           </div>
 
-          <SectionLabel>Identity</SectionLabel>
+          <SectionLabel>{t("newWorkflowModal.identity")}</SectionLabel>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 20 }}>
-            <FieldInline label="Display name">
+            <FieldInline label={t("newWorkflowModal.displayName")}>
               <InlineText value={name} onChange={suggestId} />
             </FieldInline>
-            <FieldInline label="Workflow id (slug)">
+            <FieldInline label={t("newWorkflowModal.workflowId")}>
               <InlineText value={id} onChange={setId} mono />
             </FieldInline>
-            <FieldInline label="Tenant">
+            <FieldInline label={t("newWorkflowModal.tenant")}>
               <select
                 value={tenant}
                 onChange={(e) => setTenant(e.target.value)}
@@ -110,7 +112,7 @@ export function NewWorkflowModal({ onClose }: { onClose: () => void }) {
                 ))}
               </select>
             </FieldInline>
-            <FieldInline label="Default model">
+            <FieldInline label={t("newWorkflowModal.defaultModel")}>
               <select
                 defaultValue="claude-sonnet-4-5"
                 style={{
@@ -133,7 +135,7 @@ export function NewWorkflowModal({ onClose }: { onClose: () => void }) {
 
           {path === "blank" && (
             <div>
-              <SectionLabel>Trigger</SectionLabel>
+              <SectionLabel>{t("newWorkflowModal.trigger")}</SectionLabel>
               <div
                 style={{
                   padding: 14,
@@ -143,7 +145,7 @@ export function NewWorkflowModal({ onClose }: { onClose: () => void }) {
                 }}
               >
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                  <FieldInline label="Trigger type">
+                  <FieldInline label={t("newWorkflowModal.triggerType")}>
                     <select
                       style={{
                         background: "var(--panel)",
@@ -155,18 +157,18 @@ export function NewWorkflowModal({ onClose }: { onClose: () => void }) {
                         outline: "none",
                       }}
                     >
-                      <option>Event (raised by another agent)</option>
-                      <option>Scheduled (cron)</option>
-                      <option>Webhook (HTTP)</option>
-                      <option>Manual (operator)</option>
+                      <option>{t("newWorkflowModal.triggerEvent")}</option>
+                      <option>{t("newWorkflowModal.triggerScheduled")}</option>
+                      <option>{t("newWorkflowModal.triggerWebhook")}</option>
+                      <option>{t("newWorkflowModal.triggerManual")}</option>
                     </select>
                   </FieldInline>
-                  <FieldInline label="First agent name">
+                  <FieldInline label={t("newWorkflowModal.firstAgentName")}>
                     <InlineText value="processNewRequest" mono onChange={() => {}} />
                   </FieldInline>
                 </div>
                 <div style={{ marginTop: 10, fontSize: 11.5, color: "var(--text-3)", lineHeight: 1.55 }}>
-                  We&apos;ll create a single agent stub. You&apos;ll add downstream agents and wire events on the canvas.
+                  {t("newWorkflowModal.blankStubHelp")}
                 </div>
               </div>
             </div>
@@ -174,31 +176,31 @@ export function NewWorkflowModal({ onClose }: { onClose: () => void }) {
 
           {path === "template" && (
             <div>
-              <SectionLabel>Pick a template</SectionLabel>
+              <SectionLabel>{t("newWorkflowModal.pickTemplate")}</SectionLabel>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 8 }}>
-                {WORKFLOW_TEMPLATES.map((t) => (
+                {WORKFLOW_TEMPLATES.map((tpl) => (
                   <button
-                    key={t.id}
-                    onClick={() => setTemplate(t.id)}
+                    key={tpl.id}
+                    onClick={() => setTemplate(tpl.id)}
                     style={{
                       padding: "12px 14px",
-                      background: template === t.id ? "var(--panel-3)" : "var(--panel-2)",
-                      border: `1px solid ${template === t.id ? "var(--signal)" : "var(--border)"}`,
+                      background: template === tpl.id ? "var(--panel-3)" : "var(--panel-2)",
+                      border: `1px solid ${template === tpl.id ? "var(--signal)" : "var(--border)"}`,
                       borderRadius: 5,
                       textAlign: "left",
                       cursor: "pointer",
                     }}
                   >
                     <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-                      <div style={{ width: 14, height: 14, background: t.color, borderRadius: 2 }} />
-                      <span style={{ fontSize: 13, color: "var(--text)", fontWeight: 500 }}>{t.name}</span>
-                      {template === t.id && (
-                        <Icon name="check" size={11} style={{ color: "var(--signal)", marginLeft: "auto" }} />
+                      <div style={{ width: 14, height: 14, background: tpl.color, borderRadius: 2 }} />
+                      <span style={{ fontSize: 13, color: "var(--text)", fontWeight: 500 }}>{t(`newWorkflowModal.tplName_${tpl.id}`)}</span>
+                      {template === tpl.id && (
+                        <Icon name="check" size={11} style={{ color: "var(--accent-text)", marginLeft: "auto" }} />
                       )}
                     </div>
-                    <div style={{ fontSize: 11.5, color: "var(--text-2)", marginBottom: 6 }}>{t.desc}</div>
+                    <div style={{ fontSize: 11.5, color: "var(--text-2)", marginBottom: 6 }}>{t(`newWorkflowModal.tplDesc_${tpl.id}`)}</div>
                     <div style={{ fontSize: 10.5, color: "var(--text-3)", fontFamily: "var(--mono)" }}>
-                      {t.agents} agents · {t.events} events
+                      {t("newWorkflowModal.agentsEvents", { agents: tpl.agents, events: tpl.events })}
                     </div>
                   </button>
                 ))}
@@ -208,7 +210,7 @@ export function NewWorkflowModal({ onClose }: { onClose: () => void }) {
 
           {path === "import" && (
             <div>
-              <SectionLabel>Manifest</SectionLabel>
+              <SectionLabel>{t("newWorkflowModal.manifest")}</SectionLabel>
               <div
                 style={{
                   padding: 28,
@@ -220,15 +222,15 @@ export function NewWorkflowModal({ onClose }: { onClose: () => void }) {
               >
                 <Icon name="upload" size={22} style={{ color: "var(--text-3)" }} />
                 <div style={{ marginTop: 8, fontSize: 12.5, color: "var(--text-2)" }}>
-                  Drop <span className="mono">workflow.json</span> and <span className="mono">actions.json</span>
+                  {t("newWorkflowModal.dropPrefix")} <span className="mono">workflow.json</span> {t("newWorkflowModal.dropAnd")} <span className="mono">actions.json</span>
                 </div>
                 <div style={{ marginTop: 4, fontSize: 11, color: "var(--text-3)" }}>
-                  or <span style={{ color: "var(--signal)" }}>browse files</span>
+                  {t("newWorkflowModal.or")} <span style={{ color: "var(--accent-text)" }}>{t("newWorkflowModal.browseFiles")}</span>
                 </div>
               </div>
               <div style={{ marginTop: 10, fontSize: 11.5, color: "var(--text-3)", lineHeight: 1.55 }}>
-                We accept the same schema as <span className="mono">RAAS</span>:{" "}
-                <span className="mono">id, name, actor, trigger[], actions[], triggered_event[]</span>. We&apos;ll validate the graph and report any cycles or orphans before letting you save.
+                {t("newWorkflowModal.schemaNotePrefix")} <span className="mono">RAAS</span>:{" "}
+                <span className="mono">id, name, actor, trigger[], actions[], triggered_event[]</span>. {t("newWorkflowModal.schemaNoteSuffix")}
               </div>
             </div>
           )}
@@ -237,11 +239,11 @@ export function NewWorkflowModal({ onClose }: { onClose: () => void }) {
         <footer style={{ display: "flex", alignItems: "center", gap: 8, padding: "12px 18px", borderTop: "1px solid var(--border)", background: "var(--panel-2)" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "var(--text-3)" }}>
             <Icon name="check" size={10} style={{ color: "var(--green)" }} />
-            <span>Will save as draft. Deploy later from the workflow page.</span>
+            <span>{t("newWorkflowModal.draftNote")}</span>
           </div>
           <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
-            <Button tone="ghost" onClick={onClose}>Cancel</Button>
-            <Button tone="primary" icon="check" onClick={onClose}>Create workflow</Button>
+            <Button tone="ghost" onClick={onClose}>{t("newWorkflowModal.cancel")}</Button>
+            <Button tone="primary" icon="check" onClick={onClose}>{t("newWorkflowModal.create")}</Button>
           </div>
         </footer>
       </div>
@@ -292,7 +294,7 @@ function PathCard({
       }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 5 }}>
-        <Icon name={icon} size={12} style={{ color: active ? "var(--signal)" : "var(--text-2)" }} />
+        <Icon name={icon} size={12} style={{ color: active ? "var(--accent-text)" : "var(--text-2)" }} />
         <span style={{ fontSize: 12.5, color: "var(--text)", fontWeight: 500 }}>{title}</span>
       </div>
       <div style={{ fontSize: 11, color: "var(--text-3)", lineHeight: 1.45 }}>{sub}</div>

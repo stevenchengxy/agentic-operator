@@ -17,11 +17,15 @@
  */
 
 import {
-  bootstrapAll,
+  bootstrapAllByTenant,
+  bootstrapTenantBySlug,
   helloFn,
   inngest,
   setRuntimeGateway,
   setRuntimeMetrics,
+  setMemoryDriver,
+  createLocalVectorDriver,
+  openaiEmbedder,
   type TenantRegistries,
 } from "@agentic/runtime";
 import type { Inngest, InngestFunction } from "inngest";
@@ -31,6 +35,7 @@ import tenantTest1 from "@tenants/tenant-test1";
 import robohireTenant from "@tenants/robohire";
 import northwindTenant from "@tenants/northwind";
 import insightlabTenant from "@tenants/insightlab";
+import zhaopinTenant from "@tenants/zhaopin";
 import {
   bootstrapCodeAgents,
   setGateway as setAgentGateway,
@@ -40,10 +45,14 @@ import type { TenantRegistry } from "@agentic/agent-kit";
 import { getMcpManager, type McpServerConfig } from "@agentic/mcp";
 import { buildSkillTools, type SkillDescriptor } from "@agentic/skills";
 import { getLLMGateway } from "./services/llm";
+import { wireLlmTelemetry } from "./services/agent-factory/llm-telemetry";
 import { metrics } from "./services/metrics";
 import { reconcileImports } from "./services/reconcile-imports";
 import { getDb, pruneRolledBackDeployments } from "@agentic/db";
-import { reregisterInngest } from "./services/inngest-registry";
+import {
+  initInngestRegistry,
+  reregisterInngest,
+} from "./services/inngest-registry";
 import {
   applyDemoModeOverrides,
   describeDemoMode,
@@ -51,6 +60,7 @@ import {
   isDemoMode,
 } from "./config/demo-mode.js";
 import { startDemoRunner } from "./services/demo-runner.js";
+import { startGovernanceRunner } from "./services/agent-factory/fleet-governance-runner.js";
 import { runSeedRich } from "../scripts/seed-rich.js";
 
 /**
@@ -92,7 +102,65 @@ const TENANT_REGISTRIES: TenantRegistries = {
   robohire: robohireTenant,
   northwind: northwindTenant,
   insightlab: insightlabTenant,
+  zhaopin: zhaopinTenant,
 };
+
+/**
+ * The MCP/Skills-expanded tenant registries, captured at boot so a runtime
+ * re-register (deploy / undeploy / archive) can re-run `bootstrapAll` against
+ * the SAME registries without re-connecting MCP servers. `rebuildTenantFns`
+ * reads this. Empty until `bootstrapRuntime` populates it.
+ */
+let cachedExpanded: TenantRegistries = {};
+
+/**
+ * Re-run the manifest bootstrap and return the fresh tenant Inngest function
+ * set. Called by `reregisterInngest({ scope: "tenant" })` (via dynamic import
+ * to dodge the circular dep). This is what makes 上线/下线 actually hot-swap:
+ *
+ *   - 上线 (deploy): the import wizard renames the new manifest onto disk, then
+ *     reregisters → `bootstrapAll` re-reads disk → the new agent set is served.
+ *   - 下线 (disable): a route flips `agents.enabled=false`, then reregisters →
+ *     `bootstrapTenant` skips disabled agents → their functions drop out.
+ *   - archive: an archived tenant is skipped entirely (see runtime bootstrap).
+ *
+ * `bootstrapAll` is idempotent (upserts by primary key), so re-running it on a
+ * live process only changes the returned function array, never the DB.
+ */
+export async function rebuildTenantFns(
+  slug?: string,
+): Promise<InngestFunction.Any[]> {
+  // Scoped to one tenant app when a slug is given (the registry's common path);
+  // no slug → every tenant's functions flat (back-compat for callers/tests that
+  // want the whole fleet).
+  if (slug) return bootstrapTenantBySlug(slug, cachedExpanded);
+  return [...(await bootstrapAllByTenant(cachedExpanded)).values()].flat();
+}
+
+/**
+ * Full per-tenant rebuild — every tenant's functions, grouped by slug. Used by
+ * `reregisterInngest({ scope: "tenant" })` with no slug (archive/restore that
+ * don't carry a slug, or a global refresh). The scoped single-slug path
+ * (`rebuildTenantFns`) is preferred for deploy / 上线·下线.
+ */
+export async function rebuildAllTenantFnsByTenant(): Promise<
+  Map<string, InngestFunction.Any[]>
+> {
+  return bootstrapAllByTenant(cachedExpanded);
+}
+
+/**
+ * Re-run the code-agent bootstrap. Code agents are invoked synchronously
+ * (`POST /v1/agents/:name/invoke`) and do NOT yet contribute Inngest functions
+ * (async-via-Inngest is reserved for v2 per CLAUDE.md), so this returns an
+ * empty set. Wired through so `reregisterInngest({ scope: "code_agent" })`
+ * resolves a real function rather than silently no-op'ing, and so the day code
+ * agents gain Inngest fns there's a single place to return them.
+ */
+export async function rebuildCodeAgentFns(): Promise<InngestFunction.Any[]> {
+  await bootstrapCodeAgents();
+  return [];
+}
 
 export async function bootstrapRuntime(): Promise<BootstrapResult> {
   // 0. Surface the demo-mode flag at the very top of the boot log so the
@@ -114,11 +182,55 @@ export async function bootstrapRuntime(): Promise<BootstrapResult> {
     console.log(describeDemoOverrides(overrides));
   }
 
+  // #NOMOCK — production-on-mock guard. The locked rule is "production = ZERO mock". This fires ONLY
+  // when NODE_ENV=production (a real deploy), NOT in local dev testing — where mock is the INTENDED
+  // main-gateway default (it keeps background/dashboard/generated-agent-runtime traffic OFF the LAN
+  // proxy on the production machine at 10.100.0.70:3010; the factory brain still uses that proxy for
+  // EXPLICIT runs via FACTORY_AI_MODEL). So in local dev, mock main gateway is correct — no warning.
+  // In a real production deploy, mock main gateway is a genuine misconfig → surface it LOUDLY.
+  const mainProvider = (process.env.LLM_DEFAULT_PROVIDER ?? "").trim().toLowerCase();
+  const isRealProd = process.env.NODE_ENV === "production";
+  if (isRealProd && !isDemoMode() && (mainProvider === "mock" || /mock/i.test(process.env.LLM_DEFAULT_MODEL ?? ""))) {
+    console.warn(
+      "\n[bootstrap] ⚠️  生产部署(NODE_ENV=production, DEMO_MODE=false) 却使用 MOCK LLM 网关" +
+        ` (LLM_DEFAULT_PROVIDER=${process.env.LLM_DEFAULT_PROVIDER}, model=${process.env.LLM_DEFAULT_MODEL})。` +
+        "\n         这违反「production = ZERO mock」的锁定规则。工厂交付物（报告等）会自动改走真实工厂网关，" +
+        "\n         但【生成的 agent 运行时逻辑步】仍走此 mock 网关（推理为 mock）。要彻底去 mock：设 LLM_DEFAULT_PROVIDER=custom" +
+        "（见 apps/api/.env.local）。\n",
+    );
+  }
+
   // 1. Construct LLM gateway once and wire it into both consumers
   //    (agents package for BaseAgent.run, runtime package for step-engine logic actions).
   const gateway = getLLMGateway();
   setAgentGateway(gateway);
   setRuntimeGateway(gateway);
+  // Vector-recall memory: register a real driver so ctx.memory.search() returns cosine-ranked hits
+  // instead of NoMemoryDriverError. Prefer a gateway embed model when MEMORY_EMBED_MODEL is set,
+  // else the self-contained local (offline, deterministic) embedder. Opt out with MEMORY_VECTOR=off.
+  if (process.env.MEMORY_VECTOR !== "off") {
+    const embed = openaiEmbedder() ?? undefined;
+    setMemoryDriver(createLocalVectorDriver(embed ? { embed } : {}));
+    // #SCALE-PGVECTOR — upgrade vector recall to Postgres/pgvector when AGENTIC_PGVECTOR_URL is set
+    // (the local driver above stays as the degradation target; SQLite remains system of record).
+    try {
+      const { wirePgVectorMemory } = await import("./services/memory-pgvector");
+      await wirePgVectorMemory();
+    } catch { /* inert */ }
+    console.log(`[bootstrap] memory vector driver — ${embed ? `gateway(${process.env.MEMORY_EMBED_MODEL})` : "local"} embeddings`);
+  }
+  // #P0-3 — persist raw LLM telemetry (model/routing/latency/size) to the llm_calls table.
+  wireLlmTelemetry();
+  // #SCALE-FANOUT — cross-instance SSE fanout via Redis (inert without REDIS_URL + ioredis).
+  try {
+    const { wireRedisFanout } = await import("./services/fanout-redis");
+    void wireRedisFanout();
+  } catch { /* inert */ }
+  // #SCALE-RESUME — re-attach factory runs interrupted by a crash/restart (conversation checkpoint).
+  try {
+    const { autoResumeCrashedRuns } = await import("./services/agent-factory/run-registry");
+    autoResumeCrashedRuns();
+  } catch { /* best-effort */ }
   // UC-V11-22 / AR-GAP-07 — wire the prometheus metrics registry into
   // the manifest engine. Without this the registry exists but
   // `runs_total`, `run_duration_ms` stay flat for any traffic the
@@ -142,13 +254,38 @@ export async function bootstrapRuntime(): Promise<BootstrapResult> {
   for (const [slug, base] of Object.entries(TENANT_REGISTRIES)) {
     expanded[slug] = await expandTenantRegistry(slug, base);
   }
+  // Capture for runtime re-registration (deploy / undeploy / archive). See
+  // `rebuildTenantFns`.
+  cachedExpanded = expanded;
 
-  // 4. Manifest-driven (RAAS etc) Inngest functions.
-  const tenantFns = await bootstrapAll(expanded);
+  // 4. Manifest-driven (RAAS etc) Inngest functions, GROUPED BY tenant so each
+  //    tenant becomes its own Inngest app (`agentic-operator-<slug>`).
+  const tenantFnsByTenant = await bootstrapAllByTenant(expanded);
+  const tenantFns = [...tenantFnsByTenant.values()].flat();
   const allFns = [helloFn, ...tenantFns];
   console.log(
-    `[bootstrap] api serving ${allFns.length} Inngest function(s) (${tenantFns.length} from tenant manifests)`,
+    `[bootstrap] api serving ${allFns.length} Inngest function(s) across ${tenantFnsByTenant.size} tenant app(s) + __system (${tenantFns.length} from tenant manifests)`,
   );
+
+  // 4a. Seed the MUTABLE per-app Inngest registry so each `/inngest[/:slug]`
+  //     route serves a function set that `reregisterInngest()` can swap at
+  //     runtime without a restart. The platform app (__system) carries helloFn
+  //     (systemBase); code agents are sync-invoked (none yet); every tenant
+  //     gets its own app entry. Before this the registry was never initialized
+  //     and every re-register silently no-op'd.
+  initInngestRegistry({
+    systemBase: [helloFn],
+    systemCodeAgent: [],
+    tenants: [...tenantFnsByTenant.entries()].map(([slug, fns]) => ({
+      slug,
+      fns,
+    })),
+  });
+
+  // 4a-bis. Inngest dev/cloud sync is started from server.ts AFTER Fastify is
+  //     actually listening. Doing it here used to PUT http://localhost:<PORT>
+  //     before the route existed, so tenant apps often never appeared until a
+  //     later reconciler tick.
 
   // 4. Crash recovery for the manifest-import wizard (per review C1).
   //    `reconcileImports` does three things:
@@ -202,6 +339,25 @@ export async function bootstrapRuntime(): Promise<BootstrapResult> {
     }
   }
 
+  // 4b. Stuck-run reconcile — one-shot startup sweep. Inngest dev is not
+  //     crash-safe: an api restart drops in-flight handlers so their runs never
+  //     reach failRun and stay `running` forever. This reaps every orphan
+  //     accumulated while the process was down (HITL-safe — see reconcile-runs).
+  if (process.env.NODE_ENV !== "test") {
+    try {
+      const { reconcileOrphanedRuns } = await import("./services/reconcile-runs");
+      const swept = await reconcileOrphanedRuns({
+        info: (m) => console.log(m),
+        warn: (m) => console.warn(m),
+      });
+      if (swept.reaped > 0) {
+        console.log(`[bootstrap] stuck-run reconcile — marked ${swept.reaped} orphaned run(s) failed`);
+      }
+    } catch (err) {
+      console.warn("[bootstrap] reconcileOrphanedRuns failed", err);
+    }
+  }
+
   // 5. Demo-mode hydration + runner. Gated entirely by AGENTIC_DEMO_MODE
   //    (NEVER auto-enabled from NODE_ENV). Two parts:
   //      a. Seed the rich RAAS fixtures (idempotent — every helper skips
@@ -240,6 +396,20 @@ export async function bootstrapRuntime(): Promise<BootstrapResult> {
     });
     stopDemoRunner = runner.stop;
   }
+
+  // #P7-infra — 治理巡检:定时对每个租户的已交付 function 聚合近 14 天生产战绩 → 建议返工(待人签核,
+  // 不自动开)。内部 gated(AGENTIC_GOVERNANCE=1 且非 test),无条件调用安全(默认 no-op)。收尾由
+  // server.ts 的 onClose 调 stopGovernanceRunner()(与 demo-runner 同款模块级 stop)。
+  startGovernanceRunner({
+    tenantSlugs: () => {
+      try {
+        const { getDb, tenants } = require("@agentic/db") as typeof import("@agentic/db");
+        return getDb().select({ slug: tenants.slug }).from(tenants).all().map((r) => r.slug).filter(Boolean);
+      } catch {
+        return [];
+      }
+    },
+  });
 
   return { inngest, functions: allFns, stopDemoRunner };
 }

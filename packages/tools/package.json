@@ -11,7 +11,8 @@
     "./robohire": "./src/robohire/index.ts",
     "./fs": "./src/fs/index.ts",
     "./http": "./src/http/index.ts",
-    "./meta": "./src/meta/index.ts"
+    "./meta": "./src/meta/index.ts",
+    "./records": "./src/records/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
@@ -19,6 +20,7 @@
   },
   "dependencies": {
     "@agentic/agent-kit": "workspace:*",
+    "@agentic/db": "workspace:*",
     "@agentic/shared": "workspace:*",
     "zod": "^4.4.3"
   },

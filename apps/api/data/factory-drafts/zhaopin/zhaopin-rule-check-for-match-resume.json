@@ -1,0 +1,115 @@
+{
+  "domain": "zhaopin",
+  "slug": "zhaopin-rule-check-for-match-resume",
+  "spec": {
+    "key": "ruleCheckForMatchResume",
+    "actionName": "ruleCheckForMatchResume",
+    "slug": "zhaopin-rule-check-for-match-resume",
+    "short": "RuleCheckForMatchResumeAgent",
+    "domainId": "zhaopin",
+    "nameZh": "候选人在进行简历匹配前的规则检查（公",
+    "kind": "llm",
+    "trigger": [
+      "RESUME_PROCESSED"
+    ],
+    "emit": [
+      "MATCH_RULE_CHECK_PASSED",
+      "MATCH_RULE_CHECK_FAILED"
+    ],
+    "tools": [
+      "ontology.fetchActionRules"
+    ],
+    "unresolvedTools": [],
+    "objects": [],
+    "systemPrompt": "你是一个简历匹配前置门禁专家。你的职责是在候选人进入简历匹配环节之前，执行全套规则检查，确保只有合规候选人才能进入匹配流程。\n\n工作流程：\n1. 接收 RESUME_PROCESSED 事件，获取 candidate_id 和 resume_id。\n2. 调用 ontology.fetchActionRules 动态获取当前生效的匹配前置规则（包含公司通用规则和客户定制规则）。\n3. 按以下顺序依次执行三类规则检查（fail-closed，任一失败即终止后续检查）：\n   a. 关联公司冷冻期检查：候选人是否在目标公司的冷冻期内。\n   b. 国籍限制检查：候选人国籍是否满足岗位要求。\n   c. 回流冷冻期检查：候选人是否在回流限制期内。\n4. 判定结果：\n   - 全部通过 → 产出 MATCH_RULE_CHECK_PASSED 事件（含 candidate_id 和 job_requisition_id）。\n   - 任一失败 → 产出 MATCH_RULE_CHECK_FAILED 事件（含 candidate_id 和 failure_reasons 数组）。\n\n关键约束：\n- 本检查为 fail-closed：规则获取失败时，默认拒绝（产出 MATCH_RULE_CHECK_FAILED），不得放行。\n- 规则必须从 ontology.fetchActionRules 动态获取，绝不硬编码任何规则内容。\n- failure_reasons 必须清晰列出每条失败规则的名称和原因，便于后续审计。\n- 客户定制规则优先级高于公司通用规则，如有冲突以客户规则为准。",
+    "userPrompt": "",
+    "designReasoning": "设计 ruleCheckForMatchResume Agent，这是匹配前的 fail-closed 门禁，需动态抓规则，按顺序检查冷冻期/国籍/回流三类规则，全部通过才产出 MATCH_RULE_CHECK_PASSED。",
+    "toolRationale": "ontology.fetchActionRules 是唯一需要的工具，动态获取三类规则（冷冻期/国籍/回流），规则校验逻辑由 LLM 基于动态规则执行，无需其他外部工具。",
+    "decisionLogic": "1. 动态获取规则（ontology.fetchActionRules），失败 → 默认拒绝，产出 MATCH_RULE_CHECK_FAILED。\n2. 按顺序检查：关联公司冷冻期 → 国籍限制 → 回流冷冻期。\n3. 任一失败 → 收集 failure_reasons，产出 MATCH_RULE_CHECK_FAILED，不再检查后续规则。\n4. 全部通过 → 产出 MATCH_RULE_CHECK_PASSED。",
+    "steps": [
+      {
+        "name": "step_1",
+        "description": "调用 ontology.fetchActionRules",
+        "tool": "ontology.fetchActionRules"
+      }
+    ],
+    "ruleRefs": [],
+    "retries": 3,
+    "hitl": false,
+    "confidence": 0.8,
+    "promptSource": "llm",
+    "inputSchema": [
+      {
+        "field": "candidate_id",
+        "type": "String",
+        "source": "Candidate.candidate_id",
+        "description": "候选人ID"
+      },
+      {
+        "field": "resume_id",
+        "type": "String",
+        "source": "Resume.resume_id",
+        "description": "简历ID"
+      }
+    ],
+    "outputSchema": [
+      {
+        "field": "candidate_id",
+        "type": "String",
+        "source": "Candidate.candidate_id",
+        "description": "候选人ID"
+      },
+      {
+        "field": "job_requisition_id",
+        "type": "String",
+        "source": "Job_Requisition.job_requisition_id",
+        "description": "关联的招聘需求ID（MATCH_RULE_CHECK_PASSED 时产出）"
+      },
+      {
+        "field": "failure_reasons",
+        "type": "Array<String>",
+        "description": "失败原因列表（MATCH_RULE_CHECK_FAILED 时产出）"
+      }
+    ],
+    "plan": [
+      {
+        "stepId": "fetch-match-rules",
+        "kind": "tool",
+        "tool": "ontology.fetchActionRules",
+        "idempotencyKeyFrom": "candidate_id",
+        "onError": "terminal",
+        "description": "动态获取匹配前置规则（公司通用+客户定制）"
+      },
+      {
+        "stepId": "evaluate-rules",
+        "kind": "logic",
+        "description": "按顺序执行冷冻期/国籍/回流三类规则检查，收集 failure_reasons"
+      },
+      {
+        "stepId": "check-all-passed",
+        "kind": "condition",
+        "condition": "evaluate-rules.failure_reasons.length == 0",
+        "description": "判断是否全部规则通过"
+      }
+    ],
+    "stateBindings": [
+      {
+        "object": "Candidate",
+        "reads": [
+          "candidate_id"
+        ],
+        "writes": []
+      },
+      {
+        "object": "Resume",
+        "reads": [
+          "resume_id"
+        ],
+        "writes": []
+      }
+    ],
+    "generatedCode": "// 候选人在进行简历匹配前的规则检查（公 — 由 Agent 工厂从本体动作 `ruleCheckForMatchResume`(zhaopin)生成。\n// trigger: RESUME_PROCESSED → emit: MATCH_RULE_CHECK_PASSED | MATCH_RULE_CHECK_FAILED\n// 参考脚手架：运行时按 workflow manifest 的 action[] 声明式调度执行（systemPrompt + 工具），\n// 【不直接运行这段 .ts 代码】——它是可读/可改的 agent 定义参考。真·CodeAct 执行路径用 codeExecuted 开关（默认关）。\n\n/** Input/Output schema — 依据本体 DataObjects 定义。 */\ninterface RuleCheckForMatchResumeAgentInput {\n  candidate_id: string; // 候选人ID (源: Candidate.candidate_id)\n  resume_id: string; // 简历ID (源: Resume.resume_id)\n}\n\ninterface RuleCheckForMatchResumeAgentOutput {\n  candidate_id: string; // 候选人ID (源: Candidate.candidate_id)\n  job_requisition_id: string; // 关联的招聘需求ID（MATCH_RULE_CHECK_PASSED 时产出） (源: Job_Requisition.job_requisition_id)\n  failure_reasons: unknown[]; // 失败原因列表（MATCH_RULE_CHECK_FAILED 时产出）\n}\n\n/** System prompt — 工厂为【这一个】agent 亲自推理出来的。 */\nconst SYSTEM_PROMPT = `你是一个简历匹配前置门禁专家。你的职责是在候选人进入简历匹配环节之前，执行全套规则检查，确保只有合规候选人才能进入匹配流程。\n\n工作流程：\n1. 接收 RESUME_PROCESSED 事件，获取 candidate_id 和 resume_id。\n2. 调用 ontology.fetchActionRules 动态获取当前生效的匹配前置规则（包含公司通用规则和客户定制规则）。\n3. 按以下顺序依次执行三类规则检查（fail-closed，任一失败即终止后续检查）：\n   a. 关联公司冷冻期检查：候选人是否在目标公司的冷冻期内。\n   b. 国籍限制检查：候选人国籍是否满足岗位要求。\n   c. 回流冷冻期检查：候选人是否在回流限制期内。\n4. 判定结果：\n   - 全部通过 → 产出 MATCH_RULE_CHECK_PASSED 事件（含 candidate_id 和 job_requisition_id）。\n   - 任一失败 → 产出 MATCH_RULE_CHECK_FAILED 事件（含 candidate_id 和 failure_reasons 数组）。\n\n关键约束：\n- 本检查为 fail-closed：规则获取失败时，默认拒绝（产出 MATCH_RULE_CHECK_FAILED），不得放行。\n- 规则必须从 ontology.fetchActionRules 动态获取，绝不硬编码任何规则内容。\n- failure_reasons 必须清晰列出每条失败规则的名称和原因，便于后续审计。\n- 客户定制规则优先级高于公司通用规则，如有冲突以客户规则为准。`;\n\nexport const ruleCheckForMatchResumeAgent = defineAgent({\n  id: \"zhaopin-rule-check-for-match-resume\",\n  name: \"RuleCheckForMatchResumeAgent\",\n  actor: [\"Agent\"],\n  trigger: [\"RESUME_PROCESSED\"],\n  emit: [\"MATCH_RULE_CHECK_PASSED\",\"MATCH_RULE_CHECK_FAILED\"],\n  tools: [\"ontology.fetchActionRules\"],\n  systemPrompt: SYSTEM_PROMPT,\n  async handler(input, ctx) {\n      // 调用工具 ontology.fetchActionRules\n      // const fetchActionRulesResult = await ctx.tools.run(\"ontology.fetchActionRules\", input);\n      // 用本 agent 专属 system prompt 推理(决策核心)\n      const decision = await ctx.reason(SYSTEM_PROMPT, input);\n      // 决策分支（条件见 SYSTEM_PROMPT / decisionLogic）\n      if (decision.pass) {\n        await ctx.emit(\"MATCH_RULE_CHECK_PASSED\", { ...input, ...decision });\n      } else {\n        await ctx.emit(\"MATCH_RULE_CHECK_FAILED\", { ...input, ...decision });\n      }\n      return { ok: true };\n  },\n});\n",
+    "codeSource": "render"
+  },
+  "createdAt": "2026-06-30T09:24:43.641Z"
+}

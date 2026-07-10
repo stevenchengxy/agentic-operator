@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const API_URL = process.env.AGENTIC_API_URL ?? "http://localhost:3501";
+const API_URL = process.env.AGENTIC_API_URL ?? "http://localhost:3540";
 
 /**
  * Next 16 ships Turbopack as default for dev. The web workspace has no
@@ -12,11 +12,11 @@ const API_URL = process.env.AGENTIC_API_URL ?? "http://localhost:3501";
  * is safe here. The api still runs on Node 26 + better-sqlite3 12 directly.
  *
  * Web is UI-only. All data calls go through /v1/* which Next rewrites to
- * apps/api on :3501. Same-origin in dev; in prod a reverse proxy serves the
+ * apps/api on :3540. Same-origin in dev; in prod a reverse proxy serves the
  * same paths.
  *
  * Routing decisions (P5-TEN-01b — SPA / production split):
- *   - `/v1/*`, `/health`            → proxied to apps/api on :3501.
+ *   - `/v1/*`, `/health`            → proxied to apps/api on :3540.
  *   - `/demo` and `/demo/*`         → static Babel SPA in /public/demo
  *                                     (the v1_1 design reference, NOT the
  *                                     production app).
@@ -33,6 +33,10 @@ const API_URL = process.env.AGENTIC_API_URL ?? "http://localhost:3501";
  */
 /** @type {import("next").NextConfig} */
 const nextConfig = {
+  // Emit a self-contained server bundle at .next/standalone — the web Dockerfile
+  // COPYs it (runtime stage) + runs `node apps/web/server.js`. Without this Next
+  // never produces the standalone folder and the container build fails on COPY.
+  output: "standalone",
   outputFileTracingRoot: path.join(__dirname, "../.."),
   transpilePackages: ["@agentic/contracts"],
   typedRoutes: true,

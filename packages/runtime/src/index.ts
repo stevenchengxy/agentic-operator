@@ -1,8 +1,59 @@
-export { inngest, type EventMap } from "./client";
+export {
+  inngest,
+  getTenantInngest,
+  appIdForTenant,
+  mainTenantSlug,
+  isMainTenant,
+  allTenantClients,
+  SYSTEM_SLUG,
+  type EventMap,
+} from "./client";
 export { helloFn } from "./hello";
-export { registerAgent, type RegisterContext } from "./register";
+export { registerAgent, findMissingTenantPrompts, type RegisterContext } from "./register";
+export { makeGeneratedAgentPrompt } from "./generated-agent";
+export { runGeneratedCode } from "./codeact";
+// #P0a — isolated worker_thread runner for arbitrary generated modules (time + memory bounded).
+export { runGeneratedModule, type ModuleRunResult, type RunModuleOpts } from "./module-runner";
+// #P6-1 — stronger-isolation sibling: child-process runner with a SCRUBBED env (strips real creds),
+// throwaway cwd, SIGKILL wall-clock, memory cap, and string-code-gen denied. scrubEnv is pure + tested.
+export {
+  runGeneratedModuleProcess,
+  scrubEnv,
+  DEFAULT_ENV_ALLOWLIST,
+  SECRET_ENV_PATTERN,
+  type RunModuleProcOpts,
+  type ScrubEnvOpts,
+} from "./module-runner-proc";
+// #P6 (full) — strongest tier: real Docker container isolation (--network none, --read-only, caps dropped,
+// non-root, memory/cpu/pids caps). Falls back to the child-process runner when Docker is unavailable.
+export { runGeneratedModuleContainer, dockerAvailable, _resetDockerProbe, type RunModuleContainerOpts } from "./module-runner-container";
+// #REDESIGN FU1 — the delivered-tier AgentRuntime adapter (power-strip contract).
+export { makeDeliveredRuntime, type DeliveredRuntimeDeps } from "./delivered-runtime";
+// #COMMS — inter-agent message envelope: carry-forward payload assembler + content-addressed offload.
+export {
+  assembleEmitPayload,
+  rehydratePayload, rehydratePayloadAsync,
+  extractBusinessFields,
+  isBlobRef,
+  type BlobRef,
+  type EnvelopeMeta,
+  type AssembleInput,
+  type AssembleResult,
+} from "./message-envelope";
+export { putBlob, getBlob, resolveBlobRef, resolveBlobRefAsync, replicateBlob, fetchBlobRemote, makeBlobOffloader, blobDir } from "./blob-store";
+export { setBlobRemoteBackend, activeBlobBackend, blobBackendStatus, makeS3Backend, makeHttpBackend, resetBlobBackendCache, type BlobRemoteBackend } from "./blob-backend";
+export { sigV4Sign, amzNow, EMPTY_PAYLOAD_SHA256 } from "./sigv4";
+// #SCALE-TRACE — ambient trace context (ALS) for nested tools/logs.
+export { runWithTraceContext, getTraceContext, type TraceContext } from "./trace-context";
+// #P1-1 — durable event-store causality queries.
+export { getCausalityChain, getStoredEvent, type StoredEvent } from "./event-store-query";
+// Agent migration — branch-emit: let a forked agent's final step pick which
+// declared `triggered_event` to emit (PASS/FAIL routing) instead of always [0].
+export { selectEmittedEvent } from "./emit-select";
 export {
   bootstrapAll,
+  bootstrapAllByTenant,
+  bootstrapTenantBySlug,
   bootstrapTenant,
   type TenantRegistries,
   type BootstrapTenantResult,
@@ -61,10 +112,32 @@ export {
   setMemoryDriver,
   getMemoryDriver,
 } from "./memory";
+export {
+  createLocalVectorDriver,
+  openaiEmbedder,
+  localEmbed,
+  cosine,
+  type Embedder,
+  type LocalVectorDriverOpts,
+} from "./memory-driver-local";
+// #REDESIGN P1b — sandbox tool-dispatch gating (read live / write gated).
+export {
+  sandboxToolMode,
+  isSandboxTenant,
+  isWriteTool,
+  sandboxWritesAllowed,
+  toolDispatchDecision,
+  gatedWriteMarker,
+  sandboxToolStub,
+  type SandboxToolMode,
+  injectedFault,
+  faultResult,
+} from "./sandbox-mode";
 // P1-RT-05 / UC-14 — Broadcast / SSE stream surface. Tests + the /v1/stream
 // route consume these under explicit `*StreamEvent(s)` / `__broadcast*`
 // aliases; the underlying `broadcast.ts` uses the shorter symbols. Both
 // names are re-exported so callers don't need to know the internal name.
+export { setFanoutBridge, type FanoutBridge } from "./broadcast"; // #SCALE-FANOUT
 export {
   publish,
   publish as publishStreamEvent,

@@ -1,0 +1,174 @@
+import { describe, it, expect } from "vitest";
+import { classifyIntentKind, estimateDifficulty, selectPolicy, selectStrategy, parseStrategyPlan, describeStrategyPlan, shouldSuggestSplit } from "./reasoning-policy";
+import type { Difficulty } from "./reasoning-policy";
+import type { DomainOntology } from "./ontology-types";
+
+function ont(nAgents: number, nRules: number, opts?: { branchy?: number; nObjects?: number }): DomainOntology {
+  const actions = Array.from({ length: nAgents }, (_, i) => ({
+    id: `a${i}`,
+    name: `action${i}`,
+    actor: ["Agent"],
+    trigger: [`E${i}`],
+    triggered_event: i < (opts?.branchy ?? 0) ? ["OK", "FAIL", "PARK"] : ["OK"],
+    target_objects: [],
+    tool_use: [],
+    system_prompt: "",
+    user_prompt: "",
+  }));
+  return {
+    domainId: "d",
+    actions,
+    rules: Array.from({ length: nRules }, (_, i) => ({ id: `r${i}` })),
+    objects: Array.from({ length: opts?.nObjects ?? 0 }, (_, i) => ({ id: `o${i}` })),
+    events: [],
+    workflow: [],
+    source: "snapshot",
+  } as unknown as DomainOntology;
+}
+
+describe("classifyIntentKind", () => {
+  it("reads the LAST intent line's type tag", () => {
+    expect(classifyIntentKind("[生成] 造招聘链 ｜ 约束: 无 ｜ 期望产物: workflow")).toBe("generate");
+    expect(classifyIntentKind("[生成] 旧的\n[提问] 这个字段是什么意思")).toBe("question");
+    expect(classifyIntentKind("[修改] 调整 matchResume 的阈值")).toBe("modify");
+    expect(classifyIntentKind(undefined)).toBe("other");
+  });
+});
+
+describe("estimateDifficulty", () => {
+  it("small domain → simple; big rule-heavy branchy domain → complex", () => {
+    expect(estimateDifficulty(ont(3, 5)).band).toBe("simple");
+    const hard = estimateDifficulty(ont(10, 80, { branchy: 3, nObjects: 25 }));
+    expect(hard.band).toBe("complex");
+    expect(hard.reasons.join()).toContain("规则 80");
+  });
+  it("no ontology → standard (never blocks)", () => {
+    expect(estimateDifficulty(null).band).toBe("standard");
+  });
+});
+
+describe("selectPolicy", () => {
+  const simple = estimateDifficulty(ont(3, 5));
+  const complex = estimateDifficulty(ont(10, 80, { branchy: 3, nObjects: 25 }));
+
+  it("question/analyze → analyze pipeline + fast tier bias", () => {
+    const p = selectPolicy({ intentKind: "question", difficulty: simple, hasSpecs: false });
+    expect(p).toMatchObject({ pipeline: "analyze", tierBias: "fast", deepUnderstand: false });
+  });
+
+  it("generate + complex → full pipeline; #NATIVE 深读/深评不再被规模强制（事实进 reasons，AI 自决）", () => {
+    const p = selectPolicy({ intentKind: "generate", difficulty: complex, hasSpecs: false });
+    expect(p).toMatchObject({ pipeline: "full", deepUnderstand: false, deepCritique: false, tierBias: null });
+    expect(p.reasons.join()).toContain("规则 80"); // 规模【事实】仍然带给 AI 参考
+    expect(p.reasons.join()).toContain("由你决定"); // 决定权归 AI
+  });
+
+  it("generate + simple → full but no forced deep (size heuristic still guards independently)", () => {
+    const p = selectPolicy({ intentKind: "generate", difficulty: simple, hasSpecs: false });
+    expect(p).toMatchObject({ pipeline: "full", deepUnderstand: false, deepCritique: false });
+  });
+
+  it("modify with existing specs → skinny path", () => {
+    const p = selectPolicy({ intentKind: "modify", difficulty: simple, hasSpecs: true });
+    expect(p.pipeline).toBe("skinny");
+  });
+
+  it("ambiguous generate → ask_first", () => {
+    const p = selectPolicy({ intentKind: "generate", difficulty: complex, hasSpecs: false, ambiguityCount: 3 });
+    expect(p.pipeline).toBe("ask_first");
+    expect(p.reasons.join()).toContain("歧义 3 处");
+  });
+
+  it("reasons always explain the decision", () => {
+    const p = selectPolicy({ intentKind: "generate", difficulty: complex, hasSpecs: false });
+    expect(p.reasons.length).toBeGreaterThanOrEqual(3);
+  });
+});
+
+describe("#OPEN-VOCAB open intent vocabulary", () => {
+  it("a novel bracketed intent tag passes through verbatim instead of collapsing to other", () => {
+    expect(classifyIntentKind("[对比] 比较两个方案的规则覆盖")).toBe("对比");
+  });
+  it("selectPolicy handles a novel intent with the safe full default and names it in reasons", () => {
+    const p = selectPolicy({ intentKind: "对比", difficulty: estimateDifficulty(null), hasSpecs: false });
+    expect(p.pipeline).toBe("full");
+    expect(p.reasons.join()).toContain("新意图类型「对比」");
+  });
+});
+
+describe("#STRATEGY selectStrategy (轴2 推理策略选择器)", () => {
+  const simpleD: Difficulty = { band: "simple", score: 6, reasons: [] };
+  const complexD: Difficulty = { band: "complex", score: 60, reasons: [] };
+
+  it("high-risk contexts (arbitrate/finish/review) default to debate", () => {
+    for (const context of ["arbitrate", "finish", "review"] as const) {
+      const s = selectStrategy({ intentKind: "generate", difficulty: simpleD, context });
+      expect(s.strategy).toBe("debate");
+      expect(s.expensive).toBe(true);
+    }
+  });
+  it("rework → reflection (lock the failing span)", () => {
+    const s = selectStrategy({ intentKind: "modify", difficulty: complexD, context: "code", isRework: true });
+    expect(s.strategy).toBe("reflection");
+  });
+  it("complex plan/design → tot; simple → react", () => {
+    expect(selectStrategy({ intentKind: "generate", difficulty: complexD, context: "plan" }).strategy).toBe("tot");
+    expect(selectStrategy({ intentKind: "generate", difficulty: simpleD, context: "plan" }).strategy).toBe("react");
+  });
+  it("analyze context → cot (cheap single chain)", () => {
+    expect(selectStrategy({ intentKind: "question", difficulty: simpleD, context: "analyze" }).strategy).toBe("cot");
+  });
+  it("fast bias downshifts an expensive strategy — EXCEPT high-stakes contexts", () => {
+    // complex design would be tot, but fast bias pulls it back to react
+    expect(selectStrategy({ intentKind: "generate", difficulty: complexD, context: "design", tierBias: "fast" }).strategy).toBe("react");
+    // finish stays debate even under fast bias (worth the cost)
+    expect(selectStrategy({ intentKind: "generate", difficulty: simpleD, context: "finish", tierBias: "fast" }).strategy).toBe("debate");
+  });
+  it("selectPolicy now carries a strategy on the dual axis", () => {
+    const p = selectPolicy({ intentKind: "generate", difficulty: complexD, hasSpecs: false });
+    expect(p.pipeline).toBe("full");
+    expect(["react", "reflection", "debate", "tot", "cot"]).toContain(p.strategy);
+  });
+});
+
+describe("#STRATEGY-COMBO parseStrategyPlan (AI 自选推理组合,不默认 ReAct)", () => {
+  it("单策略", () => {
+    const p = parseStrategyPlan("reflection", { rationale: "返工" });
+    expect(p.mode).toBe("single");
+    expect(p.steps.map((s) => s.strategy)).toEqual(["reflection"]);
+    expect(p.chosenBy).toBe("ai");
+  });
+  it("组合(多种分隔符 →/+/,/、/空格 都认)", () => {
+    for (const raw of ["tot→debate→reflection", "tot + debate + reflection", "tot, debate, reflection", "tot、debate、reflection", "tot debate reflection", "tot->debate->reflection"]) {
+      const p = parseStrategyPlan(raw);
+      expect(p.mode).toBe("combo");
+      expect(p.steps.map((s) => s.strategy)).toEqual(["tot", "debate", "reflection"]);
+    }
+  });
+  it("数组输入", () => {
+    expect(parseStrategyPlan(["cot", "debate"]).steps.map((s) => s.strategy)).toEqual(["cot", "debate"]);
+  });
+  it("空 → 回退 react 且 chosenBy=default(不是 AI 选的)", () => {
+    const p = parseStrategyPlan("");
+    expect(p.steps.map((s) => s.strategy)).toEqual(["react"]);
+    expect(p.chosenBy).toBe("default");
+  });
+  it("开放词汇:未知策略保留在 steps + unknown(不静默塌缩)", () => {
+    const p = parseStrategyPlan("tot→自研反演→debate");
+    expect(p.steps.map((s) => s.strategy)).toEqual(["tot", "自研反演", "debate"]);
+    expect(p.unknown).toEqual(["自研反演"]);
+  });
+  it("describeStrategyPlan 可读", () => {
+    expect(describeStrategyPlan(parseStrategyPlan("tot→debate", { rationale: "复杂设计" }))).toContain("组合 tot → debate");
+    expect(describeStrategyPlan(parseStrategyPlan("cot"))).toContain("策略 cot");
+  });
+});
+
+describe("shouldSuggestSplit (#ADAPT 卡住才拆)", () => {
+  it("complex agents (≥4 tools or ≥6 plan steps) qualify; simple ones don't", () => {
+    expect(shouldSuggestSplit({ tools: ["a", "b", "c", "d"] })).toBe(true);
+    expect(shouldSuggestSplit({ tools: ["a"], plan: new Array(6).fill({}) })).toBe(true);
+    expect(shouldSuggestSplit({ tools: ["a", "b"], plan: new Array(3).fill({}) })).toBe(false);
+    expect(shouldSuggestSplit(null)).toBe(false);
+  });
+});

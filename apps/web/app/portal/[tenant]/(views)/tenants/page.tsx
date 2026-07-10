@@ -36,11 +36,21 @@ import {
   useToast,
 } from "@/app/portal/components";
 import { fmtAgo } from "@/app/portal/lib/format";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 import {
   TENANTS_KEYS,
   useTenants,
   type TenantListItem,
 } from "@/lib/hooks/useTenants";
+import {
+  buildRuntimeDomainNameMap,
+  buildRuntimeDomainSlugSet,
+  displayRuntimeDomainName,
+  isVisibleRuntimeDomain,
+} from "@/lib/domain-display";
+import { useAgentFactoryDomains } from "@/lib/hooks/useAgentFactoryDomains";
+import { useTenant } from "@/app/portal/lib/use-tenant";
+import { DomainSyncPanel } from "./domain-sync";
 
 const DEFAULT_COLORS = [
   "#d0ff00",
@@ -146,6 +156,7 @@ function useRestoreTenant() {
 }
 
 export default function TenantsPage() {
+  const activeTenant = useTenant();
   const [includeArchived, setIncludeArchived] = useState(false);
   const [editTarget, setEditTarget] = useState<TenantListItem | null>(null);
   const [archiveTarget, setArchiveTarget] = useState<TenantListItem | null>(
@@ -153,35 +164,52 @@ export default function TenantsPage() {
   );
   const toast = useToast();
   const restore = useRestoreTenant();
+  const { t } = useI18n();
 
   const query = useTenants({ includeArchived });
+  const domainsQuery = useAgentFactoryDomains();
+  const domainNames = buildRuntimeDomainNameMap(domainsQuery.data?.domains);
+  const domainSlugs = buildRuntimeDomainSlugSet(domainsQuery.data?.domains);
 
   function handleRestore(slug: string) {
     restore.mutate(slug, {
       onSuccess: () =>
-        toast({ tone: "green", title: "Tenant restored", description: slug }),
+        toast({
+          tone: "green",
+          title: t("tenants.toastRestored"),
+          description: slug,
+        }),
       onError: (err) =>
         toast({
           tone: "red",
-          title: "Restore failed",
+          title: t("tenants.toastRestoreFailed"),
           description: (err as Error).message,
         }),
     });
   }
 
-  const rows = query.data?.items ?? [];
+  const rows = (query.data?.items ?? []).filter((row) =>
+    isVisibleRuntimeDomain(row, domainSlugs),
+  );
 
   return (
     <div style={{ height: "100%", overflow: "auto", padding: "20px 24px" }}>
       <ViewHeader
-        title="Tenants"
-        subtitle="Workspace boundaries. Each tenant is an isolated stack of agents, workflows, runs, events, budgets, and audit trail."
+        title={t("nav.tenants")}
+        subtitle={t("tenants.subtitle")}
         badge={
           <Badge tone="muted" style={{ fontFamily: "var(--mono)" }}>
-            {rows.length} {rows.length === 1 ? "TENANT" : "TENANTS"}
+            {rows.length}{" "}
+            {rows.length === 1
+              ? t("tenants.countSingular")
+              : t("tenants.countPlural")}
           </Badge>
         }
       />
+
+      <div style={{ marginBottom: 14 }}>
+        <DomainSyncPanel activeTenant={activeTenant} />
+      </div>
 
       <div
         style={{
@@ -206,7 +234,7 @@ export default function TenantsPage() {
             checked={includeArchived}
             onChange={(e) => setIncludeArchived(e.target.checked)}
           />
-          Show archived
+          {t("tenants.showArchived")}
         </label>
         <button
           onClick={() => query.refetch()}
@@ -219,10 +247,10 @@ export default function TenantsPage() {
             background: "transparent",
           }}
         >
-          Refresh
+          {t("tenants.refresh")}
         </button>
         <span style={{ marginLeft: "auto", color: "var(--text-3)" }}>
-          Use the sidebar tenant switcher to create new tenants.
+          {t("tenants.createHint")}
         </span>
       </div>
 
@@ -231,8 +259,8 @@ export default function TenantsPage() {
           style={{
             padding: "8px 12px",
             marginBottom: 12,
-            background: "rgba(255,100,112,0.08)",
-            border: "1px solid rgba(255,100,112,0.3)",
+            background: "color-mix(in srgb, var(--red) 8%, transparent)",
+            border: "1px solid color-mix(in srgb, var(--red) 30%, transparent)",
             borderRadius: 4,
             color: "var(--red)",
             fontSize: 12,
@@ -243,19 +271,23 @@ export default function TenantsPage() {
       )}
 
       {query.isLoading && rows.length === 0 ? (
-        <Empty title="Loading tenants…" hint="One moment." />
+        <Empty
+          title={t("tenants.loadingTitle")}
+          hint={t("tenants.loadingHint")}
+        />
       ) : rows.length === 0 ? (
         <Empty
-          title="No tenants visible"
+          title={t("tenants.emptyTitle")}
           hint={
             includeArchived
-              ? "There are no tenants at all yet. Use the sidebar switcher to create one."
-              : "All tenants are archived. Toggle 'Show archived' to see them."
+              ? t("tenants.emptyHintAll")
+              : t("tenants.emptyHintActive")
           }
         />
       ) : (
         <TenantsTable
           rows={rows}
+          domainNames={domainNames}
           onEdit={setEditTarget}
           onArchive={setArchiveTarget}
           onRestore={handleRestore}
@@ -270,7 +302,7 @@ export default function TenantsPage() {
             setEditTarget(null);
             toast({
               tone: "green",
-              title: "Tenant updated",
+              title: t("tenants.toastUpdated"),
               description: slug,
             });
           }}
@@ -284,7 +316,7 @@ export default function TenantsPage() {
             setArchiveTarget(null);
             toast({
               tone: "amber",
-              title: "Tenant archived",
+              title: t("tenants.toastArchived"),
               description: slug,
             });
           }}
@@ -298,15 +330,18 @@ export default function TenantsPage() {
 
 function TenantsTable({
   rows,
+  domainNames,
   onEdit,
   onArchive,
   onRestore,
 }: {
   rows: TenantListItem[];
+  domainNames: Map<string, string>;
   onEdit: (t: TenantListItem) => void;
   onArchive: (t: TenantListItem) => void;
   onRestore: (slug: string) => void;
 }) {
+  const { t } = useI18n();
   return (
     <Panel padded={false}>
       <div
@@ -325,38 +360,45 @@ function TenantsTable({
         }}
       >
         <div></div>
-        <div>Tenant</div>
-        <div>Description</div>
-        <div style={{ textAlign: "right" }}>Agents</div>
-        <div style={{ textAlign: "right" }}>Runs/24h</div>
-        <div style={{ textAlign: "right" }}>Open tasks</div>
-        <div>Created</div>
+        <div>{t("tenants.colTenant")}</div>
+        <div>{t("tenants.colDescription")}</div>
+        <div style={{ textAlign: "right" }}>{t("tenants.colAgents")}</div>
+        <div style={{ textAlign: "right" }}>{t("tenants.colRuns24h")}</div>
+        <div style={{ textAlign: "right" }}>{t("tenants.colOpenTasks")}</div>
+        <div>{t("tenants.colCreated")}</div>
         <div></div>
       </div>
-      {rows.map((t) => (
-        <Row
-          key={t.slug}
-          tenant={t}
-          onEdit={() => onEdit(t)}
-          onArchive={() => onArchive(t)}
-          onRestore={() => onRestore(t.slug)}
-        />
-      ))}
+      {rows.map((t) => {
+        const displayName = displayRuntimeDomainName(t, domainNames);
+        return (
+          <Row
+            key={t.slug}
+            tenant={t}
+            displayName={displayName}
+            onEdit={() => onEdit({ ...t, name: displayName })}
+            onArchive={() => onArchive({ ...t, name: displayName })}
+            onRestore={() => onRestore(t.slug)}
+          />
+        );
+      })}
     </Panel>
   );
 }
 
 function Row({
   tenant,
+  displayName,
   onEdit,
   onArchive,
   onRestore,
 }: {
   tenant: TenantListItem;
+  displayName: string;
   onEdit: () => void;
   onArchive: () => void;
   onRestore: () => void;
 }) {
+  const { t } = useI18n();
   const archived = !!tenant.archivedAt;
   return (
     <div
@@ -385,11 +427,11 @@ function Row({
           fontWeight: 700,
         }}
       >
-        {tenant.name[0] ?? "?"}
+        {displayName[0] ?? "?"}
       </div>
       <div>
         <div style={{ color: "var(--text)", fontSize: 13, fontWeight: 500 }}>
-          {tenant.name}
+          {displayName}
         </div>
         <div
           style={{
@@ -401,7 +443,7 @@ function Row({
           {tenant.slug}
           {archived && (
             <Badge tone="amber" style={{ marginLeft: 8, fontSize: 9 }}>
-              ARCHIVED
+              {t("tenants.archivedBadge")}
             </Badge>
           )}
         </div>
@@ -472,20 +514,20 @@ function Row({
                 background: "transparent",
               }}
             >
-              Edit
+              {t("tenants.edit")}
             </button>
             <button
               onClick={onArchive}
               style={{
                 padding: "3px 8px",
-                border: "1px solid rgba(255,100,112,0.3)",
+                border: "1px solid color-mix(in srgb, var(--red) 30%, transparent)",
                 borderRadius: 4,
                 fontSize: 11,
                 color: "var(--red)",
                 background: "transparent",
               }}
             >
-              Archive
+              {t("tenants.archive")}
             </button>
           </>
         ) : (
@@ -500,7 +542,7 @@ function Row({
               background: "transparent",
             }}
           >
-            Restore
+            {t("tenants.restore")}
           </button>
         )}
       </div>
@@ -523,6 +565,7 @@ function EditModal({
   const [subtitle, setSubtitle] = useState(target.subtitle ?? "");
   const [color, setColor] = useState(target.color ?? DEFAULT_COLORS[0]!);
   const update = useUpdateTenant();
+  const { t } = useI18n();
 
   const colorOk = HEX_COLOR_RE.test(color);
   const canSave =
@@ -569,7 +612,7 @@ function EditModal({
           }}
         >
           <div style={{ fontSize: 13, color: "var(--text)", fontWeight: 500 }}>
-            Edit tenant · {target.slug}
+            {t("tenants.editTitle")} · {target.slug}
           </div>
           <button onClick={onClose} style={{ color: "var(--text-3)", padding: 4, background: "transparent", border: "none" }}>
             <Icon name="x" size={12} />
@@ -580,8 +623,8 @@ function EditModal({
             <div
               style={{
                 padding: "8px 12px",
-                background: "rgba(255,100,112,0.08)",
-                border: "1px solid rgba(255,100,112,0.3)",
+                background: "color-mix(in srgb, var(--red) 8%, transparent)",
+                border: "1px solid color-mix(in srgb, var(--red) 30%, transparent)",
                 borderRadius: 4,
                 color: "var(--red)",
                 fontSize: 12,
@@ -590,21 +633,24 @@ function EditModal({
               {(update.error as Error).message}
             </div>
           )}
-          <Field label="Display name">
+          <Field label={t("tenants.fieldName")}>
             <input
               value={name}
               onChange={(e) => setName(e.target.value)}
               style={inputStyle()}
             />
           </Field>
-          <Field label="Subtitle">
+          <Field label={t("tenants.fieldSubtitle")}>
             <input
               value={subtitle}
               onChange={(e) => setSubtitle(e.target.value)}
               style={inputStyle()}
             />
           </Field>
-          <Field label="Accent color" error={!colorOk ? "must be #rrggbb hex" : null}>
+          <Field
+            label={t("tenants.fieldAccent")}
+            error={!colorOk ? t("tenants.colorError") : null}
+          >
             <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
               {DEFAULT_COLORS.map((c) => (
                 <button
@@ -638,8 +684,7 @@ function EditModal({
             </div>
           </Field>
           <div style={{ fontSize: 11, color: "var(--text-3)" }}>
-            Slug is immutable. To rename, archive this tenant and create a
-            new one.
+            {t("tenants.slugImmutable")}
           </div>
         </div>
         <div
@@ -662,10 +707,10 @@ function EditModal({
               background: "transparent",
             }}
           >
-            Cancel
+            {t("tenants.cancel")}
           </button>
           <Button tone="primary" disabled={!canSave} onClick={submit}>
-            {update.isPending ? "Saving…" : "Save"}
+            {update.isPending ? t("tenants.saving") : t("tenants.save")}
           </Button>
         </div>
       </div>
@@ -687,6 +732,7 @@ function ArchiveModal({
   const [confirm, setConfirm] = useState("");
   const [reason, setReason] = useState("");
   const archive = useArchiveTenant();
+  const { t } = useI18n();
 
   function submit() {
     if (confirm !== target.slug || archive.isPending) return;
@@ -726,7 +772,7 @@ function ArchiveModal({
           }}
         >
           <div style={{ fontSize: 13, color: "var(--text)", fontWeight: 500 }}>
-            Archive tenant · {target.slug}
+            {t("tenants.archiveTitle")} · {target.slug}
           </div>
           <button onClick={onClose} style={{ color: "var(--text-3)", padding: 4, background: "transparent", border: "none" }}>
             <Icon name="x" size={12} />
@@ -737,8 +783,8 @@ function ArchiveModal({
             <div
               style={{
                 padding: "8px 12px",
-                background: "rgba(255,100,112,0.08)",
-                border: "1px solid rgba(255,100,112,0.3)",
+                background: "color-mix(in srgb, var(--red) 8%, transparent)",
+                border: "1px solid color-mix(in srgb, var(--red) 30%, transparent)",
                 borderRadius: 4,
                 color: "var(--red)",
                 fontSize: 12,
@@ -748,11 +794,9 @@ function ArchiveModal({
             </div>
           )}
           <div style={{ fontSize: 13, color: "var(--text-2)", lineHeight: 1.5 }}>
-            Archiving "{target.name}" hides it from the switcher and disables
-            its API tokens, but preserves all rows for audit. You can restore
-            later. Active runs and open tasks must be resolved first.
+            {t("tenants.archiveBody", { name: target.name })}
           </div>
-          <Field label={`Type "${target.slug}" to confirm`}>
+          <Field label={t("tenants.confirmLabel", { slug: target.slug })} preserveCase>
             <input
               autoFocus
               value={confirm}
@@ -761,7 +805,7 @@ function ArchiveModal({
               style={{ ...inputStyle(), fontFamily: "var(--mono)" }}
             />
           </Field>
-          <Field label="Reason (optional)">
+          <Field label={t("tenants.fieldReason")}>
             <textarea
               value={reason}
               onChange={(e) => setReason(e.target.value)}
@@ -794,14 +838,14 @@ function ArchiveModal({
               background: "transparent",
             }}
           >
-            Cancel
+            {t("tenants.cancel")}
           </button>
           <Button
             tone="danger"
             disabled={confirm !== target.slug || archive.isPending}
             onClick={submit}
           >
-            {archive.isPending ? "Archiving…" : "Archive"}
+            {archive.isPending ? t("tenants.archiving") : t("tenants.archive")}
           </Button>
         </div>
       </div>
@@ -814,10 +858,12 @@ function ArchiveModal({
 function Field({
   label,
   error,
+  preserveCase = false,
   children,
 }: {
   label: string;
   error?: string | null;
+  preserveCase?: boolean;
   children: React.ReactNode;
 }) {
   return (
@@ -827,8 +873,8 @@ function Field({
           fontSize: 11,
           fontFamily: "var(--mono)",
           color: "var(--text-3)",
-          textTransform: "uppercase",
-          letterSpacing: "0.08em",
+          textTransform: preserveCase ? "none" : "uppercase",
+          letterSpacing: preserveCase ? 0 : "0.08em",
         }}
       >
         {label}

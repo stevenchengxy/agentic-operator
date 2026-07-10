@@ -1,0 +1,309 @@
+[
+  {
+    "id": "4",
+    "name": "createJD",
+    "title": "Create JD Agent",
+    "description": "负责基于已澄清的招聘需求自动生成标准化的职位发布信息（JD）。将内部需求转化为面向外部候选人的招聘岗位描述，需经交付经理审核确认后才能发布。一个客户需求可能对应多个职位发布（不同渠道定制），多个客户需求也可能聚合为一个职位发布（相同岗位合并发布）。",
+    "actor": ["Agent"],
+    "trigger": ["REQUIREMENT_LOGGED", "CLARIFICATION_READY", "JD_REJECTED"],
+    "actions": [
+      {
+        "order": "1",
+        "name": "generateJDContent",
+        "description": "加载已澄清的招聘岗位详情，生成标准化的职位名称、5 个最优搜索关键词、完整的职位描述内容（岗位职责、任职要求、公司介绍、薪资福利、工作安排等），内容需符合各招聘平台的规范要求与合规要求。",
+        "type": "logic",
+        "condition": "收到需求登记 / 澄清就绪 / JD 被退回事件"
+      },
+      {
+        "order": "2",
+        "name": "handleRequisitionMapping",
+        "description": "处理一对多或多对一的需求与职位发布映射关系：同一客户相同岗位的多个需求可聚合为一个职位发布；一个需求需面向不同渠道定制时创建多个职位发布版本。",
+        "type": "logic",
+        "condition": "职位描述内容生成完成"
+      },
+      {
+        "order": "3",
+        "name": "persistJd",
+        "description": "确定性持久化：把生成的 jd_content 按 job_requisition_id 写入租户 JD store 供 matchResume 回查（无 LLM 内容时回退用 title+requirements 组装），并回传 jd_content 使 JD_GENERATED 仍携带。",
+        "type": "tool",
+        "condition": "职位映射完成"
+      }
+    ],
+    "triggered_event": ["JD_GENERATED"],
+    "input_data": {}
+  },
+  {
+    "id": "9-1",
+    "name": "processResume",
+    "title": "Resume Parser Agent",
+    "description": "对下载完成并已入库的简历文件进行全链路自动化处理：智能解析结构化数据、候选人唯一归属锁定（基于姓名 + 手机号识别唯一性，确保每个候选人仅归属一名 Recruiter 以防止锁定冲突）、关键信息抽取与完整性校验。确保每份简历以标准化、高质量的候选人档案形态进入后续匹配环节。锁定冲突则终止流程。",
+    "actor": ["Agent"],
+    "trigger": ["RESUME_DOWNLOADED"],
+    "actions": [
+      {
+        "order": "1",
+        "name": "fs.readFromInbox",
+        "description": "从租户收件箱 data/resumes/<tenant>/inbox 读取已下载的简历文件字节（base64），供下一步解析。",
+        "type": "tool",
+        "condition": "已收到简历下载完成事件"
+      },
+      {
+        "order": "2",
+        "name": "parseResumeApi",
+        "description": "调用 RoboHire /api/v1/parse-resume，将简历字节解析为结构化候选人数据（姓名、手机号、邮箱、教育/工作/项目经历、技能）。",
+        "type": "tool",
+        "condition": "已读取简历字节"
+      },
+      {
+        "order": "3",
+        "name": "candidateDedupLookup",
+        "description": "基于解析出的姓名 + 手机号 + 邮箱执行候选人查重与『一候选人仅归属一名 Recruiter』的锁定检查；新候选人则注册，冲突则在结果中标记 lock_conflict。",
+        "type": "tool",
+        "condition": "简历解析成功，已提取姓名和手机号"
+      },
+      {
+        "order": "4",
+        "name": "records.upsert",
+        "description": "持久化候选人业务档案（含解析简历快照）到 business_records（新架构替代 Neo4j/RAAS-PG 实例回写），按 candidate_id 幂等 upsert；pass-through 不影响后续路由。",
+        "type": "tool",
+        "condition": "查重与锁定处理完成"
+      },
+      {
+        "order": "5",
+        "name": "routeResumeProcessed",
+        "description": "确定性装配 RESUME_PROCESSED：回传 candidate_id/resume/resume_id/job_requisition_id/jd（供 matchResume 免 LLM 取用，jd 从 JD store 按 job_requisition_id 回查），并按 lock_conflict 在 _emit 路由 RESUME_LOCKED_CONFLICT / RESUME_PROCESSED。",
+        "type": "tool",
+        "condition": "查重和锁定处理完成"
+      }
+    ],
+    "triggered_event": ["RESUME_PROCESSED", "RESUME_LOCKED_CONFLICT"],
+    "input_data": {},
+    "tool_use": [
+      {
+        "name": "fs.readFromInbox",
+        "description": "读取收件箱简历字节",
+        "config": { "subdir": "resumes" }
+      },
+      {
+        "name": "parseResumeApi",
+        "description": "RoboHire 简历解析",
+        "config": { "api_key_env": "ROBOHIRE_API_KEY", "timeout_ms": 300000 }
+      },
+      {
+        "name": "candidateDedupLookup",
+        "description": "候选人查重 + 归属锁定"
+      },
+      {
+        "name": "records.upsert",
+        "description": "持久化候选人业务档案",
+        "config": { "record_type": "candidate", "candidate_field": "candidate_id" }
+      }
+    ]
+  },
+  {
+    "id": "10-3",
+    "name": "ruleCheckForCandidateIdentity",
+    "title": "候选人查重",
+    "description": "候选人入库后的身份去重规则检查：简历解析后，按 9-15 同一候选人判定规则的三级优先级（手机号 > 姓名+邮箱 > 六字段）对系统中已有候选人对比池逐级比对，判定本次上传候选人是否与已有候选人为同一人。判为同一人则把新简历挂到已有候选人档案下（一人多简历），否则建新候选人。本检查只产出判定与审计，不阻断主流程（soft-fail）。",
+    "actor": ["Agent"],
+    "trigger": ["RESUME_PROCESSED"],
+    "actions": [
+      {
+        "order": "1",
+        "name": "candidateDedupLookup",
+        "description": "按姓名 / 手机号 / 邮箱在候选池中执行身份比对，返回是否命中已有候选人及命中依据。",
+        "type": "tool",
+        "condition": "已收到简历处理完成事件"
+      },
+      {
+        "order": "2",
+        "name": "checkCandidateIdentity",
+        "description": "按 9-15 三级规则（手机号 > 姓名+邮箱 > 六字段，模糊字段做语义等价）判定是否同一人，第三级为弱信号仅标记人工复核；产出审计结论 same_person / same_as_candidate_id / dedup_action / needs_review。读取上一步查重结果（ctx.lastResult）。",
+        "type": "logic",
+        "condition": "候选池比对完成"
+      },
+      {
+        "order": "3",
+        "name": "ontology.fetchActionRules",
+        "description": "从 Allmeta（RAAS-v1 域）拉取 processResume 的身份/查重现行规则，为审计结论补充现行本体依据（末步、不阻断主流程；默认发 CANDIDATE_IDENTITY_CHECKED）。",
+        "type": "tool",
+        "condition": "身份判定完成"
+      }
+    ],
+    "triggered_event": ["CANDIDATE_IDENTITY_CHECKED"],
+    "input_data": {},
+    "tool_use": [
+      {
+        "name": "candidateDedupLookup",
+        "description": "候选池身份比对"
+      },
+      {
+        "name": "ontology.fetchActionRules",
+        "description": "拉取身份/查重现行规则（Allmeta 现行本体）",
+        "config": { "action": "processResume", "domain": "RAAS-v1" }
+      }
+    ]
+  },
+  {
+    "id": "10-1",
+    "name": "ruleCheckForMatchResume",
+    "title": "Rule Check Agent",
+    "description": "候选人在进行简历匹配前的规则检查（公司通用规则 + 客户定制规则），是简历匹配的前置门禁。按顺序执行关联公司冷冻期、国籍限制、回流冷冻期三类规则检查，由确定性折叠给出 fail-closed 结论。只有通过（MATCH_RULE_CHECK_PASSED）才会触发后续简历匹配。",
+    "actor": ["Agent"],
+    "trigger": ["RESUME_PROCESSED"],
+    "actions": [
+      {
+        "order": "1",
+        "name": "ontology.fetchActionRules",
+        "description": "从 Allmeta（RAAS-v1 域）拉取本动作 executor=Agent 的现行规则（关联公司互不挖角红线 / 国籍通道 / 回流冷冻期），返回 {rules, mandatory, count, source}。确定性、无 LLM。",
+        "type": "tool",
+        "condition": "已收到简历处理完成事件"
+      },
+      {
+        "order": "2",
+        "name": "evaluateMatchRules",
+        "description": "确定性评估：按候选人信号（履历/雇主/国籍）逐条给上一步拉取的现行规则打 pass/fail 状态，生成 rule_results；命中受限雇主或非法国籍 → fail；Allmeta 拉取失败 → error（fail-closed）。",
+        "type": "tool",
+        "condition": "现行规则拉取完成"
+      },
+      {
+        "order": "3",
+        "name": "foldRuleDecision",
+        "description": "确定性收敛：将 rule_results 按 fail-closed 折叠为最终结论（任一不通过 / 存疑 / 评估器异常 → 不通过），并在 _emit 路由 MATCH_RULE_CHECK_PASSED / MATCH_RULE_CHECK_FAILED。",
+        "type": "tool",
+        "condition": "逐条规则评估完成"
+      }
+    ],
+    "triggered_event": ["MATCH_RULE_CHECK_PASSED", "MATCH_RULE_CHECK_FAILED"],
+    "input_data": {
+      "candidate_id": "候选人唯一标识",
+      "job_requisition_id": "招聘岗位唯一标识"
+    },
+    "tool_use": [
+      {
+        "name": "ontology.fetchActionRules",
+        "description": "拉取匹配前规则（Allmeta 现行本体）",
+        "config": { "action": "ruleCheckForMatchResume", "domain": "RAAS-v1" }
+      },
+      {
+        "name": "evaluateMatchRules",
+        "description": "确定性规则评估器"
+      }
+    ]
+  },
+  {
+    "id": "10-2",
+    "name": "matchResume",
+    "title": "Match Resume Agent",
+    "description": "对已通过匹配前规则检查的候选人简历进行智能匹配评估，评估候选人是否符合招聘岗位要求（学历、工作年限、技能匹配度等）。匹配结果决定候选人是否进入后续面试或直接推荐环节。",
+    "actor": ["Agent"],
+    "trigger": ["MATCH_RULE_CHECK_PASSED"],
+    "actions": [
+      {
+        "order": "1",
+        "name": "matchResumeApi",
+        "description": "确定性工具步：调用 RoboHire /api/v1/match-resume（传入 {resume, jd} 纯文本），返回量化打分 {matchScore, verdict, hiringRecommendation, summary}。不依赖 LLM，保证真实外部调用一定发生（事件需携带 resume 与 jd 文本）。",
+        "type": "tool",
+        "condition": "已收到匹配前规则检查通过事件，且 event.data 含 resume 与 jd 文本"
+      },
+      {
+        "order": "2",
+        "name": "records.upsert",
+        "description": "持久化候选人-岗位匹配结果（overallMatchScore/verdict）到 business_records，按 candidate_id:job_requisition_id 幂等 upsert；pass-through 保留 matchScore 供下一步路由。",
+        "type": "tool",
+        "condition": "匹配打分完成"
+      },
+      {
+        "order": "3",
+        "name": "decideMatchOutcome",
+        "description": "读取匹配打分（lastResult.matchScore）与业务阈值，在 _emit 路由：通过需面试 MATCH_PASSED_NEED_INTERVIEW / 通过免面试 MATCH_PASSED_NO_INTERVIEW / 不通过 MATCH_FAILED；无有效路由时回退 triggered_event[0]。",
+        "type": "logic",
+        "condition": "匹配结果已持久化"
+      }
+    ],
+    "triggered_event": [
+      "MATCH_PASSED_NEED_INTERVIEW",
+      "MATCH_PASSED_NO_INTERVIEW",
+      "MATCH_FAILED"
+    ],
+    "input_data": {},
+    "tool_use": [
+      {
+        "name": "matchResumeApi",
+        "description": "RoboHire 简历-JD 匹配打分（需 {resume, jd}）",
+        "config": { "api_key_env": "ROBOHIRE_API_KEY", "timeout_ms": 300000 }
+      },
+      {
+        "name": "records.upsert",
+        "description": "持久化匹配结果",
+        "config": { "record_type": "candidate_match_result", "candidate_field": "candidate_id" }
+      }
+    ]
+  },
+  {
+    "id": "11-1",
+    "name": "inviteInternalInterview",
+    "title": "Interview Inviter Agent",
+    "description": "针对需要内部面试的岗位，在 RaaS 侧审批确认后（INTERVIEW_INVITATION_REQUESTED）自动触发内部面试邀约流程：向候选人发送 AI 面试邀请，同时将邀约信息同步给招聘专员，便于在企业微信等渠道跟进确认候选人参加面试。确保候选人在推送客户前经过内部初筛。",
+    "actor": ["Agent"],
+    "trigger": ["INTERVIEW_INVITATION_REQUESTED", "MATCH_PASSED_NEED_INTERVIEW"],
+    "actions": [
+      {
+        "order": "1",
+        "name": "inviteCandidateApi",
+        "description": "确定性工具步：调用 RoboHire /api/v1/invite-candidate 生成面试邀请正文（传入候选人 + 岗位信息）。不依赖 LLM，保证真实外部调用一定发生。",
+        "type": "tool",
+        "condition": "已收到面试邀约请求事件"
+      },
+      {
+        "order": "2",
+        "name": "generateInterviewInvitation",
+        "description": "在 RoboHire 生成的初稿基础上（lastResult）润色个性化面试邀请内容（说明、操作指引、时间窗口与截止日期、链接占位）。",
+        "type": "logic",
+        "condition": "邀请正文初稿生成完成"
+      },
+      {
+        "order": "3",
+        "name": "sendInvitationEmail",
+        "description": "将面试邀请投递到候选人登记的联系邮箱（通过配置的 webhook/邮件中继），记录投递状态；无投递通道时 soft-fail（delivered:false）。",
+        "type": "tool",
+        "condition": "面试邀请内容生成完成"
+      },
+      {
+        "order": "4",
+        "name": "records.upsert",
+        "description": "把本次面试邀约投递作为 communication_log 追加写入 business_records（append，每次邀约一条），供后续追溯；pass-through 不影响路由。",
+        "type": "tool",
+        "condition": "邮件投递完成"
+      },
+      {
+        "order": "5",
+        "name": "notifyRecruiter",
+        "description": "依据投递结果路由最终事件并向招聘专员同步可复制的邀约话术与面试链接，便于其在企业微信跟进；在 _emit 路由 INTERVIEW_INVITATION_SENT / INTERVIEW_INVITATION_FAILED。",
+        "type": "logic",
+        "condition": "邀约已记录"
+      }
+    ],
+    "triggered_event": [
+      "INTERVIEW_INVITATION_SENT",
+      "INTERVIEW_INVITATION_FAILED"
+    ],
+    "input_data": {},
+    "tool_use": [
+      {
+        "name": "inviteCandidateApi",
+        "description": "RoboHire 生成面试邀请正文（仅生成，不投递）",
+        "config": { "api_key_env": "ROBOHIRE_API_KEY", "timeout_ms": 300000 }
+      },
+      {
+        "name": "sendInvitationEmail",
+        "description": "面试邀请实际投递（webhook，soft-fail）"
+      },
+      {
+        "name": "records.upsert",
+        "description": "追加面试邀约通信记录",
+        "config": { "record_type": "communication_log", "append": true }
+      }
+    ]
+  }
+]

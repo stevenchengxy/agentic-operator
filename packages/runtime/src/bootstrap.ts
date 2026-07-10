@@ -23,8 +23,10 @@ import {
   tenants,
   workflows,
   workflowVersions,
+  factoryTools,
   getDb,
 } from "@agentic/db";
+import { buildDeclarativeOverlay } from "@agentic/tools";
 import { makeId } from "@agentic/shared";
 import { and, eq } from "drizzle-orm";
 import {
@@ -38,7 +40,7 @@ import {
   formatMissingPromptsError,
   registerAgent,
 } from "./register";
-import type { TenantRegistry } from "@agentic/agent-kit";
+import type { TenantRegistry, ToolDescriptor } from "@agentic/agent-kit";
 import type { InngestFunction } from "inngest";
 
 /**
@@ -236,7 +238,42 @@ export async function bootstrapTenant(spec: {
   const promptCount = Object.keys(tenantRegistry?.prompts ?? {}).length;
 
   // Upsert agents + agent_versions + event_listeners
+  // Phase 2 — fold brain-authored declarative HTTP tools (factory_tools) into this tenant's
+  // runtime resolution, so a deployed agent can actually CALL a tool the brain DECLARED (the
+  // create_tool → DrizzleToolStore → here → step-engine path). Domain-scoped (the tenant slug, or
+  // the factory domain it was derived from: "<domain>-sb") + globals (domain null). Best-effort:
+  // a load failure never blocks boot, and the name-collision guard in create_tool keeps these from
+  // shadowing real global tools.
+  let declarativeTools: Record<string, ToolDescriptor> | undefined;
+  try {
+    const slug = spec.tenantSlug;
+    const baseDomain = slug.replace(/-sb$/, "");
+    const rows = db.select().from(factoryTools).all();
+    const matched = rows.filter((r) => r.domain == null || r.domain === slug || r.domain === baseDomain);
+    if (matched.length) {
+      declarativeTools = buildDeclarativeOverlay(
+        matched.map((r) => ({
+          name: r.name,
+          description: r.description ?? undefined,
+          method: r.method,
+          urlTemplate: r.urlTemplate,
+          headers: (r.headers as Record<string, string> | null) ?? undefined,
+          bodyTemplate: r.bodyTemplate ?? undefined,
+          sideEffect: r.sideEffect,
+          returnsSchema: (r.returnsSchema as Record<string, unknown> | null) ?? undefined,
+        })),
+      );
+    }
+  } catch {
+    /* declarative tool overlay is best-effort — never block boot */
+  }
+
   const registered = [];
+  // Phase 1a — sibling-function registry for synchronous `type:"invoke"` steps. Populated as
+  // each function is built; the resolver closure reads it lazily at handler-run time (after boot
+  // finishes), so an invoke action can resolve a sibling agent registered later in this loop.
+  const fnRegistry = new Map<string, InngestFunction.Any>();
+  const resolveFunction = (ref: string): InngestFunction.Any | undefined => fnRegistry.get(ref);
   for (const a of manifest) {
     let agentRow = db
       .select()
@@ -306,13 +343,27 @@ export async function bootstrapTenant(spec: {
       }
     }
 
-    const fn = registerAgent(a, {
-      tenantId: tenant.id,
-      tenantSlug: spec.tenantSlug,
-      workflowVersionId: workflowVersion.id,
-      tenantRegistry: tenantRegistry ?? undefined,
-    });
-    if (fn) registered.push(fn);
+    // 下线 (disable): a disabled agent stays in the catalog — its agents /
+    // agent_versions / event_listeners rows are upserted above — but its
+    // Inngest function is NOT registered, so no event routes to it until it is
+    // re-enabled and the tenant re-registers. `enabled` defaults to true, so
+    // this is a no-op for every agent that was never explicitly disabled.
+    if (agentRow.enabled !== false) {
+      const fn = registerAgent(a, {
+        tenantId: tenant.id,
+        tenantSlug: spec.tenantSlug,
+        workflowVersionId: workflowVersion.id,
+        tenantRegistry: tenantRegistry ?? undefined,
+        resolveFunction,
+        declarativeTools,
+      });
+      if (fn) {
+        registered.push(fn);
+        // Index by agent name + namespaced fn id so an invoke step can target either.
+        fnRegistry.set(a.name, fn as InngestFunction.Any);
+        fnRegistry.set(`${spec.tenantSlug}.${a.name}`, fn as InngestFunction.Any);
+      }
+    }
   }
 
   // Upsert ontology catalogs (RF-1.4 additive tables)
@@ -403,25 +454,58 @@ function upsertEntityTypes(tenantId: string, loaded: LoadedModels) {
   }
 }
 
-export async function bootstrapAll(
+/** Slugs that are archived (tenant-level 下线) — read once per call. */
+function archivedSlugSet(): Set<string> {
+  return new Set(
+    getDb()
+      .select({ slug: tenants.slug, archivedAt: tenants.archivedAt })
+      .from(tenants)
+      .all()
+      .filter((r) => r.archivedAt != null)
+      .map((r) => r.slug),
+  );
+}
+
+/**
+ * Bootstrap every discovered tenant, returning their Inngest functions GROUPED
+ * BY slug. This is the per-app boot path: one Inngest app per tenant, so the
+ * api boot (`apps/api/src/bootstrap.ts`) hands each slug's functions to its own
+ * `serve()` handler. A tenant whose manifest throws is logged and skipped (its
+ * map entry is simply absent) — exactly the per-tenant fault isolation that the
+ * single-app boot already had, now extended to the per-app registry.
+ */
+export async function bootstrapAllByTenant(
   tenantRegistries: TenantRegistries = {},
-): Promise<InngestFunction.Any[]> {
-  const fns: InngestFunction.Any[] = [];
+): Promise<Map<string, InngestFunction.Any[]>> {
+  const byTenant = new Map<string, InngestFunction.Any[]>();
   const folders = await discoverTenantFolders();
   if (folders.length === 0) {
     console.warn(
       `[bootstrap] no tenant model folders found in ${modelsRoot()}`,
     );
-    return fns;
+    return byTenant;
   }
+
+  // archive (tenant-level 下线): an archived tenant is taken fully offline —
+  // none of its agents register, so its app serves zero functions. The rows
+  // stay in the DB; clearing `archived_at` (restore) + a re-register brings it
+  // back. Read once per bootstrap so a re-register reflects the latest state.
+  const archivedSlugs = archivedSlugSet();
+
   for (const f of folders) {
+    if (archivedSlugs.has(f.slug)) {
+      console.log(`[bootstrap] ${f.slug} (${f.folder}): archived — skipped`);
+      continue;
+    }
     try {
       const result = await bootstrapTenant({
         tenantSlug: f.slug,
         modelDir: f.dir,
         tenantRegistry: tenantRegistries[f.slug],
       });
-      fns.push(...result.functions);
+      const arr = byTenant.get(f.slug) ?? [];
+      arr.push(...result.functions);
+      byTenant.set(f.slug, arr);
       const tenantPkgNote = result.hasTenantPackage
         ? `· tenant pkg: ${result.tenantTools} tools, ${result.tenantPrompts} prompts`
         : "· no tenant pkg (declarative)";
@@ -431,6 +515,54 @@ export async function bootstrapAll(
     } catch (err) {
       console.error(`[bootstrap] failed to load ${f.folder}:`, err);
     }
+  }
+  return byTenant;
+}
+
+/**
+ * Flat-array boot path, kept for back-compat. Delegates to
+ * `bootstrapAllByTenant` and flattens. Callers that need the per-app grouping
+ * (the api registry) should use `bootstrapAllByTenant` directly.
+ */
+export async function bootstrapAll(
+  tenantRegistries: TenantRegistries = {},
+): Promise<InngestFunction.Any[]> {
+  const byTenant = await bootstrapAllByTenant(tenantRegistries);
+  return [...byTenant.values()].flat();
+}
+
+/**
+ * Rebuild ONE tenant's Inngest functions — the scoped counterpart to
+ * `bootstrapAll`. `reregisterInngest({ tenantSlug })` calls this so a deploy /
+ * agent enable-disable / archive of tenant X only re-reads X's manifest + DB
+ * and only touches X's app, never the whole fleet.
+ *
+ *   - Archived or unknown slug → `[]` (the caller serves zero functions for
+ *     that app = tenant 下线 / app offline).
+ *   - A broken manifest → THROWS, so the registry keeps the tenant's
+ *     last-good function set (a failed re-register must never drop a tenant
+ *     that was previously live). One tenant's bad deploy cannot affect another:
+ *     this only ever reads/rebuilds the requested slug.
+ *
+ * A slug may map from multiple version folders (e.g. `raas-v1`, `raas-v2`);
+ * all matching folders are bootstrapped and their functions concatenated,
+ * mirroring `bootstrapAllByTenant`.
+ */
+export async function bootstrapTenantBySlug(
+  slug: string,
+  tenantRegistries: TenantRegistries = {},
+): Promise<InngestFunction.Any[]> {
+  const folders = (await discoverTenantFolders()).filter((f) => f.slug === slug);
+  if (folders.length === 0) return [];
+  if (archivedSlugSet().has(slug)) return [];
+  const fns: InngestFunction.Any[] = [];
+  for (const f of folders) {
+    const result = await bootstrapTenant({
+      tenantSlug: f.slug,
+      modelDir: f.dir,
+      tenantRegistry: tenantRegistries[f.slug],
+    });
+    fns.push(...result.functions);
   }
   return fns;
 }

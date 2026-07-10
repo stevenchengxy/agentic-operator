@@ -23,7 +23,7 @@ import type { FastifyInstance } from "fastify";
 import { agentRegistry, RunCancelledError } from "@agentic/agents";
 import { PROVIDER_IDS, type ProviderId } from "@agentic/contracts";
 import { isLLMError } from "@agentic/llm-gateway";
-import { appendToLedger, inngest } from "@agentic/runtime";
+import { appendToLedger, getTenantInngest } from "@agentic/runtime";
 import { events, eventTypes, getDb } from "@agentic/db";
 import { and, eq } from "drizzle-orm";
 import { InvokeAgentBody } from "@agentic/contracts";
@@ -31,6 +31,7 @@ import { makeId } from "@agentic/shared";
 import { getLLMGateway } from "../../services/llm";
 import { metrics } from "../../services/metrics";
 import { requireAuth } from "../../plugins/auth";
+import { requirePermission } from "../../plugins/rbac";
 import { findManifestAgentTrigger } from "../../queries/agents";
 import {
   lookupIdempotency,
@@ -61,7 +62,7 @@ export async function agentInvokeRoutes(app: FastifyInstance): Promise<void> {
       // UC-V11-32 / PF-GAP-10 — idempotency replay. Authenticate first so
       // the cache lookup is correctly scoped per-tenant; missing/invalid
       // auth still returns the same 401 it always did.
-      const auth = requireAuth(req);
+      const auth = requirePermission(req, "agents.invoke");
       const idemKey = readIdempotencyKey(req);
       if (idemKey) {
         const cached = lookupIdempotency(auth.tenantId, idemKey);
@@ -197,7 +198,7 @@ export async function agentInvokeRoutes(app: FastifyInstance): Promise<void> {
         }
 
         try {
-          await inngest.send({
+          await getTenantInngest(auth.tenantSlug).send({
             name: `${auth.tenantSlug}/${triggerEvent}` as `${string}/${string}`,
             data: inngestData,
           });

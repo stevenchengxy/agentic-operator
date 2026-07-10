@@ -143,6 +143,9 @@ export function dispatch(event: StreamEvent, client: QueryClient): void {
       void client.invalidateQueries({ queryKey: RUN_KEYS.all });
       void client.invalidateQueries({ queryKey: COUNT_KEYS.tenant });
       void client.invalidateQueries({ queryKey: RUN_KEYS.detail(event.runId) });
+      // Per-agent throughput changes as runs start/finish. Prefix-match
+      // invalidates every window variant ("1h"/"24h"/"7d").
+      void client.invalidateQueries({ queryKey: ["workflows", "throughput"] as const });
       break;
     }
     case "run.step.started":

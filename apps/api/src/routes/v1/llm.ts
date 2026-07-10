@@ -18,6 +18,7 @@ import type { FastifyInstance } from "fastify";
 import { PROVIDER_IDS, PROVIDER_MODEL_CATALOG, type ProviderId } from "@agentic/contracts";
 import { getLLMGateway, resetLLMGateway } from "../../services/llm";
 import { requireAuth } from "../../plugins/auth";
+import { requirePermission } from "../../plugins/rbac";
 import { writeAudit } from "../../plugins/audit";
 import {
   getProviderKey,
@@ -94,7 +95,7 @@ export async function llmRoutes(app: FastifyInstance): Promise<void> {
     Params: { id: string };
     Body: { apiKey?: string; scope?: string };
   }>("/llm/providers/:id/key", async (req, reply) => {
-    const auth = requireAuth(req);
+    const auth = requirePermission(req, "models.write");
     const id = req.params.id;
     if (!isProviderId(id)) {
       return reply.fail("bad_request", `Unknown provider: ${id}`, 400);
@@ -131,7 +132,7 @@ export async function llmRoutes(app: FastifyInstance): Promise<void> {
     Params: { id: string };
     Body: { apiKey?: string };
   }>("/llm/providers/:id/test", async (req, reply) => {
-    const auth = requireAuth(req);
+    const auth = requirePermission(req, "models.read");
     const id = req.params.id;
     if (!isProviderId(id)) {
       return reply.fail("bad_request", `Unknown provider: ${id}`, 400);
@@ -168,7 +169,7 @@ export async function llmRoutes(app: FastifyInstance): Promise<void> {
   app.get<{ Params: { id: string } }>(
     "/llm/providers/:id/available-models",
     async (req, reply) => {
-      const auth = requireAuth(req);
+      const auth = requirePermission(req, "models.read");
       const id = req.params.id;
       if (!isProviderId(id)) {
         return reply.fail("bad_request", `Unknown provider: ${id}`, 400);
@@ -250,7 +251,7 @@ export async function llmRoutes(app: FastifyInstance): Promise<void> {
 
   // ── Model fleet ─────────────────────────────────────────────────────────
   app.get("/llm/fleet", async (req, reply) => {
-    const auth = requireAuth(req);
+    const auth = requirePermission(req, "models.read");
     return reply.ok(listFleet(auth.tenantSlug));
   });
 
@@ -265,7 +266,7 @@ export async function llmRoutes(app: FastifyInstance): Promise<void> {
       temperature?: number;
     };
   }>("/llm/fleet", async (req, reply) => {
-    const auth = requireAuth(req);
+    const auth = requirePermission(req, "models.write");
     try {
       const entry = addFleetEntry({
         tenantSlug: auth.tenantSlug,
@@ -309,7 +310,7 @@ export async function llmRoutes(app: FastifyInstance): Promise<void> {
       temperature?: number;
     };
   }>("/llm/fleet/:id", async (req, reply) => {
-    const auth = requireAuth(req);
+    const auth = requirePermission(req, "models.write");
     try {
       const entry = updateFleetEntry(auth.tenantSlug, req.params.id, req.body ?? {});
       if (!entry) return reply.fail("not_found", "fleet entry not found", 404);
@@ -330,7 +331,7 @@ export async function llmRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.delete<{ Params: { id: string } }>("/llm/fleet/:id", async (req, reply) => {
-    const auth = requireAuth(req);
+    const auth = requirePermission(req, "models.write");
     const ok = deleteFleetEntry(auth.tenantSlug, req.params.id);
     if (!ok) return reply.fail("not_found", "fleet entry not found", 404);
     writeAudit({

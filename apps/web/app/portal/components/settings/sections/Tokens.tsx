@@ -10,28 +10,30 @@ import {
 } from "@/app/portal/components";
 import { fmtAgo } from "@/lib/format";
 import { SETTINGS_KEYS } from "@/app/portal/components/settings/data";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 
 export function TokensSection() {
+  const { t } = useI18n();
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
       <Panel
-        title="Workspace API tokens"
-        subtitle="Use these to call the runtime from CI, scripts, or downstream services."
+        title={t("tokensSection.workspaceTokensTitle")}
+        subtitle={t("tokensSection.workspaceTokensSubtitle")}
         padded={false}
         action={
           <Button small icon="plus" tone="primary">
-            New token
+            {t("tokensSection.newToken")}
           </Button>
         }
       >
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
           <thead>
             <tr style={{ borderBottom: "1px solid var(--border)" }}>
-              <Th>Label</Th>
-              <Th>Token prefix</Th>
-              <Th>Scopes</Th>
-              <Th>Created</Th>
-              <Th>Last used</Th>
+              <Th>{t("tokensSection.colLabel")}</Th>
+              <Th>{t("tokensSection.colTokenPrefix")}</Th>
+              <Th>{t("tokensSection.colScopes")}</Th>
+              <Th>{t("tokensSection.colCreated")}</Th>
+              <Th>{t("tokensSection.colLastUsed")}</Th>
               <Th />
             </tr>
           </thead>
@@ -40,7 +42,7 @@ export function TokensSection() {
               <tr key={k.id} style={{ borderBottom: "1px solid var(--border)" }}>
                 <Td>
                   <div style={{ color: "var(--text)" }}>{k.label}</div>
-                  <div style={{ fontSize: 10.5, color: "var(--text-3)" }}>by {k.author}</div>
+                  <div style={{ fontSize: 10.5, color: "var(--text-3)" }}>{t("tokensSection.byAuthor", { author: k.author })}</div>
                 </Td>
                 <Td>
                   <span className="mono" style={{ fontSize: 12, color: "var(--text-2)" }}>
@@ -65,7 +67,7 @@ export function TokensSection() {
                     <span style={{ color: "var(--text-2)" }}>{fmtAgo(k.lastUsed)}</span>
                     {k.expiring && (
                       <span style={{ fontSize: 10.5, color: "var(--amber)" }}>
-                        Expires in {k.expiring}d
+                        {t("tokensSection.expiresInDays", { n: k.expiring })}
                       </span>
                     )}
                   </div>
@@ -73,10 +75,10 @@ export function TokensSection() {
                 <Td style={{ textAlign: "right" }}>
                   <div style={{ display: "inline-flex", gap: 4 }}>
                     <Button small tone="ghost">
-                      Rotate
+                      {t("tokensSection.rotate")}
                     </Button>
                     <Button small tone="ghost">
-                      Revoke
+                      {t("tokensSection.revoke")}
                     </Button>
                   </div>
                 </Td>
@@ -86,9 +88,9 @@ export function TokensSection() {
         </table>
       </Panel>
 
-      <Panel title="CLI authentication" padded>
+      <Panel title={t("tokensSection.cliAuthTitle")} padded>
         <div style={{ fontSize: 12.5, color: "var(--text-2)", marginBottom: 10, lineHeight: 1.55 }}>
-          Authenticate the <span className="mono">agentic</span> CLI for shell deploys and tail logs.
+          {t("tokensSection.cliAuthDescPrefix")} <span className="mono">agentic</span> {t("tokensSection.cliAuthDescSuffix")}
         </div>
         <CodeBlock>{`$ agentic login \\
     --workspace agentic-operator \\

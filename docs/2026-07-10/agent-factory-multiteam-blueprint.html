@@ -1,0 +1,603 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>契约流水线工厂 · Contract-Line Foundry — 多团队自动化代码生成蓝图</title>
+<style>
+  :root{
+    --bg:#0c0e12; --panel:#14171d; --panel-2:#1a1e26; --panel-3:#20252e;
+    --border:#262c36; --border-2:#333b47;
+    --text:#e7eaf0; --text-2:#9aa4b2; --text-3:#6b7482;
+    --signal:#b6f34a; --signal-dim:#7fae2f;
+    --blue:#5aa9ff; --teal:#34d399; --amber:#f5b544; --red:#f2645a; --purple:#b393f6;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+  }
+  @media (prefers-color-scheme: light){
+    :root{
+      --bg:#f6f7f9; --panel:#ffffff; --panel-2:#f0f2f5; --panel-3:#e8ebef;
+      --border:#e2e6ec; --border-2:#d2d8e0;
+      --text:#161a20; --text-2:#4c5563; --text-3:#7b8494;
+      --signal:#5a8a1a; --signal-dim:#6f9a2f;
+      --blue:#2563eb; --teal:#0d9488; --amber:#b8791b; --red:#d24338; --purple:#7c4ddb;
+    }
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);line-height:1.65;font-size:15px;-webkit-font-smoothing:antialiased}
+  a{color:var(--blue);text-decoration:none}
+  code,.mono{font-family:var(--mono);font-size:.86em}
+  .wrap{max-width:1120px;margin:0 auto;padding:0 24px}
+  /* header */
+  header{border-bottom:1px solid var(--border);background:linear-gradient(180deg,var(--panel) 0%,var(--bg) 100%)}
+  .hero{padding:48px 0 36px}
+  .kicker{font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--signal);margin:0 0 14px}
+  h1{font-size:34px;line-height:1.2;margin:0 0 10px;font-weight:650;letter-spacing:-.01em}
+  .one-liner{font-size:17px;color:var(--text-2);max-width:820px;margin:0 0 22px}
+  .meta-row{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px}
+  .pill{font-family:var(--mono);font-size:11.5px;padding:4px 10px;border:1px solid var(--border-2);border-radius:999px;color:var(--text-2);background:var(--panel-2)}
+  .pill b{color:var(--signal);font-weight:600}
+  /* nav */
+  nav.toc{position:sticky;top:0;z-index:20;background:rgba(12,14,18,.86);backdrop-filter:blur(10px);border-bottom:1px solid var(--border)}
+  @media (prefers-color-scheme: light){nav.toc{background:rgba(246,247,249,.9)}}
+  nav.toc .wrap{display:flex;gap:6px;overflow-x:auto;padding:10px 24px;scrollbar-width:thin}
+  nav.toc a{font-size:12.5px;color:var(--text-2);padding:5px 11px;border-radius:7px;white-space:nowrap;border:1px solid transparent}
+  nav.toc a:hover{color:var(--text);background:var(--panel-2);border-color:var(--border)}
+  /* sections */
+  section{padding:40px 0;border-bottom:1px solid var(--border)}
+  .sec-num{font-family:var(--mono);color:var(--signal);font-size:13px;margin-right:10px}
+  h2{font-size:24px;margin:0 0 6px;font-weight:620;letter-spacing:-.01em;display:flex;align-items:baseline}
+  h2 .zh{margin-right:12px}
+  h2 small{font-family:var(--mono);font-size:13px;color:var(--text-3);font-weight:400}
+  .lede{color:var(--text-2);margin:0 0 24px;max-width:900px}
+  h3{font-size:16px;margin:26px 0 10px;font-weight:600;color:var(--text)}
+  p{margin:0 0 12px}
+  .muted{color:var(--text-2)}
+  .fp{font-family:var(--mono);font-size:12.5px;color:var(--teal);background:var(--panel-2);padding:1px 6px;border-radius:5px;border:1px solid var(--border);white-space:nowrap}
+  /* cards */
+  .grid{display:grid;gap:16px}
+  .g2{grid-template-columns:repeat(2,1fr)}
+  .g3{grid-template-columns:repeat(3,1fr)}
+  @media(max-width:820px){.g2,.g3{grid-template-columns:1fr}}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:20px}
+  .card.accent{border-color:var(--border-2)}
+  .card h4{margin:0 0 4px;font-size:16px;font-weight:620}
+  .card .role{font-family:var(--mono);font-size:11.5px;color:var(--text-3);text-transform:uppercase;letter-spacing:.08em;margin-bottom:12px}
+  .card ul{margin:8px 0 0;padding-left:18px}
+  .card li{margin:5px 0;color:var(--text-2);font-size:14px}
+  .kv{display:grid;grid-template-columns:76px 1fr;gap:6px 10px;margin-top:10px;font-size:13.5px}
+  .kv .k{color:var(--text-3);font-family:var(--mono);font-size:11.5px;padding-top:2px}
+  .kv .v{color:var(--text-2)}
+  .kv .v b{color:var(--text);font-weight:600}
+  .tag{display:inline-block;font-family:var(--mono);font-size:11px;padding:2px 8px;border-radius:6px;font-weight:600;line-height:1.5}
+  .t-reuse{color:var(--teal);background:color-mix(in srgb,var(--teal) 15%,transparent);border:1px solid color-mix(in srgb,var(--teal) 35%,transparent)}
+  .t-extend{color:var(--amber);background:color-mix(in srgb,var(--amber) 15%,transparent);border:1px solid color-mix(in srgb,var(--amber) 35%,transparent)}
+  .t-rebuild{color:var(--red);background:color-mix(in srgb,var(--red) 15%,transparent);border:1px solid color-mix(in srgb,var(--red) 35%,transparent)}
+  .t-new{color:var(--purple);background:color-mix(in srgb,var(--purple) 15%,transparent);border:1px solid color-mix(in srgb,var(--purple) 35%,transparent)}
+  .t-p0{color:var(--red);background:color-mix(in srgb,var(--red) 15%,transparent);border:1px solid color-mix(in srgb,var(--red) 40%,transparent)}
+  .t-p1{color:var(--amber);background:color-mix(in srgb,var(--amber) 15%,transparent);border:1px solid color-mix(in srgb,var(--amber) 40%,transparent)}
+  .t-p2{color:var(--blue);background:color-mix(in srgb,var(--blue) 15%,transparent);border:1px solid color-mix(in srgb,var(--blue) 40%,transparent)}
+  /* tables */
+  .tbl-wrap{overflow-x:auto;border:1px solid var(--border);border-radius:12px;margin-top:8px}
+  table{border-collapse:collapse;width:100%;font-size:13.5px;min-width:680px}
+  th,td{text-align:left;padding:11px 14px;border-bottom:1px solid var(--border);vertical-align:top}
+  th{background:var(--panel-2);color:var(--text-2);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.05em;position:sticky;top:0}
+  tr:last-child td{border-bottom:none}
+  td .fp{white-space:normal}
+  /* problem/diagnosis boxes */
+  .diag{display:flex;gap:14px;padding:16px 18px;background:var(--panel);border:1px solid var(--border);border-left:3px solid var(--red);border-radius:10px;margin-bottom:12px}
+  .diag .n{font-family:var(--mono);color:var(--red);font-weight:700;font-size:15px;flex:none}
+  .diag .body b{color:var(--text)}
+  .diag .body{color:var(--text-2);font-size:14px}
+  /* flow steps */
+  ol.flow{counter-reset:s;list-style:none;padding:0;margin:0}
+  ol.flow li{position:relative;padding:14px 16px 14px 52px;background:var(--panel);border:1px solid var(--border);border-radius:10px;margin-bottom:8px;font-size:14px;color:var(--text-2)}
+  ol.flow li::before{counter-increment:s;content:counter(s);position:absolute;left:14px;top:13px;width:26px;height:26px;border-radius:7px;background:var(--panel-3);border:1px solid var(--border-2);color:var(--signal);font-family:var(--mono);font-size:13px;display:flex;align-items:center;justify-content:center;font-weight:600}
+  ol.flow li b{color:var(--text)}
+  /* phases */
+  .phase{display:grid;grid-template-columns:150px 1fr;gap:0;border:1px solid var(--border);border-radius:12px;overflow:hidden;margin-bottom:10px}
+  @media(max-width:680px){.phase{grid-template-columns:1fr}}
+  .phase .lab{background:var(--panel-2);padding:16px;font-weight:620;font-size:14px;border-right:1px solid var(--border)}
+  .phase .lab .p-tag{display:block;font-family:var(--mono);font-size:11px;color:var(--signal);margin-bottom:4px}
+  .phase .det{padding:16px;font-size:13.5px;color:var(--text-2)}
+  .phase .det .proves{margin-top:8px;color:var(--text-3);font-size:12.5px}
+  .phase .det .proves b{color:var(--teal)}
+  /* callouts */
+  .note{background:var(--panel-2);border:1px solid var(--border);border-radius:10px;padding:14px 16px;font-size:13.5px;color:var(--text-2);margin:14px 0}
+  .note b{color:var(--text)}
+  .legend{display:flex;flex-wrap:wrap;gap:14px;margin:14px 0 4px;font-size:12.5px;color:var(--text-2)}
+  .legend span{display:inline-flex;align-items:center;gap:6px}
+  .sw{width:12px;height:12px;border-radius:3px;display:inline-block}
+  .diagram-card{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:18px;overflow-x:auto}
+  svg{display:block;max-width:100%;height:auto}
+  .foot{padding:34px 0 60px;color:var(--text-3);font-size:12.5px}
+  .risk li{margin:9px 0}
+  ul.clean{padding-left:18px;margin:6px 0}
+  ul.clean li{margin:6px 0;color:var(--text-2)}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap hero">
+    <p class="kicker">Agent Factory · 重构蓝图 · 2026-07-10</p>
+    <h1>契约流水线工厂 <span style="color:var(--text-3);font-weight:400">/ Contract-Line Foundry</span></h1>
+    <p class="one-liner">一条<strong style="color:var(--text)">顺序门控的装配流水线</strong>：真正独立的团队传递<strong style="color:var(--text)">带契约的版本化工件</strong>；一个"只指挥不动手"的<strong style="color:var(--text)">总管</strong>按归因路由返工；一个<strong style="color:var(--text)">独立监督者</strong>提交版本锁定的缺陷、finish 必须清零；AI 按子任务<strong style="color:var(--text)">自选推理策略</strong>；一个<strong style="color:var(--text)">测试者</strong>在真实隔离环境里对任意代码跑单测/集成/安全；一个<strong style="color:var(--text)">治理 cron</strong> 对已交付 fleet 重新开环。</p>
+    <div class="meta-row">
+      <span class="pill">脊柱 · <b>StationLine 装配线</b></span>
+      <span class="pill">嫁接 · Blackboard 独立评审 + FoundryOS 治理</span>
+      <span class="pill">团队 · <b>5</b> + 总管</span>
+      <span class="pill">复用/扩展/重建 · <b>29</b> 处映射</span>
+      <span class="pill">优化点 · <b>10</b>（含 2 × P0）</span>
+      <span class="pill">分期 · <b>7</b> phase</span>
+    </div>
+  </div>
+</header>
+
+<nav class="toc">
+  <div class="wrap">
+    <a href="#diag">① 现状诊断</a>
+    <a href="#arch">② 架构总览</a>
+    <a href="#teams">③ 五团队 + 总管</a>
+    <a href="#foreman">④ 总管</a>
+    <a href="#supervisor">⑤ 监督者</a>
+    <a href="#tester">⑥ 测试者 · 沙箱</a>
+    <a href="#reasoning">⑦ 推理策略选择器</a>
+    <a href="#gov">⑧ 治理闭环</a>
+    <a href="#flow">⑨ 端到端流程</a>
+    <a href="#reuse">⑩ 复用 vs 重建</a>
+    <a href="#opt">⑪ 优化点</a>
+    <a href="#phasing">⑫ 分期路线</a>
+    <a href="#risk">⑬ 风险与开放问题</a>
+  </div>
+</nav>
+
+<main class="wrap">
+
+<!-- 1. DIAGNOSIS -->
+<section id="diag">
+  <h2><span class="sec-num">01</span><span class="zh">现状诊断</span><small>为什么必须改</small></h2>
+  <p class="lede">先说清楚今天的工厂真实是什么样——否则"多团队+总管"会变成给单大脑贴标签。底层的 QA 机制其实很强（10 判据验收门、三镜评审、独立计划评审、确定性归因、真沙箱行为验证、可断点续跑的 HITL），<strong style="color:var(--text)">全部保留</strong>；只重建被证实真错的四处。</p>
+
+  <div class="diag"><div class="n">1</div><div class="body"><b>团队是化妆品。</b> 生成是一个单大脑——一条 <code>runBrain</code> ReAct 循环 <span class="fp">conductor.ts:294</span> 驱动约 40 个工具，走一个"显示用"的 stage 机；系统提示词让"一个大脑扮演多个角色" <span class="fp">system-prompt.ts:121</span>，工具上的 role 只是展示标签 <span class="fp">process-roles.ts:14</span>。没有第二个拥有自己上下文/循环/目标的 agent。</div></div>
+
+  <div class="diag"><div class="n">2</div><div class="body"><b>推理策略是写死的单 ReAct。</b> 唯一的"自适应"是 <code>selectPolicy</code> <span class="fp">reasoning-policy.ts:94</span> 选一个流水线<em>形状</em>（full/skinny/analyze/ask_first）+ 模型档位偏置——不是策略选择，没有 CoT/ToT/debate/reflection 的切换。这正是你要补的能力(b)缺的地方。</div></div>
+
+  <div class="diag"><div class="n">3</div><div class="body"><b>执行沙箱与 agent 格式强耦合，且无超时。</b> 生成代码只能作为 <code>defineAgent</code> 的 <code>.handler</code> 通过 <code>new Function</code> 在<strong>同一个 node 进程/事件循环</strong>里跑 <span class="fp">codeact.ts:135,288</span>，<strong style="color:var(--red)">没有任何 wall-clock/内存上限</strong>——一个生成的死循环会挂住整个 api；所有非 <code>@agentic/runtime</code> 的 import 被 stub 成 <code>{}</code> <span class="fp">codeact.ts:156</span>，所以任意函数和带依赖的代码既跑不了也测不了。</div></div>
+
+  <div class="diag"><div class="n">4</div><div class="body"><b>交付后质量是被动的。</b> 唯一的生产信号是 fleet 回流 <span class="fp">apps/api/.../index.ts:102-185</span>：聚合 14 天失败率、写一条 <code>[生产回流]</code> caveat 笔记，<strong>但从不重开任何一次运行</strong>。返工闭环不存在。</div></div>
+</section>
+
+<!-- 2. ARCHITECTURE -->
+<section id="arch">
+  <h2><span class="sec-num">02</span><span class="zh">架构总览</span><small>顺序门控装配线 + 独立监督 + 治理闭环</small></h2>
+  <p class="lede">总管在顶层"只指挥不动手"；工件带契约顺序流过 5 个工位，每个工位间是<strong style="color:var(--text)">硬门（上游工件在场 + 门为绿）</strong>；测试者在真实隔离里执行代码；监督者只读客观证据、提交版本锁定缺陷并按<strong style="color:var(--text)">确定性归因</strong>把返工打回<em>确切</em>的工位；治理 cron 盯着已交付 fleet，回归超阈值就（经人签核后）重新开环。<strong style="color:var(--text)">顺序</strong>交接是关键——运行仍是单个 detached driver + 断点续跑，不引入多驱动并发，避免了代码库刻意回避的 Inngest 重平台。</p>
+
+  <div class="diagram-card">
+    <svg viewBox="0 0 1080 600" role="img" aria-label="契约流水线工厂架构图">
+      <defs>
+        <marker id="ah" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></marker>
+      </defs>
+      <style>
+        .b{fill:#14171d;stroke:#333b47;stroke-width:1}
+        .b2{fill:#1a1e26;stroke:#333b47;stroke-width:1}
+        .tt{fill:#e7eaf0;font-family:var(--sans);font-weight:600}
+        .st{fill:#9aa4b2;font-family:var(--mono)}
+        .lbl{fill:#6b7482;font-family:var(--mono)}
+        .flow{stroke:#5aa9ff;stroke-width:1.8;fill:none}
+        .gate{fill:#20252e;stroke:#b6f34a;stroke-width:1.2}
+        .gatetx{fill:#b6f34a;font-family:var(--mono);font-weight:600}
+        .rework{stroke:#f2645a;stroke-width:1.6;fill:none;stroke-dasharray:6 4}
+        .gov{stroke:#b393f6;stroke-width:1.6;fill:none;stroke-dasharray:2 4}
+        .accentbox{fill:#171b22;stroke:#b6f34a;stroke-width:1.2}
+        @media (prefers-color-scheme: light){
+          .b{fill:#ffffff;stroke:#d2d8e0}.b2{fill:#f0f2f5;stroke:#d2d8e0}
+          .tt{fill:#161a20}.st{fill:#4c5563}.lbl{fill:#7b8494}
+          .accentbox{fill:#f7fbef;stroke:#5a8a1a}.gate{fill:#eef6df;stroke:#5a8a1a}.gatetx{fill:#5a8a1a}
+        }
+      </style>
+
+      <!-- FOREMAN bar -->
+      <rect class="accentbox" x="40" y="34" width="1000" height="70" rx="12"/>
+      <text class="tt" x="60" y="60" font-size="15">总管 · Foreman</text>
+      <text class="st" x="60" y="80" font-size="11">只指挥不动手（by subtraction）· 单一 WorkItem + 工位队列 · 归因驱动返工路由</text>
+      <text class="st" x="60" y="95" font-size="11">复用 runBrain 循环 + serializeCtx 断点 + park-gates</text>
+      <!-- chips on foreman -->
+      <rect class="b2" x="672" y="48" width="164" height="42" rx="9"/>
+      <text class="tt" x="684" y="66" font-size="11.5">🧭 推理策略选择器</text>
+      <text class="lbl" x="684" y="81" font-size="9.5">ReAct/CoT/reflection/debate/ToT</text>
+      <rect class="b2" x="850" y="48" width="176" height="42" rx="9"/>
+      <text class="tt" x="862" y="66" font-size="11.5">🙋 ask_user（唯一升级席）</text>
+      <text class="lbl" x="862" y="81" font-size="9.5">HITL · clarify/approval/boundary</text>
+
+      <!-- stations row -->
+      <!-- coords -->
+      <!-- station width 176, gap includes gate -->
+      <g>
+        <!-- Analysis -->
+        <rect class="b" x="40" y="180" width="176" height="96" rx="11"/>
+        <text class="tt" x="56" y="206" font-size="13.5">分析组</text>
+        <text class="st" x="56" y="224" font-size="10">意图+本体→契约拆解</text>
+        <text class="lbl" x="56" y="242" font-size="9">out: ContractSpec</text>
+        <text class="lbl" x="56" y="256" font-size="9">默认 ToT→debate</text>
+        <text class="lbl" x="56" y="270" font-size="9">reuse parseUserIntent</text>
+        <!-- Coding -->
+        <rect class="b" x="256" y="180" width="176" height="96" rx="11"/>
+        <text class="tt" x="272" y="206" font-size="13.5">编码组</text>
+        <text class="st" x="272" y="224" font-size="10">一契约→通用代码</text>
+        <text class="lbl" x="272" y="242" font-size="9">out: CodeArtifact vN</text>
+        <text class="lbl" x="272" y="256" font-size="9">ReAct + reflection</text>
+        <text class="lbl" x="272" y="270" font-size="9">reuse designSelfCheck</text>
+        <!-- Review -->
+        <rect class="b" x="472" y="180" width="176" height="96" rx="11"/>
+        <text class="tt" x="488" y="206" font-size="13.5">评审组</text>
+        <text class="st" x="488" y="224" font-size="10">测前主观评审</text>
+        <text class="lbl" x="488" y="242" font-size="9">三镜 cite-the-span</text>
+        <text class="lbl" x="488" y="256" font-size="9">快速预筛 pass/revise</text>
+        <text class="lbl" x="488" y="270" font-size="9">reuse review_*</text>
+        <!-- Test -->
+        <rect class="b" x="688" y="180" width="176" height="96" rx="11"/>
+        <text class="tt" x="704" y="206" font-size="13.5">测试组 · 测试者</text>
+        <text class="st" x="704" y="224" font-size="10">执行代码证明</text>
+        <text class="lbl" x="704" y="242" font-size="9">单测/集成/安全</text>
+        <text class="lbl" x="704" y="256" font-size="9">out: TestReport</text>
+        <text class="lbl" x="704" y="270" font-size="9">NEW runGeneratedModule</text>
+        <!-- Deliver gate -->
+        <rect class="accentbox" x="904" y="180" width="136" height="96" rx="11"/>
+        <text class="tt" x="920" y="206" font-size="13.5">交付门</text>
+        <text class="gatetx" x="920" y="226" font-size="10">finish · 判据门</text>
+        <text class="lbl" x="920" y="244" font-size="9">按 kind 条件化</text>
+        <text class="lbl" x="920" y="258" font-size="9">0 阻塞缺陷</text>
+        <text class="lbl" x="920" y="272" font-size="9">监督+测试签核</text>
+      </g>
+
+      <!-- gates between stations -->
+      <g>
+        <path class="flow" d="M216 228 L256 228" marker-end="url(#ah)"/>
+        <path class="flow" d="M432 228 L472 228" marker-end="url(#ah)"/>
+        <path class="flow" d="M648 228 L688 228" marker-end="url(#ah)"/>
+        <path class="flow" d="M864 228 L904 228" marker-end="url(#ah)"/>
+        <circle class="gate" cx="236" cy="228" r="7"/><circle class="gate" cx="452" cy="228" r="7"/>
+        <circle class="gate" cx="668" cy="228" r="7"/><circle class="gate" cx="884" cy="228" r="7"/>
+      </g>
+      <text class="lbl" x="40" y="300" font-size="9.5">● 门 = 上游工件在场 + gate 绿（stageAdmission 泛化）</text>
+
+      <!-- Foreman down to line -->
+      <path class="flow" d="M128 104 L128 180" marker-end="url(#ah)"/>
+      <text class="lbl" x="136" y="150" font-size="9.5">intake→分派</text>
+
+      <!-- SUPERVISOR -->
+      <rect class="b" x="472" y="360" width="392" height="96" rx="11"/>
+      <text class="tt" x="490" y="386" font-size="13.5">监督者 · Supervisor（独立审计）</text>
+      <text class="st" x="490" y="406" font-size="10.5">仅读客观证据（TestReport + 保真度 + 运行行）· 确定性归因 → 责任工位 + 契约</text>
+      <text class="lbl" x="490" y="424" font-size="9.5">独立性四保：全新子脑 / 只读+归因工具 / 独立 review 档 / 只对总管汇报</text>
+      <text class="lbl" x="490" y="440" font-size="9.5">产出 AuditVerdict → 版本锁定阻塞缺陷（须 Tester 复验才关闭）</text>
+      <!-- test -> supervisor -->
+      <path class="flow" d="M776 276 L776 360" marker-end="url(#ah)"/>
+      <text class="lbl" x="784" y="322" font-size="9.5">证据</text>
+
+      <!-- rework arrows supervisor back to stations -->
+      <path class="rework" d="M560 360 C 470 330, 200 320, 128 276" marker-end="url(#ah)"/>
+      <path class="rework" d="M600 360 C 520 336, 360 322, 320 276" marker-end="url(#ah)"/>
+      <path class="rework" d="M660 360 C 620 340, 560 330, 544 276" marker-end="url(#ah)"/>
+      <text class="lbl" x="360" y="352" font-size="9.5" fill="#f2645a">返工路由（打回责任工位，仅重置该工位工件版本）</text>
+
+      <!-- GOVERNANCE CRON -->
+      <rect class="b2" x="40" y="500" width="1000" height="64" rx="12"/>
+      <text class="tt" x="60" y="526" font-size="13">治理 cron · Governance daemon <tspan class="lbl" font-size="10">（唯一真正 Inngest-durable 的生成侧面）</tspan></text>
+      <text class="st" x="60" y="546" font-size="10.5">定时聚合 fleet 生产证据 → 超阈值 → 监督者归因 → 人签核 → 幂等重开 rework run（startRun, step.sendEvent keyed on functionId+window）</text>
+      <!-- deliver to fleet -->
+      <path class="gov" d="M972 276 L972 500" marker-end="url(#ah)"/>
+      <text class="lbl" x="980" y="400" font-size="9.5" fill="#b393f6">交付→fleet</text>
+      <!-- gov loop back to foreman -->
+      <path class="gov" d="M40 520 C 12 520, 12 69, 40 69" marker-end="url(#ah)"/>
+      <text class="lbl" x="18" y="300" font-size="9.5" fill="#b393f6" transform="rotate(-90 18 300)">回归→重开环</text>
+    </svg>
+    <div class="legend">
+      <span><span class="sw" style="background:#5aa9ff"></span>正向流 / 门控交接</span>
+      <span><span class="sw" style="background:#f2645a"></span>归因驱动返工</span>
+      <span><span class="sw" style="background:#b393f6"></span>治理闭环（Inngest cron）</span>
+      <span><span class="sw" style="background:#b6f34a"></span>验收门 / 已具备强化</span>
+    </div>
+  </div>
+
+  <div class="note"><b>为什么选装配线而不是编排器 fan-out 或黑板并发？</b> 评审团给"装配线"的 fit_current_arch 打 9 分、并发/durability 风险最低。单工位顺序推进让生成循环留在<strong>既有的 detached-driver + 断点续跑</strong>底座上，不需要一个代码库刻意回避的多驱动 Inngest 重平台。黑板方案的"四个并发可写子脑共享版本向量"被判为 replay 不安全、并发未解决，已剔除；但它的<strong>结构性独立评审</strong>与<strong>版本锁定缺陷</strong>被嫁接过来。</div>
+</section>
+
+<!-- 3. TEAMS -->
+<section id="teams">
+  <h2><span class="sec-num">03</span><span class="zh">五个团队 + 总管</span><small>每个都是真正独立、有自己上下文与目标的子脑</small></h2>
+  <p class="lede">"团队"不再是标签：每个团队是总管派生的、<strong style="color:var(--text)">角色专属系统提示词 + 受限工具集</strong>的可写子脑（把只读研究子脑 <span class="fp">conductor.ts:257,308</span> 升级为可写、角色受限）。团队之间只通过<strong style="color:var(--text)">带契约的版本化工件</strong>交接。</p>
+
+  <div class="grid g2">
+    <div class="card accent">
+      <h4>分析组 <span class="tag t-extend">ANALYSIS+DESIGN</span></h4>
+      <div class="role">业务分析师 / 拆解设计师</div>
+      <p class="muted" style="font-size:14px">把原始请求+本体变成<strong style="color:var(--text)">机器可校验的拆解</strong>：解析意图、深读领域、把目标拆成 N 个带 I/O 签名+验收标准+下游字段契约+声明副作用的子契约，并在写任何代码前独立评审这个拆解。</p>
+      <div class="kv">
+        <span class="k">默认推理</span><span class="v"><b>ToT→debate</b>（分叉 K 个拆解、打分、再用 critique_plan 挑战胜者）；闭式本体读用 CoT</span>
+        <span class="k">产出</span><span class="v"><b>ContractSpec</b>{ deliverableKind, subContracts[], dependencyGraph, ambiguities[] } — 所有下游工位的 v0 工件</span>
+        <span class="k">复用</span><span class="v"><span class="fp">parseUserIntent · runSpecialists · critique_plan · FleetCatalog</span></span>
+      </div>
+    </div>
+
+    <div class="card accent">
+      <h4>编码组 <span class="tag t-extend">CODE</span></h4>
+      <div class="role">编码工程师</div>
+      <p class="muted" style="font-size:14px">取<strong style="color:var(--text)">恰好一个子契约</strong>，产出满足其签名+验收的通用代码（任意 function/class/module/HTTP handler/CLI 或 defineAgent handler），并在交接前做自己的内联自审。唯一写代码的团队；<strong style="color:var(--text)">从不自我判定完成</strong>——由评审/监督与总管关闭槽位。</p>
+      <div class="kv">
+        <span class="k">默认推理</span><span class="v"><b>ReAct</b>(写→编译→读诊断→精修) 外包一层 <b>reflection</b>(designSelfCheck→internalDesignRefine)；返工时切纯 reflection 锁定 span</span>
+        <span class="k">产出</span><span class="v"><b>CodeArtifact</b>{ source, compileOk, loadProbeOk, lintClean, version } — append-only 版本，绝不覆盖</span>
+        <span class="k">复用</span><span class="v"><span class="fp">validateAgentCode · probeAgentModule · design-loop.ts:52,106</span></span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h4>评审组 <span class="tag t-extend">REVIEW · 测前</span></h4>
+      <div class="role">代码评审员</div>
+      <p class="muted" style="font-size:14px">主观的<strong style="color:var(--text)">测前 review-of-coding</strong>：在测试者衡量不了的维度上对抗式评审——合规/规则泄漏、上下文契合、元认知完整性——作为<strong style="color:var(--text)">快速预筛</strong>，让测试者不在明显错的代码上白跑一次真实运行。只发 cite-the-span 结论，从不改代码。</p>
+      <div class="kv">
+        <span class="k">默认推理</span><span class="v"><b>debate/独立评委</b>：确定性 tier-1 先跑，三镜 LLM 只在 tier-1 沉默处补</span>
+        <span class="k">产出</span><span class="v">ReviewFindings[] → revise 打回编码组（版本锁定标注）</span>
+        <span class="k">与监督者</span><span class="v">刻意区分：评审=<b>主观/LLM/测前</b>；监督=<b>客观/确定性/测后</b></span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h4>测试组 · 测试者 <span class="tag t-new">TEST</span></h4>
+      <div class="role">测试工程师</div>
+      <p class="muted" style="font-size:14px">靠<strong style="color:var(--text)">执行代码</strong>证明它真的能用且安全：<b>单测</b>（真 c8 覆盖率）、<b>集成</b>（真实输入调用、cassette mock 副作用）、<b>安全</b>（静态 AST + 真实隔离里的动态围堵）。用例作者，经 ask_user 签核领取 fixture/凭据。</p>
+      <div class="kv">
+        <span class="k">默认推理</span><span class="v"><b>ReAct</b> 驱动 harness + 失败反思；断言/判定引擎<b>确定性</b>且 cassette 锁定，CI 逐位复放</span>
+        <span class="k">产出</span><span class="v">TestReport → acceptanceReport 的 <b>kind 条件化</b>判据（unit/coverage/integration/security_clean，后者 fail-closed）</span>
+        <span class="k">复用/新建</span><span class="v"><span class="fp">verification.ts kinds/Cassette</span> · <b>NEW</b> runGeneratedModule + CodeTester port</span>
+      </div>
+    </div>
+
+    <div class="card" style="grid-column:1/-1;border-color:var(--border-2)">
+      <h4>监督组 · 监督者 <span class="tag t-extend">跨生成 + 生产</span></h4>
+      <div class="role">监督者 · 独立审计</div>
+      <p class="muted" style="font-size:14px">在测试者跑完<strong style="color:var(--text)">之后</strong>，仅凭客观执行证据独立<strong style="color:var(--text)">审计问题</strong>：确定性把每个保真度/测试失败归因到责任生产者+建议动作，判断缺陷是否真实，提交总管路由的版本锁定缺陷。也在交付后跑生产证据。<strong style="color:var(--text)">从不提出或编写修复</strong>——这份独立性正是它的判定可信的原因。它不重跑评审三镜（那是评审组的活）。</p>
+      <div class="kv" style="grid-template-columns:76px 1fr">
+        <span class="k">独立性</span><span class="v">全新子脑（只喂工件+契约+证据，<b>绝不喂生产者的思维链</b>）· 物理上没有 codegen/deploy 工具 · 独立 review 模型档 · 只对总管汇报</span>
+        <span class="k">复用</span><span class="v"><span class="fp">attributeFidelityFailures · evaluateExecutionFidelity · duplicateSideEffectSteps</span>（确定性归因，胜过 ~53.5% 的 LLM 读日志猜测）</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 4. FOREMAN -->
+<section id="foreman">
+  <h2><span class="sec-num">04</span><span class="zh">总管 · Foreman</span><small>只指挥不动手 · 归因驱动返工</small></h2>
+  <p class="lede">总管是 <code>runBrain</code> 的"导演半身"，用<strong style="color:var(--text)">减法</strong>造出来：保留回合循环、每回合断点 <span class="fp">serializeCtx conductor.ts:288</span>、自动压缩、拆解、clarify/approval/boundary park-gates <span class="fp">conductor.ts:517-702</span>，但<strong style="color:var(--text)">剥掉全部 worker 工具</strong>，动作空间只剩 {intake, route, delegate, read-artifact, arbitrate-defect, gate, escalate-HITL, finish}。它从不亲自写工件。</p>
+  <div class="grid g2">
+    <div class="card">
+      <h4>交接门（handoff gates）</h4>
+      <p class="muted" style="font-size:14px">把 <span class="fp">stageAdmission conductor.ts:184</span> 从"按工具名准入"泛化为"<strong style="color:var(--text)">按工件+门准入</strong>"：<code>admit(nextStation, workItem)</code> 只在上游<em>输出工件在场</em> 且其<em>门为绿</em>时通过。编码等 ContractSpec；测试等能编译的 CodeArtifact；finish 等监督+测试签核且 0 阻塞缺陷。</p>
+    </div>
+    <div class="card">
+      <h4>返工路由（不是盲目重试）</h4>
+      <p class="muted" style="font-size:14px">红门时读监督者 <code>AuditVerdict.responsibleStation</code>（来自确定性 <span class="fp">attributeFidelityFailures:93</span>）把单元打回<strong style="color:var(--text)">确切那个工位</strong>：错接口契约→设计/分析；逻辑 bug→编码；用例不足→测试；坏需求→ask_user。<strong style="color:var(--text)">只重置该工位的工件版本</strong>，下游须重过每道门。每工位有限返工预算，耗尽则升级 ask_user 而非死循环。</p>
+    </div>
+  </div>
+  <div class="note"><b>诚实标注（预算内、非免费）：</b> 今天的归因是 agent/event 级；把缺陷映射到<strong>工位</strong>需要在 join 之上叠一层"契约-归属图"——这是真实工作，分期落地，只在归属模糊时用 LLM 兜底。见 <a href="#opt">优化点 P2</a> 与 <a href="#risk">风险</a>。</div>
+</section>
+
+<!-- 5. SUPERVISOR -->
+<section id="supervisor">
+  <h2><span class="sec-num">05</span><span class="zh">监督者的独立性</span><small>结构性的，不是口号</small></h2>
+  <p class="lede">监督者的判定可信，靠的是<strong style="color:var(--text)">四条结构性独立</strong>（嫁接自评审团点名的 Blackboard/StationLine/FoundryOS 的皇冠机制）——而非它"承诺"客观。</p>
+  <div class="grid g2">
+    <div class="card"><h4>① 全新子脑</h4><p class="muted" style="font-size:14px">派生时<strong style="color:var(--text)">只喂工件+契约+证据</strong>，绝不喂生产编码者的思维链/消息历史——所以它无法继承、也无法被生产者的自我合理化说服。</p></div>
+    <div class="card"><h4>② 只读+归因工具集</h4><p class="muted" style="font-size:14px">拿的是 <span class="fp">SUBAGENT_TOOLS</span> 的只读子集，<strong style="color:var(--text)">物理上没有</strong> codegen/refine/deploy——它永远不能给自己做的修复自我背书。</p></div>
+    <div class="card"><h4>③ 独立模型档</h4><p class="muted" style="font-size:14px">跑在专用 review 评审档 <span class="fp">model-router.ts:57,89</span>，不是生产者的档位。</p></div>
+    <div class="card"><h4>④ 汇报线</h4><p class="muted" style="font-size:14px">只对<strong style="color:var(--text)">总管</strong>汇报，从不向它审计的团队汇报。</p></div>
+  </div>
+  <div class="note"><b>评审组 ≠ 监督组。</b> 评审是<strong>主观 / LLM 评委 / 测前 / 贴着编码</strong>；监督是<strong>客观 / 证据锚定 / 测后 / 跨生产</strong>。硬 schema + 时序边界隔开两者，避免重复劳动与角色重叠。</div>
+</section>
+
+<!-- 6. TESTER -->
+<section id="tester">
+  <h2><span class="sec-num">06</span><span class="zh">测试者 + 执行沙箱</span><small>唯一真正吃重的重建</small></h2>
+  <p class="lede">交付物从"Inngest-manifest agent"变成"<strong style="color:var(--text)">通用 functions/代码</strong>"，测试者必须真的<strong style="color:var(--text)">执行任意代码</strong>。这落在一个新的 <span class="fp">FactoryPorts.codeTester</span> 端口后面，由 SANDBOX stage 里的新 <code>run_tests</code> BrainTool 驱动，让纯 factory 包保持零基础设施。</p>
+
+  <div class="grid g3">
+    <div class="card"><h4>单测 <span class="tag t-new">UNIT</span></h4><p class="muted" style="font-size:14px"><code>generate_test_cases</code> 扩展为写 vitest 式 function-under-test 断言；<code>runGeneratedModule</code> 执行并报告<strong style="color:var(--text)">逐用例 + 真 c8/istanbul 行/分支覆盖率</strong>。（今天的"coverage"只是本体动作用例矩阵 <span class="fp">test-cases.ts:184</span>）</p></div>
+    <div class="card"><h4>集成 <span class="tag t-extend">INTEGRATION</span></h4><p class="muted" style="font-size:14px">agent 形态走既有 <span class="fp">ManifestSandboxDeployer.deployAndObserve:197</span>；纯函数走并行 harness，真实输入调用+断言，副作用经 <span class="fp">mock/replay/live cassette</span> 确定性打桩。</p></div>
+    <div class="card"><h4>安全 <span class="tag t-rebuild">SECURITY</span></h4><p class="muted" style="font-size:14px">静态 AST 扫描 <span class="fp">code-lint.ts:161</span> + <strong style="color:var(--text)">动态围堵</strong>：隔离拒绝 fs/net/child_process，egress guard 挡网络，安全用例在运行时断言代码被围住。<strong style="color:var(--red)">security_clean fail-closed（未知=阻塞）</strong>。</p></div>
+  </div>
+
+  <h3>执行环境重建 · <code>runGeneratedModule</code></h3>
+  <p class="muted">今天 <span class="fp">runGeneratedCode codeact.ts:135</span> 用 <code>new Function</code> 在同进程/同事件循环跑，要求 <code>.handler</code> 导出，stub 掉所有外部 import，<strong style="color:var(--red)">await handler 无任何上限</strong>（:288）——死循环挂住 api。重建为一个兄弟函数：</p>
+  <ul class="clean">
+    <li><b>任意导出</b>（function/class/CLI/HTTP handler），不只 defineAgent+.handler。</li>
+    <li><b>离开主事件循环</b>，在真实隔离里跑，带<strong style="color:var(--text)">硬 wall-clock 超时 + 内存上限</strong>（worker_thread + resourceLimits + Worker.terminate；安全/动态与非 JS 用 child_process/容器）——泛化自唯一的真限额原语 <span class="fp">runInlineAnalysis inline-codeact.ts:65,80</span>。</li>
+    <li><b>allow-list 供货依赖</b>：拓宽 <code>{}</code> stub，让真实库能加载并被测。</li>
+    <li>隔离里采集<strong style="color:var(--text)">真 c8/istanbul 覆盖率</strong>。</li>
+    <li>每个新入口都保留两条隔离不变量：<span class="fp">FACTORY_EXEC_GENERATED</span> 门 + <span class="fp">-sb 租户串检</span>。</li>
+  </ul>
+  <div class="note"><b>诚实边界（也是最大风险）：</b> worker_thread 能封 CPU/内存、修死循环，但<strong style="color:var(--red)">不是安全边界</strong>（共享进程地址空间）。所以隔离<strong>按测试种类分档</strong>：单测用快 worker+vm；安全/动态围堵用真 child_process/容器 + egress guard +（Linux CI）seccomp。全部藏在 CodeTester 端口后，底座可从 worker_thread 硬化到容器而不动契约。</div>
+</section>
+
+<!-- 7. REASONING -->
+<section id="reasoning">
+  <h2><span class="sec-num">07</span><span class="zh">自适应推理策略选择器</span><small>硬需求(b)的唯一归宿</small></h2>
+  <p class="lede">把 <span class="fp">selectPolicy reasoning-policy.ts:94</span> 从"流水线形状+档位偏置路由"升级为<strong style="color:var(--text)">双轴选择器</strong>：轴1=流水线形状（既有），轴2=<strong style="color:var(--text)">AI 自选推理策略</strong>。挂在 selectPolicy 已经注入可解释 <code>[推理路线]</code> 引导消息的那个 pre-loop 路由点 <span class="fp">conductor.ts:430-460</span>。</p>
+
+  <div class="grid g2">
+    <div class="card">
+      <h4>两个高度选择</h4>
+      <ul class="clean">
+        <li><b>L1（总管）</b>：按任务意图给每个工位盖一个默认策略。</li>
+        <li><b>L2（团队内）</b>：当某个 worker 子脑抛出内部子问题，<code>select_strategy</code> BrainTool 对<strong style="color:var(--text)">这个子问题的意图</strong>重新分类（嵌套 parseUserIntent），只为这次贡献挑一个策略或一个小 combo DAG。</li>
+      </ul>
+      <div class="kv">
+        <span class="k">信号</span><span class="v">classifyIntentKind（开放词表意图）+ estimateDifficulty（本体难度带）+ ambiguityCount + 请求工位 + 目标工件的开放缺陷类</span>
+      </div>
+    </div>
+    <div class="card">
+      <h4>选择 + 反馈（诚实版）</h4>
+      <p class="muted" style="font-size:13.5px">v1 是<strong style="color:var(--text)">确定性可解释策略表</strong>（intent, difficulty, station, 子问题形状）→ 策略，只在表低置信时才 LLM 兜底升级。反馈把 policy-learning 的臂从 (pipeline|band) 扩到 (strategy|team|band)——但<strong style="color:var(--red)">只加不减、MIN_N 底线</strong>：它能把持续制造返工的策略<em>降级</em>，但不探索、不发现新策略。</p>
+      <p class="muted" style="font-size:13.5px"><b>承重的是手调表 + 策略→原语映射，不是那个"学习者"。</b> 别把它当学习 bandit 卖。</p>
+    </div>
+  </div>
+
+  <h3>策略 → 具体既有执行原语（没有装饰品）</h3>
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th>策略</th><th>映射到的真实原语</th><th>状态</th></tr></thead>
+      <tbody>
+        <tr><td><b>ReAct</b></td><td><span class="fp">streamTurn 工具循环 conductor.ts:795</span></td><td><span class="tag t-reuse">Day-1 一等</span></td></tr>
+        <tr><td><b>reflection</b></td><td><span class="fp">designSelfCheck→internalDesignRefine design-loop.ts:52,106</span>（泛化到任意工件）</td><td><span class="tag t-reuse">Day-1 一等</span></td></tr>
+        <tr><td><b>debate</b></td><td><span class="fp">critique_plan tools.ts:623</span> 作挑战者 + 评委综合</td><td><span class="tag t-extend">Day-1（泛化到任意工件=真实工作）</span></td></tr>
+        <tr><td><b>ToT</b></td><td><span class="fp">runSpecialists K 分叉 specialists.ts:75</span> + 打分/剪枝</td><td><span class="tag t-extend">预算内（今天是固定 4 维 map-reduce）</span></td></tr>
+        <tr><td><b>CoT</b></td><td>单 scratchpad chatOnce</td><td><span class="tag t-extend">预算内（除非提示词真的变）</span></td></tr>
+        <tr><td><b>combo</b></td><td>总管编排的 DAG</td><td><span class="tag t-new">预算内（新编排）</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="muted" style="margin-top:12px;font-size:13.5px">昂贵策略（ToT/debate/combo）门控给复杂/返工场景，常见简单场景留在便宜的单 ReAct。</p>
+</section>
+
+<!-- 8. GOVERNANCE -->
+<section id="gov">
+  <h2><span class="sec-num">08</span><span class="zh">治理闭环</span><small>把最大缺口闭上 · 唯一真正 Inngest-durable 的生成侧面</small></h2>
+  <p class="lede">今天生产信号是被动的 caveat 笔记，从不重开跑。重建为一个<strong style="color:var(--text)">常驻的定时 Inngest cron</strong>（像任意交付物一样注册，继承 durability 纪律 <span class="fp">register.ts:152</span>）。</p>
+  <ol class="flow">
+    <li>定时聚合跨 fleet 真实证据：既有 14 天生产失败率 join + 执行保真度回归 + 新冒出的安全发现。</li>
+    <li>某交付函数越阈值（复用 <code>total≥3 && failed/total≥0.5</code>）→ <b>不只写 caveat</b>，而是让<strong style="color:var(--text)">同一个独立监督者</strong>对近期生产运行归因、定位缺陷。</li>
+    <li>经 <strong style="color:var(--text)">ask_user 人签核</strong>后，调 <span class="fp">startRun run-registry.ts:113</span> 开一次 rework run——把生产证据预置成阻塞版本锁定缺陷，运行从<strong style="color:var(--text)">责任工位</strong>重入流水线，跳过仍有效的工位；finish 重新门控、重新晋升。</li>
+  </ol>
+  <div class="note"><b>幂等（诚实的 Inngest 故事）：</b> cron handler 的聚合读 + "此函数×窗口是否已开过？"记账都在 <code>step.run</code> 里；rework 触发是 <strong style="color:var(--text)">idempotent step.sendEvent</strong>，keyed on (functionId, window)/rework_run_id（泛化既有 <code>[生产回流]</code> 日期标记去重）——cron 重放或重叠 tick 都不会双开。因为构建期与生产期缺陷共用一套 schema，修复复用<strong>整台生成机</strong>，不是平行的另一套。</div>
+</section>
+
+<!-- 9. FLOW -->
+<section id="flow">
+  <h2><span class="sec-num">09</span><span class="zh">端到端流程</span><small>从用户意图到已交付+受监控的代码</small></h2>
+  <ol class="flow">
+    <li><b>INTAKE</b>：用户目标经 startRun 进入；总管跑 parseUserIntent + classifyIntent/estimateDifficulty + capability_resolve/FleetCatalog 复用检查——若已有交付函数覆盖意图，短路到复用/组合。</li>
+    <li><b>策略+分析</b>：双轴选择器盖每工位默认策略；分析组（ToT→debate）产出带类型的 ContractSpec；ambiguity≥2 park 到 ask_user。门(analysis)：评审绿。</li>
+    <li><b>编码</b>：每个子契约总管派生一个编码子脑（ReAct+reflection；编译+加载探针+自审）提交版本化 CodeArtifact。顺序交接，每次提交=断点边界。</li>
+    <li><b>评审（测前）</b>：评审组三镜 cite-the-span 快速主观预筛 → pass 或版本锁定 revise 打回编码。</li>
+    <li><b>测试</b>：测试组写单测/集成/安全用例（真 fixture 经 ask_user 签核），在 CodeTester 隔离里跑（runGeneratedModule + c8 + cassette + egress guard；agent 走 -sb）→ TestReport。</li>
+    <li><b>审计</b>：独立监督者（全新脑、只读证据）确定性归因任何失败 → AuditVerdict 命名责任工位+契约，落成版本锁定阻塞缺陷。</li>
+    <li><b>返工</b>：总管按归因把每个阻塞缺陷打回其工位，限预算；只重置该工位工件版本、下游重过门；缺陷须 Tester 复验才关闭；预算耗尽升级 ask_user。</li>
+    <li><b>门+交付</b>：finish 强制 acceptanceGate（kind 条件化判据 + 0 阻塞缺陷 + 监督&测试签核）；工件作为 durable Inngest 函数或通用供货模块交付；记录成功反思。</li>
+    <li><b>监控+闭环</b>：治理 cron 盯跨 fleet 生产证据，回归越阈值→监督归因→（人签核后）幂等开 rework run，回到责任工位。生成线写入留在断点续跑；cron+交付 agent 是唯二 Inngest-durable 面。</li>
+  </ol>
+</section>
+
+<!-- 10. REUSE MAP -->
+<section id="reuse">
+  <h2><span class="sec-num">10</span><span class="zh">复用 vs 重建 映射表</span><small>29 处 · 每行锚定真实文件</small></h2>
+  <div class="legend">
+    <span><span class="tag t-reuse">reuse</span> 原样复用</span>
+    <span><span class="tag t-extend">extend</span> 扩展</span>
+    <span><span class="tag t-rebuild">rebuild</span> 重建</span>
+    <span><span class="tag t-new">new</span> 新建</span>
+  </div>
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th style="width:24%">组件</th><th style="width:22%">当前文件</th><th style="width:9%">动作</th><th>理由</th></tr></thead>
+      <tbody>
+        <tr><td>runBrain 单 ReAct conductor</td><td><span class="fp">conductor.ts:294</span></td><td><span class="tag t-extend">extend</span></td><td>拆导演/worker：保留回合循环+断点+压缩+park-gates 当总管席，剥掉 worker 工具。减法式编排，非重写。</td></tr>
+        <tr><td>system-prompt 单多角色提示词</td><td><span class="fp">system-prompt.ts:121</span></td><td><span class="tag t-rebuild">rebuild</span></td><td>"假团队"的根源。换成每团队各自提示词（foreman/analyst/coder/reviewer/tester/supervisor），各有上下文+目标。</td></tr>
+        <tr><td>process-roles ROLE_OF_TOOL</td><td><span class="fp">process-roles.ts:14</span></td><td><span class="tag t-extend">extend</span></td><td>把化妆品式展示角色形式化为真实团队成员，让 UI 叙事映射到真正独立的子脑。</td></tr>
+        <tr><td>STAGE_OF_TOOL + stageAdmission</td><td><span class="fp">conductor.ts:161,184</span></td><td><span class="tag t-extend">extend</span></td><td>准入从工具名泛化到"上游工件在场+门绿"，成为顺序团队交接契约。</td></tr>
+        <tr><td>spawnSubagentTool + isSubAgent 递归</td><td><span class="fp">conductor.ts:257,308</span></td><td><span class="tag t-extend">extend</span></td><td>把只读研究子脑升级为可写、角色受限的团队 worker；顺序执行，不引入多驱动并发。</td></tr>
+        <tr><td>SUBAGENT_TOOLS 受限工具集</td><td><span class="fp">tools.ts:2352</span></td><td><span class="tag t-extend">extend</span></td><td>拆成每团队定制工具集当信任边界；监督者拿只读+归因、编码拿 codegen/refine。</td></tr>
+        <tr><td>selectPolicy 流水线形状路由</td><td><span class="fp">reasoning-policy.ts:94</span></td><td><span class="tag t-extend">extend</span></td><td>升级为双轴推理策略选择器，挂在 [推理路线] 注入点；自适应策略的唯一归宿(需求 b)。</td></tr>
+        <tr><td>classifyIntentKind + estimateDifficulty</td><td><span class="fp">reasoning-policy.ts:35,52</span></td><td><span class="tag t-reuse">reuse</span></td><td>原样喂策略选择器+团队路由，作意图+难度信号。</td></tr>
+        <tr><td>policy-learning 臂统计</td><td><span class="fp">policy-learning.ts:28,45</span></td><td><span class="tag t-extend">extend</span></td><td>臂扩到 (strategy|team|band)，只加不减的保守降级——诚实说不是会探索的学习 bandit。</td></tr>
+        <tr><td>runSpecialists / synthesizeUnderstanding</td><td><span class="fp">specialists.ts:75,159</span></td><td><span class="tag t-extend">extend</span></td><td>把固定 4 维 map-reduce 泛化为 N 分叉（团队成员 + ToT 策略执行器）。预算内真实工作。</td></tr>
+        <tr><td>critique_plan 独立挑战者</td><td><span class="fp">tools.ts:623</span></td><td><span class="tag t-extend">extend</span></td><td>复用为分析 review-of-analysis；从计划专用泛化到任意工件 debate 是真实工作。</td></tr>
+        <tr><td>review_agent/context/completeness 三镜</td><td><span class="fp">tools.ts:1472,1536,1578</span></td><td><span class="tag t-extend">extend</span></td><td>组成测前评审组；输出扩为版本锁定返工标注。与监督者保持区分避免重叠。</td></tr>
+        <tr><td>designSelfCheck + internalDesignRefine</td><td><span class="fp">design-loop.ts:52,106</span></td><td><span class="tag t-reuse">reuse</span></td><td>编码内联自审 + reflection 策略的具体原语（产出→自评→一次性重写）。</td></tr>
+        <tr><td>attributeFidelityFailures / attributionSummary</td><td><span class="fp">failure-attribution.ts:93,100</span></td><td><span class="tag t-extend">extend</span></td><td>监督者+总管返工路由；用契约-归属图把 agent 级归因扩到工位级（预算内，模糊时 LLM 兜底）。</td></tr>
+        <tr><td>evaluateExecutionFidelity</td><td><span class="fp">execution-fidelity.ts:64</span></td><td><span class="tag t-extend">extend</span></td><td>从事件负载契约扩到任意函数 I/O 的单测/集成断言。</td></tr>
+        <tr><td>verification.ts kinds/cassettes/dup-side-effect</td><td><span class="fp">verification.ts:26,60,98,147</span></td><td><span class="tag t-extend">extend</span></td><td>加单测/集成/安全种类；保留 cassette 让任意代码 CI 可复现。</td></tr>
+        <tr><td>acceptanceReport / acceptanceGate</td><td><span class="fp">acceptance.ts:37,110</span></td><td><span class="tag t-extend">extend</span></td><td>加 kind 条件化判据（kind=function 跳过 chain_ran/typed_payloads），仍走 criteria.every(pass)。</td></tr>
+        <tr><td>finish 门</td><td><span class="fp">tools.ts:1969</span></td><td><span class="tag t-extend">extend</span></td><td>通用代码交付要求测试+监督签核且 0 阻塞缺陷；其余复用 persist+反思。</td></tr>
+        <tr><td>runGeneratedCode CodeAct 执行器</td><td><span class="fp">codeact.ts:135,156,164,288</span></td><td><span class="tag t-rebuild">rebuild</span></td><td>加 runGeneratedModule：任意导出、离主循环隔离+硬超时+内存、allow-list 供货依赖、c8 覆盖率；保留 FACTORY_EXEC_GENERATED + -sb 不变量。</td></tr>
+        <tr><td>runInlineAnalysis 限额</td><td><span class="fp">inline-codeact.ts:65,80</span></td><td><span class="tag t-extend">extend</span></td><td>把唯一真限额原语(Promise.race+size cap)泛化进单测 runner。</td></tr>
+        <tr><td>SandboxDeployer 端口 + ManifestSandboxDeployer</td><td><span class="fp">ports.ts:90 · sandbox-deployer.ts:197</span></td><td><span class="tag t-extend">extend</span></td><td>agent 链保留 -sb 真观测；加兄弟 CodeTester 端口给通用函数，按 deliverableKind 选。manifest 路径不动。</td></tr>
+        <tr><td>lintGeneratedToolCode + lintSpawnCode</td><td><span class="fp">code-lint.ts:161 · codeact.ts:76</span></td><td><span class="tag t-extend">extend</span></td><td>安全的静态半；配上动态围堵(egress guard+隔离拒 syscall+资源上限)，fail-closed。</td></tr>
+        <tr><td>sandbox-mode mock/replay/live + cassettes</td><td><span class="fp">sandbox-mode.ts</span></td><td><span class="tag t-reuse">reuse</span></td><td>集成测试的确定性打桩/录制外部依赖，无真实副作用。</td></tr>
+        <tr><td>ask_user + clarify/approval/boundary park-gates</td><td><span class="fp">tools.ts:2039 · conductor.ts:517-702</span></td><td><span class="tag t-reuse">reuse</span></td><td>强制的 HITL 原样复用；总管作唯一升级席，与既有 !isSubAgent park 守卫对齐。</td></tr>
+        <tr><td>run-registry detached driver + 崩溃恢复</td><td><span class="fp">run-registry.ts:113,145,246</span></td><td><span class="tag t-reuse">reuse</span></td><td>顺序工位交接让运行保持单 detached driver + 断点续跑；治理 cron 调 startRun 开 rework。</td></tr>
+        <tr><td>ConversationStore + serializeCtx 断点</td><td><span class="fp">ports.ts:111 · conductor.ts:288</span></td><td><span class="tag t-extend">extend</span></td><td>成为版本化工件/缺陷标注存储(嫁接黑板数据模型)；持久化+崩溃恢复原样复用，ctx 加 team/strategy/version 字段。</td></tr>
+        <tr><td>FactoryPorts DI 根 + makeFactoryPorts</td><td><span class="fp">ports.ts:216 · index.ts:45</span></td><td><span class="tag t-extend">extend</span></td><td>加 CodeTester + 治理监控 + 每团队模型路由端口，不碰纯 factory 包。</td></tr>
+        <tr><td>fleet reflux 被动监控</td><td><span class="fp">apps/api/.../index.ts:102-185</span></td><td><span class="tag t-rebuild">rebuild</span></td><td>把被动 [生产回流] caveat 写手变成主动 Inngest cron，开幂等 rework run(step.sendEvent keyed on functionId+window)。</td></tr>
+        <tr><td>registerAgent durable Inngest 函数</td><td><span class="fp">register.ts:152</span></td><td><span class="tag t-reuse">reuse</span></td><td>交付 System-B agent 与治理 cron 的 durability 模板(step.run-per-effect, idempotent step.sendEvent)——唯二真正 Inngest-durable 面。</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- 11. OPTIMIZATION -->
+<section id="opt">
+  <h2><span class="sec-num">11</span><span class="zh">优化点清单</span><small>今天代码里真实的问题 · 按严重度</small></h2>
+  <div class="legend"><span><span class="tag t-p0">P0</span> 阻断/危险</span><span><span class="tag t-p1">P1</span> 核心能力缺失</span><span><span class="tag t-p2">P2</span> 质量/精度</span></div>
+  <div class="tbl-wrap">
+    <table>
+      <thead><tr><th style="width:9%">级别</th><th style="width:34%">今天的问题</th><th style="width:20%">文件</th><th>修复</th></tr></thead>
+      <tbody>
+        <tr><td><span class="tag t-p0">P0</span></td><td>生成代码 await handler <b>无超时/内存/CPU 上限</b>，死循环挂住 api；隔离只是同进程 -sb 串检。</td><td><span class="fp">codeact.ts:288,140-143</span></td><td>runGeneratedModule 在 worker_thread + resourceLimits + Worker.terminate 里离主循环跑；每入口保留 FACTORY_EXEC_GENERATED + -sb 门。</td></tr>
+        <tr><td><span class="tag t-p0">P0</span></td><td>执行器拒绝非 defineAgent .handler，且把所有外部 import stub 成 {}，<b>任意函数/带依赖代码既跑不了也测不了</b>——阻断交付物(d)。</td><td><span class="fp">codeact.ts:156,164</span></td><td>接受任意导出；经 allow-list 供货 require-shim 解析依赖；加泛化加载探针。</td></tr>
+        <tr><td><span class="tag t-p1">P1</span></td><td>团队是化妆品：一个提示词"扮演多角色"，ROLE_OF_TOOL 只是展示元数据；没有第二个有自己上下文/循环/目标的 agent。</td><td><span class="fp">system-prompt.ts:121 · process-roles.ts:14</span></td><td>每团队提示词 + 可写角色受限子脑，由只指挥的总管顺序工件门控派生。</td></tr>
+        <tr><td><span class="tag t-p1">P1</span></td><td>推理是写死单 ReAct；selectPolicy 只选形状+档位偏置，无按任务/子问题的策略自选。</td><td><span class="fp">conductor.ts:795 · reasoning-policy.ts:94</span></td><td>双轴策略选择器(表驱动+LLM 兜底)在 [推理路线] 注入点，总管与子问题两高度调用；每策略=真原语。</td></tr>
+        <tr><td><span class="tag t-p1">P1</span></td><td>交付后质量被动：fleet reflux 聚合失败率写 caveat 但从不重开跑——无闭环。</td><td><span class="fp">apps/api/.../index.ts:102-185</span></td><td>主动 Inngest cron 对生产运行跑监督归因，经人签核幂等开 rework run(keyed on functionId+window)。</td></tr>
+        <tr><td><span class="tag t-p1">P1</span></td><td>评审/归因结论是建议性的("大脑<em>可以</em>处理")；没有结构保证缺陷交付前被修复<b>且复验</b>。</td><td><span class="fp">tools.ts:1472 · failure-attribution.ts:93</span></td><td>版本锁定缺陷成为 finish 门必须清零的一等对象；阻塞缺陷须 Tester 复验才关闭。</td></tr>
+        <tr><td><span class="tag t-p2">P2</span></td><td>安全只有静态 lint(AST DANGEROUS_API)；无运行时围堵证明代码不能逃逸/外泄/耗尽资源。</td><td><span class="fp">code-lint.ts:161 · codeact.ts:76</span></td><td>child_process/容器隔离里的动态安全 pass + egress guard +(Linux CI)seccomp；security_clean fail-closed。</td></tr>
+        <tr><td><span class="tag t-p2">P2</span></td><td>"coverage"是本体动作用例矩阵，不是行/分支代码覆盖率；无 c8/istanbul 插桩。</td><td><span class="fp">test-cases.ts:184</span></td><td>隔离内采集真 c8/istanbul 覆盖率；把 coverage_met 接成 kind 条件化验收判据。</td></tr>
+        <tr><td><span class="tag t-p2">P2</span></td><td>确定性归因把保真度失败映射到 agent(按事件负载)；分不清拆解错/代码错/测试假阳，工位级返工路由尚不可靠。</td><td><span class="fp">failure-attribution.ts:93</span></td><td>在 join 上叠 subContract→station 归属图；仅归属模糊时 LLM 兜底。</td></tr>
+        <tr><td><span class="tag t-p2">P2</span></td><td>自动压缩可能丢掉评审必须引用的那段 span；标注未版本锁定、未防压缩。</td><td><span class="fp">conductor.ts 压缩 · ports.ts:111</span></td><td>缺陷标注在扩展的 ConversationStore 里版本锁定、免压缩；cited span 持久。</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- 12. PHASING -->
+<section id="phasing">
+  <h2><span class="sec-num">12</span><span class="zh">分期路线</span><small>增量 · 每期都证明一件事</small></h2>
+  <div class="phase"><div class="lab"><span class="p-tag">PHASE 0</span>runGeneratedModule</div><div class="det">worker_thread 隔离兄弟：任意导出、硬超时+内存、allow-list 供货 require、真 c8 覆盖率；保留隔离不变量。<div class="proves"><b>证明：</b>通用代码能安全执行、死循环再也挂不住 api（修 P0 codeact.ts:288）——可独立发布。</div></div></div>
+  <div class="phase"><div class="lab"><span class="p-tag">PHASE 1</span>CodeTester 端口 + 条件化验收</div><div class="det">新 FactoryPorts.codeTester + SANDBOX stage 的 run_tests BrainTool；单测+集成(cassette mock)判据经 criteria.every(pass) 流入 acceptanceReport。<div class="proves"><b>证明：</b>纯函数的单测/集成结果真的门控 finish——"完成"=测试者执行过代码。</div></div></div>
+  <div class="phase"><div class="lab"><span class="p-tag">PHASE 2</span>总管拆分 + 首个真团队 + 工件门</div><div class="det">减法式导演总管、每团队提示词、分析组作可写子脑、stageAdmission 泛化到工件+门、既有 detached driver 上顺序交接。<div class="proves"><b>证明：</b>真正的团队隔离 + 可断点续跑的硬门交接，不引入多驱动并发。</div></div></div>
+  <div class="phase"><div class="lab"><span class="p-tag">PHASE 3</span>独立监督者 + 版本锁定缺陷 + 闭环返工</div><div class="det">全新脑只读监督者（只喂工件+契约+证据）、确定性归因→版本锁定阻塞缺陷、总管归因路由返工+有限预算+ask_user 升级。<div class="proves"><b>证明：</b>阻塞缺陷交付前<b>必须</b>被解决且复验（闭上"建议性结论"缺口）；监督者无法自我背书。</div></div></div>
+  <div class="phase"><div class="lab"><span class="p-tag">PHASE 4</span>双轴推理策略选择器</div><div class="det">扩展 selectPolicy 表驱动策略选择，总管+子问题两高度；三个干净映射策略(ReAct/reflection/debate)一等，ToT/CoT/combo 预算内跟进；只加式降级反馈。<div class="proves"><b>证明：</b>难/易任务上按子任务策略确实改变行为(需求 b)，学习局限诚实上报遥测。</div></div></div>
+  <div class="phase"><div class="lab"><span class="p-tag">PHASE 5</span>动态安全 pass</div><div class="det">child_process/容器隔离 + egress guard(+Linux CI seccomp)跑安全/动态围堵测试；security_clean fail-closed。<div class="proves"><b>证明：</b>对抗式生成代码的逃逸/密钥外泄尝试在<b>运行时</b>被抓住，不只 lint 时。</div></div></div>
+  <div class="phase"><div class="lab"><span class="p-tag">PHASE 6</span>主动治理 cron</div><div class="det">定时 Inngest cron 对生产运行跑监督归因、经人签核幂等开 rework run(step.sendEvent keyed on functionId+window)。<div class="proves"><b>证明：</b>生产回归从责任工位重入流水线、被修复+复验——闭上跨 fleet 环，且在真正适用处遵守 Inngest durability。</div></div></div>
+</section>
+
+<!-- 13. RISKS -->
+<section id="risk">
+  <h2><span class="sec-num">13</span><span class="zh">诚实的风险与开放问题</span><small>这套设计不回避的地方</small></h2>
+  <h3>最大风险</h3>
+  <ul class="clean risk">
+    <li><b>通用代码执行隔离既是承重重建、也是真正的系统安全问题。</b> 围堵不足→带真实依赖的 LLM 代码逃逸到 api 宿主(worker_thread 不是安全边界)；围堵过度→真依赖加载不了、集成/安全测试变成给未测代码背书的表演。缓解：按测试种类分档隔离、security_clean fail-closed、容器/microVM 底座藏在稳定 CodeTester 端口后作后续硬化期。</li>
+    <li><b>durability 框架必须诚实。</b> 生成线是同进程 detached 断点续跑驱动，<b>不在 Inngest 上</b>；唯有交付 agent 与治理 cron 是 Inngest-durable。顺序交接避免了多驱动重平台，但可写团队仍放大 park/断点恢复面——半写工件的中途崩溃须靠版本化槽位+工位尝试幂等键对账。</li>
+    <li><b>推理策略选择器有变成装饰品的风险：</b>今天只有三个策略(ReAct/reflection/debate)映射到不同代码路径；ToT/CoT/combo 要真实工作。policy-learning 只加不减、不探索——别当学习 bandit 卖。承重的是手调表+策略→原语映射。</li>
+    <li><b>归因是 agent/event 级</b>，工位级返工路由在契约-归属图建好并验证前可能把修复派错团队——错路由烧返工预算、侵蚀对闭环的信任。</li>
+    <li><b>Token/延迟与角色重叠成本：</b>N 个隔离子脑 + debate/ToT 扇出成倍放大成本、返工循环可能死锁；评审-vs-监督必须干净分离(主观测前 vs 客观测后证据)否则重复劳动。缓解：简单/标准带默认便宜单 ReAct、昂贵策略门控给复杂/返工、严格每工位返工预算+ask_user 升级、两个评审角色间硬 schema/时序边界。</li>
+  </ul>
+  <h3>开放问题（进正式 spec 前要拍板的）</h3>
+  <ul class="clean">
+    <li>工位级归因：subContract→station 归属图叠在 attributeFidelityFailures 上能否给出可靠追责，还是 LLM 兜底会频繁到让路由精度成为瓶颈？</li>
+    <li>macOS 开发机隔离底座：seccomp/gVisor 仅 Linux、当前无容器——worker_thread + child_process + egress guard 能走多远，何时容器成为必需，会不会分裂 dev 与 CI 的信任故事？</li>
+    <li>策略选择器冷启动：只加保守偏置(MIN_N=3)+ 稀疏领域数据下臂很少过底线——需要显式探索预算，还是手调表作承重主体、policy-learning 只作慢速安全降级？</li>
+    <li>ToT/debate 原语泛化成本：critique_plan 是计划专用、runSpecialists 是固定 4 维——把 debate/ToT 做成真一等策略要多少重写 vs 保持预算内跟进？</li>
+    <li>allow-list 供货：哪套依赖被供货给单测/集成，install 步本身如何围堵以防恶意传递依赖在安装期外泄？</li>
+    <li>断点/压缩预算：版本锁定免压缩缺陷标注须活过自动压缩以保 cited span 有效——长返工循环上会不会撑爆上下文/断点尺寸预算？</li>
+    <li>返工预算调参：每工位多少返工预算能在收敛与失控 token/延迟之间平衡，超了才升级 ask_user？</li>
+  </ul>
+</section>
+
+<div class="wrap foot">
+  <p>契约流水线工厂 · Contract-Line Foundry — 由 4 套独立架构（Loom 编排器 / StationLine 装配线 / Blackboard 黑板 / FoundryOS 内核）经对抗式评审综合而来。脊柱=StationLine（评审团 fit=9、durability 风险最低），嫁接 Blackboard 独立评审+版本锁定缺陷、Loom 减法总管+HITL 升级梯、FoundryOS 确定性归因+治理 cron。</p>
+  <p>这是<b>设计蓝图，非实现</b>。下一步：定稿 → 正式 spec（docs/superpowers/specs/）→ spec 评审 → 实现计划。所有文件锚点基于当次仓库快照，落地前需再核对。</p>
+</div>
+
+</main>
+</body>
+</html>

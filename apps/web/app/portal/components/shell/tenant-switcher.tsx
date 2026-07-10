@@ -16,6 +16,7 @@ import { useRouter } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import type { TenantCreateResponse } from "@agentic/contracts";
 import { Icon } from "../Icon";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 import { useTenant, useTenantNavigate } from "../../lib/use-tenant";
 import { toast } from "../toast";
 import { TENANTS_KEYS } from "@/lib/hooks/useTenants";
@@ -41,6 +42,7 @@ export function TenantSwitcher({ tenants }: { tenants: TenantOption[] }) {
   const [tokenReveal, setTokenReveal] =
     useState<TenantTokenRevealPayload | null>(null);
   const [importForSlug, setImportForSlug] = useState<string | null>(null);
+  const { t, t: tr } = useI18n();
   const router = useRouter();
   const queryClient = useQueryClient();
   const activeId = useTenant();
@@ -55,8 +57,8 @@ export function TenantSwitcher({ tenants }: { tenants: TenantOption[] }) {
     const name = created.tenant.name;
     toast({
       tone: "green",
-      title: "Tenant provisioned",
-      description: `${name} (${slug}) is ready`,
+      title: t("tenantSwitcher.toastProvisionedTitle"),
+      description: t("tenantSwitcher.toastProvisionedDesc", { name, slug }),
     });
     navigate(slug);
     if (created.token?.plaintext) {
@@ -223,9 +225,11 @@ export function TenantSwitcher({ tenants }: { tenants: TenantOption[] }) {
                 <div style={{ color: "var(--text)" }}>{t.name}</div>
                 {(t.agentCount != null || t.runs24h != null) && (
                   <div style={{ fontSize: 10, color: "var(--text-3)" }}>
-                    {t.agentCount != null && `${t.agentCount} agents`}
+                    {t.agentCount != null &&
+                      tr("tenantSwitcher.agentCount", { count: t.agentCount })}
                     {t.agentCount != null && t.runs24h != null && " · "}
-                    {t.runs24h != null && `${t.runs24h} runs/24h`}
+                    {t.runs24h != null &&
+                      tr("tenantSwitcher.runs24h", { count: t.runs24h })}
                   </div>
                 )}
               </div>
@@ -233,7 +237,7 @@ export function TenantSwitcher({ tenants }: { tenants: TenantOption[] }) {
                 <Icon
                   name="check"
                   size={12}
-                  style={{ color: "var(--signal)" }}
+                  style={{ color: "var(--accent-text)" }}
                 />
               )}
             </button>
@@ -253,7 +257,7 @@ export function TenantSwitcher({ tenants }: { tenants: TenantOption[] }) {
               color: "var(--text-2)",
             }}
           >
-            <Icon name="plus" size={11} /> New tenant
+            <Icon name="plus" size={11} /> {t("tenantSwitcher.newTenant")}
           </button>
         </div>
       )}

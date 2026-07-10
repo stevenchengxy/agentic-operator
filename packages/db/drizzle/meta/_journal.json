@@ -24,6 +24,83 @@
       "breakpoints": true
     },
     {
+      "idx": 3,
+      "version": "6",
+      "when": 1779200000000,
+      "tag": "0003_temporal_columns",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1779250000000,
+      "tag": "0004_parent_run",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1779300000000,
+      "tag": "0005_tenant_budgets",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1779350000000,
+      "tag": "0006_schema_meta",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1779400000000,
+      "tag": "0007_soft_delete",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1779450000000,
+      "tag": "0008_runs_is_test",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1779500000000,
+      "tag": "0009_webhook_subscriptions",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1779550000000,
+      "tag": "0010_agent_memory",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1779600000000,
+      "tag": "0011_tenant_lifecycle",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1779650000000,
+      "tag": "0012_import_recovery",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "6",
+      "when": 1779700000000,
+      "tag": "0013_confused_vertigo",
+      "breakpoints": true
+    },
+    {
       "idx": 14,
       "version": "6",
       "when": 1779900000000,
@@ -35,6 +112,111 @@
       "version": "6",
       "when": 1779950000000,
       "tag": "0015_dpl_one_live_per_target",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "6",
+      "when": 1780000000000,
+      "tag": "0016_access_control",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "6",
+      "when": 1780050000000,
+      "tag": "0017_step_attempts",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "6",
+      "when": 1780100000000,
+      "tag": "0018_factory_tables",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "6",
+      "when": 1780150000000,
+      "tag": "0019_factory_runs_skills",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "6",
+      "when": 1780200000000,
+      "tag": "0020_factory_tools",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "6",
+      "when": 1780250000000,
+      "tag": "0021_factory_runs_soft_delete",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "6",
+      "when": 1780300000000,
+      "tag": "0022_factory_tools_schemas",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "6",
+      "when": 1780400000000,
+      "tag": "0023_runs_code_ran",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "6",
+      "when": 1780500000000,
+      "tag": "0024_llm_calls",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "6",
+      "when": 1780600000000,
+      "tag": "0025_event_store_acceptance",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "6",
+      "when": 1780700000000,
+      "tag": "0026_memory_embedding_ttl",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "6",
+      "when": 1780800000000,
+      "tag": "0027_tool_stats",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "6",
+      "when": 1780900000000,
+      "tag": "0028_business_records",
+      "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "6",
+      "when": 1781000000000,
+      "tag": "0029_llm_turns",
+      "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "6",
+      "when": 1781100000000,
+      "tag": "0030_run_summaries",
       "breakpoints": true
     }
   ]

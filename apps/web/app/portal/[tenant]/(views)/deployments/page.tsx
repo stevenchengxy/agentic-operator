@@ -33,6 +33,7 @@ import {
   useToast,
 } from "@/app/portal/components";
 import { fmtAgo } from "@/app/portal/lib/format";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 import { useTenant } from "@/app/portal/lib/use-tenant";
 import { useDag } from "@/lib/hooks/useAgents";
 import {
@@ -64,6 +65,7 @@ function fromApi(d: DeploymentRow): DeploymentItem {
 }
 
 export default function DeploymentsPage() {
+  const { t } = useI18n();
   const toast = useToast();
   const tenant = useTenant();
   const dagQuery = useDag();
@@ -83,11 +85,15 @@ export default function DeploymentsPage() {
   const onRollback = (deploymentId: string) => {
     rollback.mutate(deploymentId, {
       onSuccess: (res) =>
-        toast({ tone: "green", title: "Rolled back", description: res.note }),
+        toast({
+          tone: "green",
+          title: t("deployments.rolledBackToast"),
+          description: res.note,
+        }),
       onError: (e) =>
         toast({
           tone: "red",
-          title: "Rollback failed",
+          title: t("deployments.rollbackFailedToast"),
           description: e instanceof Error ? e.message : String(e),
         }),
     });
@@ -96,15 +102,15 @@ export default function DeploymentsPage() {
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
       <ViewHeader
-        title="Deployments"
-        subtitle="Every agent and workflow version, with rollback. Files in /var/agentic/deploys."
+        title={t("nav.deployments")}
+        subtitle={t("deployments.subtitle")}
         action={
           <Button
             icon="deploy"
             tone="primary"
             onClick={() => setShowWizard(true)}
           >
-            Deploy new version
+            {t("deployments.deployNewVersion")}
           </Button>
         }
       />
@@ -114,7 +120,7 @@ export default function DeploymentsPage() {
 
         {/* Live versions panel */}
         <Panel
-          title="Live versions"
+          title={t("deployments.liveVersions")}
           padded={false}
           style={{ marginBottom: 16 }}
         >
@@ -127,7 +133,7 @@ export default function DeploymentsPage() {
             }}
           >
             <LiveCard
-              label="Workflow"
+              label={t("deployments.cardWorkflow")}
               name={live?.workflowSlug ?? tenant}
               version={live?.versionString ?? workflowVersion ?? "—"}
               agentCount={live?.agentCount ?? liveAgentCount}
@@ -135,7 +141,7 @@ export default function DeploymentsPage() {
               at={liveDeployedAt}
             />
             <LiveCard
-              label="Runtime"
+              label={t("deployments.cardRuntime")}
               name="agentic-operator"
               version={process.env.NEXT_PUBLIC_APP_VERSION ?? "0.6.2"}
               agentCount={null}
@@ -143,7 +149,7 @@ export default function DeploymentsPage() {
               at={0}
             />
             <LiveCard
-              label="Inngest worker"
+              label={t("deployments.cardInngestWorker")}
               name="inngest-dev"
               version="local"
               agentCount={null}
@@ -154,34 +160,34 @@ export default function DeploymentsPage() {
         </Panel>
 
         <Panel
-          title="Deployment history"
+          title={t("deployments.historyTitle")}
           padded={false}
           action={
             <Button small icon="filter" tone="ghost">
-              Filter
+              {t("deployments.filter")}
             </Button>
           }
         >
           {isLoading ? (
             <div style={{ padding: 14 }}>
-              <Empty title="Loading deployments…" hint="" />
+              <Empty title={t("deployments.loadingTitle")} hint="" />
             </div>
           ) : isError ? (
             <div style={{ padding: 14 }}>
               <Empty
-                title="Failed to load deployments"
+                title={t("deployments.loadFailedTitle")}
                 hint={
                   error instanceof Error
                     ? error.message
-                    : "Check that the api is running on :3501 and the tenant slug is valid."
+                    : t("deployments.loadFailedHint")
                 }
               />
             </div>
           ) : dpls.length === 0 ? (
             <div style={{ padding: 14 }}>
               <Empty
-                title="No deployments yet"
-                hint={`Tenant ${tenant} has no deployment history. Push a manifest or run \`agentic deploy\`.`}
+                title={t("deployments.emptyTitle")}
+                hint={t("deployments.emptyHint", { tenant })}
               />
             </div>
           ) : (
@@ -199,12 +205,12 @@ export default function DeploymentsPage() {
                     background: "var(--panel)",
                   }}
                 >
-                  <Th>Status</Th>
-                  <Th>Version</Th>
-                  <Th>Target</Th>
-                  <Th>By</Th>
-                  <Th>When</Th>
-                  <Th>Notes</Th>
+                  <Th>{t("deployments.colStatus")}</Th>
+                  <Th>{t("deployments.colVersion")}</Th>
+                  <Th>{t("deployments.colTarget")}</Th>
+                  <Th>{t("deployments.colBy")}</Th>
+                  <Th>{t("deployments.colWhen")}</Th>
+                  <Th>{t("deployments.colNotes")}</Th>
                   <Th />
                 </tr>
               </thead>
@@ -218,13 +224,19 @@ export default function DeploymentsPage() {
                   >
                     <Td>
                       {d.status === "live" ? (
-                        <Badge tone="signal">LIVE</Badge>
+                        <Badge tone="signal">{t("deployments.statusLive")}</Badge>
                       ) : d.status === "rolled_back" || d.status === "rolled-back" ? (
-                        <Badge tone="muted">ROLLED BACK</Badge>
+                        <Badge tone="muted">
+                          {t("deployments.statusRolledBack")}
+                        </Badge>
                       ) : d.status === "pending" ? (
-                        <Badge tone="amber">PENDING</Badge>
+                        <Badge tone="amber">
+                          {t("deployments.statusPending")}
+                        </Badge>
                       ) : d.status === "superseded" ? (
-                        <Badge tone="muted">SUPERSEDED</Badge>
+                        <Badge tone="muted">
+                          {t("deployments.statusSuperseded")}
+                        </Badge>
                       ) : (
                         <Badge tone="muted">{d.status}</Badge>
                       )}
@@ -260,11 +272,11 @@ export default function DeploymentsPage() {
                         }}
                       >
                         <Button small tone="ghost" icon="external">
-                          Diff
+                          {t("deployments.diff")}
                         </Button>
                         {d.status === "live" ? (
                           <Button small tone="ghost" disabled>
-                            Live
+                            {t("deployments.live")}
                           </Button>
                         ) : d.status === "rolled_back" ||
                           d.status === "rolled-back" ||
@@ -275,7 +287,9 @@ export default function DeploymentsPage() {
                             onClick={() => onRollback(d.id)}
                             disabled={rollback.isPending}
                           >
-                            {rollback.isPending ? "Restoring…" : "Restore"}
+                            {rollback.isPending
+                              ? t("deployments.restoring")
+                              : t("deployments.restore")}
                           </Button>
                         ) : (
                           <Button small tone="ghost" disabled>
@@ -310,6 +324,7 @@ function LiveCard({
   deployedBy: string;
   at: number;
 }) {
+  const { t } = useI18n();
   return (
     <div style={{ padding: "14px 16px", background: "var(--panel)" }}>
       <div
@@ -320,7 +335,7 @@ function LiveCard({
           marginBottom: 6,
         }}
       >
-        <Badge tone="signal">LIVE</Badge>
+        <Badge tone="signal">{t("deployments.statusLive")}</Badge>
         <span
           style={{
             fontSize: 10.5,
@@ -346,7 +361,7 @@ function LiveCard({
       </div>
       <div
         className="mono"
-        style={{ fontSize: 12, color: "var(--signal)" }}
+        style={{ fontSize: 12, color: "var(--accent-text)" }}
       >
         {version}
       </div>
@@ -360,7 +375,9 @@ function LiveCard({
           fontFamily: "var(--mono)",
         }}
       >
-        {agentCount != null && <span>{agentCount} agents</span>}
+        {agentCount != null && (
+          <span>{t("deployments.agentCount", { count: agentCount })}</span>
+        )}
         <span>{fmtAgo(at)}</span>
         <span>· {deployedBy}</span>
       </div>
@@ -369,6 +386,7 @@ function LiveCard({
 }
 
 function DeployWizard({ onClose }: { onClose: () => void }) {
+  const { t } = useI18n();
   const [method, setMethod] = useState<"manifest" | "code" | "builder">(
     "manifest",
   );
@@ -381,7 +399,7 @@ function DeployWizard({ onClose }: { onClose: () => void }) {
         borderRadius: 8,
         overflow: "hidden",
         boxShadow:
-          "0 0 0 1px rgba(208,255,0,0.08), 0 12px 32px -16px rgba(208,255,0,0.18)",
+          "0 0 0 1px color-mix(in srgb, var(--signal) 8%, transparent), 0 12px 32px -16px color-mix(in srgb, var(--signal) 18%, transparent)",
       }}
     >
       <header
@@ -397,7 +415,7 @@ function DeployWizard({ onClose }: { onClose: () => void }) {
           <Icon
             name="deploy"
             size={14}
-            style={{ color: "var(--signal)" }}
+            style={{ color: "var(--accent-text)" }}
           />
           <span
             style={{
@@ -406,7 +424,7 @@ function DeployWizard({ onClose }: { onClose: () => void }) {
               fontWeight: 500,
             }}
           >
-            Deploy new version
+            {t("deployments.deployNewVersion")}
           </span>
         </div>
         <Button small icon="x" tone="ghost" onClick={onClose} />
@@ -424,22 +442,22 @@ function DeployWizard({ onClose }: { onClose: () => void }) {
             active={method === "manifest"}
             onClick={() => setMethod("manifest")}
             icon="upload"
-            title="Manifest upload"
-            sub="Drop a workflow.json + actions.json. Best for declarative pipelines."
+            title={t("deployments.methodManifestTitle")}
+            sub={t("deployments.methodManifestSub")}
           />
           <MethodCard
             active={method === "code"}
             onClick={() => setMethod("code")}
             icon="code"
-            title="Code package"
-            sub="TypeScript module via CLI / git push. Best for custom logic & tools."
+            title={t("deployments.methodCodeTitle")}
+            sub={t("deployments.methodCodeSub")}
           />
           <MethodCard
             active={method === "builder"}
             onClick={() => setMethod("builder")}
             icon="workflow"
-            title="Visual builder"
-            sub="Drag agents on a canvas, wire events. Best for prototyping & ops."
+            title={t("deployments.methodBuilderTitle")}
+            sub={t("deployments.methodBuilderSub")}
           />
         </div>
 
@@ -488,7 +506,7 @@ function MethodCard({
         <Icon
           name={icon}
           size={13}
-          style={{ color: active ? "var(--signal)" : "var(--text-2)" }}
+          style={{ color: active ? "var(--accent-text)" : "var(--text-2)" }}
         />
         <span
           style={{
@@ -514,6 +532,7 @@ function MethodCard({
 }
 
 function ManifestStep() {
+  const { t } = useI18n();
   return (
     <div
       style={{
@@ -523,7 +542,7 @@ function ManifestStep() {
       }}
     >
       <div>
-        <StepLabel>1 · Upload manifest</StepLabel>
+        <StepLabel>{t("deployments.manifestStep1")}</StepLabel>
         <div
           style={{
             padding: 24,
@@ -545,7 +564,9 @@ function ManifestStep() {
               color: "var(--text-2)",
             }}
           >
-            Drop <span className="mono">workflow.json</span> and{" "}
+            {t("deployments.dropPrefix")}{" "}
+            <span className="mono">workflow.json</span>{" "}
+            {t("deployments.dropAnd")}{" "}
             <span className="mono">actions.json</span>
           </div>
           <div
@@ -555,9 +576,9 @@ function ManifestStep() {
               color: "var(--text-3)",
             }}
           >
-            or{" "}
-            <span style={{ color: "var(--signal)", cursor: "pointer" }}>
-              browse files
+            {t("deployments.or")}{" "}
+            <span style={{ color: "var(--accent-text)", cursor: "pointer" }}>
+              {t("deployments.browseFiles")}
             </span>
           </div>
         </div>
@@ -568,7 +589,7 @@ function ManifestStep() {
             color: "var(--text-3)",
           }}
         >
-          We accept the same schema you provided for RAAS:{" "}
+          {t("deployments.schemaNote")}{" "}
           <span className="mono">
             id, name, actor, trigger[], actions[], triggered_event[]
           </span>
@@ -576,7 +597,7 @@ function ManifestStep() {
         </div>
       </div>
       <div>
-        <StepLabel>2 · Preview · 22 agents detected</StepLabel>
+        <StepLabel>{t("deployments.manifestStep2")}</StepLabel>
         <CodeBlock>{`{
   "version": "raas@2026.05.16-b",
   "agents": 22,           // 18 agent · 4 human
@@ -589,9 +610,9 @@ function ManifestStep() {
 }`}</CodeBlock>
         <div style={{ marginTop: 10, display: "flex", gap: 8 }}>
           <Button tone="primary" icon="deploy">
-            Deploy to prod
+            {t("deployments.deployToProd")}
           </Button>
-          <Button>Deploy to staging</Button>
+          <Button>{t("deployments.deployToStaging")}</Button>
         </div>
       </div>
     </div>
@@ -599,9 +620,10 @@ function ManifestStep() {
 }
 
 function CodeStep() {
+  const { t } = useI18n();
   return (
     <div>
-      <StepLabel>1 · From your shell</StepLabel>
+      <StepLabel>{t("deployments.codeStep1")}</StepLabel>
       <CodeBlock>{`$ npx agentic deploy raas \\
     --version 2026.05.16-b \\
     --target prod
@@ -612,7 +634,7 @@ function CodeStep() {
 ✓ Registered with Inngest worker · 1842 active runs migrated
 → Live in 3.4s`}</CodeBlock>
       <div style={{ marginTop: 12 }}>
-        <StepLabel>2 · Or via git push</StepLabel>
+        <StepLabel>{t("deployments.codeStep2")}</StepLabel>
       </div>
       <CodeBlock>{`$ git push agentic main:raas/prod
 
@@ -625,6 +647,7 @@ remote: → deploying as 2026.05.16-b`}</CodeBlock>
 }
 
 function BuilderStep() {
+  const { t } = useI18n();
   return (
     <div
       style={{
@@ -647,7 +670,7 @@ function BuilderStep() {
           color: "var(--text)",
         }}
       >
-        Open visual builder
+        {t("deployments.openVisualBuilder")}
       </div>
       <div
         style={{
@@ -656,12 +679,11 @@ function BuilderStep() {
           color: "var(--text-3)",
         }}
       >
-        Drag agents from the palette, connect them with events. Save as a
-        manifest, then deploy.
+        {t("deployments.builderDesc")}
       </div>
       <div style={{ marginTop: 14 }}>
         <Button tone="primary" icon="external">
-          Open builder →
+          {t("deployments.openBuilder")}
         </Button>
       </div>
     </div>

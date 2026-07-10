@@ -48,6 +48,10 @@ import {
 } from "./fs";
 import { httpFetchTool } from "./http";
 import { ping } from "./meta";
+import { fetchActionRules } from "./ontology";
+import { recordsUpsert } from "./records";
+import { svgChart } from "./viz";
+import { htmlToPdfTool } from "./report";
 
 /** Per-field metadata used to render args / returns tables. */
 export interface ToolFieldSchema {
@@ -117,8 +121,8 @@ const ROBOHIRE_CONFIG_SCHEMA: Record<string, ToolFieldSchema> = {
   },
   base_url: {
     type: "string",
-    default: "https://api.robohire.io/api/v1",
-    description: "Override the RoboHire API base URL.",
+    default: "https://api.gohire.top/api/v1",
+    description: "Override the RoboHire API base URL (default: the gohire.top RoboHire-compatible host).",
   },
   timeout_ms: { type: "number", default: 30000 },
 };
@@ -651,6 +655,146 @@ const REGISTRATIONS: ToolRegistration[] = [
       },
       aliases: ["monitorAndFetchRequirement", "pingProbe"],
       sourcePath: "packages/tools/src/meta/ping.ts",
+    },
+  },
+  // ── viz.* ───────────────────────────────────────────────────────────────
+  {
+    descriptor: svgChart,
+    catalog: {
+      name: "viz.svgChart",
+      category: "viz",
+      summary:
+        "Deterministic inline-SVG chart renderer (bar / donut / line / flow) — embed the returned svg verbatim in HTML reports.",
+      description:
+        "The numbers→geometry step is computed server-side so axes and proportions are always correct (LLM-freehand SVG charts routinely are not). Pure + deterministic: same spec, same SVG. Pairs with fs.writeHtmlToArchive / report.htmlToPdf for report generation.",
+      argsSchema: {
+        kind: { type: "'bar'|'donut'|'line'|'flow'", required: true },
+        title: { type: "string" },
+        data: {
+          type: "Array<{label: string, value: number}>",
+          description: "Required for bar/donut/line.",
+        },
+        steps: {
+          type: "string[]",
+          description: "Required for flow — the ordered step labels.",
+        },
+        width: { type: "number", description: "SVG width in px (default 480–640 by kind)." },
+        palette: { type: "string[]", description: "Override the default color palette." },
+      },
+      argsExample: {
+        kind: "bar",
+        title: "各动作绑定工具数",
+        data: [
+          { label: "简历解析", value: 3 },
+          { label: "简历匹配", value: 2 },
+        ],
+      },
+      configSchema: {},
+      returnsSchema: {
+        svg: { type: "string", description: "Self-contained <svg>…</svg> markup." },
+        width: { type: "number" },
+        height: { type: "number" },
+      },
+      returnsExample: { svg: "<svg xmlns=…></svg>", width: 640, height: 94 },
+      chainsWith: ["fs.writeHtmlToArchive", "report.htmlToPdf"],
+      sourcePath: "packages/tools/src/viz/svg-chart.ts",
+    },
+  },
+
+  // ── report.* ────────────────────────────────────────────────────────────
+  {
+    descriptor: htmlToPdfTool,
+    catalog: {
+      name: "report.htmlToPdf",
+      category: "report",
+      summary:
+        "Render an HTML document to data/<subdir>/<tenant>/<id>.{html,pdf} via local headless Chrome (no bundled Chromium).",
+      description:
+        "Persists the HTML alongside the printed PDF so a missing Chrome degrades to 'HTML only', never data loss. Chrome discovery: CHROME_PATH env → common macOS/Linux install paths. Errors carry the fix instruction verbatim.",
+      argsSchema: {
+        html: {
+          type: "string",
+          required: true,
+          description: "HTML body or full document. Aliases: `body`, `report`.",
+        },
+        title: { type: "string", description: "Used in the auto-wrapped <title>." },
+      },
+      argsExample: { html: "<h1>领域分析</h1><p>…</p>", title: "Ontology 分析报告" },
+      configSchema: {
+        subdir: { type: "string", default: "reports" },
+        id_prefix: { type: "string", default: "report" },
+        lang: { type: "string", default: "zh-CN" },
+        timeout_ms: { type: "number", default: 60000 },
+      },
+      configExample: { subdir: "reports", id_prefix: "ontology" },
+      returnsSchema: {
+        id: { type: "string" },
+        htmlPath: { type: "string" },
+        pdfPath: { type: "string" },
+        bytes: { type: "number", description: "PDF size in bytes." },
+      },
+      returnsExample: {
+        id: "report-20260702120000-a1b2c3",
+        htmlPath: "/abs/data/reports/raas/report-20260702120000-a1b2c3.html",
+        pdfPath: "/abs/data/reports/raas/report-20260702120000-a1b2c3.pdf",
+        bytes: 48213,
+      },
+      chainsWith: ["viz.svgChart"],
+      sourcePath: "packages/tools/src/report/pdf.ts",
+    },
+  },
+
+  {
+    descriptor: fetchActionRules,
+    catalog: {
+      name: "ontology.fetchActionRules",
+      category: "ontology",
+      summary: "Runtime: fetch the executor=Agent rules governing this action from the live ontology, so a rule-check agent folds against real, current rules.",
+      description:
+        "Bound automatically onto rule-check agents by the Agent Factory. At run time it pulls the rules for ctx.actionName from Allmeta (domain via config.domain or the tenant slug), filters to executor=Agent, flags the mandatory subset, and returns { rules, mandatory, count } so the agent folds fail-closed. Never bake rules into a prompt — call this instead.",
+      argsSchema: {},
+      argsExample: {},
+      configSchema: {
+        domain: { type: "string", description: "Ontology domain id (the factory attaches this; defaults to the tenant slug minus a -sb suffix)." },
+        action: { type: "string", description: "Override the action whose rules to fetch (defaults to ctx.actionName)." },
+      },
+      configExample: { domain: "Agents-generation" },
+      returnsSchema: {
+        rules: { type: "object[]", description: "executor=Agent rules for this action." },
+        mandatory: { type: "object[]", description: "the mandatory subset — fail-close on any of these." },
+        count: { type: "number" },
+        source: { type: "string", description: "allmeta | unconfigured | error:…" },
+      },
+      returnsExample: { rules: [], mandatory: [], count: 0, source: "allmeta" },
+      sourcePath: "packages/tools/src/ontology/fetch-action-rules.ts",
+    },
+  },
+
+  {
+    descriptor: recordsUpsert,
+    catalog: {
+      name: "records.upsert",
+      category: "records",
+      summary: "Persist a durable business record (candidate / resume / job_posting / candidate_match_result / communication_log) that outlives the run; pass-through so it can sit mid-pipeline.",
+      description:
+        "New-arch-native replacement for Neo4j / RAAS-Postgres instance write-back. Reads the current step's data (ctx.event.data + ctx.lastResult), upserts a row into business_records keyed by (tenant, record_type, record_key), and tags it with run/correlation/candidate. PASS-THROUGH: echoes the upstream result so it never starves the next step or hijacks _emit — place it non-terminally. Soft-fail (never blocks the run).",
+      argsSchema: {},
+      argsExample: {},
+      configSchema: {
+        record_type: { type: "string", description: "candidate | resume | job_posting | candidate_match_result | communication_log (required)." },
+        key_field: { type: "string", description: "Override the field used as the business identity (record_key)." },
+        candidate_field: { type: "string", description: "Field holding the candidate id (default candidate_id)." },
+        append: { type: "boolean", description: "For communication_log: always insert a fresh row instead of upserting." },
+      },
+      configExample: { record_type: "candidate", candidate_field: "candidate_id" },
+      returnsSchema: {
+        record_id: { type: "string", description: "business_records.id" },
+        record_type: { type: "string" },
+        record_key: { type: "string" },
+        upserted: { type: "boolean" },
+      },
+      returnsExample: { record_id: "rec-abc123", record_type: "candidate", record_key: "cand-1", upserted: true },
+      sourcePath: "packages/tools/src/records/upsert.ts",
     },
   },
 ];

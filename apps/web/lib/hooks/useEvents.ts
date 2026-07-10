@@ -73,6 +73,24 @@ export interface EventRow {
     agentTitle: string | null;
     status: string;
   }>;
+  /** Resolved REAL payload — populated only by GET /v1/events/:id (useEvent). */
+  payload?: unknown;
+}
+
+/**
+ * Single event with its REAL resolved payload + actual consumers
+ * (GET /v1/events/:id). Used by the Events detail panel to show what actually
+ * fired instead of a reconstructed envelope.
+ */
+export function useEvent(
+  id: string | null | undefined,
+): UseQueryResult<EventRow> {
+  return useQuery({
+    queryKey: ["events", "detail", id] as const,
+    queryFn: () => callV1<EventRow>(`/v1/events/${encodeURIComponent(id!)}`),
+    enabled: Boolean(id),
+    staleTime: 30_000,
+  });
 }
 
 /** Field descriptor from `/v1/events/catalog` — drives typed form inputs. */

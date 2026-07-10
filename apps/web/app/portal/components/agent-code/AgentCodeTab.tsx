@@ -13,6 +13,7 @@
  */
 
 import { useState } from "react";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 import {
   Badge,
   Button,
@@ -38,11 +39,12 @@ interface AgentCodeShape {
 }
 
 export function AgentCodeTab({ agent }: { agent: AgentCodeShape }) {
+  const { t } = useI18n();
   if (agent.actor !== "Agent") {
     return (
       <Empty
-        title="No code for human tasks"
-        hint="Human-actor nodes pause the workflow for an operator. They have no TypeScript handler — only an event payload + UI."
+        title={t("agentCodeTab.emptyTitle")}
+        hint={t("agentCodeTab.emptyHint")}
       />
     );
   }
@@ -74,15 +76,15 @@ export function AgentCodeTab({ agent }: { agent: AgentCodeShape }) {
       }}
       action={
         <div style={{ display: "flex", gap: 4, alignItems: "center", flexShrink: 0 }}>
-          <Button small icon="external" tone="ghost" title="Open in IDE" />
-          <Button small icon="upload" tone="ghost" title="Download" />
+          <Button small icon="external" tone="ghost" title={t("agentCodeTab.openInIde")} />
+          <Button small icon="upload" tone="ghost" title={t("agentCodeTab.download")} />
           <Button
             small
             tone="ghost"
             icon={maximized ? "x" : "code"}
             onClick={() => setMaximized(!maximized)}
           >
-            {maximized ? "Restore" : "Maximize"}
+            {maximized ? t("agentCodeTab.restore") : t("agentCodeTab.maximize")}
           </Button>
         </div>
       }
@@ -135,7 +137,7 @@ export function AgentCodeTab({ agent }: { agent: AgentCodeShape }) {
         <div style={{ height: ontologyH, flexShrink: 0, minHeight: 0 }}>
           <Panel
             title="ontology_instructions"
-            subtitle="Domain vocabulary & rules"
+            subtitle={t("agentCodeTab.ontologySubtitle")}
             padded={false}
             scroll
             style={{ height: "100%" }}
@@ -160,7 +162,7 @@ export function AgentCodeTab({ agent }: { agent: AgentCodeShape }) {
         <Splitter axis="y" getValue={() => ontologyH} setValue={setOntologyH} min={80} max={600} />
 
         <div style={{ height: inputDataH, flexShrink: 0, minHeight: 0 }}>
-          <Panel title="input_data" subtitle="Sample input" padded={false} style={{ height: "100%" }}>
+          <Panel title="input_data" subtitle={t("agentCodeTab.inputDataSubtitle")} padded={false} style={{ height: "100%" }}>
             <MonacoEditor
               value={JSON.stringify(inputData, null, 2)}
               language="json"
@@ -175,17 +177,17 @@ export function AgentCodeTab({ agent }: { agent: AgentCodeShape }) {
         <div style={{ height: toolUseH, flexShrink: 0, minHeight: 0 }}>
           <Panel
             title={`tool_use · ${tools.length}`}
-            subtitle="LLM tool API surface"
+            subtitle={t("agentCodeTab.toolUseSubtitle")}
             padded={false}
             scroll
             style={{ height: "100%" }}
           >
             <div style={{ height: "100%", overflow: "auto" }}>
-              {tools.map((t) => (
-                <div key={t.name} style={{ padding: "10px 14px", borderBottom: "1px solid var(--border)" }}>
+              {tools.map((tool) => (
+                <div key={tool.name} style={{ padding: "10px 14px", borderBottom: "1px solid var(--border)" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
-                    <Icon name="code" size={10} style={{ color: "var(--signal)" }} />
-                    <span className="mono" style={{ fontSize: 12, color: "var(--text)" }}>{t.name}</span>
+                    <Icon name="code" size={10} style={{ color: "var(--accent-text)" }} />
+                    <span className="mono" style={{ fontSize: 12, color: "var(--text)" }}>{tool.name}</span>
                     <span
                       style={{
                         marginLeft: "auto",
@@ -194,14 +196,14 @@ export function AgentCodeTab({ agent }: { agent: AgentCodeShape }) {
                         fontFamily: "var(--mono)",
                       }}
                     >
-                      {Object.keys(t.input_schema.properties).length} params
+                      {t("agentCodeTab.params", { n: Object.keys(tool.input_schema.properties).length })}
                     </span>
                   </div>
                   <div style={{ fontSize: 11.5, color: "var(--text-2)", lineHeight: 1.5, marginBottom: 6 }}>
-                    {t.description}
+                    {tool.description}
                   </div>
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>
-                    {Object.entries(t.input_schema.properties).map(([k, v]) => (
+                    {Object.entries(tool.input_schema.properties).map(([k, v]) => (
                       <span
                         key={k}
                         style={{
@@ -214,7 +216,7 @@ export function AgentCodeTab({ agent }: { agent: AgentCodeShape }) {
                           background: "var(--panel-2)",
                           border: "1px solid var(--border)",
                           borderRadius: 3,
-                          color: t.input_schema.required.includes(k)
+                          color: tool.input_schema.required.includes(k)
                             ? "var(--text)"
                             : "var(--text-3)",
                         }}
@@ -222,7 +224,7 @@ export function AgentCodeTab({ agent }: { agent: AgentCodeShape }) {
                         {k}
                         <span style={{ color: "var(--text-3)" }}>:</span>
                         <span style={{ color: "var(--blue)" }}>{v.type}</span>
-                        {t.input_schema.required.includes(k) && (
+                        {tool.input_schema.required.includes(k) && (
                           <span style={{ color: "var(--amber)" }}>*</span>
                         )}
                       </span>
@@ -237,13 +239,13 @@ export function AgentCodeTab({ agent }: { agent: AgentCodeShape }) {
         <Splitter axis="y" getValue={() => toolUseH} setValue={setToolUseH} min={100} max={700} />
 
         <div style={{ flex: 1, minHeight: 80 }}>
-          <Panel title="Runtime" padded style={{ height: "100%" }}>
+          <Panel title={t("agentCodeTab.runtimeTitle")} padded style={{ height: "100%" }}>
             <div style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 11.5 }}>
-              <RuntimeRow label="Language" value="TypeScript 5.6" />
-              <RuntimeRow label="Runtime" value="Node 26 · esm" />
-              <RuntimeRow label="Bundler" value="esbuild" />
-              <RuntimeRow label="Source" value="agentic/raas-workflows@main" mono />
-              <RuntimeRow label="Last build" value="3.4s · 12 KB minified" />
+              <RuntimeRow label={t("agentCodeTab.runtimeLanguage")} value="TypeScript 5.6" />
+              <RuntimeRow label={t("agentCodeTab.runtimeRuntime")} value="Node 26 · esm" />
+              <RuntimeRow label={t("agentCodeTab.runtimeBundler")} value="esbuild" />
+              <RuntimeRow label={t("agentCodeTab.runtimeSource")} value="agentic/raas-workflows@main" mono />
+              <RuntimeRow label={t("agentCodeTab.runtimeLastBuild")} value="3.4s · 12 KB minified" />
             </div>
           </Panel>
         </div>

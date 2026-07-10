@@ -1,0 +1,125 @@
+{
+  "domain": "zhaopin",
+  "slug": "zhaopin-rule-check-for-candidate-identity",
+  "spec": {
+    "key": "ruleCheckForCandidateIdentity",
+    "actionName": "ruleCheckForCandidateIdentity",
+    "slug": "zhaopin-rule-check-for-candidate-identity",
+    "short": "RuleCheckForCandidateIdentityAgent",
+    "domainId": "zhaopin",
+    "nameZh": "候选人入库后的身份去重规则检查：简历",
+    "kind": "llm",
+    "trigger": [
+      "RESUME_PROCESSED"
+    ],
+    "emit": [
+      "CANDIDATE_IDENTITY_CHECKED"
+    ],
+    "tools": [
+      "candidateDedupLookup",
+      "ontology.fetchActionRules",
+      "fs.appendToLog"
+    ],
+    "unresolvedTools": [],
+    "objects": [],
+    "systemPrompt": "你是一个候选人身份去重规则检查专家。你的职责是在简历解析完成后，按照系统规则对候选人身份进行唯一性判定，确保同一候选人不会被重复建档。\n\n工作流程：\n1. 接收 RESUME_PROCESSED 事件，获取 candidate_id 和 resume_id。\n2. 调用 ontology.fetchActionRules 动态获取当前生效的候选人身份判定规则（三级优先级：手机号 > 姓名+邮箱 > 六字段组合）。\n3. 调用 candidateDedupLookup 按规则逐级比对，判断本次候选人是否与已有候选人为同一人：\n   - 第一级：手机号完全匹配 → 判定为同一人。\n   - 第二级：姓名+邮箱同时匹配 → 判定为同一人。\n   - 第三级：六字段（姓名+出生年月+性别+最高学历+毕业院校+专业）匹配 → 判定为同一人。\n   - 以上均不匹配 → 判定为新候选人。\n4. 调用 fs.appendToLog 记录判定结果（审计日志）。\n5. 产出 CANDIDATE_IDENTITY_CHECKED 事件，包含 candidate_id 和 same_person（Boolean）。\n\n关键约束：\n- 本检查为 soft-fail：即使 candidateDedupLookup 调用失败，也应记录错误并默认输出 same_person=false（建新候选人），不阻断主流程。\n- 规则必须从 ontology.fetchActionRules 动态获取，绝不硬编码规则逻辑。\n- 判定结果仅供审计，不阻断后续流程。",
+    "userPrompt": "",
+    "designReasoning": "修正 ruleCheckForCandidateIdentity 的 plan，为 fetch-rules 步骤补充 idempotencyKeyFrom。",
+    "toolRationale": "ontology.fetchActionRules 动态获取去重规则，candidateDedupLookup 执行三级比对，fs.appendToLog 记录审计日志。",
+    "decisionLogic": "1. 动态获取规则（ontology.fetchActionRules）。\n2. 按三级优先级逐级比对（candidateDedupLookup）。\n3. 任一级匹配 → same_person=true，新简历挂到已有候选人档案下。\n4. 全部不匹配 → same_person=false，建新候选人。\n5. 调用失败 → soft-fail，same_person=false，记录错误日志。\n6. 产出 CANDIDATE_IDENTITY_CHECKED。",
+    "steps": [
+      {
+        "name": "step_1",
+        "description": "调用 candidateDedupLookup",
+        "tool": "candidateDedupLookup"
+      },
+      {
+        "name": "step_2",
+        "description": "调用 ontology.fetchActionRules",
+        "tool": "ontology.fetchActionRules"
+      },
+      {
+        "name": "step_3",
+        "description": "调用 fs.appendToLog",
+        "tool": "fs.appendToLog"
+      }
+    ],
+    "ruleRefs": [],
+    "retries": 3,
+    "hitl": false,
+    "confidence": 0.8,
+    "promptSource": "llm",
+    "inputSchema": [
+      {
+        "field": "candidate_id",
+        "type": "String",
+        "source": "Candidate.candidate_id",
+        "description": "候选人ID"
+      },
+      {
+        "field": "resume_id",
+        "type": "String",
+        "source": "Resume.resume_id",
+        "description": "简历ID"
+      }
+    ],
+    "outputSchema": [
+      {
+        "field": "candidate_id",
+        "type": "String",
+        "source": "Candidate.candidate_id",
+        "description": "候选人ID"
+      },
+      {
+        "field": "same_person",
+        "type": "Boolean",
+        "description": "是否与已有候选人为同一人"
+      }
+    ],
+    "plan": [
+      {
+        "stepId": "fetch-rules",
+        "kind": "tool",
+        "tool": "ontology.fetchActionRules",
+        "idempotencyKeyFrom": "candidate_id",
+        "onError": "soft",
+        "description": "动态获取候选人身份判定规则"
+      },
+      {
+        "stepId": "dedup-check",
+        "kind": "tool",
+        "tool": "candidateDedupLookup",
+        "idempotencyKeyFrom": "candidate_id",
+        "onError": "soft",
+        "description": "按三级优先级逐级比对候选人身份"
+      },
+      {
+        "stepId": "append-audit-log",
+        "kind": "tool",
+        "tool": "fs.appendToLog",
+        "idempotencyKeyFrom": "candidate_id",
+        "onError": "soft",
+        "description": "记录身份判定结果到审计日志"
+      }
+    ],
+    "stateBindings": [
+      {
+        "object": "Candidate",
+        "reads": [
+          "candidate_id"
+        ],
+        "writes": []
+      },
+      {
+        "object": "Resume",
+        "reads": [
+          "resume_id"
+        ],
+        "writes": []
+      }
+    ],
+    "generatedCode": "// 候选人入库后的身份去重规则检查：简历 — 由 Agent 工厂从本体动作 `ruleCheckForCandidateIdentity`(zhaopin)生成。\n// trigger: RESUME_PROCESSED → emit: CANDIDATE_IDENTITY_CHECKED\n// 参考脚手架：运行时按 workflow manifest 的 action[] 声明式调度执行（systemPrompt + 工具），\n// 【不直接运行这段 .ts 代码】——它是可读/可改的 agent 定义参考。真·CodeAct 执行路径用 codeExecuted 开关（默认关）。\n\n/** Input/Output schema — 依据本体 DataObjects 定义。 */\ninterface RuleCheckForCandidateIdentityAgentInput {\n  candidate_id: string; // 候选人ID (源: Candidate.candidate_id)\n  resume_id: string; // 简历ID (源: Resume.resume_id)\n}\n\ninterface RuleCheckForCandidateIdentityAgentOutput {\n  candidate_id: string; // 候选人ID (源: Candidate.candidate_id)\n  same_person: boolean; // 是否与已有候选人为同一人\n}\n\n/** System prompt — 工厂为【这一个】agent 亲自推理出来的。 */\nconst SYSTEM_PROMPT = `你是一个候选人身份去重规则检查专家。你的职责是在简历解析完成后，按照系统规则对候选人身份进行唯一性判定，确保同一候选人不会被重复建档。\n\n工作流程：\n1. 接收 RESUME_PROCESSED 事件，获取 candidate_id 和 resume_id。\n2. 调用 ontology.fetchActionRules 动态获取当前生效的候选人身份判定规则（三级优先级：手机号 > 姓名+邮箱 > 六字段组合）。\n3. 调用 candidateDedupLookup 按规则逐级比对，判断本次候选人是否与已有候选人为同一人：\n   - 第一级：手机号完全匹配 → 判定为同一人。\n   - 第二级：姓名+邮箱同时匹配 → 判定为同一人。\n   - 第三级：六字段（姓名+出生年月+性别+最高学历+毕业院校+专业）匹配 → 判定为同一人。\n   - 以上均不匹配 → 判定为新候选人。\n4. 调用 fs.appendToLog 记录判定结果（审计日志）。\n5. 产出 CANDIDATE_IDENTITY_CHECKED 事件，包含 candidate_id 和 same_person（Boolean）。\n\n关键约束：\n- 本检查为 soft-fail：即使 candidateDedupLookup 调用失败，也应记录错误并默认输出 same_person=false（建新候选人），不阻断主流程。\n- 规则必须从 ontology.fetchActionRules 动态获取，绝不硬编码规则逻辑。\n- 判定结果仅供审计，不阻断后续流程。`;\n\nexport const ruleCheckForCandidateIdentityAgent = defineAgent({\n  id: \"zhaopin-rule-check-for-candidate-identity\",\n  name: \"RuleCheckForCandidateIdentityAgent\",\n  actor: [\"Agent\"],\n  trigger: [\"RESUME_PROCESSED\"],\n  emit: [\"CANDIDATE_IDENTITY_CHECKED\"],\n  tools: [\"candidateDedupLookup\",\"ontology.fetchActionRules\",\"fs.appendToLog\"],\n  systemPrompt: SYSTEM_PROMPT,\n  async handler(input, ctx) {\n      // 调用工具 candidateDedupLookup\n      // const candidateDedupLookupResult = await ctx.tools.run(\"candidateDedupLookup\", input);\n      // 调用工具 ontology.fetchActionRules\n      // const fetchActionRulesResult = await ctx.tools.run(\"ontology.fetchActionRules\", input);\n      // 调用工具 fs.appendToLog\n      // const appendToLogResult = await ctx.tools.run(\"fs.appendToLog\", input);\n      // 用本 agent 专属 system prompt 推理(决策核心)\n      const decision = await ctx.reason(SYSTEM_PROMPT, input);\n      await ctx.emit(\"CANDIDATE_IDENTITY_CHECKED\", { ...input, ...decision });\n      return { ok: true };\n  },\n});\n",
+    "codeSource": "render"
+  },
+  "createdAt": "2026-06-30T09:24:43.641Z"
+}

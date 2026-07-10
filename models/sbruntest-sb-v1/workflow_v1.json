@@ -1,0 +1,94 @@
+[
+  {
+    "id": "sbrt-createjd",
+    "name": "CreateJd",
+    "title": "CreateJd",
+    "description": "",
+    "actor": [
+      "Agent"
+    ],
+    "trigger": [
+      "RUNTHRU_START"
+    ],
+    "actions": [
+      {
+        "order": "1",
+        "name": "CreateJd",
+        "description": "CreateJd",
+        "type": "logic",
+        "retries": 1
+      }
+    ],
+    "triggered_event": [
+      "JD_GENERATED"
+    ],
+    "ontology_instructions": "You are CreateJd. Handle the trigger event and emit the outcome event.",
+    "tool_use": [
+      {
+        "name": "meta.ping"
+      }
+    ],
+    "generated": true,
+    "codeExecuted": false
+  },
+  {
+    "id": "sbrt-processresume",
+    "name": "ProcessResume",
+    "title": "ProcessResume",
+    "description": "",
+    "actor": [
+      "Agent"
+    ],
+    "trigger": [
+      "RESUME_DOWNLOADED"
+    ],
+    "actions": [
+      {
+        "order": "1",
+        "name": "ProcessResume",
+        "description": "ProcessResume",
+        "type": "logic",
+        "retries": 1
+      }
+    ],
+    "triggered_event": [
+      "RESUME_PROCESSED"
+    ],
+    "ontology_instructions": "You are ProcessResume. Handle the trigger event and emit the outcome event.",
+    "tool_use": [
+      {
+        "name": "meta.ping"
+      }
+    ],
+    "generated": true,
+    "codeExecuted": false
+  },
+  {
+    "id": "sbruntest-mock-ext-resume-downloaded",
+    "name": "MockExt_resume_downloaded",
+    "title": "模拟外部平台→RESUME_DOWNLOADED",
+    "description": "",
+    "actor": [
+      "Agent"
+    ],
+    "trigger": [
+      "RUNTHRU_START"
+    ],
+    "actions": [
+      {
+        "order": "1",
+        "name": "mock_ext_resume_downloaded",
+        "description": "mock_ext_resume_downloaded",
+        "type": "logic",
+        "retries": 1
+      }
+    ],
+    "triggered_event": [
+      "RESUME_DOWNLOADED"
+    ],
+    "ontology_instructions": "你在沙箱里【模拟一个外部平台】：当收到 RUNTHRU_START 后，按事件契约产出一份代表性的 RESUME_DOWNLOADED payload（真实感数据，字段对齐 event_data），让事件链能端到端跑通。这是模拟桩，不是真实集成。",
+    "tool_use": [],
+    "generated": true,
+    "codeExecuted": false
+  }
+]

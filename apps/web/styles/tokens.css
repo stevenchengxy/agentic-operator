@@ -35,6 +35,25 @@
   --red: #ff6470;
   --violet: #b594ff;
 
+  /* Ink that sits on a solid accent fill (chip, stepper circle, avatar,
+   * checkbox). In dark mode the accents are bright, so black reads on them;
+   * the light theme overrides this to white because its accents are dark.
+   * Use this instead of a literal "#000" whenever text/icon sits on
+   * var(--signal|--violet|--green|…) so it stays legible in both themes. */
+  --on-accent: #000;
+
+  /* The accent rendered as TEXT/icon (not a fill). `--signal` is the vivid
+   * brand fill and is fine as text on this dark theme, so the static fallback
+   * just mirrors it. preferences-context.tsx re-injects a theme-aware value at
+   * runtime (the bright accent here, a darkened-to-AA variant in light mode);
+   * this fallback only covers SSR / pre-hydration. */
+  --accent-text: var(--signal);
+
+  /* Ink on a solid --signal fill. On this dark theme --signal is the vivid
+   * accent (bright) → black ink; the light theme overrides --signal to a deep
+   * accent → white ink. The runtime injection recomputes it per theme. */
+  --on-signal: #000;
+
   --sans: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
   --mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
   --display: "Instrument Serif", "IBM Plex Serif", Georgia, serif;
@@ -76,8 +95,29 @@ html[data-theme="light"] {
   --text-2: #5a5b62;
   --text-3: #8c8d94;
   --text-4: #b8b9be;
+  /* Static light-mode fallbacks before hydration. The runtime injection
+   * (preferences-context) replaces --signal/--accent-text with
+   * darkenToAA(tenant accent) and --on-signal with #fff. #4d5e00 is the
+   * darkened default-lime (~7:1 on white) and white ink reads on it, so the
+   * pre-hydration state is already legible — vivid lime is NEVER used as a
+   * fill in light mode (it's garish/low-contrast on white). */
   --signal: #4d5e00;
-  --signal-dim: #c8d985;
+  --signal-dim: #7e8f3a;
+  --accent-text: #4d5e00;
+  --on-signal: #fff;
+
+  /* Accent palette retuned for light backgrounds. The dark-theme values in
+   * :root are bright-on-dark and collapse to ~1.5–2.9:1 as text on a white
+   * panel (illegible — worst is the pale-mint --green at 1.65:1). These
+   * darker, saturated variants clear WCAG AA (≥4.5:1 on both #fff and the
+   * #f6f6f4 page bg) while keeping each hue's identity for dots/fills, and
+   * are dark enough that white --on-accent ink reads on them as a fill. */
+  --green: #137a4d;
+  --blue: #2160d6;
+  --amber: #9a6400;
+  --red: #d62839;
+  --violet: #6d3ee0;
+  --on-accent: #fff;
 }
 
 /* ─── Density (P2-FE-20, replaces v1_1 placeholder) ─── */
@@ -109,7 +149,7 @@ body {
 ::-webkit-scrollbar-thumb:hover { background: var(--border-3); }
 
 /* ─── Selection (v1_1 index.html:82) ─── */
-::selection { background: var(--signal); color: #000; }
+::selection { background: var(--signal); color: var(--on-signal); }
 
 /* ─── Utility classes (v1_1 index.html:85-89) ─── */
 .mono { font-family: var(--mono); font-feature-settings: "ss01" on; }
@@ -212,7 +252,7 @@ select:focus {
   z-index: var(--z-toast);
   padding: 6px 12px;
   background: var(--signal);
-  color: #000;
+  color: var(--on-signal);
   font-family: var(--sans);
   font-size: 12px;
   font-weight: 600;

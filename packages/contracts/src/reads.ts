@@ -12,6 +12,33 @@ export const TenantCounts = z.object({
 });
 export type TenantCounts = z.infer<typeof TenantCounts>;
 
+/**
+ * Per-agent throughput for the dashboard. For the tenant's LIVE workflow,
+ * each agent gets the count of DISTINCT subjects it processed and its run
+ * count within the rolling window. This is honest across every tenant
+ * shape (linear pipeline or not) — unlike a stage "funnel", which only made
+ * sense for staged tenants. Sorted by subjects desc; test runs never count.
+ */
+export const ThroughputAgent = z.object({
+  kebabId: z.string(),
+  name: z.string(),
+  title: z.string(),
+  /** Distinct subjects this agent processed in the window. */
+  subjects: z.number(),
+  /** Total runs (incl. repeats on the same subject) in the window. */
+  runs: z.number(),
+});
+export type ThroughputAgent = z.infer<typeof ThroughputAgent>;
+
+export const ThroughputResult = z.object({
+  /** Human window token echoed back: "1h" | "24h" | "7d". */
+  window: z.string(),
+  /** Window length in milliseconds (source of truth for the query). */
+  windowMs: z.number(),
+  agents: z.array(ThroughputAgent),
+});
+export type ThroughputResult = z.infer<typeof ThroughputResult>;
+
 /** Health endpoint — unauthenticated, used by load balancers / `/api/health`. */
 export const HealthReport = z.object({
   ok: z.boolean(),
@@ -52,6 +79,13 @@ export const HealthReport = z.object({
       defaultProvider: z.string().optional(),
       defaultModel: z.string().optional(),
       providers: z.number().optional(),
+      /**
+       * #NOMOCK — true when the CONSTRUCTED gateway is the mock (echo) provider, so a mock runtime
+       * can never masquerade as real. Ops/UI can surface a persistent "MOCK LLM ACTIVE" banner from
+       * one curl instead of trusting the boot log. Distinct from demoMode: mock can be active via a
+       * runtime demo toggle even when the boot env said production.
+       */
+      mock: z.boolean().optional(),
     })
     .optional(),
   /**
@@ -62,5 +96,10 @@ export const HealthReport = z.object({
    * undefined as `false`.
    */
   demoMode: z.boolean().optional(),
+  // #SCALE — which pluggable backends are live: blob "fs" | "fs+http" | "fs+s3" | "fs+<custom>";
+  // fanout "local" | "redis". Lets ops confirm a config-flip took effect from one curl.
+  blobBackend: z.string().optional(),
+  fanout: z.string().optional(),
+  memoryDriver: z.string().optional(),
 });
 export type HealthReport = z.infer<typeof HealthReport>;

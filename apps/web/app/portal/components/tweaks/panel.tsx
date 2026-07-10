@@ -1,31 +1,23 @@
 "use client";
 
 /**
- * TweaksPanel (P2-FE-16) — floating control panel for runtime preferences.
+ * TweaksPanel (P2-FE-16) — floating power-user control panel.
  *
- * Layout / visual style ported from v1_1 tweaks-panel.jsx (light glass card,
- * bottom-right anchor, draggable header, ~280px wide). The wiring is
- * different: postMessage plumbing is replaced by localStorage via
- * `useTweaks`, and the panel opens/closes on a keyboard hotkey + a
- * cog button rather than the v1_1 `__activate_edit_mode` protocol.
+ * Opened with the cog button or Cmd/Ctrl+Shift+T. State flows through the
+ * shared PreferencesProvider (via `useTweaks`), so changes here stay in
+ * sync with the top-bar controls and Settings → Appearance.
  *
- * Hotkey: Cmd/Ctrl + Shift + T.
- *
- * Controls:
- *   1. Theme       (dark / light)
- *   2. Density     (compact / default / comfortable)
- *   3. Accent      (4 color chips)
- *   4. Live stream (toggle)
- *   5. Show debug  (toggle)
- *   6. Tenant      (select)
- *   7. Data source (radio; no-op since real API is the only source — kept
- *                   for prototype parity per audit §6 D-3)
+ * Restyled to theme tokens (was hardcoded light glass, unreadable in dark
+ * mode). Controls: Theme (system/light/dark), Language (EN/中), Density,
+ * Accent, Live stream, Show debug, Tenant, Data source.
  */
 
 import { useEffect, useState } from "react";
 import { Icon } from "../Icon";
 import { useTweaks, type Tweaks } from "./use-tweaks";
+import { LanguageToggle } from "../shell/appearance-controls";
 import { useTenantNavigate } from "../../lib/use-tenant";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 
 const ACCENT_OPTIONS: { value: string; label: string }[] = [
   { value: "#d0ff00", label: "Lime" },
@@ -47,6 +39,7 @@ export function TweaksPanel({ tenants = [] }: TweaksPanelProps) {
   const [open, setOpen] = useState(false);
   const [tweaks, setTweak] = useTweaks();
   const goTenant = useTenantNavigate();
+  const { t } = useI18n();
 
   // Hotkey: Cmd/Ctrl+Shift+T toggles the panel.
   useEffect(() => {
@@ -64,8 +57,8 @@ export function TweaksPanel({ tenants = [] }: TweaksPanelProps) {
     <>
       <button
         onClick={() => setOpen((v) => !v)}
-        aria-label="Open tweaks panel"
-        title="Tweaks (⌘⇧T)"
+        aria-label={t("tweaksPanel.openAria")}
+        title={t("tweaksPanel.openTitle")}
         style={{
           position: "fixed",
           right: 16,
@@ -110,10 +103,11 @@ function PanelBody({
   onClose: () => void;
   onTenantChange: (next: string) => void;
 }) {
+  const { t } = useI18n();
   return (
     <div
       role="dialog"
-      aria-label="Tweaks panel"
+      aria-label={t("tweaksPanel.dialogAria")}
       style={{
         position: "fixed",
         right: 16,
@@ -122,16 +116,12 @@ function PanelBody({
         maxHeight: "calc(100vh - 32px)",
         display: "flex",
         flexDirection: "column",
-        background: "rgba(250,249,247,.86)",
-        color: "#29261b",
-        backdropFilter: "blur(24px) saturate(160%)",
-        WebkitBackdropFilter: "blur(24px) saturate(160%)",
-        border: "0.5px solid rgba(255,255,255,.6)",
-        borderRadius: 14,
-        boxShadow:
-          "0 1px 0 rgba(255,255,255,.5) inset, 0 12px 40px rgba(0,0,0,.18)",
-        fontFamily:
-          "ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif",
+        background: "var(--panel)",
+        color: "var(--text)",
+        border: "1px solid var(--border-2)",
+        borderRadius: 12,
+        boxShadow: "0 12px 40px rgba(0,0,0,.35)",
+        fontFamily: "var(--sans)",
         fontSize: 11.5,
         lineHeight: 1.4,
         overflow: "hidden",
@@ -144,16 +134,17 @@ function PanelBody({
           alignItems: "center",
           justifyContent: "space-between",
           padding: "10px 8px 10px 14px",
+          borderBottom: "1px solid var(--border)",
         }}
       >
         <strong style={{ fontSize: 12, fontWeight: 600, letterSpacing: ".01em" }}>
-          Tweaks
+          {t("tweaksPanel.title")}
         </strong>
         <button
           onClick={onClose}
-          aria-label="Close tweaks"
+          aria-label={t("tweaksPanel.closeAria")}
           style={{
-            color: "rgba(41,38,27,.55)",
+            color: "var(--text-3)",
             width: 22,
             height: 22,
             borderRadius: 6,
@@ -165,7 +156,7 @@ function PanelBody({
       </div>
       <div
         style={{
-          padding: "2px 14px 14px",
+          padding: "12px 14px 14px",
           display: "flex",
           flexDirection: "column",
           gap: 10,
@@ -173,36 +164,41 @@ function PanelBody({
         }}
       >
         <RadioRow
-          label="Theme"
+          label={t("tweaksPanel.theme")}
           value={tweaks.theme}
-          options={["dark", "light"]}
+          options={["system", "light", "dark"]}
+          optionKeyPrefix="tweaksPanel.theme_"
           onChange={(v) => setTweak("theme", v as Tweaks["theme"])}
         />
+        <Row label={t("tweaksPanel.language")} inline>
+          <LanguageToggle />
+        </Row>
         <RadioRow
-          label="Density"
+          label={t("tweaksPanel.density")}
           value={tweaks.density}
           options={["compact", "default", "comfortable"]}
+          optionKeyPrefix="tweaksPanel.density_"
           onChange={(v) => setTweak("density", v as Tweaks["density"])}
         />
         <ColorRow
-          label="Accent"
+          label={t("tweaksPanel.accent")}
           value={tweaks.accent}
           options={ACCENT_OPTIONS}
           onChange={(v) => setTweak("accent", v)}
         />
         <ToggleRow
-          label="Live event stream"
+          label={t("tweaksPanel.liveStream")}
           value={tweaks.liveStream}
           onChange={(v) => setTweak("liveStream", v)}
         />
         <ToggleRow
-          label="Show debug panels"
+          label={t("tweaksPanel.showDebug")}
           value={tweaks.showDebug}
           onChange={(v) => setTweak("showDebug", v)}
         />
         {tenants.length > 0 && (
           <SelectRow
-            label="Active tenant"
+            label={t("tweaksPanel.activeTenant")}
             value={tweaks.tenant}
             options={tenants.map((t) => ({ value: t.id, label: t.name }))}
             onChange={(v) => {
@@ -213,13 +209,12 @@ function PanelBody({
         )}
         {tweaks.showDebug && (
           <RadioRow
-            label="Data source"
+            label={t("tweaksPanel.dataSource")}
             value={tweaks.dataSource}
             options={["json", "neo4j"]}
-            onChange={(v) =>
-              setTweak("dataSource", v as Tweaks["dataSource"])
-            }
-            note="Latent — real API is always the source."
+            optionKeyPrefix="tweaksPanel.dataSource_"
+            onChange={(v) => setTweak("dataSource", v as Tweaks["dataSource"])}
+            note={t("tweaksPanel.dataSourceNote")}
           />
         )}
       </div>
@@ -227,7 +222,7 @@ function PanelBody({
   );
 }
 
-// ─── Sub-controls — minimal but on-spec ─────────────────────────────────────
+// ─── Sub-controls — token-based ─────────────────────────────────────────────
 
 function Row({
   label,
@@ -246,8 +241,8 @@ function Row({
         style={{
           display: "flex",
           justifyContent: "space-between",
-          alignItems: "baseline",
-          color: "rgba(41,38,27,.72)",
+          alignItems: "center",
+          color: "var(--text-2)",
         }}
       >
         <span style={{ fontWeight: 500 }}>{label}</span>
@@ -255,7 +250,7 @@ function Row({
       </div>
       {!inline && children}
       {note && (
-        <div style={{ fontSize: 10, color: "rgba(41,38,27,.5)" }}>{note}</div>
+        <div style={{ fontSize: 10, color: "var(--text-3)" }}>{note}</div>
       )}
     </div>
   );
@@ -265,24 +260,28 @@ function RadioRow({
   label,
   value,
   options,
+  optionKeyPrefix,
   onChange,
   note,
 }: {
   label: string;
   value: string;
   options: string[];
+  optionKeyPrefix: string;
   onChange: (v: string) => void;
   note?: string;
 }) {
+  const { t } = useI18n();
   return (
     <Row label={label} note={note}>
       <div
         style={{
           display: "flex",
           padding: 2,
-          background: "rgba(0,0,0,.06)",
+          background: "var(--panel-3)",
+          border: "1px solid var(--border)",
           borderRadius: 8,
-          gap: 0,
+          gap: 2,
         }}
       >
         {options.map((o) => {
@@ -295,17 +294,15 @@ function RadioRow({
                 flex: 1,
                 padding: "4px 6px",
                 borderRadius: 6,
-                background: active ? "rgba(255,255,255,.9)" : "transparent",
-                boxShadow: active
-                  ? "0 1px 2px rgba(0,0,0,.12)"
-                  : "none",
-                color: "#29261b",
-                fontWeight: 500,
+                background: active ? "var(--panel)" : "transparent",
+                boxShadow: active ? "0 1px 2px rgba(0,0,0,.25)" : "none",
+                color: active ? "var(--text)" : "var(--text-3)",
+                fontWeight: active ? 500 : 400,
                 fontSize: 11.5,
                 minHeight: 22,
               }}
             >
-              {o}
+              {t(`${optionKeyPrefix}${o}`)}
             </button>
           );
         })}
@@ -334,7 +331,7 @@ function ToggleRow({
           width: 32,
           height: 18,
           borderRadius: 999,
-          background: value ? "#34c759" : "rgba(0,0,0,.15)",
+          background: value ? "var(--green)" : "var(--border-2)",
           transition: "background .15s",
         }}
       >
@@ -377,10 +374,10 @@ function SelectRow({
           width: "100%",
           height: 26,
           padding: "0 8px",
-          border: "0.5px solid rgba(0,0,0,.1)",
+          border: "1px solid var(--border)",
           borderRadius: 7,
-          background: "rgba(255,255,255,.6)",
-          color: "inherit",
+          background: "var(--panel-2)",
+          color: "var(--text)",
           font: "inherit",
         }}
       >
@@ -405,25 +402,27 @@ function ColorRow({
   options: { value: string; label: string }[];
   onChange: (v: string) => void;
 }) {
+  const { t } = useI18n();
   return (
     <Row label={label}>
       <div style={{ display: "flex", gap: 6 }}>
         {options.map((o) => {
           const on = o.value.toLowerCase() === value.toLowerCase();
+          const accentLabel = t(`tweaksPanel.accent_${o.label.toLowerCase()}`);
           return (
             <button
               key={o.value}
               onClick={() => onChange(o.value)}
-              aria-label={o.label}
-              title={o.label}
+              aria-label={accentLabel}
+              title={accentLabel}
               style={{
                 flex: 1,
                 height: 28,
                 borderRadius: 6,
                 background: o.value,
                 boxShadow: on
-                  ? "0 0 0 2px #29261b, 0 2px 6px rgba(0,0,0,.15)"
-                  : "0 0 0 .5px rgba(0,0,0,.12), 0 1px 2px rgba(0,0,0,.06)",
+                  ? "0 0 0 2px var(--text), 0 2px 6px rgba(0,0,0,.25)"
+                  : "0 0 0 1px var(--border-2)",
                 cursor: "pointer",
               }}
             />

@@ -14,6 +14,7 @@
 
 import { useState, useEffect } from "react";
 import { ActorTag, Badge, Button } from "@/app/portal/components";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 import type { DagAgent } from "@/lib/hooks/useAgents";
 import { Section, type EventCatalogItem } from "./inspectors";
 import type { DraftAgent } from "./draft";
@@ -36,6 +37,7 @@ export function AgentEditor({
   onRemove,
   onClose,
 }: AgentEditorProps) {
+  const { t } = useI18n();
   const effective = mergeAgent(agent, draft);
   const [titleInput, setTitleInput] = useState(effective.title);
   const [triggerInput, setTriggerInput] = useState(effective.triggers.join(", "));
@@ -84,28 +86,28 @@ export function AgentEditor({
           <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
             <ActorTag actor={agent.actor} />
             <Badge tone="muted">{agent.kebabId}</Badge>
-            <Badge tone="amber">EDIT</Badge>
+            <Badge tone="amber">{t("agentEditor.editBadge")}</Badge>
           </div>
           <div style={{ fontSize: 11, color: "var(--text-3)" }}>
-            Changes stay in your draft until you deploy.
+            {t("agentEditor.draftHint")}
           </div>
         </div>
-        <Button small icon="x" tone="ghost" onClick={onClose} ariaLabel="Close" />
+        <Button small icon="x" tone="ghost" onClick={onClose} ariaLabel={t("agentEditor.close")} />
       </header>
 
-      <Section title="Title">
+      <Section title={t("agentEditor.titleSection")}>
         <input
           value={titleInput}
           onChange={(e) => {
             setTitleInput(e.target.value);
             commit({ title: e.target.value });
           }}
-          placeholder="Human-readable title"
+          placeholder={t("agentEditor.titlePlaceholder")}
           style={inputStyle}
         />
       </Section>
 
-      <Section title="Triggered by · events this agent listens for">
+      <Section title={t("agentEditor.triggeredBySection")}>
         <textarea
           value={triggerInput}
           onChange={(e) => {
@@ -116,10 +118,10 @@ export function AgentEditor({
           rows={2}
           style={textareaStyle}
         />
-        <EventDictHint events={events} prefix="Available" />
+        <EventDictHint events={events} prefix={t("agentEditor.available")} />
       </Section>
 
-      <Section title="Triggered event · emitted on success">
+      <Section title={t("agentEditor.triggeredEventSection")}>
         <textarea
           value={emitInput}
           onChange={(e) => {
@@ -130,7 +132,7 @@ export function AgentEditor({
           rows={2}
           style={textareaStyle}
         />
-        <EventDictHint events={events} prefix="Available" />
+        <EventDictHint events={events} prefix={t("agentEditor.available")} />
       </Section>
 
       <div
@@ -143,7 +145,7 @@ export function AgentEditor({
         }}
       >
         <Button icon="x" tone="danger" onClick={onRemove}>
-          Remove node
+          {t("agentEditor.removeNode")}
         </Button>
       </div>
     </div>
@@ -157,11 +159,12 @@ function EventDictHint({
   events: EventCatalogItem[];
   prefix: string;
 }) {
+  const { t } = useI18n();
   if (events.length === 0) return null;
   return (
     <div style={{ marginTop: 6, fontSize: 10.5, color: "var(--text-3)" }}>
       {prefix}: {events.slice(0, 6).map((e) => e.name).join(", ")}
-      {events.length > 6 ? `, +${events.length - 6} more` : ""}
+      {events.length > 6 ? t("agentEditor.moreCount", { count: events.length - 6 }) : ""}
     </div>
   );
 }

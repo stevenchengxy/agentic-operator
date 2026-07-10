@@ -25,14 +25,26 @@ export interface Session {
   tenant: string;
 }
 
+/**
+ * Dev auto-login is gated on AUTH_MODE === "dev" ONLY (matching the api's
+ * `authenticate()`), NOT on `NODE_ENV !== production`. Otherwise local dev
+ * would always synthesize a session — the sign-in page, logout, and
+ * change-password could never actually take effect (P6-AUTH fix).
+ */
 function isDev(): boolean {
-  return (
-    process.env.AUTH_MODE === "dev" || process.env.NODE_ENV !== "production"
-  );
+  return process.env.AUTH_MODE === "dev";
 }
 
+/**
+ * Must match the api's secret resolution (apps/api/src/plugins/auth.ts) so a
+ * cookie the api signs on login verifies here. The api prefers
+ * AUTH_SESSION_SECRET; accept SESSION_SECRET as a fallback.
+ */
 function getSecret(): Uint8Array {
-  const raw = process.env.SESSION_SECRET ?? "dev-only-do-not-use-in-prod";
+  const raw =
+    process.env.AUTH_SESSION_SECRET ??
+    process.env.SESSION_SECRET ??
+    "dev-only-do-not-use-in-prod";
   return new TextEncoder().encode(raw);
 }
 

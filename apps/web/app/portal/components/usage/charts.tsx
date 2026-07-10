@@ -13,6 +13,8 @@
 
 import type { CSSProperties } from "react";
 
+import { useI18n } from "@/app/portal/lib/preferences-context";
+
 export interface BarDatum {
   key: string;
   value: number;
@@ -67,11 +69,12 @@ export function HorizontalBarChart({
   height?: number;
   accent?: string;
 }) {
+  const { t } = useI18n();
   const items = bucketBars(data, maxBars);
   if (items.length === 0) {
     return (
       <EmptyState
-        label="No usage data in this period"
+        label={t("chartsComp.noUsageData")}
         style={{ height }}
       />
     );
@@ -163,8 +166,9 @@ export function LineChart({
   accent?: string;
   formatY?: (v: number) => string;
 }) {
+  const { t } = useI18n();
   if (values.length === 0) {
-    return <EmptyState label="No daily data" style={{ height }} />;
+    return <EmptyState label={t("chartsComp.noDailyData")} style={{ height }} />;
   }
   const innerW = width - 60; // leave space for y labels
   const innerH = height - 20; // leave space for x labels
@@ -180,7 +184,7 @@ export function LineChart({
         width="100%"
         height={height}
         style={{ display: "block" }}
-        aria-label="Usage over time"
+        aria-label={t("chartsComp.usageOverTime")}
         role="img"
       >
         {/* Gridlines */}

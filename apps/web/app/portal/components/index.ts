@@ -43,6 +43,7 @@ export {
 } from "./sparkline";
 export { ViewHeader, type ViewHeaderProps } from "./view-header";
 export { Button, type ButtonProps, type ButtonTone } from "./button";
+export { CountUp, GrowBar } from "./motion";
 
 export {
   SearchInput,
@@ -55,6 +56,10 @@ export {
 } from "./inputs";
 
 export { KV, type KVProps } from "./kv";
+
+export { HelpTip } from "./help-tip";
+
+export { Markdown } from "./markdown";
 
 export { Splitter, type SplitterProps } from "./Splitter";
 export { ModalOverlay } from "./Modal";

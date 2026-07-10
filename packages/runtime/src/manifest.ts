@@ -28,6 +28,9 @@ export const StepTypeEnum = z.enum([
   "condition",
   "delay",
   "subflow",
+  // Phase 1a: a synchronous sub-agent call (step.invoke) with timeout + soft-fail default —
+  // the candidate-identity pattern (dedup/identity check that runs before a write).
+  "invoke",
 ]);
 
 export const ActionSchema = z.object({
@@ -43,6 +46,18 @@ export const ActionSchema = z.object({
   delay_ms: z.number().int().nonnegative().optional(),
   subflow: z.string().optional(),
   subflow_input: z.record(z.string(), z.unknown()).optional(),
+  // Phase 1a — production-grade orchestration fields:
+  //  - depends_on: names of prior steps that GATE this one. If a depended-on condition step
+  //    evaluated false (or a dependency was itself skipped), this action is SKIPPED (real branch).
+  //  - idempotency_key_from: a dotted path (event.data / subject) whose value is appended to this
+  //    step's Inngest id, so a per-item loop produces distinct, replay-stable step ids.
+  //  - invoke / invoke_input / on_error / default_result: the synchronous step.invoke contract.
+  depends_on: z.array(z.string()).optional(),
+  idempotency_key_from: z.string().optional(),
+  invoke: z.string().optional(),
+  invoke_input: z.record(z.string(), z.unknown()).optional(),
+  on_error: z.enum(["soft", "terminal"]).optional(),
+  default_result: z.unknown().optional(),
 });
 export type ActionSpec = z.infer<typeof ActionSchema>;
 
@@ -116,10 +131,24 @@ export const AgentSchema = z
     trigger: z.array(z.string()),
     actions: z.array(ActionSchema),
     triggered_event: z.array(z.string()),
+    // #P0-4 — compensation: the event to emit if this agent's run FAILS after it may have caused
+    // side-effects (e.g. PAYMENT_INITIATED → this agent fails → emit PAYMENT_CANCELLED so downstream
+    // can undo). Fired once (idempotent) on a hard failure. Optional — no-op when unset.
+    compensation_event: emptyStringToUndef,
     input_data: z.record(z.string(), z.unknown()).optional(),
     ontology_instructions: emptyStringToUndef,
     tool_use: toolUseSchema,
     typescript_code: emptyStringToUndef,
+    // Agent Factory marker: this agent was machine-generated and has NO hand-written tenant
+    // definePrompt. Its `logic` action runs the runtime's default generated-agent prompt (the
+    // agent's ontology_instructions are its system prompt) and advertises GLOBAL tools in the
+    // tool-use loop. Opt-in per agent → zero effect on hand-authored tenants (RAAS et al.).
+    generated: z.boolean().optional(),
+    // #G — true CodeAct: when set (only for AI-written code), the runtime EXECUTES the agent's
+    // typescript_code handler in the sandbox instead of the default prompt. Isolation invariant:
+    // runs ONLY on `-sb` sandbox tenants; FACTORY_EXEC_GENERATED=0 is the kill switch (default ON);
+    // any load/exec failure falls back to the declarative path (and counts as code-not-ran).
+    codeExecuted: z.boolean().optional(),
     // Scheduled-trigger fields. Declared explicitly so that legacy manifests
     // serialising `""` as the placeholder coerce to `undefined`; otherwise
     // `.passthrough()` would let the raw empty string flow through and the

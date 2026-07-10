@@ -1,5 +1,18 @@
+import { readFile, unlink } from "node:fs/promises";
 import { alias } from "drizzle-orm/sqlite-core";
-import { and, desc, eq, isNull, like, or, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  inArray,
+  isNotNull,
+  isNull,
+  like,
+  notInArray,
+  or,
+  sql,
+} from "drizzle-orm";
 import {
   agents,
   events,
@@ -10,6 +23,57 @@ import {
   tenants,
 } from "@agentic/db";
 import type { RunRow, StepRow, EventRow } from "@agentic/contracts";
+
+/**
+ * Resolve a stored payload reference to its real JSON, for the run-detail
+ * IO/Events tabs. Two ref formats coexist:
+ *   - event ledger: "<file>#<byteOffset>" → the NDJSON line's `.data`
+ *   - step artifact: "<file>"             → the whole JSON file
+ * Bounded to MAX_PAYLOAD_BYTES so a base64 résumé can't bloat the response;
+ * an oversized payload collapses to a small preview marker. Best-effort —
+ * a missing/garbled file resolves to null rather than throwing.
+ */
+const MAX_PAYLOAD_BYTES = 24_000;
+
+function capPayload(value: unknown): unknown {
+  if (value == null) return value;
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(value);
+  } catch {
+    return null;
+  }
+  if (serialized.length <= MAX_PAYLOAD_BYTES) return value;
+  return {
+    _truncated: true,
+    _bytes: serialized.length,
+    _preview: serialized.slice(0, 4000),
+  };
+}
+
+export async function resolvePayloadRef(
+  ref: string | null | undefined,
+): Promise<unknown> {
+  if (!ref) return null;
+  const hashIdx = ref.lastIndexOf("#");
+  try {
+    if (hashIdx === -1) {
+      // step artifact — the whole file is the payload
+      return capPayload(JSON.parse(await readFile(ref, "utf8")));
+    }
+    // event ledger ref "<file>#<offset>" → the line's `.data`
+    const filePath = ref.slice(0, hashIdx);
+    const offset = Number(ref.slice(hashIdx + 1));
+    if (!Number.isFinite(offset)) return null;
+    const buf = await readFile(filePath);
+    const nl = buf.indexOf(0x0a, offset);
+    const line = buf.toString("utf8", offset, nl === -1 ? undefined : nl);
+    const parsed = JSON.parse(line) as { data?: unknown };
+    return capPayload(parsed.data ?? parsed);
+  } catch {
+    return null;
+  }
+}
 
 // UC-V11-21 / AR-GAP-06 — two `events` joins on the same query (the
 // trigger event AND the emitted event) need aliases or Drizzle's
@@ -82,23 +146,46 @@ function hydrateStepInfo(rows: Array<RunRow & { id: string }>): RunRow[] {
   });
 }
 
-export async function listRecentRuns(
-  tenantSlug: string,
-  opts: { limit?: number; status?: string; agentName?: string; query?: string } = {},
-): Promise<RunRow[]> {
-  const db = getDb();
-  const tenantId = await resolveTenantId(tenantSlug);
-  if (!tenantId) return [];
+const VALID_STATUSES = [
+  "queued",
+  "running",
+  "ok",
+  "failed",
+  "waiting",
+  "cancelled",
+] as const;
 
-  const whereParts = [eq(runs.tenantId, tenantId)];
-  const VALID_STATUSES = [
-    "queued",
-    "running",
-    "ok",
-    "failed",
-    "waiting",
-    "cancelled",
-  ] as const;
+/**
+ * Statuses that mean the run is still in flight. Delete/cleanup actions never
+ * touch these — you can't tombstone a run that's mid-execution (the live
+ * handler would keep writing to a tombstoned row).
+ */
+const ACTIVE_STATUSES = ["queued", "running", "waiting"] as const;
+
+interface RunFilterOpts {
+  status?: string;
+  agentName?: string;
+  query?: string;
+  parentRunId?: string;
+  /** true → only tombstoned rows (recycle bin); default/false → only live rows. */
+  deleted?: boolean;
+}
+
+/**
+ * Build the shared WHERE predicate for the runs list surfaces. Always applies
+ * the tenant scope + the soft-delete lens (live rows by default, tombstoned
+ * rows when `deleted`), plus the optional status / agent / free-text / parent
+ * filters. Centralising this fixed a latent bug where `listRecentRuns` never
+ * filtered `deleted_at`, so soft-deleted runs kept surfacing in the operator UI.
+ */
+function buildRunWhere(tenantId: string, opts: RunFilterOpts) {
+  const whereParts = [
+    eq(runs.tenantId, tenantId),
+    opts.deleted ? isNotNull(runs.deletedAt) : isNull(runs.deletedAt),
+  ];
+  if (opts.parentRunId) {
+    whereParts.push(eq(runs.parentRunId, opts.parentRunId));
+  }
   if (
     opts.status &&
     opts.status !== "all" &&
@@ -115,6 +202,25 @@ export async function listRecentRuns(
       or(like(runs.id, q), like(runs.subject, q), like(agents.name, q))!,
     );
   }
+  return whereParts;
+}
+
+export async function listRecentRuns(
+  tenantSlug: string,
+  opts: {
+    limit?: number;
+    status?: string;
+    agentName?: string;
+    query?: string;
+    parentRunId?: string;
+    deleted?: boolean;
+  } = {},
+): Promise<RunRow[]> {
+  const db = getDb();
+  const tenantId = await resolveTenantId(tenantSlug);
+  if (!tenantId) return [];
+
+  const whereParts = buildRunWhere(tenantId, opts);
 
   const rows = db
     .select({
@@ -134,6 +240,9 @@ export async function listRecentRuns(
       correlationId: runs.correlationId,
       errorMessage: runs.errorMessage,
       logPath: runs.logPath,
+      // Surfacing parentRunId lets the list render a REPLAY/child badge and
+      // lets the trace tree fetch a run's children via ?parentRunId=.
+      parentRunId: runs.parentRunId,
       // P2-FE-18 — `testRun` lets cold-loaded views render the TEST badge
       // without a follow-up SSE roundtrip. The column is non-null in the
       // schema (default false) but we still coerce defensively.
@@ -164,6 +273,209 @@ export async function listRecentRuns(
   return hydrateStepInfo(rows);
 }
 
+/**
+ * Server-side keyset-free paginated listing (1-indexed `page`, `pageSize`
+ * rows). Returns the current page plus the full filtered `total` so the UI can
+ * render page controls. OFFSET pagination is fine here — operators keep at most
+ * a few thousand runs and prune old ones, and the `(tenant_id, started_at)`
+ * index backs the ORDER BY. Shares the exact filter predicate with
+ * `listRecentRuns` via `buildRunWhere`, including the soft-delete lens.
+ */
+export async function listRunsPaged(
+  tenantSlug: string,
+  opts: {
+    page?: number;
+    pageSize?: number;
+    status?: string;
+    agentName?: string;
+    query?: string;
+    parentRunId?: string;
+    deleted?: boolean;
+  } = {},
+): Promise<{ rows: RunRow[]; total: number; page: number; pageSize: number }> {
+  const db = getDb();
+  const page = Math.max(1, Math.trunc(opts.page ?? 1));
+  const pageSize = Math.min(200, Math.max(1, Math.trunc(opts.pageSize ?? 50)));
+  const tenantId = await resolveTenantId(tenantSlug);
+  if (!tenantId) return { rows: [], total: 0, page, pageSize };
+
+  const whereParts = buildRunWhere(tenantId, opts);
+
+  // Total is joined through `agents` because the free-text / agent filters
+  // reference `agents.name`. The events joins aren't needed for a count.
+  const totalRow = db
+    .select({ c: sql<number>`count(*)` })
+    .from(runs)
+    .innerJoin(agents, eq(agents.id, runs.agentId))
+    .where(and(...whereParts))
+    .all()[0];
+  const total = Number(totalRow?.c ?? 0);
+
+  const rows = db
+    .select({
+      id: runs.id,
+      status: runs.status,
+      agentName: agents.name,
+      agentTitle: agents.title,
+      subject: runs.subject,
+      triggerEvent: events.name,
+      emittedEvent: emittedEventsAlias.name,
+      startedAt: runs.startedAt,
+      endedAt: runs.endedAt,
+      durationMs: runs.durationMs,
+      tokensIn: runs.tokensIn,
+      tokensOut: runs.tokensOut,
+      model: runs.model,
+      correlationId: runs.correlationId,
+      errorMessage: runs.errorMessage,
+      logPath: runs.logPath,
+      parentRunId: runs.parentRunId,
+      isTest: runs.isTest,
+    })
+    .from(runs)
+    .innerJoin(agents, eq(agents.id, runs.agentId))
+    .leftJoin(events, eq(events.id, runs.triggerEventId))
+    .leftJoin(emittedEventsAlias, eq(emittedEventsAlias.id, runs.emittedEventId))
+    .where(and(...whereParts))
+    .orderBy(desc(runs.startedAt))
+    .limit(pageSize)
+    .offset((page - 1) * pageSize)
+    .all()
+    .map((r) => ({
+      ...r,
+      error: r.errorMessage,
+      testRun: r.isTest === true,
+      currentStepName: null,
+      currentStepOrd: null,
+      stepCount: null,
+    })) as RunRow[];
+
+  return { rows: hydrateStepInfo(rows), total, page, pageSize };
+}
+
+/** Outcome codes for {@link softDeleteRun} so the route can pick the HTTP status. */
+export type DeleteRunReason =
+  | "ok"
+  | "not_found"
+  | "active"
+  | "already_deleted";
+
+/**
+ * Soft-delete (tombstone) a single run — recoverable via {@link restoreRun}.
+ * Tenant-scoped (a run the caller doesn't own resolves to `not_found`, never
+ * leaking existence) and refuses to touch an in-flight run. Idempotent:
+ * re-deleting an already-tombstoned run reports `already_deleted` (the route
+ * treats it as a 200 no-op).
+ */
+export function softDeleteRun(tenantId: string, runId: string): DeleteRunReason {
+  const db = getDb();
+  const row = db
+    .select({ tenantId: runs.tenantId, status: runs.status, deletedAt: runs.deletedAt })
+    .from(runs)
+    .where(eq(runs.id, runId))
+    .all()[0];
+  if (!row || row.tenantId !== tenantId) return "not_found";
+  if ((ACTIVE_STATUSES as readonly string[]).includes(row.status)) return "active";
+  if (row.deletedAt) return "already_deleted";
+  db.update(runs)
+    .set({ deletedAt: new Date() })
+    .where(and(eq(runs.id, runId), eq(runs.tenantId, tenantId), isNull(runs.deletedAt)))
+    .run();
+  return "ok";
+}
+
+/** Un-tombstone a soft-deleted run. Returns false if nothing was restored
+ *  (wrong tenant, not found, or not currently deleted). */
+export function restoreRun(tenantId: string, runId: string): boolean {
+  const db = getDb();
+  const res = db
+    .update(runs)
+    .set({ deletedAt: null })
+    .where(and(eq(runs.id, runId), eq(runs.tenantId, tenantId), isNotNull(runs.deletedAt)))
+    .run() as { changes?: number };
+  return (res?.changes ?? 0) > 0;
+}
+
+/**
+ * Bulk soft-delete finished runs for a tenant. `scope: "all"` tombstones every
+ * finished (non-active, non-deleted) run; `scope: "oldest"` tombstones the `n`
+ * oldest by `started_at`. Never touches an in-flight run. Returns the count.
+ */
+export function bulkSoftDeleteRuns(
+  tenantId: string,
+  scope: "all" | "oldest",
+  n?: number,
+): number {
+  const db = getDb();
+  const base = [
+    eq(runs.tenantId, tenantId),
+    isNull(runs.deletedAt),
+    notInArray(runs.status, [...ACTIVE_STATUSES]),
+  ];
+
+  if (scope === "oldest") {
+    const count = Math.max(0, Math.trunc(n ?? 0));
+    if (count === 0) return 0;
+    // Two-step so we tombstone exactly the N oldest — SQLite's UPDATE has no
+    // ORDER BY/LIMIT, so resolve the ids first (oldest started_at first; NULL
+    // started_at sorts first under SQLite, i.e. treated as oldest — fine, those
+    // are the most stale rows to clear).
+    const ids = db
+      .select({ id: runs.id })
+      .from(runs)
+      .where(and(...base))
+      .orderBy(asc(runs.startedAt))
+      .limit(count)
+      .all()
+      .map((r) => r.id);
+    if (ids.length === 0) return 0;
+    const res = db
+      .update(runs)
+      .set({ deletedAt: new Date() })
+      .where(inArray(runs.id, ids))
+      .run() as { changes?: number };
+    return res?.changes ?? 0;
+  }
+
+  const res = db
+    .update(runs)
+    .set({ deletedAt: new Date() })
+    .where(and(...base))
+    .run() as { changes?: number };
+  return res?.changes ?? 0;
+}
+
+/**
+ * HARD-delete every already-tombstoned run for a tenant (empty the recycle
+ * bin). Irreversible: drops the run rows (FK cascade takes steps / tasks /
+ * artifacts / short-term memory / llm_turns / run_summaries with them) and
+ * best-effort unlinks each run's `.log` file, which no cascade covers. Never
+ * touches a live (non-deleted) run. Returns the number of run rows removed.
+ */
+export async function purgeDeletedRuns(tenantId: string): Promise<number> {
+  const db = getDb();
+  const doomed = db
+    .select({ id: runs.id, logPath: runs.logPath })
+    .from(runs)
+    .where(and(eq(runs.tenantId, tenantId), isNotNull(runs.deletedAt)))
+    .all();
+  if (doomed.length === 0) return 0;
+
+  // Best-effort log-file cleanup before the rows go. A missing/locked file
+  // must not abort the purge — the DB rows are the source of truth.
+  await Promise.all(
+    doomed
+      .filter((r) => r.logPath)
+      .map((r) => unlink(r.logPath as string).catch(() => undefined)),
+  );
+
+  const res = db
+    .delete(runs)
+    .where(and(eq(runs.tenantId, tenantId), isNotNull(runs.deletedAt)))
+    .run() as { changes?: number };
+  return res?.changes ?? 0;
+}
+
 export async function getRun(
   tenantSlug: string,
   runId: string,
@@ -189,7 +501,12 @@ export async function getRun(
       correlationId: runs.correlationId,
       errorMessage: runs.errorMessage,
       logPath: runs.logPath,
+      parentRunId: runs.parentRunId,
       isTest: runs.isTest,
+      // Real payloads for the run-detail IO/Events tabs: the trigger event is
+      // the run's INPUT, the emitted event its OUTPUT. Resolved below.
+      triggerPayloadRef: events.payloadRef,
+      emittedPayloadRef: emittedEventsAlias.payloadRef,
     })
     .from(runs)
     .innerJoin(agents, eq(agents.id, runs.agentId))
@@ -198,26 +515,115 @@ export async function getRun(
       emittedEventsAlias,
       eq(emittedEventsAlias.id, runs.emittedEventId),
     )
-    .where(and(eq(runs.tenantId, tenantId), eq(runs.id, runId)))
+    .where(
+      and(
+        eq(runs.tenantId, tenantId),
+        eq(runs.id, runId),
+        isNull(runs.deletedAt),
+      ),
+    )
     .all()[0];
   if (!row) return null;
+  const { triggerPayloadRef, emittedPayloadRef, ...runFields } = row;
+  // Resolve the real input (trigger) + output (emitted) payloads from the
+  // ledger — detail-only (the list endpoint never reads files).
+  const [inputPayload, outputPayload] = await Promise.all([
+    resolvePayloadRef(triggerPayloadRef),
+    resolvePayloadRef(emittedPayloadRef),
+  ]);
   // P2-FE-18 — mirror errorMessage→error and surface isTest→testRun so the
   // detail surface matches the list surface and cold-loads paint the badge.
   const enriched = {
-    ...row,
-    error: row.errorMessage,
-    testRun: row.isTest === true,
+    ...runFields,
+    error: runFields.errorMessage,
+    testRun: runFields.isTest === true,
     currentStepName: null,
     currentStepOrd: null,
     stepCount: null,
+    inputPayload,
+    outputPayload,
   } as RunRow;
   const hydrated = hydrateStepInfo([enriched]);
   return hydrated[0] ?? null;
 }
 
+export interface RunChainRow {
+  id: string;
+  agentName: string;
+  agentTitle: string | null;
+  status: string;
+  subject: string | null;
+  triggerEvent: string | null;
+  emittedEvent: string | null;
+  startedAt: Date | null;
+  durationMs: number | null;
+  parentRunId: string | null;
+  correlationId: string;
+}
+
+/**
+ * The whole cross-run cascade sharing an anchor run's correlationId, in
+ * pipeline order (ascending startedAt). The zhaopin 6-agent pipeline chains
+ * runs by re-emitting events with the same correlationId (NOT parentRunId), so
+ * the parentRunId-based trace tree shows nothing — this surfaces the real chain.
+ * Strictly tenant-scoped: a run id the caller doesn't own resolves to null (→
+ * 404) and never leaks another tenant's chain.
+ */
+export async function listRunChain(
+  tenantSlug: string,
+  runId: string,
+): Promise<{ correlationId: string; runs: RunChainRow[] } | null> {
+  const db = getDb();
+  const tenantId = await resolveTenantId(tenantSlug);
+  if (!tenantId) return null;
+
+  const anchor = db
+    .select({ correlationId: runs.correlationId })
+    .from(runs)
+    .where(
+      and(
+        eq(runs.tenantId, tenantId),
+        eq(runs.id, runId),
+        isNull(runs.deletedAt),
+      ),
+    )
+    .all()[0];
+  if (!anchor) return null;
+
+  const rows = db
+    .select({
+      id: runs.id,
+      status: runs.status,
+      agentName: agents.name,
+      agentTitle: agents.title,
+      subject: runs.subject,
+      triggerEvent: events.name,
+      emittedEvent: emittedEventsAlias.name,
+      startedAt: runs.startedAt,
+      durationMs: runs.durationMs,
+      parentRunId: runs.parentRunId,
+      correlationId: runs.correlationId,
+    })
+    .from(runs)
+    .innerJoin(agents, eq(agents.id, runs.agentId))
+    .leftJoin(events, eq(events.id, runs.triggerEventId))
+    .leftJoin(emittedEventsAlias, eq(emittedEventsAlias.id, runs.emittedEventId))
+    .where(
+      and(
+        eq(runs.tenantId, tenantId),
+        eq(runs.correlationId, anchor.correlationId),
+        isNull(runs.deletedAt),
+      ),
+    )
+    .orderBy(runs.startedAt)
+    .all() as RunChainRow[];
+
+  return { correlationId: anchor.correlationId, runs: rows };
+}
+
 export async function listSteps(runId: string): Promise<StepRow[]> {
   const db = getDb();
-  return db
+  const rows = db
     .select({
       id: steps.id,
       ord: steps.ord,
@@ -232,11 +638,23 @@ export async function listSteps(runId: string): Promise<StepRow[]> {
       model: steps.model,
       tokensIn: steps.tokensIn,
       tokensOut: steps.tokensOut,
+      attempts: steps.attempts,
+      inputRef: steps.inputRef,
+      outputRef: steps.outputRef,
     })
     .from(steps)
     .where(eq(steps.runId, runId))
     .orderBy(steps.ord)
     .all();
+  // Resolve each step's real input/output artifact for the Timeline/Trace/IO
+  // tabs (Inngest-style per-step 📥/📤). Detail-only file reads.
+  return Promise.all(
+    rows.map(async ({ inputRef, outputRef, ...step }) => ({
+      ...step,
+      input: await resolvePayloadRef(inputRef),
+      output: await resolvePayloadRef(outputRef),
+    })),
+  ) as Promise<StepRow[]>;
 }
 
 export async function listRecentEvents(

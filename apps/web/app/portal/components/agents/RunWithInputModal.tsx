@@ -20,6 +20,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { Button } from "@/app/portal/components";
 import { ModalOverlay } from "@/app/portal/components/Modal";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 import { useInvokeAgent } from "@/lib/hooks/useAgents";
 
 interface RunWithInputModalProps {
@@ -45,6 +46,7 @@ export function RunWithInputModal({
   onClose,
   onSubmitted,
 }: RunWithInputModalProps) {
+  const { t } = useI18n();
   const invoke = useInvokeAgent();
 
   // Seed the textarea once on open. Re-opening with a different agent
@@ -93,7 +95,9 @@ export function RunWithInputModal({
       parsed = bodyText.trim() === "" ? {} : JSON.parse(bodyText);
     } catch (err) {
       setParseError(
-        `JSON parse error — ${err instanceof Error ? err.message : String(err)}`,
+        t("runWithInputModal.parseErrorPrefix", {
+          msg: err instanceof Error ? err.message : String(err),
+        }),
       );
       return;
     }
@@ -136,7 +140,7 @@ export function RunWithInputModal({
   return (
     <ModalOverlay
       onClose={onClose}
-      ariaLabel={`Run agent ${agentTitle} with custom input`}
+      ariaLabel={t("runWithInputModal.ariaLabel", { agentTitle })}
     >
       <div
         style={{
@@ -159,7 +163,7 @@ export function RunWithInputModal({
               fontWeight: 500,
             }}
           >
-            Run with input
+            {t("runWithInputModal.heading")}
           </h3>
           <span
             className="mono"
@@ -170,13 +174,13 @@ export function RunWithInputModal({
         </header>
 
         <p style={{ margin: 0, fontSize: 12.5, color: "var(--text-2)" }}>
-          Edit the JSON body sent as <code className="mono">body.input</code> to
-          {" "}
+          {t("runWithInputModal.descBeforeBodyInput")}{" "}
+          <code className="mono">body.input</code>{" "}
+          {t("runWithInputModal.descBeforeEndpoint")}{" "}
           <code className="mono">
             POST /v1/agents/{agentName}/invoke?testRun=1
           </code>
-          . The manifest engine forwards it to the first declared trigger event
-          as the payload.
+          {t("runWithInputModal.descAfterEndpoint")}
         </p>
 
         {requiredFieldsHint && (
@@ -190,7 +194,8 @@ export function RunWithInputModal({
               padding: "8px 10px",
             }}
           >
-            Required fields: <strong className="mono">{requiredFieldsHint}</strong>
+            {t("runWithInputModal.requiredFields")}{" "}
+            <strong className="mono">{requiredFieldsHint}</strong>
           </div>
         )}
 
@@ -203,7 +208,7 @@ export function RunWithInputModal({
             color: "var(--text-3)",
           }}
         >
-          JSON body
+          {t("runWithInputModal.jsonBody")}
         </label>
         <textarea
           id="run-input-textarea"
@@ -235,7 +240,7 @@ export function RunWithInputModal({
         )}
         {serverError && (
           <p style={{ margin: 0, fontSize: 12, color: "var(--red)" }}>
-            Server returned an error: {serverError}
+            {t("runWithInputModal.serverError")} {serverError}
           </p>
         )}
 
@@ -244,8 +249,8 @@ export function RunWithInputModal({
             style={{
               fontSize: 12.5,
               color: "var(--text-2)",
-              background: "rgba(208,255,0,0.06)",
-              border: "1px solid rgba(208,255,0,0.32)",
+              background: "color-mix(in srgb, var(--signal) 6%, transparent)",
+              border: "1px solid color-mix(in srgb, var(--signal) 32%, transparent)",
               borderRadius: 4,
               padding: "10px 12px",
               display: "flex",
@@ -255,7 +260,7 @@ export function RunWithInputModal({
           >
             {submitted.kind === "code" ? (
               <span>
-                ✓ Run completed ·{" "}
+                ✓ {t("runWithInputModal.runCompleted")} ·{" "}
                 <span className="mono" style={{ color: "var(--text)" }}>
                   {submitted.runId}
                 </span>
@@ -266,7 +271,8 @@ export function RunWithInputModal({
             ) : (
               <>
                 <span>
-                  ✓ Manifest run queued · event{" "}
+                  ✓ {t("runWithInputModal.manifestQueued")} ·{" "}
+                  {t("runWithInputModal.eventLabel")}{" "}
                   <span className="mono" style={{ color: "var(--text)" }}>
                     {submitted.eventId}
                   </span>
@@ -279,8 +285,7 @@ export function RunWithInputModal({
                   <span className="mono">{submitted.correlationId}</span>
                 </span>
                 <span style={{ fontSize: 11.5, color: "var(--text-3)" }}>
-                  Inngest will spin up the run shortly — watch the Runs list
-                  (filter by this correlationId) for the timeline.
+                  {t("runWithInputModal.inngestHint")}
                 </span>
               </>
             )}
@@ -296,7 +301,7 @@ export function RunWithInputModal({
           }}
         >
           <Button small tone="ghost" onClick={onClose} disabled={invoke.isPending}>
-            {submitted ? "Close" : "Cancel"}
+            {submitted ? t("runWithInputModal.close") : t("runWithInputModal.cancel")}
           </Button>
           <Button
             small
@@ -305,7 +310,11 @@ export function RunWithInputModal({
             onClick={handleRun}
             disabled={invoke.isPending}
           >
-            {invoke.isPending ? "Running…" : submitted ? "Run again" : "Run"}
+            {invoke.isPending
+              ? t("runWithInputModal.running")
+              : submitted
+                ? t("runWithInputModal.runAgain")
+                : t("runWithInputModal.run")}
           </Button>
         </footer>
       </div>

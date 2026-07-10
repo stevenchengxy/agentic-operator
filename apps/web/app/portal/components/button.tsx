@@ -27,7 +27,7 @@ const TONES: Record<
   },
   primary: {
     bg: "var(--signal)",
-    fg: "#000",
+    fg: "var(--on-signal)",
     border: "var(--signal)",
     hover: "var(--signal)",
   },
@@ -40,8 +40,8 @@ const TONES: Record<
   danger: {
     bg: "transparent",
     fg: "var(--red)",
-    border: "rgba(255,100,112,0.35)",
-    hover: "rgba(255,100,112,0.08)",
+    border: "color-mix(in srgb, var(--red) 35%, transparent)",
+    hover: "color-mix(in srgb, var(--red) 8%, transparent)",
   },
 };
 

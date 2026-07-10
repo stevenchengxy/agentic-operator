@@ -2,12 +2,21 @@
 
 import { Button, Icon, Panel } from "@/app/portal/components";
 import { Field, SelectIn, TextIn, Toggle } from "@/app/portal/components/settings/atoms";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 
 export function NotificationsSection() {
+  const { t } = useI18n();
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-      <Panel title="Routes" subtitle="Where events show up. Configure per-event-name in the channels below." padded>
-        <Field label="Default route" hint="Falls back to this when no event-specific rule matches.">
+      <Panel
+        title={t("notifications.routesTitle")}
+        subtitle={t("notifications.routesSubtitle")}
+        padded
+      >
+        <Field
+          label={t("notifications.defaultRoute")}
+          hint={t("notifications.defaultRouteHint")}
+        >
           <SelectIn
             value="wechat:#ops-alerts"
             options={[
@@ -15,16 +24,19 @@ export function NotificationsSection() {
               "wechat:#deploys",
               "email:operations@agentic.local",
               "pagerduty:raas-on-call",
-              "silent (off)",
+              t("notifications.silentOff"),
             ]}
           />
         </Field>
-        <Field label="Page on failure" hint="Trigger PagerDuty when a run fails after retries.">
+        <Field
+          label={t("notifications.pageOnFailure")}
+          hint={t("notifications.pageOnFailureHint")}
+        >
           <Toggle value onChange={() => {}} />
         </Field>
         <Field
-          label="Quiet hours"
-          hint="Non-critical alerts are buffered until the window ends."
+          label={t("notifications.quietHours")}
+          hint={t("notifications.quietHoursHint")}
         >
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <TextIn value="22:00" mono />
@@ -34,7 +46,7 @@ export function NotificationsSection() {
         </Field>
       </Panel>
 
-      <Panel title="Event → channel mapping" padded={false}>
+      <Panel title={t("notifications.eventChannelMapping")} padded={false}>
         {[
           { ev: "TASK_CREATED", ch: "wechat:#human-tasks" },
           { ev: "JD_PUBLISHED", ch: "wechat:#hiring" },
@@ -58,13 +70,13 @@ export function NotificationsSection() {
               {r.ch}
             </span>
             <Button small tone="ghost">
-              <Icon name="x" size={10} /> Remove
+              <Icon name="x" size={10} /> {t("notifications.remove")}
             </Button>
           </div>
         ))}
         <div style={{ padding: "10px 14px", borderTop: "1px solid var(--border)" }}>
           <Button small icon="plus" tone="ghost">
-            Add route
+            {t("notifications.addRoute")}
           </Button>
         </div>
       </Panel>

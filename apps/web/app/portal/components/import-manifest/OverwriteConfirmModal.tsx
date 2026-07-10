@@ -20,6 +20,7 @@
 import { useEffect, useMemo } from "react";
 import type { ManifestImportOverwriteRequired } from "@agentic/contracts";
 import { Button, Icon } from "@/app/portal/components";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 
 /** The flat 409 payload may carry an optional `prior` block the wizard knows
  *  about even though it's not part of the strict contract type — make it a
@@ -45,6 +46,7 @@ export function OverwriteConfirmModal({
   onCancel,
   committing,
 }: OverwriteConfirmModalProps) {
+  const { t } = useI18n();
   const diff = payload.diff;
   const prior = payload.prior ?? {};
   const conflicts = payload.conflicts ?? [];
@@ -73,7 +75,7 @@ export function OverwriteConfirmModal({
       onClick={committing ? undefined : onCancel}
       role="dialog"
       aria-modal="true"
-      aria-label="Confirm overwrite of live workflow"
+      aria-label={t("overwriteConfirmModal.dialogAria")}
       style={{
         position: "fixed",
         inset: 0,
@@ -92,7 +94,7 @@ export function OverwriteConfirmModal({
           width: 560,
           maxHeight: "82vh",
           background: "var(--panel)",
-          border: "1px solid rgba(255,100,112,0.45)",
+          border: "1px solid color-mix(in srgb, var(--red) 45%, transparent)",
           borderRadius: 8,
           overflow: "hidden",
           display: "flex",
@@ -107,34 +109,34 @@ export function OverwriteConfirmModal({
             gap: 10,
             padding: "14px 18px",
             borderBottom: "1px solid var(--border)",
-            background: "rgba(255,100,112,0.06)",
+            background: "color-mix(in srgb, var(--red) 6%, transparent)",
           }}
         >
           <Icon name="alert" size={14} style={{ color: "var(--red)" }} />
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontSize: 14, color: "var(--text)", fontWeight: 500 }}>
-              Replace live workflow?
+              {t("overwriteConfirmModal.title")}
             </div>
             <div style={{ fontSize: 11, color: "var(--text-3)", marginTop: 2 }}>
               {prior.version_label ? (
                 <>
-                  Replacing live workflow{" "}
+                  {t("overwriteConfirmModal.replacingLabeled")}{" "}
                   <span className="mono" style={{ color: "var(--text-2)" }}>
                     {prior.version_label}
                   </span>
                   {prior.deployed_at
-                    ? ` (deployed ${humanTime(prior.deployed_at)})`
+                    ? ` ${t("overwriteConfirmModal.deployedAt", { time: humanTime(prior.deployed_at) })}`
                     : ""}
                 </>
               ) : (
-                <>Replacing the current live workflow.</>
+                <>{t("overwriteConfirmModal.replacingCurrent")}</>
               )}
             </div>
           </div>
           <button
             onClick={committing ? undefined : onCancel}
             disabled={committing}
-            aria-label="Close"
+            aria-label={t("overwriteConfirmModal.close")}
             style={{ color: "var(--text-3)" }}
           >
             <Icon name="x" size={13} />
@@ -162,21 +164,24 @@ export function OverwriteConfirmModal({
             }}
           >
             <span>
-              Will add <span style={{ color: "var(--green)" }}>{counts.added}</span>
+              {t("overwriteConfirmModal.willAdd")}{" "}
+              <span style={{ color: "var(--green)" }}>{counts.added}</span>
             </span>
             <span style={{ color: "var(--text-4)" }}>·</span>
             <span>
-              remove <span style={{ color: "var(--red)" }}>{counts.removed}</span>
+              {t("overwriteConfirmModal.remove")}{" "}
+              <span style={{ color: "var(--red)" }}>{counts.removed}</span>
             </span>
             <span style={{ color: "var(--text-4)" }}>·</span>
             <span>
-              modify <span style={{ color: "var(--amber)" }}>{counts.modified}</span>
+              {t("overwriteConfirmModal.modify")}{" "}
+              <span style={{ color: "var(--amber)" }}>{counts.modified}</span>
             </span>
             {typeof prior.agents === "number" && (
               <>
                 <span style={{ color: "var(--text-4)" }}>·</span>
                 <span style={{ color: "var(--text-3)" }}>
-                  prior had {prior.agents} agents
+                  {t("overwriteConfirmModal.priorHadAgents", { count: prior.agents })}
                 </span>
               </>
             )}
@@ -184,7 +189,7 @@ export function OverwriteConfirmModal({
 
           {counts.removed > 0 && (
             <DiffSection
-              label={`Removed · ${counts.removed}`}
+              label={t("overwriteConfirmModal.removedSection", { count: counts.removed })}
               color="var(--red)"
               ids={diff.removed}
               tone="red"
@@ -193,7 +198,7 @@ export function OverwriteConfirmModal({
 
           {counts.modified > 0 && (
             <DiffSection
-              label={`Modified · ${counts.modified}`}
+              label={t("overwriteConfirmModal.modifiedSection", { count: counts.modified })}
               color="var(--amber)"
               ids={diff.modified}
               tone="amber"
@@ -202,7 +207,7 @@ export function OverwriteConfirmModal({
 
           {counts.added > 0 && (
             <DiffSection
-              label={`Added · ${counts.added}`}
+              label={t("overwriteConfirmModal.addedSection", { count: counts.added })}
               color="var(--green)"
               ids={diff.added}
               tone="green"
@@ -229,7 +234,7 @@ export function OverwriteConfirmModal({
                   marginBottom: 8,
                 }}
               >
-                Conflicts · {conflicts.length}
+                {t("overwriteConfirmModal.conflictsSection", { count: conflicts.length })}
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                 {conflicts.map((c, i) => (
@@ -268,20 +273,19 @@ export function OverwriteConfirmModal({
             style={{
               marginTop: 14,
               padding: "10px 12px",
-              background: "rgba(255,100,112,0.04)",
-              border: "1px solid rgba(255,100,112,0.20)",
+              background: "color-mix(in srgb, var(--red) 4%, transparent)",
+              border: "1px solid color-mix(in srgb, var(--red) 20%, transparent)",
               borderRadius: 4,
               fontSize: 11.5,
               color: "var(--text-2)",
               lineHeight: 1.5,
             }}
           >
-            The previous version will be demoted to{" "}
+            {t("overwriteConfirmModal.demotionPrefix")}{" "}
             <span className="mono" style={{ color: "var(--text)" }}>
               rolled_back
             </span>{" "}
-            and remains in the deployments history. New runs will use the new
-            manifest immediately.
+            {t("overwriteConfirmModal.demotionSuffix")}
           </div>
         </div>
 
@@ -301,7 +305,7 @@ export function OverwriteConfirmModal({
               onClick={committing ? undefined : onCancel}
               disabled={committing}
             >
-              Cancel
+              {t("overwriteConfirmModal.cancel")}
             </Button>
             <button
               onClick={committing ? undefined : onConfirm}
@@ -315,8 +319,8 @@ export function OverwriteConfirmModal({
                 fontFamily: "var(--sans)",
                 fontWeight: 500,
                 color: "#fff",
-                background: committing ? "rgba(255,100,112,0.5)" : "var(--red)",
-                border: `1px solid ${committing ? "rgba(255,100,112,0.5)" : "var(--red)"}`,
+                background: committing ? "color-mix(in srgb, var(--red) 50%, transparent)" : "var(--red)",
+                border: `1px solid ${committing ? "color-mix(in srgb, var(--red) 50%, transparent)" : "var(--red)"}`,
                 borderRadius: 5,
                 cursor: committing ? "not-allowed" : "pointer",
                 opacity: committing ? 0.8 : 1,
@@ -324,7 +328,9 @@ export function OverwriteConfirmModal({
               }}
             >
               <Icon name="alert" size={11} />
-              {committing ? "Deploying…" : "Overwrite and deploy"}
+              {committing
+                ? t("overwriteConfirmModal.deploying")
+                : t("overwriteConfirmModal.overwriteAndDeploy")}
             </button>
           </div>
         </footer>
@@ -353,12 +359,13 @@ function ReasonChip({
 }: {
   reason: ManifestImportOverwriteRequired["reason"];
 }) {
+  const { t } = useI18n();
   const text =
     reason === "removes_agents"
-      ? "Removes one or more agents"
+      ? t("overwriteConfirmModal.reasonRemovesAgents")
       : reason === "modifies_threshold"
-        ? "Modifies a large fraction of the live workflow"
-        : "Significant change";
+        ? t("overwriteConfirmModal.reasonModifiesThreshold")
+        : t("overwriteConfirmModal.reasonSignificant");
   return (
     <span
       style={{
@@ -372,8 +379,8 @@ function ReasonChip({
         letterSpacing: "0.04em",
         textTransform: "uppercase",
         color: "var(--red)",
-        background: "rgba(255,100,112,0.10)",
-        border: "1px solid rgba(255,100,112,0.32)",
+        background: "color-mix(in srgb, var(--red) 10%, transparent)",
+        border: "1px solid color-mix(in srgb, var(--red) 32%, transparent)",
         borderRadius: 3,
         lineHeight: 1.4,
         whiteSpace: "nowrap",
@@ -478,12 +485,12 @@ function SeverityChip({ severity }: { severity: "block" | "warn" }) {
         color: severity === "block" ? "var(--red)" : "var(--amber)",
         background:
           severity === "block"
-            ? "rgba(255,100,112,0.10)"
-            : "rgba(255,181,71,0.10)",
+            ? "color-mix(in srgb, var(--red) 10%, transparent)"
+            : "color-mix(in srgb, var(--amber) 10%, transparent)",
         border: `1px solid ${
           severity === "block"
-            ? "rgba(255,100,112,0.32)"
-            : "rgba(255,181,71,0.32)"
+            ? "color-mix(in srgb, var(--red) 32%, transparent)"
+            : "color-mix(in srgb, var(--amber) 32%, transparent)"
         }`,
         borderRadius: 3,
         flexShrink: 0,

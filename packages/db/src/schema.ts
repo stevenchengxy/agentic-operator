@@ -60,7 +60,29 @@ export const users = sqliteTable(
     id: text("id").primaryKey(),
     email: text("email").notNull(),
     name: text("name").notNull(),
+    /**
+     * P6-AUTH — scrypt password hash (`scrypt$<N>$<saltB64>$<hashB64>`, see
+     * password.ts). Null for legacy users seeded before auth landed and for
+     * not-yet-activated accounts; a null hash can never satisfy login.
+     */
+    passwordHash: text("password_hash"),
+    /**
+     * P6-AUTH — cross-tenant platform role. `superadmin` bypasses per-tenant
+     * RBAC and may manage tenants + users platform-wide; `none` is an ordinary
+     * user whose authority comes solely from `memberships`.
+     */
+    platformRole: text("platform_role", { enum: ["none", "superadmin"] })
+      .notNull()
+      .default("none"),
+    /** P6-AUTH — account lifecycle. `suspended` blocks login + new sessions. */
+    status: text("status", { enum: ["active", "suspended"] })
+      .notNull()
+      .default("active"),
     createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+    /** P6-AUTH — last credential/profile/role change. */
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
       .notNull()
       .default(now),
   },
@@ -79,6 +101,12 @@ export const memberships = sqliteTable(
       .notNull()
       .references(() => tenants.id, { onDelete: "cascade" }),
     role: text("role", { enum: ["admin", "operator", "viewer"] }).notNull(),
+    /** P6-AUTH — when this membership was granted (for the Access tab). */
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+    /** P6-AUTH — user id of the admin/superadmin who granted this membership. */
+    createdBy: text("created_by").references(() => users.id),
   },
   (t) => ({
     pk: primaryKey({ columns: [t.userId, t.tenantId] }),
@@ -311,6 +339,10 @@ export const runs = sqliteTable(
     tokensOut: integer("tokens_out"),
     model: text("model"),
     emittedEventId: text("emitted_event_id"),
+    /** #REDESIGN P1 — execution receipt: did this agent's GENERATED CODE actually run (true) vs fall
+     *  back to the declarative/prompt path (false)? Null = declarative agent (no code to run). The
+     *  finish gate requires every codeExecuted agent to have a run with code_ran=true. */
+    codeRan: integer("code_ran", { mode: "boolean" }),
     errorMessage: text("error_message"),
     logPath: text("log_path"),
     correlationId: text("correlation_id").notNull(),
@@ -365,9 +397,94 @@ export const steps = sqliteTable(
     model: text("model"),
     tokensIn: integer("tokens_in"),
     tokensOut: integer("tokens_out"),
+    /**
+     * Execution attempt count. Inngest retries a failed `step.run` body in
+     * place; the runtime upserts by (run_id, ord) and bumps this so the run
+     * viewer can show "attempt 2 of 3" instead of duplicate step rows.
+     * Code-agent steps run synchronously and stay at 1.
+     */
+    attempts: integer("attempts").notNull().default(1),
   },
   (t) => ({
     runOrdIdx: index("steps_run_ord_idx").on(t.runId, t.ord),
+  }),
+);
+
+// ─── LLM turns (W0) ──────────────────────────────────────────────────────────
+// Raw per-turn capture of the deployed manifest agents' LLM tool-use loop: the
+// model's response text, extracted reasoning/thinking, and the tools it
+// requested — one row per loop iteration, keyed on run_id + step_id. This is
+// what powers the run-detail reasoning surface and the 推理审计 page (production
+// runs previously stored only token counts). Gated by AGENTIC_CAPTURE_LLM_TURNS
+// with per-field size caps in the runtime. run_id FK cascade cleans these up on
+// run delete/purge.
+export const llmTurns = sqliteTable(
+  "llm_turns",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    runId: text("run_id")
+      .notNull()
+      .references(() => runs.id, { onDelete: "cascade" }),
+    /** The step this turn belongs to. Plain column — the step row is written
+     *  immediately before, so no FK ordering hazard; run cascade covers GC. */
+    stepId: text("step_id"),
+    /** Turn index within the step's tool-use loop (0-based). */
+    ord: integer("ord").notNull(),
+    /** Bounded snapshot of the rendered prompt — only on the first turn. */
+    promptPreview: text("prompt_preview"),
+    /** The assistant's text reply (bounded). */
+    responseText: text("response_text"),
+    /** Extracted thinking/reasoning when the provider surfaced it (bounded). */
+    reasoning: text("reasoning"),
+    /** [{ name, input }] of the tools the model requested this turn. */
+    toolCallsJson: text("tool_calls_json", { mode: "json" }),
+    provider: text("provider"),
+    model: text("model"),
+    tokensIn: integer("tokens_in"),
+    tokensOut: integer("tokens_out"),
+    finishReason: text("finish_reason"),
+    latencyMs: integer("latency_ms"),
+    correlationId: text("correlation_id"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+  },
+  (t) => ({
+    runIdx: index("llm_turns_run_idx").on(t.runId, t.ord),
+    tenantCreatedIdx: index("llm_turns_tenant_created_idx").on(
+      t.tenantId,
+      t.createdAt,
+    ),
+  }),
+);
+
+// ─── Run summaries (W2) ──────────────────────────────────────────────────────
+// Cached AI summary of a production run — a natural-language narrative + (on
+// success) business details or (on failure) problem + likely-cause guesses.
+// One row per run; generated lazily on first open and cached so re-opening
+// doesn't re-spend tokens. run_id FK cascade cleans it up on run delete/purge.
+export const runSummaries = sqliteTable(
+  "run_summaries",
+  {
+    runId: text("run_id")
+      .primaryKey()
+      .references(() => runs.id, { onDelete: "cascade" }),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    /** The serialized RunSummary object (narrative/problem/causes/suggestions/digest). */
+    summaryJson: text("summary_json", { mode: "json" }).notNull(),
+    /** The model that produced the critique ("" when digest-only). */
+    model: text("model"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+  },
+  (t) => ({
+    tenantIdx: index("run_summaries_tenant_idx").on(t.tenantId, t.createdAt),
   }),
 );
 
@@ -429,6 +546,43 @@ export const artifacts = sqliteTable(
   },
   (t) => ({
     runIdx: index("art_run_idx").on(t.runId),
+  }),
+);
+
+// Durable business entities (candidate / resume / job_posting /
+// candidate_match_result / communication_log) — the new-arch-native replacement
+// for the old AO's Neo4j / RAAS-Postgres instance write-back. Deliberately NOT
+// under `artifacts` (whose run_id FK cascade-deletes with its run) nor
+// `agent_memory_long` (a private per-agent KV): business entities must OUTLIVE
+// the runs that produced them. Written by the `records.upsert` global tool.
+export const businessRecords = sqliteTable(
+  "business_records",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    recordType: text("record_type").notNull(),
+    recordKey: text("record_key").notNull(),
+    subject: text("subject"),
+    candidateId: text("candidate_id"),
+    correlationId: text("correlation_id"),
+    // Plain column, NOT a FK to runs — records survive run GC / soft-delete.
+    runId: text("run_id"),
+    sourceAgent: text("source_agent"),
+    dataJson: text("data_json", { mode: "json" }).notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().default(now),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull().default(now),
+  },
+  (t) => ({
+    identityUq: uniqueIndex("business_records_identity_uq").on(
+      t.tenantId,
+      t.recordType,
+      t.recordKey,
+    ),
+    typeIdx: index("business_records_type_idx").on(t.tenantId, t.recordType, t.updatedAt),
+    candidateIdx: index("business_records_candidate_idx").on(t.tenantId, t.candidateId),
+    correlationIdx: index("business_records_correlation_idx").on(t.correlationId),
   }),
 );
 
@@ -599,6 +753,11 @@ export const agentMemoryLong = sqliteTable(
     subject: text("subject").notNull(),
     key: text("key").notNull(),
     valueJson: text("value_json").notNull(),
+    /** #SCALE-MEM — pre-computed embedding (JSON float array), written at put() time so search never
+     *  re-embeds static values. NULL = compute-on-demand (back-compat / embedder changed). */
+    embeddingJson: text("embedding_json"),
+    /** #SCALE-MEM — TTL: rows past expiresAt are excluded from reads + GC'd lazily. NULL = no expiry. */
+    expiresAt: integer("expires_at", { mode: "timestamp_ms" }),
     createdAt: integer("created_at", { mode: "timestamp_ms" })
       .notNull()
       .default(now),
@@ -728,6 +887,220 @@ export const eventsRelations = relations(events, ({ one }) => ({
   }),
 }));
 
+// ─── Agent Factory (brain conversations + failure reflections) ──────────────
+// The factory's durable state: a streaming-brain conversation (so a follow-up
+// message resumes mid-build) + per-domain failure/success reflections (so the next
+// run starts wiser). Backs the ConversationStore + ReflectionWriter ports.
+
+export const factoryConversations = sqliteTable(
+  "factory_conversations",
+  {
+    id: text("id").primaryKey(),
+    domain: text("domain").notNull(),
+    messagesJson: text("messages_json", { mode: "json" }).notNull(),
+    ctxJson: text("ctx_json", { mode: "json" }),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().default(now),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull().default(now),
+  },
+  (t) => ({
+    domainIdx: index("factory_conversations_domain_idx").on(t.domain),
+  }),
+);
+
+export const factoryReflections = sqliteTable(
+  "factory_reflections",
+  {
+    id: text("id").primaryKey(),
+    domain: text("domain").notNull(),
+    kind: text("kind").notNull(), // failure | success | caveat
+    summary: text("summary").notNull(),
+    rootCause: text("root_cause"),
+    lesson: text("lesson").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().default(now),
+  },
+  (t) => ({
+    domainIdx: index("factory_reflections_domain_idx").on(t.domain),
+  }),
+);
+
+// #P0-3 — raw LLM telemetry: one row per LLM call (the factory brain + its review/design tools).
+// Closes the biggest observability gap from the architecture audit — per-call model / routing /
+// latency / size were ephemeral (in-memory streaming only), so spend + regression + router validation
+// weren't auditable. Also carries the model-routing decision (requested vs served + fallback) so a
+// separate model_routing table isn't needed for single-instance.
+export const llmCalls = sqliteTable(
+  "llm_calls",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id"),
+    domain: text("domain"),
+    /** the brain conversation / run this call belongs to. */
+    conversationId: text("conversation_id"),
+    /** caller tag: understand | plan | critique | design | review | codegen | fast | … */
+    purpose: text("purpose"),
+    /** model requested (first of the fallback chain) vs the one that actually served. */
+    requestedModel: text("requested_model"),
+    servedModel: text("served_model"),
+    provider: text("provider"),
+    /** true when the served model differs from the requested (a fallback occurred). */
+    fallback: integer("fallback", { mode: "boolean" }),
+    promptChars: integer("prompt_chars"),
+    completionChars: integer("completion_chars"),
+    /** approx token counts (chars/4) when exact usage isn't returned by the streaming path. */
+    approxTokensIn: integer("approx_tokens_in"),
+    approxTokensOut: integer("approx_tokens_out"),
+    latencyMs: integer("latency_ms"),
+    ok: integer("ok", { mode: "boolean" }),
+    failureReason: text("failure_reason"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().default(now),
+  },
+  (t) => ({
+    domainIdx: index("llm_calls_domain_idx").on(t.domain),
+    convIdx: index("llm_calls_conversation_idx").on(t.conversationId),
+    modelIdx: index("llm_calls_served_model_idx").on(t.servedModel),
+  }),
+);
+
+// #P1-1 — durable, queryable event store. The NDJSON ledger is per-instance/per-date and not
+// queryable; this mirrors every emitted inter-agent event into a DB row with the FULL payload inline
+// (small now thanks to content-addressed blob offload) + causation lineage (causationId), so
+// cross-agent causality is queryable + replay-safe across restarts. Foundation for horizontal scale.
+export const eventStore = sqliteTable(
+  "event_store",
+  {
+    id: text("id").primaryKey(), // == the emitted event id (evt-…)
+    tenantId: text("tenant_id"),
+    name: text("name").notNull(),
+    subject: text("subject"),
+    sourceRunId: text("source_run_id"),
+    sourceAgent: text("source_agent"),
+    /** the event id that CAUSED this one (its trigger) — walk this to reconstruct a causality chain. */
+    causationId: text("causation_id"),
+    correlationId: text("correlation_id"),
+    /** full assembled payload inline (blob offload keeps this small). */
+    payloadJson: text("payload_json"),
+    ts: integer("ts", { mode: "timestamp_ms" }).notNull().default(now),
+  },
+  (t) => ({
+    subjectIdx: index("event_store_subject_idx").on(t.subject),
+    causationIdx: index("event_store_causation_idx").on(t.causationId),
+    corrIdx: index("event_store_correlation_idx").on(t.correlationId),
+  }),
+);
+
+// #SCALE-TOOLS — per-tool sandbox effectiveness (invoked/succeeded). Feeds ranking demotion: a tool
+// that keeps failing in real sandbox runs stops being recommended (empirical, not just semantic).
+export const toolStats = sqliteTable(
+  "tool_stats",
+  {
+    toolName: text("tool_name").primaryKey(),
+    invoked: integer("invoked").notNull().default(0),
+    succeeded: integer("succeeded").notNull().default(0),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull().default(now),
+  },
+);
+
+// #P1-6 — denormalized acceptance verdicts, one row per criterion per run. Acceptance was computed
+// on-demand from the transcript JSON (no table), so pass-rate trends required replaying transcripts.
+export const acceptanceScores = sqliteTable(
+  "acceptance_scores",
+  {
+    id: text("id").primaryKey(),
+    runId: text("run_id").notNull(),
+    tenantId: text("tenant_id"),
+    domain: text("domain"),
+    criterionKey: text("criterion_key").notNull(),
+    label: text("label"),
+    pass: integer("pass", { mode: "boolean" }).notNull(),
+    detail: text("detail"),
+    computedAt: integer("computed_at", { mode: "timestamp_ms" }).notNull().default(now),
+  },
+  (t) => ({
+    runIdx: index("acceptance_scores_run_idx").on(t.runId),
+    domainIdx: index("acceptance_scores_domain_idx").on(t.domain),
+  }),
+);
+
+// ─── Agent Factory run history + skills library ─────────────────────────────
+// factory_runs backs the 历史运行 sidebar (one row per brain run, with the full
+// transcript for read-only replay). factory_skills is the persistent skills library
+// (create_skill/use_skill + effectiveness scoring), backing the SkillStore port.
+
+export const factoryRuns = sqliteTable(
+  "factory_runs",
+  {
+    id: text("id").primaryKey(),
+    // tenant_id is NOT NULL + cascades (0021): factory runs are tenant-scoped like every other
+    // user-visible table, so listing/deleting can filter by tenant and deleting a tenant GCs its
+    // runs. (Was nullable + unfiltered, which leaked runs across tenants — see runs.ts/list).
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    domain: text("domain").notNull(),
+    goal: text("goal").notNull(),
+    status: text("status").notNull(), // finished | budget_exhausted | turns_exhausted | errored | incomplete | running
+    tokensUsed: integer("tokens_used").notNull().default(0),
+    turns: integer("turns").notNull().default(0),
+    agentsCount: integer("agents_count").notNull().default(0),
+    reachedTerminal: integer("reached_terminal", { mode: "boolean" }).notNull().default(false),
+    errorMessage: text("error_message"),
+    transcriptJson: text("transcript_json", { mode: "json" }),
+    // Soft delete (0021): the 历史运行 trash/clear sets this; listRuns hides non-null rows and a
+    // reconnect to a soft-deleted run replays a tombstone. Recoverable via restoreRun.
+    deletedAt: integer("deleted_at", { mode: "timestamp_ms" }),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().default(now),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull().default(now),
+  },
+  (t) => ({
+    domainIdx: index("factory_runs_domain_idx").on(t.domain, t.createdAt),
+    deletedAtIdx: index("factory_runs_deleted_at_idx").on(t.deletedAt),
+  }),
+);
+
+export const factorySkills = sqliteTable(
+  "factory_skills",
+  {
+    slug: text("slug").primaryKey(),
+    name: text("name").notNull(),
+    purpose: text("purpose").notNull(),
+    promptFragment: text("prompt_fragment").notNull().default(""),
+    tools: text("tools", { mode: "json" }).notNull(),
+    decisionRule: text("decision_rule").notNull().default(""),
+    domain: text("domain"), // null = cross-domain (general)
+    useCount: integer("use_count").notNull().default(0),
+    evalCount: integer("eval_count").notNull().default(0),
+    successCount: integer("success_count").notNull().default(0),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().default(now),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull().default(now),
+  },
+  (t) => ({
+    domainIdx: index("factory_skills_domain_idx").on(t.domain),
+  }),
+);
+
+export const factoryTools = sqliteTable(
+  "factory_tools",
+  {
+    name: text("name").primaryKey(),
+    description: text("description").notNull().default(""),
+    method: text("method").notNull().default("GET"),
+    urlTemplate: text("url_template").notNull().default(""),
+    headers: text("headers", { mode: "json" }),
+    bodyTemplate: text("body_template"),
+    sideEffect: text("side_effect").notNull().default("read"),
+    domain: text("domain"),
+    // R6 (0022): typed I/O contracts — the tool's args + return shape (also the egress contract
+    // for an external-platform handoff), so the step-engine can validate and agents agree on shapes.
+    paramsSchema: text("params_schema", { mode: "json" }),
+    returnsSchema: text("returns_schema", { mode: "json" }),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().default(now),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull().default(now),
+  },
+  (t) => ({
+    domainIdx: index("factory_tools_domain_idx").on(t.domain),
+  }),
+);
+
 // ─── Helper: full schema export for drizzle() ───────────────────────────────
 
 export const schema = {
@@ -745,6 +1118,7 @@ export const schema = {
   steps,
   tasks,
   artifacts,
+  businessRecords,
   auditLog,
   apiTokens,
   eventTypes,
@@ -755,6 +1129,11 @@ export const schema = {
   agentMemoryShort,
   agentMemoryLong,
   idempotencyKeys,
+  factoryConversations,
+  factoryReflections,
+  factoryRuns,
+  factorySkills,
+  factoryTools,
   tenantsRelations,
   workflowsRelations,
   workflowVersionsRelations,

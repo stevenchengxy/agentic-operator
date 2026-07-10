@@ -13,6 +13,7 @@
 
 import { useMemo, useState } from "react";
 import type { ManifestDiff } from "@agentic/contracts";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 
 const PAD_X = 24;
 const PAD_Y = 28;
@@ -62,6 +63,7 @@ export interface ImportPreviewGraphProps {
 }
 
 export function ImportPreviewGraph({ manifest, diff }: ImportPreviewGraphProps) {
+  const { t } = useI18n();
   const agents = useMemo(() => normalizeManifest(manifest), [manifest]);
   const stages = useMemo(() => computeStages(agents), [agents]);
 
@@ -169,7 +171,7 @@ export function ImportPreviewGraph({ manifest, diff }: ImportPreviewGraphProps) 
           fontSize: 12,
         }}
       >
-        No agents to preview. Pick a manifest source first.
+        {t("importPreviewGraph.emptyState")}
       </div>
     );
   }
@@ -209,7 +211,7 @@ export function ImportPreviewGraph({ manifest, diff }: ImportPreviewGraphProps) 
               fontFamily="var(--mono)"
               letterSpacing="0.08em"
             >
-              {String(i).padStart(2, "0")} · STAGE
+              {String(i).padStart(2, "0")} · {t("importPreviewGraph.stage")}
             </text>
           </g>
         ))}
@@ -283,9 +285,9 @@ export function ImportPreviewGraph({ manifest, diff }: ImportPreviewGraphProps) 
                   : "var(--signal)";
           const fill =
             klass === "added"
-              ? "rgba(101,224,163,0.08)"
+              ? "color-mix(in srgb, var(--green) 8%, transparent)"
               : klass === "modified"
-                ? "rgba(255,181,71,0.06)"
+                ? "color-mix(in srgb, var(--amber) 6%, transparent)"
                 : "var(--panel)";
           return (
             <g

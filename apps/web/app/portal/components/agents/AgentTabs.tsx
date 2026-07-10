@@ -22,6 +22,7 @@ import {
   Td,
 } from "@/app/portal/components";
 import { fmtAgo, fmtDur } from "@/lib/format";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 import { useDeployments } from "@/lib/hooks/useDeployments";
 import { AGENT_SAMPLE_TOOL_USE } from "@/app/portal/components/agent-code/samples";
 import {
@@ -76,13 +77,14 @@ interface ModelInfo {
 // ────────────────────────────────────────────────────────────────────────────
 
 export function ConfigTab({ agent }: { agent: ViewAgent }) {
+  const { t } = useI18n();
   const hasCode = agent.actor === "Agent";
   return (
     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
       <Panel
-        title="Manifest"
+        title={t("agentTabs.manifest")}
         padded={false}
-        action={<Button small icon="external" tone="ghost">Edit</Button>}
+        action={<Button small icon="external" tone="ghost">{t("agentTabs.edit")}</Button>}
       >
         <CodeBlock>
           {JSON.stringify(
@@ -110,14 +112,14 @@ export function ConfigTab({ agent }: { agent: ViewAgent }) {
       </Panel>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        <Panel title="Triggers" padded>
+        <Panel title={t("agentTabs.triggers")} padded>
           {agent.triggers.length === 0 ? (
-            <span style={{ fontSize: 12, color: "var(--text-3)" }}>Manual — operator-initiated.</span>
+            <span style={{ fontSize: 12, color: "var(--text-3)" }}>{t("agentTabs.manualOperatorInitiated")}</span>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              {agent.triggers.map((t) => (
+              {agent.triggers.map((trig) => (
                 <div
-                  key={t}
+                  key={trig}
                   style={{
                     display: "flex",
                     alignItems: "center",
@@ -128,7 +130,7 @@ export function ConfigTab({ agent }: { agent: ViewAgent }) {
                     borderRadius: 4,
                   }}
                 >
-                  <Badge tone="blue">{t}</Badge>
+                  <Badge tone="blue">{trig}</Badge>
                   <span
                     style={{
                       marginLeft: "auto",
@@ -137,18 +139,18 @@ export function ConfigTab({ agent }: { agent: ViewAgent }) {
                       fontFamily: "var(--mono)",
                     }}
                   >
-                    ↓ inbound
+                    ↓ {t("agentTabs.inbound")}
                   </span>
                 </div>
               ))}
             </div>
           )}
         </Panel>
-        <Panel title="Emits" padded>
+        <Panel title={t("agentTabs.emits")} padded>
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            {agent.emits.map((t) => (
+            {agent.emits.map((ev) => (
               <div
-                key={t}
+                key={ev}
                 style={{
                   display: "flex",
                   alignItems: "center",
@@ -159,7 +161,7 @@ export function ConfigTab({ agent }: { agent: ViewAgent }) {
                   borderRadius: 4,
                 }}
               >
-                <Badge tone="green">{t}</Badge>
+                <Badge tone="green">{ev}</Badge>
                 <span
                   style={{
                     marginLeft: "auto",
@@ -168,18 +170,18 @@ export function ConfigTab({ agent }: { agent: ViewAgent }) {
                     fontFamily: "var(--mono)",
                   }}
                 >
-                  ↑ outbound
+                  ↑ {t("agentTabs.outbound")}
                 </span>
               </div>
             ))}
           </div>
         </Panel>
         {agent.tools && agent.tools.length > 0 && (
-          <Panel title="Tool bindings" padded>
+          <Panel title={t("agentTabs.toolBindings")} padded>
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              {agent.tools.map((t) => (
+              {agent.tools.map((tool) => (
                 <div
-                  key={t}
+                  key={tool}
                   style={{
                     display: "flex",
                     alignItems: "center",
@@ -191,7 +193,7 @@ export function ConfigTab({ agent }: { agent: ViewAgent }) {
                   }}
                 >
                   <Icon name="code" size={11} style={{ color: "var(--text-3)" }} />
-                  <span className="mono" style={{ fontSize: 11.5, color: "var(--text)" }}>{t}</span>
+                  <span className="mono" style={{ fontSize: 11.5, color: "var(--text)" }}>{tool}</span>
                   <span
                     style={{
                       marginLeft: "auto",
@@ -200,7 +202,7 @@ export function ConfigTab({ agent }: { agent: ViewAgent }) {
                       fontFamily: "var(--mono)",
                     }}
                   >
-                    bound
+                    {t("agentTabs.bound")}
                   </span>
                 </div>
               ))}
@@ -213,8 +215,9 @@ export function ConfigTab({ agent }: { agent: ViewAgent }) {
 }
 
 export function IOConfigTab({ agent }: { agent: ViewAgent }) {
+  const { t } = useI18n();
   return (
-    <Panel title="Schema" padded>
+    <Panel title={t("agentTabs.schema")} padded>
       <CodeBlock>{`// inputs
 {
   ${agent.triggers.length > 0 ? `trigger_event: ${JSON.stringify(agent.triggers)},` : "trigger: 'manual',"}
@@ -250,18 +253,19 @@ export function VersionsTab({ agent }: { agent: ViewAgent }) {
   // it was a synthetic field from the bootstrap mock that never matched
   // real deploys.
   void agent;
+  const { t } = useI18n();
   const deploymentsQuery = useDeployments();
   const versions = deploymentsQuery.data?.list ?? [];
   return (
-    <Panel title="Versions" padded={false}>
+    <Panel title={t("agentTabs.versions")} padded={false}>
       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
         <thead>
           <tr style={{ borderBottom: "1px solid var(--border)" }}>
-            <Th>Version</Th>
-            <Th>Status</Th>
-            <Th>Deployed by</Th>
-            <Th>When</Th>
-            <Th>Notes</Th>
+            <Th>{t("agentTabs.colVersion")}</Th>
+            <Th>{t("agentTabs.colStatus")}</Th>
+            <Th>{t("agentTabs.colDeployedBy")}</Th>
+            <Th>{t("agentTabs.colWhen")}</Th>
+            <Th>{t("agentTabs.colNotes")}</Th>
             <Th />
           </tr>
         </thead>
@@ -269,19 +273,19 @@ export function VersionsTab({ agent }: { agent: ViewAgent }) {
           {deploymentsQuery.isError ? (
             <tr>
               <Td colSpan={6} style={{ padding: 24, textAlign: "center", color: "var(--text-3)" }}>
-                Failed to load deployments: {deploymentsQuery.error?.message ?? "api unreachable"}
+                {t("agentTabs.loadDeploymentsFailed")} {deploymentsQuery.error?.message ?? t("agentTabs.apiUnreachable")}
               </Td>
             </tr>
           ) : deploymentsQuery.isLoading ? (
             <tr>
               <Td colSpan={6} style={{ padding: 24, textAlign: "center", color: "var(--text-3)" }}>
-                Loading deployments…
+                {t("agentTabs.loadingDeployments")}
               </Td>
             </tr>
           ) : versions.length === 0 ? (
             <tr>
               <Td colSpan={6} style={{ padding: 24, textAlign: "center", color: "var(--text-3)" }}>
-                No workflow deployments recorded yet.
+                {t("agentTabs.noDeploymentsYet")}
               </Td>
             </tr>
           ) : (
@@ -294,9 +298,9 @@ export function VersionsTab({ agent }: { agent: ViewAgent }) {
                   </Td>
                   <Td>
                     {v.status === "live" ? (
-                      <Badge tone="signal">LIVE</Badge>
+                      <Badge tone="signal">{t("agentTabs.statusLive")}</Badge>
                     ) : v.status === "rolled_back" || v.status === "rolled-back" ? (
-                      <Badge tone="muted">ROLLED BACK</Badge>
+                      <Badge tone="muted">{t("agentTabs.statusRolledBack")}</Badge>
                     ) : (
                       <Badge tone="muted">{v.status}</Badge>
                     )}
@@ -311,7 +315,7 @@ export function VersionsTab({ agent }: { agent: ViewAgent }) {
                     <span style={{ color: "var(--text-2)" }}>{v.note ?? ""}</span>
                   </Td>
                   <Td>
-                    <Button small tone="ghost">Rollback</Button>
+                    <Button small tone="ghost">{t("agentTabs.rollback")}</Button>
                   </Td>
                 </tr>
               );
@@ -330,23 +334,24 @@ export function RunsTab({
   runs: RunRow[];
   onOpenRun: (id: string) => void;
 }) {
-  if (runs.length === 0) return <Empty title="No recent runs" />;
+  const { t } = useI18n();
+  if (runs.length === 0) return <Empty title={t("agentTabs.noRecentRuns")} />;
   const testCount = runs.filter((r) => r.testRun).length;
   return (
     <Panel
-      title={`Recent runs · ${runs.length}`}
-      subtitle={testCount > 0 ? `${testCount} test` : undefined}
+      title={t("agentTabs.recentRuns", { count: runs.length })}
+      subtitle={testCount > 0 ? t("agentTabs.testCount", { count: testCount }) : undefined}
       padded={false}
     >
       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
         <thead>
           <tr>
             <Th />
-            <Th>Run</Th>
-            <Th>Subject</Th>
-            <Th>Trigger</Th>
-            <Th>Duration</Th>
-            <Th>When</Th>
+            <Th>{t("agentTabs.colRun")}</Th>
+            <Th>{t("agentTabs.colSubject")}</Th>
+            <Th>{t("agentTabs.colTrigger")}</Th>
+            <Th>{t("agentTabs.colDuration")}</Th>
+            <Th>{t("agentTabs.colWhen")}</Th>
           </tr>
         </thead>
         <tbody>
@@ -362,7 +367,7 @@ export function RunsTab({
               <Td>
                 <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                   <span className="mono" style={{ color: "var(--text-2)" }}>{r.id}</span>
-                  {r.testRun && <Badge tone="signal" style={{ fontSize: 9 }}>TEST</Badge>}
+                  {r.testRun && <Badge tone="signal" style={{ fontSize: 9 }}>{t("agentTabs.testBadge")}</Badge>}
                 </div>
               </Td>
               <Td>
@@ -392,6 +397,7 @@ export function RunsTab({
 // ────────────────────────────────────────────────────────────────────────────
 
 export function EditConfigTab({ agent, models }: { agent: ViewAgent; models: ModelInfo[] }) {
+  const { t } = useI18n();
   const [name, setName] = useState(agent.name);
   const [title, setTitle] = useState(agent.title);
   const [desc, setDesc] = useState(agent.description);
@@ -406,38 +412,38 @@ export function EditConfigTab({ agent, models }: { agent: ViewAgent; models: Mod
     <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 360px", gap: 12 }}>
       {/* Left: form */}
       <div style={{ display: "flex", flexDirection: "column", gap: 12, minWidth: 0 }}>
-        <Panel title="Identity" padded>
-          <EditField label="Name (id)" hint="Lowercase camelCase. Used in event payloads and logs.">
+        <Panel title={t("agentTabs.identity")} padded>
+          <EditField label={t("agentTabs.fieldNameId")} hint={t("agentTabs.fieldNameIdHint")}>
             <EditText value={name} onChange={setName} mono />
           </EditField>
-          <EditField label="Title" hint="Human-readable label shown across the operator.">
+          <EditField label={t("agentTabs.fieldTitle")} hint={t("agentTabs.fieldTitleHint")}>
             <EditText value={title} onChange={setTitle} />
           </EditField>
           <EditField
-            label="Description"
-            hint="One-paragraph summary of what this agent does. Shown in the graph inspector."
+            label={t("agentTabs.fieldDescription")}
+            hint={t("agentTabs.fieldDescriptionHint")}
           >
             <EditTextarea value={desc} onChange={setDesc} rows={3} />
           </EditField>
-          <EditField label="Actor type" hint="Agent runs code automatically; Human pauses for operator input.">
+          <EditField label={t("agentTabs.fieldActorType")} hint={t("agentTabs.fieldActorTypeHint")}>
             <Seg
               value={agent.actor}
               onChange={() => {}}
               options={[
-                { value: "Agent", label: "Agent" },
-                { value: "Human", label: "Human task" },
+                { value: "Agent", label: t("agentTabs.actorAgent") },
+                { value: "Human", label: t("agentTabs.actorHumanTask") },
               ]}
             />
           </EditField>
         </Panel>
 
-        <Panel title="Events" padded>
-          <EditField label="Listens to (triggers)" hint="Inbound events. Pick existing or type a new EVENT_NAME.">
+        <Panel title={t("agentTabs.events")} padded>
+          <EditField label={t("agentTabs.fieldListensTo")} hint={t("agentTabs.fieldListensToHint")}>
             <EditableEventList items={agent.triggers} tone="blue" />
           </EditField>
           <EditField
-            label="Emits (outbound)"
-            hint="Events this agent publishes. Downstream agents subscribe to these."
+            label={t("agentTabs.fieldEmits")}
+            hint={t("agentTabs.fieldEmitsHint")}
           >
             <EditableEventList items={agent.emits} tone="green" />
           </EditField>
@@ -445,10 +451,10 @@ export function EditConfigTab({ agent, models }: { agent: ViewAgent; models: Mod
 
         {agent.actor === "Agent" && (
           <>
-            <Panel title="Implementation" padded>
+            <Panel title={t("agentTabs.implementation")} padded>
               <EditField
-                label="Steps"
-                hint="Ordered sub-procedures. Drag to reorder; the agent runs them in sequence."
+                label={t("agentTabs.fieldSteps")}
+                hint={t("agentTabs.fieldStepsHint")}
               >
                 {agent.steps && agent.steps.length > 0 ? (
                   <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
@@ -495,26 +501,26 @@ export function EditConfigTab({ agent, models }: { agent: ViewAgent; models: Mod
                     ))}
                   </div>
                 ) : (
-                  <span style={{ fontSize: 11.5, color: "var(--text-3)" }}>No steps defined.</span>
+                  <span style={{ fontSize: 11.5, color: "var(--text-3)" }}>{t("agentTabs.noStepsDefined")}</span>
                 )}
                 <div style={{ marginTop: 6 }}>
                   <Button small icon="plus" tone="ghost">
-                    Add step
+                    {t("agentTabs.addStep")}
                   </Button>
                 </div>
               </EditField>
 
               <EditField
-                label="Tools"
-                hint="Bindings this agent may call. Permissions inherited from the workspace tool catalog."
+                label={t("agentTabs.fieldTools")}
+                hint={t("agentTabs.fieldToolsHint")}
               >
                 <EditableEventList items={agent.tools || []} tone="muted" placeholder="tool.name" />
               </EditField>
 
-              <EditField label="Model" hint="Pick a model from the fleet, or leave to use the workflow default.">
+              <EditField label={t("agentTabs.fieldModel")} hint={t("agentTabs.fieldModelHint")}>
                 <select value={model} onChange={(e) => setModel(e.target.value)} style={editSelectStyle}>
                   {models.length === 0 ? (
-                    <option value="">No models configured in Settings</option>
+                    <option value="">{t("agentTabs.noModelsConfigured")}</option>
                   ) : (
                     models.map((m) => (
                       <option key={m.id} value={m.name}>
@@ -526,8 +532,8 @@ export function EditConfigTab({ agent, models }: { agent: ViewAgent; models: Mod
               </EditField>
 
               <EditField
-                label="System prompt"
-                hint="Prepended to every request. Use {{template}} variables to interpolate run context."
+                label={t("agentTabs.fieldSystemPrompt")}
+                hint={t("agentTabs.fieldSystemPromptHint")}
               >
                 <EditTextarea
                   value={`You are an automated agent in the RAAS workflow.\nGoal: ${agent.title}.\n\nFollow the steps in order. After each step, emit a structured progress event. Never block on human input — emit a HUMAN_TASK event if needed.\n\nContext variables available: {{requisition}}, {{candidate}}, {{client}}.`}
@@ -541,34 +547,34 @@ export function EditConfigTab({ agent, models }: { agent: ViewAgent; models: Mod
             <AgentCodeEditPanel value={tsCode} onChange={setTsCode} />
             <AgentToolUseEditPanel tools={toolUse} onChange={setToolUse} />
 
-            <Panel title="Behavior" padded>
-              <EditField label="Retries" hint="Maximum retry attempts on tool/model errors. Exponential backoff.">
+            <Panel title={t("agentTabs.behavior")} padded>
+              <EditField label={t("agentTabs.fieldRetries")} hint={t("agentTabs.fieldRetriesHint")}>
                 <EditText
                   value={String(retries)}
                   onChange={(v) => setRetries(parseInt(v) || 0)}
                   mono
-                  suffix="attempts"
+                  suffix={t("agentTabs.suffixAttempts")}
                 />
               </EditField>
-              <EditField label="Timeout" hint="Per-run hard timeout. After this the run is marked failed.">
+              <EditField label={t("agentTabs.fieldTimeout")} hint={t("agentTabs.fieldTimeoutHint")}>
                 <EditText
                   value={String(timeout)}
                   onChange={(v) => setTimeoutVal(parseInt(v) || 0)}
                   mono
-                  suffix="seconds"
+                  suffix={t("agentTabs.suffixSeconds")}
                 />
               </EditField>
-              <EditField label="Concurrency" hint="Maximum simultaneous runs of this agent. Beyond this, runs queue.">
+              <EditField label={t("agentTabs.fieldConcurrency")} hint={t("agentTabs.fieldConcurrencyHint")}>
                 <EditText
                   value={String(concurrency)}
                   onChange={(v) => setConcurrency(parseInt(v) || 0)}
                   mono
-                  suffix="runs"
+                  suffix={t("agentTabs.suffixRuns")}
                 />
               </EditField>
               <EditField
-                label="Concurrency key"
-                hint="Partition concurrency by a payload field. e.g. one run per candidate."
+                label={t("agentTabs.fieldConcurrencyKey")}
+                hint={t("agentTabs.fieldConcurrencyKeyHint")}
               >
                 <EditText value="${event.payload.candidate_id}" mono onChange={() => {}} />
               </EditField>
@@ -580,10 +586,10 @@ export function EditConfigTab({ agent, models }: { agent: ViewAgent; models: Mod
       {/* Right: preview */}
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
         <Panel
-          title="Preview manifest"
-          subtitle="Live · updates as you edit"
+          title={t("agentTabs.previewManifest")}
+          subtitle={t("agentTabs.previewManifestSubtitle")}
           padded={false}
-          action={<Button small icon="external" tone="ghost">Copy</Button>}
+          action={<Button small icon="external" tone="ghost">{t("agentTabs.copy")}</Button>}
         >
           <CodeBlock>
             {JSON.stringify(
@@ -619,15 +625,15 @@ export function EditConfigTab({ agent, models }: { agent: ViewAgent; models: Mod
           </CodeBlock>
         </Panel>
 
-        <Panel title="Validation" padded>
-          <ValidationLine ok label="Graph reachable" hint="2 inbound · 2 outbound" />
-          <ValidationLine ok label="No cycles" />
-          <ValidationLine ok label="All emitted events have listeners" />
-          <ValidationLine warn label="Tools updated" hint="Will regenerate type bindings on save" />
-          <ValidationLine ok label="Model accessible" hint="claude-sonnet-4-5 · primary" />
+        <Panel title={t("agentTabs.validation")} padded>
+          <ValidationLine ok label={t("agentTabs.valGraphReachable")} hint={t("agentTabs.valGraphReachableHint", { inbound: 2, outbound: 2 })} />
+          <ValidationLine ok label={t("agentTabs.valNoCycles")} />
+          <ValidationLine ok label={t("agentTabs.valAllEventsHaveListeners")} />
+          <ValidationLine warn label={t("agentTabs.valToolsUpdated")} hint={t("agentTabs.valToolsUpdatedHint")} />
+          <ValidationLine ok label={t("agentTabs.valModelAccessible")} hint={`claude-sonnet-4-5 · ${t("agentTabs.primary")}`} />
         </Panel>
 
-        <Panel title="Impact" subtitle="What changes on save" padded>
+        <Panel title={t("agentTabs.impact")} subtitle={t("agentTabs.impactSubtitle")} padded>
           <div
             style={{
               display: "flex",
@@ -637,11 +643,11 @@ export function EditConfigTab({ agent, models }: { agent: ViewAgent; models: Mod
               color: "var(--text-2)",
             }}
           >
-            <ImpactLine label="In-flight runs" value="finish on old version" muted />
-            <ImpactLine label="New runs" value="use draft" />
-            <ImpactLine label="Listening agents" value="3" />
-            <ImpactLine label="Downstream agents" value="2" />
-            <ImpactLine label="Estimated rollout" value="< 5 s" />
+            <ImpactLine label={t("agentTabs.impactInFlightRuns")} value={t("agentTabs.impactFinishOnOldVersion")} muted />
+            <ImpactLine label={t("agentTabs.impactNewRuns")} value={t("agentTabs.impactUseDraft")} />
+            <ImpactLine label={t("agentTabs.impactListeningAgents")} value="3" />
+            <ImpactLine label={t("agentTabs.impactDownstreamAgents")} value="2" />
+            <ImpactLine label={t("agentTabs.impactEstimatedRollout")} value="< 5 s" />
           </div>
         </Panel>
       </div>
@@ -813,8 +819,8 @@ function EditableEventList({
   placeholder?: string;
 }) {
   const colorMap = {
-    blue: { fg: "var(--blue)", bg: "rgba(132,169,255,0.10)", bd: "rgba(132,169,255,0.32)" },
-    green: { fg: "var(--green)", bg: "rgba(101,224,163,0.08)", bd: "rgba(101,224,163,0.30)" },
+    blue: { fg: "var(--blue)", bg: "color-mix(in srgb, var(--blue) 10%, transparent)", bd: "color-mix(in srgb, var(--blue) 32%, transparent)" },
+    green: { fg: "var(--green)", bg: "color-mix(in srgb, var(--green) 8%, transparent)", bd: "color-mix(in srgb, var(--green) 30%, transparent)" },
     muted: { fg: "var(--text-2)", bg: "var(--panel-2)", bd: "var(--border)" },
   } as const;
   const c = colorMap[tone] ?? colorMap.muted;

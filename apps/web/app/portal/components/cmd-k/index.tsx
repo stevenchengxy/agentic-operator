@@ -24,6 +24,7 @@ import {
   type KeyboardEvent,
 } from "react";
 import { useRouter } from "next/navigation";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 import { Icon } from "../Icon";
 import { Kbd } from "../atoms";
 import { useTenant } from "../../lib/use-tenant";
@@ -117,6 +118,7 @@ function PaletteInner({
   tenant: string;
   onClose: () => void;
 }) {
+  const { t } = useI18n();
   const router = useRouter();
   const [q, setQ] = useState("");
   const [cursor, setCursor] = useState(0);
@@ -225,7 +227,7 @@ function PaletteInner({
       onClick={onClose}
       role="dialog"
       aria-modal="true"
-      aria-label="Command palette"
+      aria-label={t("cmdk.dialogLabel")}
       style={{
         position: "fixed",
         inset: 0,
@@ -268,8 +270,8 @@ function PaletteInner({
             value={q}
             onChange={(e) => setQ(e.target.value)}
             onKeyDown={onKey}
-            placeholder="Jump to agent, event, run…"
-            aria-label="Search agents, events, runs, tasks"
+            placeholder={t("cmdk.searchPlaceholder")}
+            aria-label={t("cmdk.searchAria")}
             style={{
               flex: 1,
               background: "transparent",
@@ -292,10 +294,10 @@ function PaletteInner({
                 textAlign: "center",
               }}
             >
-              No matches.
+              {t("cmdk.noMatches")}
             </div>
           ) : (
-            renderGrouped(filtered, cursor, activate)
+            renderGrouped(filtered, cursor, activate, t)
           )}
         </div>
       </div>
@@ -303,10 +305,25 @@ function PaletteInner({
   );
 }
 
+// Static view-link ids → i18n key suffix (rendered at site since the const
+// array is module-scoped and can't call t() at load time).
+const VIEW_LABEL_KEYS: Record<string, string> = {
+  "v:dashboard": "viewDashboard",
+  "v:workflows": "viewWorkflows",
+  "v:agents": "viewAgents",
+  "v:runs": "viewRuns",
+  "v:events": "viewEvents",
+  "v:tasks": "viewTasks",
+  "v:logs": "viewLogs",
+  "v:deployments": "viewDeployments",
+  "v:settings": "viewSettings",
+};
+
 function renderGrouped(
   commands: Command[],
   cursor: number,
   activate: (cmd: Command) => void,
+  t: (key: string, vars?: Record<string, string | number>) => string,
 ) {
   const groups = new Map<string, Command[]>();
   for (const c of commands) {
@@ -328,7 +345,7 @@ function renderGrouped(
               color: "var(--text-3)",
             }}
           >
-            {group}
+            {t(`cmdk.group${group}`)}
           </div>
           {cmds.map((cmd) => {
             const active = idx === cursor;
@@ -357,7 +374,11 @@ function renderGrouped(
                 }}
                 data-index={myIdx}
               >
-                <span style={{ flex: 1, minWidth: 0 }}>{cmd.label}</span>
+                <span style={{ flex: 1, minWidth: 0 }}>
+                  {VIEW_LABEL_KEYS[cmd.id]
+                    ? t(`cmdk.${VIEW_LABEL_KEYS[cmd.id]}`)
+                    : cmd.label}
+                </span>
                 {cmd.hint && (
                   <span
                     style={{

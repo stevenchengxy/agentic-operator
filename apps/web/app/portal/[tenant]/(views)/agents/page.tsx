@@ -29,6 +29,7 @@ import { fmtAgo } from "@/lib/format";
 import { useAgents, type AgentListRow } from "@/lib/hooks/useAgents";
 import { useRuns, type RunListRow } from "@/lib/hooks/useRuns";
 import { useTenant } from "@/app/portal/lib/use-tenant";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 import { DeployAgentModal } from "@/app/portal/components/agents/DeployAgentModal";
 import { ImportManifestModal } from "@/app/portal/components/import-manifest/ImportManifestModal";
 
@@ -48,6 +49,7 @@ function emptyStats(): AgentStats {
 export default function AgentsPage() {
   const router = useRouter();
   const tenant = useTenant();
+  const { t } = useI18n();
   const agentsQuery = useAgents();
   const runsQuery = useRuns({ limit: 200 });
   const agents = agentsQuery.data ?? [];
@@ -109,14 +111,18 @@ export default function AgentsPage() {
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
       <ViewHeader
-        title="Agents"
-        subtitle={`${agents.length} agents in this workflow · ${agents.filter((a) => a.actor === "Agent").length} automated · ${agents.filter((a) => a.actor === "Human").length} human`}
+        title={t("nav.agents")}
+        subtitle={t("agents.subtitle", {
+          count: agents.length,
+          automated: agents.filter((a) => a.actor === "Agent").length,
+          human: agents.filter((a) => a.actor === "Human").length,
+        })}
         action={[
           <Button key="upload" icon="upload" small onClick={() => setImportOpen(true)}>
-            Import manifest
+            {t("agents.importManifest")}
           </Button>,
           <Button key="new" icon="plus" tone="primary" small onClick={() => setDeployOpen(true)}>
-            Deploy agent
+            {t("agents.deployAgent")}
           </Button>,
         ]}
       />
@@ -140,7 +146,7 @@ export default function AgentsPage() {
               gap: 8,
             }}
           >
-            <SearchInput value={query} onChange={setQuery} placeholder="agent name…" />
+            <SearchInput value={query} onChange={setQuery} placeholder={t("agents.searchPlaceholder")} />
           </div>
           <div
             style={{
@@ -151,30 +157,30 @@ export default function AgentsPage() {
             }}
           >
             <FilterChip active={actorFilter === "all"} onClick={() => setActorFilter("all")}>
-              All
+              {t("agents.filterAll")}
             </FilterChip>
             <FilterChip active={actorFilter === "Agent"} onClick={() => setActorFilter("Agent")}>
-              Agents
+              {t("agents.filterAgents")}
             </FilterChip>
             <FilterChip active={actorFilter === "Human"} onClick={() => setActorFilter("Human")}>
-              Human
+              {t("agents.filterHuman")}
             </FilterChip>
           </div>
           <div style={{ flex: 1, overflow: "auto" }}>
             {isError ? (
               <Empty
-                title="Failed to load agents"
-                hint={error?.message ?? "api unreachable on :3501"}
+                title={t("agents.loadFailedTitle")}
+                hint={error?.message ?? t("agents.loadFailedHint")}
               />
             ) : isLoading && agents.length === 0 ? (
-              <Empty title="Loading agents…" hint="" />
+              <Empty title={t("agents.loadingTitle")} hint="" />
             ) : filtered.length === 0 ? (
               <Empty
-                title="No agents yet"
+                title={t("agents.emptyTitle")}
                 hint={
                   agents.length === 0
-                    ? "Deploy a manifest or run `agentic deploy` to register agents."
-                    : "No agents match the current filter."
+                    ? t("agents.emptyHintNone")
+                    : t("agents.emptyHintFilter")
                 }
               />
             ) : (
@@ -202,6 +208,7 @@ function AgentsGrid({
   stats: Map<string, AgentStats>;
   onPick: (kebabId: string) => void;
 }) {
+  const { t } = useI18n();
   return (
     <div
       style={{
@@ -245,7 +252,7 @@ function AgentsGrid({
                   fontFamily: "var(--mono)",
                 }}
               >
-                {s.lastRun > 0 ? fmtAgo(s.lastRun) : "idle"}
+                {s.lastRun > 0 ? fmtAgo(s.lastRun) : t("agents.idle")}
               </span>
             </div>
             <div
@@ -283,9 +290,15 @@ function AgentsGrid({
                 color: "var(--text-3)",
               }}
             >
-              <span>{s.runs} runs</span>
-              {s.errors > 0 && <span style={{ color: "var(--red)" }}>{s.errors} err</span>}
-              {s.tests > 0 && <span style={{ color: "var(--signal)" }}>{s.tests} test</span>}
+              <span>{t("agents.runsCount", { count: s.runs })}</span>
+              {s.errors > 0 && (
+                <span style={{ color: "var(--red)" }}>{t("agents.errCount", { count: s.errors })}</span>
+              )}
+              {s.tests > 0 && (
+                <span style={{ color: "var(--accent-text)" }}>
+                  {t("agents.testCount", { count: s.tests })}
+                </span>
+              )}
               <span style={{ marginLeft: "auto" }}>{a.kind}</span>
             </div>
           </button>

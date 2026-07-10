@@ -1,0 +1,1710 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Agent 工厂 · Ontology-Guided Dynamic Prompt & Subagent Planning 技术架构蓝图报告</title>
+<style>
+  :root{
+    --bg:#0b0f16;
+    --bg2:#101722;
+    --panel:#151d2a;
+    --panel2:#101923;
+    --panel3:#1c2635;
+    --border:#263244;
+    --border2:#35445a;
+    --text:#ecf2f8;
+    --text2:#b5c0ce;
+    --text3:#8290a4;
+    --text4:#647188;
+    --blue:#73b7ff;
+    --cyan:#56d6c9;
+    --green:#62d394;
+    --amber:#f0bd5b;
+    --red:#ff7f91;
+    --violet:#b29cff;
+    --pink:#f49ac2;
+    --mono:"SF Mono",ui-monospace,Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0;
+    background:
+      linear-gradient(180deg,#0b0f16 0,#0c1119 320px,#0b0f16 100%);
+    color:var(--text);
+    font:15px/1.68 var(--sans);
+  }
+  a{color:var(--cyan);text-decoration:none}
+  a:hover{text-decoration:underline}
+  code{
+    font-family:var(--mono);
+    font-size:.86em;
+    color:#d7eeff;
+    background:#0c1320;
+    border:1px solid var(--border);
+    border-radius:6px;
+    padding:1px 6px;
+  }
+  pre{
+    margin:14px 0;
+    padding:16px 18px;
+    overflow:auto;
+    color:#dce7f5;
+    background:#080d14;
+    border:1px solid var(--border);
+    border-radius:12px;
+    font:12.5px/1.6 var(--mono);
+  }
+  .layout{
+    display:grid;
+    grid-template-columns:270px minmax(0,1fr);
+    max-width:1440px;
+    margin:0 auto;
+  }
+  nav{
+    position:sticky;
+    top:0;
+    align-self:start;
+    height:100vh;
+    overflow:auto;
+    padding:24px 16px 64px;
+    border-right:1px solid var(--border);
+    background:rgba(12,18,27,.86);
+    backdrop-filter:blur(10px);
+  }
+  nav .brand{
+    display:flex;
+    gap:10px;
+    align-items:center;
+    margin-bottom:18px;
+  }
+  nav .mark{
+    width:38px;
+    height:38px;
+    border-radius:10px;
+    background:linear-gradient(135deg,var(--cyan),var(--blue));
+    color:#071018;
+    display:grid;
+    place-items:center;
+    font-weight:900;
+    letter-spacing:-.03em;
+  }
+  nav h1{
+    margin:0;
+    font-size:13.5px;
+    line-height:1.3;
+  }
+  nav .sub{
+    color:var(--text4);
+    font:11px/1.3 var(--mono);
+    margin-top:3px;
+  }
+  nav a{
+    display:block;
+    color:var(--text2);
+    font-size:12.5px;
+    padding:5px 8px;
+    margin:1px 0;
+    border-radius:8px;
+    text-decoration:none;
+  }
+  nav a:hover{
+    color:var(--text);
+    background:var(--panel);
+  }
+  nav a.small{
+    padding-left:18px;
+    color:var(--text4);
+    font-size:11.5px;
+  }
+  main{
+    min-width:0;
+    padding:44px 52px 110px;
+  }
+  header.hero{
+    border:1px solid var(--border);
+    background:linear-gradient(160deg,rgba(21,29,42,.96),rgba(16,25,35,.96));
+    border-radius:18px;
+    padding:34px 36px;
+    margin-bottom:34px;
+    overflow:hidden;
+  }
+  .eyebrow{
+    font:700 11px/1 var(--mono);
+    color:var(--cyan);
+    text-transform:uppercase;
+    letter-spacing:2px;
+    margin-bottom:12px;
+  }
+  .hero h1{
+    margin:0 0 12px;
+    font-size:32px;
+    line-height:1.18;
+    letter-spacing:-.03em;
+  }
+  .hero p{
+    max-width:84ch;
+    margin:0;
+    color:var(--text2);
+    font-size:15.5px;
+  }
+  .meta{
+    display:flex;
+    gap:8px;
+    flex-wrap:wrap;
+    margin-top:22px;
+  }
+  .pill{
+    display:inline-flex;
+    align-items:center;
+    gap:6px;
+    border:1px solid var(--border2);
+    border-radius:999px;
+    color:var(--text2);
+    background:#101722;
+    padding:5px 11px;
+    font:11.5px/1 var(--mono);
+  }
+  .pill b{color:var(--text)}
+  section{
+    margin:0 0 46px;
+    scroll-margin-top:20px;
+  }
+  h2{
+    display:flex;
+    align-items:center;
+    gap:10px;
+    margin:50px 0 8px;
+    padding-top:18px;
+    border-top:1px solid var(--border);
+    font-size:22px;
+    line-height:1.3;
+    letter-spacing:-.02em;
+  }
+  h2 .n{
+    font:800 12px/1 var(--mono);
+    color:#081019;
+    background:var(--cyan);
+    border-radius:8px;
+    padding:5px 8px;
+  }
+  h3{
+    margin:26px 0 6px;
+    color:var(--text);
+    font-size:16.5px;
+    letter-spacing:-.01em;
+  }
+  h4{
+    margin:0 0 7px;
+    font-size:13.5px;
+    color:var(--text);
+  }
+  p{margin:8px 0;color:var(--text2)}
+  .lead{color:var(--text);font-size:15.8px}
+  .muted{color:var(--text3)}
+  .small{font-size:12px;color:var(--text4)}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+  .grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+  .card{
+    border:1px solid var(--border);
+    background:var(--panel);
+    border-radius:14px;
+    padding:16px 18px;
+  }
+  .card p{margin:0;font-size:13.5px}
+  .metric{
+    border:1px solid var(--border);
+    background:var(--panel2);
+    border-radius:12px;
+    padding:14px 15px;
+  }
+  .metric .k{
+    color:var(--text4);
+    font:700 11px/1.3 var(--mono);
+    text-transform:uppercase;
+    letter-spacing:.04em;
+    margin-bottom:7px;
+  }
+  .metric .v{
+    font-size:18px;
+    color:var(--text);
+    font-weight:760;
+    letter-spacing:-.02em;
+  }
+  .tag{
+    display:inline-block;
+    border:1px solid var(--border2);
+    border-radius:7px;
+    color:var(--text2);
+    padding:2px 7px;
+    margin:2px 4px 2px 0;
+    font:11px/1.3 var(--mono);
+  }
+  .tag.blue{color:var(--blue);border-color:rgba(115,183,255,.6)}
+  .tag.cyan{color:var(--cyan);border-color:rgba(86,214,201,.6)}
+  .tag.green{color:var(--green);border-color:rgba(98,211,148,.6)}
+  .tag.amber{color:var(--amber);border-color:rgba(240,189,91,.6)}
+  .tag.red{color:var(--red);border-color:rgba(255,127,145,.6)}
+  .tag.violet{color:var(--violet);border-color:rgba(178,156,255,.6)}
+  .callout{
+    border-left:3px solid var(--cyan);
+    background:rgba(86,214,201,.07);
+    border-radius:0 12px 12px 0;
+    padding:13px 16px;
+    margin:16px 0;
+    color:var(--text2);
+  }
+  .callout.good{border-left-color:var(--green);background:rgba(98,211,148,.07)}
+  .callout.warn{border-left-color:var(--amber);background:rgba(240,189,91,.07)}
+  .callout.risk{border-left-color:var(--red);background:rgba(255,127,145,.07)}
+  .fig{
+    border:1px solid var(--border);
+    background:var(--panel);
+    border-radius:16px;
+    padding:18px;
+    margin:18px 0;
+    overflow:auto;
+  }
+  .figcap{
+    margin-top:10px;
+    color:var(--text4);
+    text-align:center;
+    font:12px/1.5 var(--mono);
+  }
+  table{
+    width:100%;
+    border-collapse:collapse;
+    margin:14px 0;
+    font-size:13.2px;
+  }
+  th,td{
+    text-align:left;
+    vertical-align:top;
+    padding:9px 10px;
+    border-bottom:1px solid var(--border);
+  }
+  th{
+    color:var(--text4);
+    text-transform:uppercase;
+    letter-spacing:.04em;
+    font:700 11.5px/1.4 var(--mono);
+  }
+  td{color:var(--text2)}
+  td b{color:var(--text)}
+  .tocbox{
+    columns:2;
+    column-gap:24px;
+  }
+  .tocbox a{
+    display:block;
+    color:var(--text2);
+    padding:4px 0;
+    break-inside:avoid;
+  }
+  svg{display:block;max-width:100%;height:auto}
+  .legend{
+    display:flex;
+    flex-wrap:wrap;
+    justify-content:center;
+    gap:14px;
+    margin-top:10px;
+    color:var(--text4);
+    font:11.5px/1 var(--mono);
+  }
+  .legend span{display:inline-flex;align-items:center;gap:6px}
+  .dot{width:10px;height:10px;border-radius:3px;display:inline-block}
+  .roadmap{
+    display:grid;
+    grid-template-columns:repeat(5,1fr);
+    gap:10px;
+    margin:16px 0;
+  }
+  .phase{
+    border:1px solid var(--border);
+    background:var(--panel2);
+    border-radius:13px;
+    padding:13px 14px;
+  }
+  .phase .num{
+    display:inline-grid;
+    place-items:center;
+    width:24px;
+    height:24px;
+    border-radius:8px;
+    background:var(--cyan);
+    color:#071018;
+    font:800 12px/1 var(--mono);
+    margin-bottom:8px;
+  }
+  .phase h4{font-size:13px}
+  .phase p{font-size:12.5px}
+  footer{
+    margin-top:56px;
+    padding-top:18px;
+    border-top:1px solid var(--border);
+    color:var(--text4);
+    font-size:12px;
+  }
+  @media(max-width:980px){
+    .layout{grid-template-columns:1fr}
+    nav{display:none}
+    main{padding:26px 22px 82px}
+    .grid2,.grid3,.grid4,.roadmap{grid-template-columns:1fr}
+    .tocbox{columns:1}
+    .hero h1{font-size:25px}
+  }
+</style>
+</head>
+<body>
+<div class="layout">
+<nav>
+  <div class="brand">
+    <div class="mark">OF</div>
+    <div>
+      <h1>Ontology Factory</h1>
+      <div class="sub">Prompt + Subagent Blueprint</div>
+    </div>
+  </div>
+  <a href="#summary">0 · 执行摘要</a>
+  <a href="#current">1 · 现有架构判断</a>
+  <a class="small" href="#uploaded-delta">1.1 · 对照上传蓝图的补强点</a>
+  <a class="small" href="#runtime-chain">1.2 · Runtime 业务链试点</a>
+  <a href="#target">2 · 目标形态</a>
+  <a href="#map">3 · 总体蓝图</a>
+  <a class="small" href="#prompt-flow">3.1 · Prompt 编译链路</a>
+  <a class="small" href="#ontology-kernel">3.2 · 微型 Ontology Kernel</a>
+  <a class="small" href="#payload-compiler">3.3 · Prompt / Payload 双编译</a>
+  <a class="small" href="#subagent-planning">3.4 · Subagent 规划</a>
+  <a class="small" href="#subagent-synthesis">3.5 · 分派与汇总</a>
+  <a href="#stage-blueprint">4 · 阶段级设计</a>
+  <a href="#schemas">5 · 核心数据结构</a>
+  <a href="#linter">6 · Ontology / Prompt Linter</a>
+  <a href="#router">7 · Reasoning Policy Router</a>
+  <a href="#integration">8 · 接入现有代码</a>
+  <a href="#ui">9 · UI 与可解释性</a>
+  <a href="#roadmap">10 · 分阶段落地</a>
+  <a href="#risks">11 · 风险与边界</a>
+  <a href="#conclusion">12 · 最终判断</a>
+</nav>
+
+<main>
+<header class="hero">
+  <div class="eyebrow">Architecture Blueprint · 2026-07-09</div>
+  <h1>Agent 工厂 · Ontology-Guided Dynamic Prompt & Subagent Planning 技术架构蓝图报告</h1>
+  <p>本报告给出一套可落地的技术方案：在现有 Agent Factory 的 ReAct conductor、阶段闸门、本体读取、能力解析、沙箱证据和反思记忆之上，加入一个轻量的 <b>Micro Ontology Kernel</b>、<b>Reasoning Policy Router</b>、<b>Dynamic Prompt Compiler</b> 和 <b>Hierarchical Subagent Planner</b>。目标不是把模型锁进 JSON，而是让工厂级 Harness 能动态决定下一步调用哪个 Agent；被调用的 Agent 又能在自己的局部任务内判断是否同步生成 sub-agents 来辅助完成任务；完成后再把证据和结果回传给工厂级调度器，继续选择下一个 Agent，直到生成可部署在 Inngest 上并能跑通的业务 workflow functions。</p>
+  <div class="meta">
+    <span class="pill"><b>方案名</b> Ontology-Guided Adaptive Prompt Factory</span>
+    <span class="pill"><b>接入层</b> L3a Agent Factory</span>
+    <span class="pill"><b>原则</b> Free Thinking, Structured Commitment</span>
+    <span class="pill"><b>新增</b> Dynamic Subagent Planning</span>
+    <span class="pill"><b>优先级</b> Shadow Mode → Soft Gate → Evidence Gate</span>
+  </div>
+</header>
+
+<section id="summary">
+<h2><span class="n">0</span>执行摘要</h2>
+<p class="lead">可以，而且非常适合你们这套系统。最优解不是让 AI 每一步临时“凭感觉写 prompt”，也不是把 prompt 模板写死，而是引入一个 <b>Ontology-Guided Dynamic Prompt Compiler</b>：每次内部 Agent、专家、子大脑或设计工具被调用前，系统先生成一份结构化 <code>PromptSpec</code>，再由编译器把本体投影、约束、工具、证据、输出契约组合成最终 prompt。</p>
+
+<div class="grid4">
+  <div class="metric"><div class="k">核心升级</div><div class="v">工厂调度与 Agent 内部分工都变成上下文编译产物</div></div>
+  <div class="metric"><div class="k">关键机制</div><div class="v">Ontology Projection + PromptSpec + Linter</div></div>
+  <div class="metric"><div class="k">控制原则</div><div class="v">不约束理解，只约束承诺和交付</div></div>
+  <div class="metric"><div class="k">最终收益</div><div class="v">更接地、更少幻觉、更会组织分工</div></div>
+</div>
+
+<div class="callout good">
+  <b>一句话：</b>小型 Ontology 不应该成为 AI 的“脑子”，而应该成为 Agent 工厂的“工厂级调度账本 + Agent 内部任务账本 + Prompt 编译上下文 + Subagent 分工地图 + 证据索引”。这样每一次 Agent 调用、每一个 prompt/payload、每一次 agent-local sub-agent 任务都可以动态生成，同时不会牺牲模型的开放理解能力。
+</div>
+</section>
+
+<section id="current">
+<h2><span class="n">1</span>现有架构判断</h2>
+<p>从当前代码和架构材料看，你们已经具备升级的关键地基：</p>
+<table>
+  <tr><th>现有能力</th><th>当前位置</th><th>对新方案的意义</th></tr>
+  <tr><td><b>ReAct 主循环</b></td><td><code>packages/agent-factory/src/conductor.ts</code></td><td>已经具备 Think → Act → Observe 的自主执行形态，可插入 prompt policy 和 ontology ledger。</td></tr>
+  <tr><td><b>阶段闸门</b></td><td><code>stageAdmission()</code></td><td>已经能把跨阶段跳转结构化控制，适合升级为 ontology-aware admission gate。</td></tr>
+  <tr><td><b>本体读取</b></td><td><code>read_ontology</code></td><td>已输出动作、事件、对象、规则、工具提示和 event payload，是 Domain Ontology 的事实地基。</td></tr>
+  <tr><td><b>显式本体理解</b></td><td><code>understand_ontology</code></td><td>已有“读懂并记住”的折叠幸存者，可扩展为 graph delta。</td></tr>
+  <tr><td><b>能力解析</b></td><td><code>capability_resolve</code></td><td>已有复用优先的能力决策，可扩展成 Capability Ontology。</td></tr>
+  <tr><td><b>Heavy sub-agent</b></td><td><code>spawn_subagent</code></td><td>已经能创建隔离上下文的子大脑，适合承担独立研究、跨工具查询、风险审查等任务。</td></tr>
+  <tr><td><b>Light specialists</b></td><td><code>runSpecialists()</code></td><td>已经能并行运行轻量专家，适合本体维度拆解、计划批判和低成本多视角分析。</td></tr>
+  <tr><td><b>Runtime sub-agent 设计</b></td><td><code>design_subagent</code></td><td>已经具备把复杂父 Agent 拆成可部署子 Agent 的入口，但需要明确区分“临时辅助子脑”和“可部署业务子 Agent”。</td></tr>
+  <tr><td><b>设计自检</b></td><td><code>design-loop.ts</code></td><td>已经采用“先 draft，再确定性检查，再定点 refine”的正确模式。</td></tr>
+  <tr><td><b>沙箱证据</b></td><td><code>sandbox_run</code> / <code>acceptanceGate</code></td><td>已有真实部署、事件链、代码真跑的证据入口，可转成 Evidence Graph。</td></tr>
+  <tr><td><b>LLM telemetry</b></td><td><code>llm_calls</code> sink</td><td>已有 token、model、latency、purpose 数据，适合做 Prompt / Harness 效果飞轮。</td></tr>
+</table>
+
+<div class="callout warn">
+  <b>当前主要短板：</b>系统已经有很多“文本上下文”和“阶段结果”，也已经有 heavy sub-agent、light specialists 和 runtime sub-agent 设计能力，但缺少一份跨阶段、可检查、可投影的结构化推理账本，以及一个显式的分层调度模型。因此现在容易把“工厂级选择下一个 Agent”和“当前 Agent 内部生成辅助 sub-agents”混成一层。正确做法是：工厂级 Harness 负责选择 active agent；active agent 的局部 Harness 负责判断是否生成 agent-local sub-agents；结果和证据回到工厂级 Evidence Gate 后，再决定下一步调用哪个 Agent。
+</div>
+</section>
+
+<section id="uploaded-delta">
+<h2><span class="n">1.1</span>对照上传蓝图后的补强点</h2>
+<p class="lead">上传的技术蓝图比本报告第一版多了一层非常重要的视角：它不仅看 Agent 工厂这个“生成系统 A”，还把已交付的 runtime functions 这个“业务运行系统 B”放进分析。这个视角提醒我们，Dynamic Prompt Compiler 不应该只服务 <code>design_agent</code> 这类内部生成工具，也应该服务生产函数里的 prompt、外部 AI payload、规则校验输入和审计回放。</p>
+
+<table>
+  <tr><th>上传蓝图强调的点</th><th>本报告第一版不足</th><th>强化后的架构处理</th></tr>
+  <tr><td><b>系统 A / 系统 B 要分开看</b></td><td>主要聚焦 L3a Agent Factory，对已交付 runtime functions 着墨不足。</td><td>新增“双系统视角”：A 负责编译和生成，B 消费 Prompt/Payload Contract 并回传 Evidence。</td></tr>
+  <tr><td><b>7 个 runtime agents 已天然本体化</b></td><td>缺少从真实业务链挑试点的路线。</td><td>将 <code>createJD</code>、<code>ruleCheck</code>、<code>matchResume</code>、<code>interviewInviter</code> 纳入优先试点。</td></tr>
+  <tr><td><b>prompt 不只是 system/user 文本</b></td><td><code>PromptSpec</code> 偏内部 Agent 调用，外部 AI payload 没完全覆盖。</td><td>引入 <code>Prompt/Payload Contract</code>：match、invite、JD 生成请求都进入 ledger。</td></tr>
+  <tr><td><b>PromptBlock / PromptInstance 更细</b></td><td>有 <code>PromptSpec</code>，但缺可组合 block、实例账本、compilerVersion。</td><td>补充 <code>PromptBlock</code>、<code>PromptInstance</code>、<code>PromptCompiler</code> 接口和回滚策略。</td></tr>
+  <tr><td><b>DSPy / OPRO 式优化</b></td><td>提到 telemetry flywheel，但没有把 prompt 改进明确建模为优化问题。</td><td>新增 PromptPolicy optimizer：用通过率、沙箱失败率、人工介入率、token 成本调 block 顺序和措辞。</td></tr>
+  <tr><td><b>失败语义要进入 prompt/payload</b></td><td>Evidence Graph 有失败证据，但缺“业务失败 vs 依赖失败”的 prompt policy。</td><td>新增 FailureSemanticsBlock，要求 infra failure 不污染业务 FAIL，薄事件回填必须可解释。</td></tr>
+  <tr><td><b>版本化和回滚</b></td><td>只说 Prompt Ledger，没有强调线上 prompt 静默漂移风险。</td><td>每个 PromptInstance 绑定 <code>compilerVersion</code>、block ids、outcome，可 diff、canary、rollback。</td></tr>
+</table>
+
+<div class="callout good">
+  <b>强化后的结论：</b>Ontology-Guided Dynamic Prompt 不只是“让工厂内部 Agent 写得更好”，而是要把 Agent 工厂生成期和业务运行期统一到同一套 <b>Prompt/Payload Compiler + Ledger + Evidence</b> 闭环里。
+</div>
+</section>
+
+<section id="runtime-chain">
+<h2><span class="n">1.2</span>Runtime 业务链试点：从 7 个已交付函数切入</h2>
+<p>上传蓝图指出，现有招聘业务 functions 已经天然呈现出本体结构：触发事件、输入对象、规则、外部能力、副作用、输出事件、失败语义。它们是 Dynamic Prompt Compiler 最好的试验场，因为这里的 prompt 质量能直接用审计、事件、外部调用回执和业务结果衡量。</p>
+
+<table>
+  <tr><th>Runtime agent</th><th>当前 prompt / payload 形态</th><th>建议升级为</th><th>优先级</th></tr>
+  <tr><td><code>resumeParser</code></td><td>文件解析 + identity invoke + 落库 + emit。</td><td><code>ParseContract</code>、<code>IdentityContract</code>、<code>OutputEventContract</code>。</td><td><span class="tag amber">P2</span></td></tr>
+  <tr><td><code>candidateIdentity</code></td><td>抽取规则、三级判定、审计、返回 sameAsCandidateId。</td><td><code>IdentityRulePrompt</code>、<code>EvidenceMatrix</code>、<code>HumanReviewPolicy</code>。</td><td><span class="tag amber">P2</span></td></tr>
+  <tr><td><code>candidateOwnership</code></td><td>读锁定上下文，归属规则判定和审计。</td><td><code>OwnershipPolicyContract</code>、<code>AuditExplanationBlock</code>。</td><td><span class="tag blue">P3</span></td></tr>
+  <tr><td><code>createJD</code></td><td>从 40+ 字段、澄清记录和偏好拼 free-text prompt。</td><td><code>JDPromptCompiler</code>：字段优先级、澄清权重、排除条件、日期语义都 block 化。</td><td><span class="tag green">P0/P1</span></td></tr>
+  <tr><td><code>ruleCheck</code></td><td>Ontology + Neo4j + LLM 规则校验，保存 audit / prompt / raw response。</td><td><code>RuleCheckPromptCompiler</code>：RuleSet、Evidence、fail-close policy、infra/business failure 分离。</td><td><span class="tag green">P0/P1</span></td></tr>
+  <tr><td><code>matchResume</code></td><td>向外部 AI 发 <code>{ resume, jd }</code>，追加 rule check 结果。</td><td><code>MatchPayloadCompiler</code>、<code>PreRoboHireProofGate</code>。</td><td><span class="tag amber">P2</span></td></tr>
+  <tr><td><code>interviewInviter</code></td><td>thin event backfill，调用 invite，区分 SENT/FAILED。</td><td><code>InvitationPayloadContract</code>、<code>FailureSemanticsPrompt</code>。</td><td><span class="tag blue">P3</span></td></tr>
+</table>
+
+<div class="callout warn">
+  <b>试点建议：</b>先做 <code>createJD</code> 和 <code>ruleCheck</code>，因为前者最能验证 PromptBlock 编译价值，后者最能验证规则接地、证据链和 fail-close 语义。不要一开始全链重构。
+</div>
+</section>
+
+<section id="target">
+<h2><span class="n">2</span>目标形态：Ontology-Guided Adaptive Prompt Factory</h2>
+<p class="lead">目标不是替换现有 conductor，而是在 conductor 内部增加一个“分层认知控制面”：工厂级 Router 根据用户意图、任务阶段、风险、工具需求、验证需求，选择下一步 active agent；active agent 再用自己的局部 Router 编译 prompt、判断是否需要同步生成 agent-local sub-agents，并把结构化证据回传给工厂级调度器。</p>
+
+<div class="grid4">
+  <div class="card">
+    <h4>1. Reasoning Policy Router</h4>
+    <p>决定这一步该用 Direct、Plan-and-Solve、ReAct、GoT-Light、CodeAct、Reflexion、专家评审还是 ask_user。</p>
+  </div>
+  <div class="card">
+    <h4>2. Micro Ontology Kernel</h4>
+    <p>维护 Domain / Capability / Reasoning / Prompt / Evidence 五类小图，作为 prompt 编译和检查的事实来源。</p>
+  </div>
+  <div class="card">
+    <h4>3. Dynamic Prompt Compiler</h4>
+    <p>把角色、任务、子图投影、硬约束、工具范围、输出契约和证据要求编译成最终 prompt / payload。</p>
+  </div>
+  <div class="card">
+    <h4>4. Hierarchical Subagent Planner</h4>
+    <p>区分工厂级 Agent 调度和 Agent 内部 sub-agent 分工：先选 active agent，再由 active agent 判断是否生成局部辅助子脑。</p>
+  </div>
+</div>
+
+<h3>核心原则</h3>
+<table>
+  <tr><th>原则</th><th>说明</th><th>落地方式</th></tr>
+  <tr><td><b>自由推理，结构化承诺</b></td><td>不把每一步思考塞进 JSON，只在阶段边界记录可承诺判断。</td><td><code>graphDelta</code>、<code>PromptSpec</code>、<code>Evidence</code></td></tr>
+  <tr><td><b>Open World for exploration</b></td><td>允许不确定、候选、未建模概念。</td><td><code>hypothesis</code> / <code>candidate</code> / <code>OntologyExtensionCandidate</code></td></tr>
+  <tr><td><b>Closed World for execution</b></td><td>工具名、事件名、schema、证据必须真实存在。</td><td>grounding enum、prompt linter、finish gate</td></tr>
+  <tr><td><b>Prompt 是编译结果</b></td><td>prompt 不再是静态大模板，也不是模型自由拼接，而是由 PromptSpec 渲染。</td><td><code>prompt-compiler.ts</code></td></tr>
+  <tr><td><b>Sub-agent 是 Agent 内部的动态分工结果</b></td><td>sub-agent 不只是工厂统一 fan-out，而是当前 active agent 根据自己的局部 TaskFrame、Ontology gap、Capability gap 和预算同步生成的辅助执行单元。</td><td><code>agent-local-planner.ts</code>、<code>DelegationContract</code></td></tr>
+  <tr><td><b>AI 改 block，不从零写 prompt</b></td><td>模型可以提出、解释、改写 PromptBlock；compiler 负责组合、接地、lint、版本化。</td><td><code>PromptBlock</code>、<code>PromptInstance</code>、<code>compilerVersion</code></td></tr>
+  <tr><td><b>证据驱动 refine</b></td><td>失败不是泛泛重写，而是沿 Evidence Graph 定点修复。</td><td><code>sandbox_failure → FailureMode → target PromptSpec</code></td></tr>
+</table>
+</section>
+
+<section id="map">
+<h2><span class="n">3</span>总体技术架构蓝图</h2>
+<p>下面是完整目标架构。蓝色是现有主链路，青色是新增认知控制面，绿色是证据闭环，紫色是长期学习飞轮。</p>
+
+<div class="fig">
+<svg viewBox="0 0 1180 760" xmlns="http://www.w3.org/2000/svg" font-family="var(--mono)">
+  <defs>
+    <marker id="arr" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#73b7ff"/></marker>
+    <marker id="arrc" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#56d6c9"/></marker>
+    <marker id="arrg" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#62d394"/></marker>
+    <marker id="arrv" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#b29cff"/></marker>
+    <style>
+      .box{fill:#151d2a;stroke:#35445a;stroke-width:1.2}
+      .box2{fill:#101923;stroke:#263244;stroke-width:1.2}
+      .blue{stroke:#73b7ff}
+      .cyan{stroke:#56d6c9}
+      .green{stroke:#62d394}
+      .violet{stroke:#b29cff}
+      .amber{stroke:#f0bd5b}
+      .title{fill:#ecf2f8;font-size:13px;font-weight:700}
+      .txt{fill:#b5c0ce;font-size:10.5px}
+      .mut{fill:#8290a4;font-size:9.5px}
+    </style>
+  </defs>
+
+  <rect x="30" y="24" width="180" height="62" rx="12" class="box blue"/>
+  <text x="120" y="50" class="title" text-anchor="middle">User Goal</text>
+  <text x="120" y="69" class="txt" text-anchor="middle">生成 / 分析 / 修改 / 调试</text>
+
+  <rect x="260" y="24" width="180" height="62" rx="12" class="box blue"/>
+  <text x="350" y="50" class="title" text-anchor="middle">Intent Gate</text>
+  <text x="350" y="69" class="txt" text-anchor="middle">真实意图 + 约束 + 产物</text>
+
+  <rect x="490" y="24" width="210" height="62" rx="12" class="box cyan"/>
+  <text x="595" y="50" class="title" text-anchor="middle">IntentFrame / TaskFrame</text>
+  <text x="595" y="69" class="txt" text-anchor="middle">risk · ambiguity · verification</text>
+
+  <rect x="760" y="24" width="250" height="62" rx="12" class="box cyan"/>
+  <text x="885" y="50" class="title" text-anchor="middle">Reasoning Policy Router</text>
+  <text x="885" y="69" class="txt" text-anchor="middle">选择 Harness + 预算 + 升级条件</text>
+
+  <rect x="30" y="138" width="1080" height="214" rx="16" fill="#101722" stroke="#263244"/>
+  <text x="54" y="164" fill="#56d6c9" font-size="14" font-weight="700">Micro Ontology Kernel（新增）</text>
+  <rect x="54" y="188" width="190" height="116" rx="12" class="box2 cyan"/>
+  <text x="149" y="214" class="title" text-anchor="middle">Domain Ontology</text>
+  <text x="149" y="236" class="txt" text-anchor="middle">Object / Action</text>
+  <text x="149" y="253" class="txt" text-anchor="middle">Event / Rule / State</text>
+  <text x="149" y="278" class="mut" text-anchor="middle">来自 read_ontology / Allmeta</text>
+
+  <rect x="270" y="188" width="190" height="116" rx="12" class="box2 cyan"/>
+  <text x="365" y="214" class="title" text-anchor="middle">Capability Ontology</text>
+  <text x="365" y="236" class="txt" text-anchor="middle">Tool / Skill / Agent</text>
+  <text x="365" y="253" class="txt" text-anchor="middle">Precondition / Effect</text>
+  <text x="365" y="278" class="mut" text-anchor="middle">来自 capability_resolve</text>
+
+  <rect x="486" y="188" width="190" height="116" rx="12" class="box2 cyan"/>
+  <text x="581" y="214" class="title" text-anchor="middle">Reasoning Ledger</text>
+  <text x="581" y="236" class="txt" text-anchor="middle">Goal / Constraint</text>
+  <text x="581" y="253" class="txt" text-anchor="middle">PlanStep / Risk / Decision</text>
+  <text x="581" y="278" class="mut" text-anchor="middle">折叠幸存者</text>
+
+  <rect x="702" y="188" width="190" height="116" rx="12" class="box2 cyan"/>
+  <text x="797" y="214" class="title" text-anchor="middle">Prompt Ontology</text>
+  <text x="797" y="236" class="txt" text-anchor="middle">Role / PromptSpec</text>
+  <text x="797" y="253" class="txt" text-anchor="middle">ContextPolicy / Contract</text>
+  <text x="797" y="278" class="mut" text-anchor="middle">动态 prompt 蓝图</text>
+
+  <rect x="918" y="188" width="168" height="116" rx="12" class="box2 green"/>
+  <text x="1002" y="214" class="title" text-anchor="middle">Evidence Graph</text>
+  <text x="1002" y="236" class="txt" text-anchor="middle">Sandbox / Probe</text>
+  <text x="1002" y="253" class="txt" text-anchor="middle">Validation / Run IO</text>
+  <text x="1002" y="278" class="mut" text-anchor="middle">证据与反证</text>
+
+  <rect x="100" y="410" width="210" height="72" rx="12" class="box cyan"/>
+  <text x="205" y="438" class="title" text-anchor="middle">Ontology Projection</text>
+  <text x="205" y="458" class="txt" text-anchor="middle">按角色裁剪子图</text>
+
+  <rect x="360" y="410" width="210" height="72" rx="12" class="box cyan"/>
+  <text x="465" y="438" class="title" text-anchor="middle">PromptSpec Builder</text>
+  <text x="465" y="458" class="txt" text-anchor="middle">role · task · tools · evidence</text>
+
+  <rect x="620" y="410" width="210" height="72" rx="12" class="box cyan"/>
+  <text x="725" y="438" class="title" text-anchor="middle">Prompt Compiler</text>
+  <text x="725" y="458" class="txt" text-anchor="middle">渲染最终内部 prompt</text>
+
+  <rect x="880" y="410" width="210" height="72" rx="12" class="box amber"/>
+  <text x="985" y="438" class="title" text-anchor="middle">Prompt / Ontology Linter</text>
+  <text x="985" y="458" class="txt" text-anchor="middle">接地 / 覆盖 / 证据 / 安全</text>
+
+  <rect x="54" y="552" width="170" height="68" rx="12" class="box blue"/>
+  <text x="139" y="580" class="title" text-anchor="middle">Factory / AgentRuns</text>
+  <text x="139" y="600" class="txt" text-anchor="middle">active agents + local subagents</text>
+
+  <rect x="260" y="552" width="170" height="68" rx="12" class="box blue"/>
+  <text x="345" y="580" class="title" text-anchor="middle">Tools</text>
+  <text x="345" y="600" class="txt" text-anchor="middle">read / design / validate</text>
+
+  <rect x="466" y="552" width="170" height="68" rx="12" class="box green"/>
+  <text x="551" y="580" class="title" text-anchor="middle">CodeAct / Sandbox</text>
+  <text x="551" y="600" class="txt" text-anchor="middle">真执行 + 真实回执</text>
+
+  <rect x="672" y="552" width="170" height="68" rx="12" class="box green"/>
+  <text x="757" y="580" class="title" text-anchor="middle">Evidence Gate</text>
+  <text x="757" y="600" class="txt" text-anchor="middle">finish 前证据验收</text>
+
+  <rect x="878" y="552" width="170" height="68" rx="12" class="box violet"/>
+  <text x="963" y="580" class="title" text-anchor="middle">Telemetry Flywheel</text>
+  <text x="963" y="600" class="txt" text-anchor="middle">prompt / harness / outcome</text>
+
+  <rect x="54" y="684" width="994" height="44" rx="12" fill="#101923" stroke="#35445a"/>
+  <text x="551" y="711" fill="#ecf2f8" font-size="12" text-anchor="middle">UI Explainability：推理图谱卡片 · Prompt Diff · ORV Score · 风险证据 · Harness 决策回放</text>
+
+  <line x1="210" y1="55" x2="258" y2="55" stroke="#73b7ff" stroke-width="1.7" marker-end="url(#arr)"/>
+  <line x1="440" y1="55" x2="488" y2="55" stroke="#73b7ff" stroke-width="1.7" marker-end="url(#arr)"/>
+  <line x1="700" y1="55" x2="758" y2="55" stroke="#56d6c9" stroke-width="1.7" marker-end="url(#arrc)"/>
+  <line x1="885" y1="86" x2="885" y2="136" stroke="#56d6c9" stroke-width="1.7" marker-end="url(#arrc)"/>
+  <line x1="580" y1="304" x2="580" y2="376" stroke="#56d6c9" stroke-width="1.7" marker-end="url(#arrc)"/>
+  <line x1="797" y1="304" x2="797" y2="376" stroke="#56d6c9" stroke-width="1.7" marker-end="url(#arrc)"/>
+  <line x1="205" y1="482" x2="205" y2="524" stroke="#73b7ff" stroke-width="1.7" marker-end="url(#arr)"/>
+  <line x1="310" y1="446" x2="358" y2="446" stroke="#56d6c9" stroke-width="1.7" marker-end="url(#arrc)"/>
+  <line x1="570" y1="446" x2="618" y2="446" stroke="#56d6c9" stroke-width="1.7" marker-end="url(#arrc)"/>
+  <line x1="830" y1="446" x2="878" y2="446" stroke="#56d6c9" stroke-width="1.7" marker-end="url(#arrc)"/>
+  <line x1="985" y1="482" x2="985" y2="524" stroke="#f0bd5b" stroke-width="1.7" marker-end="url(#arrg)"/>
+  <line x1="224" y1="586" x2="258" y2="586" stroke="#73b7ff" stroke-width="1.7" marker-end="url(#arr)"/>
+  <line x1="430" y1="586" x2="464" y2="586" stroke="#62d394" stroke-width="1.7" marker-end="url(#arrg)"/>
+  <line x1="636" y1="586" x2="670" y2="586" stroke="#62d394" stroke-width="1.7" marker-end="url(#arrg)"/>
+  <line x1="842" y1="586" x2="876" y2="586" stroke="#b29cff" stroke-width="1.7" marker-end="url(#arrv)"/>
+  <path d="M963 552 C963 332,1002 332,1002 306" fill="none" stroke="#b29cff" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#arrv)"/>
+  <path d="M963 620 C963 660,551 660,551 682" fill="none" stroke="#b29cff" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#arrv)"/>
+</svg>
+<div class="figcap">图 3 · Ontology-Guided Adaptive Prompt Factory 总体蓝图</div>
+<div class="legend">
+  <span><i class="dot" style="background:var(--blue)"></i>现有主链路</span>
+  <span><i class="dot" style="background:var(--cyan)"></i>新增 Ontology / Prompt 控制面</span>
+  <span><i class="dot" style="background:var(--green)"></i>证据与验收</span>
+  <span><i class="dot" style="background:var(--violet)"></i>遥测学习飞轮</span>
+</div>
+</div>
+</section>
+
+<section id="prompt-flow">
+<h2><span class="n">3.1</span>动态 Prompt 编译链路</h2>
+<p class="lead">每个内部 Agent 的 prompt 不再直接来自一个大 system prompt，而是由 <code>PromptSpec</code> 编译出来。模型仍可自由理解和提出方案，但进入工具调用或工程动作前，必须把“要让哪个角色做什么、看哪些事实、受哪些约束、产出什么格式、需要什么证据”提交给 Prompt Compiler。</p>
+
+<div class="fig">
+<svg viewBox="0 0 980 330" xmlns="http://www.w3.org/2000/svg" font-family="var(--mono)">
+  <defs>
+    <marker id="pf" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#56d6c9"/></marker>
+    <style>
+      .b{fill:#151d2a;stroke:#35445a;stroke-width:1.2}
+      .c{fill:#101923;stroke:#56d6c9;stroke-width:1.2}
+      .g{fill:#101923;stroke:#62d394;stroke-width:1.2}
+      .t{fill:#ecf2f8;font-size:12px;font-weight:700}
+      .s{fill:#b5c0ce;font-size:10px}
+    </style>
+  </defs>
+  <rect x="24" y="108" width="130" height="70" rx="12" class="b"/>
+  <text x="89" y="136" class="t" text-anchor="middle">TaskFrame</text>
+  <text x="89" y="157" class="s" text-anchor="middle">阶段 / 目标 / 风险</text>
+
+  <rect x="190" y="42" width="150" height="62" rx="12" class="c"/>
+  <text x="265" y="69" class="t" text-anchor="middle">Role Policy</text>
+  <text x="265" y="88" class="s" text-anchor="middle">分析师 / 设计师 / 质检</text>
+  <rect x="190" y="128" width="150" height="62" rx="12" class="c"/>
+  <text x="265" y="155" class="t" text-anchor="middle">Ontology Projection</text>
+  <text x="265" y="174" class="s" text-anchor="middle">只切相关子图</text>
+  <rect x="190" y="214" width="150" height="62" rx="12" class="c"/>
+  <text x="265" y="241" class="t" text-anchor="middle">Evidence Context</text>
+  <text x="265" y="260" class="s" text-anchor="middle">验证 / 失败 / 反证</text>
+
+  <rect x="390" y="108" width="170" height="78" rx="12" class="c"/>
+  <text x="475" y="136" class="t" text-anchor="middle">PromptSpec</text>
+  <text x="475" y="157" class="s" text-anchor="middle">role · input · output</text>
+  <text x="475" y="173" class="s" text-anchor="middle">tools · constraints</text>
+
+  <rect x="610" y="108" width="150" height="78" rx="12" class="c"/>
+  <text x="685" y="136" class="t" text-anchor="middle">Prompt Compiler</text>
+  <text x="685" y="157" class="s" text-anchor="middle">渲染最终 prompt</text>
+  <text x="685" y="173" class="s" text-anchor="middle">注入硬约束</text>
+
+  <rect x="806" y="108" width="150" height="78" rx="12" class="g"/>
+  <text x="881" y="136" class="t" text-anchor="middle">Internal Agent</text>
+  <text x="881" y="157" class="s" text-anchor="middle">执行推理 / 工具调用</text>
+  <text x="881" y="173" class="s" text-anchor="middle">产出 graphDelta</text>
+
+  <line x1="154" y1="143" x2="188" y2="73" stroke="#56d6c9" marker-end="url(#pf)"/>
+  <line x1="154" y1="143" x2="188" y2="159" stroke="#56d6c9" marker-end="url(#pf)"/>
+  <line x1="154" y1="143" x2="188" y2="245" stroke="#56d6c9" marker-end="url(#pf)"/>
+  <line x1="340" y1="159" x2="388" y2="147" stroke="#56d6c9" marker-end="url(#pf)"/>
+  <line x1="560" y1="147" x2="608" y2="147" stroke="#56d6c9" marker-end="url(#pf)"/>
+  <line x1="760" y1="147" x2="804" y2="147" stroke="#62d394" marker-end="url(#pf)"/>
+</svg>
+<div class="figcap">图 3.1 · 动态 Prompt 编译链路：TaskFrame → PromptSpec → Compiler → Internal Agent</div>
+</div>
+
+<h3>PromptSpec 的价值</h3>
+<table>
+  <tr><th>字段</th><th>作用</th><th>例子</th></tr>
+  <tr><td><code>role</code></td><td>指定内部 Agent 身份</td><td><code>AgentDesigner</code>、<code>RuleReviewer</code>、<code>SandboxRefiner</code></td></tr>
+  <tr><td><code>taskFrame</code></td><td>定义这一轮的局部任务</td><td>“为 MatchResume 生成 Ontology Contract 和 system prompt”</td></tr>
+  <tr><td><code>ontologyProjection</code></td><td>只给必要子图，降低上下文噪声</td><td>当前 action、触发事件、产出事件、相关规则、工具候选</td></tr>
+  <tr><td><code>hardConstraints</code></td><td>必须满足的工程规则</td><td>不得发明事件；规则必须动态抓；外部副作用必须有幂等键</td></tr>
+  <tr><td><code>outputContract</code></td><td>约束返回结构，不约束思考过程</td><td><code>graphDelta</code>、<code>AgentContract</code>、<code>ReviewFindings</code></td></tr>
+  <tr><td><code>requiredEvidence</code></td><td>声明后续要由什么证据证明</td><td>validate_graph、sandbox receipt、probe result</td></tr>
+</table>
+
+<h3>Prompt 由 9 类 PromptBlock 组成</h3>
+<table>
+  <tr><th>Block</th><th>说明</th><th>例子</th></tr>
+  <tr><td><code>RoleBlock</code></td><td>当前 agent 的职责边界。</td><td>“你只做规则判定，不写 candidate 表。”</td></tr>
+  <tr><td><code>GoalBlock</code></td><td>本次局部任务目标。</td><td>“根据候选人简历与岗位要求评估底线规则。”</td></tr>
+  <tr><td><code>OntologyBlock</code></td><td>相关对象、动作、事件、规则。</td><td>Candidate / Resume / Job_Requisition / MATCH_RULE_CHECK_PASSED</td></tr>
+  <tr><td><code>EvidenceBlock</code></td><td>已经验证的事实。</td><td>已落库 candidate_id、identity check 已通过、rule audit id。</td></tr>
+  <tr><td><code>PolicyBlock</code></td><td>决策政策和失败语义。</td><td>fail-close、信息不足进入人工复核、infra failure 不等于业务 FAIL。</td></tr>
+  <tr><td><code>DataBlock</code></td><td>输入数据快照。</td><td>parsed_resume、job_requisition、clarifications。</td></tr>
+  <tr><td><code>OutputContractBlock</code></td><td>强制输出格式和事件名枚举。</td><td>JSON schema、字段枚举、事件名枚举。</td></tr>
+  <tr><td><code>FailureMemoryBlock</code></td><td>历史失败提醒。</td><td>“空简历不得继续推进到 match。”</td></tr>
+  <tr><td><code>AskUserBlock</code></td><td>把阻塞缺口转成清晰问题。</td><td>“岗位描述缺少必备技能，是否按客户澄清记录补足？”</td></tr>
+</table>
+</section>
+
+<section id="ontology-kernel">
+<h2><span class="n">3.2</span>Micro Ontology Kernel</h2>
+<p>这里的小型 Ontology 不做成重型知识图谱平台，而是做成 Agent 工厂内部的“推理中间表示”。第一版建议只保留五类图，每类图很小，但能覆盖 prompt 生成、检查、证据和学习。</p>
+
+<div class="grid2">
+  <div class="card">
+    <h4><span class="tag cyan">Domain</span> 业务本体</h4>
+    <p>来自 Allmeta / 上传本体 / 本地 fallback。包含 Object、Action、Event、Rule、State，是 prompt 接地的外部世界。</p>
+  </div>
+  <div class="card">
+    <h4><span class="tag blue">Capability</span> 能力本体</h4>
+    <p>来自工具目录、skills、已有 fleet agents、生产战绩。用于决定复用、组合、新造，以及 prompt 中允许调用哪些工具。</p>
+  </div>
+  <div class="card">
+    <h4><span class="tag violet">Reasoning</span> 推理账本</h4>
+    <p>记录 Goal、Constraint、PlanStep、Assumption、Risk、Decision、OpenQuestion。它不是思想过程，而是阶段性承诺。</p>
+  </div>
+  <div class="card">
+    <h4><span class="tag amber">Prompt</span> Prompt 本体</h4>
+    <p>记录 Role、TaskFrame、PromptSpec、ContextPolicy、OutputContract、PromptVersion。让 prompt 成为可审计工件。</p>
+  </div>
+  <div class="card">
+    <h4><span class="tag green">Evidence</span> 证据图</h4>
+    <p>记录 validate_graph、code probe、sandbox run、run IO、人工确认、失败反证。finish 只相信证据，不相信宣称。</p>
+  </div>
+  <div class="card">
+    <h4><span class="tag red">Failure</span> 失败模式</h4>
+    <p>从 sandbox / review / production stats 回流，连接到具体 AgentSpec、Tool、Capability、PromptSpec，下次设计时自动进入上下文。</p>
+  </div>
+</div>
+</section>
+
+<section id="payload-compiler">
+<h2><span class="n">3.3</span>Prompt / Payload 双编译</h2>
+<p class="lead">上传蓝图补充了一个容易被忽略的点：很多业务函数并不直接给 LLM 写 system prompt，而是向外部 AI、工具或服务发送结构化 payload。对 Agent 工厂来说，这些 payload 和 prompt 一样，都是“模型/外部智能系统的上下文输入”，也应该被本体接地、版本化、lint 和回流。</p>
+
+<div class="grid3">
+  <div class="card">
+    <h4>Prompt Compiler</h4>
+    <p>面向内部 Agent、规则校验 LLM、生成 JD LLM。输出 <code>system</code>、<code>user</code>、<code>data</code>、<code>outputContract</code>。</p>
+  </div>
+  <div class="card">
+    <h4>Payload Compiler</h4>
+    <p>面向 RoboHire、match API、invite API、外部 AI。输出结构化请求体，并记录字段来源和缺失处理。</p>
+  </div>
+  <div class="card">
+    <h4>Contract Compiler</h4>
+    <p>面向事件、I/O schema、审计和下游消费方。输出事件契约、失败语义、回填策略和人工确认要求。</p>
+  </div>
+</div>
+
+<table>
+  <tr><th>对象</th><th>为什么也算 prompt-like</th><th>必须记录什么</th></tr>
+  <tr><td><code>createJD</code> free-text prompt</td><td>它决定外部 JD 生成模型如何理解需求。</td><td>字段来源、澄清权重、缺字段策略、compilerVersion、输出质量。</td></tr>
+  <tr><td><code>ruleCheck</code> input</td><td>它决定规则校验 LLM 看到哪些规则、证据和候选人事实。</td><td>RuleSet 来源、Neo4j 证据、fail-close policy、raw response、audit id。</td></tr>
+  <tr><td><code>matchResume</code> payload</td><td>虽然是 JSON，但它决定外部 match AI 的语义输入。</td><td>resume/JD 字段来源、ruleCheck 证明、缺字段和薄事件回填。</td></tr>
+  <tr><td><code>interviewInviter</code> payload</td><td>它把业务判断转成外部邀请动作。</td><td>收件人、时间、模板、业务拒绝 vs 依赖失败、幂等键。</td></tr>
+</table>
+
+<div class="callout good">
+  <b>强化原则：</b>只要某段数据会影响 LLM、外部 AI 或业务副作用的判断，它就应该进入 Prompt/Payload Ledger。这样后续失败时不是“重新猜 prompt”，而是可以追到每个字段、规则、证据和 policy block。
+</div>
+</section>
+
+<section id="subagent-planning">
+<h2><span class="n">3.4</span>Ontology-guided Subagent Planning</h2>
+<p class="lead">这里需要明确校准：我们要的不是单层 Lead Agent 一次性 fan-out 一组 sub-agents，而是 <b>Factory-level orchestration + Agent-local subagent planning</b>。工厂级 Harness 先根据目标、本体缺口、证据状态和阶段闸门推理出“下一个应该调用哪个 active agent”；该 active agent 被激活后，再在自己的局部任务范围内运行局部 Harness，判断是否需要同步生成 agent-local sub-agents 来完成当前 agent 的子任务。agent 完成后返回结构化证据和结果，工厂级 Evidence Gate 再决定下一步调用哪个 agent，直到生成并验证可部署在 Inngest 上的业务 workflow functions。</p>
+
+<div class="fig">
+<svg viewBox="0 0 1180 650" xmlns="http://www.w3.org/2000/svg" font-family="var(--mono)">
+  <defs>
+    <marker id="sg" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#56d6c9"/></marker>
+    <marker id="sgb" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#73b7ff"/></marker>
+    <marker id="sgg" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#62d394"/></marker>
+    <style>
+      .sgbox{fill:#151d2a;stroke:#35445a;stroke-width:1.2}
+      .sgcyan{fill:#101923;stroke:#56d6c9;stroke-width:1.2}
+      .sgblue{fill:#101923;stroke:#73b7ff;stroke-width:1.2}
+      .sggreen{fill:#101923;stroke:#62d394;stroke-width:1.2}
+      .sgamber{fill:#101923;stroke:#f0bd5b;stroke-width:1.2}
+      .sgviolet{fill:#101923;stroke:#b29cff;stroke-width:1.2}
+      .sgt{fill:#ecf2f8;font-size:12px;font-weight:700}
+      .sgs{fill:#b5c0ce;font-size:10px}
+      .sgm{fill:#8290a4;font-size:9px}
+    </style>
+  </defs>
+
+  <rect x="36" y="36" width="180" height="68" rx="12" class="sgblue"/>
+  <text x="126" y="63" class="sgt" text-anchor="middle">User Goal</text>
+  <text x="126" y="84" class="sgs" text-anchor="middle">业务 workflow 目标</text>
+
+  <rect x="266" y="36" width="230" height="68" rx="12" class="sgcyan"/>
+  <text x="381" y="62" class="sgt" text-anchor="middle">Factory Harness</text>
+  <text x="381" y="83" class="sgs" text-anchor="middle">下一步调用哪个 active agent?</text>
+
+  <rect x="546" y="36" width="210" height="68" rx="12" class="sgamber"/>
+  <text x="651" y="62" class="sgt" text-anchor="middle">AgentInvocation</text>
+  <text x="651" y="83" class="sgs" text-anchor="middle">agent + task + ontology slice</text>
+
+  <rect x="806" y="36" width="260" height="68" rx="12" class="sggreen"/>
+  <text x="936" y="62" class="sgt" text-anchor="middle">Factory Evidence Gate</text>
+  <text x="936" y="83" class="sgs" text-anchor="middle">结果是否足以进入下一 agent?</text>
+
+  <rect x="72" y="170" width="1036" height="310" rx="18" fill="#101722" stroke="#35445a"/>
+  <text x="100" y="198" fill="#56d6c9" font-size="14" font-weight="700">Active Agent 内部执行栈：每个被工厂选中的 agent 都可以独立运行局部推理和同步 sub-agent 分工</text>
+
+  <rect x="116" y="230" width="190" height="74" rx="12" class="sgblue"/>
+  <text x="211" y="258" class="sgt" text-anchor="middle">Active Agent</text>
+  <text x="211" y="279" class="sgs" text-anchor="middle">design / codegen / validate</text>
+
+  <rect x="350" y="230" width="210" height="74" rx="12" class="sgcyan"/>
+  <text x="455" y="258" class="sgt" text-anchor="middle">Agent-local Harness</text>
+  <text x="455" y="279" class="sgs" text-anchor="middle">本 agent 是否要拆任务?</text>
+
+  <rect x="604" y="230" width="210" height="74" rx="12" class="sgamber"/>
+  <text x="709" y="258" class="sgt" text-anchor="middle">Local SubagentPlan</text>
+  <text x="709" y="279" class="sgs" text-anchor="middle">局部目标 · 边界 · 预算</text>
+
+  <rect x="858" y="230" width="190" height="74" rx="12" class="sggreen"/>
+  <text x="953" y="258" class="sgt" text-anchor="middle">AgentResult</text>
+  <text x="953" y="279" class="sgs" text-anchor="middle">证据 + 产物 + 缺口</text>
+
+  <rect x="168" y="362" width="190" height="70" rx="12" class="sgcyan"/>
+  <text x="263" y="389" class="sgt" text-anchor="middle">Local Specialist</text>
+  <text x="263" y="410" class="sgs" text-anchor="middle">规则 / I/O / prompt review</text>
+
+  <rect x="402" y="362" width="190" height="70" rx="12" class="sgcyan"/>
+  <text x="497" y="389" class="sgt" text-anchor="middle">Local Sub-brain</text>
+  <text x="497" y="410" class="sgs" text-anchor="middle">代码探查 / 证据收集</text>
+
+  <rect x="636" y="362" width="190" height="70" rx="12" class="sgcyan"/>
+  <text x="731" y="389" class="sgt" text-anchor="middle">Local Builder</text>
+  <text x="731" y="410" class="sgs" text-anchor="middle">局部草案 / 测试 / 修复</text>
+
+  <rect x="870" y="362" width="190" height="70" rx="12" class="sgviolet"/>
+  <text x="965" y="389" class="sgt" text-anchor="middle">Promote?</text>
+  <text x="965" y="410" class="sgs" text-anchor="middle">是否升级为 runtime sub-agent</text>
+
+  <rect x="250" y="548" width="230" height="60" rx="12" class="sggreen"/>
+  <text x="365" y="582" class="sgt" text-anchor="middle">Next Agent Decision</text>
+
+  <rect x="560" y="548" width="260" height="60" rx="12" class="sggreen"/>
+  <text x="690" y="582" class="sgt" text-anchor="middle">Deployable Inngest Functions</text>
+
+  <line x1="216" y1="70" x2="264" y2="70" stroke="#73b7ff" stroke-width="1.7" marker-end="url(#sgb)"/>
+  <line x1="496" y1="70" x2="544" y2="70" stroke="#56d6c9" stroke-width="1.7" marker-end="url(#sg)"/>
+  <line x1="756" y1="70" x2="804" y2="70" stroke="#62d394" stroke-width="1.7" marker-end="url(#sgg)"/>
+  <path d="M651 104 C651 142,211 140,211 228" fill="none" stroke="#56d6c9" stroke-width="1.6" marker-end="url(#sg)"/>
+  <line x1="306" y1="267" x2="348" y2="267" stroke="#73b7ff" stroke-width="1.6" marker-end="url(#sgb)"/>
+  <line x1="560" y1="267" x2="602" y2="267" stroke="#56d6c9" stroke-width="1.6" marker-end="url(#sg)"/>
+  <line x1="814" y1="267" x2="856" y2="267" stroke="#62d394" stroke-width="1.6" marker-end="url(#sgg)"/>
+  <path d="M709 304 C680 336,263 328,263 360" fill="none" stroke="#56d6c9" stroke-width="1.4" marker-end="url(#sg)"/>
+  <path d="M709 304 C690 336,497 328,497 360" fill="none" stroke="#56d6c9" stroke-width="1.4" marker-end="url(#sg)"/>
+  <path d="M709 304 C720 336,731 328,731 360" fill="none" stroke="#56d6c9" stroke-width="1.4" marker-end="url(#sg)"/>
+  <path d="M709 304 C780 336,965 328,965 360" fill="none" stroke="#b29cff" stroke-width="1.4" marker-end="url(#sg)"/>
+  <path d="M263 432 C320 466,760 468,953 304" fill="none" stroke="#62d394" stroke-width="1.3" stroke-dasharray="5 4" marker-end="url(#sgg)"/>
+  <path d="M497 432 C540 466,770 462,953 304" fill="none" stroke="#62d394" stroke-width="1.3" stroke-dasharray="5 4" marker-end="url(#sgg)"/>
+  <path d="M731 432 C790 462,900 430,953 304" fill="none" stroke="#62d394" stroke-width="1.3" stroke-dasharray="5 4" marker-end="url(#sgg)"/>
+  <path d="M965 432 C980 462,1000 458,953 304" fill="none" stroke="#b29cff" stroke-width="1.3" stroke-dasharray="5 4" marker-end="url(#sg)"/>
+  <path d="M953 230 C1030 160,936 132,936 106" fill="none" stroke="#62d394" stroke-width="1.5" marker-end="url(#sgg)"/>
+  <path d="M936 104 C936 530,365 520,365 546" fill="none" stroke="#62d394" stroke-width="1.4" stroke-dasharray="6 5" marker-end="url(#sgg)"/>
+  <line x1="480" y1="578" x2="558" y2="578" stroke="#62d394" stroke-width="1.7" marker-end="url(#sgg)"/>
+</svg>
+<div class="figcap">图 3.4 · 分层模型：工厂级 Harness 选择 active agent，active agent 内部再进行局部 sub-agent planning</div>
+</div>
+
+<h3>两层推理职责</h3>
+<table>
+  <tr><th>层级</th><th>核心问题</th><th>输入</th><th>输出</th></tr>
+  <tr><td><b>Factory-level Harness</b></td><td>现在应该调用哪个 agent 来推进整个 workflow？</td><td>用户目标、全局 BuildPlan、Ontology Proof、上一 agent 的证据、失败模式、Inngest 部署状态。</td><td><code>AgentInvocation</code>、下一 active agent、阶段跳转、全局 Evidence Gate 决策。</td></tr>
+  <tr><td><b>Agent-local Harness</b></td><td>当前 agent 为了完成自己的 task，是否需要生成同步 sub-agents？</td><td>该 agent 的局部 TaskFrame、局部本体投影、允许工具、任务预算、输出 contract。</td><td><code>LocalSubagentPlan</code>、<code>DelegationContract</code>、局部 SynthesisLedger、AgentResult。</td></tr>
+  <tr><td><b>Factory Evidence Gate</b></td><td>当前 agent 的产物是否足以让工厂进入下一步？</td><td>AgentResult、sub-agent 证据、代码/沙箱回执、rule/contract/lint 检查。</td><td>继续下一个 agent、让当前 agent refine、回退到上游 agent、ask_user 或 finish。</td></tr>
+</table>
+
+<h3>Agent 内部可以生成的 sub-agent 类型</h3>
+<table>
+  <tr><th>类型</th><th>生命周期</th><th>典型触发</th><th>输出</th></tr>
+  <tr><td><b>Ephemeral Specialist</b></td><td>只存在于当前 AgentRun 内。</td><td>当前 agent 需要规则、I/O、prompt、安全、失败语义等局部评审。</td><td>结构化 findings、blocking risks、建议修复点。</td></tr>
+  <tr><td><b>Ephemeral Sub-brain</b></td><td>只存在于当前 AgentRun 内，但可多轮工具调用。</td><td>当前 agent 需要查代码、查本体、查历史 run、收集证据。</td><td>claims、evidenceRefs、openGaps、局部结论。</td></tr>
+  <tr><td><b>Local Builder</b></td><td>只服务当前 agent 的局部产物。</td><td>当前 agent 需要生成局部 schema、测试、prompt block、probe 或修复草案。</td><td>draft artifact、test case、patch proposal、prompt/payload block。</td></tr>
+  <tr><td><b>Promotable Runtime Sub-agent</b></td><td>先作为设计候选，必要时升级为可部署业务 Agent。</td><td>局部能力被判定为可复用、可独立触发、可被父 Agent invoke。</td><td>AgentSpec、Inngest trigger/invoke contract、Prompt/Payload Contract。</td></tr>
+</table>
+
+<div class="callout warn">
+  <b>核心边界：</b>agent-local sub-agents 只对当前 active agent 的局部 task 负责，不能直接决定工厂级下一步，也不能直接写最终 workflow 交付。工厂级调度器只接收 active agent 的 <code>AgentResult</code> 和证据，再判断下一步应该调用哪个 agent、是否 refine、是否生成 runtime sub-agent、是否进入 Inngest 部署验证。
+</div>
+</section>
+
+<section id="subagent-synthesis">
+<h2><span class="n">3.5</span>AgentRun Contract 与分层证据回流</h2>
+<p class="lead">真正要落地的是一个“调用栈”模型：<code>FactoryRun</code> 选择并启动 <code>AgentRun</code>；<code>AgentRun</code> 可同步启动多个 <code>SubagentRun</code>；sub-agent 结果先汇总成当前 agent 的局部 SynthesisLedger；agent 再输出 AgentResult；工厂级 Evidence Gate 只根据 AgentResult、证据和全局计划状态决定下一步。这样就能形成灵活但可控的智能执行过程。</p>
+
+<div class="fig">
+<svg viewBox="0 0 1180 560" xmlns="http://www.w3.org/2000/svg" font-family="var(--mono)">
+  <defs>
+    <marker id="sw" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#73b7ff"/></marker>
+    <marker id="swg" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#62d394"/></marker>
+    <style>
+      .lane{fill:#101722;stroke:#263244;stroke-width:1}
+      .swbox{fill:#151d2a;stroke:#35445a;stroke-width:1.2}
+      .swc{fill:#101923;stroke:#56d6c9;stroke-width:1.2}
+      .swg{fill:#101923;stroke:#62d394;stroke-width:1.2}
+      .swt{fill:#ecf2f8;font-size:12px;font-weight:700}
+      .sws{fill:#b5c0ce;font-size:10px}
+      .swm{fill:#8290a4;font-size:9px}
+    </style>
+  </defs>
+
+  <rect x="34" y="34" width="240" height="78" rx="12" class="lane"/>
+  <text x="154" y="64" class="swt" text-anchor="middle">FactoryRun</text>
+  <text x="154" y="86" class="sws" text-anchor="middle">global goal · build plan · evidence</text>
+
+  <rect x="328" y="34" width="220" height="78" rx="12" class="swc"/>
+  <text x="438" y="64" class="swt" text-anchor="middle">NextAgentDecision</text>
+  <text x="438" y="86" class="sws" text-anchor="middle">select active agent</text>
+
+  <rect x="602" y="34" width="220" height="78" rx="12" class="swbox"/>
+  <text x="712" y="64" class="swt" text-anchor="middle">AgentRun</text>
+  <text x="712" y="86" class="sws" text-anchor="middle">local task + local harness</text>
+
+  <rect x="876" y="34" width="240" height="78" rx="12" class="swg"/>
+  <text x="996" y="64" class="swt" text-anchor="middle">Factory Evidence Gate</text>
+  <text x="996" y="86" class="sws" text-anchor="middle">advance / retry / backtrack / finish</text>
+
+  <rect x="94" y="178" width="990" height="230" rx="18" fill="#101722" stroke="#263244"/>
+  <text x="124" y="205" class="swt">Inside one AgentRun</text>
+
+  <rect x="142" y="244" width="180" height="58" rx="10" class="swc"/>
+  <text x="232" y="268" class="swt" text-anchor="middle">Local TaskFrame</text>
+  <text x="232" y="286" class="sws" text-anchor="middle">agent-owned scope</text>
+
+  <rect x="372" y="244" width="190" height="58" rx="10" class="swc"/>
+  <text x="467" y="268" class="swt" text-anchor="middle">LocalSubagentPlan</text>
+  <text x="467" y="286" class="sws" text-anchor="middle">spawn / no spawn / promote</text>
+
+  <rect x="612" y="214" width="160" height="52" rx="10" class="swbox"/>
+  <text x="692" y="244" class="swt" text-anchor="middle">SubagentRun 1</text>
+  <rect x="612" y="282" width="160" height="52" rx="10" class="swbox"/>
+  <text x="692" y="312" class="swt" text-anchor="middle">SubagentRun 2</text>
+  <rect x="612" y="350" width="160" height="40" rx="10" class="swbox"/>
+  <text x="692" y="374" class="swt" text-anchor="middle">SubagentRun n</text>
+
+  <rect x="828" y="244" width="190" height="58" rx="10" class="swg"/>
+  <text x="923" y="268" class="swt" text-anchor="middle">Local Synthesis</text>
+  <text x="923" y="286" class="sws" text-anchor="middle">claims · evidence · gaps</text>
+
+  <rect x="342" y="464" width="210" height="60" rx="12" class="swg"/>
+  <text x="447" y="499" class="swt" text-anchor="middle">AgentResult</text>
+
+  <rect x="632" y="464" width="230" height="60" rx="12" class="swg"/>
+  <text x="747" y="499" class="swt" text-anchor="middle">Inngest Function Proof</text>
+
+  <line x1="274" y1="73" x2="326" y2="73" stroke="#73b7ff" stroke-width="1.6" marker-end="url(#sw)"/>
+  <line x1="548" y1="73" x2="600" y2="73" stroke="#56d6c9" stroke-width="1.6" marker-end="url(#sw)"/>
+  <line x1="822" y1="73" x2="874" y2="73" stroke="#62d394" stroke-width="1.6" marker-end="url(#swg)"/>
+  <path d="M712 112 C712 154,232 158,232 242" fill="none" stroke="#56d6c9" stroke-width="1.4" marker-end="url(#sw)"/>
+  <line x1="322" y1="273" x2="370" y2="273" stroke="#56d6c9" stroke-width="1.4" marker-end="url(#sw)"/>
+  <path d="M562 273 C585 244,590 240,610 240" fill="none" stroke="#73b7ff" stroke-width="1.3" marker-end="url(#sw)"/>
+  <path d="M562 273 C585 304,590 308,610 308" fill="none" stroke="#73b7ff" stroke-width="1.3" marker-end="url(#sw)"/>
+  <path d="M562 273 C590 360,590 370,610 370" fill="none" stroke="#73b7ff" stroke-width="1.3" marker-end="url(#sw)"/>
+  <path d="M772 240 C805 245,805 260,826 270" fill="none" stroke="#62d394" stroke-width="1.3" stroke-dasharray="5 4" marker-end="url(#swg)"/>
+  <path d="M772 308 C805 302,805 286,826 276" fill="none" stroke="#62d394" stroke-width="1.3" stroke-dasharray="5 4" marker-end="url(#swg)"/>
+  <path d="M772 370 C818 350,820 306,826 292" fill="none" stroke="#62d394" stroke-width="1.3" stroke-dasharray="5 4" marker-end="url(#swg)"/>
+  <path d="M923 302 C923 430,447 420,447 462" fill="none" stroke="#62d394" stroke-width="1.4" marker-end="url(#swg)"/>
+  <line x1="552" y1="494" x2="630" y2="494" stroke="#62d394" stroke-width="1.5" marker-end="url(#swg)"/>
+  <path d="M747 464 C747 430,996 160,996 114" fill="none" stroke="#62d394" stroke-width="1.4" stroke-dasharray="6 5" marker-end="url(#swg)"/>
+  <path d="M996 112 C1110 210,1110 410,438 112" fill="none" stroke="#62d394" stroke-width="1.2" stroke-dasharray="6 5" marker-end="url(#swg)"/>
+</svg>
+<div class="figcap">图 3.5 · 调用栈模型：FactoryRun → AgentRun → SubagentRun → AgentResult → Factory Evidence Gate</div>
+</div>
+
+<h3>AgentInvocation 与 DelegationContract 的区别</h3>
+<table>
+  <tr><th>契约</th><th>由谁创建</th><th>解决什么问题</th><th>返回给谁</th></tr>
+  <tr><td><b>AgentInvocation</b></td><td>Factory-level Harness</td><td>选择并启动下一个 active agent，比如 <code>design_agent</code>、<code>codegen_agent</code>、<code>validate_graph</code>、<code>sandbox_run</code> 或某个已生成的 runtime agent。</td><td>返回 <code>AgentResult</code> 给工厂级 Evidence Gate。</td></tr>
+  <tr><td><b>DelegationContract</b></td><td>Active Agent 的局部 Harness</td><td>当前 agent 内部把自己的 task 拆给 ephemeral specialist、sub-brain、builder 或 promotable runtime sub-agent candidate。</td><td>返回 <code>SubagentResult</code> 给当前 AgentRun 的局部 SynthesisLedger。</td></tr>
+  <tr><td><b>RuntimeAgentContract</b></td><td>Active Agent 通过 <code>design_subagent</code> 生成</td><td>当某个局部能力值得长期复用时，将它升级为可部署、可被父 Agent invoke 的业务子 Agent。</td><td>返回 AgentSpec / Inngest trigger / invoke contract 给工厂级计划。</td></tr>
+</table>
+
+<h3>工厂级闭环</h3>
+<table>
+  <tr><th>步骤</th><th>工厂级问题</th><th>可能结果</th></tr>
+  <tr><td>1. Select Agent</td><td>根据全局计划和证据，下一步应调用哪个 agent？</td><td><code>understand_ontology</code>、<code>capability_resolve</code>、<code>design_agent</code>、<code>codegen_agent</code>、<code>sandbox_run</code>、<code>refine_agent</code>、runtime agent。</td></tr>
+  <tr><td>2. Run Agent Locally</td><td>该 agent 是否在自己的内部拆 sub-agents？</td><td>不拆、轻专家评审、heavy sub-brain、local builder、promotable runtime sub-agent candidate。</td></tr>
+  <tr><td>3. Collect AgentResult</td><td>当前 agent 是否完成自己的 contract？</td><td>产出 AgentSpec、代码、payload contract、验证报告、沙箱 receipt、open gaps。</td></tr>
+  <tr><td>4. Evidence Gate</td><td>当前证据是否足以进入下一阶段？</td><td>advance、retry same agent、call another agent、backtrack、ask_user、finish。</td></tr>
+  <tr><td>5. Deploy Proof</td><td>最终生成的 functions 是否能在 Inngest workflow 中跑通？</td><td>事件链闭合、trigger/invoke contract 成立、沙箱执行通过、失败语义可解释。</td></tr>
+</table>
+
+<div class="callout good">
+  <b>设计取舍：</b>这里的智能性来自“每个 active agent 都能局部组织自己的小团队”，而不是工厂一开始就把所有事情拆完。Ontology 的价值是让每一层都知道自己的边界：工厂级看全局 workflow 和部署证据；agent-local 看当前 task 和局部缺口；sub-agent 只看被委派的最小必要上下文。
+</div>
+</section>
+
+<section id="stage-blueprint">
+<h2><span class="n">4</span>阶段级设计：每一步怎么动态生成 prompt</h2>
+<table>
+  <tr><th>阶段</th><th>现有工具</th><th>推荐 Harness</th><th>动态 Prompt 输入</th><th>产出</th></tr>
+  <tr><td><b>意图</b></td><td><code>parseUserIntent</code></td><td>Structured Private Reasoning</td><td>用户消息、历史 intent、当前状态</td><td><code>IntentFrame</code>、Goal、Constraint、OpenQuestion</td></tr>
+  <tr><td><b>读本体</b></td><td><code>read_ontology</code></td><td>Direct Tool</td><td>domain、tenant、本体源</td><td>Domain Ontology graph delta</td></tr>
+  <tr><td><b>理解本体</b></td><td><code>understand_ontology</code></td><td>Specialist / GoT-light</td><td>对象、动作、事件、规则子图</td><td>业务链路理解、歧义、风险</td></tr>
+  <tr><td><b>工厂调度</b></td><td><code>conductor</code> / <code>ReasoningPolicyRouter</code></td><td>Factory-level Harness</td><td>全局 BuildPlan、上一 AgentResult、Evidence Graph、阶段闸门、Inngest 部署状态</td><td><code>AgentInvocation</code>：下一步 active agent、输入 contract、预期证据</td></tr>
+  <tr><td><b>Agent 内部分工</b></td><td><code>spawn_subagent</code> / <code>runSpecialists</code> / <code>design_subagent</code></td><td>Agent-local Harness</td><td>当前 AgentInvocation、局部 TaskFrame、Ontology slice、Capability slice、预算</td><td><code>LocalSubagentPlan</code>、<code>DelegationContracts</code>、局部 SynthesisLedger</td></tr>
+  <tr><td><b>规划</b></td><td><code>create_plan</code></td><td>Plan-and-Solve + GoT-light</td><td>Goal、事件链、能力缺口、边界候选</td><td>BuildPlan + graphDelta + coverage</td></tr>
+  <tr><td><b>评审</b></td><td><code>critique_plan</code></td><td>Multi-Expert Critique</td><td>链路子图、规则子图、IO 子图</td><td>ReviewFindings、blocking risks</td></tr>
+  <tr><td><b>设计</b></td><td><code>design_agent</code></td><td>Structured Generation + Ontology Contract</td><td>当前 action 子图、工具、规则、field contract</td><td>AgentSpec、PromptContract、PlanStep</td></tr>
+  <tr><td><b>代码</b></td><td><code>codegen_agent</code></td><td>CodeAct / PAL-style</td><td>Runtime contract、安全策略、测试入口</td><td>TypeScript code、probe evidence</td></tr>
+  <tr><td><b>校验</b></td><td><code>validate_graph</code></td><td>Deterministic Check</td><td>specs、domain graph、contracts</td><td>event closure、payload gaps</td></tr>
+  <tr><td><b>沙箱</b></td><td><code>sandbox_run</code></td><td>ReAct + Evidence</td><td>test cases、sandbox boundary、spec fingerprint</td><td>Execution receipts、Evidence Graph</td></tr>
+  <tr><td><b>修复</b></td><td><code>refine_agent</code></td><td>Reflexion + Targeted ReAct</td><td>失败证据、影响的 claim、历史 attempt</td><td>定点修复、Prompt diff、new evidence required</td></tr>
+  <tr><td><b>交付</b></td><td><code>finish</code></td><td>Evidence Gate</td><td>acceptance report、unresolved risks、evidence density</td><td>Ontology Proof、交付摘要</td></tr>
+</table>
+</section>
+
+<section id="schemas">
+<h2><span class="n">5</span>核心数据结构</h2>
+<p>第一版可以先全部落在 <code>ctx.reasoningOntology</code> / <code>ctx.promptLedger</code> 的 JSON 中，不急着建表。等 schema 稳定后，再拆 L4 表。</p>
+
+<h3>ReasoningOntology</h3>
+<pre><code>type ReasoningOntology = {
+  version: number;
+  nodes: ReasoningNode[];
+  edges: ReasoningEdge[];
+  checks: OntologyCheckResult[];
+  evidenceIndex: EvidenceRef[];
+  promptLedger: PromptLedger;
+  lastUpdatedBy: {
+    stage: "intent" | "understand" | "plan" | "design" | "validate" | "sandbox" | "finish";
+    tool?: string;
+    turnId: string;
+  };
+};</code></pre>
+
+<h3>ReasoningNode</h3>
+<pre><code>type ReasoningNode = {
+  id: string;
+  type:
+    | "Goal" | "IntentFrame" | "Constraint" | "DomainConcept"
+    | "Capability" | "PlanStep" | "AgentSpec" | "PromptSpec"
+    | "AgentInvocation" | "AgentRun" | "AgentResult"
+    | "LocalSubagentPlan" | "DelegationContract" | "SubagentResult" | "SynthesisLedger"
+    | "FactoryEvidenceDecision" | "RuntimeAgentContract"
+    | "Assumption" | "Risk" | "OpenQuestion" | "Evidence"
+    | "ReasoningStrategy" | "HarnessInvocation"
+    | "OntologyExtensionCandidate";
+  text?: string;
+  status: "hypothesis" | "candidate" | "committed" | "verified" | "rejected" | "superseded";
+  confidence?: number;
+  source: "user" | "ontology" | "capability_resolve" | "llm" | "sandbox" | "human" | "deterministic";
+  provenance: string[];
+  createdAtStage: string;
+  lastUpdatedAtStage: string;
+};</code></pre>
+
+<h3>PromptSpec</h3>
+<pre><code>type PromptSpec = {
+  id: string;
+  role:
+    | "FactoryDispatcher" | "AgentLocalPlanner"
+    | "IntentAnalyst" | "OntologyAnalyst" | "SolutionArchitect"
+    | "AgentDesigner" | "RuleReviewer" | "IoContractReviewer"
+    | "SubagentPlanner" | "EvidenceResearcher" | "CapabilityResearcher"
+    | "AgentLocalSynthesizer" | "CodeEngineer" | "SandboxRefiner" | "DeliveryLead";
+  taskFrameId: string;
+  selectedHarness: ReasoningHarness;
+  ontologyProjection: {
+    domainConceptIds: string[];
+    capabilityIds: string[];
+    evidenceIds: string[];
+    riskIds: string[];
+  };
+  allowedTools: string[];
+  hardConstraints: string[];
+  softGuidance: string[];
+  outputContract: {
+    kind: "graphDelta" | "agentContract" | "reviewFindings" | "code" | "answer" | "payloadContract";
+    schemaRef?: string;
+  };
+  requiredEvidence: string[];
+  promptVersion: number;
+};</code></pre>
+
+<h3>AgentInvocation / AgentRun</h3>
+<pre><code>type AgentInvocation = {
+  id: string;
+  factoryRunId: string;
+  selectedAgentSlug: string;
+  selectedBy: "factory_harness" | "evidence_gate" | "human_override";
+  reasonSummary: string;
+  inputContract: {
+    taskFrameId: string;
+    ontologyProjectionIds: string[];
+    evidenceRefs: string[];
+    requiredOutput: "agent_spec" | "code" | "validation" | "sandbox_receipt" | "runtime_contract";
+  };
+  expectedEvidence: string[];
+  allowedFactoryActions: Array&lt;"advance" | "retry" | "backtrack" | "ask_user" | "finish"&gt;;
+};
+
+type AgentRun = {
+  id: string;
+  invocationId: string;
+  agentSlug: string;
+  status: "running" | "succeeded" | "failed" | "partial";
+  localTaskFrameId: string;
+  localSubagentPlanId?: string;
+  resultId?: string;
+};</code></pre>
+
+<h3>LocalSubagentPlan</h3>
+<pre><code>type LocalSubagentPlan = {
+  id: string;
+  ownerAgentRunId: string;
+  parentAgentSlug: string;
+  localTaskFrameId: string;
+  taskShape: "straightforward" | "breadth_first" | "depth_first" | "mixed";
+  parallelizable: boolean;
+  sharedContextRisk: "low" | "medium" | "high";
+  spawnStrategy:
+    | "none"
+    | "light_specialists"
+    | "heavy_subagents"
+    | "local_builders"
+    | "promotable_runtime_subagent"
+    | "hybrid";
+  rationale: string;
+  agents: DelegationContract[];
+  synthesisLedgerId: string;
+  budget: {
+    maxSubagents: number;
+    maxParallel: number;
+    maxTotalToolCalls: number;
+    maxTotalTokens?: number;
+  };
+  stopPolicy: {
+    minCoverage: number;
+    diminishingReturnThreshold: number;
+    maxRounds: number;
+  };
+  promotionPolicy?: {
+    canPromoteToRuntimeAgent: boolean;
+    requiredProof: string[];
+  };
+};</code></pre>
+
+<h3>DelegationContract</h3>
+<pre><code>type DelegationContract = {
+  id: string;
+  planId: string;
+  ownerAgentRunId: string;
+  mode:
+    | "ephemeral_specialist"
+    | "ephemeral_subbrain"
+    | "local_builder"
+    | "promotable_runtime_subagent";
+  role: string;
+  objective: string;
+  scope: string;
+  nonGoals: string[];
+  boundary: string;
+  inputRefs: string[];
+  allowedTools: string[];
+  outputSchemaRef: string;
+  evidenceRequired: boolean;
+  dependencyIds: string[];
+  priority: "low" | "normal" | "high" | "blocking";
+  budget: {
+    modelTier: "fast" | "default" | "hard" | "review";
+    maxTurns: number;
+    maxToolCalls: number;
+    maxTokens?: number;
+  };
+  stopCondition: string;
+  promotionCandidate?: {
+    proposedAgentSlug: string;
+    inngestTrigger?: string;
+    parentInvokeContract?: string;
+  };
+};</code></pre>
+
+<h3>SubagentResult / AgentResult / SynthesisLedger</h3>
+<pre><code>type SubagentResult = {
+  id: string;
+  contractId: string;
+  ownerAgentRunId: string;
+  status: "succeeded" | "failed" | "partial" | "timed_out";
+  summary: string;
+  claims: Array&lt;{
+    text: string;
+    confidence: number;
+    evidenceRefs: string[];
+    riskLevel?: "low" | "medium" | "high";
+  }&gt;;
+  conflicts: Array&lt;{ withClaimId?: string; description: string }&gt;;
+  openGaps: string[];
+  recommendedNextAction?: "stop" | "spawn_more" | "ask_user" | "factory_decide";
+};
+
+type AgentResult = {
+  id: string;
+  agentRunId: string;
+  agentSlug: string;
+  status: "succeeded" | "failed" | "partial";
+  producedArtifacts: Array&lt;{
+    kind: "agent_spec" | "code" | "test" | "prompt_contract" | "payload_contract" | "sandbox_receipt";
+    ref: string;
+  }&gt;;
+  evidenceRefs: string[];
+  openGaps: string[];
+  recommendedFactoryAction: "advance" | "retry_same_agent" | "call_another_agent" | "backtrack" | "ask_user" | "finish";
+};
+
+type SynthesisLedger = {
+  id: string;
+  scope: "agent_local" | "factory_global";
+  goalId: string;
+  ownerAgentRunId?: string;
+  localSubagentPlanId?: string;
+  coverage: Record&lt;string, "covered" | "partial" | "missing" | "not_applicable"&gt;;
+  results: SubagentResult[];
+  mergedClaims: Array&lt;{
+    text: string;
+    supportingResultIds: string[];
+    status: "accepted" | "rejected" | "needs_evidence" | "conflicted";
+  }&gt;;
+  unresolvedConflicts: string[];
+  remainingGaps: string[];
+  shouldSpawnMore: boolean;
+  finalSynthesis: string;
+};</code></pre>
+
+<h3>PromptBlock</h3>
+<pre><code>type PromptBlock = {
+  id: string;
+  kind:
+    | "role" | "goal" | "ontology" | "rule"
+    | "evidence" | "data" | "policy"
+    | "output_contract" | "failure_memory" | "ask_user";
+  appliesTo: string[];       // agent slug / task type / runtime function
+  source: "user" | "ontology" | "code" | "runtime" | "reflection" | "ai_proposed";
+  status: "candidate" | "committed" | "verified" | "deprecated";
+  priority: number;
+  tokenBudget?: number;
+  content: string;
+  groundingRefs: string[];   // event / rule / object / tool / evidence ids
+  lintRules?: string[];
+};</code></pre>
+
+<h3>PromptInstance</h3>
+<pre><code>type PromptInstance = {
+  id: string;
+  runId: string;
+  conversationId?: string;
+  agentSlug: string;
+  taskId: string;
+  triggerEvent?: string;
+  compilerVersion: string;
+  strategy: "direct" | "react" | "plan_solve" | "codeact" | "got_light" | "reflexion";
+  blocks: string[];
+  rendered: {
+    system?: string;
+    user?: string;
+    data?: Record&lt;string, unknown&gt;;
+    payload?: Record&lt;string, unknown&gt;;
+    outputContract?: Record&lt;string, unknown&gt;;
+  };
+  lint: { ok: boolean; warnings: string[]; errors: string[] };
+  outcome?: {
+    ok: boolean;
+    model?: string;
+    tokens?: number;
+    latencyMs?: number;
+    evidenceRefs?: string[];
+    failureMode?: string;
+    humanIntervention?: boolean;
+  };
+};</code></pre>
+
+<h3>PromptCompiler 接口</h3>
+<pre><code>interface PromptCompiler {
+  compile(input: {
+    agentSlug: string;
+    taskFrame: TaskFrame;
+    eventData?: Record&lt;string, unknown&gt;;
+    ontology: MicroOntology;
+    evidence: EvidenceLedger;
+    policy?: PromptPolicy;
+    budget: { maxTokens: number; modelTier: "fast" | "default" | "hard" | "review" };
+  }): Promise&lt;PromptInstance&gt;;
+
+  lint(instance: PromptInstance): PromptLintResult;
+  explain(instanceId: string): PromptExplanation;
+  rollback(agentSlug: string, toCompilerVersion: string): Promise&lt;void&gt;;
+}</code></pre>
+
+<h3>ReasoningPolicyDecision</h3>
+<pre><code>type ReasoningPolicyDecision = {
+  id: string;
+  taskId: string;
+  selectedHarness: ReasoningHarness;
+  strategyStack: ReasoningHarness[];
+  reasonSummary: string;
+  notSelected: Array&lt;{ harness: ReasoningHarness; reason: string }&gt;;
+  budget: {
+    modelTier: "fast" | "default" | "hard" | "review";
+    maxToolCalls?: number;
+    maxBranches?: number;
+    maxSubagents?: number;
+    maxSandboxRuns?: number;
+  };
+  expectedArtifacts: string[];
+  expectedEvidence: string[];
+  agentInvocationId?: string;
+  localSubagentPlanId?: string;
+  escalationTriggers: Array&lt;{ condition: string; nextHarness: ReasoningHarness }&gt;;
+  status: "selected" | "running" | "succeeded" | "failed" | "escalated";
+};</code></pre>
+</section>
+
+<section id="linter">
+<h2><span class="n">6</span>Ontology / Prompt Linter</h2>
+<p>Ontology Linter 不应该一开始就强硬拦截。推荐四级结果：<code>info</code>、<code>warning</code>、<code>blocking</code>、<code>hard_error</code>。探索阶段只提示，设计和交付阶段逐步升级。</p>
+
+<table>
+  <tr><th>检查规则</th><th>阶段</th><th>级别</th><th>说明</th></tr>
+  <tr><td>Goal 必须被 PlanStep 或 AgentSpec 覆盖</td><td>plan</td><td><span class="tag amber">blocking</span></td><td>防止用户目标丢失。</td></tr>
+  <tr><td>AgentSpec 必须有 trigger 或 parent invoke</td><td>design</td><td><span class="tag amber">blocking</span></td><td>防止孤儿 agent。</td></tr>
+  <tr><td>非终态 event 必须有 consumer</td><td>validate</td><td><span class="tag amber">blocking</span></td><td>提前发现事件链断裂。</td></tr>
+  <tr><td>工具名必须来自 tool catalog</td><td>design</td><td><span class="tag red">hard_error</span></td><td>禁止 hallucinated tools。</td></tr>
+  <tr><td>事件名必须来自 Domain Ontology</td><td>design</td><td><span class="tag red">hard_error</span></td><td>禁止 hallucinated events。</td></tr>
+  <tr><td>规则闸必须绑定 <code>ontology.fetchActionRules</code></td><td>design / finish</td><td><span class="tag red">hard_error</span></td><td>禁止把具体规则写死进 prompt。</td></tr>
+  <tr><td>外部副作用步骤必须有 idempotency key</td><td>design</td><td><span class="tag amber">blocking</span></td><td>保证 replay safe。</td></tr>
+  <tr><td>高风险 claim 必须有 Evidence</td><td>finish</td><td><span class="tag red">hard_error</span></td><td>finish 只相信证据。</td></tr>
+  <tr><td>AgentInvocation 必须声明 requiredOutput 和 expectedEvidence</td><td>factory dispatch</td><td><span class="tag amber">blocking</span></td><td>防止工厂级调度只凭感觉选择下一个 agent。</td></tr>
+  <tr><td>LocalSubagentPlan 必须声明 ownerAgentRunId、sharedContextRisk 和预算</td><td>agent local delegate</td><td><span class="tag amber">blocking</span></td><td>防止 agent 内部把强依赖局部任务过度拆分。</td></tr>
+  <tr><td>DelegationContract 必须有 <code>nonGoals</code>、<code>outputSchema</code> 和 <code>stopCondition</code></td><td>agent local delegate</td><td><span class="tag amber">blocking</span></td><td>防止局部 sub-agent 越界、输出散文和无限调查。</td></tr>
+  <tr><td>Agent-local sub-agent 不得决定工厂级下一步</td><td>synthesis</td><td><span class="tag red">hard_error</span></td><td>它只能返回 SubagentResult；下一步 agent 选择必须由 Factory Evidence Gate 完成。</td></tr>
+  <tr><td>AgentResult 证据不足不得 advance</td><td>factory evidence gate</td><td><span class="tag red">hard_error</span></td><td>当前 active agent 没有完成自己的 contract 时不能进入下一 agent。</td></tr>
+  <tr><td>PromptSpec 输出结构必须完整</td><td>prompt compile</td><td><span class="tag amber">blocking</span></td><td>避免模型输出半成品结构。</td></tr>
+  <tr><td>重复 refine 没有分数提升</td><td>refine</td><td><span class="tag amber">blocking</span></td><td>防止 churn，转向 verify_chain 或 analyze_failure。</td></tr>
+</table>
+</section>
+
+<section id="router">
+<h2><span class="n">7</span>Reasoning Policy Router</h2>
+<p class="lead">不要问“用 CoT 还是 ReAct”。应该把 Router 拆成两层：工厂级 Router 决定下一步 active agent；agent-local Router 决定当前 agent 内部是否需要拆 sub-agents、用什么 Harness、如何汇总局部证据。</p>
+
+<table>
+  <tr><th>任务特征</th><th>首选 Harness</th><th>适用阶段</th><th>原因</th></tr>
+  <tr><td>简单解释、无需工具</td><td><code>DIRECT_ANSWER</code></td><td>answer</td><td>避免过度推理和过高成本。</td></tr>
+  <tr><td>多步规划、容易漏步骤</td><td><code>PLAN_AND_SOLVE</code></td><td>create_plan</td><td>先拆任务再逐项承诺。</td></tr>
+  <tr><td>需要查本体、工具、历史</td><td><code>SELF_ASK_RAG</code></td><td>understand / capability</td><td>按需检索，不固定塞全量上下文。</td></tr>
+  <tr><td>需要工具执行和观察</td><td><code>REACT_TOOL_LOOP</code></td><td>conductor main loop</td><td>工具调用、观察、修正交织。</td></tr>
+  <tr><td>需要决定下一步调用哪个 agent</td><td><code>FACTORY_NEXT_AGENT</code></td><td>factory dispatch</td><td>根据全局 BuildPlan、Evidence Graph 和上一 AgentResult 生成 AgentInvocation。</td></tr>
+  <tr><td>当前 active agent 需要局部拆分任务</td><td><code>AGENT_LOCAL_SUBAGENT_PLAN</code></td><td>agent run</td><td>在当前 agent 内部生成 LocalSubagentPlan 和 DelegationContracts。</td></tr>
+  <tr><td>多方案架构设计</td><td><code>GOT_LIGHT</code></td><td>plan / complex design</td><td>保留 2-4 个候选方案，再由 linter 和证据筛选。</td></tr>
+  <tr><td>当前 agent 的局部问题可并行调查</td><td><code>LOCAL_SUBAGENT_FANOUT</code></td><td>agent run</td><td>按规则簇、能力簇、代码区域或候选方案拆给当前 agent 的局部 sub-agents。</td></tr>
+  <tr><td>当前 agent 的局部任务强共享上下文</td><td><code>LOCAL_LIGHT_REVIEW</code></td><td>design / code / refine</td><td>只让轻专家评审，不让多个 heavy sub-brain 各自改写主方案。</td></tr>
+  <tr><td>当前 agent 发现可复用业务子能力</td><td><code>PROMOTE_RUNTIME_SUBAGENT</code></td><td>complex design</td><td>调用 <code>design_subagent</code> 生成可部署、可被父 Agent invoke 的 runtime Agent contract。</td></tr>
+  <tr><td>代码、图分析、schema diff</td><td><code>PAL_CODEACT</code></td><td>codegen / analyze_with_code</td><td>确定性执行比语言推理可靠。</td></tr>
+  <tr><td>高风险审查</td><td><code>MULTI_EXPERT_CRITIQUE</code></td><td>critique / review / finish</td><td>链路、规则、IO 分视角评估。</td></tr>
+  <tr><td>失败后修复</td><td><code>REFLEXION_RETRY</code></td><td>refine / analyze_failure</td><td>把失败证据转成修复假设和持久反思。</td></tr>
+  <tr><td>阻塞性信息缺口</td><td><code>ASK_USER</code></td><td>any</td><td>只有 OpenQuestion blocks Goal 时才问用户。</td></tr>
+</table>
+
+<h3>升级阶梯</h3>
+<div class="fig">
+<svg viewBox="0 0 980 150" xmlns="http://www.w3.org/2000/svg" font-family="var(--mono)">
+  <defs><marker id="up" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#73b7ff"/></marker></defs>
+  <g font-size="11">
+    <rect x="20" y="44" width="105" height="46" rx="10" fill="#151d2a" stroke="#35445a"/><text x="72" y="71" fill="#ecf2f8" text-anchor="middle">Direct</text>
+    <rect x="155" y="44" width="120" height="46" rx="10" fill="#151d2a" stroke="#35445a"/><text x="215" y="71" fill="#ecf2f8" text-anchor="middle">Structured</text>
+    <rect x="305" y="44" width="120" height="46" rx="10" fill="#151d2a" stroke="#35445a"/><text x="365" y="71" fill="#ecf2f8" text-anchor="middle">RAG</text>
+    <rect x="455" y="44" width="120" height="46" rx="10" fill="#151d2a" stroke="#35445a"/><text x="515" y="71" fill="#ecf2f8" text-anchor="middle">ReAct</text>
+    <rect x="605" y="44" width="120" height="46" rx="10" fill="#151d2a" stroke="#35445a"/><text x="665" y="71" fill="#ecf2f8" text-anchor="middle">GoT-Light</text>
+    <rect x="755" y="44" width="120" height="46" rx="10" fill="#151d2a" stroke="#35445a"/><text x="815" y="71" fill="#ecf2f8" text-anchor="middle">CodeAct</text>
+    <rect x="905" y="44" width="55" height="46" rx="10" fill="#151d2a" stroke="#35445a"/><text x="932" y="71" fill="#ecf2f8" text-anchor="middle">HITL</text>
+    <line x1="125" y1="67" x2="153" y2="67" stroke="#73b7ff" marker-end="url(#up)"/>
+    <line x1="275" y1="67" x2="303" y2="67" stroke="#73b7ff" marker-end="url(#up)"/>
+    <line x1="425" y1="67" x2="453" y2="67" stroke="#73b7ff" marker-end="url(#up)"/>
+    <line x1="575" y1="67" x2="603" y2="67" stroke="#73b7ff" marker-end="url(#up)"/>
+    <line x1="725" y1="67" x2="753" y2="67" stroke="#73b7ff" marker-end="url(#up)"/>
+    <line x1="875" y1="67" x2="903" y2="67" stroke="#73b7ff" marker-end="url(#up)"/>
+  </g>
+</svg>
+<div class="figcap">图 7 · 从便宜推理逐步升级到昂贵推理，避免所有任务一上来就 GoT / CodeAct</div>
+</div>
+
+<h3>Agent-local sub-agent 数量策略</h3>
+<table>
+  <tr><th>任务复杂度</th><th>建议数量</th><th>策略</th></tr>
+  <tr><td>当前 agent 的简单局部任务</td><td>0</td><td>active agent 直接处理，最多让一个 lightweight reviewer 检查。</td></tr>
+  <tr><td>当前 agent 的标准多维任务</td><td>2-3</td><td>按规则、能力、I/O 或候选方案拆分，要求输出 schema 一致。</td></tr>
+  <tr><td>当前 agent 的中等复杂研究/设计</td><td>3-5</td><td>并行 fan-out，active agent 维护局部 coverage matrix，并在第一轮后决定是否继续。</td></tr>
+  <tr><td>高复杂、高不确定任务</td><td>5-10</td><td>必须有预算、round limit 和 diminishing returns 判断，不允许无限扩张。</td></tr>
+  <tr><td>强共享上下文编码任务</td><td>0-2</td><td>优先用 active agent + specialist review，避免多个子脑产生互相不兼容的实现路径。</td></tr>
+</table>
+
+<div class="callout warn">
+  <b>Router 规则：</b><code>LOCAL_SUBAGENT_FANOUT</code> 是 active agent 内部的并行组织策略，不是工厂级全局 fan-out。只有当局部子任务可以独立推进、回传结果可结构化汇总、且新增证据价值高于成本时才启用。
+</div>
+</section>
+
+<section id="integration">
+<h2><span class="n">8</span>如何接入现有代码</h2>
+<p>推荐先做加法，不破坏现有主循环。第一阶段只增加旁路模块和 ctx 字段，Shadow Mode 观察效果。</p>
+
+<h3>新增目录建议</h3>
+<pre><code>packages/agent-factory/src/reasoning-ontology/
+  schema.ts
+  graph.ts
+  checks.ts
+  import-domain.ts
+  import-capabilities.ts
+  prompt-projection.ts
+  diff.ts
+  explain.ts
+
+packages/agent-factory/src/reasoning-policy/
+  schema.ts
+  intent-profiler.ts
+  task-classifier.ts
+  harness-registry.ts
+  strategy-router.ts
+  escalation.ts
+
+packages/agent-factory/src/prompt-compiler/
+  schema.ts
+  build-prompt-spec.ts
+  compile.ts
+  lint.ts
+  ledger.ts
+
+packages/agent-factory/src/factory-dispatch/
+  schema.ts
+  next-agent-router.ts
+  evidence-gate.ts
+  invocation-ledger.ts
+
+packages/agent-factory/src/agent-local-planning/
+  schema.ts
+  task-shape.ts
+  gap-scan.ts
+  local-subagent-router.ts
+  delegation-planner.ts
+  synthesis-ledger.ts
+  budget.ts</code></pre>
+
+<h3>最小侵入接入点</h3>
+<table>
+  <tr><th>文件</th><th>接入点</th><th>改动</th></tr>
+  <tr><td><code>brain-types.ts</code></td><td><code>BrainCtx</code></td><td>增加 <code>reasoningOntology?</code>、<code>promptLedger?</code>、<code>policyDecisions?</code>。</td></tr>
+  <tr><td><code>conductor.ts</code></td><td>每轮 turn 前</td><td>调用 <code>selectReasoningPolicy(ctx)</code>，再由 <code>nextAgentRouter</code> 在阶段边界生成 <code>AgentInvocation</code>。</td></tr>
+  <tr><td><code>conductor.ts</code></td><td>进入 active agent 时</td><td>创建 <code>AgentRun</code>，注入局部 Ontology Projection、PromptSpec、允许工具和 expectedEvidence。</td></tr>
+  <tr><td><code>conductor.ts</code></td><td><code>spawn_subagent</code> 前</td><td>当前 AgentRun 的局部 Router 把自然语言 task 包装成 <code>DelegationContract</code>，记录 ownerAgentRunId、scope、nonGoals、outputSchema 和预算。</td></tr>
+  <tr><td><code>conductor.ts</code></td><td><code>spawn_subagent</code> 后</td><td>把子结果写入当前 AgentRun 的局部 <code>SynthesisLedger</code>，再汇总为 <code>AgentResult</code>。</td></tr>
+  <tr><td><code>conductor.ts</code></td><td><code>buildStateSummary</code></td><td>让 reasoning ontology 成为新的折叠幸存者。</td></tr>
+  <tr><td><code>specialists.ts</code></td><td><code>runSpecialists</code></td><td>把 light specialists 接入 <code>LocalSubagentPlan</code>，统一与 heavy sub-agent 汇总格式。</td></tr>
+  <tr><td><code>tools.ts</code></td><td><code>read_ontology</code></td><td>把 Domain Ontology 导入 graphDelta。</td></tr>
+  <tr><td><code>tools.ts</code></td><td><code>capability_resolve</code></td><td>把 tools / skills / fleet agents 导入 Capability graph。</td></tr>
+  <tr><td><code>tools.ts</code></td><td><code>create_plan</code></td><td>产出 PlanStep graphDelta 和 coverage。</td></tr>
+  <tr><td><code>tools.ts</code></td><td><code>design_subagent</code></td><td>只在当前 AgentRun 判断局部能力值得长期复用时启用，并把候选 runtime sub-agent 交回工厂级计划确认。</td></tr>
+  <tr><td><code>tools.ts</code></td><td><code>design_agent</code></td><td>生成 Agent Ontology Contract，写 PromptSpec 和 PromptLedger。</td></tr>
+  <tr><td><code>tools.ts</code></td><td><code>sandbox_run</code></td><td>把 receipt / run IO 写 Evidence Graph。</td></tr>
+  <tr><td><code>acceptance.ts</code></td><td><code>acceptanceGate</code></td><td>增加 AgentRun / AgentResult / Inngest Function Proof 检查项：目标覆盖、事件链闭合、runtime agent 可部署、沙箱证据充足。</td></tr>
+</table>
+</section>
+
+<section id="ui">
+<h2><span class="n">9</span>UI 与可解释性</h2>
+<p>前端不应该展示原始 Chain-of-Thought，而应该展示结构化理由、证据和策略选择。</p>
+
+<div class="grid3">
+  <div class="card">
+    <h4>推理图谱卡片</h4>
+    <p>显示目标覆盖、事件闭合、规则接地、工具接地、证据密度、未解决风险。</p>
+  </div>
+  <div class="card">
+    <h4>Prompt Diff</h4>
+    <p>展示每个 Agent 的 prompt 是由哪些本体片段、约束和证据编译而来，版本如何变化。</p>
+  </div>
+  <div class="card">
+    <h4>Harness Decision</h4>
+    <p>显示为什么这一步选择 GoT-Light / CodeAct / Reflexion，而不是 Direct 或普通 ReAct。</p>
+  </div>
+  <div class="card">
+    <h4>Prompt Block Explorer</h4>
+    <p>按 Role / Goal / Ontology / Evidence / Policy / FailureMemory 展示最终 prompt 的组成。</p>
+  </div>
+  <div class="card">
+    <h4>Payload Contract Viewer</h4>
+    <p>展示外部 AI payload 每个字段来自哪里、是否有证据、缺失时如何 fallback。</p>
+  </div>
+  <div class="card">
+    <h4>Version & Rollback</h4>
+    <p>展示 compilerVersion、PromptInstance outcome、canary 结果，并支持回滚到上一稳定版本。</p>
+  </div>
+  <div class="card">
+    <h4>Agent Invocation Trace</h4>
+    <p>展示工厂级 Router 为什么选择当前 active agent，以及它需要返回什么证据。</p>
+  </div>
+  <div class="card">
+    <h4>Local Subagent Plan Viewer</h4>
+    <p>展示当前 active agent 为什么拆、拆几个、每个局部 sub-agent 的目标、边界、工具和预算。</p>
+  </div>
+  <div class="card">
+    <h4>Factory Evidence Timeline</h4>
+    <p>展示每个 AgentResult 如何推动工厂进入下一 agent、retry、backtrack、ask_user 或 finish。</p>
+  </div>
+</div>
+
+<h3>建议新增 ORV 分数</h3>
+<pre><code>ORV =
+  0.25 * grounding
++ 0.25 * coverage
++ 0.20 * closure
++ 0.20 * evidence_density
+- 0.10 * contradiction_debt</code></pre>
+
+<table>
+  <tr><th>指标</th><th>含义</th></tr>
+  <tr><td><code>grounding</code></td><td>事件、动作、规则、工具、字段有多少能在本体 / 能力库中找到。</td></tr>
+  <tr><td><code>coverage</code></td><td>用户目标、业务动作、关键规则被计划和 AgentSpec 覆盖的比例。</td></tr>
+  <tr><td><code>closure</code></td><td>事件链、IO 链、规则链是否闭合。</td></tr>
+  <tr><td><code>evidence_density</code></td><td>关键 claim 有多少被 validate、probe、sandbox、人工确认支撑。</td></tr>
+  <tr><td><code>contradiction_debt</code></td><td>未解决冲突、假设、风险、阻塞问题的数量和严重度。</td></tr>
+</table>
+</section>
+
+<section id="roadmap">
+<h2><span class="n">10</span>分阶段落地路线</h2>
+<p class="lead">强化后的路线分两条并行推进：先在 runtime 业务函数里做可观测、低侵入试点，再把成熟的 PromptBlock / Ledger 机制反哺到 Agent 工厂的 <code>design_agent</code> 和 <code>refine_agent</code>。</p>
+
+<h3>试点路线：先从 createJD 和 ruleCheck 开始</h3>
+<table>
+  <tr><th>阶段</th><th>范围</th><th>做什么</th><th>成功标准</th></tr>
+  <tr><td>Phase 0</td><td>观测，不改行为</td><td>新增 <code>Prompt Ledger</code>，记录 createJD prompt、ruleCheck prompt、match payload、invite payload。</td><td>每次 AI/外部智能调用都能追到 block 来源、compilerVersion 和结果。</td></tr>
+  <tr><td>Phase 1</td><td><code>createJD</code></td><td>把 <code>buildPromptFromRequirement</code> 拆成 PromptBlocks：基础字段、澄清记录、技能、排除条件、日期语义、输出目标。</td><td>JD prompt 可解释；字段缺失时能说明缺什么；人工修改率下降。</td></tr>
+  <tr><td>Phase 2</td><td><code>ruleCheck</code></td><td>把规则目录、Neo4j 证据、候选人简历、岗位要求、fail-close policy 编译成 RuleCheckPrompt。</td><td>规则引用无幻觉；infra failure 不污染业务 FAIL；规则审计能回放 prompt 来源。</td></tr>
+  <tr><td>Phase 3</td><td><code>matchResume</code> / <code>interviewInviter</code></td><td>把外部 AI payload 纳入 Prompt/Payload Contract，记录为什么带这些字段。</td><td>缺字段、thin event、外部失败能被 contract 解释，并能触发精准 ask_user。</td></tr>
+  <tr><td>Phase 4</td><td>Agent 工厂设计期</td><td>让 <code>design_agent</code> 生成 Ontology Contract + PromptPolicy，不再只生成 prompt 文本。</td><td>新造 agents 的 prompt 天然可编译、可 lint、可回流。</td></tr>
+  <tr><td>Phase 5</td><td>自优化</td><td>引入 DSPy / OPRO-style prompt optimizer，根据通过率、人工介入率、沙箱失败率优化 block 顺序和措辞。</td><td>同类任务 token 更少、失败更少、人工介入更准。</td></tr>
+</table>
+
+<h3>平台路线：再扩大到 Agent Factory 主链路</h3>
+<div class="roadmap">
+  <div class="phase">
+    <div class="num">1</div>
+    <h4>Shadow Mode</h4>
+    <p>旁路生成 graphDelta、PromptSpec、linter result。只记录不拦截，收集误报和帮助案例。</p>
+  </div>
+  <div class="phase">
+    <div class="num">2</div>
+    <h4>Projection</h4>
+    <p>让 understand、critique、design、refine 使用 Ontology Projection，而不是全量上下文。</p>
+  </div>
+  <div class="phase">
+    <div class="num">3</div>
+    <h4>Soft Gate</h4>
+    <p>对幻觉事件、幻觉工具、规则硬编码、目标未覆盖做 blocking，但仍允许人工 override。</p>
+  </div>
+  <div class="phase">
+    <div class="num">4</div>
+    <h4>Evidence Gate</h4>
+    <p>finish 必须通过 Ontology Proof：Goal 覆盖、硬约束满足、高风险有证据。</p>
+  </div>
+  <div class="phase">
+    <div class="num">5</div>
+    <h4>Learning Router</h4>
+    <p>基于 llm_calls、sandbox 次数、acceptance 分数，优化 Harness 和 Prompt 编译策略。</p>
+  </div>
+</div>
+
+<h3>分层 Agent / Subagent 路线：从隐式调用升级为显式调用栈</h3>
+<table>
+  <tr><th>阶段</th><th>范围</th><th>做什么</th><th>成功标准</th></tr>
+  <tr><td>S0</td><td>观测</td><td>记录当前工厂级 tool/agent 调用、<code>spawn_subagent</code>、<code>runSpecialists</code>、<code>design_subagent</code> 的触发原因、输入、输出和成本。</td><td>能区分“工厂为什么调用这个 agent”和“agent 内部为什么生成 sub-agent”。</td></tr>
+  <tr><td>S1</td><td>AgentInvocation</td><td>在阶段边界生成 <code>AgentInvocation</code>，记录 selectedAgent、inputContract、expectedEvidence。</td><td>每次 active agent 调用都能回放调度理由。</td></tr>
+  <tr><td>S2</td><td>LocalSubagentPlan</td><td>所有 agent-local sub-agent 调用前必须生成 ownerAgentRunId、objective、scope、nonGoals、allowedTools、budget、stopCondition。</td><td>局部 sub-agent 越界率下降，结果能汇总成 AgentResult。</td></tr>
+  <tr><td>S3</td><td>Factory Evidence Gate</td><td>每个 AgentResult 返回后，由工厂判断 advance、retry、backtrack、call another agent、ask_user 或 finish。</td><td>主流程能基于证据一步步推进，而不是固定流水线。</td></tr>
+  <tr><td>S4</td><td>Inngest Function Proof</td><td>finish 前检查生成的 runtime functions 是否 trigger/invoke 合法、事件链闭合、沙箱执行通过。</td><td>最终交付能解释“为什么这些 functions 能部署并跑通”。</td></tr>
+</table>
+
+<h3>持久化建议</h3>
+<table>
+  <tr><th>阶段</th><th>存储方式</th><th>原因</th></tr>
+  <tr><td>Phase 1-2</td><td><code>factory_conversations.ctx.reasoningOntology</code> JSON</td><td>schema 未稳定，先不建表。</td></tr>
+  <tr><td>Phase 2</td><td><code>factory_prompt_blocks</code></td><td>可组合 block 需要复用、废弃、优先级和来源追踪。</td></tr>
+  <tr><td>Phase 3</td><td><code>factory_prompt_instances</code> / <code>factory_payload_instances</code></td><td>每次 prompt/payload 编译都要记录 compilerVersion、blocks、rendered、lint、outcome。</td></tr>
+  <tr><td>Phase 3</td><td><code>factory_agent_invocations</code> / <code>factory_agent_runs</code></td><td>记录工厂级下一 agent 选择、输入 contract、期望证据和 AgentResult。</td></tr>
+  <tr><td>Phase 3</td><td><code>factory_local_subagent_plans</code> / <code>factory_delegation_contracts</code></td><td>记录 AgentRun 内部 sub-agent 生成原因、分工边界、工具预算、停止条件。</td></tr>
+  <tr><td>Phase 4</td><td><code>factory_reasoning_nodes</code> / <code>edges</code> / <code>checks</code></td><td>需要 UI 图谱、跨 run 分析和 Ontology Proof。</td></tr>
+  <tr><td>Phase 4</td><td><code>factory_subagent_results</code> / <code>factory_synthesis_ledgers</code></td><td>记录局部子结果、AgentResult、覆盖率矩阵、冲突解决和 Evidence Gate 决策。</td></tr>
+  <tr><td>Phase 5</td><td><code>factory_reasoning_policy_decisions</code></td><td>训练 / 优化 Router 和 PromptPolicy 的数据集。</td></tr>
+</table>
+</section>
+
+<section id="risks">
+<h2><span class="n">11</span>风险与边界</h2>
+<table>
+  <tr><th>风险</th><th>表现</th><th>缓解</th></tr>
+  <tr><td>Ontology 约束过强</td><td>模型过早收敛、创新下降、硬塞类别</td><td>探索层允许 hypothesis / unmodeled concept；早期只 warning。</td></tr>
+  <tr><td>JSON 假精确</td><td>猜测被结构化后看起来像事实</td><td>所有节点必须有 status、source、provenance、confidence。</td></tr>
+  <tr><td>Prompt 编译复杂化</td><td>调试困难，prompt 来源不透明</td><td>PromptLedger 记录每次 prompt 的组成和版本 diff。</td></tr>
+  <tr><td>AI 自由写 prompt 导致漂移</td><td>每次让模型从零写系统提示词，线上行为不可预测</td><td>AI 只提出/改写 block；compiler 负责组合、lint、版本化和回滚。</td></tr>
+  <tr><td>Prompt 版本不可控</td><td>线上 prompt 静默变化，难以解释回归</td><td>每个 PromptInstance 绑定 <code>compilerVersion</code>、block ids、outcome；支持 canary 和 rollback。</td></tr>
+  <tr><td>Payload 没纳入账本</td><td>外部 AI 调用失败后只能看请求体，无法知道字段为何这样选</td><td>外部 AI payload 与 prompt 一样进入 PayloadInstance 和 Evidence Ledger。</td></tr>
+  <tr><td>业务失败与依赖失败混淆</td><td>infra failure 被误写成候选人不合格或业务拒绝</td><td>Prompt/Payload 必须注入 FailureSemanticsBlock，区分 business reject、dependency failure、data insufficient。</td></tr>
+  <tr><td>工厂级与 Agent-local 职责混淆</td><td>局部 sub-agent 直接决定下一步工厂该调用哪个 agent</td><td>Agent-local sub-agent 只能返回 SubagentResult；下一步只能由 Factory Evidence Gate 决定。</td></tr>
+  <tr><td>Agent-local sub-agent 过度拆分</td><td>当前 AgentRun 的简单局部任务被拆成多个子任务，成本和时延上升</td><td>LocalSubagentPlan 必须先判断 taskShape、parallelizable 和 sharedContextRisk。</td></tr>
+  <tr><td>Agent-local sub-agent 任务重叠</td><td>多个局部 sub-agent 调查同一事实，最后 summary 噪声很高</td><td>DelegationContract 必须声明 ownerAgentRunId、scope、nonGoals、boundary；linter 检查 overlap。</td></tr>
+  <tr><td>强共享上下文被错误切分</td><td>每个局部子脑只看到局部，产生互相不兼容的设计</td><td>对强依赖编码任务优先 active agent + light specialist review，不启用 heavy fan-out。</td></tr>
+  <tr><td>AgentResult 证据不足</td><td>active agent 产物看起来完成，但无法推动 Inngest workflow 跑通</td><td>AgentResult 必须绑定 requiredOutput、evidenceRefs、openGaps 和 recommendedFactoryAction。</td></tr>
+  <tr><td>Promotable sub-agent 过早产品化</td><td>临时局部 helper 被误升级成 runtime agent，增加系统复杂度</td><td>只有具备复用价值、独立触发/invoke contract 和部署证据时，才允许 promote。</td></tr>
+  <tr><td>Router 滥用高成本 Harness</td><td>token、时延、sandbox 成本上升</td><td>默认 escalation ladder；GoT / CodeAct / subagent 需要触发条件。</td></tr>
+  <tr><td>原始 CoT 暴露</td><td>污染 UI 和记忆，产生隐私和合规风险</td><td>只保存 structured rationale summary、证据和决策，不保存原始 CoT。</td></tr>
+  <tr><td>PII 暴露面扩大</td><td>为了“更懂上下文”把完整简历到处传</td><td>DataBlock 按最小必要字段编译；full payload 只进受控审计，敏感字段脱敏或引用化。</td></tr>
+  <tr><td>Linter 误伤</td><td>有效方案被错误拦截</td><td>记录 valid_override_rate、false_positive_rate、Constraint Drag。</td></tr>
+  <tr><td>Prompt 优化缺评价</td><td>改了 prompt 但不知道好坏</td><td>所有 PromptInstance 绑定 outcome：通过率、失败原因、人工介入、沙箱次数、token 成本。</td></tr>
+</table>
+
+<h3>Constraint Drag 指标</h3>
+<p>为了确认小型 Ontology 是脚手架而不是笼子，建议专门监控：</p>
+<div class="grid3">
+  <div class="card"><h4>valid_override_rate</h4><p>人工或模型推翻 linter 的比例，过高说明规则误伤。</p></div>
+  <div class="card"><h4>unmodeled_concept_count</h4><p>模型频繁提出未建模概念，说明 schema 需要扩展。</p></div>
+  <div class="card"><h4>premature_commit_reverts</h4><p>过早 commit 后频繁回滚，说明结构化太早。</p></div>
+  <div class="card"><h4>alternative_plan_count</h4><p>检查多方案能力是否保留。</p></div>
+  <div class="card"><h4>novel_capability_proposals</h4><p>检查是否仍能提出新 tool / skill / sub-agent。</p></div>
+  <div class="card"><h4>schema_fillers</h4><p>大量空洞字段、套话字段，说明 JSON 压力太强。</p></div>
+  <div class="card"><h4>subagent_overlap_rate</h4><p>子 Agent 输出 claim 的重复率，过高说明分工边界不清。</p></div>
+  <div class="card"><h4>subagent_marginal_gain</h4><p>每新增一个子 Agent 带来的新增证据或风险发现数量。</p></div>
+  <div class="card"><h4>synthesis_conflict_debt</h4><p>进入 finish 前仍未解决的子结论冲突数量和严重度。</p></div>
+</div>
+</section>
+
+<section id="conclusion">
+<h2><span class="n">12</span>最终判断</h2>
+<p class="lead">你们这套系统非常适合引入小型 Ontology，但它的正确位置不是“替代模型思考”，而是“管理工厂级 agent 调度、管理 active agent 内部 sub-agent 分工、生成动态 prompt、校验工程事实、索引证据和失败回流”。</p>
+
+<div class="callout good">
+  <b>最终方案：</b>Factory-level Router 负责“下一步该调用哪个 active agent”，Agent-local Router 负责“当前 agent 是否要同步生成局部 sub-agents”，Micro Ontology Kernel 负责“每一层依据什么事实和证据”，Dynamic Prompt Compiler 负责“把这些东西编译成当前 agent/sub-agent 的 prompt / payload”。四者组合后，Agent 工厂就从“会生成 Agent”升级为“会动态选择 agent、会让 agent 自己组织局部小团队、会用证据一步步生成并验证 Inngest workflow functions”的 Agent 工厂。
+</div>
+
+<table>
+  <tr><th>升级前</th><th>升级后</th></tr>
+  <tr><td>系统 prompt 里写很多纪律，靠模型记住</td><td>每次调用前由 PromptSpec 注入专属约束和子图</td></tr>
+  <tr><td>上下文折叠后依赖文本摘要</td><td>Reasoning Ledger / Prompt Ledger 成为折叠幸存者</td></tr>
+  <tr><td>refine 主要读错误日志再猜</td><td>沿 Evidence Graph 定位被反证的 claim</td></tr>
+  <tr><td>工具 / 事件幻觉靠后面 validate 才发现</td><td>Prompt 编译和 design 阶段前置发现</td></tr>
+  <tr><td>每个任务大多走同一套 ReAct</td><td>Router 动态组合 Direct / Plan / ReAct / GoT / CodeAct / Reflexion，并在阶段边界选择下一 active agent</td></tr>
+  <tr><td>工厂和 agent 内部 sub-agent 分工混在一起</td><td>工厂生成 AgentInvocation；active agent 生成 LocalSubagentPlan，两层职责分离</td></tr>
+  <tr><td>子 Agent 输出 summary 后由主脑泛读</td><td>局部 SynthesisLedger 先形成 AgentResult，再由 Factory Evidence Gate 决定下一步</td></tr>
+  <tr><td>prompt 是手工模板资产</td><td>prompt 是可度量、可回放、可优化的编译产物</td></tr>
+  <tr><td>外部 AI payload 只作为普通请求体</td><td>payload 和 prompt 一样进入 Contract / Ledger / Evidence 闭环</td></tr>
+  <tr><td>生成期和运行期各自记录</td><td>Agent Factory 与 runtime functions 共用 Prompt/Payload Ledger 和 Evidence Ledger</td></tr>
+  <tr><td>prompt 优化靠人工经验</td><td>DSPy / OPRO-style optimizer 根据 outcome 调整 PromptPolicy 和 block 顺序</td></tr>
+</table>
+</section>
+
+<footer>
+  <div>Agent Factory · Ontology-Guided Dynamic Prompt & Subagent Planning 技术架构蓝图报告</div>
+  <div>Generated for local workspace: <code>/Users/yuhancheng/Desktop/agentic operator_new</code></div>
+</footer>
+</main>
+</div>
+</body>
+</html>

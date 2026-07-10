@@ -7,6 +7,7 @@ import {
   deployments,
   eventListeners,
   getDb,
+  runs,
   tenants,
   workflows,
   workflowVersions,
@@ -14,9 +15,11 @@ import {
 import { makeId } from "@agentic/shared";
 import { ManifestUploadBody } from "@agentic/contracts";
 import { requireAuth } from "../../plugins/auth";
+import { requirePermission } from "../../plugins/rbac";
 import { writeAudit } from "../../plugins/audit";
 import { getAgentDetail, listAgentRuns, listAgents } from "../../queries/agents";
 import { resolveTenantCodePath } from "../../services/tenant-code";
+import { reregisterInngest } from "../../services/inngest-registry";
 
 function hashManifest(m: unknown): string {
   return crypto
@@ -69,7 +72,7 @@ export async function agentsRoutes(app: FastifyInstance) {
   app.get<{ Querystring: { kind?: string } }>(
     "/agents",
     async (req, reply) => {
-      const auth = requireAuth(req);
+      const auth = requirePermission(req, "agents.read");
       const rawKind = (req.query as { kind?: string }).kind;
       const kind: "code" | "manifest" | "all" =
         rawKind === "code" || rawKind === "manifest" ? rawKind : "all";
@@ -89,7 +92,7 @@ export async function agentsRoutes(app: FastifyInstance) {
   app.get<{ Params: { kebab: string } }>(
     "/agents/:kebab",
     async (req, reply) => {
-      const auth = requireAuth(req);
+      const auth = requirePermission(req, "agents.read");
       const detail = await getAgentDetail(auth.tenantSlug, req.params.kebab);
       if (!detail) return reply.fail("not_found", "agent not found", 404);
       const recentRuns = await listAgentRuns(auth.tenantSlug, detail.id, 20);
@@ -99,7 +102,7 @@ export async function agentsRoutes(app: FastifyInstance) {
 
   // POST /v1/agents — Mode 1 manifest upload
   app.post("/agents", async (req, reply) => {
-    const auth = requireAuth(req);
+    const auth = requirePermission(req, "agents.write");
     const parsed = ManifestUploadBody.parse(req.body);
     const db = getDb();
     const tenant = db
@@ -296,4 +299,164 @@ export async function agentsRoutes(app: FastifyInstance) {
       note: "Server restart picks up the new manifest in Inngest runtime.",
     });
   });
+
+  // PATCH /v1/agents/:kebab — 上线/下线 a single agent (toggle `enabled`).
+  //
+  // Flipping `enabled` then re-registering the tenant is the runtime
+  // disable/enable path: a disabled manifest agent is dropped from the served
+  // Inngest function set (see packages/runtime bootstrapTenant), so no event
+  // routes to it until it's re-enabled. Code agents have no Inngest function;
+  // their `enabled` flag is honored at invoke time instead. Idempotent —
+  // toggling to the current state still returns 200 with the row state.
+  app.patch<{ Params: { kebab: string }; Body: { enabled?: unknown; title?: unknown } }>(
+    "/agents/:kebab",
+    async (req, reply) => {
+      const auth = requirePermission(req, "agents.write");
+      const body = (req.body ?? {}) as { enabled?: unknown; title?: unknown };
+      const hasEnabled = typeof body.enabled === "boolean";
+      const hasTitle = typeof body.title === "string";
+      if (!hasEnabled && !hasTitle) {
+        return reply.fail(
+          "invalid_body",
+          "body must include { enabled: boolean } and/or { title: string }",
+          400,
+        );
+      }
+      const db = getDb();
+      const row = db
+        .select({
+          id: agents.id,
+          kebabId: agents.kebabId,
+          name: agents.name,
+          title: agents.title,
+          kind: agents.kind,
+          enabled: agents.enabled,
+        })
+        .from(agents)
+        .innerJoin(workflows, eq(workflows.id, agents.workflowId))
+        .where(
+          and(
+            eq(workflows.tenantId, auth.tenantId),
+            eq(agents.kebabId, req.params.kebab),
+          ),
+        )
+        .all()[0];
+      if (!row) return reply.fail("not_found", "agent not found", 404);
+
+      // Rename (title) — display-only; the kebabId / event routing is unchanged, so no re-register.
+      if (hasTitle) {
+        const title = String(body.title).trim();
+        if (!title) return reply.fail("invalid_body", "title 不能为空", 400);
+        if (title !== row.title) {
+          db.update(agents).set({ title, updatedAt: new Date() }).where(eq(agents.id, row.id)).run();
+          writeAudit({ tenantId: auth.tenantId, action: "agent.rename", targetType: "agent", targetId: row.id, meta: { kebabId: row.kebabId, from: row.title, to: title } });
+        }
+        if (!hasEnabled) return reply.ok({ kebabId: row.kebabId, name: row.name, title, kind: row.kind, enabled: row.enabled });
+      }
+
+      const enabled = hasEnabled ? (body.enabled as boolean) : row.enabled;
+      if (row.enabled !== enabled) {
+        db.update(agents)
+          .set({ enabled, updatedAt: new Date() })
+          .where(eq(agents.id, row.id))
+          .run();
+        writeAudit({
+          tenantId: auth.tenantId,
+          action: enabled ? "agent.enable" : "agent.disable",
+          targetType: "agent",
+          targetId: row.id,
+          meta: { kebabId: row.kebabId, kind: row.kind },
+        });
+      }
+
+      // Re-register so a manifest agent's function is added/removed from the
+      // live serve handler without a restart. No-op for code agents (they
+      // contribute no Inngest function) but harmless. Best-effort: a failed
+      // re-register is logged and surfaced, but the DB flip already persisted
+      // and the next boot reflects it.
+      let reregistered = false;
+      let fnCount: number | undefined;
+      try {
+        const r = await reregisterInngest({
+          tenantSlug: auth.tenantSlug,
+          scope: "tenant",
+        });
+        reregistered = true;
+        fnCount = r.fnCount;
+      } catch (err) {
+        req.log.warn(
+          { err, kebabId: row.kebabId },
+          "agent enable/disable: re-register failed; next boot will reflect it",
+        );
+      }
+
+      return reply.ok({
+        kebabId: row.kebabId,
+        name: row.name,
+        title: row.title,
+        kind: row.kind,
+        enabled,
+        reregistered,
+        fnCount,
+      });
+    },
+  );
+
+  // DELETE /v1/agents/:kebab — remove an agent from the fleet.
+  //   • No run history → hard delete (agent_versions + event_listeners cascade, then the row);
+  //     the agent disappears from the tenant workflow's served set on re-register.
+  //   • Has run history → runs.agent_id is a RESTRICT FK, so a hard delete would orphan history.
+  //     We disable + delist instead and report it, so the caller gets an honest outcome (no crash,
+  //     no lost audit trail). Pass ?force=1 to also purge run history first (destructive).
+  app.delete<{ Params: { kebab: string }; Querystring: { force?: string } }>(
+    "/agents/:kebab",
+    async (req, reply) => {
+      const auth = requirePermission(req, "agents.write");
+      const db = getDb();
+      const row = db
+        .select({ id: agents.id, kebabId: agents.kebabId, name: agents.name, kind: agents.kind })
+        .from(agents)
+        .innerJoin(workflows, eq(workflows.id, agents.workflowId))
+        .where(and(eq(workflows.tenantId, auth.tenantId), eq(agents.kebabId, req.params.kebab)))
+        .all()[0];
+      if (!row) return reply.fail("not_found", "agent not found", 404);
+
+      const runCount = db.select({ id: runs.id }).from(runs).where(eq(runs.agentId, row.id)).all().length;
+      const force = req.query.force === "1" || req.query.force === "true";
+
+      let deleted = false;
+      let disabled = false;
+      if (runCount > 0 && !force) {
+        // Soft path: disable so it drops out of the served Inngest set (same as PATCH disable).
+        db.update(agents).set({ enabled: false, updatedAt: new Date() }).where(eq(agents.id, row.id)).run();
+        disabled = true;
+      } else {
+        if (force && runCount > 0) {
+          // Destructive purge of history first (steps/events/artifacts cascade off runs).
+          db.delete(runs).where(eq(runs.agentId, row.id)).run();
+        }
+        // agent_versions + event_listeners cascade on agent delete; deployments reference the
+        // version rows (cascade) — remove the agent row last.
+        db.delete(agents).where(eq(agents.id, row.id)).run();
+        deleted = true;
+      }
+      writeAudit({ tenantId: auth.tenantId, action: deleted ? "agent.delete" : "agent.disable", targetType: "agent", targetId: row.id, meta: { kebabId: row.kebabId, kind: row.kind, runCount, force } });
+
+      let reregistered = false;
+      try {
+        await reregisterInngest({ tenantSlug: auth.tenantSlug, scope: "tenant" });
+        reregistered = true;
+      } catch (err) {
+        req.log.warn({ err, kebabId: row.kebabId }, "agent delete: re-register failed; next boot will reflect it");
+      }
+      return reply.ok({
+        kebabId: row.kebabId,
+        deleted,
+        disabled,
+        runCount,
+        reregistered,
+        note: disabled ? "该智能体有运行历史，已下线并移出服务集（未物理删除）；如需彻底删除请用 ?force=1 一并清理历史。" : undefined,
+      });
+    },
+  );
 }

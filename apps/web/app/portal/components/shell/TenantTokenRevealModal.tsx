@@ -13,6 +13,7 @@
 
 import { useState } from "react";
 import { Button, Icon, ModalOverlay } from "@/app/portal/components";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 
 export interface TenantTokenRevealPayload {
   slug: string;
@@ -30,6 +31,7 @@ export function TenantTokenRevealModal({
   payload,
   onClose,
 }: TenantTokenRevealModalProps) {
+  const { t } = useI18n();
   const [acked, setAcked] = useState(false);
   const [copied, setCopied] = useState(false);
 
@@ -50,7 +52,7 @@ export function TenantTokenRevealModal({
   return (
     <ModalOverlay
       onClose={handleDismiss}
-      ariaLabel={`Bootstrap token for ${payload.name}`}
+      ariaLabel={t("tenantTokenRevealModal.ariaLabel", { name: payload.name })}
     >
       <div
         style={{
@@ -76,13 +78,13 @@ export function TenantTokenRevealModal({
           }}
         >
           <div style={{ fontSize: 13, color: "var(--text)", fontWeight: 500 }}>
-            Bootstrap token · {payload.name}
+            {t("tenantTokenRevealModal.headerTitle")} · {payload.name}
           </div>
           <button
             onClick={handleDismiss}
             style={{ color: "var(--text-3)" }}
             disabled={!acked}
-            aria-label="Close"
+            aria-label={t("tenantTokenRevealModal.close")}
           >
             <Icon name="x" size={12} />
           </button>
@@ -90,8 +92,7 @@ export function TenantTokenRevealModal({
 
         <div style={{ padding: "16px 18px", overflowY: "auto", flex: 1 }}>
           <div style={{ fontSize: 13, color: "var(--text-2)", marginBottom: 12, lineHeight: 1.5 }}>
-            This is the only time you&apos;ll see this token. Save it now. The hash is
-            stored on the server; we cannot show the plaintext again.
+            {t("tenantTokenRevealModal.warning")}
           </div>
           <div
             style={{
@@ -124,14 +125,15 @@ export function TenantTokenRevealModal({
                 cursor: "pointer",
               }}
             >
-              {copied ? "COPIED" : "COPY"}
+              {copied ? t("tenantTokenRevealModal.copied") : t("tenantTokenRevealModal.copy")}
             </button>
           </div>
           <div style={{ fontSize: 11, color: "var(--text-3)", marginTop: 6 }}>
-            Scopes: {(payload.scopes || []).join(", ") || "(default)"}
+            {t("tenantTokenRevealModal.scopes")}{" "}
+            {(payload.scopes || []).join(", ") || t("tenantTokenRevealModal.defaultScope")}
           </div>
           <div style={{ fontSize: 11, color: "var(--text-3)", marginTop: 14 }}>
-            Use it as:
+            {t("tenantTokenRevealModal.useItAs")}
             <pre
               style={{
                 background: "var(--bg)",
@@ -143,7 +145,7 @@ export function TenantTokenRevealModal({
                 borderRadius: 4,
               }}
             >{`curl -H "Authorization: Bearer ${payload.token}" \\
-  http://localhost:3501/v1/agents`}</pre>
+  http://localhost:3540/v1/agents`}</pre>
           </div>
         </div>
 
@@ -171,10 +173,10 @@ export function TenantTokenRevealModal({
                 checked={acked}
                 onChange={(e) => setAcked(e.target.checked)}
               />
-              I have stored this token securely
+              {t("tenantTokenRevealModal.ackLabel")}
             </label>
             <Button tone="primary" disabled={!acked} onClick={onClose}>
-              Dismiss
+              {t("tenantTokenRevealModal.dismiss")}
             </Button>
           </div>
         </div>

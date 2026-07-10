@@ -24,8 +24,13 @@ import type {
   ToolContext,
   ToolDescriptor,
 } from "@agentic/agent-kit";
+import type { MemoryHandle } from "@agentic/agent-sdk";
 import type { ActionSpec } from "./manifest";
 import { getRuntimeGateway } from "./llm-host";
+import { makeGeneratedAgentPrompt } from "./generated-agent";
+import { runGeneratedCode } from "./codeact";
+import { evaluateCondition } from "./action-plan";
+import { isSandboxTenant, sandboxToolMode, sandboxToolStub, cassetteLookup, toolDispatchDecision, gatedWriteMarker, injectedFault, faultResult } from "./sandbox-mode";
 import type {
   ChatContentBlock,
   ChatMessage,
@@ -60,6 +65,17 @@ interface AgentSlots {
    * `MAX_TOOL_USE_ITERS`).
    */
   tool_use?: ToolUseEntry[];
+  /**
+   * Agent Factory marker. When true, the agent's `logic` action runs the runtime's default
+   * generated-agent prompt (no hand-written tenant prompt required) and the tool-use loop
+   * advertises GLOBAL registry tools in addition to tenant tools — so a machine-generated agent
+   * referencing global tools (ontology.fetchActionRules, fs.*, …) can actually call them.
+   */
+  generated?: boolean;
+  /** #G — true CodeAct: when true (AI-written code), the logic action EXECUTES `typescriptCode`'s
+   *  handler in the sandbox instead of the default prompt. Gated (FACTORY_EXEC_GENERATED) + falls back. */
+  codeExecuted?: boolean;
+  typescriptCode?: string;
 }
 
 /** Hard cap on tool-use iterations per `logic` action. Anything above 8
@@ -100,6 +116,13 @@ export interface StepInput {
    */
   runId?: string;
   stepOrd?: number;
+  /**
+   * #REDESIGN FU1 — the REAL durable MemoryHandle for this run (createMemoryHandle), threaded from the
+   * delivered adapter (register.ts). Passed into generated-code execution so a deployed agent's handler
+   * gets persistent vector-recall memory instead of an ephemeral map. Undefined for pure-runtime/test
+   * callers → codeact falls back to an in-process handle.
+   */
+  memory?: MemoryHandle;
 }
 
 export interface StepOutput {
@@ -200,6 +223,7 @@ async function callLLM(
   provider: string;
   model: string;
   toolCalls: ToolCallTrace[];
+  turns: LlmTurnTrace[];
 }> {
   const gateway = getRuntimeGateway();
   if (!gateway) {
@@ -221,7 +245,12 @@ async function callLLM(
   const tools: ToolDef[] = [];
   if (agent?.tool_use && agent.tool_use.length > 0) {
     for (const entry of agent.tool_use) {
-      const handler = tenantRegistry?.tools?.[entry.name];
+      // Tenant tool wins; for GENERATED agents, fall back to the global registry so their roster
+      // (ontology.fetchActionRules, fs.*, …) is actually advertised to the model. Hand-authored
+      // tenants keep the strict tenant-only behaviour (a stale declaration silently no-ops).
+      const handler =
+        tenantRegistry?.tools?.[entry.name] ??
+        (agent?.generated ? globalToolRegistry.get(entry.name) : undefined);
       if (!handler) continue;
       tools.push({
         name: entry.name,
@@ -247,6 +276,11 @@ async function callLLM(
   let lastModel = "";
   let finalText = "";
   const toolCalls: ToolCallTrace[] = [];
+  // #W0 — raw per-turn capture (response text + reasoning + requested tools),
+  // surfaced up to register.ts which persists it to `llm_turns`. This is the
+  // only site that sees every turn's full response, incl. provider-native
+  // reasoning via response.raw.
+  const turns: LlmTurnTrace[] = [];
 
   for (let iter = 0; iter < maxIters; iter++) {
     const response = await gateway.chat({
@@ -261,6 +295,23 @@ async function callLLM(
     lastModel = response.model;
 
     const requestedCalls = response.toolCalls ?? [];
+
+    turns.push({
+      ord: iter,
+      promptPreview: iter === 0 ? capText(rendered, 4000) : undefined,
+      responseText: capText(response.text ?? "", 8000),
+      reasoning: capText(extractReasoning(response.raw), 8000),
+      toolCalls: requestedCalls.map((c) => ({
+        name: c.name,
+        input: capValue(c.input, 1500),
+      })),
+      provider: response.provider,
+      model: response.model,
+      tokensIn: response.tokensIn ?? 0,
+      tokensOut: response.tokensOut ?? 0,
+      finishReason: response.finishReason,
+      latencyMs: response.latencyMs ?? 0,
+    });
     if (requestedCalls.length === 0) {
       // Model returned prose — we're done.
       finalText = response.text;
@@ -309,6 +360,7 @@ async function callLLM(
         actionName: call.name,
         subject: ctx?.subject,
         correlationId: ctx?.correlationId ?? "no-correlation",
+        runId: ctx?.runId,
         tenantSlug: ctx?.tenantSlug ?? "unknown",
         event: ctx?.event,
         // Each tool sees the prior tool's output as lastResult — gives the
@@ -316,6 +368,7 @@ async function callLLM(
         lastResult:
           toolCalls.length > 0 ? toolCalls[toolCalls.length - 1]!.output : ctx?.lastResult,
         config: toolConfig,
+        memory: ctx?.memory, // #P0-1 — durable memory reaches each tool in the tool-use loop
       };
 
       const startedAt = Date.now();
@@ -328,14 +381,29 @@ async function callLLM(
             `tool '${call.name}' not registered for this tenant and not found in global registry`,
           );
         }
-        // Merge the model's tool-call input into the context so handlers
-        // that prefer args over ctx.event.data have a single read site.
-        const handlerCtx = { ...callCtx, event: { name: `tool:${call.name}`, data: call.input } };
-        const r = await handler.handler(handlerCtx);
-        outputData = r.data;
-        outputBody = stringifyToolPayload(r.data);
-        totalIn += r.tokensIn ?? 0;
-        totalOut += r.tokensOut ?? 0;
+        // #REDESIGN P1b — the LLM tool-use loop must honour sandbox gating too (not just the
+        // type:"tool" plan path): in a `-sb` tenant, READS run live, external WRITES are gated
+        // (marker, not fired) unless FACTORY_SANDBOX_ALLOW_WRITES=1; mock/replay short-circuit.
+        const sbDecision = isSandboxTenant(callCtx.tenantSlug) ? toolDispatchDecision(call.name, sandboxToolMode()) : "live";
+        if (sbDecision !== "live") {
+          const replayed = sbDecision === "replay" ? await cassetteLookup(callCtx.tenantSlug!, call.name, call.input) : undefined;
+          outputData = sbDecision === "gate" ? gatedWriteMarker(call.name, call.input) : (replayed ?? sandboxToolStub(call.name));
+          const faultLoop = injectedFault(ctx?.event?.data, call.name); // #W3-FAULT — poisoned tool in the LLM loop
+          if (faultLoop) outputData = faultResult(call.name, faultLoop.kind);
+          // #W1-9 — make the sandbox decision VISIBLE in the artifact: a mocked/gated call must never
+          // read like a real one in the run trace.
+          if (outputData && typeof outputData === "object") (outputData as Record<string, unknown>).__sbDecision = sbDecision;
+          outputBody = stringifyToolPayload(outputData);
+        } else {
+          // Merge the model's tool-call input into the context so handlers
+          // that prefer args over ctx.event.data have a single read site.
+          const handlerCtx = { ...callCtx, event: { name: `tool:${call.name}`, data: call.input } };
+          const r = await handler.handler(handlerCtx);
+          outputData = r.data;
+          outputBody = stringifyToolPayload(r.data);
+          totalIn += r.tokensIn ?? 0;
+          totalOut += r.tokensOut ?? 0;
+        }
       } catch (err) {
         isError = true;
         outputBody = JSON.stringify({
@@ -377,7 +445,75 @@ async function callLLM(
     provider: lastProvider,
     model: lastModel,
     toolCalls,
+    turns,
   };
+}
+
+/**
+ * One raw LLM turn captured from the tool-use loop. Persisted to `llm_turns`
+ * (via register.ts) and surfaced in the run's reasoning views. Text fields are
+ * pre-bounded here so the runtime never hands the DB an unbounded blob.
+ */
+export interface LlmTurnTrace {
+  ord: number;
+  promptPreview?: string | null;
+  responseText: string | null;
+  reasoning: string | null;
+  toolCalls: Array<{ name: string; input: unknown }>;
+  provider: string;
+  model: string;
+  tokensIn: number;
+  tokensOut: number;
+  finishReason: string;
+  latencyMs: number;
+}
+
+/** Truncate a string to `max` chars with a compact "+N more" marker. */
+function capText(s: string | null | undefined, max: number): string | null {
+  if (s == null) return null;
+  if (s.length <= max) return s;
+  return `${s.slice(0, max)}…[+${s.length - max} chars]`;
+}
+
+/** Bound an arbitrary value by its serialized size; oversized → preview marker. */
+function capValue(v: unknown, max: number): unknown {
+  if (v == null) return v;
+  let s: string;
+  try {
+    s = JSON.stringify(v);
+  } catch {
+    return null;
+  }
+  if (s.length <= max) return v;
+  return { _truncated: true, _bytes: s.length, _preview: s.slice(0, max) };
+}
+
+/**
+ * Best-effort extraction of provider-native reasoning/thinking from a chat
+ * response's `raw` payload. Anthropic surfaces `thinking` content blocks;
+ * OpenAI-family adapters may expose `reasoning`/`reasoning_content`. Returns
+ * null when the provider didn't surface any (the common case).
+ */
+function extractReasoning(raw: unknown): string | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  // Anthropic: content[].{thinking|redacted_thinking}
+  if (Array.isArray(r.content)) {
+    const parts: string[] = [];
+    for (const b of r.content as Array<Record<string, unknown>>) {
+      if (b?.type === "thinking" && typeof b.thinking === "string")
+        parts.push(b.thinking);
+      else if (b?.type === "redacted_thinking") parts.push("[redacted thinking]");
+    }
+    if (parts.join("").trim()) return parts.join("\n");
+  }
+  // OpenAI-ish: choices[0].message.{reasoning_content|reasoning}
+  const choices = r.choices as Array<Record<string, unknown>> | undefined;
+  const msg = choices?.[0]?.message as Record<string, unknown> | undefined;
+  const rc = msg?.reasoning_content ?? msg?.reasoning;
+  if (typeof rc === "string" && rc.trim()) return rc;
+  if (typeof r.reasoning === "string" && r.reasoning.trim()) return r.reasoning;
+  return null;
 }
 
 /**
@@ -448,6 +584,9 @@ async function runTenantPrompt(
       // each tool call inline with the LLM turn that spawned it. Empty
       // array when the model didn't request any tools.
       toolCalls: result.toolCalls,
+      // #W0 — raw per-turn LLM capture (response text + reasoning + requested
+      // tools). register.ts persists this to `llm_turns` when capture is on.
+      turns: result.turns,
     },
   };
 }
@@ -486,6 +625,33 @@ export async function runAction(input: StepInput): Promise<StepOutput> {
   let result: StepOutput;
   switch (action.type) {
     case "tool": {
+      // T3 — sandbox interception: in the isolated `-sb` tenant, a Phase-1 `type:"tool"` step calls
+      // the real handler directly (no LLM in the loop), so without this it would hit RoboHire/etc.
+      // for real. mock (default) → stub; replay → recorded cassette (miss → stub); live → real.
+      if (isSandboxTenant(ctx.tenantSlug)) {
+        // #W3-FAULT — an injected fault (from a kind:"fault" test case's __fault payload marker) beats
+        // every dispatch mode: return a failing result so the step's onError policy is EXERCISED.
+        const fault = injectedFault(ctx.event?.data, action.name);
+        if (fault) {
+          result = { ok: false, type: "tool", data: faultResult(action.name, fault.kind), meta: { tool: action.name, sandbox: true, injectedFault: fault.kind } };
+          break;
+        }
+        const mode = sandboxToolMode();
+        // #REDESIGN P1b — gated: READ tools run live (real integration, fall through below); external
+        // WRITES are gated (real payload recorded, not fired) unless FACTORY_SANDBOX_ALLOW_WRITES=1.
+        const decision = toolDispatchDecision(action.name, mode);
+        if (decision !== "live") {
+          const args = (ctx.event?.data ?? {}) as Record<string, unknown>;
+          const replayed = decision === "replay" ? await cassetteLookup(ctx.tenantSlug!, action.name, args) : undefined;
+          result = {
+            ok: true,
+            type: "tool",
+            data: decision === "gate" ? gatedWriteMarker(action.name, args) : (replayed ?? sandboxToolStub(action.name)),
+            meta: { tool: action.name, sandbox: true, toolMode: mode, decision, replayed: replayed !== undefined },
+          };
+          break;
+        }
+      }
       // Same resolution chain as the LLM tool-use loop: tenant override
       // → global registry → legacy mock runTool fallback. Keeps the two
       // dispatch paths behaviourally aligned so an action declared as
@@ -509,13 +675,16 @@ export async function runAction(input: StepInput): Promise<StepOutput> {
         const enrichedCtx: ToolContext = toolConfig ? { ...ctx, config: toolConfig } : ctx;
         result = await runTenantTool(enrichedCtx, (tenantTool ?? globalTool)!);
       } else {
-        const r = await runTool(genericCtx(ctx), action.name);
-        result = {
-          ok: r.ok,
-          type: "tool",
-          data: r.data,
-          meta: r.meta,
-        };
+        // #NOMOCK — 生产路径不再走 legacy runTool 假桩（httpFetch→{status:200,mock:true}）：一个
+        // 未解析到真实工具的 type:"tool" 步曾在【生产】里静默返回 mock 成功（沙箱路径在上面已被
+        // sandboxToolStub 拦截，这里只会命中真实/晋升租户）。改为 fail-closed：报错让 step 的
+        // onError 策略生效，别让"跑通"建立在假成功上。FACTORY_ALLOW_LEGACY_MOCK_TOOL=1 可临时放行。
+        if (process.env.FACTORY_ALLOW_LEGACY_MOCK_TOOL === "1") {
+          const r = await runTool(genericCtx(ctx), action.name);
+          result = { ok: r.ok, type: "tool", data: r.data, meta: { ...r.meta, legacyMock: true } };
+        } else {
+          result = { ok: false, type: "tool", data: { __error: `工具「${action.name}」未注册（tenant/global 都没有）——生产不再用假桩兜底。请为该动作绑定真实工具或补进工具库。` }, meta: { tool: action.name, unresolved: true } };
+        }
       }
       break;
     }
@@ -523,6 +692,21 @@ export async function runAction(input: StepInput): Promise<StepOutput> {
       const tenantPrompt = tenantRegistry?.prompts?.[action.name];
       if (tenantPrompt) {
         result = await runTenantPrompt(ctx, tenantPrompt, agent, tenantRegistry);
+      } else if (agent?.generated) {
+        // #G — true CodeAct: when this generated agent has executable AI code, RUN it (gated,
+        // sandboxed, dry-run tools) so the verdict reflects the deployable code — not a
+        // re-interpretation. Any failure returns null → fall through to the default prompt.
+        const exec = agent.codeExecuted && agent.typescriptCode
+          ? await runGeneratedCode(agent.typescriptCode, (ctx?.event?.data ?? {}) as Record<string, unknown>, { systemPrompt: agent.ontology_instructions, tenantSlug: ctx?.tenantSlug, memory: input.memory, runId: input.runId })
+          : null;
+        if (exec) {
+          result = { ok: true, type: "logic", data: exec.data, meta: { codeExecuted: true, emitted: exec.emitted } };
+        } else {
+          // Generated agent: no hand-written tenant prompt by design. Run the default generated
+          // prompt — the agent's ontology_instructions ARE its system prompt; this feeds the event
+          // payload and lets the tool-use loop drive.
+          result = await runTenantPrompt(ctx, makeGeneratedAgentPrompt(action.name), agent, tenantRegistry);
+        }
       } else {
         // UC-V11-25 / AR-GAP-13 — strict mode. Boot-time validation in
         // `packages/runtime/src/bootstrap.ts` refuses to register a tenant
@@ -563,23 +747,15 @@ export async function runAction(input: StepInput): Promise<StepOutput> {
       break;
     }
     case "condition": {
-      // P1-RT-03: lightweight expression evaluator. The real evaluator lives
-      // in register.ts where it has access to step/event/agent context; the
-      // step-engine version returns the same shape so callers can branch on
-      // `data.evaluated` without case analysis on `type`.
+      // Phase 1a: the real, safe boolean evaluator (action-plan.ts) — supports path
+      // comparisons (==/!=/>/</>=/<=), presence, negation, &&/||, plus the legacy
+      // `lastResult == null` forms. Unparseable → false (deterministic, never throws).
+      // register.ts consumes `data.evaluated` to SKIP downstream dependsOn steps.
       const condition = (action as { condition?: string }).condition ?? "true";
-      // Minimal JS-ish evaluator: supports `lastResult == null`, `!= null`,
-      // and bare literals. Anything that doesn't parse cleanly is treated
-      // as `false` rather than throwing — keeps the engine deterministic.
-      let evaluated = false;
-      try {
-        if (/^true$/i.test(condition.trim())) evaluated = true;
-        else if (/lastResult\s*==\s*null/.test(condition)) evaluated = ctx.lastResult == null;
-        else if (/lastResult\s*!=\s*null/.test(condition)) evaluated = ctx.lastResult != null;
-        else evaluated = Boolean(condition);
-      } catch {
-        evaluated = false;
-      }
+      const evaluated = evaluateCondition(condition, {
+        lastResult: ctx.lastResult,
+        event: ctx.event,
+      });
       result = {
         ok: true,
         type: "condition",
@@ -618,6 +794,18 @@ export async function runAction(input: StepInput): Promise<StepOutput> {
           subflow: a.subflow ?? null,
           subflow_input: a.subflow_input ?? {},
         },
+      };
+      break;
+    }
+    default: {
+      // Phase 1a — `invoke` is handled synchronously in register.ts (step.invoke) and never
+      // reaches runAction. This default keeps the switch exhaustive over StepTypeEnum and
+      // returns a benign error result for any unexpected/ad-hoc type.
+      result = {
+        ok: false,
+        type: "logic",
+        data: null,
+        meta: { error: "unsupported_action_type", actionType: (action as { type?: string }).type },
       };
       break;
     }

@@ -30,6 +30,7 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { ManifestImportBody } from "@agentic/contracts";
 import { requireAuth } from "../../plugins/auth";
+import { requirePermission } from "../../plugins/rbac";
 import { writeAudit } from "../../plugins/audit";
 import {
   validate,
@@ -70,7 +71,7 @@ export async function manifestImportRoutes(app: FastifyInstance) {
   }>(
     "/tenants/:slug/manifest-import",
     async (req, reply) => {
-      const auth = requireAuth(req);
+      const auth = requirePermission(req, "workflows.write");
       const slug = req.params.slug;
       if (auth.tenantSlug !== slug) {
         return reply.fail(
@@ -149,7 +150,7 @@ export async function manifestImportRoutes(app: FastifyInstance) {
   app.delete<{ Params: { slug: string; deployment_id: string } }>(
     "/tenants/:slug/manifest-import/:deployment_id",
     async (req, reply) => {
-      const auth = requireAuth(req);
+      const auth = requirePermission(req, "workflows.write");
       const slug = req.params.slug;
       if (auth.tenantSlug !== slug) {
         return reply.fail(
@@ -189,7 +190,7 @@ export async function manifestImportRoutes(app: FastifyInstance) {
   }>(
     "/tenants/:slug/manifest-import/fetch-url",
     async (req, reply) => {
-      const auth = requireAuth(req);
+      const auth = requirePermission(req, "workflows.write");
       const slug = req.params.slug;
       if (auth.tenantSlug !== slug) {
         return reply.fail(
@@ -283,7 +284,7 @@ export async function manifestImportRoutes(app: FastifyInstance) {
   app.post<{ Params: { slug: string } }>(
     "/tenants/:slug/manifest-import/fetch-repo",
     async (req, reply) => {
-      const auth = requireAuth(req);
+      const auth = requirePermission(req, "workflows.write");
       const slug = req.params.slug;
       if (auth.tenantSlug !== slug) {
         return reply.fail(

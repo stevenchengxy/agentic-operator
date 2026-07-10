@@ -52,13 +52,36 @@ services:
       PORT: "3501"
       HOST: "0.0.0.0"
       AGENTIC_DATA_DIR: /app/data
+      # #AUDIT-FIX(P0-06) — factory 文件存储读 AGENTIC_DATA_ROOT（不是 DATA_DIR）；
+      # 不设它们会写到未挂载的 /app/apps/api/data（cwd），容器重启丢草稿/策略/上传本体/blob/cassette。
+      AGENTIC_DATA_ROOT: /app/data
       AGENTIC_MODELS_DIR: /app/models
       AGENTIC_LOGS_DIR: /app/data/logs
       AGENTIC_ARTIFACTS_DIR: /app/data/artifacts
       AGENTIC_TENANTS_DIR: /app/data/tenants
       DATABASE_URL: file:/app/data/agentic.db
       INNGEST_BASE_URL: http://inngest:8288
+      # Dev-mode broker (the inngest service runs `inngest dev`); match it or the
+      # SDK uses cloud/signed semantics the dev broker doesn't provide.
+      INNGEST_DEV: "1"
+      # Per-tenant apps PUT-register their serve URL here. Must be the api's
+      # in-network address (NOT localhost, which resolves to the broker's own
+      # container) or the 6 zhaopin functions never fire from queued events.
+      INNGEST_SERVE_ORIGIN: http://api:3501
+      INNGEST_EVENT_KEY: "${INNGEST_EVENT_KEY:-dev}"
+      INNGEST_SIGNING_KEY: "${INNGEST_SIGNING_KEY:-dev}"
+      # Live ontology (rule-check) + RoboHire (parse/match/invite). `localhost`
+      # inside the container is NOT the host — reach host services via
+      # host.docker.internal (see extra_hosts below).
+      ALLMETA_BASE_URL: "${ALLMETA_BASE_URL:-http://host.docker.internal:3500}"
+      ALLMETA_API_KEY: "${ALLMETA_API_KEY:-abc123}"
+      ALLMETA_TIMEOUT_MS: "8000"
+      ROBOHIRE_API_KEY: "${ROBOHIRE_API_KEY:-}"
+      ROBOHIRE_BASE_URL: "${ROBOHIRE_BASE_URL:-https://api.gohire.top/api/v1}"
       WEB_ORIGIN: "${WEB_ORIGIN:-http://localhost:3599}"
+    # Resolve host.docker.internal on Linux hosts (macOS Docker Desktop native).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - agentic-data:/app/data
       - ./models:/app/models:ro

@@ -58,6 +58,11 @@ COPY apps/cli/package.json apps/cli/tsconfig.json apps/cli/
 COPY packages packages
 COPY tenants tenants
 COPY data/system-agents/package.json data/system-agents/tsconfig.json data/system-agents/
+# The root `postinstall` (package.json) runs scripts/ensure-native-modules.mjs
+# during `pnpm install` (enable-pre-post-scripts=true), so scripts/ + .npmrc must
+# be in the context BEFORE install or it dies with MODULE_NOT_FOUND.
+COPY scripts scripts
+COPY .npmrc ./
 # Install every workspace package so better-sqlite3 builds against this
 # image's libc + node ABI. `--ignore-scripts=false` is the default; the
 # pnpm-workspace allowBuilds list pre-approves the natives we trust.
@@ -84,6 +89,8 @@ ENV PATH="$PNPM_HOME:$PATH"
 ENV PORT=3501
 ENV HOST=0.0.0.0
 ENV AGENTIC_DATA_DIR=/app/data
+# #AUDIT-FIX(P0-06) — factory 文件存储读 AGENTIC_DATA_ROOT（草稿/策略/上传本体/blob/cassette）
+ENV AGENTIC_DATA_ROOT=/app/data
 ENV AGENTIC_MODELS_DIR=/app/models
 ENV AGENTIC_LOGS_DIR=/app/data/logs
 ENV AGENTIC_ARTIFACTS_DIR=/app/data/artifacts

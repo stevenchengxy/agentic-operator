@@ -7,7 +7,7 @@
  * every 15s to defeat idle proxies (cloudflare, nginx) that drop slow
  * connections.
  *
- *   curl -N -H "Authorization: Bearer <token>" http://localhost:3501/v1/stream
+ *   curl -N -H "Authorization: Bearer <token>" http://localhost:3540/v1/stream
  *
  * Tenant scoping (P1-API-01): the broadcast channel is keyed by tenantId,
  * which the route derives from `requireAuth`. There is NO `?tenant=` query
@@ -23,12 +23,13 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { subscribeStreamEvents } from "@agentic/runtime";
 import { requireAuth } from "../../plugins/auth";
+import { requirePermission } from "../../plugins/rbac";
 
 const KEEPALIVE_MS = 15_000;
 
 export async function streamRoutes(app: FastifyInstance): Promise<void> {
   app.get("/stream", async (req: FastifyRequest, reply: FastifyReply) => {
-    const auth = requireAuth(req);
+    const auth = requirePermission(req, "events.read");
 
     // The Fastify reply object is hijacked to write raw SSE frames; we must
     // tell Fastify not to apply its JSON serialization or attempt to set

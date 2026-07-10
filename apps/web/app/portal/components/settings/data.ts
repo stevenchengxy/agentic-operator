@@ -93,6 +93,7 @@ export const LOCALES = [
 
 export const SETTINGS_SECTIONS = [
   { id: "workspace", label: "Workspace", icon: "settings" as const, hint: "Name, slug, timezone, locale, accent" },
+  { id: "appearance", label: "Appearance", icon: "moon" as const, hint: "Theme, language, density" },
   { id: "people", label: "People & roles", icon: "human" as const, hint: "RBAC, invites" },
   { id: "models", label: "Models", icon: "spark" as const, hint: "Fleet & fallback chain" },
   { id: "channels", label: "Channels", icon: "git" as const, hint: "Job boards & messaging" },

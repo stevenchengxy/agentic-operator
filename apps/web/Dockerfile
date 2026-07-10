@@ -21,8 +21,10 @@
 FROM node:26-slim AS base
 ENV PNPM_HOME=/pnpm
 ENV PATH="$PNPM_HOME:$PATH"
+# python3/make/g++ are needed because the whole-workspace `pnpm install` builds
+# better-sqlite3 from source on Node 26 (no prebuilt binary) — mirror apps/api.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates tini \
+ && apt-get install -y --no-install-recommends ca-certificates tini python3 make g++ \
  && rm -rf /var/lib/apt/lists/*
 # node:26-slim does NOT ship corepack; install pnpm via npm.
 RUN npm install --global pnpm@11.1.2
@@ -38,6 +40,9 @@ COPY apps/cli/package.json apps/cli/tsconfig.json apps/cli/
 COPY packages packages
 COPY tenants tenants
 COPY data/system-agents/package.json data/system-agents/tsconfig.json data/system-agents/
+# Root `postinstall` runs scripts/ensure-native-modules.mjs during install.
+COPY scripts scripts
+COPY .npmrc ./
 
 # Install workspace deps. Web only needs @agentic/contracts at runtime,
 # but the pnpm workspace install is whole-graph so dependants resolve.

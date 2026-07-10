@@ -24,6 +24,7 @@ import {
   type StatusName,
 } from "@/app/portal/components";
 import { fmtDur, fmtNum } from "@/app/portal/lib/format";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 import type { RunListRow, StepRow } from "@/lib/hooks/useRuns";
 import { useRun, useRuns } from "@/lib/hooks/useRuns";
 
@@ -80,6 +81,7 @@ interface TraceTreeProps {
 }
 
 export function TraceTree({ node, depth = 0, tenant }: TraceTreeProps) {
+  const { t } = useI18n();
   // Fetch direct children for this run (one query per visible level).
   const { data: children = [] } = useRuns({
     parentRunId: node.run.id,
@@ -90,8 +92,8 @@ export function TraceTree({ node, depth = 0, tenant }: TraceTreeProps) {
   if (entries.length === 0) {
     return (
       <Empty
-        title="No steps or sub-runs"
-        hint="This run didn't compose any subflows."
+        title={t("traceTree.emptyTitle")}
+        hint={t("traceTree.emptyHint")}
       />
     );
   }
@@ -125,6 +127,7 @@ export function TraceTree({ node, depth = 0, tenant }: TraceTreeProps) {
 }
 
 function StepRowItem({ step }: { step: StepRow }) {
+  const { t } = useI18n();
   const tone = stepTone(step);
   return (
     <div
@@ -154,7 +157,7 @@ function StepRowItem({ step }: { step: StepRow }) {
           {step.name}
         </div>
         <div style={{ fontSize: 10.5, color: "var(--text-3)" }}>
-          step {step.ord} · {step.type}
+          {t("traceTree.stepLabel")} {step.ord} · {step.type}
           {step.model ? ` · ${step.model}` : ""}
         </div>
       </div>
@@ -193,6 +196,7 @@ function ChildRunBlock({
   depth: number;
   tenant: string;
 }) {
+  const { t } = useI18n();
   const [open, setOpen] = useState(depth <= 1);
 
   // Lazy load this child's steps when expanded.
@@ -244,7 +248,7 @@ function ChildRunBlock({
         <span className="mono" style={{ fontSize: 11, color: "var(--text-2)" }}>
           {child.id}
         </span>
-        <Badge tone="muted">SUBFLOW</Badge>
+        <Badge tone="muted">{t("traceTree.subflow")}</Badge>
         <span
           style={{
             fontSize: 12,
@@ -272,7 +276,7 @@ function ChildRunBlock({
           href={`/portal/${tenant}/runs/${child.id}` as never}
           onClick={(e) => e.stopPropagation()}
           style={{ textDecoration: "none", marginLeft: 6 }}
-          title="Open child run"
+          title={t("traceTree.openChildRun")}
         >
           <Icon name="external" size={11} style={{ color: "var(--text-3)" }} />
         </Link>
@@ -295,16 +299,17 @@ function ChildRunBlock({
 }
 
 function DepthCap({ childId, tenant }: { childId: string; tenant: string }) {
+  const { t } = useI18n();
   return (
     <div style={{ padding: "8px 10px", fontSize: 11.5, color: "var(--text-3)" }}>
-      Trace depth limit reached.{" "}
+      {t("traceTree.depthCapPrefix")}{" "}
       <Link
         href={`/portal/${tenant}/runs/${childId}` as never}
-        style={{ color: "var(--signal)", textDecoration: "underline" }}
+        style={{ color: "var(--accent-text)", textDecoration: "underline" }}
       >
-        Open this run on its own page
+        {t("traceTree.depthCapLink")}
       </Link>{" "}
-      to continue the trace.
+      {t("traceTree.depthCapSuffix")}
     </div>
   );
 }

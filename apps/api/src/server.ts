@@ -9,18 +9,22 @@ import { healthRoute } from "./routes/health";
 import { metricsRoute } from "./routes/metrics";
 import { eventsRoutes } from "./routes/v1/events";
 import { runsRoutes } from "./routes/v1/runs";
+import { reasoningRoutes } from "./routes/v1/reasoning";
 import { runsLogsRoute } from "./routes/v1/runs-logs";
 import { tasksRoutes } from "./routes/v1/tasks";
 import { agentsRoutes } from "./routes/v1/agents";
 import { agentInvokeRoutes } from "./routes/v1/agent-invoke";
+import { agentFactoryRoutes } from "./routes/v1/agent-factory";
 import { deploymentsRoutes } from "./routes/v1/deployments";
 import { webhooksRoutes } from "./routes/v1/webhooks";
 import { artifactsRoutes } from "./routes/v1/artifacts";
+import { recordsRoutes } from "./routes/v1/records";
 import { readsRoutes } from "./routes/v1/reads";
 import { llmRoutes } from "./routes/v1/llm";
 import { manifestImportRoutes } from "./routes/v1/manifest-import";
 import { tenantsRoutes } from "./routes/v1/tenants";
 import { usageRoutes } from "./routes/v1/usage";
+import { observabilityRoutes } from "./routes/v1/observability";
 import { budgetsRoutes } from "./routes/v1/budgets";
 import { auditRoutes } from "./routes/v1/audit";
 import { streamRoutes } from "./routes/v1/stream";
@@ -28,13 +32,22 @@ import { tenantCodeRoutes } from "./routes/v1/tenant-code";
 import { workflowRoutes } from "./routes/v1/workflow";
 import { demoRoutes } from "./routes/v1/demo";
 import { toolsRoutes } from "./routes/v1/tools";
+import { authRoutes } from "./routes/v1/auth";
+import { membersRoutes } from "./routes/v1/members";
+import { adminUsersRoutes } from "./routes/v1/admin-users";
 import { stopDemoRunner } from "./services/demo-runner";
+import {
+  startAppReconciler,
+  stopAppReconciler,
+  syncAllAppsWithRetry,
+} from "./services/inngest-sync";
+import { startRunReconciler, stopRunReconciler } from "./services/reconcile-runs";
 import { inngestRoute } from "./routes/inngest";
 import { bootstrapRuntime } from "./bootstrap";
 
 const MAX_BODY_BYTES = Number(process.env.AGENTIC_MAX_BODY_BYTES ?? 10 * 1024 * 1024);
 
-const PORT = Number(process.env.PORT ?? 3501);
+const PORT = Number(process.env.PORT ?? 3540);
 const HOST = process.env.HOST ?? "0.0.0.0";
 const WEB_ORIGIN = process.env.WEB_ORIGIN ?? "http://localhost:3599";
 
@@ -93,13 +106,33 @@ export async function build() {
   // `POST /v1/demo/start` would NOT be drained on SIGTERM. The imported
   // `stopDemoRunner` from the demo-runner module reads the live
   // `_activeRunner` singleton, so it works for both code paths.
-  const { inngest, functions } = await bootstrapRuntime();
-  await inngestRoute(app, { client: inngest, functions });
+  // Runs boot: builds per-tenant Inngest apps + seeds the per-app registry that
+  // the `/inngest[/:slug]` routes delegate to. The route reads the registry per
+  // request, so it needs no bootstrap result handed in.
+  await bootstrapRuntime();
+  await inngestRoute(app);
 
   // Demo-runner stops cleanly on Fastify drain (SIGTERM / SIGINT route here
   // through `installGracefulShutdown`). No-op when nothing is running.
   app.addHook("onClose", async () => {
     stopDemoRunner();
+    // #P7-infra — stop the governance sweep timer on shutdown (no-op if it never started).
+    try {
+      const { stopGovernanceRunner } = await import("./services/agent-factory/fleet-governance-runner");
+      stopGovernanceRunner();
+    } catch { /* best-effort */ }
+    // #SCALE-FANOUT — quit Redis fanout clients so SIGTERM drains instead of hanging on sockets.
+    try {
+      const { stopRedisFanout } = await import("./services/fanout-redis");
+      await stopRedisFanout();
+    } catch { /* inert when never wired */ }
+    // #SCALE-PGVECTOR — drain the pgvector pool.
+    try {
+      const { stopPgVectorMemory } = await import("./services/memory-pgvector");
+      await stopPgVectorMemory();
+    } catch { /* inert when never wired */ }
+    stopAppReconciler();
+    stopRunReconciler();
   });
 
   // /v1 REST surface
@@ -107,13 +140,18 @@ export async function build() {
     async (v1) => {
       await v1.register(eventsRoutes);
       await v1.register(runsRoutes);
+      await v1.register(reasoningRoutes);
       await v1.register(runsLogsRoute);
       await v1.register(tasksRoutes);
       await v1.register(agentsRoutes);
       await v1.register(agentInvokeRoutes);
+      // Agent Factory — autonomous brain SSE stream (generates business agents from
+      // a domain's models/ ontology, streamed live to the portal factory tab).
+      await v1.register(agentFactoryRoutes);
       await v1.register(deploymentsRoutes);
       await v1.register(webhooksRoutes);
       await v1.register(artifactsRoutes);
+      await v1.register(recordsRoutes);
       await v1.register(readsRoutes);
       await v1.register(llmRoutes);
       await v1.register(manifestImportRoutes);
@@ -121,6 +159,7 @@ export async function build() {
       // Settings → Usage / Audit / Budgets surfaces. Previously dead-on-
       // arrival files (P0-LOG-D1 / 03-logging-audit.md).
       await v1.register(usageRoutes);
+      await v1.register(observabilityRoutes);
       await v1.register(budgetsRoutes);
       await v1.register(auditRoutes);
       // Sprint 1 Phase 3 + Sprint 2 Obs: live SSE event stream, tenant
@@ -137,6 +176,11 @@ export async function build() {
       // Global tool catalog — drives the Tools view in the portal so
       // manifest authors can browse what's available without spelunking.
       await v1.register(toolsRoutes);
+      // P6-AUTH — login + identity, tenant-scoped membership management, and
+      // platform-wide user administration (the Access tab + sign-in/up flows).
+      await v1.register(authRoutes);
+      await v1.register(membersRoutes);
+      await v1.register(adminUsersRoutes);
     },
     { prefix: "/v1" },
   );
@@ -145,7 +189,11 @@ export async function build() {
 }
 
 // Auto-start only when this file is the main entrypoint, not when imported by tests.
-const isMain = import.meta.url === `file://${process.argv[1]}`;
+// Compare normalized file URLs so a project path containing spaces (which
+// import.meta.url percent-encodes but a raw `file://` + argv concat does not)
+// still matches.
+const isMain =
+  !!process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href;
 if (isMain) {
   const app = await build();
   // Install signal handlers BEFORE listen() so a SIGTERM during a slow boot
@@ -156,6 +204,18 @@ if (isMain) {
   try {
     await app.listen({ port: PORT, host: HOST });
     app.log.info(`api listening on http://${HOST}:${PORT}`);
+    void syncAllAppsWithRetry({
+      info: (msg) => app.log.info(msg),
+      warn: (msg) => app.log.warn(msg),
+    }).catch((err) => app.log.warn({ err }, "initial inngest app sync failed"));
+    startAppReconciler({
+      info: (msg) => app.log.info(msg),
+      warn: (msg) => app.log.warn(msg),
+    });
+    startRunReconciler({
+      info: (msg) => app.log.info(msg),
+      warn: (msg) => app.log.warn(msg),
+    });
   } catch (err) {
     app.log.error({ err }, "failed to start");
     process.exit(1);

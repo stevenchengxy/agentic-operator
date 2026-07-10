@@ -1,0 +1,439 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Agentic Operator · Agent Factory 技术书</title>
+<style>
+  :root{
+    --bg:#0b0e14; --panel:#121722; --panel2:#0e131c; --border:#1f2735; --border2:#2b3548;
+    --text:#e6ecf5; --text2:#a9b6c9; --text3:#6f7e94;
+    --signal:#7cc4ff; --violet:#b69cff; --green:#5fd39a; --amber:#f3c969; --red:#ff7a8a; --mono:"SF Mono",ui-monospace,Menlo,Consolas,monospace;
+  }
+  @media (prefers-color-scheme: light){
+    :root{ --bg:#f5f7fb; --panel:#ffffff; --panel2:#f0f3f9; --border:#dde3ee; --border2:#c8d2e3; --text:#161c26; --text2:#445065; --text3:#7a8699; --signal:#1f6fd6; --violet:#7a5af0; --green:#168f5e; --amber:#a9760a; --red:#cf3d4f; }
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--text);font:15px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;}
+  .wrap{display:grid;grid-template-columns:248px minmax(0,1fr);max-width:1320px;margin:0 auto;gap:0}
+  nav.toc{position:sticky;top:0;align-self:start;height:100vh;overflow:auto;padding:22px 14px 60px;border-right:1px solid var(--border);background:var(--panel2)}
+  nav.toc h1{font-size:14px;letter-spacing:.3px;color:var(--text);margin:0 0 4px}
+  nav.toc .sub{font-size:11px;color:var(--text3);margin-bottom:16px}
+  nav.toc a{display:block;color:var(--text2);text-decoration:none;font-size:12.5px;padding:4px 8px;border-radius:7px;margin:1px 0}
+  nav.toc a:hover{background:var(--panel);color:var(--text)}
+  nav.toc a.h3{padding-left:18px;font-size:11.5px;color:var(--text3)}
+  main{padding:40px 48px 120px;min-width:0}
+  header.hero{border:1px solid var(--border);background:linear-gradient(160deg,var(--panel),var(--panel2));border-radius:16px;padding:30px 32px;margin-bottom:34px}
+  header.hero .kick{font:600 11px/1 var(--mono);letter-spacing:2px;color:var(--signal);text-transform:uppercase}
+  header.hero h1{font-size:30px;margin:12px 0 8px;letter-spacing:-.4px}
+  header.hero p{color:var(--text2);margin:0;max-width:70ch}
+  section{margin:0 0 40px;scroll-margin-top:20px}
+  h2{font-size:21px;margin:48px 0 6px;padding-top:10px;border-top:1px solid var(--border);letter-spacing:-.2px}
+  h2 .n{font:700 12px/1 var(--mono);color:var(--signal);margin-right:10px}
+  h3{font-size:16px;margin:26px 0 6px;color:var(--text)}
+  p{color:var(--text2)}
+  code{font-family:var(--mono);font-size:.86em;background:var(--panel2);border:1px solid var(--border);border-radius:5px;padding:1px 5px;color:var(--text)}
+  .lead{color:var(--text);font-size:15.5px}
+  .fig{border:1px solid var(--border);background:var(--panel);border-radius:14px;padding:18px;margin:18px 0;overflow:auto}
+  .fig .cap{font-size:12px;color:var(--text3);margin-top:10px;font-family:var(--mono)}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .card{border:1px solid var(--border);background:var(--panel);border-radius:12px;padding:14px 16px}
+  .card h4{margin:0 0 6px;font-size:13.5px;color:var(--text)}
+  .card p{margin:0;font-size:13px}
+  .pill{display:inline-block;font:600 10.5px/1 var(--mono);padding:3px 7px;border-radius:20px;border:1px solid var(--border2);color:var(--text2);margin:2px 4px 2px 0}
+  .pill.real{color:var(--green);border-color:color-mix(in srgb,var(--green) 45%,transparent)}
+  .pill.det{color:var(--amber);border-color:color-mix(in srgb,var(--amber) 45%,transparent)}
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:13px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+  th{color:var(--text3);font-weight:600;font-size:11.5px;text-transform:uppercase;letter-spacing:.4px}
+  td code{font-size:.8em}
+  .callout{border-left:3px solid var(--signal);background:var(--panel2);border-radius:0 10px 10px 0;padding:12px 16px;margin:16px 0;font-size:13.5px}
+  .callout.warn{border-left-color:var(--amber)}
+  .callout.good{border-left-color:var(--green)}
+  .mono{font-family:var(--mono)}
+  .small{font-size:12px;color:var(--text3)}
+  svg{display:block;max-width:100%;height:auto}
+  .legend{display:flex;gap:16px;flex-wrap:wrap;font-size:11.5px;color:var(--text3);margin-top:8px}
+  .legend span{display:inline-flex;align-items:center;gap:5px}
+  .dot{width:10px;height:10px;border-radius:3px;display:inline-block}
+  footer{color:var(--text3);font-size:12px;border-top:1px solid var(--border);padding-top:18px;margin-top:50px}
+  @media (max-width:920px){.wrap{grid-template-columns:1fr}nav.toc{display:none}main{padding:24px}.grid2{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav class="toc">
+  <h1>Agent Factory</h1>
+  <div class="sub">Agentic Operator · 技术架构书</div>
+  <a href="#intro">0 · 它是什么</a>
+  <a href="#harness">1 · Harness 系统</a>
+  <a href="#loop">2 · ReAct Agent Loop</a>
+  <a href="#multi">3 · 多智能体架构</a>
+  <a href="#reason">4 · 推理 / 审查 / 反思</a>
+  <a href="#model">5 · 模型路由</a>
+  <a href="#tools">6 · 工具注册表</a>
+  <a href="#memory">7 · Memory 管理</a>
+  <a href="#sandbox">8 · 沙箱：部署→验证</a>
+  <a href="#exec">9 · 生成代码的执行</a>
+  <a href="#events">10 · 事件流总图</a>
+  <a href="#promote">11 · 晋升到生产</a>
+</nav>
+<main>
+<header class="hero">
+  <div class="kick">Technical Book · v2026.06</div>
+  <h1>Agent 工厂是怎么搭出来的</h1>
+  <p class="lead">把一份业务域 <b>Ontology</b>（对象 / 动作 / 事件 / 规则）变成一队真实可跑、经过沙箱验证的智能体——这本书拆开它的每一层：harness、agent loop、多智能体结构、模型路由、工具、记忆、沙箱与生产晋升。所有符号名都来自真实代码（<code>packages/agent-factory</code> · <code>apps/api</code> · <code>apps/web</code>）。</p>
+</header>
+
+<!-- 0 -->
+<section id="intro">
+<h2><span class="n">0</span>它是什么 · 一句话与一张图</h2>
+<p class="lead">Agent Factory 是一个<b>流式、工具驱动的自主代码生成 harness</b>。核心是一个 <b>ReAct 循环的 conductor</b>（<code>conductor.ts · runBrain()</code>），它围绕一个业务域目标，自主地：读懂本体 → 规划 → 设计每个智能体 → 审查 → 让事件图闭合 → 部署到 Inngest 沙箱真跑 → 交付。整个过程以 SSE 事件流实时推到前端。</p>
+<div class="fig">
+<svg viewBox="0 0 920 250" xmlns="http://www.w3.org/2000/svg" font-family="var(--mono)" font-size="12">
+  <defs><marker id="ar" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#7cc4ff"/></marker></defs>
+  <rect x="14" y="96" width="150" height="58" rx="10" fill="#121722" stroke="#2b3548"/>
+  <text x="89" y="120" fill="#e6ecf5" text-anchor="middle">Ontology</text>
+  <text x="89" y="138" fill="#6f7e94" text-anchor="middle" font-size="10">动作/事件/规则/对象</text>
+  <rect x="220" y="80" width="200" height="90" rx="12" fill="#121722" stroke="#7cc4ff"/>
+  <text x="320" y="108" fill="#7cc4ff" text-anchor="middle" font-weight="700">Conductor · ReAct</text>
+  <text x="320" y="128" fill="#a9b6c9" text-anchor="middle" font-size="10">streamTurn ⇄ 34 BrainTools</text>
+  <text x="320" y="146" fill="#a9b6c9" text-anchor="middle" font-size="10">理解→规划→设计→审查</text>
+  <rect x="476" y="96" width="160" height="58" rx="10" fill="#121722" stroke="#b69cff"/>
+  <text x="556" y="120" fill="#b69cff" text-anchor="middle">Inngest 沙箱</text>
+  <text x="556" y="138" fill="#6f7e94" text-anchor="middle" font-size="10">sandbox-&lt;域&gt;-sb</text>
+  <rect x="692" y="96" width="160" height="58" rx="10" fill="#121722" stroke="#5fd39a"/>
+  <text x="772" y="120" fill="#5fd39a" text-anchor="middle">生产 App</text>
+  <text x="772" y="138" fill="#6f7e94" text-anchor="middle" font-size="10">promote → liveAgents</text>
+  <line x1="164" y1="125" x2="214" y2="125" stroke="#7cc4ff" marker-end="url(#ar)"/>
+  <line x1="420" y1="125" x2="470" y2="125" stroke="#7cc4ff" marker-end="url(#ar)"/>
+  <line x1="636" y1="125" x2="686" y2="125" stroke="#7cc4ff" marker-end="url(#ar)"/>
+  <path d="M556 80 C556 40, 320 40, 320 78" fill="none" stroke="#6f7e94" stroke-dasharray="4 4" marker-end="url(#ar)"/>
+  <text x="438" y="34" fill="#6f7e94" text-anchor="middle" font-size="10">沙箱判定回灌（跑通 / 降级 / 断链）</text>
+  <rect x="220" y="196" width="200" height="40" rx="8" fill="#0e131c" stroke="#1f2735"/>
+  <text x="320" y="221" fill="#a9b6c9" text-anchor="middle" font-size="10">SSE 事件流 → 前端实时可视化</text>
+  <line x1="320" y1="170" x2="320" y2="194" stroke="#6f7e94" marker-end="url(#ar)"/>
+</svg>
+<div class="cap">图 0 · 端到端：Ontology → 自主设计 → 沙箱真跑验证 → 生产晋升，全程 SSE 直播</div>
+</div>
+<div class="callout good"><b>两条事实地基。</b> ① 本体是唯一事实来源——事件名/动作名/字段名/工具名全部从 <code>read_ontology</code> 来，约束解码（grounding enums）禁止模型脑补不存在的符号。② 沙箱是唯一验收标准——只有真实部署到 Inngest 并端到端跑到成功终态（或合法的外部交接终态）才允许 <code>finish</code>。</div>
+</section>
+
+<!-- 1 -->
+<section id="harness">
+<h2><span class="n">1</span>Harness 系统 · 运行的生命周期</h2>
+<p>一次工厂运行从 <code>GET /v1/agent-factory/stream?domain=X&amp;goal=Y</code> 开始。API handler 调 <code>startRun()</code>，在<b>进程内的 run-registry</b> 注册一个 <code>ActiveRun</code>，并<b>脱钩（detach）</b>一个后台 driver 去跑 <code>runBrain()</code>。关键点：浏览器关掉 EventSource 只是取消订阅，<b>运行本身在服务端继续</b>——所以刷新/重连能接回还在跑的 brain（靠 <code>run.started</code> 帧里的 runId + localStorage）。</p>
+<table>
+<tr><th>组件</th><th>职责</th><th>位置</th></tr>
+<tr><td><code>run-registry</code></td><td>持有 ActiveRun；订阅者重放尾部缓冲；<code>EVICT_AFTER_MS</code> 回收；镜像到 <code>factory_runs</code> 持久化</td><td>apps/api</td></tr>
+<tr><td><code>startRun / drive</code></td><td>脱钩后台 driver，把 runBrain 的 yield 帧广播给所有订阅者</td><td>apps/api</td></tr>
+<tr><td><code>ConversationStore</code></td><td>每轮把 messages + ctx 快照存 <code>factory_conversations</code> → 重启可续跑</td><td>port</td></tr>
+<tr><td>SSE 契约</td><td><code>useBrainStream</code>：<code>run.started</code> 捕获 runId；<code>done</code> 解锁；60s 静默看门狗解僵尸</td><td>apps/web</td></tr>
+</table>
+<div class="callout warn"><b>非崩溃安全。</b> Inngest dev 模式不是崩溃安全的：若 api 在运行中重启（tsx watch 改文件触发），在飞的 handler 可能被丢；前端的静默看门狗会在 60s 无帧后解锁 composer，避免卡在「发送没反应」。</div>
+</section>
+
+<!-- 2 -->
+<section id="loop">
+<h2><span class="n">2</span>ReAct Agent Loop · 推理的心脏</h2>
+<p><code>runBrain()</code>（conductor.ts，约 480 行）是一个 <code>async generator</code>。它装好 <code>BrainCtx</code>（累积所有状态：specs / ontology / currentPlan / testCases / lastSandbox / humanDirectives …），从 <code>[system, user(goal)]</code> 起步，进入主循环（上限 <code>MAX_TURNS</code>）。</p>
+<div class="fig">
+<svg viewBox="0 0 900 360" xmlns="http://www.w3.org/2000/svg" font-family="var(--mono)" font-size="11.5">
+  <defs><marker id="a2" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#7cc4ff"/></marker></defs>
+  <rect x="350" y="14" width="200" height="44" rx="9" fill="#121722" stroke="#7cc4ff"/>
+  <text x="450" y="34" fill="#7cc4ff" text-anchor="middle" font-weight="700">每轮 turn 开始</text>
+  <text x="450" y="50" fill="#6f7e94" text-anchor="middle" font-size="9.5">软成本计量 · 自动压缩检查</text>
+
+  <rect x="350" y="84" width="200" height="48" rx="9" fill="#121722" stroke="#2b3548"/>
+  <text x="450" y="104" fill="#e6ecf5" text-anchor="middle">① 选模型</text>
+  <text x="450" y="120" fill="#6f7e94" text-anchor="middle" font-size="9.5">tierForContext → modelChain</text>
+
+  <rect x="350" y="158" width="200" height="56" rx="9" fill="#121722" stroke="#b69cff"/>
+  <text x="450" y="180" fill="#b69cff" text-anchor="middle" font-weight="700">② streamTurn（真·LLM）</text>
+  <text x="450" y="196" fill="#a9b6c9" text-anchor="middle" font-size="9.5">think 增量 + tool_calls</text>
+  <text x="450" y="208" fill="#6f7e94" text-anchor="middle" font-size="9.5">实时 yield 到前端</text>
+
+  <rect x="350" y="240" width="200" height="48" rx="9" fill="#121722" stroke="#2b3548"/>
+  <text x="450" y="260" fill="#e6ecf5" text-anchor="middle">③ 工具派发 + grounding</text>
+  <text x="450" y="276" fill="#6f7e94" text-anchor="middle" font-size="9.5">enum 约束=禁止脑补符号</text>
+
+  <rect x="350" y="312" width="200" height="40" rx="9" fill="#121722" stroke="#2b3548"/>
+  <text x="450" y="336" fill="#e6ecf5" text-anchor="middle">④ tool.result → 回灌 messages</text>
+
+  <line x1="450" y1="58" x2="450" y2="82" stroke="#7cc4ff" marker-end="url(#a2)"/>
+  <line x1="450" y1="132" x2="450" y2="156" stroke="#7cc4ff" marker-end="url(#a2)"/>
+  <line x1="450" y1="214" x2="450" y2="238" stroke="#7cc4ff" marker-end="url(#a2)"/>
+  <line x1="450" y1="288" x2="450" y2="310" stroke="#7cc4ff" marker-end="url(#a2)"/>
+  <path d="M350 332 C150 332, 150 36, 348 36" fill="none" stroke="#5fd39a" stroke-dasharray="5 4" marker-end="url(#a2)"/>
+  <text x="150" y="186" fill="#5fd39a" text-anchor="middle" font-size="10">下一轮</text>
+  <text x="150" y="200" fill="#6f7e94" text-anchor="middle" font-size="9">（无 tool_calls=结束）</text>
+
+  <rect x="600" y="158" width="270" height="120" rx="10" fill="#0e131c" stroke="#1f2735"/>
+  <text x="615" y="180" fill="#a9b6c9" font-size="11" font-weight="700">HITL 暂停门（park gates）</text>
+  <text x="615" y="200" fill="#6f7e94" font-size="10">· 测试用例待确认</text>
+  <text x="615" y="216" fill="#6f7e94" font-size="10">· 边界事件分类</text>
+  <text x="615" y="232" fill="#6f7e94" font-size="10">· ask_user / supply_test_data 澄清</text>
+  <text x="615" y="252" fill="#6f7e94" font-size="10">轮询 mailbox，超时(150 ticks≈3min)</text>
+  <text x="615" y="268" fill="#6f7e94" font-size="10">回退 AI 推荐项——绝不永久挂起</text>
+</svg>
+<div class="cap">图 2 · ReAct 单轮：选模型 → 流式推理 → 工具派发(约束解码) → 结果回灌；穿插 HITL 暂停门</div>
+</div>
+<h3>约束解码（grounding enums）</h3>
+<p>派发前，<code>injectGroundingEnums</code> 把工具 schema 里的「动作名 / 工具名」字段约束成<b>真实本体符号</b>。如果 <code>design_agent</code> 仍发明了一个不存在的名字，工具失败后会注入一条系统消息把真名喂回去，让 brain <b>自我纠正</b>——这是「不写死、但也不许胡编」的关键机制。</p>
+</section>
+
+<!-- 3 -->
+<section id="multi">
+<h2><span class="n">3</span>多智能体架构 · 一个指挥 + 专项子代理 + 两条执行路</h2>
+<p>工厂不是「一个巨型 prompt」。它是<b>一个 conductor 主脑</b> 协调若干<b>专项子代理</b>与<b>两条运行时执行路径</b>。</p>
+<div class="grid2">
+  <div class="card"><h4>主脑 · Conductor</h4><p>唯一的 ReAct 推理体，持有全局 ctx，决定下一步调哪个工具。它<b>就是</b>推理本身（streamTurn）。</p></div>
+  <div class="card"><h4>子代理 · 测试用例设计师</h4><p><code>test-cases.ts · authorTestCases</code>：独立的 chatOnce 调用，按事件链造 pass/reject/edge 用例（真·LLM）。</p></div>
+  <div class="card"><h4>子代理 · 质检裁判</h4><p><code>review_agent</code> Tier-2 / <code>analyze_failure</code>：独立 review-tier LLM，引用证据片段挑问题。</p></div>
+  <div class="card"><h4>子代理 · 压缩摘要器</h4><p><code>summarizeDropped</code>：fast-tier LLM，把折叠掉的早期对话压成「决策+原因」要点。</p></div>
+</div>
+<h3>两条运行时执行路径</h3>
+<div class="fig">
+<svg viewBox="0 0 900 220" xmlns="http://www.w3.org/2000/svg" font-family="var(--mono)" font-size="11.5">
+  <defs><marker id="a3" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#7cc4ff"/></marker></defs>
+  <rect x="330" y="14" width="240" height="44" rx="9" fill="#121722" stroke="#7cc4ff"/>
+  <text x="450" y="34" fill="#7cc4ff" text-anchor="middle" font-weight="700">step-engine · runAction("logic")</text>
+  <text x="450" y="50" fill="#6f7e94" text-anchor="middle" font-size="9.5">agent.codeExecuted &amp;&amp; typescriptCode ?</text>
+  <rect x="120" y="108" width="300" height="90" rx="10" fill="#121722" stroke="#5fd39a"/>
+  <text x="270" y="130" fill="#5fd39a" text-anchor="middle" font-weight="700">声明式（默认 · RAAS-v1 标准）</text>
+  <text x="270" y="150" fill="#a9b6c9" text-anchor="middle" font-size="10">manifest 的 systemPrompt + tools + 条件</text>
+  <text x="270" y="166" fill="#a9b6c9" text-anchor="middle" font-size="10">在 step.run 里逐步可重放执行</text>
+  <text x="270" y="184" fill="#6f7e94" text-anchor="middle" font-size="9.5">codeSource="render" / 代码校验未过</text>
+  <rect x="480" y="108" width="300" height="90" rx="10" fill="#121722" stroke="#b69cff"/>
+  <text x="630" y="130" fill="#b69cff" text-anchor="middle" font-weight="700">CodeAct（真跑生成代码）</text>
+  <text x="630" y="150" fill="#a9b6c9" text-anchor="middle" font-size="10">runGeneratedCode：转译+执行 .ts handler</text>
+  <text x="630" y="166" fill="#a9b6c9" text-anchor="middle" font-size="10">门控：FACTORY_EXEC_GENERATED + 租户 -sb</text>
+  <text x="630" y="184" fill="#6f7e94" text-anchor="middle" font-size="9.5">出错永不抛 → 返回 null → 回退左路</text>
+  <line x1="410" y1="58" x2="290" y2="106" stroke="#5fd39a" marker-end="url(#a3)"/>
+  <line x1="490" y1="58" x2="610" y2="106" stroke="#b69cff" marker-end="url(#a3)"/>
+  <path d="M630 198 C630 214, 270 214, 270 200" fill="none" stroke="#6f7e94" stroke-dasharray="4 4" marker-end="url(#a3)"/>
+</svg>
+<div class="cap">图 3 · 同一个生成出来的 agent：默认走声明式 manifest；当渲染代码通过编译+安全 lint 时，沙箱里真跑 CodeAct，失败自动回退声明式（永不破坏验收）</div>
+</div>
+<div class="callout"><b>声明式 vs CodeAct 的取舍。</b> 声明式是生产标准（100% spec 驱动、可重放、可审计）。CodeAct 让「生成的代码真的执行」，但只在 <code>-sb</code> 沙箱租户里、且 <code>runGeneratedCode</code> 设计成<b>永不抛异常</b>——任何失败返回 null，step-engine 自动回退声明式。所以打开它不会让已经能跑通的链路回归。</div>
+
+<h3>递归 harness · 一层套一层</h3>
+<p>harness 是<b>层层嵌套</b>的：顶层大脑管 Agents/Skills/Tools；每个部署出来的 agent 自己也是一个 harness（跑工具循环）；agent 还能调子 agent。三层加上新的运行时自生成层：</p>
+<div class="fig">
+<svg viewBox="0 0 900 250" xmlns="http://www.w3.org/2000/svg" font-family="var(--mono)" font-size="11">
+  <rect x="20" y="20" width="860" height="210" rx="12" fill="#0e131c" stroke="#7cc4ff"/>
+  <text x="34" y="42" fill="#7cc4ff" font-weight="700">L0 · Factory 大脑（设计期 harness）</text>
+  <text x="34" y="58" fill="#6f7e94" font-size="10">conductor ReAct — 管 Agents / Skills / Tools，产出可部署函数</text>
+  <rect x="40" y="72" width="820" height="150" rx="10" fill="#121722" stroke="#b69cff"/>
+  <text x="54" y="94" fill="#b69cff" font-weight="700">L1 · 部署出来的 agent（运行时 harness）</text>
+  <text x="54" y="110" fill="#6f7e94" font-size="10">step-engine 工具循环（≤8 轮）——每个 agent 自己就是一个小 harness，管它的 tool_use[]</text>
+  <rect x="60" y="124" width="380" height="86" rx="9" fill="#0e131c" stroke="#5fd39a"/>
+  <text x="74" y="146" fill="#5fd39a" font-weight="700">L1.5 · 静态子 agent（可部署）🆕</text>
+  <text x="74" y="162" fill="#6f7e94" font-size="10">design_subagent → 父 plan 加 invoke 步</text>
+  <text x="74" y="176" fill="#6f7e94" font-size="10">step.invoke 同步调（超时+软失败）</text>
+  <text x="74" y="194" fill="#6f7e94" font-size="10">✅ 父+子都真实注册——这是生产路径</text>
+  <rect x="460" y="124" width="380" height="86" rx="9" fill="#0e131c" stroke="#f3c969"/>
+  <text x="474" y="146" fill="#f3c969" font-weight="700">L2 · 动态子 agent（运行时自生成）🆕</text>
+  <text x="474" y="162" fill="#6f7e94" font-size="10">ctx.spawn(task) → 生成子 agent 代码 → 递归运行</text>
+  <text x="474" y="176" fill="#6f7e94" font-size="10">深度受限(默认2)、仅 -sb 沙箱、永不抛</text>
+  <text x="474" y="194" fill="#6f7e94" font-size="10">✅ 沙箱助手 / 发现分解——不是交付物</text>
+</svg>
+<div class="cap">图 3b · 递归 harness 四层。L1.5 是<b>可部署</b>的子 agent（生产路径）；L2 是运行时自生成的沙箱助手</div>
+</div>
+<div class="callout good"><b>和「必须可部署」怎么调和（已实现闭环）。</b> 交付物永远是 L1/L1.5 的<b>静态注册函数</b>（可重放、可审计）。<code>design_subagent</code>（新）让大脑把一个复杂父 agent 拆成 父+<b>可部署子 agent</b>：给父的 plan 加一个 <code>kind:"invoke"</code> 步（idempotencyKeyFrom+软失败），子 agent 是真实注册的函数、被父同步调；子 agent 不计入本体覆盖，但受 has_code/tools_resolve/<code>sub_agents_bound</code>（不能有没人 invoke 的孤儿）验收。L2 的 <code>ctx.spawn</code> 运行时生成+跑临时子 agent 用于沙箱辅助 / <b>发现</b>值得固化的子任务——它生成的代码被 <code>spawnedSubAgents</code> 捕获，直接喂给 <code>design_subagent(code=…)</code> 就<b>晋升成可部署子 agent</b>（过 TS+安全 lint）。发现 → 固化 → 静态调，闭环打通；「能自生成」与「最终可部署」都不牺牲。</div>
+</section>
+
+<!-- 4 -->
+<section id="reason">
+<h2><span class="n">4</span>推理 / 审查 / 反思 · 哪些是真 AI，哪些是确定性护栏</h2>
+<p>用户最关心的一点：<b>不是写死的，是真由 AI 推理</b>。事实是——<b>推理本身就是 conductor 的 streamTurn（真 LLM）</b>；工具大多是「校验 + 落地」的确定性护栏（这恰恰应该确定）。下表逐个标注：</p>
+<table>
+<tr><th>机制</th><th>性质</th><th>说明</th></tr>
+<tr><td><code>streamTurn / chatOnce</code></td><td><span class="pill real">real-LLM</span></td><td>OpenAI SDK 流式打到网关；所有推理的底座</td></tr>
+<tr><td><code>modelChain / tierForContext</code></td><td><span class="pill real">配置驱动</span></td><td>按阶段选 tier；模型 id 来自环境变量或<b>实时 catalog 派生</b>，无硬编码</td></tr>
+<tr><td><b>understand_ontology</b> 🆕</td><td><span class="pill real">real-LLM</span></td><td>读完本体显式消化成结构化理解（要造谁/事件链/规则闸/外部交接/歧义），存入 ctx 并贯穿设计</td></tr>
+<tr><td><b>critique_plan</b> 🆕</td><td><span class="pill real">real-LLM</span></td><td>review-tier 独立挑战分解：漏/多 agent、顺序、闸口认定、外部交接误判、跨 agent 契约</td></tr>
+<tr><td><code>review_agent</code></td><td><span class="pill det">det</span> + <span class="pill real">real-LLM</span></td><td>Tier1 确定性集合检查 + Tier2 LLM 裁判（必须引用 prompt 证据片段）</td></tr>
+<tr><td><code>analyze_failure</code></td><td><span class="pill det">det</span> + <span class="pill real">real-LLM</span></td><td>当 brain 给的根因太薄时，调 LLM 从真实运行态合成根因+可执行教训</td></tr>
+<tr><td><code>generate_test_cases</code></td><td><span class="pill real">real-LLM</span></td><td>测试用例设计师 LLM；无网关时回退确定性 golden fixture</td></tr>
+<tr><td><code>create_plan</code> / <code>design_agent</code></td><td><span class="pill real">推理在循环里</span> + <span class="pill det">det 落地</span></td><td>规划/设计的<b>推理</b>发生在 conductor 的 streamTurn；工具负责 grounding/校验/渲染</td></tr>
+<tr><td><code>score_spec</code></td><td><span class="pill det">det</span></td><td>4 维打分纯公式（工具解析率/prompt 丰富度/决策覆盖/精修健康）——刻意确定</td></tr>
+</table>
+<div class="callout good"><b>这一版新增的三道真·推理闸。</b> <code>understand_ontology</code>（答「我怎么知道 AI 读懂并记住了」）、<code>critique_plan</code>（答「规划没人挑战」）、流水线强制 <code>review_agent</code>（答「设计后没有审查反思」）。三者都发 <code>reflect</code> 事件，前端实时显示「🧠 反思：…」，形成可见的思考时间线。</div>
+</section>
+
+<!-- 5 -->
+<section id="model">
+<h2><span class="n">5</span>模型路由 · 按任务难度灵活选模型</h2>
+<p><code>tierForContext(ctx)</code> 按<b>阶段</b>选 tier，<code>modelChain(tier)</code> 解析出一条「首选→兜底→base」的链，<code>streamTurn</code> 依次尝试直到某个模型成功。链要么由环境变量钉死，要么从<b>实时 catalog</b> 按偏好模式派生——没有硬编码模型 id。</p>
+<table>
+<tr><th>阶段</th><th>tier</th><th>典型模型偏好</th></tr>
+<tr><td>读本体（无 plan 无 specs）</td><td><code>fast</code></td><td>flash / haiku / mini</td></tr>
+<tr><td>规划（有 plan 未设计）</td><td><code>default</code></td><td>gemini-3.1-pro / gpt-5.4 / sonnet</td></tr>
+<tr><td>正在设计（specs &lt; 计划数）</td><td><code>hard</code></td><td>sonnet / kimi / gpt-5.4 / opus</td></tr>
+<tr><td>设计完成后的轻活</td><td><code>default</code></td><td>回落，不再钉 sonnet</td></tr>
+<tr><td>评审/裁判/失败诊断</td><td><code>review</code></td><td>opus / gpt-5.5（裁判最贵，错判代价最高）</td></tr>
+</table>
+<div class="callout warn"><b>修过的坑。</b> 旧版 <code>tierForContext</code> 是<b>单向棘轮</b>：一旦设计了第一个 agent，之后每轮都钉死在 <code>hard</code> 链首位（永远 sonnet-4.6）。现已改成阶段感知：读=fast、规划=default、<b>设计中</b>=hard、设计完=default，所以一次运行会用到 flash + pro + sonnet 多个模型。</div>
+</section>
+
+<!-- 6 -->
+<section id="tools">
+<h2><span class="n">6</span>工具注册表 · BrainTools vs 运行时工具</h2>
+<div class="grid2">
+  <div class="card"><h4>BrainTools（设计期）</h4><p><code>FACTORY_TOOLS</code>：conductor 能调的 ~34 个工具——read_ontology / understand_ontology / create_plan / critique_plan / design_agent / review_agent / sandbox_run / supply_test_data / finish …。这是 brain 的动作空间。</p></div>
+  <div class="card"><h4>Global Tool Registry（运行时）</h4><p><code>packages/tools</code>：生成出来的 agent 在运行时能用的工具（fs.* / http.fetch / parseResumeApi …）。配置驱动，任何租户的 manifest 列名即用。</p></div>
+</div>
+<p>解析顺序（step-engine）：<code>租户专属 ?? 全局注册表 ?? MCP 工具</code>。manifest 的 <code>tool_use[]</code> 是信任边界——注册了不等于可调，必须在白名单里。<code>search_tools</code> 让 brain 按语义检索真实工具；<code>create_tool</code> / <code>extract_api_schema</code> 能把一篇 API 文档现造成工具。</p>
+</section>
+
+<!-- 7 -->
+<section id="memory">
+<h2><span class="n">7</span>Memory 管理 · 写入 / 召回 / 压缩</h2>
+<p>记忆分三层，关键区分是「<b>写入</b>」与「<b>真正被召回进推理</b>」。</p>
+<div class="fig">
+<svg viewBox="0 0 900 270" xmlns="http://www.w3.org/2000/svg" font-family="var(--mono)" font-size="11">
+  <defs><marker id="a4" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#7cc4ff"/></marker></defs>
+  <rect x="20" y="20" width="250" height="120" rx="10" fill="#121722" stroke="#2b3548"/>
+  <text x="35" y="42" fill="#a9b6c9" font-weight="700">写入</text>
+  <text x="35" y="64" fill="#6f7e94" font-size="10">reflection.record → factory_reflections</text>
+  <text x="35" y="82" fill="#6f7e94" font-size="10">（失败/成功/警示 + 教训）</text>
+  <text x="35" y="102" fill="#6f7e94" font-size="10">ctx 快照 → factory_conversations</text>
+  <text x="35" y="120" fill="#6f7e94" font-size="10">agent 运行时 ctx.memory.put（run/subject/tenant 三 scope）</text>
+  <rect x="325" y="20" width="250" height="120" rx="10" fill="#121722" stroke="#7cc4ff"/>
+  <text x="340" y="42" fill="#7cc4ff" font-weight="700">召回（进推理上下文）</text>
+  <text x="340" y="64" fill="#6f7e94" font-size="10">开跑：rankLessons 取 Top-5 反思</text>
+  <text x="340" y="82" fill="#6f7e94" font-size="10">注入 system prompt（跨运行学习）</text>
+  <text x="340" y="102" fill="#6f7e94" font-size="10">折叠后：buildStateSummary 保真名</text>
+  <text x="340" y="120" fill="#5fd39a" font-size="10">🆕 ontologyUnderstanding 进折叠摘要</text>
+  <rect x="630" y="20" width="250" height="120" rx="10" fill="#121722" stroke="#f3c969"/>
+  <text x="645" y="42" fill="#f3c969" font-weight="700">压缩（2 层）</text>
+  <text x="645" y="64" fill="#6f7e94" font-size="10">Tier1 确定性：结构化状态快照</text>
+  <text x="645" y="82" fill="#6f7e94" font-size="10">（动作/事件/对象/规则真名 + 计划</text>
+  <text x="645" y="98" fill="#6f7e94" font-size="10">+ specs + 沙箱 + 未解决问题锚点）</text>
+  <text x="645" y="120" fill="#6f7e94" font-size="10">Tier2 LLM：summarizeDropped 保决策+原因</text>
+  <line x1="270" y1="80" x2="323" y2="80" stroke="#7cc4ff" marker-end="url(#a4)"/>
+  <line x1="575" y1="80" x2="628" y2="80" stroke="#f3c969" marker-end="url(#a4)"/>
+  <rect x="200" y="180" width="500" height="70" rx="10" fill="#0e131c" stroke="#1f2735"/>
+  <text x="450" y="206" fill="#a9b6c9" text-anchor="middle" font-size="11" font-weight="700">「未解决问题」锚点（open-problems）</text>
+  <text x="450" y="226" fill="#6f7e94" text-anchor="middle" font-size="10">还没设计的动作 / 没绑工具会降级的 agent / 没解析的工具 / 上次未闭合或未跑通</text>
+  <text x="450" y="242" fill="#6f7e94" text-anchor="middle" font-size="10">逐字保留、绝不压缩掉——折叠后 brain 仍从「还欠什么」推理，而不是只看计数</text>
+</svg>
+<div class="cap">图 7 · 记忆生命周期：写入 → 召回进 system prompt / 折叠摘要 → 2 层压缩；open-problems 锚点永不丢</div>
+</div>
+<p>反思（reflections）是<b>真召回</b>的：开跑时按 kind 优先级（failure&gt;caveat&gt;success）取 Top-5 注入 system prompt，实现跨运行学习。压缩 Tier2 是真 LLM。这一版补的洞：<code>understand_ontology</code> 的 AI 消化结论也进了折叠摘要，所以早期对话压掉后，设计阶段仍能从「读懂的模型」推理（「读了就忘」保险）。</p>
+<div class="callout good"><b>向量召回已落地（原 v1 桩）。</b> 运行时 agent 的 <code>ctx.memory.search(query,k)</code> 现在接了真实 <code>MemoryDriver</code>（<code>createLocalVectorDriver</code>）：默认<b>本地确定性 embedding</b>（词 token + 中文 unigram/bigram → 256 维哈希向量，L2 归一化，离线可复现），按 <b>cosine 相似度</b>排序返回 top-k；按 <code>MEMORY_EMBED_MODEL</code> 可切换到网关 embeddings（<code>openaiEmbedder</code>，OpenAI 兼容 /embeddings）。租户隔离在 SQL 边界（<code>MemorySearchScope</code> 由 SDK 透传），跨 subject 语义召回。行向量按 (key+updatedAt) 缓存，一次编码多次复用。bootstrap 自动注册（<code>MEMORY_VECTOR=off</code> 可关）。<b>进一步</b>：持久化 embedding 列 + SQLite-VSS/pgvector ANN 索引以支撑超大语料。</div>
+</section>
+
+<!-- 8 -->
+<section id="sandbox">
+<h2><span class="n">8</span>沙箱 · 部署 → 注册 → 触发 → 观测 → 判定</h2>
+<p>这是回答「沙箱 app 叫什么、注册了哪些 agent、怎么跑成的」的地方。<code>sandbox_run</code> 调 <code>ManifestSandboxDeployer.deployAndObserve()</code>：</p>
+<div class="fig">
+<svg viewBox="0 0 900 300" xmlns="http://www.w3.org/2000/svg" font-family="var(--mono)" font-size="11">
+  <defs><marker id="a5" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#b69cff"/></marker></defs>
+  <rect x="20" y="20" width="170" height="70" rx="10" fill="#121722" stroke="#b69cff"/>
+  <text x="105" y="44" fill="#b69cff" text-anchor="middle" font-weight="700">① 隔离租户</text>
+  <text x="105" y="62" fill="#6f7e94" text-anchor="middle" font-size="9.5">ensureTenant()</text>
+  <text x="105" y="78" fill="#5fd39a" text-anchor="middle" font-size="9.5">appId = sandbox-&lt;域&gt;-sb</text>
+  <rect x="220" y="20" width="170" height="70" rx="10" fill="#121722" stroke="#2b3548"/>
+  <text x="305" y="44" fill="#e6ecf5" text-anchor="middle" font-weight="700">② 映射 manifest</text>
+  <text x="305" y="62" fill="#6f7e94" text-anchor="middle" font-size="9.5">mapToManifest：spec.slug</text>
+  <text x="305" y="78" fill="#6f7e94" text-anchor="middle" font-size="9.5">= 函数 id；带 codeExecuted</text>
+  <rect x="420" y="20" width="170" height="70" rx="10" fill="#121722" stroke="#2b3548"/>
+  <text x="505" y="44" fill="#e6ecf5" text-anchor="middle" font-weight="700">③ 校验+提交</text>
+  <text x="505" y="62" fill="#6f7e94" text-anchor="middle" font-size="9.5">miValidate → miCommit</text>
+  <text x="505" y="78" fill="#5fd39a" text-anchor="middle" font-size="9.5">registeredIds = 各 slug</text>
+  <rect x="620" y="20" width="170" height="70" rx="10" fill="#121722" stroke="#2b3548"/>
+  <text x="705" y="44" fill="#e6ecf5" text-anchor="middle" font-weight="700">④ 等就绪</text>
+  <text x="705" y="62" fill="#6f7e94" text-anchor="middle" font-size="9.5">syncTenantApp</text>
+  <text x="705" y="78" fill="#6f7e94" text-anchor="middle" font-size="9.5">waitForAppReady</text>
+  <rect x="220" y="130" width="170" height="70" rx="10" fill="#121722" stroke="#2b3548"/>
+  <text x="305" y="154" fill="#e6ecf5" text-anchor="middle" font-weight="700">⑤ 触发入口事件</text>
+  <text x="305" y="172" fill="#6f7e94" text-anchor="middle" font-size="9.5">每条用例独立 subject</text>
+  <text x="305" y="188" fill="#6f7e94" text-anchor="middle" font-size="9.5">ig.send(&lt;租户&gt;/&lt;事件&gt;)</text>
+  <rect x="420" y="130" width="170" height="70" rx="10" fill="#121722" stroke="#7cc4ff"/>
+  <text x="505" y="154" fill="#7cc4ff" text-anchor="middle" font-weight="700">⑥ 观测（关键修复）</text>
+  <text x="505" y="172" fill="#6f7e94" text-anchor="middle" font-size="9.5">pollRuns 自适应等待</text>
+  <text x="505" y="188" fill="#6f7e94" text-anchor="middle" font-size="9.5">≥45s·按链长×7s，封顶120s</text>
+  <rect x="620" y="130" width="170" height="70" rx="10" fill="#121722" stroke="#5fd39a"/>
+  <text x="705" y="154" fill="#5fd39a" text-anchor="middle" font-weight="700">⑦ 判定</text>
+  <text x="705" y="172" fill="#6f7e94" text-anchor="middle" font-size="9.5">per-case 判定 + 整链</text>
+  <text x="705" y="188" fill="#6f7e94" text-anchor="middle" font-size="9.5">+ 每 agent 真 I/O</text>
+  <line x1="190" y1="55" x2="218" y2="55" stroke="#b69cff" marker-end="url(#a5)"/>
+  <line x1="390" y1="55" x2="418" y2="55" stroke="#b69cff" marker-end="url(#a5)"/>
+  <line x1="590" y1="55" x2="618" y2="55" stroke="#b69cff" marker-end="url(#a5)"/>
+  <path d="M705 90 C705 112, 305 112, 305 128" fill="none" stroke="#b69cff" marker-end="url(#a5)"/>
+  <line x1="390" y1="165" x2="418" y2="165" stroke="#b69cff" marker-end="url(#a5)"/>
+  <line x1="590" y1="165" x2="618" y2="165" stroke="#b69cff" marker-end="url(#a5)"/>
+  <rect x="20" y="230" width="860" height="56" rx="10" fill="#0e131c" stroke="#1f2735"/>
+  <text x="36" y="252" fill="#a9b6c9" font-size="11" font-weight="700">finish 验收门</text>
+  <text x="36" y="272" fill="#6f7e94" font-size="10">覆盖全部 Agent 动作 · 工具都解析 · 真实注册(非模拟) · (fullChainRan 或 达成功终态且零降级) · 规则闸已绑 · I/O 类型化 · 都有代码</text>
+</svg>
+<div class="cap">图 8 · 沙箱七步 + finish 验收门。app 名 = <code>sandbox-&lt;域&gt;-sb</code>；<code>registeredIds</code> 是注册成功的智能体 slug 证明</div>
+</div>
+<div class="callout good"><b>前端现已可见。</b> 沙箱事件块现在显示：🚀 Inngest 沙箱 App: <code>sandbox-agents-generation-sb</code> · 注册 N 个函数 · 部署 K 个智能体，并逐个列出每个 agent 的「已注册·已跑通/运行中」状态；右侧 <code>SandboxIOPanel</code> 展示每个 agent 真实的输入/输出 payload。</div>
+<div class="callout warn"><b>修过的核心死循环。</b> 旧版 <code>pollRuns</code> 固定 12s 窗口，在慢规则闸级联还在 running 时就采样 → <code>fullChainRan=false</code> → finish 拒 → 重跑沙箱 → 又一个过早快照 → 无限循环。现改为自适应等待（≥45s，按链长缩放，封顶 120s；测试态保持 12s），并让 finish 接受「达成功终态且零降级」作为合法的快照时机兜底，且跨同指纹运行<b>取最强证据</b>，从根上打断死循环。</div>
+</section>
+
+<!-- 9 -->
+<section id="exec">
+<h2><span class="n">9</span>生成代码的真实执行 · CodeAct</h2>
+<p><code>design_agent</code> 渲染出每个 agent 的可读 <code>.ts</code>，然后 <code>renderExecutableCode</code> 给它<b>评级</b>：用 TS 编译器校验 + 安全 lint（禁 child_process/fs/net/eval）。两关都过 → <code>spec.codeExecuted=true</code>。manifest 映射：<code>codeExecuted = codeSource==="ai" || spec.codeExecuted</code>。</p>
+<p>运行时（step-engine 的 <code>logic</code> 动作）：若 <code>codeExecuted &amp;&amp; typescriptCode</code>，调 <code>runGeneratedCode</code> 真跑转译后的 handler。它<b>永不抛异常</b>——门控不满足（非 -sb 租户、或代码无效、或运行出错）就返回 <code>null</code>，step-engine 回退到声明式 prompt 路径。所以「让生成代码真执行」是<b>尽力而为 + 自动兜底</b>，不会破坏已验证的链路。</p>
+<div class="callout good"><b>实测。</b> 打开 <code>FACTORY_EXEC_GENERATED=1</code> 跑 Agents-generation：6 个 agent 全部评级 <code>codeExecuted=true</code>（渲染代码编译+安全检查通过），且 finish 照常达成——零回归。</div>
+</section>
+
+<!-- 10 -->
+<section id="events">
+<h2><span class="n">10</span>事件流总图 · 一次成功运行的 SSE 时间线</h2>
+<p>brain 的每一步都以 <code>BrainEvent</code> 推到前端。下面是<b>全部事件类型</b>与一次典型成功运行的时序。</p>
+<div class="fig">
+<svg viewBox="0 0 900 430" xmlns="http://www.w3.org/2000/svg" font-family="var(--mono)" font-size="10.5">
+  <defs><marker id="a6" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#6f7e94"/></marker></defs>
+  <line x1="60" y1="20" x2="60" y2="400" stroke="#2b3548" stroke-width="2"/>
+  <!-- nodes -->
+  <g>
+    <circle cx="60" cy="34" r="5" fill="#7cc4ff"/><text x="78" y="38" fill="#7cc4ff" font-weight="700">run.started</text><text x="230" y="38" fill="#6f7e94">runId 落 localStorage，可重连</text>
+    <circle cx="60" cy="66" r="5" fill="#6f7e94"/><text x="78" y="70" fill="#a9b6c9">model</text><text x="230" y="70" fill="#6f7e94">本轮实际服务的模型（按 tier）</text>
+    <circle cx="60" cy="98" r="5" fill="#6f7e94"/><text x="78" y="102" fill="#a9b6c9">think</text><text x="230" y="102" fill="#6f7e94">流式思考增量（边想边说）</text>
+    <circle cx="60" cy="130" r="5" fill="#5fd39a"/><text x="78" y="134" fill="#a9b6c9">tool.call → tool.result</text><text x="290" y="134" fill="#6f7e94">read_ontology → catalog</text>
+    <circle cx="60" cy="162" r="5" fill="#b69cff"/><text x="78" y="166" fill="#b69cff" font-weight="700">reflect (understanding) 🆕</text><text x="320" y="166" fill="#6f7e94">理解本体 / 标歧义</text>
+    <circle cx="60" cy="194" r="5" fill="#5fd39a"/><text x="78" y="198" fill="#a9b6c9">plan</text><text x="230" y="198" fill="#6f7e94">create_plan：BuildPlan</text>
+    <circle cx="60" cy="226" r="5" fill="#b69cff"/><text x="78" y="230" fill="#b69cff" font-weight="700">reflect (plan-critique) 🆕</text><text x="320" y="230" fill="#6f7e94">独立挑战分解</text>
+    <circle cx="60" cy="258" r="5" fill="#5fd39a"/><text x="78" y="262" fill="#a9b6c9">agent.created × N · code · score.delta</text><text x="430" y="262" fill="#6f7e94">design_agent / 渲染+评级</text>
+    <circle cx="60" cy="290" r="5" fill="#f3c969"/><text x="78" y="294" fill="#a9b6c9">validation · boundary.cases/decided</text><text x="420" y="294" fill="#6f7e94">verify_chain / 边界分类</text>
+    <circle cx="60" cy="322" r="5" fill="#f3c969"/><text x="78" y="326" fill="#a9b6c9">test.cases → clarify(supply_test_data) → test.decision</text><text x="540" y="326" fill="#6f7e94">补真实数据</text>
+    <circle cx="60" cy="354" r="5" fill="#b69cff"/><text x="78" y="358" fill="#a9b6c9">sandbox · inspect</text><text x="260" y="358" fill="#6f7e94">部署+真跑+每 agent I/O</text>
+    <circle cx="60" cy="386" r="5" fill="#5fd39a"/><text x="78" y="390" fill="#5fd39a" font-weight="700">reflect(success) → done</text><text x="330" y="390" fill="#6f7e94">finish 交付，存草稿</text>
+  </g>
+</svg>
+<div class="cap">图 10 · 一次成功运行的事件时间线。其他事件：<code>compaction</code>（自动压缩）·<code>refine/revert</code>（精修/回滚）·<code>skill.created/tool.created/tool.search</code>·<code>web.result</code>·<code>subagent.start/done</code>·<code>stage</code>（阶段里程碑）·<code>error</code></div>
+</div>
+<table>
+<tr><th>事件</th><th>何时触发</th><th>事件</th><th>何时触发</th></tr>
+<tr><td><code>run.started</code></td><td>运行注册，给 runId</td><td><code>reflect</code></td><td>理解/评审/反思/成败教训</td></tr>
+<tr><td><code>think</code></td><td>模型流式吐思考 token</td><td><code>validation</code></td><td>verify_chain 图闭包结果</td></tr>
+<tr><td><code>tool.call/result</code></td><td>每次工具调用与返回</td><td><code>test.cases/decision</code></td><td>用例生成 / 用户确认</td></tr>
+<tr><td><code>model</code></td><td>本轮实际服务模型</td><td><code>clarify</code></td><td>ask_user / supply_test_data 暂停</td></tr>
+<tr><td><code>plan</code></td><td>create_plan 提交</td><td><code>sandbox</code></td><td>deployAndObserve 落定（app/注册/I-O）</td></tr>
+<tr><td><code>agent.created/code</code></td><td>design_agent 完成一个</td><td><code>compaction</code></td><td>上下文自动压缩</td></tr>
+<tr><td><code>score.delta</code></td><td>refine 后分数变化</td><td><code>done</code></td><td>运行结束（finish 或终止）</td></tr>
+</table>
+</section>
+
+<!-- 11 -->
+<section id="promote">
+<h2><span class="n">11</span>晋升到生产</h2>
+<p>沙箱跑通、<code>finish</code> 把 agent 存成可审阅的草稿后，<b>promote</b> 把同一套 manifest 注册成一个真实的生产 Inngest app（每个业务域一个 app：<code>agentic-operator-&lt;域&gt;</code>），生产路径走<b>声明式</b>执行（CodeAct 的 <code>-sb</code> 门控自动让生产回落声明式）。生产里只反映通过 <code>POST /v1/events</code> 打进来的真实事件——零 mock。</p>
+<div class="callout"><b>一句话收尾。</b> 设计期的智能（conductor + 真 LLM 推理 + 三道审查闸）负责「造对」；沙箱的真实部署+自适应观测+验收门负责「证明能跑」；生产的声明式 manifest 负责「可重放可审计地运行」。三段各司其职，就是这个 harness 的全部。</div>
+</section>
+
+<footer>
+Agentic Operator · Agent Factory 技术书 · 由代码实时校对生成（packages/agent-factory · apps/api · apps/web）。图为架构示意，符号名以源码为准。
+</footer>
+</main>
+</div>
+</body>
+</html>

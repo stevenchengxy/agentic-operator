@@ -12,6 +12,8 @@ export interface SparklineProps {
   height?: number;
   color?: string;
   filled?: boolean;
+  /** Animate the line drawing in (CSS `.spark-draw`, see global.css). */
+  animate?: boolean;
 }
 
 export interface SparkPaths {
@@ -45,13 +47,21 @@ export function Sparkline({
   height = 22,
   color = "var(--signal)",
   filled = true,
+  animate = false,
 }: SparklineProps) {
   const paths = computeSparkPaths(values, width, height);
   if (!paths) return null;
   return (
-    <svg width={width} height={height} style={{ display: "block" }}>
+    <svg width={width} height={height} style={{ display: "block", overflow: "visible" }}>
       {filled && <path d={paths.area} fill={color} opacity={0.12} />}
-      <path d={paths.line} stroke={color} fill="none" strokeWidth={1.25} />
+      <path
+        className={animate ? "spark-draw" : undefined}
+        d={paths.line}
+        stroke={color}
+        fill="none"
+        strokeWidth={1.25}
+        strokeLinecap="round"
+      />
     </svg>
   );
 }

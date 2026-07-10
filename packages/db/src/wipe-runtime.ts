@@ -32,6 +32,8 @@ import { closeDb, getRawSqlite } from "./client";
  */
 const TABLES_TO_WIPE = [
   "steps",
+  "llm_turns",
+  "run_summaries",
   "artifacts",
   "agent_memory_short",
   "agent_memory_long",
@@ -122,7 +124,8 @@ async function main(): Promise<void> {
   closeDb();
 }
 
-const isMain = import.meta.url === `file://${process.argv[1]}`;
+const isMain =
+  !!process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href;
 if (isMain) {
   main().catch((err) => {
     console.error("[wipe-runtime] failed", err);

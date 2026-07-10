@@ -4,9 +4,11 @@ import { readFile, stat, statfs } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { getRawSqlite } from "@agentic/db";
 import type { HealthReport } from "@agentic/contracts";
-import { CURRENT_SCHEMA_VERSION } from "@agentic/runtime";
+import { CURRENT_SCHEMA_VERSION, blobBackendStatus } from "@agentic/runtime";
 import { getLLMGateway } from "../services/llm";
 import { isDemoMode } from "../config/demo-mode.js";
+import { fanoutStatus } from "../services/fanout-redis";
+import { memoryDriverStatus } from "../services/memory-pgvector";
 
 /** apps/api/package.json — used for the `version` field on the report. */
 const apiPackageJsonPath = path.resolve(
@@ -60,6 +62,10 @@ export async function healthRoute(app: FastifyInstance) {
       // request so a hot-reload of the env (uncommon in prod) takes effect
       // without a restart. The web treats undefined as false.
       demoMode: isDemoMode(),
+      // #SCALE — pluggable-backend status (config-flip verification from one curl).
+      blobBackend: blobBackendStatus(),
+      fanout: fanoutStatus(),
+      memoryDriver: memoryDriverStatus(),
     };
     return reply.status(ok ? 200 : 503).send(report);
   });
@@ -73,6 +79,8 @@ async function checkLLMGateway(): Promise<NonNullable<HealthReport["llmGateway"]
       defaultProvider: g.defaultProvider,
       defaultModel: process.env.LLM_DEFAULT_MODEL ?? undefined,
       providers: g.listProviders().length,
+      // #NOMOCK — explicit flag so a mock runtime can never masquerade as real (one curl reveals it).
+      mock: g.defaultProvider === "mock",
     };
   } catch {
     return { ok: false };

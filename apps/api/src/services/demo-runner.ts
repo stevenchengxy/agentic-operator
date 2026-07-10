@@ -46,7 +46,7 @@ import {
   tenants as tenantsTable,
   workflows as workflowsTable,
 } from "@agentic/db";
-import { appendToLedger, inngest } from "@agentic/runtime";
+import { appendToLedger, getTenantInngest } from "@agentic/runtime";
 import { makeId } from "@agentic/shared";
 import { isDemoMode } from "../config/demo-mode.js";
 
@@ -223,7 +223,7 @@ async function tickPublishEvent(
     .run();
 
   const namespaced = `${tenant.slug}/${eventName}` as `${string}/${string}`;
-  await inngest.send({
+  await getTenantInngest(tenant.slug).send({
     name: namespaced,
     data: {
       __demo: true,
@@ -247,8 +247,10 @@ async function tickResolveTask(log: DemoRunnerLogger): Promise<string | null> {
     .select({
       id: tasksTable.id,
       tenantId: tasksTable.tenantId,
+      tenantSlug: tenantsTable.slug,
     })
     .from(tasksTable)
+    .innerJoin(tenantsTable, eq(tenantsTable.id, tasksTable.tenantId))
     .where(eq(tasksTable.status, "open"))
     .limit(50)
     .all();
@@ -268,8 +270,8 @@ async function tickResolveTask(log: DemoRunnerLogger): Promise<string | null> {
     .run();
 
   try {
-    await inngest.send({
-      name: "task.resolved",
+    await getTenantInngest(target.tenantSlug).send({
+      name: `${target.tenantSlug}/task.resolved` as `${string}/${string}`,
       data: {
         taskId: target.id,
         tenantId: target.tenantId,

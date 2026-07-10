@@ -1,7 +1,7 @@
 /**
  * P4-TEST-01 — E2E: manifest agent run.
  *
- * Boots the live dev stack (api on :3501, inngest on :8288). Fires an
+ * Boots the live dev stack (api on :3540, inngest on :8488). Fires an
  * event that the `syncFromClientSystem` manifest agent listens to,
  * waits for the run row to appear, asserts:
  *

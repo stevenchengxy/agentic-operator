@@ -1,78 +1,197 @@
-import type { FastifyInstance, FastifyRequest } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { createHash } from "node:crypto";
-import { eq } from "drizzle-orm";
-import { jwtVerify } from "jose";
-import { apiTokens, getDb, tenants } from "@agentic/db";
+import { and, eq } from "drizzle-orm";
+import { jwtVerify, SignJWT } from "jose";
+import { apiTokens, getDb, memberships, tenants, users } from "@agentic/db";
+import type { PlatformRole, TenantRole } from "@agentic/contracts";
 
+/**
+ * P6-AUTH — authenticated request context.
+ *
+ * Identity (`userId`/`email`/`name`/`platformRole`) is resolved once per
+ * request; the *active tenant* and the caller's `role` within it are resolved
+ * from the request (the `x-agentic-tenant` header the portal forwards, or the
+ * caller's first membership) and verified against `memberships`. RBAC
+ * decisions read `platformRole` + `role` — see plugins/rbac.ts.
+ *
+ * `userId` is null only for legacy bearer tokens that carry no user link.
+ */
 export interface AuthedContext {
+  userId: string | null;
+  email: string | null;
+  name: string | null;
+  platformRole: PlatformRole;
   tenantId: string;
   tenantSlug: string;
+  role: TenantRole | null;
   via: "token" | "dev" | "cookie";
 }
 
 const COOKIE_NAME = "agentic_session";
+const SESSION_TTL_SECONDS = 60 * 60 * 24 * 30; // 30d
 
 /**
- * UC-V11-29 / PF-GAP-05 — read the session JWT signing secret. Accepts
- * both `AUTH_SESSION_SECRET` (the canonical api-side name per
- * `.env.example`) and `SESSION_SECRET` (what `apps/web/lib/auth/session.ts`
- * sets today). Returns null when neither is configured — production
- * callers refuse cookie auth in that case and fall through to bearer.
+ * Session JWT signing secret. Accepts both `AUTH_SESSION_SECRET` (canonical
+ * api name) and `SESSION_SECRET` (what apps/web sets). Returns null when
+ * neither is configured. In dev we fall back to a fixed string so the portal
+ * works out of the box; production MUST set one (the boot guard warns).
  */
-function getSessionSecret(): Uint8Array | null {
+const DEV_SESSION_SECRET_FALLBACK = "dev-only-do-not-use-in-prod";
+function getSessionSecret(): Uint8Array {
   const raw =
-    process.env.AUTH_SESSION_SECRET ?? process.env.SESSION_SECRET ?? "";
-  if (!raw) return null;
+    process.env.AUTH_SESSION_SECRET ??
+    process.env.SESSION_SECRET ??
+    DEV_SESSION_SECRET_FALLBACK;
   return new TextEncoder().encode(raw);
 }
 
 /**
- * Single-cookie reader. Avoids `@fastify/cookie` because we only need
- * one well-known key and adding the plugin would force a plugin-order
- * change. RFC 6265 syntax: `name=value; name=value; ...`.
+ * Single-cookie reader. Avoids `@fastify/cookie` because we only need one
+ * well-known key and adding the plugin would force a plugin-order change.
  */
 function readCookie(header: string | undefined, name: string): string | null {
   if (!header) return null;
   for (const part of header.split(";")) {
-    const eq = part.indexOf("=");
-    if (eq < 0) continue;
-    const k = part.slice(0, eq).trim();
+    const idx = part.indexOf("=");
+    if (idx < 0) continue;
+    const k = part.slice(0, idx).trim();
     if (k !== name) continue;
-    let v = part.slice(eq + 1).trim();
+    let v = part.slice(idx + 1).trim();
     if (v.startsWith('"') && v.endsWith('"')) v = v.slice(1, -1);
     return v;
   }
   return null;
 }
 
+function hashToken(token: string): string {
+  return createHash("sha256").update(token).digest("hex");
+}
+
+export function initialsFor(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "??";
+  if (parts.length === 1) return (parts[0] ?? "").slice(0, 2).toUpperCase();
+  const first = parts[0]?.[0] ?? "";
+  const last = parts[parts.length - 1]?.[0] ?? "";
+  return (first + last).toUpperCase();
+}
+
+// ─── Session cookie (API-owned auth, P6-AUTH) ────────────────────────────────
+
+interface SessionClaims {
+  sub: string; // userId
+  name: string;
+  initials: string;
+  tenant: string; // last-active tenant slug (display/redirect hint only)
+}
+
+/** Sign an HS256 session JWT. Shape stays compatible with apps/web Session. */
+export async function signSessionJwt(claims: SessionClaims): Promise<string> {
+  return new SignJWT({ ...claims })
+    .setProtectedHeader({ alg: "HS256" })
+    .setIssuedAt()
+    .setExpirationTime(`${SESSION_TTL_SECONDS}s`)
+    .sign(getSessionSecret());
+}
+
+/** Set the HttpOnly session cookie on a reply (manual Set-Cookie string). */
+export function setSessionCookie(reply: FastifyReply, jwt: string): void {
+  const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
+  reply.header(
+    "set-cookie",
+    `${COOKIE_NAME}=${jwt}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${SESSION_TTL_SECONDS}${secure}`,
+  );
+}
+
+/** Clear the session cookie (logout). */
+export function clearSessionCookie(reply: FastifyReply): void {
+  const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
+  reply.header(
+    "set-cookie",
+    `${COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure}`,
+  );
+}
+
+// ─── Tenant / role resolution ────────────────────────────────────────────────
+
 /**
- * Verify a session JWT (HS256, per `apps/web/lib/auth/session.ts`) and
- * resolve to an `AuthedContext`. Returns null when the token is malformed,
- * signature invalid, expired, or references a tenant slug that no longer
- * exists in `tenants`. Caller falls through to bearer in any null case.
+ * Dev-only tenant override header, now also the production signal for "which
+ * tenant is this request acting on". The portal forwards the URL's `[tenant]`
+ * segment here. It is SAFE to trust in production because the active role is
+ * always re-derived from `memberships` server-side — a forged header for a
+ * tenant the user isn't a member of yields `role = null` and the RBAC guard
+ * denies. Slug shape mirrors tenants.slug.
  */
-async function authenticateCookie(
-  jwt: string,
-): Promise<AuthedContext | null> {
-  const secret = getSessionSecret();
-  if (!secret) return null;
-  let payload: Record<string, unknown>;
-  try {
-    const verified = await jwtVerify(jwt, secret, { algorithms: ["HS256"] });
-    payload = verified.payload as unknown as Record<string, unknown>;
-  } catch {
-    return null;
-  }
-  const tenantSlug =
-    typeof payload.tenant === "string" ? payload.tenant : null;
-  if (!tenantSlug) return null;
-  const t = getDb()
-    .select()
-    .from(tenants)
-    .where(eq(tenants.slug, tenantSlug))
+const TENANT_HEADER = "x-agentic-tenant";
+
+function headerTenantSlug(req: FastifyRequest | null): string | null {
+  if (!req) return null;
+  const raw = req.headers[TENANT_HEADER];
+  const slug = Array.isArray(raw) ? raw[0] : raw;
+  if (typeof slug !== "string") return null;
+  const trimmed = slug.trim();
+  if (!/^[a-z0-9_-]{1,64}$/.test(trimmed)) return null;
+  return trimmed;
+}
+
+function roleFor(userId: string, tenantId: string): TenantRole | null {
+  const hit = getDb()
+    .select({ role: memberships.role })
+    .from(memberships)
+    .where(and(eq(memberships.userId, userId), eq(memberships.tenantId, tenantId)))
     .all()[0];
-  if (!t) return null;
-  return { tenantId: t.id, tenantSlug: t.slug, via: "cookie" };
+  return (hit?.role as TenantRole | undefined) ?? null;
+}
+
+interface TenantResolution {
+  tenantId: string;
+  tenantSlug: string;
+  role: TenantRole | null;
+}
+
+/**
+ * Resolve the active tenant + the caller's role in it. Honours an explicit
+ * request (header / cookie tenant claim) first — even when the user isn't a
+ * member (role stays null so the guard denies) — then falls back to the
+ * caller's first membership, then a configured default.
+ */
+function resolveTenant(
+  userId: string,
+  explicit: Array<string | null>,
+): TenantResolution {
+  const db = getDb();
+  const seen = new Set<string>();
+  for (const slug of explicit) {
+    if (!slug || seen.has(slug)) continue;
+    seen.add(slug);
+    const t = db.select().from(tenants).where(eq(tenants.slug, slug)).all()[0];
+    if (!t) continue;
+    return { tenantId: t.id, tenantSlug: t.slug, role: roleFor(userId, t.id) };
+  }
+  // First membership.
+  const first = db
+    .select({ tenantId: memberships.tenantId, role: memberships.role })
+    .from(memberships)
+    .where(eq(memberships.userId, userId))
+    .all()[0];
+  if (first) {
+    const t = db.select().from(tenants).where(eq(tenants.id, first.tenantId)).all()[0];
+    if (t) return { tenantId: t.id, tenantSlug: t.slug, role: first.role as TenantRole };
+  }
+  // Configured default (superadmin with no memberships, or none at all).
+  const fbSlug = process.env.AGENTIC_DEV_TENANT ?? "raas";
+  const fb = db.select().from(tenants).where(eq(tenants.slug, fbSlug)).all()[0];
+  if (fb) return { tenantId: fb.id, tenantSlug: fb.slug, role: roleFor(userId, fb.id) };
+  return { tenantId: "", tenantSlug: "", role: null };
+}
+
+/** Map a bearer token's scopes to an effective tenant role. */
+function roleFromScopes(scopes: string[]): TenantRole {
+  if (scopes.includes("tenant:write")) return "admin";
+  if (scopes.some((s) => s.endsWith(":invoke") || s === "agents:invoke")) {
+    return "operator";
+  }
+  return "viewer";
 }
 
 declare module "fastify" {
@@ -81,162 +200,162 @@ declare module "fastify" {
   }
 }
 
-function hashToken(token: string): string {
-  return createHash("sha256").update(token).digest("hex");
-}
+// ─── authenticate ────────────────────────────────────────────────────────────
 
-/**
- * Dev-only tenant override header. The Next.js portal forwards the URL's
- * `[tenant]` segment as `x-agentic-tenant` so dashboards bound to
- * `/portal/<slug>/...` see that tenant's data — not whatever
- * `AGENTIC_DEV_TENANT` happens to be. Strictly gated to `AUTH_MODE=dev`:
- * production must continue to derive tenant exclusively from the bearer
- * token / session cookie, never from a client-controlled header.
- *
- * Hotfix — dashboard render hang (`/portal/hello/dashboard`). See
- * docs/team-execution/00-master-plan.md for the full narrative.
- */
-const DEV_TENANT_HEADER = "x-agentic-tenant";
-
-/**
- * Read the dev-only tenant override from a request. Returns the trimmed
- * slug when the header is present, non-empty, and references an existing
- * (non-archived) tenant; otherwise returns null so callers fall back to
- * `AGENTIC_DEV_TENANT`. NEVER consults this header outside `AUTH_MODE=dev`.
- */
-function devTenantOverride(req: FastifyRequest | null): string | null {
-  if (!req) return null;
-  const raw = req.headers[DEV_TENANT_HEADER];
-  const slug = Array.isArray(raw) ? raw[0] : raw;
-  if (typeof slug !== "string") return null;
-  const trimmed = slug.trim();
-  if (!trimmed) return null;
-  // Slug shape mirrors `packages/db/schema.ts#tenants.slug` and the wizard
-  // validator: 1-32 chars of [a-z0-9_-]. Reject malformed values rather
-  // than running a SELECT with attacker-controlled text — defense in depth.
-  if (!/^[a-z0-9_-]{1,32}$/.test(trimmed)) return null;
-  return trimmed;
-}
-
-function devTenant(req: FastifyRequest | null = null): AuthedContext | null {
-  const override = devTenantOverride(req);
-  const fallback = process.env.AGENTIC_DEV_TENANT ?? "raas";
-  // Try the URL-bound tenant first; fall back to the env-pinned slug if it
-  // doesn't resolve. The header is advisory in dev mode — never a 401.
-  const candidates = override && override !== fallback ? [override, fallback] : [fallback];
-  for (const slug of candidates) {
-    const t = getDb().select().from(tenants).where(eq(tenants.slug, slug)).all()[0];
-    if (t) return { tenantId: t.id, tenantSlug: t.slug, via: "dev" };
+async function authenticateCookie(
+  jwt: string,
+  req: FastifyRequest,
+): Promise<AuthedContext | null> {
+  let payload: Record<string, unknown>;
+  try {
+    const verified = await jwtVerify(jwt, getSessionSecret(), {
+      algorithms: ["HS256"],
+    });
+    payload = verified.payload as unknown as Record<string, unknown>;
+  } catch {
+    return null;
   }
-  return null;
+  const userId = typeof payload.sub === "string" ? payload.sub : null;
+  if (!userId) return null;
+  const u = getDb().select().from(users).where(eq(users.id, userId)).all()[0];
+  if (!u || u.status !== "active") return null;
+  const cookieTenant = typeof payload.tenant === "string" ? payload.tenant : null;
+  const resolved = resolveTenant(u.id, [headerTenantSlug(req), cookieTenant]);
+  return {
+    userId: u.id,
+    email: u.email,
+    name: u.name,
+    platformRole: u.platformRole as PlatformRole,
+    ...resolved,
+    via: "cookie",
+  };
+}
+
+function authenticateDev(req: FastifyRequest): AuthedContext | null {
+  const email = process.env.AGENTIC_DEV_USER_EMAIL ?? "ops@agentic.local";
+  const u = getDb().select().from(users).where(eq(users.email, email)).all()[0];
+  if (!u) return null;
+  // Pin the active tenant to AGENTIC_DEV_TENANT when the request carries no
+  // explicit tenant header — preserves the legacy dev default (the seeded dev
+  // user is a member of every tenant, so "first membership" would be
+  // non-deterministic and break tenant-scoped tests/dashboards).
+  const resolved = resolveTenant(u.id, [
+    headerTenantSlug(req),
+    process.env.AGENTIC_DEV_TENANT ?? "raas",
+  ]);
+  return {
+    userId: u.id,
+    email: u.email,
+    name: u.name,
+    platformRole: u.platformRole as PlatformRole,
+    ...resolved,
+    via: "dev",
+  };
+}
+
+function authenticateBearer(token: string): AuthedContext | null {
+  const db = getDb();
+  const row = db
+    .select({ id: apiTokens.id, tenantId: apiTokens.tenantId, scopes: apiTokens.scopes })
+    .from(apiTokens)
+    .where(eq(apiTokens.hash, hashToken(token)))
+    .all()[0];
+  if (!row) return null;
+  db.update(apiTokens).set({ lastUsedAt: new Date() }).where(eq(apiTokens.id, row.id)).run();
+  const t = db.select().from(tenants).where(eq(tenants.id, row.tenantId)).all()[0];
+  if (!t) return null;
+  return {
+    userId: null,
+    email: null,
+    name: t.name,
+    platformRole: "none",
+    tenantId: t.id,
+    tenantSlug: t.slug,
+    role: roleFromScopes((row.scopes as string[] | null) ?? []),
+    via: "token",
+  };
 }
 
 /**
- * Resolve an authenticated context for `req`, or `null` if no credential
- * matched.
+ * Resolve an authenticated context for `req`, or null if no credential matched.
  *
- * Dev-tenant unlock requires the EXPLICIT opt-in `AUTH_MODE=dev`. The earlier
- * implementation also fell back to "any non-production NODE_ENV", which meant
- * a staging build deployed with `NODE_ENV=staging` would silently bypass
- * bearer auth and resolve every request to the seeded admin tenant. P0-AUTH-01.
+ * Dev-mode (`AUTH_MODE=dev`) resolves a REAL seeded user (default
+ * `ops@agentic.local`) so audit + RBAC always have a concrete `userId` — it no
+ * longer fabricates a userless tenant context.
  */
 export async function authenticate(req: FastifyRequest): Promise<AuthedContext | null> {
   if (process.env.AUTH_MODE === "dev") {
-    return devTenant(req);
+    return authenticateDev(req);
   }
 
-  // UC-V11-29 / PF-GAP-05 — cookie auth precedes bearer in prod. The
-  // Next.js web app sets an HttpOnly `agentic_session` JWT after sign-in
-  // (`apps/web/lib/auth/session.ts`); without this branch the browser
-  // session is invisible to the api and every /v1 call from /portal
-  // 401s. Bearer remains the path for CLI + machine clients.
-  const cookieHeader = req.headers.cookie;
-  const sessionJwt = readCookie(cookieHeader, COOKIE_NAME);
+  const sessionJwt = readCookie(req.headers.cookie, COOKIE_NAME);
   if (sessionJwt) {
-    const cookieCtx = await authenticateCookie(sessionJwt);
+    const cookieCtx = await authenticateCookie(sessionJwt, req);
     if (cookieCtx) return cookieCtx;
-    // Cookie present but invalid (rotated secret, expired, bogus tenant)
-    // — fall through to bearer so a CLI request carrying a stale browser
-    // cookie can still authenticate via its bearer token.
+    // Cookie present but invalid — fall through to bearer.
   }
 
   const header = req.headers.authorization;
   if (!header || !header.startsWith("Bearer ")) return null;
   const token = header.slice(7).trim();
   if (!token) return null;
-  const hash = hashToken(token);
-
-  const db = getDb();
-  const row = db
-    .select({ id: apiTokens.id, tenantId: apiTokens.tenantId })
-    .from(apiTokens)
-    .where(eq(apiTokens.hash, hash))
-    .all()[0];
-  if (!row) return null;
-
-  db.update(apiTokens)
-    .set({ lastUsedAt: new Date() })
-    .where(eq(apiTokens.id, row.id))
-    .run();
-
-  const tenant = db
-    .select({ slug: tenants.slug })
-    .from(tenants)
-    .where(eq(tenants.id, row.tenantId))
-    .all()[0];
-  if (!tenant) return null;
-
-  return { tenantId: row.tenantId, tenantSlug: tenant.slug, via: "token" };
+  return authenticateBearer(token);
 }
 
 /**
- * Boot-time guard: fail fast on env-var combinations that would silently
- * bypass auth in production.
- *
- * Refuses to return on:
- *   - `AUTH_MODE=dev` + `NODE_ENV=production` (deploy-time misconfig — would
- *     authenticate every unauthenticated request as the seeded admin tenant).
- *   - `AUTH_MODE=dev` + `AGENTIC_DEV_TENANT` pointing at a slug that doesn't
- *     exist in `tenants` (a typo silently making every dev request `null`).
- *
- * A silent prod auth bypass is worse than downtime, so this throws rather
- * than warning. P5-TEN-01 / tc-53.
+ * Boot-time guard: fail fast on env combos that would silently bypass auth.
  */
 export function assertAuthModeSafe(): void {
-  if (process.env.AUTH_MODE !== "dev") return; // bearer-only path is always safe
+  const isDev = process.env.AUTH_MODE === "dev";
+  const isProd = process.env.NODE_ENV === "production";
 
-  if (process.env.NODE_ENV === "production") {
+  // AUTH_MODE=dev + NODE_ENV=production is the single biggest footgun (every unauth'd request becomes
+  // the dev-tenant admin). Name it FIRST so the error is actionable for exactly that combo, before the
+  // more generic secret check below.
+  if (isDev && isProd) {
     throw new Error(
-      "AUTH_MODE=dev is incompatible with NODE_ENV=production — the dev-tenant " +
-        "unlock would bypass bearer auth and authenticate every unauthenticated " +
-        "request as the seeded admin tenant. Unset AUTH_MODE for prod or run with " +
-        "NODE_ENV=development.",
+      "AUTH_MODE=dev is incompatible with NODE_ENV=production — the dev-user " +
+        "unlock would bypass real authentication. Unset AUTH_MODE for prod or " +
+        "run with NODE_ENV=development.",
     );
   }
 
+  // #AUDIT-FIX(P0-07) — production 必须配置一个真实、足够随机的 session secret；缺失或仍是 dev
+  // 固定回退值即启动失败（否则攻击者可伪造/预测会话签名）。这个检查独立于 AUTH_MODE。
+  if (isProd) {
+    const secret = process.env.AUTH_SESSION_SECRET ?? process.env.SESSION_SECRET ?? "";
+    if (!secret || secret === DEV_SESSION_SECRET_FALLBACK) {
+      throw new Error(
+        "生产启动失败：AUTH_SESSION_SECRET/SESSION_SECRET 未设置或仍是 dev 回退值——会话签名可被伪造。请设置一个 ≥32 字节的随机密钥。",
+      );
+    }
+    if (Buffer.byteLength(secret, "utf8") < 32) {
+      throw new Error("生产启动失败：session secret 少于 32 字节，随机性不足。请设置一个 ≥32 字节的随机密钥。");
+    }
+  }
+
+  if (!isDev) return;
+
   const slug = process.env.AGENTIC_DEV_TENANT ?? "raas";
-  const row = getDb()
-    .select({ id: tenants.id })
-    .from(tenants)
-    .where(eq(tenants.slug, slug))
-    .all()[0];
-  if (!row) {
+  const tenant = getDb().select({ id: tenants.id }).from(tenants).where(eq(tenants.slug, slug)).all()[0];
+  if (!tenant) {
     throw new Error(
       `AUTH_MODE=dev requires AGENTIC_DEV_TENANT to match an existing tenant slug; ` +
         `'${slug}' was not found. Seed the tenant (e.g. \`pnpm db:seed\`) or set ` +
         `AGENTIC_DEV_TENANT to an existing slug.`,
     );
   }
+
+  const email = process.env.AGENTIC_DEV_USER_EMAIL ?? "ops@agentic.local";
+  const user = getDb().select({ id: users.id }).from(users).where(eq(users.email, email)).all()[0];
+  if (!user) {
+    throw new Error(
+      `AUTH_MODE=dev requires AGENTIC_DEV_USER_EMAIL to match a seeded user; ` +
+        `'${email}' was not found. Run \`pnpm db:seed\` or set AGENTIC_DEV_USER_EMAIL.`,
+    );
+  }
 }
 
-/**
- * Decorate every request with an `auth` context. Routes that need it can read
- * `req.auth`; routes that don't (like /health) ignore it. Bearer auth happens
- * automatically — only fail explicitly inside the route.
- *
- * Also runs `assertAuthModeSafe()` at plugin-register time so an unsafe env
- * combination crashes boot rather than silently shipping a prod auth bypass.
- */
 export async function registerAuth(app: FastifyInstance) {
   assertAuthModeSafe();
   app.addHook("onRequest", async (req) => {
@@ -244,12 +363,10 @@ export async function registerAuth(app: FastifyInstance) {
   });
 }
 
-/** Convenience: require auth or fail with 401. */
+/** Require auth or fail with 401. */
 export function requireAuth(req: FastifyRequest): AuthedContext {
   if (!req.auth) {
-    const err: Error & { statusCode?: number; code?: string } = new Error(
-      "unauthorized",
-    );
+    const err: Error & { statusCode?: number; code?: string } = new Error("unauthorized");
     err.statusCode = 401;
     err.code = "unauthorized";
     throw err;

@@ -25,15 +25,17 @@ import { LOCALES, TIMEZONES } from "@/app/portal/components/settings/data";
 import { useTenants } from "@/lib/hooks/useTenants";
 import { useWorkspace } from "@/lib/hooks/useWorkspace";
 import { useTenant } from "@/app/portal/lib/use-tenant";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 
 const ACCENTS = [
-  { value: "#d0ff00", label: "Lime" },
-  { value: "#5deeff", label: "Cyan" },
-  { value: "#ffb547", label: "Amber" },
-  { value: "#b594ff", label: "Violet" },
+  { value: "#d0ff00", id: "lime", label: "Lime" },
+  { value: "#5deeff", id: "cyan", label: "Cyan" },
+  { value: "#ffb547", id: "amber", label: "Amber" },
+  { value: "#b594ff", id: "violet", label: "Violet" },
 ];
 
 export function WorkspaceSection() {
+  const { t } = useI18n();
   const tenantsQuery = useTenants();
   // Adapt the live tenant rows to the local {id, name, color} shape this
   // form already uses. Filters out archived tenants so they don't show in
@@ -79,20 +81,20 @@ export function WorkspaceSection() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-      <Panel title="Workspace" padded>
+      <Panel title={t("workspace.panelWorkspace")} padded>
         <Field
-          label="Workspace ID"
-          hint="Used in URLs and API endpoints. Cannot be changed once set."
+          label={t("workspace.workspaceId")}
+          hint={t("workspace.workspaceIdHint")}
           locked
         >
           <TextIn value={name} mono onChange={setName} />
         </Field>
-        <Field label="Display name" hint="Shown in the sidebar and audit log.">
+        <Field label={t("workspace.displayName")} hint={t("workspace.displayNameHint")}>
           <TextIn value={display} onChange={setDisplay} />
         </Field>
         <Field
-          label="Region"
-          hint="Workers and event storage run in this region. Currently advisory — set NEXT_PUBLIC_AGENTIC_REGION to pin one once the multi-region runtime ships."
+          label={t("workspace.region")}
+          hint={t("workspace.regionHint")}
         >
           <SelectIn
             value={region}
@@ -108,20 +110,20 @@ export function WorkspaceSection() {
           />
         </Field>
         <Field
-          label="Timezone"
-          hint="Used for dashboards, audit log, and scheduled triggers. Stored in cookie via /api/prefs."
+          label={t("workspace.timezone")}
+          hint={t("workspace.timezoneHint")}
         >
           <SelectIn value={timezone} onChange={setTimezone} options={TIMEZONES} />
         </Field>
         <Field
-          label="Locale"
-          hint="Number and date formatting throughout the UI."
+          label={t("workspace.locale")}
+          hint={t("workspace.localeHint")}
         >
           <SelectIn value={locale} onChange={setLocale} options={LOCALES} />
         </Field>
         <Field
-          label="Default tenant"
-          hint="Where new sessions land. Members can override per-browser."
+          label={t("workspace.defaultTenant")}
+          hint={t("workspace.defaultTenantHint")}
         >
           <SelectIn
             value={tenant}
@@ -130,15 +132,15 @@ export function WorkspaceSection() {
           />
         </Field>
         <Field
-          label="Accent color"
-          hint="UI signal color. Live and active affordances pick this up via CSS variables."
+          label={t("workspace.accentColor")}
+          hint={t("workspace.accentColorHint")}
         >
           <div style={{ display: "flex", gap: 6 }}>
             {ACCENTS.map((a) => (
               <button
                 key={a.value}
                 onClick={() => setAccent(a.value)}
-                aria-label={a.label}
+                aria-label={t(`workspace.${a.id}`)}
                 style={{
                   width: 24,
                   height: 24,
@@ -153,33 +155,33 @@ export function WorkspaceSection() {
         </Field>
       </Panel>
 
-      <Panel title="Data retention & privacy" padded>
+      <Panel title={t("workspace.panelDataRetention")} padded>
         <Field
-          label="Run & event retention"
-          hint="How long full payloads are kept. Metrics are kept forever."
+          label={t("workspace.runEventRetention")}
+          hint={t("workspace.runEventRetentionHint")}
         >
           <div style={{ display: "flex", gap: 8 }}>
-            <TextIn value={retention} mono suffix="days" onChange={setRetention} />
+            <TextIn value={retention} mono suffix={t("workspace.days")} onChange={setRetention} />
           </div>
         </Field>
         <Field
-          label="Mask PII in logs"
-          hint="Email, phone and ID-card numbers are redacted in stored log lines."
+          label={t("workspace.maskPii")}
+          hint={t("workspace.maskPiiHint")}
         >
           <Toggle value={piiMask} onChange={setPiiMask} />
         </Field>
         <Field
-          label="Strict schema validation"
-          hint="Reject events whose payload doesn't match the agent's declared schema (recommended in prod)."
+          label={t("workspace.strictSchema")}
+          hint={t("workspace.strictSchemaHint")}
         >
           <Toggle value={strict} onChange={setStrict} />
         </Field>
       </Panel>
 
       <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
-        <Button tone="ghost">Discard</Button>
+        <Button tone="ghost">{t("workspace.discard")}</Button>
         <Button tone="primary" icon="check">
-          Save changes
+          {t("workspace.saveChanges")}
         </Button>
       </div>
     </div>

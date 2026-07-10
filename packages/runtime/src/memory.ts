@@ -14,7 +14,8 @@
  * a `NoMemoryDriverError` until someone wires SQLite-VSS / pgvector / etc.
  */
 
-import { and, eq, sql } from "drizzle-orm";
+import { localEmbed } from "./memory-driver-local";
+import { and, eq, lt, sql } from "drizzle-orm";
 import {
   agentMemoryLong,
   agentMemoryShort,
@@ -111,6 +112,19 @@ export function createMemoryHandle(b: MemoryBinding): MemoryHandle {
         return;
       }
       const subj = scope === "tenant" ? TENANT_SCOPE_SUBJECT : b.subject;
+      // #SCALE-MEM — pre-compute the embedding ONCE at write time (search stops re-embedding static
+      // values), and stamp a TTL when configured (MEMORY_TTL_DAYS; 0/unset = keep forever). Both
+      // best-effort: a failed embed just leaves NULL → the driver computes on demand as before.
+      let embeddingJson: string | null = null;
+      try {
+        const drv = getMemoryDriver();
+        if (drv) {
+          const vec = await localEmbed(`${key} ${typeof value === "string" ? value : JSON.stringify(value ?? "")}`.slice(0, 4000));
+          embeddingJson = JSON.stringify([...vec].map((x) => Math.round(x * 1e6) / 1e6));
+        }
+      } catch { /* embed best-effort */ }
+      const ttlDays = Number(process.env.MEMORY_TTL_DAYS);
+      const expiresAt = Number.isFinite(ttlDays) && ttlDays > 0 ? new Date(Date.now() + ttlDays * 86_400_000) : null;
       db.insert(agentMemoryLong)
         .values({
           tenantId: b.tenantId,
@@ -118,6 +132,8 @@ export function createMemoryHandle(b: MemoryBinding): MemoryHandle {
           subject: subj,
           key,
           valueJson: encoded,
+          embeddingJson,
+          expiresAt,
           updatedAt: now,
         })
         .onConflictDoUpdate({
@@ -127,9 +143,19 @@ export function createMemoryHandle(b: MemoryBinding): MemoryHandle {
             agentMemoryLong.subject,
             agentMemoryLong.key,
           ],
-          set: { valueJson: encoded, updatedAt: now },
+          set: { valueJson: encoded, embeddingJson, expiresAt, updatedAt: now },
         })
         .run();
+      // #SCALE-PGVECTOR — write-through mirror: a driver with its own store (pgvector) syncs this
+      // row fire-and-forget. SQLite stays the system of record; a mirror failure only degrades recall.
+      try {
+        const drv = getMemoryDriver();
+        if (drv?.mirror) void drv.mirror({ tenantId: b.tenantId, agentName: b.agentName, subject: subj, key, valueJson: encoded, embedding: embeddingJson ? (JSON.parse(embeddingJson) as number[]) : null, expiresAt }).catch(() => {});
+      } catch { /* mirror best-effort */ }
+      // #SCALE-MEM — lazy GC: cheap sweep of THIS tenant's expired rows on write (no cron needed).
+      try {
+        db.delete(agentMemoryLong).where(and(eq(agentMemoryLong.tenantId, b.tenantId), lt(agentMemoryLong.expiresAt, new Date()))).run();
+      } catch { /* GC best-effort */ }
     },
 
     async delete(key: string, scope: MemoryScope = "subject"): Promise<void> {
@@ -154,6 +180,11 @@ export function createMemoryHandle(b: MemoryBinding): MemoryHandle {
           ),
         )
         .run();
+      // #SCALE-PGVECTOR — keep the mirror in sync with KV deletes (fire-and-forget).
+      try {
+        const drv = getMemoryDriver();
+        if (drv?.deleteMirror) void drv.deleteMirror({ tenantId: b.tenantId, agentName: b.agentName, subject: subj, key }).catch(() => {});
+      } catch { /* mirror best-effort */ }
     },
 
     async search(query: string, k: number): Promise<MemoryHit[]> {
@@ -161,7 +192,13 @@ export function createMemoryHandle(b: MemoryBinding): MemoryHandle {
       if (!driver) {
         throw new NoMemoryDriverError();
       }
-      return driver.search(query, Math.max(1, k));
+      // Thread the binding as scope so the driver isolates by tenant/agent (subject is left to the
+      // driver's ranking for cross-subject semantic recall).
+      return driver.search(query, Math.max(1, k), {
+        tenantId: b.tenantId,
+        agentName: b.agentName,
+        subject: b.subject,
+      });
     },
   };
 }
