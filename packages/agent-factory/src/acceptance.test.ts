@@ -26,6 +26,25 @@ describe("acceptanceReport (RAAS-v1 bar)", () => {
     expect(r.allPass).toBe(true);
   });
 
+  it("#P3 no_blocking_defects: >0 阻塞缺陷阻断 finish;0 或不传则通过(向后兼容)", () => {
+    const specs = [
+      spec({ actionName: "createJD", tools: ["x"], inputSchema: okIO }),
+      spec({ actionName: "ruleCheckForMatchResume", tools: ["ontology.fetchActionRules"], inputSchema: okIO }),
+    ];
+    const sb = { registeredIds: ["d-createJD", "d-ruleCheckForMatchResume"], ran: 2, fullChainRan: true, degradedAgents: [], simulated: false, fidelityFailures: [] };
+    const dom = ont(["createJD", "ruleCheckForMatchResume"]);
+    // 不传 opts → 不加此判据,行为不变(向后兼容)
+    expect(acceptanceReport(specs, dom, sb).criteria.find((c) => c.key === "no_blocking_defects")).toBeUndefined();
+    // 0 阻塞 → 判据在且通过
+    const clean = acceptanceReport(specs, dom, sb, { blockingDefects: 0 });
+    expect(clean.criteria.find((c) => c.key === "no_blocking_defects")!.pass).toBe(true);
+    expect(clean.allPass).toBe(true);
+    // >0 阻塞 → 判据失败,finish 被阻断
+    const blocked = acceptanceReport(specs, dom, sb, { blockingDefects: 2 });
+    expect(blocked.criteria.find((c) => c.key === "no_blocking_defects")!.pass).toBe(false);
+    expect(blocked.allPass).toBe(false);
+  });
+
   it("fails coverage when an Agent action is uncovered", () => {
     const specs = [spec({ actionName: "createJD", tools: ["x"], inputSchema: okIO })];
     const r = acceptanceReport(specs, ont(["createJD", "matchResume"]), { registeredIds: ["d-createJD"], ran: 1, fullChainRan: true, degradedAgents: [], simulated: false });

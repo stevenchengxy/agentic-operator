@@ -34,7 +34,13 @@ export interface AcceptanceReport { criteria: AcceptanceCriterion[]; allPass: bo
 // matches a domain-agnostic, bilingual rule/check/gate vocabulary (not the narrow RAAS terms).
 const isRuleGate = (s: GeneratedAgentSpec) => s.tools.includes("ontology.fetchActionRules") || /rule.?check|gate|guard|校验|审核|风控|合规|查重|dedup/i.test(s.actionName);
 
-export function acceptanceReport(specs: GeneratedAgentSpec[], ontology: DomainOntology | null, sandbox: AcceptanceSandbox | null): AcceptanceReport {
+export function acceptanceReport(
+  specs: GeneratedAgentSpec[],
+  ontology: DomainOntology | null,
+  sandbox: AcceptanceSandbox | null,
+  /** #P3 — 监督者证据(可选,向后兼容:不传则不加此判据,既有调用行为不变)。 */
+  opts?: { blockingDefects?: number },
+): AcceptanceReport {
   const agentActions = ontology ? ontology.actions.filter((a) => a.actor.includes("Agent")).map((a) => a.name) : [];
   const gap = ontology ? coverageGap(ontology.actions, specs.map((s) => s.actionName)) : agentActions;
   const unresolved = specs.filter((s) => (s.unresolvedTools ?? []).length);
@@ -84,6 +90,12 @@ export function acceptanceReport(specs: GeneratedAgentSpec[], ontology: DomainOn
     { key: "code_really_ran", label: "生成代码真的执行（非回退声明式）", pass: codeFellBack.length === 0, detail: codeFellBack.length ? `标了执行代码但回退了声明式（没真跑）：${codeFellBack.map((s) => s.short).join("、")}` : codeSpecs.length ? `${codeSpecs.length} 个代码型 agent 的代码均真跑` : "无代码执行型 agent（声明式）" },
     { key: "execution_fidelity", label: "真实 emit 满足下游契约（不 output_parse_error）", pass: fidelityFail.length === 0 && !fidelityUnknown, detail: fidelityUnknown ? "⚠ 无法评估执行保真（真实跑了但没采到 emit 载荷/证据）——按未知阻断，不算通过；重跑沙箱或检查 agentRuns 采集" : fidelityFail.length ? `emit 载荷违反下游契约：${fidelityFail.join("、")}` : fidelityEvaluated ? "全部 emit 载荷满足契约" : "未评估（模拟或未跑沙箱）" },
   ];
+  // #P3 — 独立监督者的版本锁定缺陷:finish 门要求 0 个 open 阻塞缺陷。只有当调用方传入证据时才加此
+  // 判据(向后兼容——既有 acceptanceReport(specs,ontology,sandbox) 调用不受影响)。
+  if (opts && typeof opts.blockingDefects === "number") {
+    const n = opts.blockingDefects;
+    criteria.push({ key: "no_blocking_defects", label: "监督者：0 阻塞缺陷（版本锁定，须复验关闭）", pass: n === 0, detail: n === 0 ? "无未清阻塞缺陷" : `${n} 个阻塞缺陷未复验关闭，不能 finish` });
+  }
   return { criteria, allPass: criteria.every((c) => c.pass) };
 }
 
@@ -111,6 +123,8 @@ export function acceptanceGate(
   specs: GeneratedAgentSpec[],
   ontology: DomainOntology | null,
   sandbox: SandboxEvidenceLike | null,
+  /** #P3 — 监督者证据(可选,向后兼容)。 */
+  opts?: { blockingDefects?: number },
 ): { pass: boolean; failing: AcceptanceCriterion[]; report: AcceptanceReport } {
   const sb: AcceptanceSandbox | null = sandbox
     ? {
@@ -127,6 +141,6 @@ export function acceptanceGate(
         simulated: sandbox.simulated,
       }
     : null;
-  const report = acceptanceReport(specs, ontology, sb);
+  const report = acceptanceReport(specs, ontology, sb, opts);
   return { pass: report.allPass, failing: report.criteria.filter((c) => !c.pass), report };
 }

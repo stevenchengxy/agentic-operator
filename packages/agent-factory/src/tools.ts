@@ -18,6 +18,7 @@ import { parsePlan, validatePlan } from "./plan-projection";
 import { deriveContractGraph, contractIssueStringsBySeverity, contractAgentIssueMap } from "./contract";
 import { evaluateExecutionFidelity, expectedFieldsByEvent } from "./execution-fidelity";
 import { attributeFidelityFailures, attributionSummary } from "./failure-attribution";
+import { supervisorAudit, reconcileDefects, blockingDefects, supervisorSummary } from "./supervisor";
 import { proposeOntologyRevisions, revisionSummary } from "./ontology-revision";
 import { resolveCapabilityLadder } from "./capability-ladder";
 import { parseStrategyPlan, describeStrategyPlan, selectStrategy, estimateDifficulty, classifyIntentKind, STRATEGY_DESC, type StrategyContext } from "./reasoning-policy";
@@ -1373,6 +1374,15 @@ const sandbox_run: BrainTool = {
       ? attributeFidelityFailures(fidelity, deriveContractGraph(ctx.specs, ctx.domain, canonFields))
       : [];
     const attribNote = attribution.length ? `\n${attributionSummary(attribution)}` : "";
+    // #P3 — 独立监督者审计:客观证据(保真违约归因)→ 版本锁定缺陷,结转+复验(证据消失且指纹已变才关闭)。
+    // 证据指纹变 → sandboxSeq+1 作"版本"信号。finish 门读 ctx.defects 的阻塞数清零。
+    if (!prev || prev.specsFingerprint !== sbFp) ctx.sandboxSeq = (ctx.sandboxSeq ?? 0) + 1;
+    const sbSeq = ctx.sandboxSeq ?? 1;
+    const sbVersions = Object.fromEntries(ctx.specs.map((s) => [s.slug, sbSeq]));
+    ctx.defects = reconcileDefects(ctx.defects ?? [], supervisorAudit({ attribution, versions: sbVersions }), sbVersions);
+    const openDefects = blockingDefects(ctx.defects);
+    const supervisorNote = ctx.defects.length ? `\n${supervisorSummary(ctx.defects)}` : "";
+    if (openDefects.length) ctx.emit({ t: "reflect", kind: "supervisor", lesson: supervisorSummary(ctx.defects) });
     // #REVISION — 本体漂移对账：真实载荷与 canonical 持续不一致 → 修订提案（提案不写回，
     // 大脑走 ask_user 确认）。只在真实（非模拟）运行上取证。
     const revisions = !res.simulated && Array.isArray(res.agentRuns) && res.agentRuns.length && canonFields
@@ -1407,7 +1417,7 @@ const sandbox_run: BrainTool = {
             : "事件链没到成功终态——用 inspect_run 看断在哪个 agent，多半是 trigger/emit 没对齐本体事件名。";
       await ctx.ports.reflection.record(ctx.domain, { summary: `沙箱未跑通：部署${res.functionsRegistered}·跑${res.ran}·成功终态=${res.reachedSuccessTerminal}${fidelity && !fidelity.ok ? `·保真${Math.round(fidelity.fidelity * 100)}%` : ""}`, lesson, failedStep: fidelity && !fidelity.ok ? "execution_fidelity" : "sandbox_chain", kind: "failure" }).catch(() => {});
     }
-    return { ok, summary: ok ? `沙箱已部署 ${res.functionsRegistered} 函数、跑 ${res.ran}、到成功终态 ✓${fidelity ? `、保真 ${Math.round(fidelity.fidelity * 100)}%` : ""}${simNote}${fireNote}${revisionNote}` : `沙箱未完全跑通：部署 ${res.functionsRegistered}、跑 ${res.ran}、成功终态=${res.reachedSuccessTerminal}${fidelity && !fidelity.ok ? `、保真违约 ${fidelity.failingShorts.join("、")}` : ""}${res.degradedAgents.length ? `、降级:${res.degradedAgents.join("、")}` : ""}${res.simulated ? "（模拟）" : ""}${fireNote}${envNote}${attribNote}${revisionNote}`, output: res };
+    return { ok, summary: ok ? `沙箱已部署 ${res.functionsRegistered} 函数、跑 ${res.ran}、到成功终态 ✓${fidelity ? `、保真 ${Math.round(fidelity.fidelity * 100)}%` : ""}${simNote}${fireNote}${revisionNote}` : `沙箱未完全跑通：部署 ${res.functionsRegistered}、跑 ${res.ran}、成功终态=${res.reachedSuccessTerminal}${fidelity && !fidelity.ok ? `、保真违约 ${fidelity.failingShorts.join("、")}` : ""}${res.degradedAgents.length ? `、降级:${res.degradedAgents.join("、")}` : ""}${res.simulated ? "（模拟）" : ""}${fireNote}${envNote}${attribNote}${supervisorNote}${revisionNote}`, output: res };
   },
 };
 
@@ -2086,7 +2096,9 @@ const finish: BrainTool = {
     // Phase 0a — enforce the FULL documented acceptance bar, not just the inline checks above.
     // This catches the gaps finish ignored: an agent with an unresolved tool, a chain that ran
     // but DEGRADED, an unbound rule gate, or an agent with no typed I/O payload.
-    const gate = acceptanceGate(ctx.specs, ctx.ontology, ctx.lastSandbox);
+    // #P3 — 监督者的版本锁定缺陷进 finish 门:0 阻塞缺陷才放行(阻塞缺陷在 sandbox_run 审计+结转到
+    // ctx.defects,须在【更新版本】上复验消失才关闭——防同版本重跑洗白)。
+    const gate = acceptanceGate(ctx.specs, ctx.ontology, ctx.lastSandbox, { blockingDefects: blockingDefects(ctx.defects ?? []).length });
     // #P1-6 — persist per-criterion verdicts (pass OR fail) so acceptance pass-rate is trendable
     // without replaying transcripts. Fail-safe — never blocks the gate.
     if (ctx.conversationId) {

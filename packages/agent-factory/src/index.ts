@@ -45,3 +45,5 @@ export * from "./capability-ladder";
 export * from "./ts-function-module";
 // #P2.5-Tester — 把交付形态变成可跑测试模块 + 验收判据(纯变换,执行在 apps/api):
 export * from "./function-tester";
+// #P3 — 独立监督者审计 + 版本锁定缺陷(finish 门清零):
+export * from "./supervisor";

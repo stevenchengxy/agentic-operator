@@ -376,6 +376,13 @@ export interface BrainCtx {
     simulated: boolean;
     ts: number;
   } | null;
+  /** #P3 — 独立监督者的版本锁定缺陷(在 sandbox_run 后审计+结转,finish 门读它清零)。
+   *  in-memory across turns within one runBrain;重启后重置(下一次 sandbox_run 重填,execution_fidelity
+   *  仍从持久 lastSandbox.fidelityFailures 兜底,不 fail-open)。 */
+  defects?: import("./supervisor").VersionLockedDefect[];
+  /** #P3 — 沙箱运行序号(证据指纹变化时 +1),作版本锁定缺陷的"版本"信号:证据消失且此序号 > 缺陷
+   *  的 foundAtVersion 才算复验关闭(防同一指纹重跑洗白)。 */
+  sandboxSeq?: number;
   /** last validate_graph result with per-agent backref (refine reads agentIssueMap[slug]). */
   lastValidation: { agentIssueMap: Record<string, unknown[]>; ok: boolean } | null;
   /** authoritative directives a human injected mid-run (HITL). */
