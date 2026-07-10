@@ -23,6 +23,13 @@ import { useCallback } from "react";
 import type { RunStreamEvent } from "@agentic/contracts";
 import { useStream } from "@/lib/hooks/useStream";
 import { useTenants } from "@/lib/hooks/useTenants";
+import { useAgentFactoryDomains } from "@/lib/hooks/useAgentFactoryDomains";
+import {
+  buildRuntimeDomainNameMap,
+  buildRuntimeDomainSlugSet,
+  displayRuntimeDomainName,
+  isVisibleRuntimeDomain,
+} from "@/lib/domain-display";
 import { useTenant } from "@/app/portal/lib/use-tenant";
 import { useMe, useLogout } from "@/lib/hooks/useMe";
 import { Sidebar } from "./sidebar";
@@ -76,6 +83,9 @@ export function PortalChrome({
   // so the proxy forwards it from the query param). Switching tenants
   // re-subscribes via the path dependency.
   const activeTenant = useTenant();
+  const domainsQuery = useAgentFactoryDomains();
+  const domainNames = buildRuntimeDomainNameMap(domainsQuery.data?.domains);
+  const domainSlugs = buildRuntimeDomainSlugSet(domainsQuery.data?.domains);
   useStream({
     path: activeTenant
       ? `/livefeed?tenant=${encodeURIComponent(activeTenant)}`
@@ -91,13 +101,13 @@ export function PortalChrome({
   const tenants: TenantOption[] = liveItems
     ? liveItems
         .filter((t) => t.archivedAt == null)
-        // #REDESIGN — 业务领域 = REAL business domains only, consistent with the Agent Factory's
-        // 业务域 list. Hide internal sandbox tenants (`<domain>-sb`, the factory's throwaway deploy
-        // targets) + the platform System tenant — they're not user-facing domains.
-        .filter((t) => !t.slug.endsWith("-sb") && t.slug !== "__system" && t.slug.toLowerCase() !== "system")
+        // 业务领域 = user-facing runtime domains. Hide internal sandbox/system rows
+        // and empty test leftovers, but keep the URL-active domain visible while
+        // the operator is already inside it.
+        .filter((t) => isVisibleRuntimeDomain(t, domainSlugs) || t.slug === activeTenant)
         .map((t) => ({
           id: t.slug,
-          name: t.name,
+          name: displayRuntimeDomainName(t, domainNames),
           subtitle: t.subtitle ?? undefined,
           color: t.color ?? "#d0ff00",
           agentCount: t.agentCount,

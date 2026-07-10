@@ -15,6 +15,7 @@
  * api didn't restart, so it never otherwise re-syncs).
  */
 
+import { appIdForTenant } from "@agentic/runtime";
 import { listRegisteredApps, servePathForSlug } from "./inngest-registry";
 
 export interface SyncLogger {
@@ -68,7 +69,7 @@ export async function syncTenantApp(
   logger: SyncLogger = {},
 ): Promise<SyncResult> {
   const url = `${serveOrigin()}${servePathForSlug(slug)}`;
-  const base = { slug, appId: `app:${slug}`, url };
+  const base = { slug, appId: appIdForTenant(slug), url };
   if (!syncEnabled()) return { ...base, ok: true };
   try {
     const res = await fetch(url, {
@@ -94,15 +95,34 @@ export async function syncTenantApp(
 /** PUT every registered app's serve URL (boot + manual full re-sync). */
 export async function syncAllApps(logger: SyncLogger = {}): Promise<SyncResult[]> {
   if (!syncEnabled()) return [];
-  const out: SyncResult[] = [];
-  for (const a of listRegisteredApps()) {
-    out.push(await syncTenantApp(a.slug, logger));
-  }
+  const out = await Promise.all(
+    listRegisteredApps().map((a) => syncTenantApp(a.slug, logger)),
+  );
   const ok = out.filter((r) => r.ok).length;
   logger.info?.(
     `[inngest-sync] synced ${ok}/${out.length} app(s) at ${serveOrigin()}`,
   );
   return out;
+}
+
+export async function syncAllAppsWithRetry(
+  logger: SyncLogger = {},
+  opts: { attempts?: number; delayMs?: number } = {},
+): Promise<SyncResult[]> {
+  const attempts = Math.max(1, opts.attempts ?? 8);
+  const delayMs = Math.max(0, opts.delayMs ?? 1500);
+  let last: SyncResult[] = [];
+  for (let i = 1; i <= attempts; i++) {
+    last = await syncAllApps(logger);
+    if (last.length === 0 || last.every((r) => r.ok)) return last;
+    if (i < attempts) {
+      logger.warn?.(
+        `[inngest-sync] retrying app sync (${i}/${attempts}) after ${delayMs}ms`,
+      );
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+  return last;
 }
 
 export interface AppProbe {

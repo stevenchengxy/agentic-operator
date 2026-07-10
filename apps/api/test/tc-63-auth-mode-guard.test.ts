@@ -43,6 +43,7 @@ function snapshotEnv() {
   saved.AUTH_MODE = process.env.AUTH_MODE;
   saved.NODE_ENV = process.env.NODE_ENV;
   saved.AGENTIC_DEV_TENANT = process.env.AGENTIC_DEV_TENANT;
+  saved.AUTH_SESSION_SECRET = process.env.AUTH_SESSION_SECRET;
 }
 function restoreEnv() {
   for (const [k, v] of Object.entries(saved)) {
@@ -89,8 +90,20 @@ describe("TC-53: assertAuthModeSafe boot guard", () => {
   it("allows boot when AUTH_MODE is unset (bearer-only mode)", async () => {
     delete process.env.AUTH_MODE;
     process.env.NODE_ENV = "production";
+    // #AUDIT-FIX(P0-07) — production now requires a real ≥32-byte session secret (else session
+    // signatures are forgeable). A prod bearer-only boot is only safe WITH such a secret configured.
+    process.env.AUTH_SESSION_SECRET = "a-32-byte-or-longer-random-secret-value";
 
     const callGuard = await loadGuard();
     await expect(callGuard()).resolves.toBeUndefined();
+  });
+
+  it("refuses to start in production when AUTH_SESSION_SECRET is missing (P0-07)", async () => {
+    delete process.env.AUTH_MODE;
+    process.env.NODE_ENV = "production";
+    delete process.env.AUTH_SESSION_SECRET;
+
+    const callGuard = await loadGuard();
+    await expect(callGuard()).rejects.toThrow(/session secret|会话签名|AUTH_SESSION_SECRET/);
   });
 });

@@ -1,12 +1,14 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { appIdForTenant, SYSTEM_SLUG } from "@agentic/runtime";
-import { getHandlerForApp } from "../services/inngest-registry";
+import { appIdForTenant } from "@agentic/runtime";
+import { baseServeSlug, getHandlerForApp } from "../services/inngest-registry";
 
 /**
  * Inngest serve adapter — ONE app per tenant.
  *
- *   - `/inngest`         → the platform `__system` app (auto-discovered by the
- *                          inngest-cli `-u .../inngest` flag).
+ *   - `/inngest`         → the base app auto-discovered by the inngest-cli
+ *                          `-u .../inngest` flag. By default this is the
+ *                          platform `__system` app; when INNGEST_MAIN_TENANT is
+ *                          set, it is that tenant's legacy-compatible app.
  *   - `/inngest/:slug`   → the tenant app `agentic-operator-<slug>`, registered
  *                          explicitly via `inngest-sync.ts` PUT self-sync.
  *
@@ -17,12 +19,13 @@ import { getHandlerForApp } from "../services/inngest-registry";
  * route takes a request.
  */
 export async function inngestRoute(app: FastifyInstance): Promise<void> {
-  // Platform app at the base path.
+  // Base app at the base path.
   app.route({
     method: ["GET", "POST", "PUT"],
     url: "/inngest",
     handler: (req: FastifyRequest, reply: FastifyReply) => {
-      const handler = getHandlerForApp(appIdForTenant(SYSTEM_SLUG));
+      const slug = baseServeSlug();
+      const handler = getHandlerForApp(appIdForTenant(slug));
       if (!handler) {
         return reply
           .code(503)

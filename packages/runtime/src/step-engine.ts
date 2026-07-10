@@ -223,6 +223,7 @@ async function callLLM(
   provider: string;
   model: string;
   toolCalls: ToolCallTrace[];
+  turns: LlmTurnTrace[];
 }> {
   const gateway = getRuntimeGateway();
   if (!gateway) {
@@ -275,6 +276,11 @@ async function callLLM(
   let lastModel = "";
   let finalText = "";
   const toolCalls: ToolCallTrace[] = [];
+  // #W0 — raw per-turn capture (response text + reasoning + requested tools),
+  // surfaced up to register.ts which persists it to `llm_turns`. This is the
+  // only site that sees every turn's full response, incl. provider-native
+  // reasoning via response.raw.
+  const turns: LlmTurnTrace[] = [];
 
   for (let iter = 0; iter < maxIters; iter++) {
     const response = await gateway.chat({
@@ -289,6 +295,23 @@ async function callLLM(
     lastModel = response.model;
 
     const requestedCalls = response.toolCalls ?? [];
+
+    turns.push({
+      ord: iter,
+      promptPreview: iter === 0 ? capText(rendered, 4000) : undefined,
+      responseText: capText(response.text ?? "", 8000),
+      reasoning: capText(extractReasoning(response.raw), 8000),
+      toolCalls: requestedCalls.map((c) => ({
+        name: c.name,
+        input: capValue(c.input, 1500),
+      })),
+      provider: response.provider,
+      model: response.model,
+      tokensIn: response.tokensIn ?? 0,
+      tokensOut: response.tokensOut ?? 0,
+      finishReason: response.finishReason,
+      latencyMs: response.latencyMs ?? 0,
+    });
     if (requestedCalls.length === 0) {
       // Model returned prose — we're done.
       finalText = response.text;
@@ -337,6 +360,7 @@ async function callLLM(
         actionName: call.name,
         subject: ctx?.subject,
         correlationId: ctx?.correlationId ?? "no-correlation",
+        runId: ctx?.runId,
         tenantSlug: ctx?.tenantSlug ?? "unknown",
         event: ctx?.event,
         // Each tool sees the prior tool's output as lastResult — gives the
@@ -421,7 +445,75 @@ async function callLLM(
     provider: lastProvider,
     model: lastModel,
     toolCalls,
+    turns,
   };
+}
+
+/**
+ * One raw LLM turn captured from the tool-use loop. Persisted to `llm_turns`
+ * (via register.ts) and surfaced in the run's reasoning views. Text fields are
+ * pre-bounded here so the runtime never hands the DB an unbounded blob.
+ */
+export interface LlmTurnTrace {
+  ord: number;
+  promptPreview?: string | null;
+  responseText: string | null;
+  reasoning: string | null;
+  toolCalls: Array<{ name: string; input: unknown }>;
+  provider: string;
+  model: string;
+  tokensIn: number;
+  tokensOut: number;
+  finishReason: string;
+  latencyMs: number;
+}
+
+/** Truncate a string to `max` chars with a compact "+N more" marker. */
+function capText(s: string | null | undefined, max: number): string | null {
+  if (s == null) return null;
+  if (s.length <= max) return s;
+  return `${s.slice(0, max)}…[+${s.length - max} chars]`;
+}
+
+/** Bound an arbitrary value by its serialized size; oversized → preview marker. */
+function capValue(v: unknown, max: number): unknown {
+  if (v == null) return v;
+  let s: string;
+  try {
+    s = JSON.stringify(v);
+  } catch {
+    return null;
+  }
+  if (s.length <= max) return v;
+  return { _truncated: true, _bytes: s.length, _preview: s.slice(0, max) };
+}
+
+/**
+ * Best-effort extraction of provider-native reasoning/thinking from a chat
+ * response's `raw` payload. Anthropic surfaces `thinking` content blocks;
+ * OpenAI-family adapters may expose `reasoning`/`reasoning_content`. Returns
+ * null when the provider didn't surface any (the common case).
+ */
+function extractReasoning(raw: unknown): string | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  // Anthropic: content[].{thinking|redacted_thinking}
+  if (Array.isArray(r.content)) {
+    const parts: string[] = [];
+    for (const b of r.content as Array<Record<string, unknown>>) {
+      if (b?.type === "thinking" && typeof b.thinking === "string")
+        parts.push(b.thinking);
+      else if (b?.type === "redacted_thinking") parts.push("[redacted thinking]");
+    }
+    if (parts.join("").trim()) return parts.join("\n");
+  }
+  // OpenAI-ish: choices[0].message.{reasoning_content|reasoning}
+  const choices = r.choices as Array<Record<string, unknown>> | undefined;
+  const msg = choices?.[0]?.message as Record<string, unknown> | undefined;
+  const rc = msg?.reasoning_content ?? msg?.reasoning;
+  if (typeof rc === "string" && rc.trim()) return rc;
+  if (typeof r.reasoning === "string" && r.reasoning.trim()) return r.reasoning;
+  return null;
 }
 
 /**
@@ -492,6 +584,9 @@ async function runTenantPrompt(
       // each tool call inline with the LLM turn that spawned it. Empty
       // array when the model didn't request any tools.
       toolCalls: result.toolCalls,
+      // #W0 — raw per-turn LLM capture (response text + reasoning + requested
+      // tools). register.ts persists this to `llm_turns` when capture is on.
+      turns: result.turns,
     },
   };
 }
@@ -580,13 +675,16 @@ export async function runAction(input: StepInput): Promise<StepOutput> {
         const enrichedCtx: ToolContext = toolConfig ? { ...ctx, config: toolConfig } : ctx;
         result = await runTenantTool(enrichedCtx, (tenantTool ?? globalTool)!);
       } else {
-        const r = await runTool(genericCtx(ctx), action.name);
-        result = {
-          ok: r.ok,
-          type: "tool",
-          data: r.data,
-          meta: r.meta,
-        };
+        // #NOMOCK — 生产路径不再走 legacy runTool 假桩（httpFetch→{status:200,mock:true}）：一个
+        // 未解析到真实工具的 type:"tool" 步曾在【生产】里静默返回 mock 成功（沙箱路径在上面已被
+        // sandboxToolStub 拦截，这里只会命中真实/晋升租户）。改为 fail-closed：报错让 step 的
+        // onError 策略生效，别让"跑通"建立在假成功上。FACTORY_ALLOW_LEGACY_MOCK_TOOL=1 可临时放行。
+        if (process.env.FACTORY_ALLOW_LEGACY_MOCK_TOOL === "1") {
+          const r = await runTool(genericCtx(ctx), action.name);
+          result = { ok: r.ok, type: "tool", data: r.data, meta: { ...r.meta, legacyMock: true } };
+        } else {
+          result = { ok: false, type: "tool", data: { __error: `工具「${action.name}」未注册（tenant/global 都没有）——生产不再用假桩兜底。请为该动作绑定真实工具或补进工具库。` }, meta: { tool: action.name, unresolved: true } };
+        }
       }
       break;
     }

@@ -28,6 +28,8 @@ export type IdPrefix =
   | "rfl"
   | "frn"
   | "llm"
+  | "llt"
+  | "rsm"
   | "rpt";
 
 export function makeId(prefix: IdPrefix): string {

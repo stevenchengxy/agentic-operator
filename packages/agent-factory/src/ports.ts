@@ -57,6 +57,12 @@ export interface SandboxDeployResult {
   fires?: Array<{ event: string; ok: boolean; error?: string }>;
   /** R2: the Inngest function ids registered by the commit (proof, not just a count). */
   registeredIds?: string[];
+  /** #AUDIT-FIX(H2) — 沙箱 app 是否真的在 Inngest dev server 完成注册/发现。false + ran:0 =
+   *  【环境问题】（serve URL 配错/回连失败），不是 agent 设计问题——避免大脑按错误归因
+   *  反复 refine 死循环。 */
+  appReady?: boolean;
+  /** #AUDIT-FIX(H2) — app 注册（PUT serve URL）失败时的底层错误文本。 */
+  syncError?: string;
   /** #D — 跑通 redefinition: how the chain closed. internalChains = agents that ran into an
    *  internal/success terminal; externalTerminals = agents whose emit is a legitimate external
    *  HANDOFF (consumed by an external platform, not a broken chain). Surfaced so the UI shows
@@ -237,6 +243,12 @@ export interface FactoryPorts {
   /** optional: 系统 B 的舰队目录（已交付/已启用的 functions）——capability_resolve 的「复用面」。
    *  Wired by the api; absent → resolution honestly skips the fleet face (never guesses). */
   fleet?: FleetCatalog;
+  /** optional (#POLICY-LEARN): per-domain 前置路由 arm 统计（(pipeline|band) → {n,ok,fidelityBad}）。
+   *  conductor 选路前 load 做证据偏置、run 收束时 save。No-op when unwired; fail-safe. */
+  policyStats?: {
+    load(domain: string): Promise<Record<string, { n: number; ok: number; fidelityBad: number }> | null>;
+    save(domain: string, stats: Record<string, { n: number; ok: number; fidelityBad: number }>): Promise<void>;
+  };
 }
 
 /** Delivered functions visible to the GENERATION system for reuse resolution (G1, 附录 B)。

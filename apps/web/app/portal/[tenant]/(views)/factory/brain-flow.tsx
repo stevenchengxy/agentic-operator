@@ -7,7 +7,7 @@
  * loop-back arcs for the refine cycles. Pure projection of the event stream; steps fade in live.
  */
 
-import { Empty } from "@/app/portal/components";
+import { Empty, HelpTip } from "@/app/portal/components";
 import type { BrainStep, BrainStepStatus } from "./model";
 
 const COLOR: Record<BrainStepStatus, string> = {
@@ -29,7 +29,7 @@ const CARD_W = 270;
 const CARD_H = 44;
 
 export function BrainFlow({ steps, running }: { steps: BrainStep[]; running: boolean }) {
-  if (!steps.length) return <Empty title="大脑还没开始推理" hint="运行后，这里逐步画出大脑的决策路径：校验 / 修订 / 暂停等你 / 试运行 / 交付" />;
+  if (!steps.length) return <Empty title={<>大脑还没开始推理 <HelpTip>运行后，这里逐步画出大脑的决策路径：校验 / 修订 / 暂停等你 / 试运行 / 交付</HelpTip></>} />;
 
   const cy = (i: number) => PADTOP + i * ROWH + CARD_H / 2;
   const H = PADTOP + steps.length * ROWH + 8;

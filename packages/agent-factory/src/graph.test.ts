@@ -169,3 +169,30 @@ describe("HITL detection (synthetic)", () => {
     expect(g.hitlActions).toContain("humanApprove");
   });
 });
+
+// #AUDIT-FIX(P2-02) — 反向可达 / dead_end 检测：可达但到不了终态的分支必须被标出。
+describe("verifyGraph dead_end (#P2-02 reverse reachability)", () => {
+  it("flags a node that is reachable from entry but cycles without ever reaching a terminal", () => {
+    // A→X→Y→X (X/Y 互相环，永不产出终态)；B→DONE 提供一个合法终态让图别整体 no_terminal。
+    const g = compileGraph(
+      [
+        act({ id: "n-a", name: "A", trigger: ["E_IN"], triggered_event: ["E_X"] }),
+        act({ id: "n-x", name: "X", trigger: ["E_X"], triggered_event: ["E_Y"] }),
+        act({ id: "n-y", name: "Y", trigger: ["E_Y"], triggered_event: ["E_X"] }), // 环回 X，无出口
+        act({ id: "n-b", name: "B", trigger: ["E_IN2"], triggered_event: ["DONE"] }),
+      ],
+      { domainId: "cyc" },
+    );
+    const v = verifyGraph(g, { knownTerminals: ["DONE"] });
+    const deadEnds = v.issues.filter((i) => i.kind === "dead_end").map((i) => (i as { action: string }).action).sort();
+    // A/X/Y 都到不了 DONE → 全部 dead_end；B 能到 DONE → 不算。
+    expect(deadEnds).toEqual(["A", "X", "Y"]);
+    expect(v.ok).toBe(false);
+  });
+
+  it("a clean linear chain to a terminal has no dead_end", () => {
+    const g = compileGraph(recruitActions, { domainId: "recruit-gen-v1" });
+    const v = verifyGraph(g, { knownTerminals: ["MATCH_PASSED_NEED_INTERVIEW", "INTERVIEW_INVITATION_SENT", "JD_GENERATED", "CANDIDATE_IDENTITY_CHECKED", "MATCH_FAILED"] });
+    expect(v.issues.some((i) => i.kind === "dead_end")).toBe(false);
+  });
+});

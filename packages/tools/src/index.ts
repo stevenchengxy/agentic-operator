@@ -43,6 +43,7 @@ export * as fs from "./fs";
 export * as http from "./http";
 export * as meta from "./meta";
 export * as ontology from "./ontology";
+export * as records from "./records";
 export * as viz from "./viz";
 export * as report from "./report";
 

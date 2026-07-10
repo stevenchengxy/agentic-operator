@@ -83,6 +83,22 @@ export const candidateDedupLookup = defineTool({
   output: z.record(z.string(), z.unknown()),
   // eslint-disable-next-line @typescript-eslint/require-await
   async handler(ctx) {
+    // Carry-forward fields for routeResumeProcessed: echo the parsed resume (this
+    // step's ctx.lastResult IS the parseResumeApi output), the resume id, and the
+    // job_requisition_id, so RESUME_PROCESSED carries what matchResume needs.
+    const parsedResume = ctx.lastResult;
+    const resumeText =
+      typeof parsedResume === "string"
+        ? parsedResume
+        : JSON.stringify(
+            (parsedResume && typeof parsedResume === "object"
+              ? ((parsedResume as Record<string, unknown>).data ?? parsedResume)
+              : parsedResume) ?? {},
+          );
+    const evData = (ctx.event?.data ?? {}) as Record<string, unknown>;
+    const jobReqId =
+      typeof evData.job_requisition_id === "string" ? evData.job_requisition_id : "";
+    const eventResumeId = typeof evData.resume_id === "string" ? evData.resume_id : "";
     try {
       const sources = identitySources(ctx);
       const name = pick(sources, NAME_KEYS);
@@ -107,7 +123,15 @@ export const candidateDedupLookup = defineTool({
         .all()[0];
       if (!tenantRow) {
         // Can't scope — fail soft to a new candidate.
-        return { data: freshCandidate(name, nPhone, nEmail, true) };
+        const fc = freshCandidate(name, nPhone, nEmail, true);
+        return {
+          data: {
+            ...fc,
+            resume: resumeText,
+            resume_id: eventResumeId || `res-${String(fc.candidate_id)}`,
+            job_requisition_id: jobReqId,
+          },
+        };
       }
       const tenantId = tenantRow.id;
 
@@ -183,12 +207,17 @@ export const candidateDedupLookup = defineTool({
           name,
           phone: nPhone,
           email: nEmail,
+          // carry-forward for routeResumeProcessed → matchResume
+          resume: resumeText,
+          resume_id: eventResumeId || `res-${candidateId}`,
+          job_requisition_id: jobReqId,
         },
       };
     } catch (err) {
+      const cid = newCandidateId();
       return {
         data: {
-          candidate_id: newCandidateId(),
+          candidate_id: cid,
           same_as_candidate_id: null,
           is_new: true,
           tier: null,
@@ -196,6 +225,9 @@ export const candidateDedupLookup = defineTool({
           lock_conflict: false,
           dedup_degraded: true,
           error: String((err as Error)?.message ?? err),
+          resume: resumeText,
+          resume_id: eventResumeId || `res-${cid}`,
+          job_requisition_id: jobReqId,
         },
       };
     }

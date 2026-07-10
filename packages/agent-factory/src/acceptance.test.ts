@@ -22,7 +22,7 @@ describe("acceptanceReport (RAAS-v1 bar)", () => {
       spec({ actionName: "createJD", tools: ["x"], inputSchema: okIO }),
       spec({ actionName: "ruleCheckForMatchResume", tools: ["ontology.fetchActionRules"], inputSchema: okIO }),
     ];
-    const r = acceptanceReport(specs, ont(["createJD", "ruleCheckForMatchResume"]), { registeredIds: ["d-createJD", "d-ruleCheckForMatchResume"], ran: 2, fullChainRan: true, degradedAgents: [], simulated: false });
+    const r = acceptanceReport(specs, ont(["createJD", "ruleCheckForMatchResume"]), { registeredIds: ["d-createJD", "d-ruleCheckForMatchResume"], ran: 2, fullChainRan: true, degradedAgents: [], simulated: false, fidelityFailures: [] });
     expect(r.allPass).toBe(true);
   });
 
@@ -67,7 +67,7 @@ describe("acceptanceGate (maps the conductor's lastSandbox shape onto the bar)",
   const ontGood = ont(["createJD", "ruleCheckForMatchResume"]);
 
   it("accepts the conductor field names (deployed/agentsRan) and passes a met bar", () => {
-    const r = acceptanceGate(good, ontGood, { deployed: 2, agentsRan: 2, fullChainRan: true, degradedAgents: [], simulated: false });
+    const r = acceptanceGate(good, ontGood, { deployed: 2, agentsRan: 2, fullChainRan: true, degradedAgents: [], simulated: false, fidelityFailures: [] });
     expect(r.pass).toBe(true);
     expect(r.failing).toEqual([]);
   });
@@ -77,7 +77,7 @@ describe("acceptanceGate (maps the conductor's lastSandbox shape onto the bar)",
       spec({ actionName: "createJD", tools: ["x"], unresolvedTools: ["ghostTool"], inputSchema: okIO }),
       spec({ actionName: "ruleCheckForMatchResume", tools: ["ontology.fetchActionRules"], inputSchema: okIO }),
     ];
-    const r = acceptanceGate(specs, ontGood, { deployed: 2, agentsRan: 2, fullChainRan: true, degradedAgents: [], simulated: false });
+    const r = acceptanceGate(specs, ontGood, { deployed: 2, agentsRan: 2, fullChainRan: true, degradedAgents: [], simulated: false, fidelityFailures: [] });
     expect(r.pass).toBe(false);
     expect(r.failing.map((c) => c.key)).toContain("tools_resolve");
   });
@@ -91,5 +91,23 @@ describe("acceptanceGate (maps the conductor's lastSandbox shape onto the bar)",
   it("returns no failures (pass=false) when there is no sandbox evidence at all", () => {
     const r = acceptanceGate(good, ontGood, null);
     expect(r.pass).toBe(false);
+  });
+
+  // #AUDIT-FIX(P1-02) — 三态：真实跑过(ran>0)却【没采到保真证据】= UNKNOWN → 阻断（不再 fail-open）。
+  it("BLOCKS execution_fidelity when a real run captured no fidelity evidence (unknown ≠ pass)", () => {
+    const r = acceptanceGate(good, ontGood, { deployed: 2, agentsRan: 2, fullChainRan: true, degradedAgents: [], simulated: false }); // 无 fidelityFailures → unknown
+    expect(r.report.criteria.find((c) => c.key === "execution_fidelity")!.pass).toBe(false);
+    expect(r.pass).toBe(false);
+  });
+  it("PASSES execution_fidelity when a real run graded clean (fidelityFailures: [])", () => {
+    const r = acceptanceGate(good, ontGood, { deployed: 2, agentsRan: 2, fullChainRan: true, degradedAgents: [], simulated: false, fidelityFailures: [] });
+    expect(r.report.criteria.find((c) => c.key === "execution_fidelity")!.pass).toBe(true);
+    expect(r.pass).toBe(true);
+  });
+
+  it("blocks when a real emit payload violated the downstream contract (the output_parse_error class)", () => {
+    const r = acceptanceGate(good, ontGood, { deployed: 2, agentsRan: 2, fullChainRan: true, degradedAgents: [], simulated: false, fidelityFailures: ["CreateJD"] });
+    expect(r.pass).toBe(false);
+    expect(r.failing.map((c) => c.key)).toContain("execution_fidelity");
   });
 });

@@ -30,8 +30,12 @@ import {
   matchResumeApi,
   inviteCandidateApi,
 } from "@agentic/tools/robohire";
+import { recordsUpsert } from "@agentic/tools/records";
 import { candidateDedupLookup } from "./tools/candidate-dedup";
 import { foldRuleDecisionTool } from "./tools/fold-rule-decision";
+import { evaluateMatchRules } from "./tools/evaluate-match-rules";
+import { routeResumeProcessed } from "./tools/route-resume-processed";
+import { persistJdTool } from "./tools/jd-store";
 import { sendInvitationEmail } from "./tools/send-invitation-email";
 import { zhaopinPrompts } from "./prompts";
 
@@ -48,14 +52,33 @@ const tools: TenantRegistry["tools"] = {
   // lock (name+phone+email; soft-fail → never throws).
   candidateDedupLookup,
 
-  // 10-1 ruleCheckForMatchResume: deterministic fail-closed fold of the three
-  // match-rule steps → MATCH_RULE_CHECK_PASSED|FAILED (the verdict the LLM
+  // 9-1 processResume FINAL step: deterministic RESUME_PROCESSED assembler —
+  // carries candidate_id/resume/resume_id/job_requisition_id/jd forward (via
+  // the carry-forward envelope) so matchResume gets {resume, jd} with no LLM,
+  // and routes _emit by lock_conflict.
+  routeResumeProcessed,
+
+  // 4 createJD FINAL step: persist the JD by job_requisition_id to the tenant
+  // JD store so matchResume can retrieve it (new-arch JD instance store).
+  persistJd: persistJdTool,
+
+  // 10-1 ruleCheckForMatchResume: LIVE-rule gate. ontology.fetchActionRules
+  // (global) pulls the executor=Agent rules from Allmeta RAAS-v1; evaluateMatchRules
+  // stamps a deterministic pass/fail status per rule from candidate signals
+  // (fail-closed on any restricted employer/nationality OR an Allmeta outage);
+  // foldRuleDecision folds → MATCH_RULE_CHECK_PASSED|FAILED (the verdict the LLM
   // must NOT own).
+  evaluateMatchRules,
   foldRuleDecision: foldRuleDecisionTool,
 
   // 11-1 inviteInternalInterview: real invite delivery (RoboHire only generates
   // the body); soft-fails if no transport is configured.
   sendInvitationEmail,
+
+  // Durable business-record persistence (candidate / resume / match / comms) —
+  // new-arch replacement for the old AO's Neo4j / RAAS-PG instance write-back.
+  // Global tool, re-exported here for advertise-loop parity.
+  "records.upsert": recordsUpsert,
 };
 
 const prompts: TenantRegistry["prompts"] = zhaopinPrompts;

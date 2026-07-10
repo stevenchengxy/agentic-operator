@@ -34,6 +34,16 @@ const TRUTHY = new Set(["true", "1", "yes"]);
 let _runtimeOn = false;
 let _runtimeOverrides: DemoOverrideRecord[] = [];
 
+/**
+ * Whether `AGENTIC_DEMO_MODE` was truthy at PROCESS BOOT, captured once before any runtime toggle.
+ * #NOMOCK — used to make a runtime swap-to-mock from a PRODUCTION boot LOUD, so a mock runtime can
+ * never silently masquerade as real (the audit's "mock masquerading as real" hole).
+ */
+const _bootDemoMode: boolean = (() => {
+  const raw = process.env.AGENTIC_DEMO_MODE;
+  return !!raw && TRUTHY.has(raw.toLowerCase().trim());
+})();
+
 /** Read the current demo-mode state. Runtime toggle wins; falls through to env. */
 export function isDemoMode(): boolean {
   if (_runtimeOn) return true;
@@ -115,6 +125,16 @@ export function forceApplyDemoOverrides(): DemoOverrideRecord[] {
       before: beforeProvider,
       after: wantProvider,
     });
+  }
+  // #NOMOCK — a runtime swap to MOCK from a PRODUCTION boot (AGENTIC_DEMO_MODE=false) must be LOUD, so
+  // it can never masquerade as real. /health also persistently surfaces llmGateway.mock=true. To run
+  // demo with a real LLM instead, set AGENTIC_DEMO_LLM_PROVIDER=<real provider>.
+  if (wantProvider === "mock" && !_bootDemoMode) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      "[demo-mode] ⚠️  运行时已把 LLM 网关切到 MOCK（回声、非真实模型），但本进程以生产模式启动（AGENTIC_DEMO_MODE=false）。" +
+        "/health 的 llmGateway.mock=true 会持续暴露此状态；POST /v1/demo/stop 恢复。要在 demo 下用真实 LLM：设 AGENTIC_DEMO_LLM_PROVIDER。",
+    );
   }
 
   const wantModel =

@@ -42,6 +42,13 @@ import {
   useTenants,
   type TenantListItem,
 } from "@/lib/hooks/useTenants";
+import {
+  buildRuntimeDomainNameMap,
+  buildRuntimeDomainSlugSet,
+  displayRuntimeDomainName,
+  isVisibleRuntimeDomain,
+} from "@/lib/domain-display";
+import { useAgentFactoryDomains } from "@/lib/hooks/useAgentFactoryDomains";
 import { useTenant } from "@/app/portal/lib/use-tenant";
 import { DomainSyncPanel } from "./domain-sync";
 
@@ -160,6 +167,9 @@ export default function TenantsPage() {
   const { t } = useI18n();
 
   const query = useTenants({ includeArchived });
+  const domainsQuery = useAgentFactoryDomains();
+  const domainNames = buildRuntimeDomainNameMap(domainsQuery.data?.domains);
+  const domainSlugs = buildRuntimeDomainSlugSet(domainsQuery.data?.domains);
 
   function handleRestore(slug: string) {
     restore.mutate(slug, {
@@ -178,7 +188,9 @@ export default function TenantsPage() {
     });
   }
 
-  const rows = query.data?.items ?? [];
+  const rows = (query.data?.items ?? []).filter((row) =>
+    isVisibleRuntimeDomain(row, domainSlugs),
+  );
 
   return (
     <div style={{ height: "100%", overflow: "auto", padding: "20px 24px" }}>
@@ -275,6 +287,7 @@ export default function TenantsPage() {
       ) : (
         <TenantsTable
           rows={rows}
+          domainNames={domainNames}
           onEdit={setEditTarget}
           onArchive={setArchiveTarget}
           onRestore={handleRestore}
@@ -317,11 +330,13 @@ export default function TenantsPage() {
 
 function TenantsTable({
   rows,
+  domainNames,
   onEdit,
   onArchive,
   onRestore,
 }: {
   rows: TenantListItem[];
+  domainNames: Map<string, string>;
   onEdit: (t: TenantListItem) => void;
   onArchive: (t: TenantListItem) => void;
   onRestore: (slug: string) => void;
@@ -353,26 +368,32 @@ function TenantsTable({
         <div>{t("tenants.colCreated")}</div>
         <div></div>
       </div>
-      {rows.map((t) => (
-        <Row
-          key={t.slug}
-          tenant={t}
-          onEdit={() => onEdit(t)}
-          onArchive={() => onArchive(t)}
-          onRestore={() => onRestore(t.slug)}
-        />
-      ))}
+      {rows.map((t) => {
+        const displayName = displayRuntimeDomainName(t, domainNames);
+        return (
+          <Row
+            key={t.slug}
+            tenant={t}
+            displayName={displayName}
+            onEdit={() => onEdit({ ...t, name: displayName })}
+            onArchive={() => onArchive({ ...t, name: displayName })}
+            onRestore={() => onRestore(t.slug)}
+          />
+        );
+      })}
     </Panel>
   );
 }
 
 function Row({
   tenant,
+  displayName,
   onEdit,
   onArchive,
   onRestore,
 }: {
   tenant: TenantListItem;
+  displayName: string;
   onEdit: () => void;
   onArchive: () => void;
   onRestore: () => void;
@@ -406,11 +427,11 @@ function Row({
           fontWeight: 700,
         }}
       >
-        {tenant.name[0] ?? "?"}
+        {displayName[0] ?? "?"}
       </div>
       <div>
         <div style={{ color: "var(--text)", fontSize: 13, fontWeight: 500 }}>
-          {tenant.name}
+          {displayName}
         </div>
         <div
           style={{
@@ -775,7 +796,7 @@ function ArchiveModal({
           <div style={{ fontSize: 13, color: "var(--text-2)", lineHeight: 1.5 }}>
             {t("tenants.archiveBody", { name: target.name })}
           </div>
-          <Field label={t("tenants.confirmLabel", { slug: target.slug })}>
+          <Field label={t("tenants.confirmLabel", { slug: target.slug })} preserveCase>
             <input
               autoFocus
               value={confirm}
@@ -837,10 +858,12 @@ function ArchiveModal({
 function Field({
   label,
   error,
+  preserveCase = false,
   children,
 }: {
   label: string;
   error?: string | null;
+  preserveCase?: boolean;
   children: React.ReactNode;
 }) {
   return (
@@ -850,8 +873,8 @@ function Field({
           fontSize: 11,
           fontFamily: "var(--mono)",
           color: "var(--text-3)",
-          textTransform: "uppercase",
-          letterSpacing: "0.08em",
+          textTransform: preserveCase ? "none" : "uppercase",
+          letterSpacing: preserveCase ? 0 : "0.08em",
         }}
       >
         {label}

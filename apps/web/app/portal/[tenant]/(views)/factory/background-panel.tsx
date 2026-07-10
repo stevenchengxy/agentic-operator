@@ -14,7 +14,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Button } from "@/app/portal/components";
+import { Button, HelpTip, Markdown } from "@/app/portal/components";
 import { tenantHeader } from "@/lib/hooks/tenant-header";
 import type { BrainEvent } from "@/lib/hooks/useBrainStream";
 import { FullModal } from "./atoms";
@@ -117,6 +117,71 @@ function TaskTranscript({ task }: { task: SessionTask }) {
 const linkBtn: React.CSSProperties = { fontSize: 11, padding: "2px 9px", borderRadius: 7, border: "1px solid var(--border)", background: "none", color: "var(--text-2)", cursor: "pointer" };
 const primaryLinkBtn: React.CSSProperties = { ...linkBtn, border: "1px solid var(--signal)", color: "var(--signal)" };
 
+/* ── #UI-DRILL — L2 决策卡组：点开一个 agent，宏观→微观看它的计划/思考/工具/问题/子agent/真实 I/O。
+   sub-agent 可继续展开自己的 L2（递归，封顶 2 层防失控）。纯投影，历史回放一致。 ── */
+function DrillCard({ icon, title, color, children }: { icon: string; title: string; color?: string; children: React.ReactNode }) {
+  return (
+    <div style={{ border: "1px solid var(--border)", borderRadius: 8, background: "var(--panel-3)", padding: "7px 9px" }}>
+      <div style={{ fontSize: 10.5, fontWeight: 700, color: color ?? "var(--text-2)", marginBottom: 3 }}>{icon} {title}</div>
+      <div style={{ fontSize: 11, color: "var(--text-3)", lineHeight: 1.55, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{children}</div>
+    </div>
+  );
+}
+
+function AgentDrillIn({ task, taskBySlug, depth = 0 }: { task: SessionTask; taskBySlug: Map<string, SessionTask>; depth?: number }) {
+  const [openSub, setOpenSub] = useState<string | null>(null);
+  const d = task.drill;
+  if (!d) return null;
+  const toolItems = task.transcript.filter((it) => it.kind === "tool").slice(-8);
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 4, paddingLeft: 16, borderLeft: "2px solid var(--border-2)" }}>
+      {d.reasoning && <DrillCard icon="🧠" title="计划 · 设计推理"><Markdown>{d.reasoning.slice(0, 500)}</Markdown></DrillCard>}
+      {d.decisionLogic && <DrillCard icon="🔀" title="分支决策逻辑"><Markdown>{d.decisionLogic.slice(0, 400)}</Markdown></DrillCard>}
+      {toolItems.length > 0 && (
+        <DrillCard icon="🔧" title="用了什么工具（harness 归组）">
+          {toolItems.map((it) => (
+            <div key={it.id}>
+              {it.label}{it.ok !== undefined ? (it.ok ? " ✓" : " ✗") : ""}{it.detail ? ` — ${it.detail}` : ""}
+            </div>
+          ))}
+        </DrillCard>
+      )}
+      {(d.problems.length > 0 || d.refineCritiques.length > 0) && (
+        <DrillCard icon="⚠️" title="发现的问题 · 修订" color="var(--amber)">
+          {d.problems.map((p, i) => <div key={`p${i}`}>· {p}</div>)}
+          {d.refineCritiques.slice(-3).map((c, i) => <div key={`c${i}`} style={{ color: "var(--text-4)" }}>↻ {c}</div>)}
+        </DrillCard>
+      )}
+      {d.subAgents.length > 0 && (
+        <DrillCard icon="🧩" title="生成的 sub-agent / phases" color="var(--violet)">
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+            {d.subAgents.map((sub) => (
+              <button key={sub.slug} onClick={() => setOpenSub(openSub === sub.slug ? null : sub.slug)}
+                style={{ ...linkBtn, border: "1px solid var(--violet)", color: "var(--violet)", fontSize: 10.5 }}>
+                {openSub === sub.slug ? "▾" : "▸"} {sub.name}
+              </button>
+            ))}
+          </div>
+          {openSub && depth < 2 && taskBySlug.get(openSub) && (
+            <AgentDrillIn task={taskBySlug.get(openSub)!} taskBySlug={taskBySlug} depth={depth + 1} />
+          )}
+        </DrillCard>
+      )}
+      {d.io && (
+        <DrillCard icon="📦" title={`真实执行 I/O${d.fidelityFail ? " · ⚠ 契约违约" : ""}`} color={d.fidelityFail ? "var(--red)" : "var(--green)"}>
+          <div style={{ fontFamily: "var(--mono)", fontSize: 10.5 }}>
+            ◂ {d.io.triggerEvent ?? "—"} → ▸ {d.io.outputEvent ?? "（无产出事件）"} · {d.io.status ?? ""}
+          </div>
+          {d.io.output && <div style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--text-4)", marginTop: 2 }}>{d.io.output.slice(0, 300)}</div>}
+        </DrillCard>
+      )}
+      {!d.reasoning && !toolItems.length && !d.problems.length && !d.subAgents.length && !d.io && (
+        <div style={{ fontSize: 10.5, color: "var(--text-4)" }}>这个 agent 还没有可下钻的决策记录。</div>
+      )}
+    </div>
+  );
+}
+
 const KIND_ICON: Record<SessionTask["kind"], string> = { harness: "🧠", agent: "🤖", subagent: "🧩", tool: "🔧", sandbox: "📦" };
 
 export interface BackgroundPanelProps {
@@ -139,6 +204,9 @@ export interface BackgroundPanelProps {
 
 export function BackgroundPanel({ tenant, domain, events, running, convId, viewingRunId, liveRunId, awaitingHint, onReconnectRun, onSelectAgent, onClose, inline }: BackgroundPanelProps) {
   const sessionTasks = useMemo(() => deriveSessionTasks(events, running), [events, running]);
+  // #UI-DRILL — slug→task 索引供子 agent 递归下钻；展开集合按 task id 记忆。
+  const taskBySlug = useMemo(() => new Map(sessionTasks.filter((t) => t.agentSlug).map((t) => [t.agentSlug!, t])), [sessionTasks]);
+  const [drillIds, setDrillIds] = useState<Set<string>>(new Set());
   const runTools = useMemo(() => deriveGeneratedTools(events), [events]);
   const [openTaskId, setOpenTaskId] = useState<string | null>(null);
   const openTask = useMemo(() => sessionTasks.find((t) => t.id === openTaskId) ?? null, [sessionTasks, openTaskId]);
@@ -288,7 +356,7 @@ export function BackgroundPanel({ tenant, domain, events, running, convId, viewi
       className={inline ? undefined : "rise"}
       style={inline
         ? { display: "flex", flexDirection: "column" }
-        : { position: "fixed", top: 0, right: 0, bottom: 0, width: 400, maxWidth: "92vw", zIndex: 60, background: "var(--panel)", borderLeft: "1px solid var(--border)", boxShadow: "-16px 0 40px rgba(0,0,0,.28)", display: "flex", flexDirection: "column" }}
+        : { position: "fixed", top: 0, right: 0, bottom: 0, width: 400, maxWidth: "92vw", zIndex: "var(--z-overlay)" as unknown as number, background: "var(--panel)", borderLeft: "1px solid var(--border)", boxShadow: "-16px 0 40px rgba(0,0,0,.28)", display: "flex", flexDirection: "column" }}
     >
       {openTask && (
         <FullModal title={`${KIND_ICON[openTask.kind]} ${openTask.title} · 过程`} onClose={() => setOpenTaskId(null)}>
@@ -348,6 +416,7 @@ export function BackgroundPanel({ tenant, domain, events, running, convId, viewi
         {visibleTasks.map((t) => {
           const askThis = t.kind === "tool" && pendingToolNames.has(t.title.replace(/^造工具 /, ""));
           const toolName = t.title.replace(/^造工具 /, "");
+          const drilled = drillIds.has(t.id);
           return (
             <div key={t.id} style={{ border: `1px solid ${askThis ? "var(--amber)" : "var(--border)"}`, borderRadius: 10, padding: "9px 11px", background: "var(--panel-2)", display: "flex", flexDirection: "column", gap: 5 }}>
               <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
@@ -370,14 +439,21 @@ export function BackgroundPanel({ tenant, domain, events, running, convId, viewi
                     <button onClick={() => void declineTool(toolName)} style={linkBtn}>✗ 删除</button>
                   </>
                 )}
+                {t.drill && (
+                  <button onClick={() => setDrillIds((prev) => { const n = new Set(prev); if (n.has(t.id)) n.delete(t.id); else n.add(t.id); return n; })}
+                    style={drilled ? { ...primaryLinkBtn } : linkBtn}>
+                    {drilled ? "▾ 收起决策" : "▸ 决策下钻"}
+                  </button>
+                )}
                 <button onClick={() => setOpenTaskId(t.id)} style={linkBtn}>View transcript</button>
                 {t.agentSlug && <button onClick={() => onSelectAgent(t.agentSlug!)} style={linkBtn}>在右栏查看 →</button>}
               </div>
+              {drilled && t.drill && <AgentDrillIn task={t} taskBySlug={taskBySlug} />}
             </div>
           );
         })}
         {sessionTasks.length === 0 && (
-          <div style={{ fontSize: 11.5, color: "var(--text-4)", padding: 8 }}>开始一次生成后，这里会分解展示本会话的 Harness、各智能体构建、子智能体、造工具与沙箱部署。</div>
+          <div style={{ fontSize: 11.5, color: "var(--text-4)", padding: 8, display: "flex", alignItems: "center", gap: 6 }}>本会话暂无后台分解 <HelpTip>开始一次生成后，这里会分解展示本会话的 Harness、各智能体构建、子智能体、造工具与沙箱部署。</HelpTip></div>
         )}
 
         {/* ── 跨会话后台：报告任务 + 其它运行中的会话 ── */}

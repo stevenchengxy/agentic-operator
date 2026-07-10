@@ -8,7 +8,7 @@
  */
 
 import { useState } from "react";
-import { Button, Empty } from "@/app/portal/components";
+import { Button, Empty, HelpTip } from "@/app/portal/components";
 import { chip, Field, CodeBox } from "./atoms";
 import type { AgentCardData, AgentIO } from "./model";
 
@@ -62,14 +62,14 @@ function AgentCard({ a, st, onShowCode, onRegenerate, onSelect }: { a: AgentCard
         {onRegenerate && <button onClick={() => onRegenerate(a.actionName || a.slug, "")} style={{ marginLeft: "auto", fontSize: 11, color: "var(--signal)", background: "none", border: "none", cursor: "pointer" }}>↻ 重想</button>}
       </div>
       {view === "prompt" && a.systemPrompt && <div style={{ marginTop: 6 }}><Field label="system prompt（指令）" text={a.systemPrompt} mono /></div>}
-      {view === "logic" && a.decisionLogic && <div style={{ marginTop: 6 }}><Field label="分支决策逻辑" text={a.decisionLogic} /></div>}
+      {view === "logic" && a.decisionLogic && <div style={{ marginTop: 6 }}><Field label="分支决策逻辑" text={a.decisionLogic} markdown /></div>}
       {view === "code" && a.code && <div style={{ marginTop: 6 }}><div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 3 }}><button onClick={() => onShowCode(a)} style={{ fontSize: 10.5, color: "var(--green)", background: "none", border: "none", cursor: "pointer" }}>全屏 ⛶</button></div><CodeBox code={a.code} /></div>}
     </div>
   );
 }
 
 export function AgentCardList({ agents, degraded, ioByShort, onShowCode, onRegenerate, onSelect }: { agents: AgentCardData[]; degraded: Set<string>; ioByShort: Map<string, AgentIO>; onShowCode: (a: AgentCardData) => void; onRegenerate?: (actionName: string, supplement: string) => void; onSelect?: (slug: string) => void }) {
-  if (!agents.length) return <Empty title="还没有智能体" hint="运行后，每个生成的 agent 会作为一张卡片出现：状态 + 事件图 + 指令/代码/决策逻辑，可逐张展开" />;
+  if (!agents.length) return <Empty title={<>还没有智能体 <HelpTip>运行后，每个生成的 agent 会作为一张卡片出现：状态 + 事件图 + 指令/代码/决策逻辑，可逐张展开</HelpTip></>} />;
   return (
     <div>
       <div style={{ fontSize: 11, color: "var(--text-3)", marginBottom: 8 }}>智能体 · {agents.length} 个</div>
@@ -80,7 +80,7 @@ export function AgentCardList({ agents, degraded, ioByShort, onShowCode, onRegen
 
 // ── Sandbox I/O panel: test cases (input) + per-agent runs (input + OUTPUT) + per-case verdict ──
 export function SandboxIOPanel({ testCases, agentRuns, onShowCode: _osc }: { testCases: Array<{ name: string; kind: string; entryEvent: string; expectedOutcome?: string; payload?: Record<string, unknown> }>; agentRuns: AgentIO[]; onShowCode?: () => void }) {
-  if (!testCases.length && !agentRuns.length) return <Empty title="还没有沙箱 I/O" hint="生成测试用例并 sandbox_run 后，这里展示每条用例的输入、每个 agent 运行的输入与输出、以及判定结果" />;
+  if (!testCases.length && !agentRuns.length) return <Empty title={<>还没有沙箱 I/O <HelpTip>生成测试用例并 sandbox_run 后，这里展示每条用例的输入、每个 agent 运行的输入与输出、以及判定结果</HelpTip></>} />;
   const kindColor = (k: string) => (/reject|拒绝|fail/i.test(k) ? "var(--amber)" : /edge|边界/i.test(k) ? "var(--violet)" : "var(--green)");
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>

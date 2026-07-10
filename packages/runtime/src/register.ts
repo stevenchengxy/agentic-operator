@@ -18,7 +18,7 @@
  */
 
 import { getTenantInngest } from "./client";
-import { runAction } from "./step-engine";
+import { runAction, type LlmTurnTrace } from "./step-engine";
 import { stableStepId, shouldSkip, softInvoke, type GateState } from "./action-plan";
 import { selectEmittedEvent } from "./emit-select";
 import { appendToLedger } from "./event-ledger";
@@ -33,6 +33,7 @@ import {
   agentVersions,
   events,
   eventStore,
+  llmTurns,
   runs,
   steps,
   tasks as tasksTable,
@@ -40,6 +41,17 @@ import {
   getDb,
 } from "@agentic/db";
 import { eq, and } from "drizzle-orm";
+
+/**
+ * #W0 — is raw LLM-turn capture enabled? Default ON. Set
+ * AGENTIC_CAPTURE_LLM_TURNS to a falsy value (`0`/`false`/`no`/`off`) to stop
+ * persisting the model's response/reasoning text (e.g. for PII-sensitive
+ * deployments); token counts on `steps`/`llm_calls` are unaffected.
+ */
+function captureLlmTurns(): boolean {
+  const raw = (process.env.AGENTIC_CAPTURE_LLM_TURNS ?? "").trim().toLowerCase();
+  return !["0", "false", "no", "off"].includes(raw);
+}
 
 import type { TenantRegistry, ToolDescriptor } from "@agentic/agent-kit";
 import type { InngestFunction } from "inngest";
@@ -366,13 +378,22 @@ export function registerAgent(
         correlationId,
         subject: subject ?? undefined,
         memory: createMemoryHandle({ tenantId: ctx.tenantId, agentName: agent.name, subject: subject ?? "", runId }),
+        // #AUDIT-FIX(H0 fail-open twin) — 与 codeact.ts 同款：决策核心失败不得伪造 {ok:true}，
+        // 返回 _reasonFailed 标记让消费方走失败分支（fail-close）并留日志。
         reason: async (sp, inp) => {
           const gw = getRuntimeGateway();
-          if (!gw) return { ok: true };
+          if (!gw) {
+            try { console.warn("[runtime] reason() 无 LLM 网关——fail-close，不伪造通过"); } catch { /* best-effort */ }
+            return { ok: false, _reasonFailed: true, error: "llm_gateway_missing" };
+          }
+          let failure = "";
           const r = await gw
             .chat({ messages: [{ role: "system", content: sp }, { role: "user", content: JSON.stringify(inp ?? {}) }], tenantSlug })
-            .catch(() => null);
-          if (!r) return { ok: true };
+            .catch((e) => { failure = String((e as Error)?.message ?? e).slice(0, 200); return null; });
+          if (!r) {
+            try { console.warn(`[runtime] reason() LLM 调用失败——fail-close：${failure}`); } catch { /* best-effort */ }
+            return { ok: false, _reasonFailed: true, error: failure || "llm_call_failed" };
+          }
           try { return JSON.parse(r.text); } catch { return { text: r.text, ok: true }; }
         },
         toolRun: async (name, toolArgs) => {
@@ -708,6 +729,7 @@ export function registerAgent(
                 actionName: action.name,
                 subject: subject ?? undefined,
                 correlationId,
+                runId,
                 tenantSlug,
                 event: {
                   name: event.name,
@@ -785,6 +807,49 @@ export function registerAgent(
               })
               .where(eq(steps.id, sid))
               .run();
+            // #W0 — persist the raw per-turn LLM capture (response text +
+            // reasoning + requested tools) to `llm_turns`, keyed on runId+stepId.
+            // Gated + best-effort: a capture failure must never fail the step.
+            // Inside step.run ⇒ written exactly once per real execution. On an
+            // Inngest retry (attempt>1) we clear the prior attempt's rows first
+            // so a retried step doesn't accumulate duplicate turns.
+            if (captureLlmTurns()) {
+              const capturedTurns = (
+                res.meta as { turns?: LlmTurnTrace[] } | undefined
+              )?.turns;
+              if (Array.isArray(capturedTurns) && capturedTurns.length > 0) {
+                try {
+                  if (attempt > 1) {
+                    dbInner.delete(llmTurns).where(eq(llmTurns.stepId, sid)).run();
+                  }
+                  dbInner
+                    .insert(llmTurns)
+                    .values(
+                      capturedTurns.map((tn) => ({
+                        id: makeId("llt"),
+                        tenantId: ctx.tenantId,
+                        runId,
+                        stepId: sid,
+                        ord: tn.ord,
+                        promptPreview: tn.promptPreview ?? null,
+                        responseText: tn.responseText ?? null,
+                        reasoning: tn.reasoning ?? null,
+                        toolCallsJson: tn.toolCalls ?? [],
+                        provider: tn.provider ?? null,
+                        model: tn.model ?? null,
+                        tokensIn: tn.tokensIn ?? null,
+                        tokensOut: tn.tokensOut ?? null,
+                        finishReason: tn.finishReason ?? null,
+                        latencyMs: tn.latencyMs ?? null,
+                        correlationId,
+                      })),
+                    )
+                    .run();
+                } catch {
+                  /* capture is a debugging aid, never a correctness gate */
+                }
+              }
+            }
             try {
               publish({
                 type: "run.step.completed",

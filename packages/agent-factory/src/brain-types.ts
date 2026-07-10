@@ -22,6 +22,9 @@ export type AgentCardLite = {
   tools: string[];
   /** tools the brain wanted but the library doesn't have yet (shown as "待人工实现"). */
   unresolved?: string[];
+  /** TRUE = an invoke-only sub-agent (design_subagent) — the UI must not infer this from the
+   *  slug (a top-level action whose kebab contains "-sub-" would be misclassified). */
+  isSubAgent?: boolean;
 };
 
 /** The LLM's authored design for one agent — surfaced as collapsible reasoning. */
@@ -145,12 +148,31 @@ export type FactoryStage = "read" | "plan" | "design" | "validate" | "sandbox" |
 /** Streamed to the chatbot — the live trace of the brain's reasoning + acts. */
 export type BrainEvent =
   | { t: "think"; delta: string } // streamed reasoning token
-  | { t: "tool.call"; id: string; name: string; reasoning: string; input: unknown }
-  | { t: "tool.result"; id: string; name: string; ok: boolean; summary: string; output?: string }
-  | { t: "agent.created"; spec: AgentCardLite; design?: AgentDesignLite }
+  // #UI-DRILL — `forAgent` is the actionName of the generated agent this harness step is FOR
+  // (from the tool's `action`/`parent_action` arg), so the ops panel can group every reasoning
+  // step, tool call and sub-agent under the agent it was building (macro→micro drill-in).
+  | { t: "tool.call"; id: string; name: string; reasoning: string; input: unknown; role?: string; forAgent?: string }
+  // #HEARTBEAT — 长工具执行心跳（每 ~15s）：用户永远能区分「慢/卡/死」——elapsedS 递增 = 还在
+  // 干活；note 是升级提示（60s/180s/420s 各一条）。同时让 SSE 持续有事件流出，前端 staleness
+  // 检测不再把长工具误判成"已无响应"。阻断必有回执的第一层。
+  | { t: "tool.progress"; id: string; name: string; role?: string; elapsedS: number; note?: string }
+  | { t: "tool.result"; id: string; name: string; ok: boolean; summary: string; output?: string; forAgent?: string }
+  | { t: "agent.created"; spec: AgentCardLite; design?: AgentDesignLite; forAgent?: string; parentAgent?: string }
   | { t: "catalog"; domain: string; actions: number; events: number; agentActions: number } // read_ontology summary
   | { t: "plan"; plan: BuildPlan }
   | { t: "validation"; ok: boolean; issues: string[]; agentIssueMap?: Record<string, unknown[]> }
+  // #BIZFLOW — the derived end-to-end business-flow model (external platforms + per-agent
+  // reads/calls/writes/notifies + branch semantics). The right sidebar renders this as the
+  // complete business-flow diagram (the hand-drawn 6-agent SVG, generated). Typed loosely here
+  // to avoid a type-only import cycle; the shape is business-flow.ts#BusinessFlowModel.
+  | { t: "flow.business"; model: Record<string, unknown> }
+  // #POLICY — the entrance router's decision (why this pipeline shape / specialist depth / tier
+  // bias was selected for THIS request). Emitted right after the intent gate; UI renders it as
+  // the "推理策略" chip so the choice is explainable, not implicit.
+  | { t: "policy"; pipeline: string; band: string; deepUnderstand: boolean; deepCritique: boolean; tierBias?: string | null; reasons: string[] }
+  // #REVISION — 证据驱动的本体修订提案（真实沙箱载荷 vs canonical event_data 持续不一致）。
+  // 工厂只提案不写回；大脑据此 ask_user 确认（"AI 提案 → 人确认 → 生效"，同 boundary-gate 范式）。
+  | { t: "ontology.revision"; proposals: Array<{ kind: string; event: string; field: string; observedType: string; canonicalType?: string; occurrences: number; evidence: string }> }
   | {
       t: "sandbox";
       ran: number;
@@ -188,6 +210,8 @@ export type BrainEvent =
       /** TRUE = a graph-closure SIMULATION, not a real Inngest deploy+run. The UI must
        *  badge it so a simulated pass is never mistaken for a verified real deploy. */
       simulated?: boolean;
+      /** #R3 — spec shorts whose REAL emitted payload violated the downstream contract. */
+      fidelityFailures?: string[];
     }
   | { t: "refine"; actionName: string; critique: string; diff?: { systemPromptChanged: boolean; toolsAdded: string[]; toolsRemoved: string[]; decisionLogicChanged: boolean } }
   | { t: "score.delta"; actionName: string; priorTotal: number; newTotal: number; delta: number; regression: boolean; dimensions: ScoreDims }
@@ -198,13 +222,13 @@ export type BrainEvent =
   | { t: "tool.search"; query: string; results: Array<{ name: string; summary: string; sideEffect: string }> } // progressive tool discovery
   | { t: "tool.schema"; name: string; method: string; url: string; fields: number } // doc→tool schema extracted
   | { t: "web.result"; query: string; results: Array<{ title: string; url: string; snippet: string }> }
-  | { t: "subagent.start"; task: string }
-  | { t: "subagent.done"; task: string; summary: string }
+  | { t: "subagent.start"; task: string; role?: string; parentAgent?: string }
+  | { t: "subagent.done"; task: string; summary: string; parentAgent?: string }
   | { t: "code"; actionName: string; code: string; codeSource: "ai" | "render" }
   // Explicit pipeline-stage signal. status: "active" = the brain entered/is working this
   // stage; "ok"/"error" = its tool settled. Drives the live-canvas stage rail + health strip
   // directly, instead of every consumer re-inferring a stage from heterogeneous event types.
-  | { t: "stage"; stage: FactoryStage; status: "active" | "ok" | "error"; detail?: string }
+  | { t: "stage"; role?: string; stage: FactoryStage; status: "active" | "ok" | "error"; detail?: string }
   | { t: "test.cases"; cases: TestCase[]; awaitingApproval: boolean; coverage?: { required: string[]; covered: string[]; backfilled: string[]; uncoveredNeedingData: string[] } }
   | { t: "test.decision"; decision: "approve" | "regenerate"; note?: string }
   // Boundary events the brain proposes for the user to classify (external handoff /
@@ -305,6 +329,25 @@ export interface BrainCtx {
    *  kept so a park timeout can fall back to the AI's recommended option. */
   awaitingClarify?: boolean;
   clarifyPrompt?: { question: string; options?: Array<{ label: string; value: string; recommended?: boolean }>; context?: string };
+  /** #ASK-DEDUP — normalized question → the user's answer ("" while pending). ask_user refuses
+   *  to re-ask an already-answered question (the answer is replayed to the brain instead). */
+  askedQuestions?: Record<string, string>;
+  /** #AUDIT-FIX(H4) — 本会话已成功交付过（finish 通过）。跨 run 持久（serializeCtx），
+   *  完成守卫据此不再对交付后的追问轮催「去 finish」。 */
+  delivered?: boolean;
+  /** #POLICY — the entrance reasoning policy selected after the intent gate (pipeline shape +
+   *  forced specialist depth + tier bias). Additive: size heuristics still apply independently.
+   *  #OPEN-VOCAB：pipeline 是开放词汇——已知 full/skinny/analyze/ask_first 给路由规则；
+   *  新形状原样携带，消费端未识别按 full 兜底（认知开放、协议封闭）。 */
+  policy?: {
+    pipeline: string;
+    deepUnderstand: boolean;
+    deepCritique: boolean;
+    tierBias: "fast" | null;
+    reasons: string[];
+    /** 难度带（policy-learning 的 arm 维度之一；run 收束时随 outcome 回喂）——度量刻度，保持封闭。 */
+    band?: "simple" | "standard" | "complex";
+  };
   /** the proposals awaiting decision, kept so a park TIMEOUT can auto-apply the AI's kinds. */
   boundaryProposals?: BoundaryProposal[];
   /** outcome of the last sandbox_run — the finish gate requires real end-to-end
@@ -321,6 +364,9 @@ export interface BrainCtx {
     /** #REDESIGN P1 — spec shorts whose generated code actually executed (not fell back). */
     codeRanAgents?: string[];
     degradedAgents: string[];
+    /** #R3 — spec shorts whose REAL emitted payload violated the downstream field contract
+     *  (evaluateExecutionFidelity over the sandbox agentRuns). Undefined ⇒ not graded ⇒ lenient. */
+    fidelityFailures?: string[];
     /** R2: true = graph-closure SIMULATION (Inngest not reachable), not a real deploy+run.
      *  The finish gate refuses simulated evidence unless FACTORY_ALLOW_SIMULATED_FINISH=1. */
     simulated: boolean;

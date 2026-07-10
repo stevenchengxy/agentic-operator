@@ -21,6 +21,9 @@ export interface AcceptanceSandbox {
   /** #REDESIGN P1 — spec shorts whose GENERATED CODE actually ran (not fell back to declarative). */
   codeRanAgents?: string[];
   degradedAgents?: string[];
+  /** #R3 — shorts whose REAL emitted payload violated the downstream field contract
+   *  (from evaluateExecutionFidelity over the sandbox agentRuns). Undefined ⇒ not graded ⇒ lenient pass. */
+  fidelityFailures?: string[];
   simulated?: boolean;
 }
 
@@ -56,6 +59,14 @@ export function acceptanceReport(specs: GeneratedAgentSpec[], ontology: DomainOn
   const codeSpecs = specs.filter((s) => s.codeExecuted);
   const ranSet = new Set(sandbox?.codeRanAgents ?? []);
   const codeFellBack = sandbox && !sandbox.simulated ? codeSpecs.filter((s) => !ranSet.has(s.short)) : [];
+  // #R3 — execution fidelity: agents whose REAL emitted payload violated the downstream contract.
+  // Graded upstream (from the sandbox agentRuns) and threaded here.
+  // #AUDIT-FIX(P1-02) — 三态而非二态：undefined 不再一律当 pass（fail-open）。真实跑过且有 agent
+  // 运行、却【没采到保真证据】= UNKNOWN，按未知【阻断】finish（不能证明 emit 合法就不算通过）。
+  // 模拟/未跑沙箱由 real_register/chain_ran 兜底，这里不重复扣分。
+  const fidelityFail = sandbox?.fidelityFailures ?? [];
+  const fidelityEvaluated = sandbox?.fidelityFailures !== undefined;
+  const fidelityUnknown = !!sandbox && sandbox.simulated === false && (sandbox.ran ?? 0) > 0 && !fidelityEvaluated;
 
   const criteria: AcceptanceCriterion[] = [
     { key: "coverage", label: "覆盖全部 Agent 动作", pass: !!ontology && gap.length === 0, detail: gap.length ? `还差：${gap.join("、")}` : `${agentActions.length} 个全覆盖` },
@@ -71,6 +82,7 @@ export function acceptanceReport(specs: GeneratedAgentSpec[], ontology: DomainOn
     { key: "has_code", label: "所有 agent 都有代码", pass: specs.length > 0 && noCode.length === 0, detail: noCode.length ? `缺代码：${noCode.map((s) => s.short).join("、")}` : "全部已生成代码" },
     { key: "sub_agents_bound", label: "子 agent 都被父 invoke·无悬空调用", pass: orphanSubs.length === 0 && danglingInvokes.length === 0, detail: danglingInvokes.length ? `悬空 invoke（目标不存在）：${danglingInvokes.join("、")}` : subAgents.length ? (orphanSubs.length ? `孤儿子 agent（没被 invoke）：${orphanSubs.map((s) => s.short).join("、")}` : `${subAgents.length} 个子 agent 均已被父调用`) : "无子 agent" },
     { key: "code_really_ran", label: "生成代码真的执行（非回退声明式）", pass: codeFellBack.length === 0, detail: codeFellBack.length ? `标了执行代码但回退了声明式（没真跑）：${codeFellBack.map((s) => s.short).join("、")}` : codeSpecs.length ? `${codeSpecs.length} 个代码型 agent 的代码均真跑` : "无代码执行型 agent（声明式）" },
+    { key: "execution_fidelity", label: "真实 emit 满足下游契约（不 output_parse_error）", pass: fidelityFail.length === 0 && !fidelityUnknown, detail: fidelityUnknown ? "⚠ 无法评估执行保真（真实跑了但没采到 emit 载荷/证据）——按未知阻断，不算通过；重跑沙箱或检查 agentRuns 采集" : fidelityFail.length ? `emit 载荷违反下游契约：${fidelityFail.join("、")}` : fidelityEvaluated ? "全部 emit 载荷满足契约" : "未评估（模拟或未跑沙箱）" },
   ];
   return { criteria, allPass: criteria.every((c) => c.pass) };
 }
@@ -88,6 +100,7 @@ export interface SandboxEvidenceLike {
   reachedSuccessTerminal?: boolean;
   codeRanAgents?: string[];
   degradedAgents?: string[];
+  fidelityFailures?: string[];
   simulated?: boolean;
 }
 
@@ -110,6 +123,7 @@ export function acceptanceGate(
         reachedSuccessTerminal: sandbox.reachedSuccessTerminal,
         codeRanAgents: sandbox.codeRanAgents,
         degradedAgents: sandbox.degradedAgents ?? [],
+        fidelityFailures: sandbox.fidelityFailures,
         simulated: sandbox.simulated,
       }
     : null;

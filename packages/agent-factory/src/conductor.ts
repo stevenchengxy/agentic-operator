@@ -8,12 +8,16 @@
 
 import { streamTurn, chatOnce, isGatewayConfigured, setLlmCallContext, type ChatMsg, type ToolSchema } from "./stream-gateway";
 import { systemPrompt } from "./system-prompt";
-import { FACTORY_TOOLS, SUBAGENT_TOOLS } from "./tools";
+import { FACTORY_TOOLS, SUBAGENT_TOOLS, normalizeQuestion } from "./tools";
 import type { BrainEvent, BrainTool, BrainCtx, ReflectionLite, BoundaryEvent, FactoryStage } from "./brain-types";
 import type { FactoryPorts } from "./ports";
 import { isStopIntent } from "./intent";
 import { parseUserIntent } from "./specialists";
 import { modelChain, tierForContext } from "./model-router";
+import { classifyIntentKind, estimateDifficulty, selectPolicy } from "./reasoning-policy";
+import { anchorDue, buildOntologyAnchor, DEFAULT_ANCHOR_EVERY } from "./ontology-anchor";
+import { roleOfTool } from "./process-roles";
+import { adjustPolicyWithStats, recordOutcome } from "./policy-learning";
 import { warmModelCatalog } from "./model-catalog";
 import { resolveBrainLang } from "./i18n";
 
@@ -63,6 +67,8 @@ function buildStateSummary(ctx: BrainCtx): string {
   // The intent gate's reading of WHAT THE USER WANTS — the one thing the brain must never
   // forget, however long the run gets. Appended per goal, kept verbatim through every fold.
   if (ctx.userIntent) lines.push(`用户意图(意图门·逐条累积): ${ctx.userIntent.slice(0, 500)}`);
+  // #POLICY — 折叠后大脑仍要记得"这次请求走什么路线"（analyze 别 sandbox、skinny 别全量重走）。
+  if (ctx.policy) lines.push(`推理路线(前置路由): ${ctx.policy.pipeline}${ctx.policy.deepUnderstand ? "·深读" : ""}${ctx.policy.deepCritique ? "·深评" : ""}${ctx.policy.tierBias ? `·${ctx.policy.tierBias}档` : ""} — ${ctx.policy.reasons.slice(0, 2).join("；")}`);
   // capability_resolve 的选型结论（复用/组合/新造）——设计阶段的"别造重复轮子"依据。
   if (ctx.capabilityResolution) lines.push(`能力解析(选型优先于制造): ${ctx.capabilityResolution.slice(0, 600)}`);
   if (ctx.humanDirectives.length) lines.push(`人工介入指令: ${ctx.humanDirectives.join(" / ")}`);
@@ -251,15 +257,17 @@ function freshCtx(domain: string, goal: string, ports: FactoryPorts, emit: (e: B
 const spawnSubagentTool: BrainTool = {
   name: "spawn_subagent",
   description: "派一个隔离的子大脑做聚焦子任务（只读研究：read_ontology / describe_domain / web_search / inspect_run 等，不能部署也不能改 agent）。完成后回传它的总结。某个子问题要独立深入分析、又不想污染主对话时用。",
-  parameters: { type: "object", properties: { reasoning: { type: "string", description: "为什么要派子大脑" }, task: { type: "string", description: "交给子大脑的聚焦子任务" }, tools: { type: "array", items: { type: "string" }, description: "#W3-2 可选:限定子大脑只能用这些工具(作用域工具集,避免 38 个全量工具污染其决策);不传=默认只读集" } }, required: ["reasoning", "task"], additionalProperties: false },
+  parameters: { type: "object", properties: { reasoning: { type: "string", description: "为什么要派子大脑" }, task: { type: "string", description: "交给子大脑的聚焦子任务" }, role: { type: "string", description: "【由你自动拟定】给这个子大脑设定的角色名（≤10 字，按任务定制，如「证据调查员」「规则考古学家」「链路侦探」）——后台任务卡与活动叙事用它称呼这个子 agent" }, tools: { type: "array", items: { type: "string" }, description: "#W3-2 可选:限定子大脑只能用这些工具(作用域工具集,避免 38 个全量工具污染其决策);不传=默认只读集" } }, required: ["reasoning", "task"], additionalProperties: false },
   async execute(args, ctx) {
     const task = String(args.task ?? "").trim();
     if (!task) return { ok: false, summary: "task 不能为空。" };
+    // #ROLE — 子大脑的角色由 AI 在 spawn 时自动设定（开放词汇，不设注册表）；缺省不显示。
+    const role = String(args.role ?? "").trim().slice(0, 16) || undefined;
     // #W3-2 — scoped toolset: filter the sub-brain's tools to the requested subset (of the read-only
     // sub-agent set) so a narrow research task isn't confused by the full catalog.
     const toolFilter = Array.isArray(args.tools) ? new Set((args.tools as string[]).map(String)) : null;
     const scopedTools = toolFilter ? SUBAGENT_TOOLS.filter((t) => toolFilter.has(t.name)) : undefined;
-    ctx.emit({ t: "subagent.start", task });
+    ctx.emit({ t: "subagent.start", task, role });
     let summary = "";
     try {
       // R9: propagate depth so the spawned sub-brain gets the depth-bounded toolset (it may
@@ -310,10 +318,20 @@ export async function* runBrain(opts: {
   warmModelCatalog();
 
   // resume or fresh
-  const saved =
-    opts.conversationId && (await opts.ports.conversation.has(opts.conversationId).catch(() => false))
-      ? await opts.ports.conversation.load(opts.conversationId).catch(() => null)
-      : null;
+  // #AUDIT-FIX(H1) — 区分「行不存在」与「读取失败」：读失败曾被吞成 fresh，随后每轮 checkpoint
+  // 用全新 ctx 覆盖同一 conversationId——一次瞬时读故障即永久摧毁会话历史。现在：读失败 →
+  // 按 fresh 继续本次运行（不阻断用户），但【禁用全部落盘】保护旧行，并发出可见告警。
+  let convReadFailed = false;
+  const savedExists = opts.conversationId
+    ? await opts.ports.conversation.has(opts.conversationId).catch(() => { convReadFailed = true; return false; })
+    : false;
+  const saved = savedExists
+    ? await opts.ports.conversation.load(opts.conversationId!).catch(() => { convReadFailed = true; return null; })
+    : null;
+  const checkpointWritesDisabled = convReadFailed;
+  // #AUDIT-FIX(L28) — 崩溃自动续跑的哨兵目标：不当作新需求（跳过意图门/policy/目标追加），
+  // 只提示大脑从状态摘要接续，避免同一请求被登记两次意图、注入错误路线。
+  const isCrashResume = !opts.isSubAgent && opts.goal.trim().startsWith("[恢复继续]");
   const priorReflections: ReflectionLite[] = saved
     ? ((saved.ctx.priorReflections as ReflectionLite[]) ?? [])
     : await opts.ports.reflection.list(opts.domain).catch(() => []);
@@ -341,7 +359,7 @@ export async function* runBrain(opts: {
   let lang = resolveBrainLang(opts.domain, ctx.ontology);
   let langFromOntology = !!ctx.ontology;
   const messages: ChatMsg[] = saved
-    ? [...(saved.messages as ChatMsg[]), { role: "user", content: opts.goal }]
+    ? [...(saved.messages as ChatMsg[])]
     : [
         { role: "system", content: systemPrompt(opts.domain, priorReflections, lang) },
         { role: "user", content: opts.goal },
@@ -353,19 +371,92 @@ export async function* runBrain(opts: {
     messages[0] = { role: "system", content: systemPrompt(opts.domain, priorReflections, lang) };
   }
 
+  if (convReadFailed) {
+    emit({ t: "reflect", kind: "warning", lesson: "⚠ 会话存档读取失败——本次按临时会话运行且【不落盘】以保护既有历史；修复存储后重新发送可恢复原会话。" });
+  }
+
+  // #AUDIT-FIX(H3) — resume 时的残留 park 门调和：崩溃/停止时 park 标志随 checkpoint 幸存，
+  // 老逻辑会带着空邮箱重新 park ~3 分钟然后自动做出【用户从未批准的】决定（含真实部署）。
+  // 现在：① 若在等澄清且用户发来了新消息 → 新消息就是答案（走澄清门同款登记路径）；
+  // ② 若在等测试用例/边界确认 → 取消旧等待并明确告知大脑（提案仍在上下文，可重新发起），
+  // 绝不自动替用户拍板。
+  let goalRoutedToClarify = false;
+  if (saved && !opts.isSubAgent) {
+    const goalText = opts.goal.trim();
+    if (ctx.awaitingClarify && ctx.clarifyPrompt && goalText && !isCrashResume && !isStopIntent(goalText)) {
+      const q = ctx.clarifyPrompt.question;
+      const hit = ctx.clarifyPrompt.options?.find((o) => o.label === goalText || o.value === goalText);
+      const answer = hit ? hit.value : goalText;
+      ctx.awaitingClarify = false;
+      ctx.clarifyPrompt = undefined;
+      ctx.humanDirectives.push(`澄清「${q}」→ ${answer}`);
+      (ctx.askedQuestions ??= {})[normalizeQuestion(q)] = answer;
+      messages.push({ role: "user", content: `[用户澄清回答] 针对你的问题「${q}」，用户回答：${answer}。据此继续，别再重复问同样的问题。` });
+      emit({ t: "message", text: `✅（恢复会话）已把你的新消息作为此前澄清问题「${q.slice(0, 40)}」的回答。` });
+      goalRoutedToClarify = true;
+    }
+    if (ctx.awaitingApproval) {
+      ctx.awaitingApproval = false;
+      messages.push({ role: "user", content: "[门已重置] 恢复会话时存在未决的【测试用例确认】——原等待已取消，没有也不会自动执行部署。测试用例仍在上下文；若仍需沙箱验证，请重新征求用户确认（generate_test_cases 或直接 ask_user）。先处理用户的新消息。" });
+      emit({ t: "message", text: "ℹ️（恢复会话）此前有一个未决的测试用例确认——已取消等待，不会自动执行部署。" });
+    }
+    if (ctx.awaitingBoundary) {
+      ctx.awaitingBoundary = false;
+      messages.push({ role: "user", content: "[门已重置] 恢复会话时存在未决的【边界事件分类】——原等待已取消（不会按 AI 初判自动生效）。boundaryProposals 仍在上下文；若需要请重新 propose_boundary_events 征求用户确认。先处理用户的新消息。" });
+      emit({ t: "message", text: "ℹ️（恢复会话）此前有一个未决的边界事件分类——已取消等待，不会自动按初判生效。" });
+    }
+  }
+  if (saved && !goalRoutedToClarify) messages.push({ role: "user", content: opts.goal });
+
   // ── INTENT GATE（意图门）— understand the user before executing them. Every new goal
   // (fresh run OR a resumed conversation's follow-up) gets a fast structured read:
   // [类型] 目标 ｜ 约束 ｜ 期望产物 — APPENDED to ctx.userIntent so the conversation's intent
   // history accumulates. Fold-surviving (buildStateSummary) + restart-surviving (serializeCtx).
   // Skipped for sub-brains (machine-authored goals); fail-safe inside parseUserIntent: an LLM
   // hiccup degrades to recording the raw goal — the gate never blocks a run.
-  if (!opts.isSubAgent && isGatewayConfigured() && opts.goal.trim()) {
+  if (!opts.isSubAgent && isGatewayConfigured() && opts.goal.trim() && !goalRoutedToClarify && !isCrashResume) {
     const before = ctx.userIntent;
     ctx.userIntent = await parseUserIntent(opts.goal, ctx.userIntent);
     if (ctx.userIntent && ctx.userIntent !== before) {
       const latest = ctx.userIntent.split("\n").pop() ?? ctx.userIntent;
       emit({ t: "reflect", kind: "intent", lesson: `意图理解：${latest.replace(/^\+\s*/, "")}` });
     }
+  }
+
+  // ── #POLICY 前置自适应路由 — 意图门之后、任何工具调用之前，按【问题类型】选流水线形状 +
+  // 档位偏置（analyze/question 降 fast 省钱）。#NATIVE 修订：规模/难度/历史教训只作为【事实
+  // 与建议】注入上下文（下方 guide 消息），分治深度（understand/critique 的 deep 参数）由 AI
+  // 原生决定——不再由本体规模阈值确定性强制。对 sub-brain 跳过（机器目标，无需分诊）。
+  if (!opts.isSubAgent && !goalRoutedToClarify && !isCrashResume) {
+    const difficulty = estimateDifficulty(ctx.ontology);
+    // ontologyUnderstanding 是折叠幸存的文本摘要——understand_ontology 的产出固定含"N 处歧义"。
+    // 首轮（还没理解）为 0；续轮（resume 的追加目标）能据此建议 ask_first。
+    const ambiguityCount = Number(ctx.ontologyUnderstanding?.match(/(\d+)\s*处歧义/)?.[1] ?? 0);
+    let policy = selectPolicy({ intentKind: classifyIntentKind(ctx.userIntent), difficulty, hasSpecs: ctx.specs.length > 0, ambiguityCount });
+    // #POLICY-LEARN — 历史 arm 统计做证据偏置（保真差→强制深评；fast 答疑砸→撤降档）。best-effort。
+    try {
+      const stats = (await ctx.ports.policyStats?.load(opts.domain)) ?? null;
+      policy = adjustPolicyWithStats(policy, stats, difficulty.band);
+    } catch { /* 无统计 → 原样 */ }
+    ctx.policy = { ...policy, band: difficulty.band };
+    emit({ t: "policy", pipeline: policy.pipeline, band: difficulty.band, deepUnderstand: policy.deepUnderstand, deepCritique: policy.deepCritique, tierBias: policy.tierBias, reasons: policy.reasons });
+    // #POLICY — 非 full 路线：把路线指令直接注入对话（阶段闸门不动——它守的是"生成时的顺序"，
+    // 路线守的是"这次要不要生成"；analyze/skinny 由大脑按指令执行，指令进 messages 可折叠幸存）。
+    // #NATIVE — full 路线也注入一条【事实与建议】（决定权在 AI）：难度事实、经验回喂的深评建议
+    // （policy-learning 的 deepCritique 现在只经这里到达 AI，不再被工具强制消费）。
+    const suggests = [
+      policy.deepUnderstand ? "understand_ontology 建议 deep=true" : null,
+      policy.deepCritique ? "critique_plan 建议 deep=true（历史保真教训）" : null,
+    ].filter(Boolean);
+    const guide =
+      policy.pipeline === "analyze"
+        ? "[推理路线] 本次是只读分析/答疑：直接用已有知识与 read_ontology/understand_ontology 回答，【不要】进入生成流水线（不 create_plan / design_agent / sandbox_run / finish）。"
+        : policy.pipeline === "skinny"
+          ? "[推理路线] 本次是修改请求且已有设计成果：先定位目标 agent → refine_agent 定点修 → validate_graph（必要时 sandbox_run）验证。【不要】create_plan 全量重造。"
+          : policy.pipeline === "ask_first"
+            ? "[推理路线] 本体理解已标出多处歧义：先 ask_user 澄清最关键的 1-2 处（给具体选项），拿到答案再进入设计。"
+            : `[推理路线] 完整生成路线。参考事实与建议（深读/深评等分治深度由你在工具的 deep 参数里自行决定）：${policy.reasons.slice(-3).join("；")}${suggests.length ? `；${suggests.join("；")}` : ""}`;
+    if (guide) messages.push({ role: "user", content: guide });
   }
 
   let finishedOk = false;
@@ -379,7 +470,8 @@ export async function* runBrain(opts: {
   let finishRefusals = 0;
   let sawReflect = false;
   let parkTicks = 0;
-  const PARK_MAX_TICKS = 150; // ~3 min of polling before auto-approving the test cases
+  // #AUDIT-FIX(H5) — park 超时节拍 env 可配；批准/边界门超时【挂起】而非自动拍板（见各门）。
+  const PARK_MAX_TICKS = Math.max(10, Number(process.env.FACTORY_PARK_MAX_TICKS) || 150);
 
   try {
     // #W2 — duplicate-call breaker state (consecutive same tool+args).
@@ -425,19 +517,32 @@ export async function* runBrain(opts: {
       if (!opts.isSubAgent && ctx.awaitingApproval && opts.conversationId) {
         const human = await drainRouted();
         let decided: null | { decision: "approve" | "regenerate"; note: string } = null;
+        let hardStop = false;
         for (const text of human) {
+          if (isStopIntent(text)) { hardStop = true; break; } // #AUDIT-FIX(H6) — park 中的「停止」是硬停止，不是数据
           if (GATE_TAG.boundary.test(text) || GATE_TAG.clarify.test(text)) { requeueFor([text]); continue; } // #W2-HITL
           const m = text.match(/^\[测试用例决策[:：]\s*(执行|approve|重新生成|regenerate)\]\s*([\s\S]*)$/i);
           if (m) decided = { decision: /执行|approve/i.test(m[1]!) ? "approve" : "regenerate", note: (m[2] ?? "").trim() };
+          else if (/^(执行|approve|确认执行|ok|好)$/i.test(text.trim())) decided = { decision: "approve", note: "" }; // #AUDIT-FIX(M16) 纯文本关键词可解门
+          else if (/^(重新生成|regenerate|重做)/i.test(text.trim())) decided = { decision: "regenerate", note: text.trim().replace(/^(重新生成|regenerate|重做)[，,：:]?\s*/i, "") };
           else {
             ctx.humanDirectives.push(text);
             messages.push({ role: "user", content: `[人工介入] ${text}` });
             yield { t: "message", text: `🧑 收到你的介入：「${text}」` };
           }
         }
+        if (hardStop) {
+          yield { t: "message", text: "⏹ 收到停止指令——立即停止本次运行（等待中的确认已取消，已生成的内容保留）。" };
+          ctx.awaitingApproval = false;
+          break;
+        }
         if (!decided && parkTicks >= PARK_MAX_TICKS) {
-          decided = { decision: "approve", note: "(等待超时，自动确认执行)" };
-          yield { t: "message", text: "⏱ 用例确认等待超时——自动按「执行」继续试运行。" };
+          // #AUDIT-FIX(H5) — 旧行为在超时后自动按「执行」触发真实部署（用户从未批准，且可能
+          // 正是为了阻止部署才停下）。现在：挂起运行、保留 park 状态，等用户回来决定；恢复
+          // 会话时 H3 调和逻辑接手。绝不自动选择风险更高的一侧。
+          parkTicks = 0;
+          yield { t: "message", text: "⏸ 测试用例确认等待超时——运行已挂起（不会自动执行部署）。回来后点【执行/重新生成】或直接发消息即可继续。" };
+          break;
         }
         if (!decided) {
           parkTicks++;
@@ -463,7 +568,9 @@ export async function* runBrain(opts: {
       if (!opts.isSubAgent && ctx.awaitingBoundary && opts.conversationId) {
         const human = await drainRouted();
         let decided: BoundaryEvent[] | null = null;
+        let hardStopB = false;
         for (const text of human) {
+          if (isStopIntent(text)) { hardStopB = true; break; } // #AUDIT-FIX(H6)
           if (GATE_TAG.approval.test(text) || GATE_TAG.clarify.test(text)) { requeueFor([text]); continue; } // #W2-HITL
           const m = text.match(/^\[边界事件决策\]\s*([\s\S]+)$/);
           if (m) {
@@ -487,9 +594,17 @@ export async function* runBrain(opts: {
             yield { t: "message", text: `🧑 收到你的介入：「${text}」` };
           }
         }
+        if (hardStopB) {
+          yield { t: "message", text: "⏹ 收到停止指令——立即停止本次运行（等待中的分类已取消，已生成的内容保留）。" };
+          ctx.awaitingBoundary = false;
+          break;
+        }
         if (!decided && parkTicks >= PARK_MAX_TICKS) {
-          decided = (ctx.boundaryProposals ?? []).map((p) => ({ event: p.event, kind: p.suggestedKind, consumer: p.consumer, payloadContract: p.payloadContract }));
-          yield { t: "message", text: "⏱ 边界事件确认超时——按你的初判处理继续。" };
+          // #AUDIT-FIX(M18) — 这个门存在的全部意义是「AI 提案、用户确认」；超时把 AI 初判当用户
+          // 决定生效（直接影响断链判定与 finish）违背该原则。改为挂起等用户，恢复时 H3 接手。
+          parkTicks = 0;
+          yield { t: "message", text: "⏸ 边界事件确认等待超时——运行已挂起（不会按 AI 初判自动生效）。回来后提交分类或直接发消息即可继续。" };
+          break;
         }
         if (!decided) {
           parkTicks++;
@@ -517,16 +632,29 @@ export async function* runBrain(opts: {
       if (!opts.isSubAgent && ctx.awaitingClarify && opts.conversationId) {
         const human = await drainRouted();
         let answer: string | null = null;
+        let hardStopC = false;
+        const untagged: string[] = [];
         for (const text of human) {
+          if (isStopIntent(text)) { hardStopC = true; break; } // #AUDIT-FIX(H6) — 「停止」不是答案
           if (GATE_TAG.approval.test(text) || GATE_TAG.boundary.test(text)) { requeueFor([text]); continue; } // #W2-HITL — was greedily eaten here
           const m = text.match(/^\[澄清回答\]\s*([\s\S]+)$/);
-          if (m) answer = m[1]!.trim();
-          else { answer = text.trim(); } // any UNTAGGED free reply while parked counts as the answer
+          if (m) untagged.push(m[1]!.trim());
+          else untagged.push(text.trim()); // any UNTAGGED free reply while parked counts as answer material
         }
+        // #AUDIT-FIX(M16) — 多条自由回复【累积】为完整答案（旧逻辑只留最后一条，前面的静默丢弃）。
+        if (untagged.length) answer = untagged.join("\n");
+        if (hardStopC) {
+          yield { t: "message", text: "⏹ 收到停止指令——立即停止本次运行（待答的问题保留，回来可继续）。" };
+          break;
+        }
+        let autoFallback = false;
         if (!answer && parkTicks >= PARK_MAX_TICKS) {
           const rec = ctx.clarifyPrompt?.options?.find((o) => o.recommended);
-          answer = rec ? `(等待超时，按你的推荐继续：${rec.label})` : "(等待超时，AI 自行按最佳判断继续)";
-          yield { t: "message", text: `⏱ 澄清等待超时——${rec ? `按推荐项「${rec.label}」` : "AI 自行判断"}继续。` };
+          // #ASK-FIX（审查修复）— 超时回退必须用【机器可用的 value】而不是人类可读 label：
+          // 大脑拿 label 当叙述读，拿 value 才能当决策执行。label 只进给用户看的消息。
+          answer = rec ? rec.value : "(等待超时，AI 自行按最佳判断继续)";
+          autoFallback = true; // #AUDIT-FIX(H7) — 机器代答，绝不能冒充用户答案进入去重回放
+          yield { t: "message", text: `⏱ 澄清等待超时——${rec ? `按推荐项「${rec.label}」(${rec.value})` : "AI 自行判断"}继续。` };
         }
         if (!answer) {
           parkTicks++;
@@ -536,21 +664,38 @@ export async function* runBrain(opts: {
         }
         parkTicks = 0;
         const q = ctx.clarifyPrompt?.question ?? ""; // snapshot BEFORE clearing state (idempotent, matches the other gates)
+        // #ASK-FIX — 用户自由回复若命中某个选项的 label，规范化为该选项的 value（答案进入
+        // 决策路径时统一是机器值；原文保留在给用户的回显里）。
+        const hitOpt = ctx.clarifyPrompt?.options?.find((o) => o.label === answer || o.value === answer);
+        if (hitOpt) answer = hitOpt.value;
+        const clarifyContext = ctx.clarifyPrompt?.context ?? ""; // M20 用，clear 前快照
         ctx.awaitingClarify = false;
         ctx.clarifyPrompt = undefined;
-        ctx.humanDirectives.push(`澄清「${q}」→ ${answer}`);
+        ctx.humanDirectives.push(`澄清「${q}」→ ${autoFallback ? "(auto·超时代答) " : ""}${answer}`);
+        // #ASK-DEDUP — 记住"这个问题已经答过"：同一问题再被 ask_user 时直接回放答案，不再打断用户。
+        // #AUDIT-FIX(H7) — 超时的机器代答【不写入】去重表（并清掉 pending 标记）：用户回来后
+        // 这个问题必须还能被真正问到，而不是永远回放一个机器决定并声称"用户当时的答复"。
+        if (autoFallback) {
+          if (ctx.askedQuestions) delete ctx.askedQuestions[normalizeQuestion(q)];
+        } else {
+          (ctx.askedQuestions ??= {})[normalizeQuestion(q)] = answer;
+        }
         // If this was a supply_test_data request, capture any "field: value" lines into the test-data
         // overrides directly — so real values (e.g. a real interview email) thread into the fired
         // payloads even if the brain doesn't explicitly re-call supply_test_data. Safe: the overrides
         // only replace keys ALREADY present in a test payload (applyTestDataOverrides), so unrelated
         // clarify answers are no-ops.
-        if (q.includes("真实联系") || q.includes("真实值") || /字段/.test(q)) {
+        // #AUDIT-FIX(M20) — 只在明确的【测试数据补全】上下文才做 kv 捕获（旧条件 /字段/ 过宽：
+        // 任何提到"字段"的澄清，答案里的 key: value 都被静默织进测试载荷）。捕获结果可见披露。
+        if (/测试数据|真实联系|真实值/.test(clarifyContext) || q.includes("真实联系") || q.includes("真实值")) {
+          const captured: string[] = [];
           for (const line of answer.split(/\n+/)) {
             const kv = line.match(/^\s*([A-Za-z_][\w.]*)\s*[:：=]\s*(.+?)\s*$/);
             const key = kv?.[1];
             const val = kv?.[2]?.trim();
-            if (key && val && val !== "用占位") (ctx.testDataOverrides ??= {})[key] = val;
+            if (key && val && val !== "用占位") { (ctx.testDataOverrides ??= {})[key] = val; captured.push(key); }
           }
+          if (captured.length) yield { t: "message", text: `🧷 已登记测试真实值：${captured.join("、")}（只会替换测试载荷中已存在的同名字段）。` };
         }
         messages.push({ role: "user", content: `[用户澄清回答] 针对你的问题「${q}」，用户回答：${answer}。据此继续，别再重复问同样的问题。` });
         yield { t: "message", text: `✅ 收到你的回答：${answer}` };
@@ -571,6 +716,17 @@ export async function* runBrain(opts: {
           yield { t: "message", text: `🧑 收到你的介入：「${text}」——下一步会纳入。` };
         }
         if (stopRequested) break;
+      }
+
+      // #AUDIT-FIX(M14) — pendingHuman 只被 park 门排空；错时投递的带标消息在门关闭后会永远滞留。
+      // 常规轮顶：没有任何门在等时，把滞留消息按 [人工介入] 补送（可见），不再无声吞没。
+      if (!ctx.awaitingApproval && !ctx.awaitingBoundary && !ctx.awaitingClarify && ctx.pendingHuman?.length) {
+        for (const text of ctx.pendingHuman) {
+          ctx.humanDirectives.push(text);
+          messages.push({ role: "user", content: `[人工介入] ${text}` });
+          yield { t: "message", text: `🧑（补送）收到你此前的消息：「${text.slice(0, 80)}」——对应的等待已结束，按介入处理。` };
+        }
+        ctx.pendingHuman = [];
       }
 
       // Soft cost meter every 3 turns (NOT a hard cap — user vetoed caps).
@@ -599,6 +755,20 @@ export async function* runBrain(opts: {
         yield { t: "compaction", summary: "上下文已自动压缩：保留近期若干轮 + 结构化状态摘要，早期冗长输出已折叠（细节可用 read_spec / inspect_run / list_agents 取回）。", state: buildStateSummary(ctx) };
       }
 
+      // #ANCHOR — 本体记忆心跳：按节拍把【本体事实 + 消化结论 + 还欠的覆盖】重新注入对话，
+      // 防止长跑中早期理解被几十轮工具结果稀释（折叠幸存解决"丢"，锚点解决"淡"）。
+      // 事实提醒而非指令；FACTORY_ONTOLOGY_ANCHOR_EVERY 调节拍（0=关）。
+      {
+        const anchorEvery = Number(process.env.FACTORY_ONTOLOGY_ANCHOR_EVERY ?? DEFAULT_ANCHOR_EVERY);
+        if (anchorDue(turn, anchorEvery)) {
+          const anchor = buildOntologyAnchor(ctx, turn);
+          if (anchor) {
+            messages.push({ role: "user", content: anchor });
+            yield { t: "reflect", kind: "anchor", lesson: `本体锚点已注入（第 ${turn} 轮心跳）——理解与覆盖清单已刷新到上下文。` };
+          }
+        }
+      }
+
       // Constrained decoding: ground design/refine schemas to the REAL action + tool names.
       const groundedSchemas = ctx.ontology
         ? injectGroundingEnums(toolSchemas, {
@@ -607,12 +777,26 @@ export async function* runBrain(opts: {
           })
         : toolSchemas;
 
+      // #AUDIT-FIX(L24) — 排空事件缓冲：工具调用之外 emit 的事件（policy/意图反思/锚点/调和提示）
+      // 曾只在工具循环里 drain，纯对话轮会静默滞留、run 结束整批丢弃。
+      while (buffer.length) {
+        const ev0 = buffer.shift()!;
+        if (ev0.t === "reflect") sawReflect = true;
+        yield ev0;
+      }
+
       // #7: route this turn's model by difficulty (fast while reading/planning, hard once
       // designing/coding) through a config-driven fallback chain; annotate which model served it.
       const tier = tierForContext(ctx);
       let pendingCalls: { id: string; name: string; args: string }[] | null = null;
       let assistantContent = "";
-      for await (const ev of streamTurn(messages, groundedSchemas, { signal: opts.signal, models: modelChain(tier) })) {
+      // #AUDIT-FIX(M17) — 单轮流中断（看门狗/断流/瞬时 5xx）不再炸掉整个 run：本轮重试一次
+      // （messages 在成功前不变，重放安全）；连续两次才向上抛。
+      for (let sAttempt = 0; ; sAttempt++) {
+        try {
+          pendingCalls = null;
+          assistantContent = "";
+          for await (const ev of streamTurn(messages, groundedSchemas, { signal: opts.signal, models: modelChain(tier) })) {
         if (ev.t === "think") yield { t: "think", delta: ev.delta };
         else if (ev.t === "model") yield { t: "model", model: ev.model, tier, turn: turn + 1 };
         else if (ev.t === "usage") {
@@ -632,6 +816,18 @@ export async function* runBrain(opts: {
           pendingCalls = ev.calls;
           assistantContent = ev.content;
         } else if (ev.t === "done") assistantContent = ev.content;
+          }
+          break;
+        } catch (e) {
+          const msg = String((e as Error)?.message ?? e);
+          const transientTurn = !opts.signal?.aborted && /看门狗|空转|overload|\b50[234]\b|temporarily|unavailable|timeout|timed out|too many requests|rate.?limit|econn|socket hang|abort/i.test(msg);
+          if (sAttempt === 0 && transientTurn) {
+            yield { t: "message", text: `⚠ 本轮模型流中断（${msg.slice(0, 70)}）——自动重试一次。` };
+            await new Promise((r) => setTimeout(r, 2000));
+            continue;
+          }
+          throw e;
+        }
       }
 
       // No tool calls → the brain is talking: its final answer for this turn. We do NOT
@@ -650,7 +846,10 @@ export async function* runBrain(opts: {
         // #8 FIX: gate ONLY on real specs existing — NOT on a plan alone. A plan can exist for an
         // analysis/exploration turn the user never asked to finish; nudging then makes "分析一下本体"
         // requests loop. The genuine generation path still trips this the moment the first spec exists.
-        if (!opts.isSubAgent && !finishedOk && ctx.ontology && ctx.specs.length > 0) {
+        // #AUDIT-FIX(H4) — analyze/ask_first/skinny 路线与已交付会话不再被「去 finish」推搡：
+        // 旧守卫会连发 5 条与 [推理路线] 直接矛盾的催促（甚至触发不想要的真实部署）。
+        const guardExempt = ["analyze", "ask_first", "skinny"].includes(String(ctx.policy?.pipeline ?? "")) || ctx.delivered === true;
+        if (!opts.isSubAgent && !finishedOk && !guardExempt && ctx.ontology && ctx.specs.length > 0) {
           const agentActions = ctx.ontology.actions.filter((a) => a.actor.includes("Agent")).map((a) => a.name);
           const covered = new Set(ctx.specs.map((s) => s.actionName));
           const remaining = agentActions.filter((a) => !covered.has(a));
@@ -689,18 +888,23 @@ export async function* runBrain(opts: {
           args = {};
         }
         const reasoning = typeof args.reasoning === "string" ? args.reasoning : "";
-        yield { t: "tool.call", id: call.id, name: call.name, reasoning, input: args };
+        // #UI-DRILL — the generated agent this harness step targets (agent-scoped tools carry
+        // `action`; `design_subagent` carries `parent_action`). Lets the ops panel group every
+        // reasoning step + tool call under the agent it was building.
+        const forAgent = typeof args.action === "string" ? args.action : typeof args.parent_action === "string" ? args.parent_action : undefined;
+        yield { t: "tool.call", id: call.id, name: call.name, reasoning, input: args, role: roleOfTool(call.name), forAgent };
 
         // Explicit stage signal: light the canvas rail as the brain ENTERS this stage, before
         // the (possibly long) tool runs, so the active-stage highlight tracks the live work.
         const stage = STAGE_OF_TOOL[call.name];
-        if (stage) yield { t: "stage", stage, status: "active" };
+        if (stage) yield { t: "stage", stage, status: "active", role: roleOfTool(call.name) };
 
         const tool = byName.get(call.name);
-        if (STAGE_OF_TOOL[call.name]) currentStage = STAGE_OF_TOOL[call.name]!; // #W2-STAGE attribution
         // #W2-STAGE — admission gate: refuse a stage-jumping tool with a structured steer (this is the
         // phaseFor→control upgrade; order enforced by structure, not prompt prose).
         const admission = stageAdmission(call.name, ctx);
+        // #AUDIT-FIX(L29) — 只有闸门放行才更新 stage 归因：被拒绝的跳段不应把后续 token 记到它头上。
+        if (!admission && STAGE_OF_TOOL[call.name]) currentStage = STAGE_OF_TOOL[call.name]!;
         let result;
         if (admission) {
           result = { ok: false, summary: admission };
@@ -708,8 +912,32 @@ export async function* runBrain(opts: {
           result = { ok: false, summary: `重复调用检测：你已连续 ${dupCount + 1} 次用【完全相同的参数】调用 ${call.name}——重复不会改变结果。改变输入、换工具（verify_chain/analyze_failure/ask_user），或 revert 后换思路。` };
         } else if (!tool) result = { ok: false, summary: `未知工具 ${call.name}` };
         else {
+          // #HEARTBEAT — 工具执行心跳：长工具（understand_ontology 四维分治 / sandbox_run 轮询）
+          // 曾在 UI 上只有一句"运行中…"，慢/卡/死不可区分。现在每 ~15s yield 一条 tool.progress
+          // （elapsed 递增 + 阶梯升级提示），SSE 持续有流量 → 前端 staleness 不误报"无响应"。
           try {
-            result = await tool.execute(args, ctx);
+            const HEARTBEAT_MS = Math.max(5000, Number(process.env.FACTORY_TOOL_HEARTBEAT_MS) || 15000);
+            const toolP = Promise.resolve(tool.execute(args, ctx)).then(
+              (v) => ({ kind: "ok" as const, v }),
+              (e) => ({ kind: "err" as const, e }),
+            );
+            let elapsedMs = 0;
+            type Settled = Awaited<typeof toolP>;
+            let settled: Settled | null = null;
+            for (;;) {
+              const raced: Settled | null = await Promise.race([toolP, new Promise<null>((r) => { const t = setTimeout(() => r(null), HEARTBEAT_MS); (t as unknown as { unref?: () => void }).unref?.(); })]);
+              if (raced) { settled = raced; break; }
+              elapsedMs += HEARTBEAT_MS;
+              const es = Math.round(elapsedMs / 1000);
+              const note =
+                es >= 420 ? "仍在执行。若长期无进展可停止运行——心跳仍在说明进程没死，多半是外部依赖极慢。"
+                : es >= 180 ? "仍在执行（长任务：多次 LLM 调用/沙箱轮询属正常）。"
+                : es >= 60 ? "仍在执行——这一步涉及多次 LLM 调用或外部等待。"
+                : undefined;
+              yield { t: "tool.progress", id: call.id, name: call.name, role: roleOfTool(call.name), elapsedS: es, ...(note ? { note } : {}) };
+            }
+            if (settled!.kind === "ok") result = settled!.v;
+            else throw settled!.e;
           } catch (e) {
             result = { ok: false, summary: `工具 ${call.name} 出错：${(e as Error).message}` };
           }
@@ -726,11 +954,11 @@ export async function* runBrain(opts: {
         const outStr = result.output !== undefined ? (typeof result.output === "string" ? result.output : JSON.stringify(result.output, null, 2)) : undefined;
         const UI_OUTPUT_CAP = Number(process.env.FACTORY_UI_OUTPUT_CAP) || 64000;
         const outForUi = outStr && outStr.length > UI_OUTPUT_CAP ? outStr.slice(0, UI_OUTPUT_CAP) + "\n…[输出过长已截断，完整内容用对应工具重取]" : outStr;
-        yield { t: "tool.result", id: call.id, name: call.name, ok: result.ok, summary: result.summary, output: outForUi };
+        yield { t: "tool.result", id: call.id, name: call.name, ok: result.ok, summary: result.summary, output: outForUi, forAgent };
 
         // Settle the stage once its tool returns. For `finish` only a PASSED gate (result.ok)
         // is a real 交付; a refused finish stays "error" so the rail never falsely shows shipped.
-        if (stage) yield { t: "stage", stage, status: result.ok ? "ok" : "error" };
+        if (stage) yield { t: "stage", stage, status: result.ok ? "ok" : "error", role: roleOfTool(call.name) };
 
         const toolBody = result.output !== undefined ? { summary: result.summary, output: result.output } : { ok: result.ok, summary: result.summary };
         let toolContent = JSON.stringify(toolBody);
@@ -754,6 +982,7 @@ export async function* runBrain(opts: {
           if (result.ok) {
             finished = true;
             finishedOk = true;
+            ctx.delivered = true; // #AUDIT-FIX(H4) — 跨 run 持久（serializeCtx），交付后的追问不再被催 finish
           } else {
             finishRefusals += 1;
             if (finishRefusals >= 4) {
@@ -770,10 +999,10 @@ export async function* runBrain(opts: {
       // the «思考过程突然中断且无法续跑» incident: a follow-up build died mid-stream with its
       // conversation checkpoint still frozen at the PREVIOUS interaction. One SQLite upsert per
       // turn is cheap; crash-resume then continues from the latest completed turn.
-      if (opts.conversationId) {
+      if (opts.conversationId && !checkpointWritesDisabled) {
         await opts.ports.conversation
           .save(opts.conversationId, { domain: opts.domain, messages: messages as unknown[], ctx: serializeCtx(ctx) })
-          .catch(() => {});
+          .catch((e) => { try { console.warn(`[factory] 每轮检查点写入失败（崩溃续跑保障降级）：${(e as Error)?.message}`); } catch { /* best-effort */ } }); // #AUDIT-FIX(L25)
       }
 
       if (finished) break;
@@ -794,10 +1023,10 @@ export async function* runBrain(opts: {
     };
   } finally {
     // Persist messages + ctx so the user's NEXT message resumes this conversation.
-    if (opts.conversationId) {
+    if (opts.conversationId && !checkpointWritesDisabled) {
       await opts.ports.conversation
         .save(opts.conversationId, { domain: opts.domain, messages: messages as unknown[], ctx: serializeCtx(ctx) })
-        .catch(() => {});
+        .catch((e) => { try { console.warn(`[factory] 收尾检查点写入失败：${(e as Error)?.message}`); } catch { /* best-effort */ } }); // #AUDIT-FIX(L25)
     }
     // Tear the sandbox app back down at run-end (revert to 0 functions) — the OLD
     // conductor's session-end teardown. Only if a sandbox actually ran. Best-effort.
@@ -841,5 +1070,19 @@ export async function* runBrain(opts: {
         : ctx.spent.turns >= MAX_TURNS
           ? "turns_exhausted"
           : "incomplete";
+  // #POLICY-LEARN — 把本次 (pipeline|band) 的结果回喂进 arm 统计：ok = 体面收束；fidelityBad =
+  // 出现过保真违约。下次同域同难度选路时用作证据偏置。best-effort（存储缺席/失败零影响）。
+  if (!opts.isSubAgent && ctx.policy?.band && ctx.ports.policyStats) {
+    try {
+      const prev = (await ctx.ports.policyStats.load(opts.domain)) ?? null;
+      const next = recordOutcome(prev, {
+        pipeline: ctx.policy.pipeline,
+        band: ctx.policy.band,
+        ok: status === "finished",
+        fidelityBad: Boolean(ctx.lastSandbox?.fidelityFailures?.length),
+      });
+      await ctx.ports.policyStats.save(opts.domain, next);
+    } catch { /* best-effort */ }
+  }
   yield { t: "done", tokensUsed: ctx.spent.tokens, turns: ctx.spent.turns, status };
 }

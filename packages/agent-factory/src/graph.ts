@@ -51,7 +51,8 @@ export type GraphIssue =
   | { kind: "missing_producer"; action: string; event: string } // consumes an event nobody emits (not an entry)
   | { kind: "unreachable_node"; action: string } // not reachable from any entry node
   | { kind: "no_entry" } // graph has no entry node at all
-  | { kind: "no_terminal" }; // graph never reaches a terminal
+  | { kind: "no_terminal" } // graph never reaches a terminal
+  | { kind: "dead_end"; action: string }; // #AUDIT-FIX(P2-02) reachable but can't reach any terminal (困在环/死路)
 
 export type VerifyResult = {
   ok: boolean;
@@ -227,6 +228,24 @@ export function verifyGraph(
   for (const n of graph.nodes) {
     if (!reachable.has(n.action)) {
       issues.push({ kind: "unreachable_node", action: n.action });
+    }
+  }
+
+  // #AUDIT-FIX(P2-02) — 反向可达：只验"从入口可达"会漏掉"到不了任何终态"的分支（困在环里/死路）。
+  // 从所有终态动作沿【反向边】BFS；任何 reachable 但反向到不了终态的节点 = dead_end。
+  if (graph.terminalActions.length > 0) {
+    const radj = new Map<string, string[]>();
+    for (const e of graph.edges) { const arr = radj.get(e.to) ?? []; arr.push(e.from); radj.set(e.to, arr); }
+    const canReachTerminal = new Set<string>(graph.terminalActions);
+    const rq = [...graph.terminalActions];
+    while (rq.length) {
+      const cur = rq.shift()!;
+      for (const prev of radj.get(cur) ?? []) if (!canReachTerminal.has(prev)) { canReachTerminal.add(prev); rq.push(prev); }
+    }
+    for (const n of graph.nodes) {
+      if (reachable.has(n.action) && !canReachTerminal.has(n.action) && !graph.terminalActions.includes(n.action)) {
+        issues.push({ kind: "dead_end", action: n.action });
+      }
     }
   }
 

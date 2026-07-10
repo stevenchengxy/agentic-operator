@@ -171,6 +171,10 @@ export interface GeneratedAgentSpec {
    *  load a callable handler), why. Surfaced in the design card so the failure is legible instead of
    *  silently downgrading to declarative. Undefined when the probe passed. */
   probeReason?: string;
+  /** #SAGA（§6.6）— 补偿事件：agent 运行【硬失败】时 runtime 会 emit 它（Saga 补偿模式，
+   *  manifest 的 compensation_event → register.ts 幂等发出），用于撤销已发生的外部副作用
+   *  （邀约已发/JD 已发布）。有外部副作用工具却缺它 → designSelfCheck 软警告提醒补。 */
+  compensationEvent?: string;
   /** #NEST — this spec is a SUB-AGENT (a deployable helper invoked synchronously by a parent via a
    *  plan `kind:"invoke"` step), NOT an ontology Agent-action. Excluded from coverage + event-graph
    *  closure (it has no ontology trigger); still a real registered function the parent invokes. */

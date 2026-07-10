@@ -43,6 +43,8 @@ import { useAgents, useAgent, type AgentListRow } from "@/lib/hooks/useAgents";
 // directly here to satisfy delta D-7 (Runs detail "agent" tab).
 import { AgentCodeTab } from "@/app/portal/components/agent-code/AgentCodeTab";
 import { TraceTree } from "@/app/portal/components/runs/TraceTree";
+import { EventChain } from "@/app/portal/components/runs/EventChain";
+import { RunAiSummary } from "./run-ai-summary";
 
 const STATUS_TO_DOT: Record<string, StatusName> = {
   running: "running",
@@ -55,7 +57,15 @@ const STATUS_TO_DOT: Record<string, StatusName> = {
   idle: "idle",
 };
 
-type Tab = "timeline" | "trace" | "logs" | "io" | "events" | "agent";
+type Tab =
+  | "summary"
+  | "timeline"
+  | "trace"
+  | "chain"
+  | "logs"
+  | "io"
+  | "events"
+  | "agent";
 
 export default function RunDetailPage() {
   const params = useParams<{ id?: string }>();
@@ -364,7 +374,7 @@ function RunDetail({ run, steps, waitingTask, tab, setTab, tenant }: RunDetailPr
           flexShrink: 0,
         }}
       >
-        {(["timeline", "trace", "logs", "io", "events", "agent"] as const).map((tabId) => (
+        {(["summary", "timeline", "trace", "chain", "logs", "io", "events", "agent"] as const).map((tabId) => (
           <button
             key={tabId}
             onClick={() => setTab(tabId)}
@@ -414,6 +424,11 @@ function RunDetail({ run, steps, waitingTask, tab, setTab, tenant }: RunDetailPr
         </div>
       )}
 
+      {tab === "summary" && (
+        <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
+          <RunAiSummary runId={run.id} />
+        </div>
+      )}
       {tab === "timeline" && <TimelineTab steps={steps} run={run} />}
       {tab === "trace" && (
         <Panel
@@ -423,6 +438,17 @@ function RunDetail({ run, steps, waitingTask, tab, setTab, tenant }: RunDetailPr
         >
           <div style={{ padding: "8px 12px" }}>
             <TraceTree node={{ run, steps }} tenant={tenant} />
+          </div>
+        </Panel>
+      )}
+      {tab === "chain" && (
+        <Panel
+          title={t("runDetail.chainTitle")}
+          subtitle={t("runDetail.chainSubtitle")}
+          padded={false}
+        >
+          <div style={{ padding: "8px 12px" }}>
+            <EventChain run={run} tenant={tenant} />
           </div>
         </Panel>
       )}

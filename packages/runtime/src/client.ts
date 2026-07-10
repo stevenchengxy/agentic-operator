@@ -37,7 +37,7 @@ import { Inngest } from "inngest";
  * flow through the system; not handed to the SDK in v4.
  *
  * Tenant-namespaced event names are written as `${tenant}/${EVENT_NAME}`
- * (e.g. `raas/REQUIREMENT_LOGGED`, `raas/task.resolved`) per DESIGN.md §6.
+ * (e.g. `zhaopin/REQUIREMENT_LOGGED`, `zhaopin/task.resolved`) per DESIGN.md §6.
  * `system/PING` is the one platform-global event (served by the __system app).
  */
 export type EventMap = {
@@ -53,6 +53,16 @@ const APP_PREFIX =
   (process.env.INNGEST_APP_PREFIX ?? "").trim() || "agentic-operator";
 
 /**
+ * Legacy-main compatibility. The old AO app was hard-coded as
+ * `agentic-operator-main`; assigning a tenant slug here makes the new runtime
+ * appear in Inngest with that legacy app id while preserving the
+ * one-app-per-tenant model for every other tenant.
+ */
+const MAIN_TENANT_SLUG = (process.env.INNGEST_MAIN_TENANT ?? "").trim();
+const MAIN_TENANT_APP_ID =
+  (process.env.INNGEST_MAIN_APP_ID ?? "").trim() || `${APP_PREFIX}-main`;
+
+/**
  * The platform/system app slug. Hosts helloFn, the system-cron heartbeat, the
  * retention sweep, code-agent functions, and the global `system/PING` event.
  * Served at the BASE `/inngest` path (no slug) so the inngest-cli `-u` flag
@@ -62,7 +72,19 @@ export const SYSTEM_SLUG = "__system";
 
 /** `agentic-operator-<slug>` — the Inngest app id for a tenant. */
 export function appIdForTenant(slug: string): string {
+  if (slug !== SYSTEM_SLUG && slug === MAIN_TENANT_SLUG) {
+    return MAIN_TENANT_APP_ID;
+  }
   return `${APP_PREFIX}-${slug}`;
+}
+
+/** Tenant slug that should occupy the legacy/base Inngest app, if configured. */
+export function mainTenantSlug(): string | null {
+  return MAIN_TENANT_SLUG.length > 0 ? MAIN_TENANT_SLUG : null;
+}
+
+export function isMainTenant(slug: string): boolean {
+  return slug !== SYSTEM_SLUG && slug === MAIN_TENANT_SLUG;
 }
 
 /**

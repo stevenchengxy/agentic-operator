@@ -410,6 +410,84 @@ export const steps = sqliteTable(
   }),
 );
 
+// ─── LLM turns (W0) ──────────────────────────────────────────────────────────
+// Raw per-turn capture of the deployed manifest agents' LLM tool-use loop: the
+// model's response text, extracted reasoning/thinking, and the tools it
+// requested — one row per loop iteration, keyed on run_id + step_id. This is
+// what powers the run-detail reasoning surface and the 推理审计 page (production
+// runs previously stored only token counts). Gated by AGENTIC_CAPTURE_LLM_TURNS
+// with per-field size caps in the runtime. run_id FK cascade cleans these up on
+// run delete/purge.
+export const llmTurns = sqliteTable(
+  "llm_turns",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    runId: text("run_id")
+      .notNull()
+      .references(() => runs.id, { onDelete: "cascade" }),
+    /** The step this turn belongs to. Plain column — the step row is written
+     *  immediately before, so no FK ordering hazard; run cascade covers GC. */
+    stepId: text("step_id"),
+    /** Turn index within the step's tool-use loop (0-based). */
+    ord: integer("ord").notNull(),
+    /** Bounded snapshot of the rendered prompt — only on the first turn. */
+    promptPreview: text("prompt_preview"),
+    /** The assistant's text reply (bounded). */
+    responseText: text("response_text"),
+    /** Extracted thinking/reasoning when the provider surfaced it (bounded). */
+    reasoning: text("reasoning"),
+    /** [{ name, input }] of the tools the model requested this turn. */
+    toolCallsJson: text("tool_calls_json", { mode: "json" }),
+    provider: text("provider"),
+    model: text("model"),
+    tokensIn: integer("tokens_in"),
+    tokensOut: integer("tokens_out"),
+    finishReason: text("finish_reason"),
+    latencyMs: integer("latency_ms"),
+    correlationId: text("correlation_id"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+  },
+  (t) => ({
+    runIdx: index("llm_turns_run_idx").on(t.runId, t.ord),
+    tenantCreatedIdx: index("llm_turns_tenant_created_idx").on(
+      t.tenantId,
+      t.createdAt,
+    ),
+  }),
+);
+
+// ─── Run summaries (W2) ──────────────────────────────────────────────────────
+// Cached AI summary of a production run — a natural-language narrative + (on
+// success) business details or (on failure) problem + likely-cause guesses.
+// One row per run; generated lazily on first open and cached so re-opening
+// doesn't re-spend tokens. run_id FK cascade cleans it up on run delete/purge.
+export const runSummaries = sqliteTable(
+  "run_summaries",
+  {
+    runId: text("run_id")
+      .primaryKey()
+      .references(() => runs.id, { onDelete: "cascade" }),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    /** The serialized RunSummary object (narrative/problem/causes/suggestions/digest). */
+    summaryJson: text("summary_json", { mode: "json" }).notNull(),
+    /** The model that produced the critique ("" when digest-only). */
+    model: text("model"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+  },
+  (t) => ({
+    tenantIdx: index("run_summaries_tenant_idx").on(t.tenantId, t.createdAt),
+  }),
+);
+
 // ─── Tasks ───────────────────────────────────────────────────────────────────
 
 export const tasks = sqliteTable(
@@ -468,6 +546,43 @@ export const artifacts = sqliteTable(
   },
   (t) => ({
     runIdx: index("art_run_idx").on(t.runId),
+  }),
+);
+
+// Durable business entities (candidate / resume / job_posting /
+// candidate_match_result / communication_log) — the new-arch-native replacement
+// for the old AO's Neo4j / RAAS-Postgres instance write-back. Deliberately NOT
+// under `artifacts` (whose run_id FK cascade-deletes with its run) nor
+// `agent_memory_long` (a private per-agent KV): business entities must OUTLIVE
+// the runs that produced them. Written by the `records.upsert` global tool.
+export const businessRecords = sqliteTable(
+  "business_records",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    recordType: text("record_type").notNull(),
+    recordKey: text("record_key").notNull(),
+    subject: text("subject"),
+    candidateId: text("candidate_id"),
+    correlationId: text("correlation_id"),
+    // Plain column, NOT a FK to runs — records survive run GC / soft-delete.
+    runId: text("run_id"),
+    sourceAgent: text("source_agent"),
+    dataJson: text("data_json", { mode: "json" }).notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().default(now),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull().default(now),
+  },
+  (t) => ({
+    identityUq: uniqueIndex("business_records_identity_uq").on(
+      t.tenantId,
+      t.recordType,
+      t.recordKey,
+    ),
+    typeIdx: index("business_records_type_idx").on(t.tenantId, t.recordType, t.updatedAt),
+    candidateIdx: index("business_records_candidate_idx").on(t.tenantId, t.candidateId),
+    correlationIdx: index("business_records_correlation_idx").on(t.correlationId),
   }),
 );
 
@@ -1003,6 +1118,7 @@ export const schema = {
   steps,
   tasks,
   artifacts,
+  businessRecords,
   auditLog,
   apiTokens,
   eventTypes,

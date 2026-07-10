@@ -1,21 +1,25 @@
 "use client";
 
 /**
- * Runs — list with filters + selectable rows (P2-FE-10).
+ * Runs — server-side paginated list with user-controlled delete + recycle bin
+ * (W1).
  *
- * Ported from `apps/web/public/portal/views/runs.jsx` with the Phase 1 delta
- * preserved: data flows through `useRuns()` (replaces window.RAAS_*).
+ * Data flows through `useRunsPaged()` (page/pageSize/status/q/deleted all pushed
+ * to the server, which returns `{ rows, total, page, pageSize }`). Runs persist
+ * forever by default (no auto-GC); operators prune them here:
+ *   - per-row soft-delete (🗑, recoverable from the recycle bin)
+ *   - bulk: 清理最旧 100 条 / 一键清空 (soft) and 清空回收站 (hard purge)
  *
- * Selecting a row navigates to `/portal/[tenant]/runs/[id]`. The "agent" tab
- * inside RunDetail is on a separate page so deep-linking works.
+ * Selecting a row navigates to `/portal/[tenant]/runs/[id]`.
  */
 
-import { useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import {
   Badge,
   Button,
   Empty,
+  Icon,
   StatusDot,
   ViewHeader,
   SearchInput,
@@ -25,7 +29,13 @@ import {
 import { fmtAgo, fmtDur } from "@/app/portal/lib/format";
 import { useTenant } from "@/app/portal/lib/use-tenant";
 import { useI18n } from "@/app/portal/lib/preferences-context";
-import { useRuns, type RunListRow } from "@/lib/hooks/useRuns";
+import {
+  useRunsPaged,
+  useDeleteRun,
+  useRestoreRun,
+  useBulkDeleteRuns,
+  type RunListRow,
+} from "@/lib/hooks/useRuns";
 
 const STATUS_TO_DOT: Record<string, StatusName> = {
   running: "running",
@@ -38,46 +48,101 @@ const STATUS_TO_DOT: Record<string, StatusName> = {
   idle: "idle",
 };
 
+const PAGE_SIZE = 25;
+
 export default function RunsPage() {
   const tenant = useTenant();
   const { t } = useI18n();
-  const { data: allRuns = [] } = useRuns({ limit: 200 });
+
   const [statusFilter, setStatusFilter] = useState<
     "all" | "running" | "ok" | "failed"
   >("all");
+  const [queryInput, setQueryInput] = useState("");
   const [query, setQuery] = useState("");
+  const [page, setPage] = useState(1);
+  const [binMode, setBinMode] = useState(false);
 
-  const filtered = useMemo(() => {
-    return allRuns.filter((r) => {
-      if (statusFilter !== "all" && r.status !== statusFilter) return false;
-      if (query) {
-        const q = query.toLowerCase();
-        if (
-          !r.id.toLowerCase().includes(q) &&
-          !r.agentName.toLowerCase().includes(q) &&
-          !(r.subject ?? "").toLowerCase().includes(q)
-        )
-          return false;
-      }
-      return true;
-    });
-  }, [allRuns, statusFilter, query]);
+  // Debounce the free-text search so we don't refetch on every keystroke.
+  useEffect(() => {
+    const id = setTimeout(() => setQuery(queryInput.trim()), 300);
+    return () => clearTimeout(id);
+  }, [queryInput]);
 
-  const activeCount = allRuns.filter((r) => r.status === "running").length;
-  const selectedId = filtered[0]?.id ?? null;
+  // Any filter/lens change resets to the first page.
+  useEffect(() => {
+    setPage(1);
+  }, [statusFilter, query, binMode]);
+
+  const { data, isFetching } = useRunsPaged({
+    status: binMode ? "all" : statusFilter,
+    q: query || undefined,
+    page,
+    pageSize: PAGE_SIZE,
+    deleted: binMode,
+  });
+
+  const rows = data?.rows ?? [];
+  const total = data?.total ?? 0;
+  const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const activeCount = rows.filter((r) => r.status === "running").length;
+
+  const deleteRun = useDeleteRun();
+  const restoreRun = useRestoreRun();
+  const bulk = useBulkDeleteRuns();
+  const busy = deleteRun.isPending || restoreRun.isPending || bulk.isPending;
+
+  function cleanOldest() {
+    if (window.confirm(t("runs.confirmCleanOldest", { n: 100 })))
+      bulk.mutate({ scope: "oldest", n: 100 });
+  }
+  function clearAll() {
+    if (window.confirm(t("runs.confirmClearAll"))) bulk.mutate({ scope: "all" });
+  }
+  function purgeBin() {
+    if (window.confirm(t("runs.confirmPurge"))) bulk.mutate({ scope: "purge" });
+  }
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
       <ViewHeader
         title={t("nav.runs")}
-        subtitle={t("runs.summary", {
-          count: filtered.length,
-          active: activeCount,
-        })}
+        subtitle={t("runs.summary", { count: total, active: activeCount })}
         action={
-          <Button icon="replay" small>
-            {t("runs.replaySelection")}
-          </Button>
+          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            {/* Records ↔ recycle-bin lens toggle */}
+            <div style={{ display: "flex", gap: 4 }}>
+              <Button
+                small
+                tone={binMode ? "ghost" : "primary"}
+                onClick={() => setBinMode(false)}
+              >
+                {t("runs.activeRecords")}
+              </Button>
+              <Button
+                small
+                icon="trash"
+                tone={binMode ? "primary" : "ghost"}
+                onClick={() => setBinMode(true)}
+              >
+                {t("runs.recycleBin")}
+              </Button>
+            </div>
+            <span style={{ width: 1, height: 18, background: "var(--border)" }} />
+            {binMode ? (
+              <Button small tone="danger" onClick={purgeBin} disabled={busy || total === 0}>
+                {t("runs.purgeBin")}
+              </Button>
+            ) : (
+              <>
+                <Button small onClick={cleanOldest} disabled={busy}>
+                  {t("runs.cleanOldest")}
+                </Button>
+                <Button small tone="danger" onClick={clearAll} disabled={busy}>
+                  {t("runs.clearAll")}
+                </Button>
+              </>
+            )}
+          </div>
         }
       />
 
@@ -107,50 +172,97 @@ export default function RunsPage() {
             }}
           >
             <SearchInput
-              value={query}
-              onChange={setQuery}
+              value={queryInput}
+              onChange={setQueryInput}
               placeholder={t("runs.searchPlaceholder")}
             />
           </div>
-          <div
-            style={{
-              padding: "8px 14px",
-              borderBottom: "1px solid var(--border)",
-              display: "flex",
-              gap: 6,
-              flexWrap: "wrap",
-            }}
-          >
-            {(
-              [
-                { id: "all", labelKey: "runs.filterAll" },
-                { id: "running", labelKey: "runs.filterRunning" },
-                { id: "ok", labelKey: "runs.filterOk" },
-                { id: "failed", labelKey: "runs.filterFailed" },
-              ] as const
-            ).map((chip) => (
-              <FilterChip
-                key={chip.id}
-                active={statusFilter === chip.id}
-                onClick={() => setStatusFilter(chip.id)}
-              >
-                {t(chip.labelKey)}
-              </FilterChip>
-            ))}
-          </div>
+          {!binMode && (
+            <div
+              style={{
+                padding: "8px 14px",
+                borderBottom: "1px solid var(--border)",
+                display: "flex",
+                gap: 6,
+                flexWrap: "wrap",
+              }}
+            >
+              {(
+                [
+                  { id: "all", labelKey: "runs.filterAll" },
+                  { id: "running", labelKey: "runs.filterRunning" },
+                  { id: "ok", labelKey: "runs.filterOk" },
+                  { id: "failed", labelKey: "runs.filterFailed" },
+                ] as const
+              ).map((chip) => (
+                <FilterChip
+                  key={chip.id}
+                  active={statusFilter === chip.id}
+                  onClick={() => setStatusFilter(chip.id)}
+                >
+                  {t(chip.labelKey)}
+                </FilterChip>
+              ))}
+            </div>
+          )}
+
           <div style={{ flex: 1, overflow: "auto" }}>
-            {filtered.length === 0 ? (
-              <Empty title={t("runs.emptyTitle")} hint={t("runs.emptyHint")} />
+            {rows.length === 0 ? (
+              <Empty
+                title={binMode ? t("runs.binEmptyTitle") : t("runs.emptyTitle")}
+                hint={binMode ? t("runs.binEmptyHint") : t("runs.emptyHint")}
+              />
             ) : (
-              filtered.map((r) => (
+              rows.map((r) => (
                 <RunListItem
                   key={r.id}
                   row={r}
                   tenant={tenant}
-                  selected={r.id === selectedId}
+                  binMode={binMode}
+                  onDelete={() => deleteRun.mutate(r.id)}
+                  onRestore={() => restoreRun.mutate(r.id)}
                 />
               ))
             )}
+          </div>
+
+          {/* Pagination footer */}
+          <div
+            style={{
+              padding: "8px 14px",
+              borderTop: "1px solid var(--border)",
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              justifyContent: "space-between",
+            }}
+          >
+            <span
+              style={{
+                fontSize: 11,
+                color: "var(--text-3)",
+                fontFamily: "var(--mono)",
+                opacity: isFetching ? 0.5 : 1,
+              }}
+            >
+              {t("runs.pageOf", { page, pages, total })}
+            </span>
+            <div style={{ display: "flex", gap: 4 }}>
+              <Button
+                small
+                icon="chevron-left"
+                ariaLabel={t("runs.prevPage")}
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                disabled={page <= 1}
+              />
+              <Button
+                small
+                icon="chevron-right"
+                ariaLabel={t("runs.nextPage")}
+                onClick={() => setPage((p) => Math.min(pages, p + 1))}
+                disabled={page >= pages}
+              />
+            </div>
           </div>
         </aside>
 
@@ -164,10 +276,7 @@ export default function RunsPage() {
             justifyContent: "center",
           }}
         >
-          <Empty
-            title={t("runs.selectTitle")}
-            hint={t("runs.selectHint")}
-          />
+          <Empty title={t("runs.selectTitle")} hint={t("runs.selectHint")} />
         </div>
       </div>
     </div>
@@ -177,47 +286,29 @@ export default function RunsPage() {
 function RunListItem({
   row,
   tenant,
-  selected,
+  binMode,
+  onDelete,
+  onRestore,
 }: {
   row: RunListRow;
   tenant: string;
-  selected: boolean;
+  binMode: boolean;
+  onDelete: () => void;
+  onRestore: () => void;
 }) {
   const { t } = useI18n();
   const testRun = (row as { testRun?: boolean }).testRun === true;
   const isReplay = Boolean(row.parentRunId);
-  return (
-    <Link
-      href={`/portal/${tenant}/runs/${row.id}` as never}
-      style={{
-        display: "block",
-        width: "100%",
-        textAlign: "left",
-        padding: "10px 14px",
-        borderBottom: "1px solid var(--border)",
-        background: selected ? "var(--panel-2)" : "transparent",
-        borderLeft: selected ? "2px solid var(--signal)" : "2px solid transparent",
-        transition: "background 0.1s",
-        overflow: "hidden",
-        textDecoration: "none",
-      }}
-    >
+
+  const body = (
+    <>
       <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          minWidth: 0,
-        }}
+        style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}
       >
         <StatusDot status={STATUS_TO_DOT[row.status] ?? "idle"} />
         <span
           className="mono"
-          style={{
-            fontSize: 11.5,
-            color: "var(--text-2)",
-            whiteSpace: "nowrap",
-          }}
+          style={{ fontSize: 11.5, color: "var(--text-2)", whiteSpace: "nowrap" }}
         >
           {row.id}
         </span>
@@ -238,6 +329,8 @@ function RunListItem({
             color: "var(--text-3)",
             fontFamily: "var(--mono)",
             whiteSpace: "nowrap",
+            // leave room for the absolute action button
+            paddingRight: 24,
           }}
         >
           {row.status === "running"
@@ -285,6 +378,61 @@ function RunListItem({
           {row.triggerEvent ?? ""}
         </span>
       </div>
-    </Link>
+    </>
+  );
+
+  const rowStyle = {
+    display: "block",
+    width: "100%",
+    textAlign: "left" as const,
+    padding: "10px 14px",
+    borderBottom: "1px solid var(--border)",
+    background: "transparent",
+    borderLeft: "2px solid transparent",
+    transition: "background 0.1s",
+    overflow: "hidden",
+    textDecoration: "none",
+  };
+
+  return (
+    <div style={{ position: "relative" }}>
+      {binMode ? (
+        <div style={{ ...rowStyle, opacity: 0.75 }}>{body}</div>
+      ) : (
+        <Link href={`/portal/${tenant}/runs/${row.id}` as never} style={rowStyle}>
+          {body}
+        </Link>
+      )}
+      {/* Action button, sibling of the Link so it never triggers navigation. */}
+      <button
+        type="button"
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          if (binMode) onRestore();
+          else onDelete();
+        }}
+        title={binMode ? t("runs.restore") : t("runs.deleteRun")}
+        aria-label={binMode ? t("runs.restore") : t("runs.deleteRun")}
+        style={{
+          position: "absolute",
+          top: 8,
+          right: 8,
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          width: 22,
+          height: 22,
+          padding: 0,
+          borderRadius: 5,
+          border: "1px solid transparent",
+          background: "transparent",
+          color: binMode ? "var(--signal)" : "var(--text-3)",
+          cursor: "pointer",
+        }}
+      >
+        <Icon name={binMode ? "replay" : "trash"} size={12} />
+      </button>
+    </div>
   );
 }

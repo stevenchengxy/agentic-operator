@@ -46,7 +46,7 @@ describe("critique_plan — 三视角分治评审", () => {
       { id: "contract", role: "IO 契约视角", ok: true, output: { issues: [] }, summary: "" },
     ] as never);
     const { ctx } = bigPlanCtx();
-    const r = await critique.execute({}, ctx);
+    const r = await critique.execute({ deep: true }, ctx);
     expect(r.ok).toBe(false); // revise
     const out = r.output as { verdict: string; issues: Array<{ problem: string; perspective: string }> };
     expect(out.verdict).toBe("revise");
@@ -64,7 +64,7 @@ describe("critique_plan — 三视角分治评审", () => {
       { id: "contract", role: "IO 契约视角", ok: true, output: { issues: [] }, summary: "" },
     ] as never);
     const { ctx } = bigPlanCtx();
-    const r = await critique.execute({}, ctx);
+    const r = await critique.execute({ deep: true }, ctx);
     expect(r.ok).toBe(true);
     expect(r.summary).toContain("三视角评审通过");
   });
@@ -76,7 +76,7 @@ describe("critique_plan — 三视角分治评审", () => {
       { id: "contract", role: "IO 契约视角", ok: true, output: { issues: [] }, summary: "" },
     ] as never);
     const { ctx, events } = bigPlanCtx();
-    const r = await critique.execute({}, ctx);
+    const r = await critique.execute({ deep: true }, ctx);
     expect(events.some((e) => e.t === "reflect" && String((e as { lesson: string }).lesson).includes("降级"))).toBe(true);
     // 假 key 下单跳 chatJson 失败 → 工具自身的"网关错误已跳过"兜底
     expect(r.ok).toBe(true);

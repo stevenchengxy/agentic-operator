@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { designSelfCheck, internalDesignRefine, innerLoopEnabled, type DesignDraft } from "./design-loop";
+import { designSelfCheck, internalDesignRefine, innerLoopEnabled, isSideEffectfulTool, type DesignDraft } from "./design-loop";
 
 // design 内部循环（架构书 §5 内推演）：确定性自检把外层最常打回的点前移到设计当下；命中硬问题
 // 跑一次内部精修，失败/无改进兜底原稿。全程零真实 LLM（refine 注入假实现）。
@@ -40,6 +40,30 @@ describe("designSelfCheck — 确定性自检", () => {
     expect(r.hardCount).toBe(0);
     expect(r.issues.some((i) => i.code === "shallow_logic" && !i.hard)).toBe(true);
     expect(r.issues.some((i) => i.code === "no_tool" && !i.hard)).toBe(true);
+  });
+
+  // #SAGA ⑥ — 副作用工具却没声明补偿事件 → 软警告；声明了/纯读 agent → 无警告。
+  it("外部副作用 + 无补偿事件 → side_effect_no_compensation（软）；声明补偿后消失", () => {
+    const withSe = designSelfCheck({ ...base, sideEffectful: true, hasCompensation: false });
+    expect(withSe.issues.some((i) => i.code === "side_effect_no_compensation" && !i.hard)).toBe(true);
+    expect(withSe.hardCount).toBe(0); // 软警告不触发内部精修
+    const declared = designSelfCheck({ ...base, sideEffectful: true, hasCompensation: true });
+    expect(declared.issues.some((i) => i.code === "side_effect_no_compensation")).toBe(false);
+    const readOnly = designSelfCheck({ ...base, sideEffectful: false });
+    expect(readOnly.issues.some((i) => i.code === "side_effect_no_compensation")).toBe(false);
+  });
+});
+
+describe("isSideEffectfulTool (#SAGA 判定)", () => {
+  it("发送/发布/写外部 → true；只读/内部 → false", () => {
+    expect(isSideEffectfulTool("send_email")).toBe(true);
+    expect(isSideEffectfulTool("inviteCandidateApi")).toBe(true);
+    expect(isSideEffectfulTool("http.fetch")).toBe(true);
+    expect(isSideEffectfulTool("fs.writeHtmlToArchive")).toBe(true);
+    expect(isSideEffectfulTool("fs.readFromInbox")).toBe(false);
+    expect(isSideEffectfulTool("ontology.fetchActionRules")).toBe(false);
+    expect(isSideEffectfulTool("meta.ping")).toBe(false);
+    expect(isSideEffectfulTool("parseResumeApi")).toBe(false); // 解析是读语义
   });
 });
 

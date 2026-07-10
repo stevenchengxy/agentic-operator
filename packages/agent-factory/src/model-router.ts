@@ -86,7 +86,10 @@ export function modelChain(tier: ModelTier, env: Record<string, string | undefin
  *  hard (each agent's prompt/logic is the heavy reasoning), and once the planned set is designed the
  *  lighter remaining work drops back to default. Heavy critic work (review/codegen/diagnosis) already
  *  routes to its own tier inside the tools, so this only sets the conductor's per-turn budget. */
-export function tierForContext(ctx: { specs: { length: number }; currentPlan: Record<string, unknown> | null }): ModelTier {
+export function tierForContext(ctx: { specs: { length: number }; currentPlan: Record<string, unknown> | null; policy?: { tierBias?: "fast" | null } }): ModelTier {
+  // #POLICY — 前置路由的降档偏置：纯答疑/分析类请求（pipeline=analyze）全程 fast，省钱且够用。
+  // 只允许向下偏置（fast）；向上加码仍由相位逻辑与各工具自己的 critic tier 决定，防止成本失控。
+  if (ctx.policy?.tierBias === "fast") return "fast";
   if (!ctx.currentPlan && ctx.specs.length === 0) return "fast"; // reading the ontology
   if (ctx.specs.length === 0) return "default"; // a plan exists, about to design
   const planned = Array.isArray(ctx.currentPlan?.agents) ? (ctx.currentPlan!.agents as unknown[]).length : 0;

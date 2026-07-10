@@ -9,6 +9,7 @@ import { healthRoute } from "./routes/health";
 import { metricsRoute } from "./routes/metrics";
 import { eventsRoutes } from "./routes/v1/events";
 import { runsRoutes } from "./routes/v1/runs";
+import { reasoningRoutes } from "./routes/v1/reasoning";
 import { runsLogsRoute } from "./routes/v1/runs-logs";
 import { tasksRoutes } from "./routes/v1/tasks";
 import { agentsRoutes } from "./routes/v1/agents";
@@ -17,6 +18,7 @@ import { agentFactoryRoutes } from "./routes/v1/agent-factory";
 import { deploymentsRoutes } from "./routes/v1/deployments";
 import { webhooksRoutes } from "./routes/v1/webhooks";
 import { artifactsRoutes } from "./routes/v1/artifacts";
+import { recordsRoutes } from "./routes/v1/records";
 import { readsRoutes } from "./routes/v1/reads";
 import { llmRoutes } from "./routes/v1/llm";
 import { manifestImportRoutes } from "./routes/v1/manifest-import";
@@ -33,7 +35,12 @@ import { authRoutes } from "./routes/v1/auth";
 import { membersRoutes } from "./routes/v1/members";
 import { adminUsersRoutes } from "./routes/v1/admin-users";
 import { stopDemoRunner } from "./services/demo-runner";
-import { stopAppReconciler } from "./services/inngest-sync";
+import {
+  startAppReconciler,
+  stopAppReconciler,
+  syncAllAppsWithRetry,
+} from "./services/inngest-sync";
+import { startRunReconciler, stopRunReconciler } from "./services/reconcile-runs";
 import { inngestRoute } from "./routes/inngest";
 import { bootstrapRuntime } from "./bootstrap";
 
@@ -119,6 +126,7 @@ export async function build() {
       await stopPgVectorMemory();
     } catch { /* inert when never wired */ }
     stopAppReconciler();
+    stopRunReconciler();
   });
 
   // /v1 REST surface
@@ -126,6 +134,7 @@ export async function build() {
     async (v1) => {
       await v1.register(eventsRoutes);
       await v1.register(runsRoutes);
+      await v1.register(reasoningRoutes);
       await v1.register(runsLogsRoute);
       await v1.register(tasksRoutes);
       await v1.register(agentsRoutes);
@@ -136,6 +145,7 @@ export async function build() {
       await v1.register(deploymentsRoutes);
       await v1.register(webhooksRoutes);
       await v1.register(artifactsRoutes);
+      await v1.register(recordsRoutes);
       await v1.register(readsRoutes);
       await v1.register(llmRoutes);
       await v1.register(manifestImportRoutes);
@@ -187,6 +197,18 @@ if (isMain) {
   try {
     await app.listen({ port: PORT, host: HOST });
     app.log.info(`api listening on http://${HOST}:${PORT}`);
+    void syncAllAppsWithRetry({
+      info: (msg) => app.log.info(msg),
+      warn: (msg) => app.log.warn(msg),
+    }).catch((err) => app.log.warn({ err }, "initial inngest app sync failed"));
+    startAppReconciler({
+      info: (msg) => app.log.info(msg),
+      warn: (msg) => app.log.warn(msg),
+    });
+    startRunReconciler({
+      info: (msg) => app.log.info(msg),
+      warn: (msg) => app.log.warn(msg),
+    });
   } catch (err) {
     app.log.error({ err }, "failed to start");
     process.exit(1);

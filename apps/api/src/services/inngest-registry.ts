@@ -4,9 +4,14 @@
  * ONE Inngest app per tenant (`agentic-operator-<slug>`), plus the platform
  * `agentic-operator-__system` app. Each app is a distinct Inngest client served
  * at its own URL:
- *   - `__system`        → `/inngest`        (auto-discovered by inngest-cli `-u`)
- *   - tenant `<slug>`   → `/inngest/<slug>` (explicit PUT self-sync; see
+ *   - base app          → `/inngest`        (auto-discovered by inngest-cli `-u`)
+ *   - every other app   → `/inngest/<slug>` (explicit PUT self-sync; see
  *                          `inngest-sync.ts`)
+ *
+ * By default the base app is `__system`. When INNGEST_MAIN_TENANT is set (for
+ * example `zhaopin` for the RAAS-v1 6-agent migration), that tenant takes the
+ * base path and app id so the new runtime can present the old AO's
+ * `agentic-operator-main` surface.
  *
  * Inngest's `serve()` captures one client + one flat functions array at
  * construction, so each app needs its own serve handler. This module holds a
@@ -36,7 +41,12 @@
 import type { InngestFunction, Inngest } from "inngest";
 import { serve } from "inngest/fastify";
 import type { FastifyReply, FastifyRequest } from "fastify";
-import { appIdForTenant, getTenantInngest, SYSTEM_SLUG } from "@agentic/runtime";
+import {
+  appIdForTenant,
+  getTenantInngest,
+  mainTenantSlug,
+  SYSTEM_SLUG,
+} from "@agentic/runtime";
 
 type ServeHandler = (
   req: FastifyRequest,
@@ -54,9 +64,14 @@ interface AppEntry {
 
 const SYSTEM_APP_ID = appIdForTenant(SYSTEM_SLUG);
 
-/** `/inngest` for the platform app, `/inngest/<slug>` for tenant apps. */
+/** The slug served by the base `/inngest` endpoint. */
+export function baseServeSlug(): string {
+  return mainTenantSlug() ?? SYSTEM_SLUG;
+}
+
+/** `/inngest` for the base app, `/inngest/<slug>` for every other app. */
 export function servePathForSlug(slug: string): string {
-  return slug === SYSTEM_SLUG ? "/inngest" : `/inngest/${slug}`;
+  return slug === baseServeSlug() ? "/inngest" : `/inngest/${slug}`;
 }
 
 const state: {

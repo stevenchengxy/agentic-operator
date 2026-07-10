@@ -174,7 +174,10 @@ export async function chatJson<T>(
     let text = "";
     try {
       text = await call(system + extraSys, user, { temperature: opts.temperature, maxTokens: cap, signal: opts.signal, models: opts.models, purpose: opts.purpose, onModel: opts.onModel });
-    } catch {
+    } catch (e) {
+      // #AUDIT-FIX(L27) — 基础设施故障（鉴权/网络/看门狗）与"模型没写出 JSON"必须可区分：
+      // 前者留日志（所有 chatJson 调用方都曾把网关故障误报为模型输出问题）。
+      try { console.warn(`[chatJson] LLM 调用失败（非解析问题）：${String((e as Error)?.message ?? e).slice(0, 160)}${opts.purpose ? ` · purpose=${opts.purpose}` : ""}`); } catch { /* best-effort */ }
       return null;
     }
     const slice = extractBalancedJson(text);
@@ -214,6 +217,26 @@ export async function* streamTurn(
     : Number.isFinite(envCap) && envCap > 0 ? envCap
     : null;
 
+  // #WATCHDOG — 空转看门狗（修「运行中…永远不动」的挂起类故障，见 2026-07-09 无响应事故）：
+  // provider 连接挂起 / 网络黑洞时流不再产出任何 chunk，没有超时的话整个 run 会永远停在
+  // "运行中"，直到前端 staleness 兜底报"已无响应"。这里在最底层咽喉点装【空转】计时器——
+  // 只要流还在动就不断续命（长输出永不误杀），静默超过阈值才中止；上层（specialists 的
+  // 降级链 / 重试链）把中止当普通失败处理，run 继续而不是死等。FACTORY_LLM_IDLE_TIMEOUT_MS 可调。
+  const idleMs = Math.max(15_000, Number(process.env.FACTORY_LLM_IDLE_TIMEOUT_MS) || 90_000);
+  const watchdog = new AbortController();
+  let idleTimer: ReturnType<typeof setTimeout> | undefined;
+  const armIdle = () => {
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => watchdog.abort(), idleMs);
+    (idleTimer as unknown as { unref?: () => void }).unref?.();
+  };
+  const signal = opts.signal ? AbortSignal.any([opts.signal, watchdog.signal]) : watchdog.signal;
+  // 把 SDK 的泛化 abort 错误翻译成可诊断的看门狗消息（telemetry/日志一眼定位）。
+  const translateAbort = (e: unknown): unknown =>
+    watchdog.signal.aborted && !opts.signal?.aborted
+      ? new Error(`LLM 流空转超过 ${idleMs}ms 被看门狗中止（provider 挂起/网络黑洞）——按失败降级继续`)
+      : e;
+
   // #7: a fallback CHAIN of models (preferred first). On a model the gateway can't serve, or
   // any persistent failure, fall through to the next model before giving up.
   const models = opts.models && opts.models.length ? opts.models : [opts.model ?? gw.model];
@@ -228,7 +251,7 @@ export async function* streamTurn(
         stream: true,
         stream_options: { include_usage: true },
       },
-      opts.signal ? { signal: opts.signal } : undefined,
+      { signal },
     );
 
   let stream;
@@ -240,9 +263,12 @@ export async function* streamTurn(
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
       if (opts.signal?.aborted) throw new Error("aborted");
       try {
+        armIdle(); // 连接阶段同样受看门狗保护（fetch 挂在首字节前也算空转）
         stream = await create(usedModel);
         break modelLoop;
-      } catch (e) {
+      } catch (e0) {
+        const e = translateAbort(e0);
+        if (watchdog.signal.aborted && !opts.signal?.aborted) { if (idleTimer) clearTimeout(idleTimer); throw e; }
         lastErr = e;
         const code = (e as { status?: number }).status;
         const msg = String((e as { message?: string }).message ?? "").toLowerCase();
@@ -274,33 +300,41 @@ export async function* streamTurn(
   let prompt = 0;
   let completion = 0;
 
-  for await (const chunk of stream) {
-    const choice = chunk.choices?.[0];
-    const delta = choice?.delta as
-      | { content?: string | null; tool_calls?: Array<{ index?: number; id?: string; function?: { name?: string; arguments?: string } }> }
-      | undefined;
+  try {
+    armIdle(); // 流已建立但首 chunk 迟迟不来也算空转
+    for await (const chunk of stream) {
+      armIdle(); // #WATCHDOG — 每个 chunk 续命：只要在动就永不误杀，静默 idleMs 才中止
+      const choice = chunk.choices?.[0];
+      const delta = choice?.delta as
+        | { content?: string | null; tool_calls?: Array<{ index?: number; id?: string; function?: { name?: string; arguments?: string } }> }
+        | undefined;
 
-    if (delta?.content) {
-      content += delta.content;
-      yield { t: "think", delta: delta.content };
-    }
-    if (delta?.tool_calls) {
-      for (const tc of delta.tool_calls) {
-        const idx = tc.index ?? 0;
-        const a = (acc[idx] ??= { id: "", name: "", args: "" });
-        if (tc.id) a.id = tc.id;
-        if (tc.function?.name) a.name += tc.function.name;
-        if (tc.function?.arguments) a.args += tc.function.arguments;
+      if (delta?.content) {
+        content += delta.content;
+        yield { t: "think", delta: delta.content };
       }
+      if (delta?.tool_calls) {
+        for (const tc of delta.tool_calls) {
+          const idx = tc.index ?? 0;
+          const a = (acc[idx] ??= { id: "", name: "", args: "" });
+          if (tc.id) a.id = tc.id;
+          if (tc.function?.name) a.name += tc.function.name;
+          if (tc.function?.arguments) a.args += tc.function.arguments;
+        }
+      }
+      if (chunk.usage) {
+        prompt = chunk.usage.prompt_tokens ?? 0;
+        completion = chunk.usage.completion_tokens ?? 0;
+      }
+      // #JSON-FIX — surface finish_reason: "length" = WE truncated the output at max_tokens. Callers
+      // parsing structured output must be able to tell "model wrote bad JSON" from "we cut it off".
+      const fr = (choice as { finish_reason?: string | null } | undefined)?.finish_reason;
+      if (fr) finishReason = fr;
     }
-    if (chunk.usage) {
-      prompt = chunk.usage.prompt_tokens ?? 0;
-      completion = chunk.usage.completion_tokens ?? 0;
-    }
-    // #JSON-FIX — surface finish_reason: "length" = WE truncated the output at max_tokens. Callers
-    // parsing structured output must be able to tell "model wrote bad JSON" from "we cut it off".
-    const fr = (choice as { finish_reason?: string | null } | undefined)?.finish_reason;
-    if (fr) finishReason = fr;
+  } catch (e0) {
+    throw translateAbort(e0);
+  } finally {
+    if (idleTimer) clearTimeout(idleTimer);
   }
 
   if (prompt || completion) yield { t: "usage", promptTokens: prompt, completionTokens: completion };

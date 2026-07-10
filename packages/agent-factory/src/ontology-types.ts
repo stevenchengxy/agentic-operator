@@ -64,4 +64,7 @@ export type DomainOntology = {
   events: OntologyEvent[];
   workflow: OntologyWorkflow;
   source: "allmeta" | "snapshot";
+  /** #AUDIT-FIX(P2-04) — 严格源(Allmeta)失败后退化到薄 manifest artifact 的标记。set 时说明
+   *  本体不完整（可能缺 events/objects/rules），read_ontology 会向 AI/用户明示，禁止据此自动 publish。 */
+  degraded?: { from: string; reason: string };
 };

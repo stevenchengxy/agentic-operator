@@ -31,7 +31,7 @@ function mk(specs: GeneratedAgentSpec[], sandbox: Partial<NonNullable<BrainCtx["
     specs,
     emit: () => {},
     ports: { reflection: { record: async () => {} }, drafts: { save: async () => specs.length } },
-    lastSandbox: { specsFingerprint: specsFingerprint(specs), deployed: specs.length, agentsRan: specs.length, ranAgents: specs.map((s) => s.slug), reachedSuccessTerminal: true, fullChainRan: true, degradedAgents: [], simulated: false, ts: 1, ...sandbox },
+    lastSandbox: { specsFingerprint: specsFingerprint(specs), deployed: specs.length, agentsRan: specs.length, ranAgents: specs.map((s) => s.slug), reachedSuccessTerminal: true, fullChainRan: true, degradedAgents: [], simulated: false, fidelityFailures: [], ts: 1, ...sandbox },
   } as unknown as BrainCtx;
 }
 

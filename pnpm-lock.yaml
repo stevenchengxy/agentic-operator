@@ -481,6 +481,9 @@ importers:
       '@agentic/agent-kit':
         specifier: workspace:*
         version: link:../agent-kit
+      '@agentic/db':
+        specifier: workspace:*
+        version: link:../db
       '@agentic/shared':
         specifier: workspace:*
         version: link:../shared

@@ -9,6 +9,7 @@ import { CompositeOntologySource } from "./composite-ontology-source";
 import { DryRunSandboxDeployer, ManifestSandboxDeployer, ProbingSandboxDeployer } from "./sandbox-deployer";
 import { DrizzleConversationStore, DrizzleReflectionWriter, DrizzleSkillStore, DrizzleToolStore, DrizzleAcceptanceRecorder, DrizzleToolStatsStore } from "./stores";
 import { FsAgentDraftStore } from "./agent-draft-store";
+import { FsPolicyStatsStore } from "./policy-stats-store";
 import { UploadedOntologySource, UploadedFirstOntologySource } from "./uploaded-ontology-source";
 import { listGlobalTools } from "@agentic/tools";
 
@@ -72,6 +73,8 @@ export function makeFactoryPorts(tenantSlug?: string): FactoryPorts {
     },
     // Persist a finished run's agents as durable, reviewable drafts (OLD syncDomainDrafts).
     drafts: new FsAgentDraftStore(),
+    // #POLICY-LEARN — 前置路由 arm 统计（选路证据偏置 ← run 结果回喂）。
+    policyStats: new FsPolicyStatsStore(),
     // #P1-6 — persist per-criterion acceptance verdicts for trend dashboards.
     acceptance: new DrizzleAcceptanceRecorder(),
     // #SCALE-TOOLS — per-tool sandbox effectiveness recording.
@@ -187,4 +190,4 @@ export function listAgentDrafts(domain: string) {
 }
 
 export { ManifestOntologySource, AllmetaOntologySource, CompositeOntologySource, DryRunSandboxDeployer, ManifestSandboxDeployer, ProbingSandboxDeployer, DrizzleConversationStore, DrizzleReflectionWriter, DrizzleSkillStore, DrizzleToolStore };
-export { recordRunStart, recordRunFinish, listRuns, getRun, deleteRun, restoreRun, deleteRunsByDomain, markRunAborted, listRunningRuns, type RunRecord } from "./stores";
+export { recordRunStart, recordRunFinish, recordRunTranscript, listRuns, getRun, deleteRun, restoreRun, deleteRunsByDomain, markRunAborted, listRunningRuns, type RunRecord } from "./stores";

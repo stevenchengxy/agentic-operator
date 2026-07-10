@@ -53,7 +53,6 @@ import {
   initInngestRegistry,
   reregisterInngest,
 } from "./services/inngest-registry";
-import { syncAllApps, startAppReconciler } from "./services/inngest-sync";
 import {
   applyDemoModeOverrides,
   describeDemoMode,
@@ -182,6 +181,24 @@ export async function bootstrapRuntime(): Promise<BootstrapResult> {
     console.log(describeDemoOverrides(overrides));
   }
 
+  // #NOMOCK — production-on-mock guard. The locked rule is "production = ZERO mock". This fires ONLY
+  // when NODE_ENV=production (a real deploy), NOT in local dev testing — where mock is the INTENDED
+  // main-gateway default (it keeps background/dashboard/generated-agent-runtime traffic OFF the LAN
+  // proxy on the production machine at 10.100.0.70:3010; the factory brain still uses that proxy for
+  // EXPLICIT runs via FACTORY_AI_MODEL). So in local dev, mock main gateway is correct — no warning.
+  // In a real production deploy, mock main gateway is a genuine misconfig → surface it LOUDLY.
+  const mainProvider = (process.env.LLM_DEFAULT_PROVIDER ?? "").trim().toLowerCase();
+  const isRealProd = process.env.NODE_ENV === "production";
+  if (isRealProd && !isDemoMode() && (mainProvider === "mock" || /mock/i.test(process.env.LLM_DEFAULT_MODEL ?? ""))) {
+    console.warn(
+      "\n[bootstrap] ⚠️  生产部署(NODE_ENV=production, DEMO_MODE=false) 却使用 MOCK LLM 网关" +
+        ` (LLM_DEFAULT_PROVIDER=${process.env.LLM_DEFAULT_PROVIDER}, model=${process.env.LLM_DEFAULT_MODEL})。` +
+        "\n         这违反「production = ZERO mock」的锁定规则。工厂交付物（报告等）会自动改走真实工厂网关，" +
+        "\n         但【生成的 agent 运行时逻辑步】仍走此 mock 网关（推理为 mock）。要彻底去 mock：设 LLM_DEFAULT_PROVIDER=custom" +
+        "（见 apps/api/.env.local）。\n",
+    );
+  }
+
   // 1. Construct LLM gateway once and wire it into both consumers
   //    (agents package for BaseAgent.run, runtime package for step-engine logic actions).
   const gateway = getLLMGateway();
@@ -264,23 +281,10 @@ export async function bootstrapRuntime(): Promise<BootstrapResult> {
     })),
   });
 
-  // 4a-bis. Register every app's serve endpoint with the Inngest dev/cloud
-  //     server. The cli `-u .../inngest` auto-discovers ONLY the __system base
-  //     URL; each tenant app at `/inngest/<slug>` must be PUT-synced explicitly.
-  //     Best-effort + idempotent — a failed sync is logged, not fatal (the
-  //     reconciler / next boot re-syncs).
-  await syncAllApps({
-    info: (msg) => console.log(msg),
-    warn: (msg) => console.warn(msg),
-  });
-
-  // 4a-ter. Periodic reconciler: re-PUT any app the Inngest server has
-  //     forgotten (e.g. the dev server restarted out from under a still-running
-  //     api). Unref'd + no-op under test / when INNGEST_RECONCILE_MS=0.
-  startAppReconciler({
-    info: (msg) => console.log(msg),
-    warn: (msg) => console.warn(msg),
-  });
+  // 4a-bis. Inngest dev/cloud sync is started from server.ts AFTER Fastify is
+  //     actually listening. Doing it here used to PUT http://localhost:<PORT>
+  //     before the route existed, so tenant apps often never appeared until a
+  //     later reconciler tick.
 
   // 4. Crash recovery for the manifest-import wizard (per review C1).
   //    `reconcileImports` does three things:
@@ -331,6 +335,25 @@ export async function bootstrapRuntime(): Promise<BootstrapResult> {
       }
     } catch (err) {
       console.warn("[bootstrap] pruneRolledBackDeployments failed", err);
+    }
+  }
+
+  // 4b. Stuck-run reconcile — one-shot startup sweep. Inngest dev is not
+  //     crash-safe: an api restart drops in-flight handlers so their runs never
+  //     reach failRun and stay `running` forever. This reaps every orphan
+  //     accumulated while the process was down (HITL-safe — see reconcile-runs).
+  if (process.env.NODE_ENV !== "test") {
+    try {
+      const { reconcileOrphanedRuns } = await import("./services/reconcile-runs");
+      const swept = await reconcileOrphanedRuns({
+        info: (m) => console.log(m),
+        warn: (m) => console.warn(m),
+      });
+      if (swept.reaped > 0) {
+        console.log(`[bootstrap] stuck-run reconcile — marked ${swept.reaped} orphaned run(s) failed`);
+      }
+    } catch (err) {
+      console.warn("[bootstrap] reconcileOrphanedRuns failed", err);
     }
   }
 

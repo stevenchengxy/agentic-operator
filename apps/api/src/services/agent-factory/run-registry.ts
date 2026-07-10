@@ -11,7 +11,7 @@
 
 import { runBrain, type BrainEvent } from "@agentic/agent-factory";
 import { makeId } from "@agentic/shared";
-import { makeFactoryPorts, recordRunStart, recordRunFinish, getRun, markRunAborted, listRunningRuns } from "./index";
+import { makeFactoryPorts, recordRunStart, recordRunFinish, recordRunTranscript, getRun, markRunAborted, listRunningRuns } from "./index";
 
 export type RunStatus = "running" | "done" | "error" | "aborted" | "failed";
 type Frame = BrainEvent | { t: "run.started"; runId: string };
@@ -144,6 +144,14 @@ export function startRun(opts: { domain: string; goal: string; tenantId?: string
 
 async function drive(r: ActiveRun, conversationId: string): Promise<void> {
   const seenAgents = new Set<string>();
+  // #AUDIT-FIX(M21) — transcript 周期镜像（每 5s，.unref 不挡退出）：崩溃时 factory_runs 行
+  // 不再只有上一次交互的旧转录（"实时镜像"的注释承诺此前是假的）。
+  const mirror = setInterval(() => {
+    try {
+      if (r.status === "running") recordRunTranscript(r.runId, r.events.slice(0, MAX_BUFFER));
+    } catch { /* mirror is best-effort */ }
+  }, 5000);
+  (mirror as unknown as { unref?: () => void }).unref?.();
   try {
     const ports = makeFactoryPorts(r.tenantSlug);
     for await (const ev of runBrain({ domain: r.domain, goal: r.goal, ports, signal: r.abort.signal, conversationId })) {
@@ -175,6 +183,7 @@ async function drive(r: ActiveRun, conversationId: string): Promise<void> {
     r.errorMessage = (e as Error).message;
     if (!r.abort.signal.aborted) emit(r, { t: "error", message: (e as Error).message });
   } finally {
+    clearInterval(mirror); // #AUDIT-FIX(M21)
     // Guarantee a terminal `done` so any subscriber unblocks even on abort/crash.
     if (!r.sawDone) {
       emit(r, { t: "done", tokensUsed: r.tokensUsed, turns: r.turns, status: r.status === "aborted" ? "incomplete" : r.status === "error" ? "errored" : "incomplete" });
@@ -236,19 +245,37 @@ export function sweepZombieRuns(domain: string | null, tenantId?: string): numbe
 // where it crashed instead of leaving a zombie for the user to manually 继续. Opt out: FACTORY_AUTORESUME=0.
 export function autoResumeCrashedRuns(): number {
   if (process.env.FACTORY_AUTORESUME === "0") return 0;
-  const { getDb, factoryRuns, eq, and } = require("@agentic/db") as typeof import("@agentic/db");
+  const { getDb, factoryRuns, tenants, eq, and } = require("@agentic/db") as typeof import("@agentic/db");
   const { isNull } = require("drizzle-orm") as typeof import("drizzle-orm");
   let resumed = 0;
   try {
+    // #AUDIT-FIX(H8) — join tenants 取回 slug：无 slug 恢复的 run 拿到未限定 ports（上传本体层
+    // 为空、report/fleet 缺失），行为与原 run 静默不同。
     const rows = getDb()
-      .select({ id: factoryRuns.id, domain: factoryRuns.domain, goal: factoryRuns.goal, tenantId: factoryRuns.tenantId })
+      .select({ id: factoryRuns.id, domain: factoryRuns.domain, goal: factoryRuns.goal, tenantId: factoryRuns.tenantId, tenantSlug: tenants.slug, createdAt: factoryRuns.createdAt })
       .from(factoryRuns)
+      .leftJoin(tenants, eq(tenants.id, factoryRuns.tenantId))
       .where(and(eq(factoryRuns.status, "running"), isNull(factoryRuns.deletedAt)))
       .all();
+    // #AUDIT-FIX(M23) — 年龄上限 + 单次启动恢复数上限：老僵尸行标记 aborted 而不是无限重跑；
+    // 一次 boot 最多恢复 3 个（其余标记，防止重启风暴挤爆进程）。
+    const MAX_AGE_MS = Math.max(3600_000, Number(process.env.FACTORY_AUTORESUME_MAX_AGE_MS) || 24 * 3600_000);
+    const MAX_RESUME = Math.max(1, Number(process.env.FACTORY_AUTORESUME_MAX) || 3);
     for (const r of rows) {
       if (isActiveRun(r.id)) continue; // already live in this process
+      const age = Date.now() - new Date(r.createdAt as unknown as string | number | Date).getTime();
+      if (Number.isFinite(age) && age > MAX_AGE_MS) {
+        try { markRunAborted(r.id, `中断超过 ${Math.round(MAX_AGE_MS / 3600_000)}h 未恢复——按放弃处理（可从历史运行重新发起）`); } catch { /* best-effort */ }
+        continue;
+      }
+      if (resumed >= MAX_RESUME) {
+        try { markRunAborted(r.id, "本次启动恢复名额已满——按中断处理（可从历史运行重新发起）"); } catch { /* best-effort */ }
+        continue;
+      }
       try {
-        startRun({ domain: r.domain, goal: r.goal ?? "(crash-resume)", tenantId: r.tenantId ?? undefined, conversationId: r.id, runId: r.id });
+        // #AUDIT-FIX(L28) — 哨兵目标：conductor 识别 "[恢复继续]" 前缀后跳过意图门/policy/目标追加，
+        // 避免同一请求被登记两次意图、注入错误路线。
+        startRun({ domain: r.domain, goal: `[恢复继续] 进程重启后自动续跑：从状态摘要与最近上下文接续先前任务，不要重复已完成的步骤。`, tenantId: r.tenantId ?? undefined, tenantSlug: (r as { tenantSlug?: string | null }).tenantSlug ?? undefined, conversationId: r.id, runId: r.id });
         resumed += 1;
       } catch { /* one bad row never blocks the rest */ }
     }

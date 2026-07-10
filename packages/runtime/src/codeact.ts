@@ -193,12 +193,23 @@ export async function runGeneratedCode(
       memory: sandboxMemory,
       log: (level, msg, data) => { try { (console[level] ?? console.log)(`[codeact] ${msg}`, data ?? ""); } catch { /* best-effort */ } },
       // the agent's decision core — its own system prompt over the event input.
+      // #AUDIT-FIX(H0 fail-open) — 决策核心失败绝不能翻译成"通过"：无网关/调用失败时返回
+      // 【不含 ok:true】且带 _reasonFailed 标记的对象——生成代码的 `decision.ok/decision.pass`
+      // 判断自然走失败分支（fail-close，与规则闸语义一致），且日志留痕。旧行为（静默 {ok:true}）
+      // 会把一次 LLM 故障当成"规则全部通过"发出成功事件。
       reason: async (sp: string, inp: unknown) => {
-        if (!gateway) return { ok: true };
+        if (!gateway) {
+          try { console.warn("[codeact] reason() 无 LLM 网关——按失败处理（fail-close），不伪造通过"); } catch { /* best-effort */ }
+          return { ok: false, _reasonFailed: true, error: "llm_gateway_missing" };
+        }
+        let failure = "";
         const r = await gateway
           .chat({ messages: [{ role: "system", content: sp || opts.systemPrompt || "" }, { role: "user", content: JSON.stringify(inp ?? {}) }], tenantSlug: opts.tenantSlug })
-          .catch(() => null);
-        if (!r) return { ok: true };
+          .catch((e) => { failure = String((e as Error)?.message ?? e).slice(0, 200); return null; });
+        if (!r) {
+          try { console.warn(`[codeact] reason() LLM 调用失败——按失败处理（fail-close）：${failure}`); } catch { /* best-effort */ }
+          return { ok: false, _reasonFailed: true, error: failure || "llm_call_failed" };
+        }
         try { return JSON.parse(r.text); } catch { return { text: r.text, ok: true }; }
       },
       emit: (event: string, payload: Record<string, unknown> = {}) => { emitted.push({ event, payload }); },
@@ -279,7 +290,10 @@ export async function runGeneratedCode(
     // `_emit` lets register.ts's branch-emit (selectEmittedEvent) honor the handler's chosen event.
     const data = emitted[0] ? { ...base, _emit: emitted[0].event } : base;
     return spawnedSubAgents.length ? { data, emitted, spawnedSubAgents } : { data, emitted };
-  } catch {
+  } catch (e) {
+    // #AUDIT-FIX(M13) — 生成代码运行异常曾被整个吞掉（系统里不存在"为什么没真跑"的诊断）。
+    // 保留回退语义（返回 null → 声明式路径），但把根因留痕：console + 返回值无处可带时至少日志。
+    try { console.warn(`[codeact] 生成代码执行失败，回退声明式路径：${String((e as Error)?.message ?? e).slice(0, 300)}`); } catch { /* best-effort */ }
     return null; // fall back to the default generated path
   }
 }

@@ -32,6 +32,17 @@ describe("TC-100: ontology upload normalize", () => {
     expect(ontology.objects).toHaveLength(1);
   });
 
+  it("attaches to a forced domainId (upload → the selected 业务域), independent of the display name", () => {
+    // name "RAAS-v1" would slugify to "raas-v1"; forcing domainId "raas" stores it UNDER "raas" so it
+    // shadows/updates the selected domain, while the display name stays "RAAS-v1".
+    const { ontology, meta } = normalizeBundle("RAAS-v1", { actions: [{ name: "a", triggered_event: ["E"] }] }, "raas");
+    expect(ontology.domainId).toBe("raas");
+    expect(meta.id).toBe("raas");
+    expect(meta.name).toBe("RAAS-v1");
+    // a mixed-case/CJK forced id is slugified (keeps the store's slug-based has()/ids() consistent).
+    expect(normalizeBundle("x", { actions: [{ name: "a" }] }, "Agents-Generation").ontology.domainId).toBe(slugifyDomain("Agents-Generation"));
+  });
+
   it("throws (fail-closed) on a bundle with no actions", () => {
     expect(() => normalizeBundle("empty", { events: [], rules: [] })).toThrow();
     expect(() => normalizeBundle("garbage", "not an object")).toThrow();

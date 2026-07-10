@@ -164,7 +164,16 @@ function renderFlow(spec: SvgChartSpec): { svg: string; width: number; height: n
       `<rect x="${fmt(x)}" y="${y}" width="${boxW}" height="${boxH}" rx="9" fill="#f6f8fc" stroke="#c9d6ee"/>` +
       // Smaller font, longer clip: event names like MATCH_PASSED_NEED_INTERVIEW must survive —
       // truncated labels leaked into report PROSE when the model quoted them off the chart.
-      `<text x="${fmt(x + boxW / 2)}" y="${y + boxH / 2 + 4}" text-anchor="middle" ${FONT} font-size="9.5" fill="${INK}">${esc(clip(s, 30))}</text>`;
+      // #AUDIT-FIX(∥截断) — 并发节点 "A ∥ B" 曾被单行 clip 吃掉 ∥ 后半（读者会把并发扇出误读成
+      // 单线串行、且把下游事件误归因给显示出来的那一个 agent）。含 ∥ 的节点改两行渲染：
+      // 每支各占一行、∥ 永远可见。
+      (s.includes("∥")
+        ? (() => {
+            const [l1, ...rest] = s.split("∥").map((t) => t.trim());
+            const l2 = rest.join(" ∥ ");
+            return `<text x="${fmt(x + boxW / 2)}" y="${y + boxH / 2 - 3}" text-anchor="middle" ${FONT} font-size="8.5" fill="${INK}">${esc(clip(l1 ?? "", 28))} ∥</text><text x="${fmt(x + boxW / 2)}" y="${y + boxH / 2 + 10}" text-anchor="middle" ${FONT} font-size="8.5" fill="${INK}">${esc(clip(l2, 28))}</text>`;
+          })()
+        : `<text x="${fmt(x + boxW / 2)}" y="${y + boxH / 2 + 4}" text-anchor="middle" ${FONT} font-size="9.5" fill="${INK}">${esc(clip(s, 30))}</text>`);
     if (i < steps.length - 1) {
       const a = pos(i);
       const b = pos(i + 1);

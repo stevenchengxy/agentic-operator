@@ -8,7 +8,12 @@
  */
 "use client";
 
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import {
+  useQuery,
+  useMutation,
+  useQueryClient,
+  keepPreviousData,
+} from "@tanstack/react-query";
 import type { UseQueryResult } from "@tanstack/react-query";
 import { RUN_KEYS, COUNT_KEYS } from "./useStream";
 import { tenantHeader } from "./tenant-header";
@@ -107,6 +112,155 @@ export function useRuns(
   });
 }
 
+// ─── Server-side pagination + delete (W1) ─────────────────────────────────
+
+/** Server-side paginated runs envelope (`GET /v1/runs?page=…`). */
+export interface PaginatedRuns {
+  rows: RunListRow[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
+export interface RunPageFilter {
+  /** Single status, or "all"/undefined for no status filter. */
+  status?: string;
+  q?: string;
+  /** 1-indexed. */
+  page: number;
+  pageSize: number;
+  /** Recycle-bin lens — only tombstoned runs. */
+  deleted?: boolean;
+}
+
+function buildPageQuery(f: RunPageFilter): string {
+  const sp = new URLSearchParams();
+  sp.set("page", String(f.page));
+  sp.set("pageSize", String(f.pageSize));
+  if (f.status && f.status !== "all") sp.set("status", f.status);
+  if (f.q) sp.set("q", f.q);
+  if (f.deleted) sp.set("deleted", "1");
+  return `?${sp.toString()}`;
+}
+
+/**
+ * Paginated runs list. `placeholderData: keepPreviousData` keeps the previous
+ * page visible during a page/filter change so the list doesn't flash empty.
+ */
+export function useRunsPaged(
+  filter: RunPageFilter,
+): UseQueryResult<PaginatedRuns> {
+  const query = buildPageQuery(filter);
+  return useQuery({
+    queryKey: RUN_KEYS.list({ paged: true, ...filter } as Record<string, unknown>),
+    queryFn: () => callV1<PaginatedRuns>(`/v1/runs${query}`),
+    placeholderData: keepPreviousData,
+    staleTime: 2_000,
+  });
+}
+
+/** Soft-delete a run (recoverable): `DELETE /v1/runs/:id`. */
+export function useDeleteRun() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      callV1<{ id: string; deleted: boolean; note: string }>(
+        `/v1/runs/${encodeURIComponent(id)}`,
+        { method: "DELETE" },
+      ),
+    onSettled: () => {
+      void client.invalidateQueries({ queryKey: RUN_KEYS.all });
+      void client.invalidateQueries({ queryKey: COUNT_KEYS.tenant });
+    },
+  });
+}
+
+/** Restore a soft-deleted run: `POST /v1/runs/:id/restore`. */
+export function useRestoreRun() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      callV1<{ id: string; restored: boolean; note: string }>(
+        `/v1/runs/${encodeURIComponent(id)}/restore`,
+        { method: "POST" },
+      ),
+    onSettled: () => {
+      void client.invalidateQueries({ queryKey: RUN_KEYS.all });
+      void client.invalidateQueries({ queryKey: COUNT_KEYS.tenant });
+    },
+  });
+}
+
+export type BulkDeleteArg =
+  | { scope: "oldest"; n: number }
+  | { scope: "all" }
+  | { scope: "purge" };
+
+/** Bulk cleanup: `DELETE /v1/runs?scope=oldest&n=` / `?scope=all` / `?scope=purge`. */
+export function useBulkDeleteRuns() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (arg: BulkDeleteArg) => {
+      const sp = new URLSearchParams();
+      sp.set("scope", arg.scope);
+      if (arg.scope === "oldest") sp.set("n", String(arg.n));
+      return callV1<{ scope: string; deleted: number; note: string }>(
+        `/v1/runs?${sp.toString()}`,
+        { method: "DELETE" },
+      );
+    },
+    onSettled: () => {
+      void client.invalidateQueries({ queryKey: RUN_KEYS.all });
+      void client.invalidateQueries({ queryKey: COUNT_KEYS.tenant });
+    },
+  });
+}
+
+// ─── AI run summary (W2) ──────────────────────────────────────────────────
+
+export interface RunSummary {
+  scored: boolean;
+  status: string;
+  headline: string;
+  narrative: string;
+  businessDetails: string[];
+  problem: string | null;
+  likelyCauses: string[];
+  suggestions: string[];
+  model: string;
+  digest: string;
+  createdAt?: string | null;
+}
+
+const SUMMARY_KEY = (id: string) => ["runs", "summary", id] as const;
+
+/** Cached AI summary for a run (`GET /v1/runs/:id/summary`). null until generated. */
+export function useRunSummary(
+  id: string | null | undefined,
+): UseQueryResult<{ summary: RunSummary | null }> {
+  return useQuery({
+    queryKey: id ? SUMMARY_KEY(id) : (["runs", "summary", "__none__"] as const),
+    queryFn: () => callV1<{ summary: RunSummary | null }>(`/v1/runs/${encodeURIComponent(id!)}/summary`),
+    enabled: Boolean(id),
+    staleTime: 60_000,
+  });
+}
+
+/** Generate (or regenerate) a run's AI summary: `POST /v1/runs/:id/summary`. */
+export function useGenerateRunSummary() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      callV1<{ summary: RunSummary }>(
+        `/v1/runs/${encodeURIComponent(id)}/summary`,
+        { method: "POST" },
+      ),
+    onSuccess: (data, id) => {
+      client.setQueryData(SUMMARY_KEY(id), data);
+    },
+  });
+}
+
 export interface StepRow {
   id: string;
   ord: number;
@@ -148,6 +302,36 @@ export function useRun(id: string | null | undefined): UseQueryResult<RunDetail>
     queryKey: id ? RUN_KEYS.detail(id) : (["runs", "detail", "__none__"] as const),
     queryFn: () => callV1<RunDetail>(`/v1/runs/${encodeURIComponent(id!)}`),
     enabled: Boolean(id),
+  });
+}
+
+/** One run in the cross-run correlationId chain (GET /v1/runs/:id/chain). */
+export interface RunChainRow {
+  id: string;
+  agentName: string;
+  agentTitle: string | null;
+  status: string;
+  subject: string | null;
+  triggerEvent: string | null;
+  emittedEvent: string | null;
+  startedAt: string | null;
+  durationMs: number | null;
+  parentRunId: string | null;
+  correlationId: string;
+}
+export interface RunChain {
+  correlationId: string;
+  runs: RunChainRow[];
+}
+
+/** The whole cross-run cascade sharing this run's correlationId, in pipeline
+ *  order — the zhaopin 6-agent chain the parentRunId-based trace tree can't show. */
+export function useRunChain(id: string | null | undefined): UseQueryResult<RunChain> {
+  return useQuery({
+    queryKey: id ? (["runs", "chain", id] as const) : (["runs", "chain", "__none__"] as const),
+    queryFn: () => callV1<RunChain>(`/v1/runs/${encodeURIComponent(id!)}/chain`),
+    enabled: Boolean(id),
+    staleTime: 2_000,
   });
 }
 

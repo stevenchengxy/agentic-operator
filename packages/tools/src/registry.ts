@@ -49,6 +49,7 @@ import {
 import { httpFetchTool } from "./http";
 import { ping } from "./meta";
 import { fetchActionRules } from "./ontology";
+import { recordsUpsert } from "./records";
 import { svgChart } from "./viz";
 import { htmlToPdfTool } from "./report";
 
@@ -766,6 +767,34 @@ const REGISTRATIONS: ToolRegistration[] = [
       },
       returnsExample: { rules: [], mandatory: [], count: 0, source: "allmeta" },
       sourcePath: "packages/tools/src/ontology/fetch-action-rules.ts",
+    },
+  },
+
+  {
+    descriptor: recordsUpsert,
+    catalog: {
+      name: "records.upsert",
+      category: "records",
+      summary: "Persist a durable business record (candidate / resume / job_posting / candidate_match_result / communication_log) that outlives the run; pass-through so it can sit mid-pipeline.",
+      description:
+        "New-arch-native replacement for Neo4j / RAAS-Postgres instance write-back. Reads the current step's data (ctx.event.data + ctx.lastResult), upserts a row into business_records keyed by (tenant, record_type, record_key), and tags it with run/correlation/candidate. PASS-THROUGH: echoes the upstream result so it never starves the next step or hijacks _emit — place it non-terminally. Soft-fail (never blocks the run).",
+      argsSchema: {},
+      argsExample: {},
+      configSchema: {
+        record_type: { type: "string", description: "candidate | resume | job_posting | candidate_match_result | communication_log (required)." },
+        key_field: { type: "string", description: "Override the field used as the business identity (record_key)." },
+        candidate_field: { type: "string", description: "Field holding the candidate id (default candidate_id)." },
+        append: { type: "boolean", description: "For communication_log: always insert a fresh row instead of upserting." },
+      },
+      configExample: { record_type: "candidate", candidate_field: "candidate_id" },
+      returnsSchema: {
+        record_id: { type: "string", description: "business_records.id" },
+        record_type: { type: "string" },
+        record_key: { type: "string" },
+        upserted: { type: "boolean" },
+      },
+      returnsExample: { record_id: "rec-abc123", record_type: "candidate", record_key: "cand-1", upserted: true },
+      sourcePath: "packages/tools/src/records/upsert.ts",
     },
   },
 ];

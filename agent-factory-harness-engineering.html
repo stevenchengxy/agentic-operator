@@ -1,0 +1,1236 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; style-src 'unsafe-inline' blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; img-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; font-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; media-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; worker-src blob:; connect-src blob: data:; frame-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<title>Agent Factory Harness Engineering</title>
+<style>:root{color-scheme:light dark;background:light-dark(rgb(255 255 255), rgb(24 24 24))}html,body{margin:0}body{box-sizing:border-box;padding:1rem;background:inherit}iframe{display:block;width:100%;max-width:736px;height:calc(100vh - 2rem);margin:0 auto;border:0}</style>
+</head>
+<body>
+<iframe sandbox="allow-scripts" referrerpolicy="no-referrer" title="Agent Factory Harness Engineering" srcdoc="&lt;!doctype html&gt;
+&lt;html lang=&quot;en&quot;&gt;
+&lt;head&gt;
+&lt;meta charset=&quot;utf-8&quot;&gt;
+&lt;meta name=&quot;viewport&quot; content=&quot;width=device-width, initial-scale=1&quot;&gt;
+&lt;meta name=&quot;referrer&quot; content=&quot;no-referrer&quot;&gt;
+&lt;meta http-equiv=&quot;Content-Security-Policy&quot; content=&quot;default-src &#x27;none&#x27;; script-src &#x27;unsafe-inline&#x27; &#x27;unsafe-eval&#x27; &#x27;wasm-unsafe-eval&#x27; blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; style-src &#x27;unsafe-inline&#x27; blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; img-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; font-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; media-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; worker-src blob:; connect-src blob: data:; frame-src &#x27;none&#x27;; object-src &#x27;none&#x27;; base-uri &#x27;none&#x27;; form-action &#x27;none&#x27;&quot;&gt;
+&lt;title&gt;Agent Factory Harness Engineering&lt;/title&gt;
+&lt;style&gt;:root {
+  color-scheme: light dark;
+  background-color: var(--background) !important;
+
+  /* Agent-facing contract; keep in sync with SKILL.md. */
+  --background: light-dark(rgb(255 255 255), rgb(24 24 24));
+  --foreground: light-dark(rgb(26 28 31), rgb(255 255 255));
+  --card: color-mix(in oklab, var(--foreground) 5%, transparent);
+  --card-foreground: var(--foreground);
+  --popover: light-dark(rgb(255 255 255), rgb(45 45 45));
+  --popover-foreground: var(--foreground);
+  --primary: light-dark(rgb(51 156 255), rgb(131 195 255));
+  --primary-foreground: light-dark(rgb(255 255 255), rgb(13 13 13));
+  --secondary: light-dark(rgb(255 255 255 / 96%), rgb(54 54 54 / 96%));
+  --secondary-foreground: var(--foreground);
+  --muted: color-mix(in srgb, var(--foreground) 10%, transparent);
+  --muted-foreground: light-dark(
+    rgb(26 28 31 / 49.4%),
+    rgb(255 255 255 / 49.8%)
+  );
+  --accent: light-dark(rgb(229 242 255), rgb(13 39 63));
+  --accent-foreground: var(--primary);
+  --destructive: light-dark(rgb(226 85 7), rgb(255 133 73));
+  --border: light-dark(rgb(26 28 31 / 8%), rgb(255 255 255 / 8.2%));
+  --input: light-dark(
+    rgb(26 28 31 / 11.8%),
+    color-mix(in oklab, rgb(0 0 0) 10%, transparent)
+  );
+  --ring: light-dark(rgb(51 156 255), rgb(131 195 255 / 76%));
+  --font-size-base: 14px;
+  --viz-series-1: var(--primary);
+  --viz-series-2: light-dark(rgb(243 136 59), rgb(245 154 86));
+  --viz-series-3: light-dark(rgb(93 201 119), rgb(116 213 139));
+  --viz-series-4: light-dark(rgb(235 119 177), rgb(240 143 192));
+  --viz-series-5: light-dark(rgb(155 121 236), rgb(170 145 239));
+  --viz-series-6: light-dark(rgb(58 185 177), rgb(90 203 194));
+
+  /* Internal implementation variables; not part of the agent contract. */
+  --font-sans: -apple-system, system-ui, &quot;Segoe UI&quot;, sans-serif;
+  --font-mono:
+    ui-monospace, SFMono-Regular, &quot;SF Mono&quot;, Menlo, Consolas, &quot;Liberation Mono&quot;,
+    monospace;
+  --font-size-normal: max(11px, var(--font-size-base));
+  --font-size-tooltip: calc(var(--font-size-base) - 1px);
+  --font-size-small: max(11px, calc(var(--font-size-base) - 2px));
+  --font-size-h1: calc(var(--font-size-normal) * 1.7142857143);
+  --font-size-h2: calc(var(--font-size-normal) * 1.4285714286);
+  --font-size-h3: calc(var(--font-size-normal) * 1.2857142857);
+  --font-weight-normal: 430;
+  --font-weight-medium: 500;
+  --line-height-normal: calc(var(--font-size-normal) * 1.5);
+  --line-height-tooltip: calc(var(--font-size-tooltip) * 1.4285714286);
+  --line-height-small: calc(var(--font-size-small) + 4px);
+  --radius: 12.5px;
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-2xl: calc(var(--radius) * 1.6);
+  --radius-full: 9999px;
+  --shadow-sm: 0 1px 2px -1px rgb(0 0 0 / 8%);
+  --checkmark-image: url(&quot;data:image/svg+xml,%3Csvg xmlns=&#x27;http://www.w3.org/2000/svg&#x27; viewBox=&#x27;0 0 17 17&#x27;%3E%3Cpath d=&#x27;M12.8961 3.64101C13.1297 3.41418 13.4984 3.37523 13.7779 3.56581C14.0571 3.75635 14.1554 4.11331 14.0299 4.41347L13.9615 4.53847L7.71151 13.7045C7.59411 13.8767 7.4063 13.9877 7.19881 14.0072C6.99136 14.0267 6.78564 13.9533 6.63826 13.806L2.88826 10.056L2.79842 9.9457C2.6192 9.67407 2.64927 9.30496 2.88826 9.06581C3.12738 8.82669 3.49647 8.79676 3.76815 8.97597L3.8785 9.06581L7.03084 12.2182L12.8053 3.74941L12.8961 3.64101Z&#x27;/%3E%3C/svg%3E&quot;);
+
+  /* Legacy aliases; not part of the current agent contract. */
+  --viz-bg: transparent;
+  --viz-panel: var(--card);
+  --viz-border: var(--border);
+  --viz-text: var(--foreground);
+  --viz-muted: var(--muted-foreground);
+  --viz-accent: var(--primary);
+  --viz-accent-text: var(--primary-foreground);
+  --viz-accent-bg: var(--accent);
+  --viz-font-size: var(--font-size-base);
+  --viz-warning: var(--destructive);
+  --color-background-primary: var(--background);
+  --color-text-primary: var(--foreground);
+  --color-border-secondary: var(--border);
+}
+
+:root[data-theme=&quot;light&quot;] {
+  color-scheme: light;
+}
+
+:root[data-theme=&quot;dark&quot;] {
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html &gt; body {
+  margin: 0;
+  padding: 5px;
+  color: var(--foreground);
+  background: transparent !important;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-normal);
+  font-weight: var(--font-weight-normal);
+  line-height: var(--line-height-normal);
+}
+
+a {
+  color: color-mix(in srgb, var(--viz-accent) 80%, var(--viz-text) 20%);
+  cursor: pointer;
+  font-weight: var(--viz-font-weight-medium);
+  text-decoration: none;
+  text-underline-offset: 2px;
+}
+
+a:is(:hover, :focus-visible) {
+  text-decoration-line: underline;
+  text-decoration-style: dashed;
+  text-decoration-thickness: 0.5px;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+p {
+  margin-block: 0;
+}
+
+h1 {
+  font-size: var(--font-size-h1);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.25;
+}
+
+h2 {
+  font-size: var(--font-size-h2);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.25;
+}
+
+h3,
+h4,
+h5,
+h6 {
+  font-size: var(--font-size-h3);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.3;
+}
+
+b,
+strong,
+th {
+  font-weight: var(--font-weight-medium);
+}
+
+code:not(pre code) {
+  display: inline;
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  corner-shape: superellipse(1.5);
+  background: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  overflow-wrap: anywhere;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+  word-break: break-word;
+}
+
+#widget {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  padding: 0;
+  background: transparent !important;
+}
+
+.card {
+  min-width: 0;
+  padding: 12px;
+  overflow: hidden;
+  overflow-wrap: break-word;
+  border-radius: var(--radius-2xl);
+  corner-shape: superellipse(1.5);
+  color: var(--card-foreground);
+  background: var(--card);
+}
+
+#widget &gt; :not(.card) {
+  width: 100% !important;
+  max-width: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.tooltip {
+  position: fixed;
+  z-index: 50;
+  top: 0;
+  left: 0;
+  width: max-content;
+  max-width: min(
+    20rem,
+    var(--tooltip-available-width, calc(100vw - 10px)),
+    calc(100vw - 10px)
+  );
+  max-height: min(
+    var(--tooltip-available-height, calc(100vh - 10px)),
+    calc(100vh - 10px)
+  );
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  corner-shape: superellipse(1.5);
+  color: var(--popover-foreground);
+  background: var(--popover);
+  box-shadow: none;
+  font-size: var(--font-size-tooltip);
+  line-height: var(--line-height-tooltip);
+  overflow-wrap: break-word;
+  white-space: normal;
+  pointer-events: none;
+  user-select: none;
+}
+
+.viz-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(max(180px, 24%), 1fr));
+  gap: 10px;
+}
+
+.viz-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.viz-stat-value {
+  font-size: var(--font-size-h2);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.25;
+}
+
+.viz-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.viz-badge {
+  padding: 3px 8px;
+  border-radius: var(--radius-full);
+  color: var(--accent-foreground);
+  background: var(--accent);
+  font-weight: var(--font-weight-medium);
+}
+
+small,
+.text-small,
+.viz-badge {
+  font-size: var(--font-size-small);
+  line-height: var(--line-height-small);
+}
+
+.text-muted {
+  color: var(--muted-foreground);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.viz-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.viz-controls &gt; .form-label {
+  display: grid;
+  min-width: min(100%, 260px);
+  flex: 1 1 280px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 2px 12px;
+  margin-bottom: 0;
+}
+
+.viz-controls &gt; .form-label &gt; :is(.form-control, .form-range, .form-select) {
+  grid-column: 1 / -1;
+}
+
+.btn,
+.form-check-input,
+.form-control,
+.form-range,
+.form-select {
+  font: inherit;
+}
+
+.btn {
+  appearance: button;
+  display: inline-flex;
+  inline-size: fit-content;
+  max-inline-size: 100%;
+  min-height: 28px;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  margin: 0;
+  padding: 0 8px;
+  -webkit-app-region: no-drag;
+  border: 1px solid var(--input);
+  border-radius: var(--radius-lg);
+  corner-shape: superellipse(1.5);
+  color: var(--secondary-foreground);
+  background: var(--secondary);
+  cursor: var(--cursor-interaction, pointer);
+  text-align: center;
+  text-decoration: none;
+  white-space: nowrap;
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+.btn:is(.btn-block, .viz-tile) {
+  inline-size: 100%;
+}
+
+.btn.viz-tile {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+a.btn {
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.btn:not(:disabled):hover {
+  background: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+}
+
+.btn-primary {
+  border-color: transparent;
+  color: var(--primary-foreground);
+  background: var(--foreground);
+  background-clip: padding-box;
+}
+
+.btn-primary .text-muted {
+  color: color-mix(in srgb, var(--primary-foreground) 50%, transparent);
+}
+
+.btn-primary:not(:disabled):hover {
+  background: color-mix(in srgb, var(--foreground) 80%, transparent);
+  background-clip: padding-box;
+}
+
+.btn-ghost {
+  border-color: transparent;
+  color: var(--muted-foreground);
+  background: transparent;
+}
+
+.btn-ghost:not(:disabled):hover {
+  color: var(--foreground);
+  background: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+}
+
+.btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+[data-lucide] {
+  stroke-width: 1.6;
+}
+
+.form-label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--foreground);
+}
+
+.form-control {
+  display: block;
+  width: 100%;
+  min-height: 28px;
+  padding: 0 8px;
+  outline: none;
+  border: 1px solid var(--input);
+  border-radius: var(--radius-lg);
+  corner-shape: superellipse(1.5);
+  color: var(--foreground);
+  background: var(--secondary);
+}
+
+.form-control::placeholder {
+  color: var(--muted-foreground);
+}
+
+.form-control[type=&quot;file&quot;] {
+  padding: 0;
+  overflow: hidden;
+  cursor: var(--cursor-interaction, pointer);
+}
+
+.form-control[type=&quot;file&quot;]::file-selector-button {
+  min-height: 26px;
+  margin-right: 8px;
+  padding: 0 8px;
+  border: 0;
+  border-right: 1px solid var(--input);
+  color: var(--secondary-foreground);
+  background: var(--secondary);
+  cursor: inherit;
+  font: inherit;
+}
+
+.form-control[type=&quot;file&quot;]:not(:disabled):hover::file-selector-button {
+  background: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+}
+
+.form-control-color[type=&quot;color&quot;] {
+  width: 40px;
+  height: 28px;
+  padding: 3px;
+  cursor: var(--cursor-interaction, pointer);
+}
+
+.form-control-color[type=&quot;color&quot;]::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.form-control-color[type=&quot;color&quot;]::-webkit-color-swatch {
+  border: 0;
+  border-radius: calc(var(--radius-lg) - 4px);
+  corner-shape: superellipse(1.5);
+}
+
+textarea.form-control {
+  height: auto;
+  min-height: 72px;
+  padding: 8px 10px;
+  resize: vertical;
+}
+
+.form-control:focus-visible {
+  border-color: var(--ring);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.form-control:disabled,
+.form-select:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.form-select {
+  appearance: none;
+  display: block;
+  width: 100%;
+  min-height: 28px;
+  margin: 0;
+  padding: 0 32px 0 8px;
+  outline: none;
+  border: 1px solid var(--input);
+  border-radius: var(--radius-lg);
+  corner-shape: superellipse(1.5);
+  color: var(--foreground);
+  background-color: var(--secondary);
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--muted-foreground) 50%),
+    linear-gradient(135deg, var(--muted-foreground) 50%, transparent 50%);
+  background-position:
+    calc(100% - 14px) 50%,
+    calc(100% - 10px) 50%;
+  background-repeat: no-repeat;
+  background-size: 4px 4px;
+  cursor: var(--cursor-interaction, default);
+}
+
+.form-select:not(:disabled):hover {
+  background-color: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+}
+
+.form-select:focus-visible {
+  border-color: var(--ring);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.form-check {
+  display: flex;
+  min-height: 20px;
+  align-items: center;
+  gap: 6px;
+}
+
+.form-check-input {
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  margin: 0;
+  border: 1px solid var(--input);
+  color: var(--primary-foreground);
+  background-color: transparent;
+  cursor: var(--cursor-interaction, default);
+  transition:
+    background-color 150ms,
+    border-color 150ms,
+    box-shadow 150ms;
+}
+
+.form-check:not(.form-switch) .form-check-input[type=&quot;checkbox&quot;] {
+  border-color: var(--input);
+  border-radius: var(--radius-sm);
+  corner-shape: superellipse(1.5);
+  background-color: var(--secondary);
+  box-shadow: var(--shadow-sm);
+}
+
+.form-check:not(.form-switch)
+  .form-check-input:not(:disabled):not(:checked):hover {
+  background-color: var(--card);
+}
+
+.form-check:not(.form-switch) .form-check-input[type=&quot;checkbox&quot;]:checked {
+  border-color: var(--primary);
+  background-color: var(--primary);
+}
+
+.form-check:not(.form-switch)
+  .form-check-input[type=&quot;checkbox&quot;]:checked::before {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: var(--primary-foreground);
+  content: &quot;&quot;;
+  mask: var(--checkmark-image) center / 12px 12px no-repeat;
+}
+
+.form-check-input[type=&quot;radio&quot;] {
+  width: 14px;
+  height: 14px;
+  border-radius: var(--radius-full);
+}
+
+.form-check-input[type=&quot;radio&quot;]:checked {
+  border: 2px solid var(--primary);
+  background:
+    radial-gradient(circle, var(--primary-foreground) 0 2.5px, transparent 3px),
+    var(--primary);
+}
+
+.form-check:not(.form-switch) .form-check-input:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.form-check:not(.form-switch) .form-check-input:disabled {
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.form-check:not(.form-switch) .form-check-input:disabled + .form-check-label {
+  cursor: not-allowed;
+}
+
+.form-switch .form-check-input:disabled,
+.form-switch .form-check-input:disabled + .form-check-label {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.form-check-label {
+  color: var(--foreground);
+  cursor: var(--cursor-interaction, default);
+}
+
+.form-switch .form-check-input {
+  position: relative;
+  width: 32px;
+  height: 20px;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: var(--muted);
+  box-shadow: none;
+  transition: background-color 200ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+.form-switch .form-check-input::before {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 16px;
+  height: 16px;
+  box-sizing: border-box;
+  border: 1px solid light-dark(var(--primary-foreground), var(--foreground));
+  border-radius: var(--radius-full);
+  background: light-dark(var(--primary-foreground), var(--foreground));
+  box-shadow: var(--shadow-sm);
+  content: &quot;&quot;;
+  transform: translate(2px, -50%);
+  transition: transform 200ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+.form-switch .form-check-input:checked {
+  background: var(--primary);
+}
+
+.form-switch .form-check-input:checked::before {
+  transform: translate(14px, -50%);
+}
+
+.form-switch .form-check-input:focus-visible {
+  box-shadow: 0 0 0 2px var(--ring);
+}
+
+.form-range {
+  appearance: none;
+  display: block;
+  width: 100%;
+  height: 28px;
+  flex: 1;
+  margin: 0;
+  padding: 0;
+  outline: none;
+  border: 0;
+  accent-color: var(--primary);
+  background: linear-gradient(
+      color-mix(in srgb, var(--foreground) 7%, transparent),
+      color-mix(in srgb, var(--foreground) 7%, transparent)
+    )
+    center / 100% 2px no-repeat;
+}
+
+.form-range::-webkit-slider-runnable-track {
+  height: 28px;
+  background: transparent;
+}
+
+.form-range::-webkit-slider-thumb {
+  appearance: none;
+  width: 20px;
+  height: 20px;
+  margin-top: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: light-dark(var(--primary-foreground), var(--foreground));
+}
+
+.form-range:focus-visible::-webkit-slider-thumb {
+  border-color: var(--ring);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.form-range::-moz-range-track {
+  height: 28px;
+  background: transparent;
+}
+
+.form-range::-moz-range-thumb {
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: light-dark(var(--primary-foreground), var(--foreground));
+}
+
+.form-range:focus-visible::-moz-range-thumb {
+  border-color: var(--ring);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.form-range:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.btn:not(.btn-primary, .viz-tile):is(
+    [aria-pressed=&quot;true&quot;],
+    [aria-selected=&quot;true&quot;],
+    .is-selected
+  ) {
+  border-color: var(--primary);
+  color: var(--primary-foreground);
+  background: var(--primary);
+}
+
+.btn.viz-tile:is([aria-pressed=&quot;true&quot;], [aria-selected=&quot;true&quot;], .is-selected) {
+  border-color: var(--primary);
+  box-shadow: inset 0 0 0 1px var(--primary);
+}
+
+.btn:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+#widget &gt; svg {
+  width: 100%;
+}
+
+.text-warning,
+.text-destructive {
+  color: var(--destructive);
+}
+
+html&gt;body{padding:0}&lt;/style&gt;
+&lt;/head&gt;
+&lt;body&gt;
+&lt;div id=&quot;af-harness-v2&quot;&gt;
+  &lt;style&gt;
+    #af-harness-v2 {
+      display: grid;
+      gap: 1rem;
+      color: var(--foreground);
+      background: transparent;
+    }
+    #af-harness-v2 .afh-view {
+      display: grid;
+      gap: 0.9rem;
+    }
+    #af-harness-v2 .afh-view[hidden] {
+      display: none;
+    }
+    #af-harness-v2 .afh-lane {
+      display: grid;
+      grid-template-columns: minmax(7.5rem, 0.28fr) 1fr;
+      align-items: center;
+      gap: 0.75rem;
+      padding-block: 0.35rem;
+    }
+    #af-harness-v2 .afh-label {
+      color: var(--foreground);
+      font-weight: 500;
+    }
+    #af-harness-v2 .afh-flow {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.45rem;
+      min-width: 0;
+    }
+    #af-harness-v2 .afh-arrow {
+      color: var(--muted-foreground);
+    }
+    #af-harness-v2 .afh-return {
+      color: var(--destructive);
+    }
+    #af-harness-v2 #afh-detail {
+      margin: 0;
+    }
+    #af-harness-v2 #afh-detail strong {
+      font-weight: 500;
+    }
+    @media (max-width: 520px) {
+      #af-harness-v2 .afh-lane {
+        grid-template-columns: 1fr;
+      }
+    }
+  &lt;/style&gt;
+
+  &lt;div class=&quot;viz-controls&quot; aria-label=&quot;切换架构视图&quot;&gt;
+    &lt;button class=&quot;btn btn-primary&quot; type=&quot;button&quot; data-afh-view=&quot;full&quot; aria-pressed=&quot;true&quot;&gt;端到端&lt;/button&gt;
+    &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-afh-view=&quot;review&quot; aria-pressed=&quot;false&quot;&gt;审查返修&lt;/button&gt;
+    &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-afh-view=&quot;inngest&quot; aria-pressed=&quot;false&quot;&gt;Inngest 编译&lt;/button&gt;
+  &lt;/div&gt;
+
+  &lt;div class=&quot;afh-view&quot; data-afh-panel=&quot;full&quot;&gt;
+    &lt;div class=&quot;afh-lane&quot;&gt;
+      &lt;div class=&quot;afh-label&quot;&gt;&lt;span class=&quot;viz-badge&quot;&gt;Chatbot&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;afh-flow&quot;&gt;
+        &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-afh-node data-afh-detail=&quot;用户目标经 EventSource 建立或重连后台 FactoryRun；连接断开只取消订阅。&quot;&gt;自然语言目标&lt;/button&gt;
+        &lt;span class=&quot;afh-arrow&quot; aria-hidden=&quot;true&quot;&gt;→&lt;/span&gt;
+        &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-afh-node data-afh-detail=&quot;run-registry 驱动 runBrain AsyncGenerator，BrainEvent 同时服务 UI、回放和审计。&quot;&gt;SSE + Registry&lt;/button&gt;
+        &lt;span class=&quot;afh-arrow&quot; aria-hidden=&quot;true&quot;&gt;→&lt;/span&gt;
+        &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-afh-node data-afh-detail=&quot;think、tool、stage、review、sandbox、HITL 和 done 都是结构化 BrainEvent。&quot;&gt;BrainEvent&lt;/button&gt;
+      &lt;/div&gt;
+    &lt;/div&gt;
+    &lt;div class=&quot;afh-lane&quot;&gt;
+      &lt;div class=&quot;afh-label&quot;&gt;&lt;span class=&quot;viz-badge&quot;&gt;Outer Harness&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;afh-flow&quot;&gt;
+        &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-afh-node data-afh-detail=&quot;意图门区分生成、修改、分析和提问；policy 决定 full、skinny、analyze 或 ask_first。&quot;&gt;Intent + Policy&lt;/button&gt;
+        &lt;span class=&quot;afh-arrow&quot; aria-hidden=&quot;true&quot;&gt;→&lt;/span&gt;
+        &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-afh-node data-afh-detail=&quot;六阶段 admission gate 只强制跨阶段入口，阶段内仍由 ReAct 大脑自由选工具。&quot;&gt;Stage Gates&lt;/button&gt;
+        &lt;span class=&quot;afh-arrow&quot; aria-hidden=&quot;true&quot;&gt;→&lt;/span&gt;
+        &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-afh-node data-afh-detail=&quot;compaction、ontology anchor、重复调用熔断、完成守卫和每轮 checkpoint 保持长运行稳定。&quot;&gt;Long-run Guardrails&lt;/button&gt;
+      &lt;/div&gt;
+    &lt;/div&gt;
+    &lt;div class=&quot;afh-lane&quot;&gt;
+      &lt;div class=&quot;afh-label&quot;&gt;&lt;span class=&quot;viz-badge&quot;&gt;Cognitive Harness&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;afh-flow&quot;&gt;
+        &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-afh-node data-afh-detail=&quot;objects、rules、actions、events 四位轻量专家并行深读，再 reduce 为 ontologyUnderstanding。&quot;&gt;4D Ontology&lt;/button&gt;
+        &lt;span class=&quot;afh-arrow&quot; aria-hidden=&quot;true&quot;&gt;→&lt;/span&gt;
+        &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-afh-node data-afh-detail=&quot;chain、rules、contract 三视角独立挑战 BuildPlan；失败可降级单 reviewer。&quot;&gt;3-Lens Plan Review&lt;/button&gt;
+        &lt;span class=&quot;afh-arrow&quot; aria-hidden=&quot;true&quot;&gt;→&lt;/span&gt;
+        &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-afh-node data-afh-detail=&quot;spawn_subagent 递归运行独立 runBrain，带自己的消息历史与只读工具，深度上限为 2。&quot;&gt;Recursive Sub-brain&lt;/button&gt;
+      &lt;/div&gt;
+    &lt;/div&gt;
+    &lt;div class=&quot;afh-lane&quot;&gt;
+      &lt;div class=&quot;afh-label&quot;&gt;&lt;span class=&quot;viz-badge&quot;&gt;Agent Compiler&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;afh-flow&quot;&gt;
+        &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-afh-node data-afh-detail=&quot;GeneratedAgentSpec 聚合事件、Prompt、工具、I/O、Plan、补偿、子 Agent 与可选 handler 代码。&quot;&gt;GeneratedAgentSpec&lt;/button&gt;
+        &lt;span class=&quot;afh-arrow&quot; aria-hidden=&quot;true&quot;&gt;→&lt;/span&gt;
+        &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-afh-node data-afh-detail=&quot;mapToManifest 把 PlanStep 编译为 action[]，同时携带 tool_use、typescript_code 与 compensation_event。&quot;&gt;Manifest&lt;/button&gt;
+        &lt;span class=&quot;afh-arrow&quot; aria-hidden=&quot;true&quot;&gt;→&lt;/span&gt;
+        &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-afh-node data-afh-detail=&quot;Runtime 的通用 registerAgent 为每个 tenant+agent 创建稳定 Inngest function 外壳。&quot;&gt;registerAgent&lt;/button&gt;
+      &lt;/div&gt;
+    &lt;/div&gt;
+    &lt;div class=&quot;afh-lane&quot;&gt;
+      &lt;div class=&quot;afh-label&quot;&gt;&lt;span class=&quot;viz-badge&quot;&gt;Evidence Loop&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;afh-flow&quot;&gt;
+        &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-afh-node data-afh-detail=&quot;Sandbox 使用同一 Manifest validate/commit/register 链，发真实测试事件并等待链路收敛。&quot;&gt;Real Sandbox Run&lt;/button&gt;
+        &lt;span class=&quot;afh-arrow&quot; aria-hidden=&quot;true&quot;&gt;→&lt;/span&gt;
+        &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-afh-node data-afh-detail=&quot;采集 runs、steps、events、agent I/O、codeRan 和 execution fidelity，定位到具体 Agent。&quot;&gt;Execution Evidence&lt;/button&gt;
+        &lt;span class=&quot;afh-return&quot; aria-hidden=&quot;true&quot;&gt;↺&lt;/span&gt;
+        &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-afh-node data-afh-detail=&quot;大脑按 attribution 选择 refine、codegen、revert、re-plan 或拆分子 Agent；新 revision 使旧 Sandbox 指纹失效。&quot;&gt;Revise Spec&lt;/button&gt;
+      &lt;/div&gt;
+    &lt;/div&gt;
+  &lt;/div&gt;
+
+  &lt;div class=&quot;afh-view&quot; data-afh-panel=&quot;review&quot; hidden&gt;
+    &lt;div class=&quot;afh-lane&quot;&gt;
+      &lt;div class=&quot;afh-label&quot;&gt;&lt;span class=&quot;viz-badge&quot;&gt;Design Inner Loop&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;afh-flow&quot;&gt;
+        &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-afh-node data-afh-detail=&quot;LLM 先提交 system prompt、decision logic、tools、I/O 和 plan 草稿。&quot;&gt;Draft&lt;/button&gt;
+        &lt;span class=&quot;afh-arrow&quot; aria-hidden=&quot;true&quot;&gt;→&lt;/span&gt;
+        &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-afh-node data-afh-detail=&quot;零 LLM 检查分支覆盖、规则泄漏、幻觉事件、浅逻辑、无工具和缺补偿。&quot;&gt;Self-check&lt;/button&gt;
+        &lt;span class=&quot;afh-arrow&quot; aria-hidden=&quot;true&quot;&gt;→&lt;/span&gt;
+        &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-afh-node data-afh-detail=&quot;hard issue 自动触发一次 targeted LLM rewrite；失败保留原稿。&quot;&gt;One Rewrite&lt;/button&gt;
+      &lt;/div&gt;
+    &lt;/div&gt;
+    &lt;div class=&quot;afh-lane&quot;&gt;
+      &lt;div class=&quot;afh-label&quot;&gt;&lt;span class=&quot;viz-badge&quot;&gt;Code Review Loop&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;afh-flow&quot;&gt;
+        &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-afh-node data-afh-detail=&quot;默认 renderer 或 codegen_agent 产生完整 defineAgent handler。&quot;&gt;Generate Code&lt;/button&gt;
+        &lt;span class=&quot;afh-arrow&quot; aria-hidden=&quot;true&quot;&gt;→&lt;/span&gt;
+        &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-afh-node data-afh-detail=&quot;真实 TypeScript transpile 检查语法。&quot;&gt;Compile&lt;/button&gt;
+        &lt;span class=&quot;afh-arrow&quot; aria-hidden=&quot;true&quot;&gt;→&lt;/span&gt;
+        &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-afh-node data-afh-detail=&quot;AST 检查危险模块、eval、Function、process 和原始网络/文件访问。&quot;&gt;AST Lint&lt;/button&gt;
+        &lt;span class=&quot;afh-arrow&quot; aria-hidden=&quot;true&quot;&gt;→&lt;/span&gt;
+        &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-afh-node data-afh-detail=&quot;加载模块并确认 defineAgent 暴露 callable handler；这里不调用业务 handler。&quot;&gt;Load Probe&lt;/button&gt;
+      &lt;/div&gt;
+    &lt;/div&gt;
+    &lt;div class=&quot;afh-lane&quot;&gt;
+      &lt;div class=&quot;afh-label&quot;&gt;&lt;span class=&quot;viz-badge&quot;&gt;Triple Review&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;afh-flow&quot;&gt;
+        &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-afh-node data-afh-detail=&quot;Lens 1 同时做规则绑定、Prompt 职责和生成代码是否真做事的审查。&quot;&gt;Design + Code&lt;/button&gt;
+        &lt;span class=&quot;afh-arrow&quot; aria-hidden=&quot;true&quot;&gt;→&lt;/span&gt;
+        &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-afh-node data-afh-detail=&quot;Lens 2 对照 ontologyUnderstanding、触发语义与 contract graph 检查上下文契合。&quot;&gt;Context&lt;/button&gt;
+        &lt;span class=&quot;afh-arrow&quot; aria-hidden=&quot;true&quot;&gt;→&lt;/span&gt;
+        &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-afh-node data-afh-detail=&quot;Lens 3 检查覆盖、多分支、错误分类、foreach、HITL、规则和外部边界。&quot;&gt;Completeness&lt;/button&gt;
+      &lt;/div&gt;
+    &lt;/div&gt;
+    &lt;div class=&quot;afh-lane&quot;&gt;
+      &lt;div class=&quot;afh-label&quot;&gt;&lt;span class=&quot;viz-badge&quot;&gt;Repair&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;afh-flow&quot;&gt;
+        &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-afh-node data-afh-detail=&quot;refine_agent 修改 prompt/tools/logic/schema，保存完整快照并计算 score delta。&quot;&gt;Refine&lt;/button&gt;
+        &lt;span class=&quot;afh-arrow&quot; aria-hidden=&quot;true&quot;&gt;→&lt;/span&gt;
+        &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-afh-node data-afh-detail=&quot;退步可 revert；两次近零 delta 或预算耗尽时停止继续磨损。&quot;&gt;Revert / Stop&lt;/button&gt;
+        &lt;span class=&quot;afh-arrow&quot; aria-hidden=&quot;true&quot;&gt;→&lt;/span&gt;
+        &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-afh-node data-afh-detail=&quot;复杂 Agent 卡住时，把子任务拆成可部署 sibling function，并由父 step.invoke。&quot;&gt;Split Sub-agent&lt;/button&gt;
+      &lt;/div&gt;
+    &lt;/div&gt;
+  &lt;/div&gt;
+
+  &lt;div class=&quot;afh-view&quot; data-afh-panel=&quot;inngest&quot; hidden&gt;
+    &lt;div class=&quot;afh-lane&quot;&gt;
+      &lt;div class=&quot;afh-label&quot;&gt;&lt;span class=&quot;viz-badge&quot;&gt;Compile A&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;afh-flow&quot;&gt;
+        &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-afh-node data-afh-detail=&quot;Spec 是 Factory 的业务 IR；修改后旧 Sandbox fingerprint 自动失效。&quot;&gt;Spec Revision&lt;/button&gt;
+        &lt;span class=&quot;afh-arrow&quot; aria-hidden=&quot;true&quot;&gt;→&lt;/span&gt;
+        &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-afh-node data-afh-detail=&quot;PlanStep 被投影为 tool、logic、condition、invoke action；HITL 插入 manual action。&quot;&gt;mapToManifest&lt;/button&gt;
+        &lt;span class=&quot;afh-arrow&quot; aria-hidden=&quot;true&quot;&gt;→&lt;/span&gt;
+        &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-afh-node data-afh-detail=&quot;manifest-import 先 validate hard issues，再 commit workflow version、文件和部署记录。&quot;&gt;Validate + Commit&lt;/button&gt;
+      &lt;/div&gt;
+    &lt;/div&gt;
+    &lt;div class=&quot;afh-lane&quot;&gt;
+      &lt;div class=&quot;afh-label&quot;&gt;&lt;span class=&quot;viz-badge&quot;&gt;Compile B&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;afh-flow&quot;&gt;
+        &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-afh-node data-afh-detail=&quot;Bootstrap upsert agents、agent_versions 和 event_listeners，并合并声明式工具 overlay。&quot;&gt;Materialize&lt;/button&gt;
+        &lt;span class=&quot;afh-arrow&quot; aria-hidden=&quot;true&quot;&gt;→&lt;/span&gt;
+        &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-afh-node data-afh-detail=&quot;fnRegistry 让 invoke action 在运行时解析 sibling agent function。&quot;&gt;Function Registry&lt;/button&gt;
+        &lt;span class=&quot;afh-arrow&quot; aria-hidden=&quot;true&quot;&gt;→&lt;/span&gt;
+        &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-afh-node data-afh-detail=&quot;registerAgent 统一构造 createFunction；LLM 没有生成这层样板代码。&quot;&gt;createFunction&lt;/button&gt;
+      &lt;/div&gt;
+    &lt;/div&gt;
+    &lt;div class=&quot;afh-lane&quot;&gt;
+      &lt;div class=&quot;afh-label&quot;&gt;&lt;span class=&quot;viz-badge&quot;&gt;Durable Handler&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;afh-flow&quot;&gt;
+        &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-afh-node data-afh-detail=&quot;step.run(init) 分配稳定 run/correlation 并写 running 状态。&quot;&gt;Init&lt;/button&gt;
+        &lt;span class=&quot;afh-arrow&quot; aria-hidden=&quot;true&quot;&gt;→&lt;/span&gt;
+        &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-afh-node data-afh-detail=&quot;按 actions 顺序执行；stableStepId 把业务键织入 Inngest step id。&quot;&gt;Action Steps&lt;/button&gt;
+        &lt;span class=&quot;afh-arrow&quot; aria-hidden=&quot;true&quot;&gt;→&lt;/span&gt;
+        &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-afh-node data-afh-detail=&quot;manual 用 waitForEvent；invoke 用 step.invoke；subflow 和 emit 用 step.sendEvent。&quot;&gt;Durable Primitives&lt;/button&gt;
+        &lt;span class=&quot;afh-arrow&quot; aria-hidden=&quot;true&quot;&gt;→&lt;/span&gt;
+        &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-afh-node data-afh-detail=&quot;finalize 写 event ledger、DB、artifacts、tokens、model、codeRan，并发送下游 namespaced event。&quot;&gt;Finalize&lt;/button&gt;
+      &lt;/div&gt;
+    &lt;/div&gt;
+    &lt;div class=&quot;afh-lane&quot;&gt;
+      &lt;div class=&quot;afh-label&quot;&gt;&lt;span class=&quot;viz-badge&quot;&gt;Execution Mode&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;afh-flow&quot;&gt;
+        &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-afh-node data-afh-detail=&quot;CodeAct 路径 transpile 并调用生成 handler；当前只允许 -sb 沙箱 tenant。&quot;&gt;CodeAct&lt;/button&gt;
+        &lt;span class=&quot;afh-arrow&quot; aria-hidden=&quot;true&quot;&gt;或&lt;/span&gt;
+        &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-afh-node data-afh-detail=&quot;声明式路径使用 ontology_instructions、tool roster 和 Runtime prompt/tool loop 解释执行。&quot;&gt;Declarative&lt;/button&gt;
+        &lt;span class=&quot;afh-arrow&quot; aria-hidden=&quot;true&quot;&gt;→&lt;/span&gt;
+        &lt;button class=&quot;btn&quot; type=&quot;button&quot; data-afh-node data-afh-detail=&quot;runs.code_ran、step I/O、events 和 execution fidelity 把真实执行结果回灌 Factory。&quot;&gt;Receipts&lt;/button&gt;
+      &lt;/div&gt;
+    &lt;/div&gt;
+  &lt;/div&gt;
+
+  &lt;p id=&quot;afh-detail&quot; class=&quot;card&quot; aria-live=&quot;polite&quot;&gt;&lt;strong&gt;端到端：&lt;/strong&gt;Chatbot 驱动自治 Harness；Harness 生成结构化 Agent IR；通用 Runtime 将 IR 编译为 Inngest functions；真实执行证据再驱动下一版 IR。&lt;/p&gt;
+
+  &lt;script&gt;
+    (function () {
+      var root = document.getElementById(&quot;af-harness-v2&quot;);
+      if (!root) return;
+      var detail = root.querySelector(&quot;#afh-detail&quot;);
+      var viewButtons = root.querySelectorAll(&quot;[data-afh-view]&quot;);
+      var panels = root.querySelectorAll(&quot;[data-afh-panel]&quot;);
+      var summaries = {
+        full: &quot;&lt;strong&gt;端到端：&lt;/strong&gt;Chatbot 驱动自治 Harness；Harness 生成结构化 Agent IR；通用 Runtime 将 IR 编译为 Inngest functions；真实执行证据再驱动下一版 IR。&quot;,
+        review: &quot;&lt;strong&gt;审查返修：&lt;/strong&gt;设计内环可直接自动修一次；三重 Review 和 Sandbox 返修由外层 ReAct 大脑自治编排；快照、分数、预算和指纹防止无限磨损与旧证据复用。&quot;,
+        inngest: &quot;&lt;strong&gt;Inngest 编译：&lt;/strong&gt;LLM 不生成 createFunction 外壳；它生成 Spec、Plan 和可选 handler。mapToManifest 与 registerAgent 负责稳定的 durable wrapper。&quot;
+      };
+      viewButtons.forEach(function (button) {
+        button.addEventListener(&quot;click&quot;, function () {
+          var name = button.getAttribute(&quot;data-afh-view&quot;);
+          viewButtons.forEach(function (item) {
+            var selected = item === button;
+            item.setAttribute(&quot;aria-pressed&quot;, selected ? &quot;true&quot; : &quot;false&quot;);
+            item.classList.toggle(&quot;btn-primary&quot;, selected);
+          });
+          panels.forEach(function (panel) {
+            panel.hidden = panel.getAttribute(&quot;data-afh-panel&quot;) !== name;
+          });
+          if (detail &amp;&amp; name &amp;&amp; summaries[name]) detail.innerHTML = summaries[name];
+        });
+      });
+      root.querySelectorAll(&quot;[data-afh-node]&quot;).forEach(function (button) {
+        button.addEventListener(&quot;click&quot;, function () {
+          root.querySelectorAll(&quot;[data-afh-node]&quot;).forEach(function (item) {
+            item.setAttribute(&quot;aria-pressed&quot;, item === button ? &quot;true&quot; : &quot;false&quot;);
+          });
+          var text = button.getAttribute(&quot;data-afh-detail&quot;);
+          if (detail &amp;&amp; text) detail.textContent = text;
+        });
+      });
+    })();
+  &lt;/script&gt;
+&lt;/div&gt;
+
+&lt;script src=&quot;https://unpkg.com/@floating-ui/core@1.7.3/dist/floating-ui.core.umd.min.js&quot;&gt;&lt;/script&gt;
+&lt;script src=&quot;https://unpkg.com/@floating-ui/dom@1.7.4/dist/floating-ui.dom.umd.min.js&quot;&gt;&lt;/script&gt;
+&lt;script&gt;
+(() =&gt; {
+  if (window.FloatingUIDOM == null) {
+    return;
+  }
+  const { autoUpdate, computePosition, flip, offset, shift, size } =
+    window.FloatingUIDOM;
+  const tooltipPlacements = new Set([&quot;top&quot;, &quot;right&quot;, &quot;bottom&quot;, &quot;left&quot;]);
+  const tooltipId = `codex-visualization-tooltip-${
+    window.crypto?.randomUUID?.() ?? Date.now().toString(36)
+  }`;
+  const tooltipGap = 5;
+  const hoverDelay = 700;
+  const skipDelay = 300;
+  let activeTrigger = null;
+  let pendingTrigger = null;
+  let tooltip = null;
+  let openTimeout = null;
+  let autoUpdateCleanup = null;
+  let positionRequest = 0;
+  let skipDelayUntil = 0;
+
+  const getTrigger = (target) =&gt;
+    target?.nodeType === Node.ELEMENT_NODE
+      ? target.closest(&quot;[data-tooltip]&quot;)
+      : null;
+  const containsTarget = (trigger, target) =&gt;
+    target?.nodeType != null &amp;&amp; trigger.contains(target);
+  const getContent = (trigger) =&gt;
+    trigger.getAttribute(&quot;data-tooltip&quot;)?.trim() ?? &quot;&quot;;
+  const getPlacement = (trigger) =&gt; {
+    const placement = trigger.getAttribute(&quot;data-tooltip-placement&quot;);
+    return tooltipPlacements.has(placement) ? placement : &quot;top&quot;;
+  };
+  const getTooltip = () =&gt; {
+    if (tooltip == null) {
+      tooltip = document.createElement(&quot;div&quot;);
+      tooltip.id = tooltipId;
+      tooltip.className = &quot;tooltip&quot;;
+      tooltip.setAttribute(&quot;role&quot;, &quot;tooltip&quot;);
+    }
+    return tooltip;
+  };
+  const setDescribedBy = (trigger, described) =&gt; {
+    const ids = new Set(
+      (trigger.getAttribute(&quot;aria-describedby&quot;) ?? &quot;&quot;)
+        .split(/\s+/)
+        .filter(Boolean),
+    );
+    if (described) {
+      ids.add(tooltipId);
+    } else {
+      ids.delete(tooltipId);
+    }
+    if (ids.size === 0) {
+      trigger.removeAttribute(&quot;aria-describedby&quot;);
+    } else {
+      trigger.setAttribute(&quot;aria-describedby&quot;, [...ids].join(&quot; &quot;));
+    }
+  };
+  const clearOpenTimeout = () =&gt; {
+    if (openTimeout != null) {
+      window.clearTimeout(openTimeout);
+      openTimeout = null;
+    }
+    pendingTrigger = null;
+  };
+  const closeTooltip = (activateSkipDelay = true) =&gt; {
+    clearOpenTimeout();
+    positionRequest += 1;
+    autoUpdateCleanup?.();
+    autoUpdateCleanup = null;
+    if (activeTrigger == null) {
+      return;
+    }
+    setDescribedBy(activeTrigger, false);
+    activeTrigger = null;
+    tooltip?.remove();
+    if (activateSkipDelay) {
+      skipDelayUntil = Date.now() + skipDelay;
+    }
+  };
+  const updatePosition = (trigger, floating) =&gt; {
+    const request = ++positionRequest;
+    void computePosition(trigger, floating, {
+      middleware: [
+        offset(tooltipGap),
+        flip({ padding: tooltipGap }),
+        shift({ padding: tooltipGap }),
+        size({
+          padding: tooltipGap,
+          apply({ availableHeight, availableWidth, elements }) {
+            elements.floating.style.setProperty(
+              &quot;--tooltip-available-width&quot;,
+              `${Math.max(0, availableWidth)}px`,
+            );
+            elements.floating.style.setProperty(
+              &quot;--tooltip-available-height&quot;,
+              `${Math.max(0, availableHeight)}px`,
+            );
+          },
+        }),
+      ],
+      placement: getPlacement(trigger),
+      strategy: &quot;fixed&quot;,
+    })
+      .then(({ x, y }) =&gt; {
+        if (activeTrigger !== trigger || request !== positionRequest) {
+          return;
+        }
+        const scale = window.devicePixelRatio || 1;
+        floating.style.transform = `translate(${Math.round(x * scale) / scale}px, ${Math.round(y * scale) / scale}px)`;
+        floating.style.visibility = &quot;visible&quot;;
+      })
+      .catch(() =&gt; {
+        if (activeTrigger === trigger &amp;&amp; request === positionRequest) {
+          closeTooltip(false);
+        }
+      });
+  };
+  const openTooltip = (trigger) =&gt; {
+    const content = getContent(trigger);
+    if (!trigger.isConnected || content.length === 0) {
+      return;
+    }
+    clearOpenTimeout();
+    if (activeTrigger === trigger) {
+      return;
+    }
+    closeTooltip();
+    const floating = getTooltip();
+    floating.textContent = content;
+    floating.style.visibility = &quot;hidden&quot;;
+    floating.style.transform = &quot;translate(0, 0)&quot;;
+    document.body.appendChild(floating);
+    activeTrigger = trigger;
+    setDescribedBy(trigger, true);
+    autoUpdateCleanup = autoUpdate(trigger, floating, () =&gt; {
+      updatePosition(trigger, floating);
+    });
+  };
+  const requestOpen = (trigger, immediate = false) =&gt; {
+    if (
+      getContent(trigger).length === 0 ||
+      activeTrigger === trigger ||
+      pendingTrigger === trigger
+    ) {
+      return;
+    }
+    clearOpenTimeout();
+    pendingTrigger = trigger;
+    const delay =
+      immediate || activeTrigger != null || Date.now() &lt; skipDelayUntil
+        ? 0
+        : hoverDelay;
+    if (delay === 0) {
+      openTooltip(trigger);
+      return;
+    }
+    openTimeout = window.setTimeout(() =&gt; {
+      openTimeout = null;
+      pendingTrigger = null;
+      openTooltip(trigger);
+    }, delay);
+  };
+  const handlePointerOpen = (event) =&gt; {
+    if (event.pointerType === &quot;touch&quot;) {
+      return;
+    }
+    const trigger = getTrigger(event.target);
+    if (trigger == null || containsTarget(trigger, event.relatedTarget)) {
+      return;
+    }
+    requestOpen(trigger);
+  };
+  const handleLeave = (event) =&gt; {
+    const trigger = getTrigger(event.target);
+    if (trigger == null || containsTarget(trigger, event.relatedTarget)) {
+      return;
+    }
+    if (activeTrigger === trigger || pendingTrigger === trigger) {
+      closeTooltip();
+    }
+  };
+  const handleFocusIn = (event) =&gt; {
+    const trigger = getTrigger(event.target);
+    if (trigger?.matches(&quot;:focus-visible&quot;)) {
+      requestOpen(trigger, true);
+    }
+  };
+  const handleKeyDown = (event) =&gt; {
+    if (event.key === &quot;Escape&quot;) {
+      closeTooltip();
+    }
+  };
+  const handleContextMenu = (event) =&gt; {
+    const trigger = getTrigger(event.target);
+    if (activeTrigger === trigger || pendingTrigger === trigger) {
+      closeTooltip();
+    }
+  };
+  const destroy = () =&gt; {
+    closeTooltip(false);
+    document.removeEventListener(&quot;pointerover&quot;, handlePointerOpen);
+    document.removeEventListener(&quot;pointerout&quot;, handleLeave);
+    document.removeEventListener(&quot;focusin&quot;, handleFocusIn);
+    document.removeEventListener(&quot;focusout&quot;, handleLeave);
+    document.removeEventListener(&quot;keydown&quot;, handleKeyDown);
+    document.removeEventListener(&quot;contextmenu&quot;, handleContextMenu);
+    tooltip = null;
+  };
+
+  document.addEventListener(&quot;pointerover&quot;, handlePointerOpen);
+  document.addEventListener(&quot;pointerout&quot;, handleLeave);
+  document.addEventListener(&quot;focusin&quot;, handleFocusIn);
+  document.addEventListener(&quot;focusout&quot;, handleLeave);
+  document.addEventListener(&quot;keydown&quot;, handleKeyDown);
+  document.addEventListener(&quot;contextmenu&quot;, handleContextMenu);
+  window.addEventListener(&quot;pagehide&quot;, destroy, { once: true });
+})();
+&lt;/script&gt;
+&lt;script id=&quot;codex-visualization-lucide&quot; async src=&quot;https://unpkg.com/lucide@1.17.0/dist/umd/lucide.js&quot;&gt;&lt;/script&gt;
+&lt;script&gt;
+(() =&gt; {
+  const initialize = () =&gt; {
+    globalThis.lucide?.createIcons({ attrs: { width: 16, height: 16 } });
+  };
+  if (globalThis.lucide != null) {
+    initialize();
+    return;
+  }
+  document
+    .getElementById(&quot;codex-visualization-lucide&quot;)
+    ?.addEventListener(&quot;load&quot;, initialize, { once: true });
+})();
+&lt;/script&gt;
+
+&lt;/body&gt;
+&lt;/html&gt;
+"></iframe>
+</body>
+</html>

@@ -169,6 +169,31 @@ a { color: inherit; text-decoration: none; }
 .factory-cta:active { transform: translateY(0); }
 @media (prefers-reduced-motion: reduce) { .factory-cta:hover, .factory-cta:active { transform: none; } }
 
+/* ── HelpTip: a muted "?" chip that reveals a hint bubble on hover / focus ───
+   Declutters dense views — the explanation is one hover away, not always on. The
+   bubble is position:fixed (coords set inline from the trigger rect) so it never
+   clips inside overflow:auto rails/panes. */
+.help-tip {
+  position: relative; display: inline-flex; align-items: center; justify-content: center;
+  vertical-align: middle; box-sizing: border-box; flex-shrink: 0;
+  border-radius: 50%; border: 1px solid var(--border-2); background: var(--panel-2);
+  color: var(--text-3); font-size: 10px; font-weight: 700; line-height: 1;
+  font-family: var(--sans); letter-spacing: 0; cursor: help; outline: none; user-select: none;
+  transition: color 0.14s ease, border-color 0.14s ease, background 0.14s ease;
+}
+.help-tip:hover, .help-tip:focus-visible { color: var(--text); border-color: var(--signal); background: var(--panel-3); }
+.help-tip-bubble {
+  position: fixed; z-index: 100;
+  padding: 9px 11px; border-radius: 9px;
+  background: var(--panel-3); border: 1px solid var(--border-2);
+  color: var(--text-2); font-size: 11.5px; font-weight: 400; line-height: 1.55;
+  white-space: normal; text-align: left; letter-spacing: normal;
+  box-shadow: 0 8px 26px rgba(0,0,0,0.30);
+  pointer-events: none; animation: help-tip-in 0.12s ease both;
+}
+@keyframes help-tip-in { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .help-tip-bubble { animation: none; } }
+
 /* Rendered markdown for AI factory replies (react-markdown + remark-gfm). */
 .factory-md { white-space: normal; }
 .factory-md > :first-child { margin-top: 0; }

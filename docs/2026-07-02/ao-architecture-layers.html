@@ -1,0 +1,1016 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agentic Operator · 全栈分层技术架构讲解书</title>
+<style>
+  :root{
+    --ink:#22303f; --ink2:#5b6773; --ink3:#98a1ad;
+    --blue:#5b8def; --green:#219653; --amber:#b7791f; --violet:#7b61c4; --red:#c0392b;
+    --bg:#f6f8fb; --card:#ffffff; --line:#dfe5ec; --code:#f0f3f8;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:0 20px 80px;background:var(--bg);color:var(--ink);
+       font-family:system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;line-height:1.75;font-size:15px}
+  main{max-width:1080px;margin:0 auto}
+  header.hero{padding:56px 0 28px;border-bottom:2px solid var(--ink)}
+  header.hero h1{font-size:30px;margin:0 0 8px;letter-spacing:.01em}
+  header.hero p{margin:0;color:var(--ink2)}
+  .pills{margin-top:14px;display:flex;gap:8px;flex-wrap:wrap}
+  .pill{font-size:12px;padding:3px 12px;border:1px solid var(--line);border-radius:20px;background:var(--card);color:var(--ink2)}
+  nav.toc{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px 22px;margin:26px 0}
+  nav.toc b{display:block;margin-bottom:8px}
+  nav.toc a{color:var(--blue);text-decoration:none;display:inline-block;margin:2px 14px 2px 0;font-size:13.5px}
+  section.ch{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:30px 34px;margin:26px 0;break-inside:avoid}
+  h2{font-size:21px;margin:0 0 4px;padding-left:12px;border-left:5px solid var(--blue)}
+  h2 small{color:var(--ink3);font-weight:400;font-size:12.5px;margin-left:8px}
+  h3{font-size:16px;margin:26px 0 8px;color:#31445c}
+  p{margin:10px 0}
+  .fig{margin:20px 0;padding:16px;border:1px solid var(--line);border-radius:10px;background:#fbfcfe;overflow-x:auto}
+  .fig figcaption{font-size:12.5px;color:var(--ink2);margin-top:10px;text-align:center}
+  svg{display:block;margin:0 auto;max-width:100%;height:auto}
+  svg text{font-family:system-ui,-apple-system,"PingFang SC",sans-serif}
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:13.5px}
+  th{background:#eef2f8;text-align:left;padding:8px 10px;border-bottom:2px solid var(--line);white-space:nowrap}
+  td{padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  tr:hover td{background:#f7fafd}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;background:var(--code);border-radius:5px;padding:1px 6px;color:#334}
+  .callout{border-left:4px solid var(--amber);background:#fdf8ef;border-radius:0 8px 8px 0;padding:10px 14px;margin:14px 0;font-size:13.5px}
+  .callout.good{border-color:var(--green);background:#f0f9f3}
+  .callout.warn{border-color:var(--red);background:#fdf1ef}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:860px){.grid2{grid-template-columns:1fr}}
+  .kv{border:1px solid var(--line);border-radius:10px;padding:12px 14px;background:#fbfcfe;font-size:13.5px}
+  .kv b{color:#31445c}
+  .badge{display:inline-block;font-size:11px;padding:1px 9px;border-radius:11px;margin-right:6px;font-weight:600}
+  .b-blue{background:#e7eefc;color:#2f5bb7}.b-green{background:#e2f4e8;color:#1a7a43}
+  .b-amber{background:#fbf0dc;color:#8f5f14}.b-violet{background:#ece7f8;color:#5c44a8}.b-red{background:#fae5e1;color:#a03024}
+  footer{color:var(--ink3);font-size:12px;text-align:center;margin-top:40px}
+  @media print{
+    body{background:#fff}
+    section.ch{border:none;box-shadow:none;break-inside:avoid;padding:10px 0}
+    nav.toc{display:none}
+  }
+</style>
+</head>
+<body>
+<main>
+
+<header class="hero">
+  <h1>Agentic Operator · 全栈分层技术架构讲解书</h1>
+  <p>从外部世界到数据层：一套「生成 functions 的多 agents 系统」如何协作——协调者如何读懂意图、角色如何作业、专家与子大脑如何按需派生、工具如何解析、functions 之间如何通信、ask_user 如何协作、记忆如何恒存。</p>
+  <div class="pills">
+    <span class="pill">2026-07-02 · rev.G8</span><span class="pill">41 个生成系统工具</span><span class="pill">design 内部循环</span><span class="pill">15 个全局运行时工具（含别名）</span>
+    <span class="pill">33 张 SQLite 表</span><span class="pill">14 个 LLM Provider</span><span class="pill">31 种脑事件</span><span class="pill">6 阶段流水线</span>
+  </div>
+</header>
+
+<nav class="toc">
+  <b>目录</b>
+  <a href="#c1">1. 全景：五层架构总览</a><a href="#c2">2. 外部世界与信任边界</a><a href="#c3">3. Harness：离体运行的大脑</a>
+  <a href="#c4">4. 推理是怎么推理的</a><a href="#c5">5. Agent 生成流水线</a><a href="#c6">6. Sub-agent 的两条产生路径</a>
+  <a href="#c7">7. 工具体系：两套工具、四级解析</a><a href="#c8">8. Agent 之间怎么沟通</a><a href="#c9">9. ask_user 与人机协作</a>
+  <a href="#c10">10. 报告管线：确定性分析 + LLM 叙事</a><a href="#c11">11. UI 信息架构：三层各司其职</a><a href="#c12">12. 数据层与可观测性</a>
+  <a href="#c13">附录 A. 关键文件地图</a><a href="#c14">附录 B. 差距与改进路线</a>
+</nav>
+
+<!-- ═══════════════════════ 第 1 章 ═══════════════════════ -->
+<section class="ch" id="c1">
+  <h2>1. 全景：五层架构总览<small>apps/web · apps/api · packages/*</small></h2>
+  <p>整个系统是一个 <b>pnpm monorepo 的双进程平台</b>：Next.js 前端（:3599）零数据库访问，一切读写经 <code>/v1/*</code> 代理到 Fastify API（:3540）；API 之下是两块大引擎——<b>生成 functions 的多 agents 系统</b>（协调者 + 内部角色 + 嵌套派生的工厂车间）和 <b>Agent 运行时</b>（跑已交付 functions 的 Inngest 事件引擎），共享同一套数据层。</p>
+
+  <figure class="fig">
+  <svg viewBox="0 0 1060 700" xmlns="http://www.w3.org/2000/svg" role="img">
+    <defs>
+      <marker id="ar" markerWidth="9" markerHeight="9" refX="7.5" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#8194ad"/></marker>
+      <marker id="arB" markerWidth="9" markerHeight="9" refX="7.5" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#5b8def"/></marker>
+    </defs>
+    <!-- L0 外部 -->
+    <rect x="14" y="14" width="1032" height="92" rx="12" fill="#f2ecf9" stroke="#c9b8e8"/>
+    <text x="30" y="38" font-size="13" font-weight="700" fill="#5c44a8">L0 · 外部世界</text>
+    <g font-size="11.5" fill="#3d3556">
+      <rect x="30" y="50" width="150" height="40" rx="8" fill="#fff" stroke="#c9b8e8"/><text x="105" y="68" text-anchor="middle">Allmeta Studio :3500</text><text x="105" y="83" text-anchor="middle" fill="#8a7cae">在线本体（领域知识）</text>
+      <rect x="196" y="50" width="150" height="40" rx="8" fill="#fff" stroke="#c9b8e8"/><text x="271" y="68" text-anchor="middle">14 个 LLM Provider</text><text x="271" y="83" text-anchor="middle" fill="#8a7cae">anthropic/openai/custom…</text>
+      <rect x="362" y="50" width="150" height="40" rx="8" fill="#fff" stroke="#c9b8e8"/><text x="437" y="68" text-anchor="middle">Inngest Dev :8288</text><text x="437" y="83" text-anchor="middle" fill="#8a7cae">持久化事件引擎</text>
+      <rect x="528" y="50" width="150" height="40" rx="8" fill="#fff" stroke="#c9b8e8"/><text x="603" y="68" text-anchor="middle">业务 SaaS API</text><text x="603" y="83" text-anchor="middle" fill="#8a7cae">RoboHire(gohire.top)…</text>
+      <rect x="694" y="50" width="150" height="40" rx="8" fill="#fff" stroke="#c9b8e8"/><text x="769" y="68" text-anchor="middle">本机 Chrome</text><text x="769" y="83" text-anchor="middle" fill="#8a7cae">--print-to-pdf（断网沙箱）</text>
+      <rect x="860" y="50" width="166" height="40" rx="8" fill="#fff" stroke="#c9b8e8"/><text x="943" y="68" text-anchor="middle">用户浏览器</text><text x="943" y="83" text-anchor="middle" fill="#8a7cae">SSE 订阅 + 聊天介入</text>
+    </g>
+    <!-- L1 web -->
+    <rect x="14" y="130" width="1032" height="96" rx="12" fill="#e9f0fd" stroke="#b9cdf4"/>
+    <text x="30" y="154" font-size="13" font-weight="700" fill="#2f5bb7">L1 · 展示层 — apps/web（Next.js 16 · :3599 · 零 DB 访问，/v1/* 全代理）</text>
+    <g font-size="11.5" fill="#2c3d5c">
+      <rect x="30" y="166" width="235" height="46" rx="8" fill="#fff" stroke="#b9cdf4"/><text x="147" y="185" text-anchor="middle">聊天流（中间栏）</text><text x="147" y="200" text-anchor="middle" fill="#7d90b5">transcript · InteractionDock · 介入</text>
+      <rect x="281" y="166" width="235" height="46" rx="8" fill="#fff" stroke="#b9cdf4"/><text x="398" y="185" text-anchor="middle">右栏 4 tab（可收起/全屏）</text><text x="398" y="200" text-anchor="middle" fill="#7d90b5">智能体 · 大脑 · 测试 · 总结</text>
+      <rect x="532" y="166" width="235" height="46" rx="8" fill="#fff" stroke="#b9cdf4"/><text x="649" y="185" text-anchor="middle">后台任务浮出面板</text><text x="649" y="200" text-anchor="middle" fill="#7d90b5">会话任务分解 · 报告 · 可重连运行</text>
+      <rect x="783" y="166" width="243" height="46" rx="8" fill="#fff" stroke="#b9cdf4"/><text x="904" y="185" text-anchor="middle">Portal 其它视图</text><text x="904" y="200" text-anchor="middle" fill="#7d90b5">智能体CRUD · 工具库 · 运行记录 · 权限</text>
+    </g>
+    <!-- L2 api -->
+    <rect x="14" y="250" width="1032" height="96" rx="12" fill="#e6f5ec" stroke="#a9d9bd"/>
+    <text x="30" y="274" font-size="13" font-weight="700" fill="#1a7a43">L2 · 接入层 — apps/api（Fastify 5 · :3540 · 认证/RBAC/租户隔离/审计）</text>
+    <g font-size="11.5" fill="#274736">
+      <rect x="30" y="286" width="200" height="46" rx="8" fill="#fff" stroke="#a9d9bd"/><text x="130" y="305" text-anchor="middle">/v1/agent-factory/*</text><text x="130" y="320" text-anchor="middle" fill="#6f9c82">stream(SSE) · inject · report…</text>
+      <rect x="246" y="286" width="185" height="46" rx="8" fill="#fff" stroke="#a9d9bd"/><text x="338" y="305" text-anchor="middle">/v1/agents /runs /events</text><text x="338" y="320" text-anchor="middle" fill="#6f9c82">CRUD · invoke · 日志 SSE</text>
+      <rect x="447" y="286" width="165" height="46" rx="8" fill="#fff" stroke="#a9d9bd"/><text x="529" y="305" text-anchor="middle">run-registry</text><text x="529" y="320" text-anchor="middle" fill="#6f9c82">离体后台运行注册表</text>
+      <rect x="628" y="286" width="165" height="46" rx="8" fill="#fff" stroke="#a9d9bd"/><text x="710" y="305" text-anchor="middle">report-jobs</text><text x="710" y="320" text-anchor="middle" fill="#6f9c82">报告任务 · 落盘可恢复</text>
+      <rect x="809" y="286" width="217" height="46" rx="8" fill="#fff" stroke="#a9d9bd"/><text x="917" y="305" text-anchor="middle">makeFactoryPorts 组合根</text><text x="917" y="320" text-anchor="middle" fill="#6f9c82">本体/沙箱/存储/报告 端口注入</text>
+    </g>
+    <!-- L3a — the GENERATION MULTI-AGENT SYSTEM (not "a brain with tools") -->
+    <rect x="14" y="370" width="508" height="150" rx="12" fill="#fdf3e3" stroke="#ecd3a1"/>
+    <text x="30" y="394" font-size="13" font-weight="700" fill="#8f5f14">L3a · 生成 functions 的多 agents 系统 — packages/agent-factory</text>
+    <g font-size="11.5" fill="#5c451d">
+      <rect x="30" y="406" width="228" height="44" rx="8" fill="#fff" stroke="#ecd3a1"/><text x="144" y="424" text-anchor="middle">协调者 conductor</text><text x="144" y="439" text-anchor="middle" fill="#a98b52">意图门 · 分派角色 · 6 阶段</text>
+      <rect x="270" y="406" width="236" height="44" rx="8" fill="#fff" stroke="#ecd3a1"/><text x="388" y="424" text-anchor="middle">内部工作角色 agents</text><text x="388" y="439" text-anchor="middle" fill="#a98b52">理解 · 规划 · 设计 · 验证 · 交付</text>
+      <rect x="30" y="460" width="228" height="44" rx="8" fill="#fff" stroke="#ecd3a1"/><text x="144" y="478" text-anchor="middle">嵌套派生（双通道）</text><text x="144" y="493" text-anchor="middle" fill="#a98b52">认知专家 ∥ 并行 · 子大脑 ≤2 层</text>
+      <rect x="270" y="460" width="236" height="44" rx="8" fill="#fff" stroke="#ecd3a1"/><text x="388" y="478" text-anchor="middle">共享推理核 + 恒存记忆</text><text x="388" y="493" text-anchor="middle" fill="#a98b52">模型路由 · 意图/介入/理解永不丢</text>
+    </g>
+    <rect x="538" y="370" width="508" height="150" rx="12" fill="#fdece8" stroke="#eec1b6"/>
+    <text x="554" y="394" font-size="13" font-weight="700" fill="#a03024">L3b · Agent 运行时 — packages/runtime + agents + tools</text>
+    <g font-size="11.5" fill="#5c2b23">
+      <rect x="554" y="406" width="228" height="44" rx="8" fill="#fff" stroke="#eec1b6"/><text x="668" y="424" text-anchor="middle">register（Inngest 函数化）</text><text x="668" y="439" text-anchor="middle" fill="#b57f72">每 agent 一个持久函数</text>
+      <rect x="794" y="406" width="236" height="44" rx="8" fill="#fff" stroke="#eec1b6"/><text x="912" y="424" text-anchor="middle">step-engine（LLM 工具循环）</text><text x="912" y="439" text-anchor="middle" fill="#b57f72">plan[] 步 · condition · invoke</text>
+      <rect x="554" y="460" width="228" height="44" rx="8" fill="#fff" stroke="#eec1b6"/><text x="668" y="478" text-anchor="middle">codeact（生成代码真执行）</text><text x="668" y="493" text-anchor="middle" fill="#b57f72">ctx.spawn 递归子代理（深度≤2）</text>
+      <rect x="794" y="460" width="236" height="44" rx="8" fill="#fff" stroke="#eec1b6"/><text x="912" y="478" text-anchor="middle">globalToolRegistry + BaseAgent</text><text x="912" y="493" text-anchor="middle" fill="#b57f72">15 全局工具 · reportGenerator…</text>
+    </g>
+    <!-- L4 data -->
+    <rect x="14" y="544" width="1032" height="92" rx="12" fill="#eef1f5" stroke="#ccd5e0"/>
+    <text x="30" y="568" font-size="13" font-weight="700" fill="#44566e">L4 · 数据层 — packages/db（SQLite WAL · 33 表）+ data/ 文件系统</text>
+    <g font-size="11.5" fill="#44566e">
+      <rect x="30" y="580" width="240" height="44" rx="8" fill="#fff" stroke="#ccd5e0"/><text x="150" y="598" text-anchor="middle">runs/steps/events/tasks/artifacts</text><text x="150" y="613" text-anchor="middle" fill="#8c99aa">运行时血液</text>
+      <rect x="286" y="580" width="260" height="44" rx="8" fill="#fff" stroke="#ccd5e0"/><text x="416" y="598" text-anchor="middle">factory_runs/conversations/tools/skills</text><text x="416" y="613" text-anchor="middle" fill="#8c99aa">工厂记忆</text>
+      <rect x="562" y="580" width="230" height="44" rx="8" fill="#fff" stroke="#ccd5e0"/><text x="677" y="598" text-anchor="middle">llm_calls/event_store/acceptance</text><text x="677" y="613" text-anchor="middle" fill="#8c99aa">可观测性</text>
+      <rect x="808" y="580" width="218" height="44" rx="8" fill="#fff" stroke="#ccd5e0"/><text x="917" y="598" text-anchor="middle">data/：logs · drafts · reports</text><text x="917" y="613" text-anchor="middle" fill="#8c99aa">NDJSON 日志 · 草稿 · 产物</text>
+    </g>
+    <!-- arrows between layers -->
+    <line x1="530" y1="106" x2="530" y2="128" stroke="#8194ad" stroke-width="1.6" marker-end="url(#ar)"/>
+    <line x1="530" y1="226" x2="530" y2="248" stroke="#5b8def" stroke-width="1.8" marker-end="url(#arB)"/>
+    <text x="545" y="242" font-size="10.5" fill="#5b8def">/v1/* 代理（web 无 DB）</text>
+    <line x1="268" y1="346" x2="268" y2="368" stroke="#8194ad" stroke-width="1.6" marker-end="url(#ar)"/>
+    <line x1="792" y1="346" x2="792" y2="368" stroke="#8194ad" stroke-width="1.6" marker-end="url(#ar)"/>
+    <line x1="268" y1="520" x2="268" y2="542" stroke="#8194ad" stroke-width="1.6" marker-end="url(#ar)"/>
+    <line x1="792" y1="520" x2="792" y2="542" stroke="#8194ad" stroke-width="1.6" marker-end="url(#ar)"/>
+    <!-- factory -> runtime promotion arrow -->
+    <line x1="522" y1="445" x2="536" y2="445" stroke="#219653" stroke-width="2" marker-end="url(#ar)"/>
+    <text x="529" y="435" font-size="10.5" fill="#219653" text-anchor="middle">晋升</text>
+    <text x="530" y="666" font-size="12" fill="#8c99aa" text-anchor="middle">图 1-1 · 五层总览：L3a 生成智能体，验收后「晋升」进 L3b 成为真实运行的 Inngest 函数，两者共用 L4。</text>
+  </svg>
+  </figure>
+
+  <h3>每层一句话</h3>
+  <table>
+    <tr><th>层</th><th>职责</th><th>关键约束</th></tr>
+    <tr><td><span class="badge b-violet">L0</span>外部世界</td><td>知识（Allmeta 本体）、算力（LLM）、持久执行（Inngest）、业务能力（SaaS API）、渲染（Chrome）</td><td>一切外部输入都是数据不是指令；PDF 打印进程断网</td></tr>
+    <tr><td><span class="badge b-blue">L1</span>展示层</td><td>纯投影：同一条 SSE 事件流渲染出聊天流、右栏、后台面板——历史回放与实时渲染同构</td><td>零 DB 访问；回答/介入只走聊天流一个入口</td></tr>
+    <tr><td><span class="badge b-green">L2</span>接入层</td><td>认证 + RBAC + 租户隔离 + 审计；把 HTTP 世界翻译成端口调用（makeFactoryPorts 组合根）</td><td>每张业务表带 tenant_id；dev 模式才认 x-agentic-tenant</td></tr>
+    <tr><td><span class="badge b-amber">L3a</span>生成多 agents 系统</td><td>协调者读懂意图后分派内部角色（理解/规划/设计/验证/交付）；角色能力不足即嵌套派生（认知专家 ∥ 并行 / 子大脑递归）；共享一个推理核；产物是 functions</td><td>纯包，不碰 DB/HTTP——一切依赖经 FactoryPorts 注入；意图/介入/理解三样记忆恒存</td></tr>
+    <tr><td><span class="badge b-red">L3b</span>运行时</td><td>把交付的 agent 变成 Inngest 持久函数：事件触发、工具循环、代码真执行、HITL</td><td>所有 DB 写包在 step.run 里（重放恰好一次）</td></tr>
+    <tr><td><span class="badge b-blue">L4</span>数据层</td><td>SQLite（33 表）+ data/ 文件（日志、草稿、本体、报告、产物）</td><td>runs.agent_id 是 RESTRICT 外键——历史不许被裸删</td></tr>
+  </table>
+  <div class="callout good"><b>核心设计观：</b>工厂与运行时是「<b>造飞机的工厂</b>」和「<b>机场</b>」的关系——共用跑道（数据层与事件总线）但绝不混淆：草稿永远不会静默变成生产 agent，晋升是显式、增量、可审计的一步。而工厂本身<b>不是一个大脑加一堆工具，而是一支车间班组</b>：协调者分工、角色作业、人手不够就现场派专家。</div>
+
+  <h3>智能化 Agent 工厂的五个支柱</h3>
+  <table>
+    <tr><th>支柱</th><th>含义</th><th>落点</th></tr>
+    <tr><td>① 生成即多 agent 协作</td><td>协调者 + 内部角色 + 按需嵌套派生——生成过程本身就是一次多智能体协作，不是单脑串行</td><td>conductor · 角色工具族 · specialists / spawn_subagent（§4.5）</td></tr>
+    <tr><td>② 共享推理核</td><td>专门化的是角色与上下文窗口，不是模型设施——主脑/专家/子大脑同一套路由、降级、遥测</td><td>stream-gateway · llm_calls（§4）</td></tr>
+    <tr><td>③ 意图与记忆恒存</td><td>先读懂你再执行你；意图、介入、理解三样折叠+重启双幸存，对话再长也不忘</td><td>意图门 · humanDirectives · ontologyUnderstanding（§3/§4.5）</td></tr>
+    <tr><td>④ 选型优先于制造</td><td>能力解析：先查资产库（agents/tools/SKILLS）、能组则组、缺口才造，造完回流入库成飞轮</td><td>工具语义排序+战绩 · use_skill · create_tool/skill（§7）</td></tr>
+    <tr><td>⑤ 产物即 functions</td><td>function 是 agent 的交付形态：过验收闸（真沙箱证据）才晋升为事件驱动的持久函数</td><td>acceptance · promote · Inngest register（§5/§8）</td></tr>
+  </table>
+
+  <h3>1.5 两套系统，一个共享基座（本书的总纲）</h3>
+  <p>把五层图再抽象一步，全平台是<b>两套各自完整的多 agent 系统</b>：<b>系统 A（生成系统）</b>——造 functions 的多 agents 车间；<b>系统 B（交付系统）</b>——functions 跑业务的运行时。两套系统<b>各有自己的 agents、自己的 sub-agents、自己的 CodeAct</b>，绝不混淆；靠两座桥连接（晋升桥、固化桥），踩在同一个基座上（数据层、工具资产、HITL、观测），并由一条回流飞轮让 B 的运行经验反哺 A 越造越好。</p>
+
+  <figure class="fig">
+  <svg viewBox="0 0 1060 560" xmlns="http://www.w3.org/2000/svg">
+    <defs><marker id="a12" markerWidth="9" markerHeight="9" refX="7.5" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#8194ad"/></marker>
+    <marker id="a12g" markerWidth="9" markerHeight="9" refX="7.5" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#219653"/></marker></defs>
+    <rect x="14" y="16" width="486" height="352" rx="12" fill="#fdf3e3" stroke="#ecd3a1"/>
+    <text x="30" y="40" font-size="13" font-weight="700" fill="#8f5f14">系统 A · 生成系统 —— 造 functions 的多 agents 车间</text>
+    <g font-size="11.5" fill="#5c451d">
+      <rect x="28" y="54" width="458" height="52" rx="8" fill="#fff" stroke="#ecd3a1"/><text x="257" y="76" text-anchor="middle" font-weight="700">协调者 conductor + 意图门</text><text x="257" y="94" text-anchor="middle" fill="#a98b52">读懂用户（意图/介入恒存）· 分派 · 6 阶段推进</text>
+      <rect x="28" y="116" width="458" height="52" rx="8" fill="#fff" stroke="#ecd3a1"/><text x="257" y="138" text-anchor="middle" font-weight="700">内部工作角色 agents</text><text x="257" y="156" text-anchor="middle" fill="#a98b52">理解 · 规划 · 设计 · 验证 · 交付（41 工具 + SKILLS 共用）</text>
+      <rect x="28" y="178" width="458" height="52" rx="8" fill="#fff" stroke="#ecd3a1" stroke-dasharray="6 4"/><text x="257" y="200" text-anchor="middle" font-weight="700">生成域 sub-agents（永不进交付物）</text><text x="257" y="218" text-anchor="middle" fill="#a98b52">认知专家 ∥ 并行单跳 · 子大脑递归 ≤2 —— 服务于推理本身</text>
+      <rect x="28" y="240" width="458" height="52" rx="8" fill="#fff" stroke="#ecd3a1"/><text x="257" y="262" text-anchor="middle" font-weight="700">内部 CodeAct（造与验的代码执行）</text><text x="257" y="280" text-anchor="middle" fill="#a98b52">编译 · AST 安审 · 加载探针 · 事件图计算 · 沙箱驱动</text>
+      <rect x="28" y="302" width="458" height="44" rx="8" fill="#ece7f8" stroke="#c9b8e8"/><text x="257" y="321" text-anchor="middle" font-weight="700" fill="#5c44a8">A 的推理面：stream-gateway（共享推理核）</text><text x="257" y="338" text-anchor="middle" fill="#8a7cae" font-size="10.5">主脑/角色/专家/子大脑同一套路由、降级、llm_calls 遥测</text>
+    </g>
+    <rect x="560" y="16" width="486" height="352" rx="12" fill="#fdece8" stroke="#eec1b6"/>
+    <text x="576" y="40" font-size="13" font-weight="700" fill="#a03024">系统 B · 交付系统 —— functions 跑业务的运行时</text>
+    <g font-size="11.5" fill="#5c2b23">
+      <rect x="574" y="54" width="458" height="52" rx="8" fill="#fff" stroke="#eec1b6"/><text x="803" y="76" text-anchor="middle" font-weight="700">functions（= 业务流程 agents）</text><text x="803" y="94" text-anchor="middle" fill="#b57f72">事件驱动的 Inngest 持久函数 · 按 subject 串行 · 重放恰好一次</text>
+      <rect x="574" y="116" width="458" height="52" rx="8" fill="#fff" stroke="#eec1b6" stroke-dasharray="6 4"/><text x="803" y="138" text-anchor="middle" font-weight="700">交付域 sub-agents（交付物的一部分）</text><text x="803" y="156" text-anchor="middle" fill="#b57f72">设计期固化 -sub- 子函数 · 运行期 ctx.spawn 涌现（深度≤2）</text>
+      <rect x="574" y="178" width="458" height="52" rx="8" fill="#fff" stroke="#eec1b6"/><text x="803" y="200" text-anchor="middle" font-weight="700">产物 CodeAct（跑业务的代码执行）</text><text x="803" y="218" text-anchor="middle" fill="#b57f72">plan[] 步骤做骨架（细粒度重放）· handler 真执行做关节</text>
+      <rect x="574" y="240" width="458" height="52" rx="8" fill="#fff" stroke="#eec1b6"/><text x="803" y="262" text-anchor="middle" font-weight="700">通信与人审</text><text x="803" y="280" text-anchor="middle" fill="#b57f72">事件总线（信封+blob）· 补偿/subflow · HITL tasks 持久等待</text>
+      <rect x="574" y="302" width="458" height="44" rx="8" fill="#ece7f8" stroke="#c9b8e8"/><text x="803" y="321" text-anchor="middle" font-weight="700" fill="#5c44a8">B 的推理面：llm-gateway（14 providers）</text><text x="803" y="338" text-anchor="middle" fill="#8a7cae" font-size="10.5">step-engine 工具循环 / BaseAgent 单跳 —— 与 A 同底不同面</text>
+    </g>
+    <line x1="500" y1="80" x2="558" y2="80" stroke="#219653" stroke-width="2.4" marker-end="url(#a12g)"/>
+    <text x="529" y="66" text-anchor="middle" font-size="11" font-weight="700" fill="#219653">晋升桥</text>
+    <text x="529" y="98" text-anchor="middle" font-size="9.5" fill="#219653">验收闸→增量上线</text>
+    <line x1="558" y1="150" x2="500" y2="150" stroke="#8194ad" stroke-width="2" marker-end="url(#a12)"/>
+    <text x="529" y="136" text-anchor="middle" font-size="11" font-weight="700" fill="#5b6773">固化桥</text>
+    <text x="529" y="168" text-anchor="middle" font-size="9.5" fill="#5b6773">spawn 涌现→A 验证</text>
+    <rect x="14" y="392" width="1032" height="76" rx="10" fill="#eef1f5" stroke="#ccd5e0"/>
+    <text x="30" y="414" font-size="12.5" font-weight="700" fill="#44566e">共享基座（两套系统踩同一块地）</text>
+    <g font-size="11" fill="#44566e">
+      <rect x="30" y="424" width="238" height="36" rx="7" fill="#fff" stroke="#ccd5e0"/><text x="149" y="446" text-anchor="middle">数据层：SQLite 33 表 + data/ 文件</text>
+      <rect x="284" y="424" width="238" height="36" rx="7" fill="#fff" stroke="#ccd5e0"/><text x="403" y="446" text-anchor="middle">工具资产：A 选型绑定 → B 四级解析</text>
+      <rect x="538" y="424" width="238" height="36" rx="7" fill="#fff" stroke="#ccd5e0"/><text x="657" y="446" text-anchor="middle">HITL：A 聊天流问答 · B tasks 人审</text>
+      <rect x="792" y="424" width="238" height="36" rx="7" fill="#fff" stroke="#ccd5e0"/><text x="911" y="446" text-anchor="middle">观测：llm_calls · event_store · acceptance</text>
+    </g>
+    <line x1="700" y1="496" x2="360" y2="496" stroke="#219653" stroke-width="1.8" stroke-dasharray="7 5" marker-end="url(#a12g)"/>
+    <text x="530" y="516" text-anchor="middle" font-size="11" fill="#219653">回流飞轮：B 的生产战绩 / 反思 / 验收趋势 → A 的资产库与记忆（工具战绩已通 ✓ · 生产运行回流规划中 ◌）</text>
+    <text x="530" y="546" font-size="12" fill="#8c99aa" text-anchor="middle">图 1-2 · 两套系统总纲：A 与 B 各有自己的 agents / sub-agents / CodeAct / 推理面；两座桥、一块基座、一条回流飞轮。</text>
+  </svg>
+  </figure>
+
+  <table>
+    <tr><th>维度</th><th>系统 A · 生成系统</th><th>系统 B · 交付系统</th></tr>
+    <tr><td>agents</td><td>协调者 + 内部工作角色（理解/规划/设计/验证/交付）</td><td>functions = 业务流程 agents（事件驱动持久函数）</td></tr>
+    <tr><td>sub-agents</td><td>认知专家（∥ 并行单跳）· 子大脑（递归 ≤2）——服务推理，<b>永不进交付物</b></td><td>-sub- 固化子函数 · ctx.spawn 运行期涌现——<b>是交付物/运行行为</b></td></tr>
+    <tr><td>CodeAct</td><td>「造与验」：编译/AST 安审/探针/图计算/沙箱驱动</td><td>「跑业务」：plan 骨架 + handler 真执行（code_ran 回执）</td></tr>
+    <tr><td>推理面</td><td>stream-gateway（共享推理核：分层路由+降级+遥测）</td><td>llm-gateway（14 providers：step-engine 循环 / BaseAgent）</td></tr>
+    <tr><td>通信</td><td>事件冒泡（BrainEvent）+ ctx 共享状态</td><td>Inngest 事件总线（信封+blob+补偿+subflow）</td></tr>
+    <tr><td>HITL</td><td>聊天流：意图门/ask_user/介入/确认卡</td><td>tasks 行 + step.waitForEvent 持久人审</td></tr>
+    <tr><td>安全</td><td>AST lint · 加载探针 · 沙箱写门控 · egress-guard</td><td>SSRF 守卫 · CSP sandbox · 租户隔离 · 工具 allow-list</td></tr>
+    <tr><td>互通</td><td colspan="2">仅两座桥：<b>晋升桥</b>（A 的草稿过验收闸 → B 的函数，显式增量）；<b>固化桥</b>（B 的 spawn 涌现 → 回 A 经 design_subagent 验证后固化）。除此之外互不越界。</td></tr>
+  </table>
+  <div class="callout"><b>同构性原则：</b>A 与 B 是同一个模式——「选型 → 能力不足即派生 → 执行 → 经验回流」——在两个域的实例。这不是巧合而是设计：会造 agent 的系统自己就该像一队 agent 那样工作。</div>
+</section>
+
+<!-- ═══════════════════════ 第 2 章 ═══════════════════════ -->
+<section class="ch" id="c2">
+  <h2>2. 外部世界与信任边界</h2>
+  <p>系统对外有六类连接，每类都有明确的边界策略：</p>
+  <table>
+    <tr><th>外部系统</th><th>方向</th><th>用途</th><th>边界防线</th></tr>
+    <tr><td>Allmeta Studio（:3500）</td><td>入</td><td>在线业务本体（动作/事件/规则/对象）</td><td>只读；上传本体优先级更高可完全替代（uploaded &gt; local &gt; Allmeta）</td></tr>
+    <tr><td>LLM Provider ×14</td><td>出/入</td><td>大脑推理、生成 agent 的 LLM 调用、报告撰写</td><td>统一 llm-gateway 单例；每次调用记 <code>llm_calls</code> 遥测；降级链 + 402 预算协商</td></tr>
+    <tr><td>Inngest Dev（:8288）</td><td>双向</td><td>持久事件引擎：真沙箱 <code>-sb</code> app 与生产 app 都注册在这里</td><td>沙箱租户外部写操作默认门控（<code>FACTORY_SANDBOX_ALLOW_WRITES</code>）</td></tr>
+    <tr><td>业务 SaaS（RoboHire 等）</td><td>出</td><td>生成的 agent 经全局工具/声明式工具调用真实业务 API</td><td>SSRF 守卫（禁内网地址）+ 每租户 config 注入密钥 + 工具级 allow-list</td></tr>
+    <tr><td>本机 Chrome</td><td>本地</td><td>HTML 报告 → PDF 打印</td><td>死代理断网（<code>--proxy-server=127.0.0.1:9</code> + <code>&lt;-loopback&gt;</code>）：恶意 HTML 无法外呼</td></tr>
+    <tr><td>用户浏览器</td><td>双向</td><td>SSE 订阅脑事件流；聊天框介入/回答</td><td>会话 cookie + RBAC；LLM 产 HTML 产物以 <code>CSP: sandbox</code> 无脚本渲染（防存储 XSS）</td></tr>
+  </table>
+  <div class="callout"><b>为什么本体有三级来源？</b>用户不想让工厂读内置/在线本体时，可在左栏「本地本体」上传自己的 JSON（actions/events/rules/dataObjects，多文件自动合并）——它立即成为可选业务域并<b>压过</b>同名的在线来源。这让工厂可以完全离线工作在私有领域知识上。</div>
+</section>
+
+<!-- ═══════════════════════ 第 3 章 ═══════════════════════ -->
+<section class="ch" id="c3">
+  <h2>3. Harness：离体运行的大脑<small>run-registry.ts · conductor.ts · stream-gateway.ts</small></h2>
+  <p>Harness 是<b>系统 A（生成系统）的宿主进程形态</b>。它的第一性设计是「<b>大脑与浏览器解耦</b>」：点开始后，大脑在 API 进程内的 <b>run-registry</b> 里离体运行——关掉页面它继续跑，回来重连即重放。这就是右上「后台任务」面板能存在的根基。</p>
+
+  <figure class="fig">
+  <svg viewBox="0 0 1060 560" xmlns="http://www.w3.org/2000/svg">
+    <defs><marker id="a3" markerWidth="9" markerHeight="9" refX="7.5" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#8194ad"/></marker></defs>
+    <!-- lanes -->
+    <g font-size="12.5" font-weight="700">
+      <rect x="14" y="14" width="240" height="530" rx="10" fill="#e9f0fd" stroke="#b9cdf4"/><text x="134" y="38" text-anchor="middle" fill="#2f5bb7">浏览器</text>
+      <rect x="268" y="14" width="250" height="530" rx="10" fill="#e6f5ec" stroke="#a9d9bd"/><text x="393" y="38" text-anchor="middle" fill="#1a7a43">API 路由层</text>
+      <rect x="532" y="14" width="250" height="530" rx="10" fill="#fdf3e3" stroke="#ecd3a1"/><text x="657" y="38" text-anchor="middle" fill="#8f5f14">run-registry（进程内）</text>
+      <rect x="796" y="14" width="250" height="530" rx="10" fill="#eef1f5" stroke="#ccd5e0"/><text x="921" y="38" text-anchor="middle" fill="#44566e">持久层</text>
+    </g>
+    <g font-size="11.5">
+      <rect x="30" y="56" width="208" height="40" rx="8" fill="#fff" stroke="#b9cdf4"/><text x="134" y="73" text-anchor="middle">发送目标 / 上传文档</text><text x="134" y="88" text-anchor="middle" fill="#7d90b5">GET /stream?domain&amp;goal&amp;conv</text>
+      <rect x="284" y="56" width="218" height="40" rx="8" fill="#fff" stroke="#a9d9bd"/><text x="393" y="73" text-anchor="middle">startRun() → runId</text><text x="393" y="88" text-anchor="middle" fill="#6f9c82">SSE hijack · 15s 心跳</text>
+      <rect x="548" y="56" width="218" height="40" rx="8" fill="#fff" stroke="#ecd3a1"/><text x="657" y="73" text-anchor="middle">drive()：runBrain 异步驱动</text><text x="657" y="88" text-anchor="middle" fill="#a98b52">事件入 buffer（10万上限+折叠标记）</text>
+      <rect x="812" y="56" width="218" height="40" rx="8" fill="#fff" stroke="#ccd5e0"/><text x="921" y="73" text-anchor="middle">recordRunStart → factory_runs</text><text x="921" y="88" text-anchor="middle" fill="#8c99aa">每回合存对话+ctx 快照</text>
+      <line x1="238" y1="76" x2="282" y2="76" stroke="#8194ad" stroke-width="1.6" marker-end="url(#a3)"/>
+      <line x1="502" y1="76" x2="546" y2="76" stroke="#8194ad" stroke-width="1.6" marker-end="url(#a3)"/>
+      <line x1="766" y1="76" x2="810" y2="76" stroke="#8194ad" stroke-width="1.6" marker-end="url(#a3)"/>
+
+      <rect x="548" y="120" width="218" height="128" rx="8" fill="#fff" stroke="#ecd3a1"/>
+      <text x="657" y="140" text-anchor="middle" font-weight="700" fill="#8f5f14">每一回合（turn）</text>
+      <text x="560" y="160">⓪ 新目标先过意图门（读懂你再执行）</text>
+      <text x="560" y="178">① 排空邮箱（[人工介入] 全量入上下文）</text>
+      <text x="560" y="196">② streamTurn 推理 → 工具/角色调用</text>
+      <text x="560" y="214">③ 角色作业（可派专家/子大脑）→ 结果回注</text>
+      <text x="560" y="232">④ 阶段推进 · 折叠保三样记忆（意图/介入/理解）</text>
+      <line x1="657" y1="96" x2="657" y2="118" stroke="#8194ad" stroke-width="1.6" marker-end="url(#a3)"/>
+
+      <rect x="30" y="120" width="208" height="64" rx="8" fill="#fff" stroke="#b9cdf4"/><text x="134" y="140" text-anchor="middle">SSE onmessage</text><text x="134" y="156" text-anchor="middle" fill="#7d90b5">31 种 BrainEvent → 纯投影</text><text x="134" y="172" text-anchor="middle" fill="#7d90b5">聊天流/右栏/面板同源渲染</text>
+      <line x1="546" y1="150" x2="240" y2="150" stroke="#5b8def" stroke-width="1.8" marker-end="url(#a3)"/>
+
+      <rect x="30" y="208" width="208" height="52" rx="8" fill="#fff" stroke="#b9cdf4"/><text x="134" y="228" text-anchor="middle">关页 = 只退订</text><text x="134" y="245" text-anchor="middle" fill="#7d90b5">大脑继续跑 · localStorage 记 runId</text>
+      <rect x="30" y="276" width="208" height="52" rx="8" fill="#fff" stroke="#b9cdf4"/><text x="134" y="296" text-anchor="middle">回来重连 ?run=&lt;id&gt;</text><text x="134" y="313" text-anchor="middle" fill="#7d90b5">buffer 全量重放 + 续订实时流</text>
+      <line x1="240" y1="302" x2="546" y2="302" stroke="#8194ad" stroke-width="1.6" stroke-dasharray="5 4" marker-end="url(#a3)"/>
+
+      <rect x="284" y="348" width="218" height="58" rx="8" fill="#fff" stroke="#a9d9bd"/><text x="393" y="368" text-anchor="middle">POST /inject（介入/回答）</text><text x="393" y="384" text-anchor="middle" fill="#6f9c82">pushHumanMessage（租户标签</text><text x="393" y="398" text-anchor="middle" fill="#6f9c82">+ 每会话 200 条上限）</text>
+      <line x1="134" y1="328" x2="134" y2="377" stroke="#8194ad" stroke-width="1.4"/><line x1="134" y1="377" x2="282" y2="377" stroke="#8194ad" stroke-width="1.4" marker-end="url(#a3)"/>
+      <line x1="502" y1="377" x2="548" y2="240" stroke="#219653" stroke-width="1.6" stroke-dasharray="4 3" marker-end="url(#a3)"/>
+      <text x="512" y="330" font-size="10.5" fill="#219653">下一回合被排空</text>
+
+      <rect x="284" y="430" width="218" height="52" rx="8" fill="#fff" stroke="#a9d9bd"/><text x="393" y="450" text-anchor="middle">POST /stop</text><text x="393" y="466" text-anchor="middle" fill="#6f9c82">AbortController → 优雅落库</text>
+      <rect x="548" y="430" width="218" height="52" rx="8" fill="#fff" stroke="#ecd3a1"/><text x="657" y="450" text-anchor="middle">完成后驻留 10 分钟</text><text x="657" y="466" text-anchor="middle" fill="#a98b52">随后仅持久层可读（回放）</text>
+      <rect x="812" y="430" width="218" height="52" rx="8" fill="#fff" stroke="#ccd5e0"/><text x="921" y="450" text-anchor="middle">recordRunFinish</text><text x="921" y="466" text-anchor="middle" fill="#8c99aa">全量 transcript JSON + 反思</text>
+      <line x1="502" y1="456" x2="546" y2="456" stroke="#8194ad" stroke-width="1.6" marker-end="url(#a3)"/>
+      <line x1="766" y1="456" x2="810" y2="456" stroke="#8194ad" stroke-width="1.6" marker-end="url(#a3)"/>
+      <rect x="812" y="120" width="218" height="64" rx="8" fill="#fff" stroke="#ccd5e0"/><text x="921" y="140" text-anchor="middle">僵尸清扫 sweepZombie</text><text x="921" y="157" text-anchor="middle" fill="#8c99aa">API 重启遗留的 running 行</text><text x="921" y="172" text-anchor="middle" fill="#8c99aa">→ 标记 aborted，列表不说谎</text>
+    </g>
+    <text x="530" y="530" font-size="12" fill="#8c99aa" text-anchor="middle">图 3-1 · 离体运行：SSE 只是「窗口」，大脑的生命周期归 run-registry 管；介入经邮箱在回合边界汇入。</text>
+  </svg>
+  </figure>
+
+  <h3>回合起点的意图门（理解你，而不只是执行你）</h3>
+  <p>每次带新 goal 进入运行（新会话或续会话补充），主循环先用 fast 档做一次<b>意图解析</b>：把用户的话理解成「意图类型（生成/分析/修改/提问）+ 关键约束 + 期望产物」，追加进 <code>ctx.userIntent</code> 并以 💡 反思卡呈现在聊天流——你能看见大脑是怎么理解你的，理解偏了当场纠正。之后每一次 [人工介入] 既全文进上下文，也累积进 <code>humanDirectives</code>；意图与介入都是折叠幸存者（见 4.5），无论对话多长、折叠多少轮、API 重启多少次，大脑不忘你说过什么。</p>
+
+  <h3>Harness 的七个自我保护机制</h3>
+  <table>
+    <tr><th>机制</th><th>触发</th><th>行为</th></tr>
+    <tr><td>重复调用熔断</td><td>连续第 3 次同名同参工具调用</td><td>拒绝执行并给结构化引导（防死循环烧钱）</td></tr>
+    <tr><td>上下文折叠</td><td>消息数超 40</td><td>LLM 摘要折叠、保留近 12 条；摘要失败则确定性保尾；<code>ontologyUnderstanding</code> 永不丢</td></tr>
+    <tr><td>阶段准入 + 阶段预算</td><td>越阶调工具 / 阶段超 token 预算</td><td>拒绝越阶；一次性预算警示（软性，不设硬顶）</td></tr>
+    <tr><td>软成本表</td><td>每 3 回合</td><td>播报 tokens/沙箱次数；超阈值提示收敛到 finish</td></tr>
+    <tr><td>门控超时</td><td>HITL 停车超 ~3 分钟</td><td>自动采用推荐选项继续（不永久卡死）</td></tr>
+    <tr><td>缓冲折叠标记</td><td>事件超 10 万条</td><td>丢最旧但插入确定性折叠标记——审计能看见缺口</td></tr>
+    <tr><td>客户端静默看门狗</td><td>60 秒无任何帧</td><td>判定僵尸运行，解锁 composer 并清理重连句柄</td></tr>
+  </table>
+</section>
+
+<!-- ═══════════════════════ 第 4 章 ═══════════════════════ -->
+<section class="ch" id="c4">
+  <h2>4. 推理是怎么推理的<small>ReAct 循环 · 理解门 · 评审门 · 模型分层 · 反思记忆</small></h2>
+  <p>大脑不是「一句提示词走天下」，而是一个带<b>结构化自我怀疑</b>的 ReAct 循环：先显式消化本体（understand），方案先被独立评审（critique），设计后打分（score），退步就回滚（revert），跑完留反思（reflection）供下次运行开局注入。</p>
+
+  <figure class="fig">
+  <svg viewBox="0 0 1060 470" xmlns="http://www.w3.org/2000/svg">
+    <defs><marker id="a4" markerWidth="9" markerHeight="9" refX="7.5" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#8194ad"/></marker>
+    <marker id="a4g" markerWidth="9" markerHeight="9" refX="7.5" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#219653"/></marker>
+    <marker id="a4r" markerWidth="9" markerHeight="9" refX="7.5" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#c0392b"/></marker></defs>
+    <!-- central loop -->
+    <rect x="330" y="30" width="400" height="74" rx="12" fill="#fdf3e3" stroke="#ecd3a1"/>
+    <text x="530" y="58" text-anchor="middle" font-size="14" font-weight="700" fill="#8f5f14">Think（流式思考）</text>
+    <text x="530" y="80" text-anchor="middle" font-size="11.5" fill="#a98b52">上下文 = 系统提示 + 本体理解 + 历史 + 反思 + 介入</text>
+    <rect x="330" y="180" width="400" height="74" rx="12" fill="#e6f5ec" stroke="#a9d9bd"/>
+    <text x="530" y="208" text-anchor="middle" font-size="14" font-weight="700" fill="#1a7a43">Act（41 个生成系统工具之一）</text>
+    <text x="530" y="230" text-anchor="middle" font-size="11.5" fill="#6f9c82">design_agent / sandbox_run / ask_user / generate_report …</text>
+    <rect x="330" y="330" width="400" height="74" rx="12" fill="#e9f0fd" stroke="#b9cdf4"/>
+    <text x="530" y="358" text-anchor="middle" font-size="14" font-weight="700" fill="#2f5bb7">Observe（tool.result 回注上下文）</text>
+    <text x="530" y="380" text-anchor="middle" font-size="11.5" fill="#7d90b5">失败 = is_error 让模型自纠 · 成功推进阶段状态机</text>
+    <path d="M 530 104 L 530 178" stroke="#8194ad" stroke-width="2" marker-end="url(#a4)" fill="none"/>
+    <path d="M 530 254 L 530 328" stroke="#8194ad" stroke-width="2" marker-end="url(#a4)" fill="none"/>
+    <path d="M 330 367 C 210 367 210 67 328 67" stroke="#8194ad" stroke-width="2" marker-end="url(#a4)" fill="none"/>
+    <text x="218" y="222" font-size="11.5" fill="#5b6773" text-anchor="middle">循环直到 finish</text>
+    <text x="218" y="239" font-size="11.5" fill="#5b6773" text-anchor="middle">或预算/轮次耗尽</text>
+    <!-- left column: model routing -->
+    <rect x="20" y="30" width="240" height="130" rx="10" fill="#fff" stroke="#dfe5ec"/>
+    <text x="140" y="54" text-anchor="middle" font-size="12.5" font-weight="700" fill="#31445c">模型分层路由（streamTurn）</text>
+    <text x="34" y="78" font-size="11.5" fill="#5b6773">fast：读目录 / 小结构化任务</text>
+    <text x="34" y="98" font-size="11.5" fill="#5b6773">default：设计 / 校验 / 修订</text>
+    <text x="34" y="118" font-size="11.5" fill="#5b6773">hard：写码 / 复杂评审</text>
+    <text x="34" y="142" font-size="11" fill="#98a1ad">每档 5 次降级重试 · 402 自动降预算</text>
+    <line x1="260" y1="95" x2="328" y2="67" stroke="#8194ad" stroke-width="1.5" marker-end="url(#a4)"/>
+    <!-- right column: gates -->
+    <rect x="790" y="30" width="250" height="180" rx="10" fill="#fff" stroke="#dfe5ec"/>
+    <text x="915" y="54" text-anchor="middle" font-size="12.5" font-weight="700" fill="#31445c">结构化自我怀疑（真 LLM 门）</text>
+    <text x="804" y="80" font-size="11.5" fill="#5b6773">① understand_ontology：显式消化</text>
+    <text x="804" y="97" font-size="11" fill="#98a1ad">　事件流转/规则闸/歧义 → 折叠也不丢</text>
+    <text x="804" y="120" font-size="11.5" fill="#5b6773">② critique_plan：独立方案评审</text>
+    <text x="804" y="137" font-size="11" fill="#98a1ad">　高危问题 → 建议 create_plan v+1</text>
+    <text x="804" y="160" font-size="11.5" fill="#5b6773">③ score_spec：四维打分</text>
+    <text x="804" y="177" font-size="11" fill="#98a1ad">　工具解析/提示丰度/决策覆盖/修订健康</text>
+    <text x="804" y="198" font-size="11.5" fill="#c0392b">④ 退步 → revert_refine 快照回滚</text>
+    <line x1="790" y1="120" x2="732" y2="120" stroke="#8194ad" stroke-width="1.5"/><line x1="732" y1="120" x2="732" y2="180" stroke="#8194ad" stroke-width="1.5" marker-end="url(#a4)"/>
+    <!-- bottom memory -->
+    <rect x="20" y="250" width="240" height="154" rx="10" fill="#fff" stroke="#dfe5ec"/>
+    <text x="140" y="274" text-anchor="middle" font-size="12.5" font-weight="700" fill="#31445c">跨运行记忆</text>
+    <text x="34" y="298" font-size="11.5" fill="#5b6773">反思库：每次运行的教训</text>
+    <text x="34" y="315" font-size="11" fill="#98a1ad">　（failure/success/caveat）开局注入</text>
+    <text x="34" y="338" font-size="11.5" fill="#5b6773">技能库：create_skill 沉淀套路</text>
+    <text x="34" y="358" font-size="11.5" fill="#5b6773">向量记忆：MemoryDriver 语义召回</text>
+    <text x="34" y="378" font-size="11.5" fill="#5b6773">工具战绩：沙箱成功率参与排序</text>
+    <line x1="260" y1="320" x2="328" y2="360" stroke="#219653" stroke-width="1.5" marker-end="url(#a4g)"/>
+    <rect x="790" y="250" width="250" height="154" rx="10" fill="#fff" stroke="#dfe5ec"/>
+    <text x="915" y="274" text-anchor="middle" font-size="12.5" font-weight="700" fill="#31445c">遥测（每次 LLM 调用）</text>
+    <text x="804" y="298" font-size="11.5" fill="#5b6773">llm_calls 表：请求/实际模型、</text>
+    <text x="804" y="315" font-size="11.5" fill="#5b6773">时延、token、降级原因、成败</text>
+    <text x="804" y="338" font-size="11.5" fill="#5b6773">purpose 标签 + conversationId 归因</text>
+    <text x="804" y="362" font-size="11" fill="#98a1ad">「贵在哪、慢在哪、掉到哪个模型」</text>
+    <text x="804" y="379" font-size="11" fill="#98a1ad">一张表可答</text>
+    <line x1="730" y1="367" x2="788" y2="340" stroke="#c0392b" stroke-width="1.5" marker-end="url(#a4r)"/>
+    <text x="530" y="446" font-size="12" fill="#8c99aa" text-anchor="middle">图 4-1 · 推理三角：ReAct 主循环（中）+ 分层算力（左上）+ 自我怀疑门（右上）+ 跨运行记忆（左下）+ 全量遥测（右下）。</text>
+  </svg>
+  </figure>
+
+  <div class="callout"><b>为什么「理解」和「评审」要做成工具而不是提示词？</b>提示词的要求会被折叠冲掉；做成工具后产物落进 <code>ctx.ontologyUnderstanding</code>（折叠时强制保留）与 reflect 事件（进 UI 与反思库）——「读了就忘」被结构性堵死。critique_plan 曾在真实运行中抓到事件链断裂并触发 4 轮方案修订。</div>
+
+  <h3>4.5 嵌套 Harness 与共享推理核：生成 functions 的多 agent 系统</h3>
+  <p>工厂内部本身就是一个<b>多 agent 运行时</b>：conductor 是协调者，「理解 / 设计 / 验收」是内部工作角色；任何角色<b>能力不足时都可以嵌套派生</b>。派生分两条通道，但共用同一个推理核（同一套模型路由、降级、遥测、记忆读口）——「共用一个推理大脑」指的就是这件事：专门化的是<b>角色与上下文窗口</b>，不是另起炉灶的模型设施。（注意这是<b>系统 A 的推理面</b>；系统 B 的 functions 走 llm-gateway——同底不同面，见图 1-2。）</p>
+
+  <figure class="fig">
+  <svg viewBox="0 0 1060 400" xmlns="http://www.w3.org/2000/svg">
+    <defs><marker id="a42" markerWidth="9" markerHeight="9" refX="7.5" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#8194ad"/></marker></defs>
+    <rect x="14" y="20" width="210" height="232" rx="10" fill="#e9f0fd" stroke="#b9cdf4"/>
+    <text x="119" y="44" text-anchor="middle" font-size="12.5" font-weight="700" fill="#2f5bb7">意图与记忆层</text>
+    <g font-size="11">
+      <rect x="26" y="56" width="186" height="48" rx="8" fill="#fff" stroke="#b9cdf4"/><text x="119" y="76" text-anchor="middle" fill="#2c3d5c">意图门 userIntent</text><text x="119" y="92" text-anchor="middle" fill="#7d90b5">goal → 类型/约束/期望产物</text>
+      <rect x="26" y="112" width="186" height="48" rx="8" fill="#fff" stroke="#b9cdf4"/><text x="119" y="132" text-anchor="middle" fill="#2c3d5c">介入 humanDirectives</text><text x="119" y="148" text-anchor="middle" fill="#7d90b5">[人工介入] 全量累积</text>
+      <rect x="26" y="168" width="186" height="48" rx="8" fill="#fff" stroke="#b9cdf4"/><text x="119" y="188" text-anchor="middle" fill="#2c3d5c">本体理解 understanding</text><text x="119" y="204" text-anchor="middle" fill="#7d90b5">四维分治汇总结论</text>
+      <text x="119" y="238" text-anchor="middle" font-size="10.5" fill="#2f5bb7">折叠幸存 + 跨重启序列化</text>
+    </g>
+    <rect x="250" y="20" width="420" height="52" rx="10" fill="#fdf3e3" stroke="#ecd3a1"/>
+    <text x="460" y="42" text-anchor="middle" font-size="13" font-weight="700" fill="#8f5f14">conductor 协调者（harness 主循环）</text>
+    <text x="460" y="60" text-anchor="middle" font-size="11" fill="#a98b52">读意图与记忆 · 分派角色 · 汇总推进</text>
+    <line x1="224" y1="46" x2="248" y2="46" stroke="#5b8def" stroke-width="1.8" marker-end="url(#a42)"/>
+    <g font-size="11.5">
+      <rect x="250" y="96" width="200" height="56" rx="9" fill="#e6f5ec" stroke="#a9d9bd"/><text x="350" y="118" text-anchor="middle" font-weight="700" fill="#1a7a43">设计角色</text><text x="350" y="136" text-anchor="middle" fill="#6f9c82">design_agent / codegen</text>
+      <rect x="470" y="96" width="200" height="56" rx="9" fill="#e6f5ec" stroke="#a9d9bd"/><text x="570" y="118" text-anchor="middle" font-weight="700" fill="#1a7a43">理解角色</text><text x="570" y="136" text-anchor="middle" fill="#6f9c82">understand_ontology v2</text>
+      <rect x="690" y="96" width="200" height="56" rx="9" fill="#e6f5ec" stroke="#a9d9bd"/><text x="790" y="118" text-anchor="middle" font-weight="700" fill="#1a7a43">验收角色</text><text x="790" y="136" text-anchor="middle" fill="#6f9c82">sandbox / acceptance</text>
+      <line x1="410" y1="72" x2="350" y2="94" stroke="#8194ad" stroke-width="1.6" marker-end="url(#a42)"/>
+      <line x1="510" y1="72" x2="570" y2="94" stroke="#8194ad" stroke-width="1.6" marker-end="url(#a42)"/>
+      <line x1="600" y1="72" x2="790" y2="94" stroke="#8194ad" stroke-width="1.6" marker-end="url(#a42)"/>
+      <rect x="908" y="96" width="138" height="112" rx="9" fill="#fff" stroke="#ecd3a1" stroke-dasharray="6 4"/>
+      <text x="977" y="120" text-anchor="middle" font-weight="700" fill="#8f5f14">重通道</text>
+      <text x="977" y="140" text-anchor="middle" fill="#a98b52">spawn_subagent</text>
+      <text x="977" y="158" text-anchor="middle" fill="#a98b52">完整子大脑</text>
+      <text x="977" y="176" text-anchor="middle" fill="#a98b52">带工具 · 多回合</text>
+      <text x="977" y="194" text-anchor="middle" fill="#a98b52">深度 ≤ 2 · 只读集</text>
+      <path d="M 670 46 L 977 46 L 977 94" stroke="#8194ad" stroke-width="1.6" fill="none" marker-end="url(#a42)"/>
+      <rect x="250" y="190" width="150" height="40" rx="8" fill="#fff" stroke="#a9d9bd" stroke-dasharray="5 4"/><text x="325" y="214" text-anchor="middle" fill="#1a7a43">objects 专家</text>
+      <rect x="416" y="190" width="150" height="40" rx="8" fill="#fff" stroke="#a9d9bd" stroke-dasharray="5 4"/><text x="491" y="214" text-anchor="middle" fill="#1a7a43">rules 专家</text>
+      <rect x="582" y="190" width="150" height="40" rx="8" fill="#fff" stroke="#a9d9bd" stroke-dasharray="5 4"/><text x="657" y="214" text-anchor="middle" fill="#1a7a43">actions 专家</text>
+      <rect x="748" y="190" width="150" height="40" rx="8" fill="#fff" stroke="#a9d9bd" stroke-dasharray="5 4"/><text x="823" y="214" text-anchor="middle" fill="#1a7a43">events 专家</text>
+      <line x1="570" y1="152" x2="325" y2="188" stroke="#8194ad" stroke-width="1.5" marker-end="url(#a42)"/>
+      <line x1="570" y1="152" x2="491" y2="188" stroke="#8194ad" stroke-width="1.5" marker-end="url(#a42)"/>
+      <line x1="570" y1="152" x2="657" y2="188" stroke="#8194ad" stroke-width="1.5" marker-end="url(#a42)"/>
+      <line x1="570" y1="152" x2="823" y2="188" stroke="#8194ad" stroke-width="1.5" marker-end="url(#a42)"/>
+      <text x="574" y="252" text-anchor="middle" font-size="10.5" fill="#5b6773">轻通道（认知专家）：单/少跳结构化调用 · 并行 · 产出汇总回主线（折叠不丢）</text>
+    </g>
+    <rect x="250" y="282" width="648" height="64" rx="10" fill="#ece7f8" stroke="#c9b8e8"/>
+    <text x="574" y="308" text-anchor="middle" font-size="13" font-weight="700" fill="#5c44a8">共享推理核 · stream-gateway</text>
+    <text x="574" y="328" text-anchor="middle" font-size="11" fill="#8a7cae">模型分层路由（fast/default/hard）· 5 级降级 · 402 预算协商 · llm_calls 全量遥测 —— 主脑/专家/子大脑同一套设施</text>
+    <g stroke="#c9b8e8" stroke-width="1.3" stroke-dasharray="3 4">
+      <line x1="350" y1="152" x2="350" y2="280"/><line x1="790" y1="152" x2="790" y2="280"/>
+      <line x1="325" y1="230" x2="325" y2="280"/><line x1="491" y1="230" x2="491" y2="280"/><line x1="657" y1="230" x2="657" y2="280"/><line x1="823" y1="230" x2="823" y2="280"/>
+      <line x1="977" y1="208" x2="977" y2="266"/><line x1="977" y1="266" x2="900" y2="300"/>
+    </g>
+    <text x="530" y="382" font-size="12" fill="#8c99aa" text-anchor="middle">图 4-2 · 嵌套 Harness：任何角色能力不足即派生——轻通道（认知专家）与重通道（子大脑）共用一个推理核；左侧记忆层是折叠与重启的幸存者。</text>
+  </svg>
+  </figure>
+
+  <table>
+    <tr><th>嵌套通道</th><th>形态</th><th>适用</th><th>成本</th></tr>
+    <tr><td><b>轻通道 · 认知专家</b>（specialists）</td><td>带角色提示词的单/少跳结构化调用，可并行，产出 JSON 汇总回主线</td><td>数据已在手、需要专注消化的子问题（四维分治理解本体、意图解析等）</td><td>每个专家 1 次 LLM 调用</td></tr>
+    <tr><td><b>重通道 · 子大脑</b>（spawn_subagent）</td><td>完整 runBrain 递归：自己的消息史 + 只读工具集 + 多回合</td><td>需要自主取数、多步推理的独立研究任务</td><td>一个小型运行（深度 ≤ 2 防爆炸）</td></tr>
+  </table>
+  <div class="callout good"><b>三个折叠幸存者（上下文记忆永不丢）：</b><code>userIntent</code>（意图门对用户目标与随时补充的结构化理解，追加式）、<code>humanDirectives</code>（全部 [人工介入] 累积）、<code>ontologyUnderstanding</code>（四维分治的汇总结论）。三者都写进折叠摘要，且 <code>serializeCtx</code> 全量落 <code>factory_conversations</code>——折叠不丢、API 重启也不丢。</div>
+</section>
+
+<!-- ═══════════════════════ 第 5 章 ═══════════════════════ -->
+<section class="ch" id="c5">
+  <h2>5. Agent 生成流水线<small>6 阶段 · 角色作业 · CodeAct 分级 · 验收闸</small></h2>
+  <p>右栏顶部的阶段轨（读业务→规划→设计→校验→试运行→交付）背后是这条流水线——<b>每个阶段由一个内部角色 agent 作业</b>（理解角色、规划角色、设计角色、验证角色、交付角色），任何角色遇到消化不动的子问题都可按 §4.5 派认知专家或子大脑。核心原则：<b>「跑通」= 真沙箱里生成代码真执行 + 整链事件真流转 + 用例逐个有判定</b>，缺运行证据时 finish 会被验收闸拒绝。</p>
+
+  <figure class="fig">
+  <svg viewBox="0 0 1060 620" xmlns="http://www.w3.org/2000/svg">
+    <defs><marker id="a5" markerWidth="9" markerHeight="9" refX="7.5" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#8194ad"/></marker>
+    <marker id="a5r" markerWidth="9" markerHeight="9" refX="7.5" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#c0392b"/></marker></defs>
+    <!-- Stage 1 row -->
+    <g font-size="11.5">
+      <rect x="14" y="20" width="196" height="66" rx="10" fill="#e9f0fd" stroke="#b9cdf4"/><text x="112" y="44" text-anchor="middle" font-weight="700" fill="#2f5bb7">① 读业务</text><text x="112" y="62" text-anchor="middle" fill="#5b6773">read_ontology：动作/事件/</text><text x="112" y="77" text-anchor="middle" fill="#5b6773">规则/对象 + 真工具目录</text>
+      <rect x="226" y="20" width="196" height="66" rx="10" fill="#e9f0fd" stroke="#b9cdf4"/><text x="324" y="44" text-anchor="middle" font-weight="700" fill="#2f5bb7">① ⁺ 理解门</text><text x="324" y="62" text-anchor="middle" fill="#5b6773">understand_ontology：LLM 消化</text><text x="324" y="77" text-anchor="middle" fill="#5b6773">→ 折叠也不丢的结构化理解</text>
+      <rect x="438" y="20" width="196" height="66" rx="10" fill="#fdf3e3" stroke="#ecd3a1"/><text x="536" y="44" text-anchor="middle" font-weight="700" fill="#8f5f14">② 规划</text><text x="536" y="62" text-anchor="middle" fill="#5b6773">create_plan：分解要造哪些</text><text x="536" y="77" text-anchor="middle" fill="#5b6773">agent、事件链怎么闭合</text>
+      <rect x="650" y="20" width="196" height="66" rx="10" fill="#fdf3e3" stroke="#ecd3a1"/><text x="748" y="44" text-anchor="middle" font-weight="700" fill="#8f5f14">② ⁺ 评审门</text><text x="748" y="62" text-anchor="middle" fill="#5b6773">critique_plan：独立 LLM 审</text><text x="748" y="77" text-anchor="middle" fill="#5b6773">高危 → 改方案再动工</text>
+      <rect x="862" y="20" width="184" height="66" rx="10" fill="#e6f5ec" stroke="#a9d9bd"/><text x="954" y="44" text-anchor="middle" font-weight="700" fill="#1a7a43">③ 设计（每个 agent）</text><text x="954" y="62" text-anchor="middle" fill="#5b6773">design_agent：中文提示词+</text><text x="954" y="77" text-anchor="middle" fill="#5b6773">决策逻辑（必填）+ I/O + plan[]</text>
+      <line x1="210" y1="53" x2="224" y2="53" stroke="#8194ad" stroke-width="1.8" marker-end="url(#a5)"/>
+      <line x1="422" y1="53" x2="436" y2="53" stroke="#8194ad" stroke-width="1.8" marker-end="url(#a5)"/>
+      <line x1="634" y1="53" x2="648" y2="53" stroke="#8194ad" stroke-width="1.8" marker-end="url(#a5)"/>
+      <line x1="846" y1="53" x2="860" y2="53" stroke="#8194ad" stroke-width="1.8" marker-end="url(#a5)"/>
+    </g>
+    <!-- design detail box -->
+    <rect x="14" y="112" width="1032" height="106" rx="10" fill="#fff" stroke="#dfe5ec"/>
+    <text x="30" y="136" font-size="12.5" font-weight="700" fill="#31445c">设计期的确定性「地板」（LLM 忘了也兜底）</text>
+    <g font-size="11.5" fill="#5b6773">
+      <text x="30" y="160">· 工具接地：LLM 选的工具名先消幻觉（groundToolPicks）；一个没选 → 语义排序补真工具</text>
+      <text x="30" y="180">· 规则闸动作：强制绑 <tspan font-family="monospace">ontology.fetchActionRules</tspan> —— 运行时动态抓规则，绝不写死在提示词里（防泄漏 + 防过期）</text>
+      <text x="30" y="200">· I/O schema：以事件 event_data 为权威合并 LLM 标注 · plan[] 每个副作用步强制 idempotencyKeyFrom + onError 才收</text>
+      <text x="580" y="160">· submission_criteria 编译成 fail-close 前置块</text>
+      <text x="580" y="180">· decision_logic 空 → 拒收重交（同空提示词守卫）</text>
+    </g>
+    <line x1="954" y1="86" x2="954" y2="110" stroke="#8194ad" stroke-width="1.6" marker-end="url(#a5)"/>
+    <!-- codegen row -->
+    <g font-size="11.5">
+      <rect x="14" y="244" width="330" height="80" rx="10" fill="#e6f5ec" stroke="#a9d9bd"/><text x="179" y="268" text-anchor="middle" font-weight="700" fill="#1a7a43">③ ⁺ 写码 + 分级（CodeAct）</text>
+      <text x="179" y="288" text-anchor="middle" fill="#5b6773">renderExecutableCode / codegen_agent(AI 代码)</text>
+      <text x="179" y="306" text-anchor="middle" fill="#5b6773">编译 ✓ + AST 安全 lint ✓ + 加载探针 ✓ → ⚙ CodeAct</text>
+      <rect x="360" y="244" width="330" height="80" rx="10" fill="#fdf3e3" stroke="#ecd3a1"/><text x="525" y="268" text-anchor="middle" font-weight="700" fill="#8f5f14">④ 校验</text>
+      <text x="525" y="288" text-anchor="middle" fill="#5b6773">validate_graph：事件图闭合 + 字段合同</text>
+      <text x="525" y="306" text-anchor="middle" fill="#5b6773">propose_boundary_events → 用户分类（外部/终态/断点）</text>
+      <rect x="706" y="244" width="340" height="80" rx="10" fill="#fdece8" stroke="#eec1b6"/><text x="876" y="268" text-anchor="middle" font-weight="700" fill="#a03024">⑤ 试运行（真沙箱）</text>
+      <text x="876" y="288" text-anchor="middle" fill="#5b6773">用例门（用户批准 + supply_test_data 补真值）</text>
+      <text x="876" y="306" text-anchor="middle" fill="#5b6773">注册 &lt;域&gt;-sb Inngest app · 外部入口事件真发 · 零 mock</text>
+      <line x1="179" y1="218" x2="179" y2="242" stroke="#8194ad" stroke-width="1.6" marker-end="url(#a5)"/>
+      <line x1="344" y1="284" x2="358" y2="284" stroke="#8194ad" stroke-width="1.8" marker-end="url(#a5)"/>
+      <line x1="690" y1="284" x2="704" y2="284" stroke="#8194ad" stroke-width="1.8" marker-end="url(#a5)"/>
+    </g>
+    <!-- refine loop -->
+    <rect x="360" y="360" width="330" height="88" rx="10" fill="#fff" stroke="#dfe5ec"/>
+    <text x="525" y="384" text-anchor="middle" font-size="12.5" font-weight="700" fill="#31445c">迭代环：inspect → refine → score → (revert)</text>
+    <g font-size="11.5" fill="#5b6773">
+      <text x="525" y="404" text-anchor="middle">看真实 I/O 找问题 → 定点精修（沙箱证据即作废）</text>
+      <text x="525" y="422" text-anchor="middle">四维评分变化：▲ 收 / ▼ 提示回滚到上一版快照</text>
+      <text x="525" y="440" text-anchor="middle" fill="#98a1ad">agent.created 重发 → UI 版本历史逐版可看</text>
+    </g>
+    <path d="M 876 324 L 876 404 L 692 404" stroke="#c0392b" stroke-width="1.8" marker-end="url(#a5r)" fill="none"/>
+    <text x="885" y="368" font-size="11" fill="#c0392b">没跑通</text>
+    <path d="M 358 404 L 179 404 L 179 326" stroke="#c0392b" stroke-width="1.8" marker-end="url(#a5r)" fill="none"/>
+    <text x="240" y="396" font-size="11" fill="#c0392b">改完重进沙箱</text>
+    <!-- finish -->
+    <g font-size="11.5">
+      <rect x="14" y="486" width="500" height="104" rx="10" fill="#e6f5ec" stroke="#219653" stroke-width="1.6"/>
+      <text x="264" y="510" text-anchor="middle" font-weight="700" fill="#1a7a43">⑥ 交付：finish 验收闸（缺证据 = 拒绝）</text>
+      <text x="30" y="532">□ 覆盖：本体该造的 agent 都造了　□ 执行：沙箱真跑 + code_really_ran 回执</text>
+      <text x="30" y="552">□ 闭合：事件图无未判定断点　□ 产物：草稿/代码/schema 齐全</text>
+      <text x="30" y="572" fill="#98a1ad">每项验收落 acceptance_scores 表 → 通过率可趋势化</text>
+      <rect x="546" y="486" width="500" height="104" rx="10" fill="#eef1f5" stroke="#ccd5e0"/>
+      <text x="796" y="510" text-anchor="middle" font-weight="700" fill="#44566e">草稿 → 晋升（显式、增量、可审计）</text>
+      <text x="562" y="532">drafts 落盘（data/factory-drafts/&lt;域&gt;/&lt;slug&gt;.json）→ 左栏勾选晋升</text>
+      <text x="562" y="552">promoteDrafts：合并进租户工作流（不覆盖旧 agent）→ 重注册 Inngest</text>
+      <text x="562" y="572" fill="#98a1ad">从此进入第 1 章 L3b：真实事件驱动的生产函数（智能体 tab 可管/删/改名）</text>
+      <line x1="514" y1="538" x2="544" y2="538" stroke="#219653" stroke-width="2" marker-end="url(#a5)"/>
+    </g>
+    <line x1="264" y1="448" x2="264" y2="484" stroke="#8194ad" stroke-width="1.6" marker-end="url(#a5)"/>
+    <text x="530" y="612" font-size="12" fill="#8c99aa" text-anchor="middle">图 5-1 · 生成流水线：两道 LLM 自省门 + 确定性地板 + 真沙箱 + 验收闸；红色是失败回流路径。</text>
+  </svg>
+  </figure>
+
+  <div class="callout"><b>别忘了系统 A 自己的 CodeAct：</b>流水线的每一步"造与验"本身就是代码在干活——编译、AST 安审、加载探针、事件图闭合计算、沙箱驱动，全是系统 A 的确定性执行面；LLM 只在需要判断的关节出手。这与下面讲的"产物 CodeAct"（系统 B 里 function 的执行范式）是两回事。</div>
+  <div class="callout warn"><b>CodeAct 分级为什么重要：</b>「生成了代码」≠「代码真的会跑」。只有过了编译+AST 安全 lint+加载探针的代码才标 <b>⚙ CodeAct</b> 并在沙箱里真实执行、在 <code>runs.code_ran</code> 留下回执；没过的诚实降级为 📄 声明式并标注探针原因——验收闸读的是回执，不是宣称。</div>
+
+  <h3>5.5 design_agent 的内部 ReAct 循环（内推演，把外层回环前移）</h3>
+  <p>真实轨迹里出现过 <b>8 次修订回环</b>：设计角色先交草稿，再靠外层 review→refine 反复挨打（同一批问题——规则硬编码、分支没覆盖、字段没透传——被 review_agent / review_context / review_completeness 每轮重复标记）。根因是审查发生在<b>提交之后</b>。design_agent 现在有一道<b>提交前的内部循环</b>：draft → 确定性自检（零 LLM）→ 命中硬问题就跑<b>一次</b>内部精修 → 提交改进版。</p>
+
+  <figure class="fig">
+  <svg viewBox="0 0 1060 250" xmlns="http://www.w3.org/2000/svg">
+    <defs><marker id="a55" markerWidth="9" markerHeight="9" refX="7.5" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#8194ad"/></marker>
+    <marker id="a55r" markerWidth="9" markerHeight="9" refX="7.5" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#c0392b"/></marker>
+    <marker id="a55g" markerWidth="9" markerHeight="9" refX="7.5" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#219653"/></marker></defs>
+    <g font-size="11.5">
+      <rect x="20" y="40" width="180" height="60" rx="9" fill="#e6f5ec" stroke="#a9d9bd"/><text x="110" y="64" text-anchor="middle" font-weight="700" fill="#1a7a43">① draft</text><text x="110" y="83" text-anchor="middle" fill="#5b6773">模型出 spec+decision_logic</text>
+      <rect x="240" y="40" width="220" height="60" rx="9" fill="#e9f0fd" stroke="#b9cdf4"/><text x="350" y="60" text-anchor="middle" font-weight="700" fill="#2f5bb7">② 确定性自检（零 LLM）</text><text x="350" y="78" text-anchor="middle" fill="#5b6773">分支覆盖 · 规则泄漏 · 幻觉事件</text><text x="350" y="93" text-anchor="middle" fill="#7d90b5">designSelfCheck — 纯函数可测</text>
+      <rect x="500" y="40" width="220" height="60" rx="9" fill="#fdf3e3" stroke="#ecd3a1"/><text x="610" y="60" text-anchor="middle" font-weight="700" fill="#8f5f14">③ 一次内部精修</text><text x="610" y="78" text-anchor="middle" fill="#a98b52">LLM 针对硬问题重写</text><text x="610" y="93" text-anchor="middle" fill="#a98b52">gateway-gated · env 可关</text>
+      <rect x="760" y="40" width="180" height="60" rx="9" fill="#e6f5ec" stroke="#a9d9bd"/><text x="850" y="64" text-anchor="middle" font-weight="700" fill="#1a7a43">④ commit</text><text x="850" y="83" text-anchor="middle" fill="#5b6773">改进版走 floor+沙箱</text>
+      <line x1="200" y1="70" x2="238" y2="70" stroke="#8194ad" stroke-width="1.8" marker-end="url(#a55)"/>
+      <line x1="460" y1="70" x2="498" y2="70" stroke="#c0392b" stroke-width="1.8" marker-end="url(#a55r)"/>
+      <text x="479" y="34" font-size="10" fill="#c0392b" text-anchor="middle">有硬问题</text>
+      <line x1="720" y1="70" x2="758" y2="70" stroke="#219653" stroke-width="1.8" marker-end="url(#a55g)"/>
+      <path d="M 350 100 L 350 140 L 850 140 L 850 102" stroke="#219653" stroke-width="1.6" stroke-dasharray="5 4" fill="none" marker-end="url(#a55g)"/>
+      <text x="600" y="158" font-size="10.5" fill="#219653" text-anchor="middle">自检通过 → 直接提交（多数情况，零额外开销）</text>
+      <rect x="20" y="180" width="920" height="46" rx="8" fill="#fbfcfe" stroke="#dfe5ec"/>
+      <text x="34" y="199" font-size="11" fill="#5b6773" font-weight="700">失败兜底：</text>
+      <text x="110" y="199" font-size="11" fill="#5b6773">内部精修抛错 / 无改进 / 输出太短 → 保留原稿，绝不比现在差（internalDesignRefine 返回 null）。</text>
+      <text x="34" y="216" font-size="11" fill="#5b6773" font-weight="700">LIVE 实证：</text>
+      <text x="120" y="216" font-size="11" fill="#5b6773">ProcessResume 草稿写了本体没有的 LOCK_CONFLICT / EMPTY_RESUME_CONTENT，自检抓到、内部精修当场清掉——不必等 validate_graph→review→refine。</text>
+    </g>
+    <text x="530" y="244" font-size="12" fill="#8c99aa" text-anchor="middle">图 5-2 · design 内部循环：审查前移到设计当下，把 8 次外层回环压到 2-3 次。</text>
+  </svg>
+  </figure>
+  <div class="callout good"><b>为什么"确定性自检 + 一次 LLM 精修"而不是"内部多轮 ReAct"：</b>最常打回的三类问题（分支没覆盖全、非闸口 agent 写死规则、prompt 出现本体没有的事件名）都能<b>零 LLM 确定性查出</b>；查出后一次针对性重写就够，多轮内部 ReAct 只会重复外层已有的 review→refine 而徒增开销。省下的不是判断，是"把判断写得好看"的来回。</div>
+</section>
+
+<!-- ═══════════════════════ 第 6 章 ═══════════════════════ -->
+<section class="ch" id="c6">
+  <h2>6. Sub-agent 的三类，两条交付路径<small>认知分治（工厂内部）· design_subagent（设计期固化）· ctx.spawn（运行期涌现）</small></h2>
+  <div class="callout"><b>先分清三类 sub-agent（名字相同，分属两套系统）：</b>① <b>认知分治型（系统 A 域）</b>——内部角色能力不足时派生的「工人」（如四维分治的 objects/rules/actions/events 专家），服务于推理本身，见图 4-2，<b>永不进交付物</b>；② <b>设计期固化型（系统 B 域）</b>——交付物的「零件」，父 function 拆出的可部署子 function；③ <b>运行期涌现型（系统 B 域）</b>——产物 CodeAct 执行中即席孵化的子代理。本章讲 B 域的两类；③→② 走<b>固化桥</b>（回系统 A 经 design_subagent 验证），是 A/B 之间除晋升桥外唯一的通道。</div>
+  <p>交付侧的「层层嵌套」：一个复杂父 agent 可以拆出可部署的子 agent（设计期），生成代码在运行中也可以临时孵化子代理解决子问题（运行期）——后者若被验证有价值，还能被<b>固化晋升</b>为前者。</p>
+
+  <figure class="fig">
+  <svg viewBox="0 0 1060 470" xmlns="http://www.w3.org/2000/svg">
+    <defs><marker id="a6" markerWidth="9" markerHeight="9" refX="7.5" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#8194ad"/></marker>
+    <marker id="a6g" markerWidth="9" markerHeight="9" refX="7.5" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#219653"/></marker></defs>
+    <!-- Path A -->
+    <rect x="14" y="16" width="1032" height="200" rx="12" fill="#e6f5ec" stroke="#a9d9bd"/>
+    <text x="30" y="40" font-size="13" font-weight="700" fill="#1a7a43">路径 A · 设计期固化 — design_subagent（生成系统工具）</text>
+    <g font-size="11.5" fill="#31445c">
+      <rect x="30" y="56" width="230" height="72" rx="9" fill="#fff" stroke="#a9d9bd"/>
+      <text x="145" y="78" text-anchor="middle" font-weight="700">父 agent（已 design_agent）</text>
+      <text x="145" y="96" text-anchor="middle" fill="#5b6773">如 matchResume：职责太重</text>
+      <text x="145" y="113" text-anchor="middle" fill="#5b6773">拆出「计算匹配维度」子任务</text>
+      <rect x="300" y="56" width="270" height="72" rx="9" fill="#fff" stroke="#a9d9bd"/>
+      <text x="435" y="78" text-anchor="middle" font-weight="700">子 agent 规格生成</text>
+      <text x="435" y="96" text-anchor="middle" fill="#5b6773">slug = 父-sub-任务（可部署函数）</text>
+      <text x="435" y="113" text-anchor="middle" fill="#5b6773">合成 trigger「.invoked」· 不入事件图</text>
+      <rect x="610" y="56" width="200" height="72" rx="9" fill="#fff" stroke="#a9d9bd"/>
+      <text x="710" y="78" text-anchor="middle" font-weight="700">父 plan 自动接线</text>
+      <text x="710" y="96" text-anchor="middle" fill="#5b6773">invoke 步：同步调子 agent</text>
+      <text x="710" y="113" text-anchor="middle" fill="#5b6773">幂等键 + onError(soft) 兜底</text>
+      <rect x="850" y="56" width="180" height="72" rx="9" fill="#fff" stroke="#a9d9bd"/>
+      <text x="940" y="78" text-anchor="middle" font-weight="700">一起晋升上线</text>
+      <text x="940" y="96" text-anchor="middle" fill="#5b6773">父与子都是真实</text>
+      <text x="940" y="113" text-anchor="middle" fill="#5b6773">Inngest 函数</text>
+      <line x1="260" y1="92" x2="298" y2="92" stroke="#8194ad" stroke-width="1.8" marker-end="url(#a6)"/>
+      <line x1="570" y1="92" x2="608" y2="92" stroke="#8194ad" stroke-width="1.8" marker-end="url(#a6)"/>
+      <line x1="810" y1="92" x2="848" y2="92" stroke="#8194ad" stroke-width="1.8" marker-end="url(#a6)"/>
+      <text x="30" y="158" font-size="11.5" fill="#5b6773">已在真实域落地的例子：<tspan font-family="monospace">agents-gener-match-resume-sub-compute-match-dimensions</tspan>、<tspan font-family="monospace">agents-gener-process-resume-sub-lock-candidate-ownership</tspan></text>
+      <text x="30" y="182" font-size="11.5" fill="#5b6773">决策逻辑保证：子 agent 不作者化 decision_logic 时按 invoke 契约<tspan font-weight="700">真实合成</tspan>（谁调用、成功返回什么、失败谁兜底）——UI 卡片不再有灰按钮</text>
+    </g>
+    <!-- Path B -->
+    <rect x="14" y="236" width="1032" height="196" rx="12" fill="#fdece8" stroke="#eec1b6"/>
+    <text x="30" y="260" font-size="13" font-weight="700" fill="#a03024">路径 B · 运行期涌现 — ctx.spawn（CodeAct 代码内）</text>
+    <g font-size="11.5" fill="#31445c">
+      <rect x="30" y="276" width="230" height="72" rx="9" fill="#fff" stroke="#eec1b6"/>
+      <text x="145" y="298" text-anchor="middle" font-weight="700">生成代码运行中遇子问题</text>
+      <text x="145" y="316" text-anchor="middle" fill="#5b6773">handler 调 ctx.spawn(task, input,</text>
+      <text x="145" y="333" text-anchor="middle" fill="#5b6773">{ tools: 只读子集 })</text>
+      <rect x="300" y="276" width="270" height="72" rx="9" fill="#fff" stroke="#eec1b6"/>
+      <text x="435" y="298" text-anchor="middle" font-weight="700">子代理代码即席生成 + 安审</text>
+      <text x="435" y="316" text-anchor="middle" fill="#5b6773">generateSubAgentCode → AST 危险 API lint</text>
+      <text x="435" y="333" text-anchor="middle" fill="#5b6773">不过 → 反馈重写（重试环）· 深度 ≤ 2</text>
+      <rect x="610" y="276" width="200" height="72" rx="9" fill="#fff" stroke="#eec1b6"/>
+      <text x="710" y="298" text-anchor="middle" font-weight="700">递归执行 + 冒泡</text>
+      <text x="710" y="316" text-anchor="middle" fill="#5b6773">结果同步返回父 handler</text>
+      <text x="710" y="333" text-anchor="middle" fill="#5b6773">spawnedSubAgents 上报工厂</text>
+      <rect x="850" y="276" width="180" height="72" rx="9" fill="#fff" stroke="#219653" stroke-width="1.6"/>
+      <text x="940" y="298" text-anchor="middle" font-weight="700" fill="#1a7a43">固化晋升 ↑</text>
+      <text x="940" y="316" text-anchor="middle" fill="#5b6773">design_subagent(code=…)</text>
+      <text x="940" y="333" text-anchor="middle" fill="#5b6773">过 TS+lint+探针才收</text>
+      <line x1="260" y1="312" x2="298" y2="312" stroke="#8194ad" stroke-width="1.8" marker-end="url(#a6)"/>
+      <line x1="570" y1="312" x2="608" y2="312" stroke="#8194ad" stroke-width="1.8" marker-end="url(#a6)"/>
+      <line x1="810" y1="312" x2="848" y2="312" stroke="#8194ad" stroke-width="1.8" marker-end="url(#a6)"/>
+      <path d="M 940 276 L 940 140 L 812 140 L 812 130" stroke="#219653" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#a6g)" fill="none"/>
+      <text x="30" y="378" font-size="11.5" fill="#5b6773">安全边界：子代理只拿显式工具子集（默认只读研究类）；禁危险 API（fs/net/process 直调）；深度硬顶防递归爆炸；</text>
+      <text x="30" y="398" font-size="11.5" fill="#5b6773">全部涌现事件（subagent.start/done）冒泡进父 transcript —— 后台面板把它们渲染成独立的 Sub-agent 任务卡。</text>
+    </g>
+    <text x="530" y="456" font-size="12" fill="#8c99aa" text-anchor="middle">图 6-1 · 两条路径 + 一条晋升虚线：运行期发现的好拆分，可被固化为设计期的可部署子 agent。</text>
+  </svg>
+  </figure>
+</section>
+
+<!-- ═══════════════════════ 第 7 章 ═══════════════════════ -->
+<section class="ch" id="c7">
+  <h2>7. 工具体系：两套工具、四级解析<small>packages/tools · factory_tools · MCP</small></h2>
+  <p>这是最容易混淆、也曾真实踩坑的地方（大脑试图直接调运行时工具失败后徒手写 HTML）：<b>大脑的工具</b>（怎么造 agent）与<b>运行时的工具</b>（agent 干活用什么）是两套体系，各有目录、各有解析规则，通过「设计期绑定 + generate_report 这类桥接工具」互通。</p>
+
+  <figure class="fig">
+  <svg viewBox="0 0 1060 560" xmlns="http://www.w3.org/2000/svg">
+    <defs><marker id="a7" markerWidth="9" markerHeight="9" refX="7.5" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#8194ad"/></marker></defs>
+    <!-- left: brain tools -->
+    <rect x="14" y="16" width="500" height="250" rx="12" fill="#fdf3e3" stroke="#ecd3a1"/>
+    <text x="30" y="40" font-size="13" font-weight="700" fill="#8f5f14">生成系统工具 · FACTORY_TOOLS（39）——内部角色共用的「怎么造」</text>
+    <g font-size="11.5" fill="#5c451d">
+      <text x="30" y="66">认知：read_ontology · understand_ontology · describe_*</text>
+      <text x="30" y="88">规划：create_plan · critique_plan · propose_boundary_events</text>
+      <text x="30" y="110">建造：design_agent · design_subagent · codegen_agent</text>
+      <text x="30" y="132">验证：validate_graph · sandbox_run · inspect_run · score_spec</text>
+      <text x="30" y="154">迭代：refine_agent · revert_refine · diff_spec · review_*</text>
+      <text x="30" y="176">造工具：search_tools · fetch_doc · extract_api_schema · create_tool</text>
+      <text x="30" y="198">协作：ask_user · supply_test_data · generate_report</text>
+      <text x="30" y="220">沉淀：create_skill · use_skill · analyze_failure · finish</text>
+      <text x="30" y="248" fill="#a98b52">只在 conductor 循环里可调；不注册进任何运行时</text>
+    </g>
+    <!-- right: runtime resolution -->
+    <rect x="546" y="16" width="500" height="250" rx="12" fill="#fdece8" stroke="#eec1b6"/>
+    <text x="562" y="40" font-size="13" font-weight="700" fill="#a03024">运行时工具解析（step-engine 派发顺序）—— 「用什么干活」</text>
+    <g font-size="11.5">
+      <rect x="562" y="54" width="468" height="44" rx="8" fill="#fff" stroke="#eec1b6"/><text x="576" y="72" font-weight="700" fill="#31445c">① 租户注册表 tenantRegistry.tools[name]</text><text x="576" y="89" fill="#5b6773">租户自带 TS 实现——可覆盖同名全局工具</text>
+      <rect x="562" y="104" width="468" height="44" rx="8" fill="#fff" stroke="#eec1b6"/><text x="576" y="122" font-weight="700" fill="#31445c">② 全局注册表 globalToolRegistry（15 项 + 别名）</text><text x="576" y="139" fill="#5b6773">robohire.* · fs.* · http.fetch · ontology.fetchActionRules · viz.svgChart · report.htmlToPdf …</text>
+      <rect x="562" y="154" width="468" height="44" rx="8" fill="#fff" stroke="#eec1b6"/><text x="576" y="172" font-weight="700" fill="#31445c">③ MCP 服务器工具（&lt;server&gt;.&lt;tool&gt; 折叠进租户表）</text><text x="576" y="189" fill="#5b6773">外接 MCP 生态即插即用</text>
+      <rect x="562" y="204" width="468" height="44" rx="8" fill="#fff" stroke="#eec1b6"/><text x="576" y="222" font-weight="700" fill="#31445c">④ 声明式覆盖层 buildDeclarativeOverlay（factory_tools 表）</text><text x="576" y="239" fill="#5b6773">大脑 create_tool 造的 HTTP 工具 → SSRF 守卫包装成可调描述符</text>
+      <line x1="796" y1="98" x2="796" y2="102" stroke="#8194ad" stroke-width="1.5" marker-end="url(#a7)"/>
+      <line x1="796" y1="148" x2="796" y2="152" stroke="#8194ad" stroke-width="1.5" marker-end="url(#a7)"/>
+      <line x1="796" y1="198" x2="796" y2="202" stroke="#8194ad" stroke-width="1.5" marker-end="url(#a7)"/>
+    </g>
+    <!-- bridge -->
+    <rect x="14" y="290" width="1032" height="120" rx="12" fill="#e9f0fd" stroke="#b9cdf4"/>
+    <text x="30" y="314" font-size="13" font-weight="700" fill="#2f5bb7">两套体系怎么互通</text>
+    <g font-size="11.5" fill="#2c3d5c">
+      <text x="30" y="340">· <tspan font-weight="700">设计期绑定</tspan>：design_agent 把运行时工具名写进 agent 的 tool_use[]（manifest 即信任边界——没列入就调不了），per-tenant 配置经 tool_use[].config → ctx.config</text>
+      <text x="30" y="364">· <tspan font-weight="700">造工具管线</tspan>：fetch_doc（读 API 文档）→ extract_api_schema（文档→schema）→ create_tool（落 factory_tools）→ UI 确认卡「存入工具库？」（保留/删除都回传告知大脑）</text>
+      <text x="30" y="388">· <tspan font-weight="700">桥接工具</tspan>：generate_report 是生成系统工具，但内部经 ports.report 走运行时的 reportGenerator agent 管线——大脑「知道去调用管线」而不是「自己假装是管线」</text>
+    </g>
+    <!-- context plumbing -->
+    <rect x="14" y="430" width="1032" height="96" rx="12" fill="#eef1f5" stroke="#ccd5e0"/>
+    <text x="30" y="454" font-size="13" font-weight="700" fill="#44566e">运行时工具的三条数据暗线</text>
+    <g font-size="11.5" fill="#44566e">
+      <text x="30" y="478">· <tspan font-family="monospace">ctx.event.data</tspan>：LLM 给的参数与 type:"tool" 步的入参走同一读取口（单一事实源）　· <tspan font-family="monospace">ctx.config</tspan>：manifest 注入的租户级密钥/路径</text>
+      <text x="30" y="502">· <tspan font-family="monospace">ctx.lastResult</tspan>：上一工具输出服务端直传（几 MB 的 base64 PDF 不过 LLM 之手——防转述损坏）　· 工具战绩（成功率）回流参与设计期排序</text>
+    </g>
+    <text x="530" y="548" font-size="12" fill="#8c99aa" text-anchor="middle">图 7-1 · 左：大脑造 agent 的 41 件工具；右：agent 干活的四级解析；中：两套体系的三种互通方式。</text>
+  </svg>
+  </figure>
+</section>
+
+<!-- ═══════════════════════ 第 8 章 ═══════════════════════ -->
+<section class="ch" id="c8">
+  <h2>8. Agent 之间怎么沟通<small>事件驱动 · 信封+blob · invoke · subflow · 补偿</small></h2>
+  <div class="callout"><b>本章讲的是系统 B 的通信。</b>系统 A 内部（协调者↔角色↔专家）不走事件总线——它们靠 BrainEvent 冒泡 + ctx 共享状态通信（同进程、同一条 SSE 流可见）。两套通信机制的对比见 §1.5 总表。</div>
+  <p>交付后的 agents 之间<b>不直接互调</b>——一切经 Inngest 事件总线：上游 <code>step.sendEvent</code> 发 <code>${租户}/EVENT_NAME</code>，下游函数以之为触发。这带来天然的持久性（重放恰好一次）、并发控制（按 subject 串行）与可插拔（新 agent 订阅既有事件即可加入链路）。</p>
+
+  <figure class="fig">
+  <svg viewBox="0 0 1060 520" xmlns="http://www.w3.org/2000/svg">
+    <defs><marker id="a8" markerWidth="9" markerHeight="9" refX="7.5" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#8194ad"/></marker>
+    <marker id="a8v" markerWidth="9" markerHeight="9" refX="7.5" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#7b61c4"/></marker>
+    <marker id="a8r" markerWidth="9" markerHeight="9" refX="7.5" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#c0392b"/></marker></defs>
+    <!-- bus -->
+    <rect x="14" y="210" width="1032" height="56" rx="10" fill="#ece7f8" stroke="#c9b8e8"/>
+    <text x="530" y="234" text-anchor="middle" font-size="13" font-weight="700" fill="#5c44a8">Inngest 事件总线 · ${tenant}/EVENT · 按 subject 并发 1 · 重试 3 · cancelOn run.cancel</text>
+    <text x="530" y="254" text-anchor="middle" font-size="11" fill="#8a7cae">事件同时镜像到 event_store 表（causationId / correlationId 因果链可查）与 NDJSON 账本</text>
+    <!-- agents -->
+    <g font-size="11.5">
+      <rect x="40" y="60" width="200" height="96" rx="10" fill="#fff" stroke="#dfe5ec"/>
+      <text x="140" y="84" text-anchor="middle" font-weight="700" fill="#31445c">processResume</text>
+      <text x="140" y="104" text-anchor="middle" fill="#5b6773">plan[]: 逐步 step.run 包裹</text>
+      <text x="140" y="121" text-anchor="middle" fill="#5b6773">（每步可重放 · 幂等键）</text>
+      <text x="140" y="141" text-anchor="middle" fill="#5b6773">CodeAct handler 真执行</text>
+      <rect x="430" y="60" width="200" height="96" rx="10" fill="#fff" stroke="#dfe5ec"/>
+      <text x="530" y="84" text-anchor="middle" font-weight="700" fill="#31445c">ruleCheckForMatchResume</text>
+      <text x="530" y="104" text-anchor="middle" fill="#5b6773">运行时 fetchActionRules</text>
+      <text x="530" y="121" text-anchor="middle" fill="#5b6773">动态抓规则 fail-close</text>
+      <text x="530" y="141" text-anchor="middle" fill="#5b6773">emit PASSED / FAILED</text>
+      <rect x="820" y="60" width="200" height="96" rx="10" fill="#fff" stroke="#dfe5ec"/>
+      <text x="920" y="84" text-anchor="middle" font-weight="700" fill="#31445c">matchResume</text>
+      <text x="920" y="104" text-anchor="middle" fill="#5b6773">plan invoke 步 → 同步调</text>
+      <text x="920" y="121" text-anchor="middle" fill="#5b6773">-sub-compute-match-dimensions</text>
+      <text x="920" y="141" text-anchor="middle" fill="#5b6773">（子 agent，见第 6 章）</text>
+      <line x1="140" y1="156" x2="140" y2="208" stroke="#8194ad" stroke-width="1.8" marker-end="url(#a8)"/>
+      <text x="152" y="186" font-size="10.5" fill="#5b6773">step.sendEvent RESUME_PROCESSED</text>
+      <line x1="530" y1="208" x2="530" y2="158" stroke="#8194ad" stroke-width="1.8" marker-end="url(#a8)"/>
+      <line x1="920" y1="208" x2="920" y2="158" stroke="#8194ad" stroke-width="1.8" marker-end="url(#a8)"/>
+      <text x="668" y="196" font-size="10.5" fill="#5b6773">MATCH_RULE_CHECK_PASSED 触发 ↑</text>
+    </g>
+    <!-- payload plumbing -->
+    <rect x="14" y="300" width="500" height="196" rx="12" fill="#e9f0fd" stroke="#b9cdf4"/>
+    <text x="30" y="324" font-size="13" font-weight="700" fill="#2f5bb7">载荷层：信封 + 内容寻址 blob</text>
+    <g font-size="11.5" fill="#2c3d5c">
+      <text x="30" y="350">· 跨 agent 的 carry-forward 信封：上游关键产物结构化随事件走，</text>
+      <text x="30" y="368">　下游不靠 LLM 转述（防丢失/防改写）</text>
+      <text x="30" y="392">· 大载荷（解析后的简历全文等）→ 内容寻址 blob 落盘，</text>
+      <text x="30" y="410">　事件里只携 hash 引用；执行前 rehydrate 还原</text>
+      <text x="30" y="434">· 效果：事件轻、上下文不爆、双跳链路载荷零损（皇冠测试）</text>
+      <text x="30" y="462" fill="#7d90b5">packages/runtime/register.ts（offloader/rehydratePayload）</text>
+    </g>
+    <!-- failure semantics -->
+    <rect x="546" y="300" width="500" height="196" rx="12" fill="#fdece8" stroke="#eec1b6"/>
+    <text x="562" y="324" font-size="13" font-weight="700" fill="#a03024">失败语义：补偿 · 兜底 · 扇出</text>
+    <g font-size="11.5" fill="#5c2b23">
+      <text x="562" y="350">· 硬失败 → 自动发补偿事件（PAYMENT_INITIATED →</text>
+      <text x="562" y="368">　PAYMENT_CANCELLED 模式）：下游可对冲副作用</text>
+      <text x="562" y="392">· invoke 子 agent 失败 → 父步 onError(soft) 用 defaultResult</text>
+      <text x="562" y="410">　兜底，不阻断父链路</text>
+      <text x="562" y="434">· type:"subflow" 步 → 异步扇出子事件（并行分支不占父函数）</text>
+      <text x="562" y="458">· HITL 停机点 → tasks 行 + step.waitForEvent(task.resolved)</text>
+      <text x="562" y="480" fill="#b57f72">人审完成才继续（跨小时/天也安全——Inngest 持久等待）</text>
+    </g>
+    <text x="530" y="514" font-size="12" fill="#8c99aa" text-anchor="middle">图 8-1 · 通信三层：事件总线（中）· 载荷信封与 blob（左下）· 失败/人审语义（右下）。示例即 Agents-generation 真实链路。</text>
+  </svg>
+  </figure>
+</section>
+
+<!-- ═══════════════════════ 第 9 章 ═══════════════════════ -->
+<section class="ch" id="c9">
+  <h2>9. ask_user 与人机协作<small>三门一邮箱 · 唯一动作面 · 双向回传</small></h2>
+  <p>HITL 也是两面的：本章主体是<b>系统 A 的协作面</b>（生成过程中的问答与介入），章末是<b>系统 B 的人审面</b>（生产链路的 tasks 停机点）。协作设计的铁律：<b>聊天流是唯一的问答与介入通道</b>；右栏与后台面板只做「看见」与「引导回聊天区」。大脑的提问是结构化的（选项 + 推荐 + 上下文），用户的回答经标签路由精确回到提问的那扇门。</p>
+
+  <figure class="fig">
+  <svg viewBox="0 0 1060 540" xmlns="http://www.w3.org/2000/svg">
+    <defs><marker id="a9" markerWidth="9" markerHeight="9" refX="7.5" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#8194ad"/></marker>
+    <marker id="a9g" markerWidth="9" markerHeight="9" refX="7.5" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#219653"/></marker></defs>
+    <!-- brain side -->
+    <rect x="14" y="16" width="500" height="240" rx="12" fill="#fdf3e3" stroke="#ecd3a1"/>
+    <text x="30" y="40" font-size="13" font-weight="700" fill="#8f5f14">大脑侧：四类停车门（parked gates）</text>
+    <g font-size="11.5" fill="#5c451d">
+      <rect x="30" y="54" width="228" height="60" rx="8" fill="#fff" stroke="#ecd3a1"/><text x="144" y="76" text-anchor="middle" font-weight="700">ask_user（澄清门）</text><text x="144" y="94" text-anchor="middle" fill="#a98b52">问题+2~4选项+★推荐+上下文</text>
+      <rect x="270" y="54" width="228" height="60" rx="8" fill="#fff" stroke="#ecd3a1"/><text x="384" y="76" text-anchor="middle" font-weight="700">测试用例批准门</text><text x="384" y="94" text-anchor="middle" fill="#a98b52">执行 / 带要求重新生成</text>
+      <rect x="30" y="124" width="228" height="60" rx="8" fill="#fff" stroke="#ecd3a1"/><text x="144" y="146" text-anchor="middle" font-weight="700">边界事件分类门</text><text x="144" y="164" text-anchor="middle" fill="#a98b52">外部交接 / 终态 / 真断点</text>
+      <rect x="270" y="124" width="228" height="60" rx="8" fill="#fff" stroke="#ecd3a1"/><text x="384" y="146" text-anchor="middle" font-weight="700">supply_test_data 门</text><text x="384" y="164" text-anchor="middle" fill="#a98b52">真实联系方式等字段补值</text>
+      <text x="30" y="212">停车时每回合轮询邮箱；超 ~3 分钟自动采用推荐项继续；</text>
+      <text x="30" y="232">工具确认卡的「保留/删除」也会 inject 回传——大脑知道你的决定。</text>
+    </g>
+    <!-- mailbox -->
+    <rect x="546" y="76" width="220" height="120" rx="12" fill="#ece7f8" stroke="#c9b8e8"/>
+    <text x="656" y="102" text-anchor="middle" font-size="13" font-weight="700" fill="#5c44a8">HITL 邮箱</text>
+    <text x="656" y="124" text-anchor="middle" font-size="11.5" fill="#5c44a8">租户标签防跨租户窥探</text>
+    <text x="656" y="142" text-anchor="middle" font-size="11.5" fill="#5c44a8">每会话 200 条上限</text>
+    <text x="656" y="160" text-anchor="middle" font-size="11.5" fill="#5c44a8">peek 供 UI 显示待读数</text>
+    <text x="656" y="182" text-anchor="middle" font-size="11" fill="#8a7cae">mailbox.ts（进程内，单机契约）</text>
+    <line x1="514" y1="136" x2="544" y2="136" stroke="#8194ad" stroke-width="1.8" marker-end="url(#a9)"/>
+    <!-- tag routing -->
+    <rect x="798" y="16" width="248" height="240" rx="12" fill="#e6f5ec" stroke="#a9d9bd"/>
+    <text x="922" y="40" text-anchor="middle" font-size="13" font-weight="700" fill="#1a7a43">标签路由（防吃错回答）</text>
+    <g font-size="11.5" fill="#274736">
+      <text x="812" y="66">[澄清回答] → 澄清门</text>
+      <text x="812" y="90">[测试用例决策] → 批准门</text>
+      <text x="812" y="114">[边界事件决策] → 分类门</text>
+      <text x="812" y="138">[人工介入]（无标签）→ 主循环</text>
+      <text x="812" y="162" fill="#6f9c82">投错门的消息重新排队</text>
+      <text x="812" y="180" fill="#6f9c82">（requeue），绝不被贪婪消费</text>
+      <text x="812" y="210" fill="#6f9c82">「停止/stop」= 硬停机指令，</text>
+      <text x="812" y="228" fill="#6f9c82">任何门都立即中断</text>
+    </g>
+    <line x1="766" y1="136" x2="796" y2="136" stroke="#8194ad" stroke-width="1.8" marker-end="url(#a9)"/>
+    <!-- UI side -->
+    <rect x="14" y="290" width="1032" height="186" rx="12" fill="#e9f0fd" stroke="#b9cdf4"/>
+    <text x="30" y="314" font-size="13" font-weight="700" fill="#2f5bb7">用户侧：一个动作面 + 两处信号</text>
+    <g font-size="11.5" fill="#2c3d5c">
+      <rect x="30" y="330" width="320" height="128" rx="9" fill="#fff" stroke="#b9cdf4"/>
+      <text x="190" y="352" text-anchor="middle" font-weight="700">InteractionDock（聊天区置顶）</text>
+      <text x="190" y="374" text-anchor="middle" fill="#5b6773">唯一可作答的地方：选项按钮化、</text>
+      <text x="190" y="392" text-anchor="middle" fill="#5b6773">两步确认（选中→确认）防误触；</text>
+      <text x="190" y="410" text-anchor="middle" fill="#5b6773">transcript 里的历史卡片是只读的</text>
+      <text x="190" y="432" text-anchor="middle" fill="#7d90b5">（同一问题绝不两处可答）</text>
+      <rect x="370" y="330" width="320" height="128" rx="9" fill="#fff" stroke="#b9cdf4"/>
+      <text x="530" y="352" text-anchor="middle" font-weight="700">聊天框 = 随时介入</text>
+      <text x="530" y="374" text-anchor="middle" fill="#5b6773">运行中任意打字 → [人工介入]</text>
+      <text x="530" y="392" text-anchor="middle" fill="#5b6773">下一回合被大脑读到（权威转向）；</text>
+      <text x="530" y="410" text-anchor="middle" fill="#5b6773">空闲时发送 = 续会话带上补充</text>
+      <text x="530" y="432" text-anchor="middle" fill="#7d90b5">「已发送/已记下」诚实反馈</text>
+      <rect x="710" y="330" width="320" height="128" rx="9" fill="#fff" stroke="#b9cdf4"/>
+      <text x="870" y="352" text-anchor="middle" font-weight="700">信号（不抢答）</text>
+      <text x="870" y="374" text-anchor="middle" fill="#5b6773">右栏：「等你决定：xxx（在聊天区回答）」</text>
+      <text x="870" y="392" text-anchor="middle" fill="#5b6773">后台面板：琥珀提示 + N 条介入待读</text>
+      <text x="870" y="410" text-anchor="middle" fill="#5b6773">页头按钮亮点：● 后台任务</text>
+      <text x="870" y="432" text-anchor="middle" fill="#7d90b5">所有信号都指回聊天区</text>
+    </g>
+    <line x1="190" y1="290" x2="620" y2="200 " stroke="#219653" stroke-width="1.6" stroke-dasharray="5 4" marker-end="url(#a9g)"/>
+    <text x="330" y="270" font-size="10.5" fill="#219653">POST /inject（带标签）</text>
+    <text x="530" y="512" font-size="12" fill="#8c99aa" text-anchor="middle">图 9-1 · 协作闭环：大脑结构化提问（左上）→ 邮箱（中）→ 标签路由回门（右上）；用户只在聊天区作答（下）。</text>
+  </svg>
+  </figure>
+
+  <div class="callout good"><b>运行时的 HITL 是另一条线：</b>已上线 agent 遇到需要人审的动作时，创建 <code>tasks</code> 行并 <code>step.waitForEvent("task.resolved")</code> 持久等待——「人工任务」页处理完毕后链路自动续走，等待跨小时/天都安全。</div>
+</section>
+
+<!-- ═══════════════════════ 第 10 章 ═══════════════════════ -->
+<section class="ch" id="c10">
+  <h2>10. 报告管线：确定性分析 + LLM 叙事<small>generate_report · report-jobs · reportGenerator</small></h2>
+  <p>报告管线是<b>系统 A 的旁路产物线</b>——由 A 的 generate_report 触发、复用共享基座的 artifacts/CSP 设施与 B 面的 reportGenerator agent。血泪换来的设计哲学：<b>判断下沉到确定性计算层，LLM 只做业务解读</b>。事件分类、断链候选、并发扇出、规则全量聚类全部由代码算好并以自描述中文喂给模型；模型受「数据忠实性契约」约束（名词/编号/数字必须逐字来自数据）；方法论附注由服务端确定性追加，不依赖模型自觉。</p>
+
+  <figure class="fig">
+  <svg viewBox="0 0 1060 430" xmlns="http://www.w3.org/2000/svg">
+    <defs><marker id="a10" markerWidth="9" markerHeight="9" refX="7.5" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#8194ad"/></marker></defs>
+    <g font-size="11.5">
+      <rect x="14" y="30" width="150" height="84" rx="10" fill="#fdf3e3" stroke="#ecd3a1"/>
+      <text x="89" y="56" text-anchor="middle" font-weight="700" fill="#8f5f14">入口 ×2</text>
+      <text x="89" y="76" text-anchor="middle" fill="#5c451d">聊天：generate_report</text>
+      <text x="89" y="94" text-anchor="middle" fill="#5c451d">面板：➕ 报告按钮</text>
+      <rect x="196" y="30" width="170" height="84" rx="10" fill="#e6f5ec" stroke="#a9d9bd"/>
+      <text x="281" y="52" text-anchor="middle" font-weight="700" fill="#1a7a43">report-jobs</text>
+      <text x="281" y="72" text-anchor="middle" fill="#274736">阶段：读本体→图表→</text>
+      <text x="281" y="88" text-anchor="middle" fill="#274736">撰写→打印 PDF</text>
+      <text x="281" y="106" text-anchor="middle" fill="#6f9c82">sidecar 落盘·重启可恢复</text>
+      <rect x="398" y="30" width="200" height="84" rx="10" fill="#e9f0fd" stroke="#b9cdf4"/>
+      <text x="498" y="52" text-anchor="middle" font-weight="700" fill="#2f5bb7">确定性分析层</text>
+      <text x="498" y="72" text-anchor="middle" fill="#2c3d5c">事件自描述分类·断链桥候选</text>
+      <text x="498" y="88" text-anchor="middle" fill="#2c3d5c">并发扇出·规则全量聚类</text>
+      <text x="498" y="106" text-anchor="middle" fill="#7d90b5">+ 未建模阶段洞察·诚实标注</text>
+      <rect x="630" y="30" width="190" height="84" rx="10" fill="#e9f0fd" stroke="#b9cdf4"/>
+      <text x="725" y="52" text-anchor="middle" font-weight="700" fill="#2f5bb7">确定性图表层</text>
+      <text x="725" y="72" text-anchor="middle" fill="#2c3d5c">viz.renderSvgChart</text>
+      <text x="725" y="88" text-anchor="middle" fill="#2c3d5c">每入口一条链路图（∥并发）</text>
+      <text x="725" y="106" text-anchor="middle" fill="#7d90b5">几何由代码算，模型零手绘</text>
+      <rect x="852" y="30" width="194" height="84" rx="10" fill="#fdece8" stroke="#eec1b6"/>
+      <text x="949" y="52" text-anchor="middle" font-weight="700" fill="#a03024">reportGenerator agent</text>
+      <text x="949" y="72" text-anchor="middle" fill="#5c2b23">数据忠实性契约 ×5</text>
+      <text x="949" y="88" text-anchor="middle" fill="#5c2b23">{{CHART:id}} 占位引用</text>
+      <text x="949" y="106" text-anchor="middle" fill="#b57f72">只叙事，不再自算图谱</text>
+      <line x1="164" y1="72" x2="194" y2="72" stroke="#8194ad" stroke-width="1.8" marker-end="url(#a10)"/>
+      <line x1="366" y1="72" x2="396" y2="72" stroke="#8194ad" stroke-width="1.8" marker-end="url(#a10)"/>
+      <line x1="598" y1="72" x2="628" y2="72" stroke="#8194ad" stroke-width="1.8" marker-end="url(#a10)"/>
+      <line x1="820" y1="72" x2="850" y2="72" stroke="#8194ad" stroke-width="1.8" marker-end="url(#a10)"/>
+      <!-- output row -->
+      <rect x="196" y="170" width="290" height="88" rx="10" fill="#fff" stroke="#dfe5ec"/>
+      <text x="341" y="194" text-anchor="middle" font-weight="700" fill="#31445c">后处理（服务端确定性）</text>
+      <text x="341" y="214" text-anchor="middle" fill="#5b6773">substituteCharts（函数替换防 $&amp; 损坏）</text>
+      <text x="341" y="232" text-anchor="middle" fill="#5b6773">+「数据与方法」附注（采样/关联/来源）</text>
+      <text x="341" y="250" text-anchor="middle" fill="#98a1ad">占位符绝不泄漏到成品</text>
+      <rect x="518" y="170" width="250" height="88" rx="10" fill="#fff" stroke="#dfe5ec"/>
+      <text x="643" y="194" text-anchor="middle" font-weight="700" fill="#31445c">产物 artifacts</text>
+      <text x="643" y="214" text-anchor="middle" fill="#5b6773">HTML：CSP sandbox 无脚本渲染</text>
+      <text x="643" y="232" text-anchor="middle" fill="#5b6773">PDF：断网 Chrome 打印</text>
+      <text x="643" y="250" text-anchor="middle" fill="#98a1ad">/v1/artifacts/:id（租户校验）</text>
+      <rect x="800" y="170" width="246" height="88" rx="10" fill="#fff" stroke="#dfe5ec"/>
+      <text x="923" y="194" text-anchor="middle" font-weight="700" fill="#31445c">呈现</text>
+      <text x="923" y="214" text-anchor="middle" fill="#5b6773">后台面板：实时阶段 + 下载按钮</text>
+      <text x="923" y="232" text-anchor="middle" fill="#5b6773">聊天流：⏳ 进度 + 引导去下载</text>
+      <text x="923" y="250" text-anchor="middle" fill="#98a1ad">（fetch+blob 下载带租户头）</text>
+      <line x1="949" y1="114" x2="500" y2="168" stroke="#8194ad" stroke-width="1.6" marker-end="url(#a10)"/>
+      <line x1="486" y1="214" x2="516" y2="214" stroke="#8194ad" stroke-width="1.8" marker-end="url(#a10)"/>
+      <line x1="768" y1="214" x2="798" y2="214" stroke="#8194ad" stroke-width="1.8" marker-end="url(#a10)"/>
+    </g>
+    <rect x="14" y="290" width="1032" height="96" rx="10" fill="#f0f9f3" stroke="#bfe3cc"/>
+    <text x="30" y="314" font-size="12.5" font-weight="700" fill="#1a7a43">程序化事实核验（每次整改后跑）</text>
+    <text x="30" y="338" font-size="11.5" fill="#274736">正文事件名 ⊆ 本体事件集 · 编造词金丝雀（如「种子账号」）· 真断点必须被深挖 · 类别不得张冠李戴 · 并发不得说成串行 ·</text>
+    <text x="30" y="358" font-size="11.5" fill="#274736">启发式关联/采样必须披露 · 引用规则编号逐一回查本体 —— 9 项全过才算交付。</text>
+    <text x="30" y="378" font-size="11" fill="#6f9c82">「模型省下来的不是判断的工作，是把判断写得好看的工作。」</text>
+    <text x="530" y="416" font-size="12" fill="#8c99aa" text-anchor="middle">图 10-1 · 报告管线：五段流水 + 服务端后处理 + 程序化核验闭环。</text>
+  </svg>
+  </figure>
+</section>
+
+<!-- ═══════════════════════ 第 11 章 ═══════════════════════ -->
+<section class="ch" id="c11">
+  <h2>11. UI 信息架构：三层各司其职<small>聊天流 · 右栏 · 后台面板</small></h2>
+  <p>三个面各回答一个问题、绝不重复：聊天流答「<b>现在对话到哪了、我该说什么</b>」；右栏答「<b>这次运行造出了什么、质量如何</b>」；后台面板答「<b>后台都在发生什么</b>」。</p>
+
+  <figure class="fig">
+  <svg viewBox="0 0 1060 440" xmlns="http://www.w3.org/2000/svg">
+    <g font-size="11.5">
+      <!-- left rail -->
+      <rect x="14" y="20" width="150" height="360" rx="10" fill="#eef1f5" stroke="#ccd5e0"/>
+      <text x="89" y="44" text-anchor="middle" font-weight="700" fill="#44566e">左栏（可收起）</text>
+      <text x="89" y="70" text-anchor="middle" fill="#5b6773">业务域切换</text>
+      <text x="89" y="92" text-anchor="middle" fill="#5b6773">📦 本地本体</text>
+      <text x="89" y="110" text-anchor="middle" fill="#8c99aa">上传/管理弹窗</text>
+      <text x="89" y="136" text-anchor="middle" fill="#5b6773">历史运行+回收站</text>
+      <text x="89" y="162" text-anchor="middle" fill="#5b6773">草稿（勾选晋升</text>
+      <text x="89" y="180" text-anchor="middle" fill="#5b6773">/ 🗑 删除）</text>
+      <text x="89" y="206" text-anchor="middle" fill="#5b6773">运行健康 5 项</text>
+      <!-- center -->
+      <rect x="180" y="20" width="430" height="360" rx="10" fill="#e9f0fd" stroke="#b9cdf4"/>
+      <text x="395" y="44" text-anchor="middle" font-weight="700" fill="#2f5bb7">聊天流 = 唯一问答与介入通道</text>
+      <text x="395" y="70" text-anchor="middle" fill="#2c3d5c">思考可折叠（思考N·操作M 分组）· 同文去重</text>
+      <text x="395" y="92" text-anchor="middle" fill="#2c3d5c">31 种事件全保真渲染 + 筛选条</text>
+      <rect x="210" y="112" width="370" height="52" rx="8" fill="#fff" stroke="#b9cdf4"/>
+      <text x="395" y="134" text-anchor="middle" fill="#2f5bb7" font-weight="700">InteractionDock（置顶动作面）</text>
+      <text x="395" y="152" text-anchor="middle" fill="#7d90b5">澄清/用例/边界 唯一可作答处 · 两步确认</text>
+      <rect x="210" y="176" width="370" height="46" rx="8" fill="#fff" stroke="#b9cdf4"/>
+      <text x="395" y="196" text-anchor="middle" fill="#2f5bb7" font-weight="700">工作指示器</text>
+      <text x="395" y="213" text-anchor="middle" fill="#7d90b5">●●● 思考中… / 调用 sandbox_run… / 生成报告…</text>
+      <rect x="210" y="234" width="370" height="52" rx="8" fill="#fff" stroke="#b9cdf4"/>
+      <text x="395" y="256" text-anchor="middle" fill="#2f5bb7" font-weight="700">composer</text>
+      <text x="395" y="274" text-anchor="middle" fill="#7d90b5">运行中打字=介入 · 📎 只收工具/参考文档 · 「停止」硬停</text>
+      <!-- right pane -->
+      <rect x="626" y="20" width="230" height="360" rx="10" fill="#e6f5ec" stroke="#a9d9bd"/>
+      <text x="741" y="44" text-anchor="middle" font-weight="700" fill="#1a7a43">右栏（可收起 · 每tab可全屏）</text>
+      <text x="741" y="70" text-anchor="middle" fill="#274736">阶段轨（6 阶段）+ 等你决定提示</text>
+      <text x="741" y="96" text-anchor="middle" fill="#274736">智能体：卡片/事件图/检查器</text>
+      <text x="741" y="114" text-anchor="middle" fill="#6f9c82">（⚙CodeAct 徽章·版本史·重想）</text>
+      <text x="741" y="140" text-anchor="middle" fill="#274736">大脑：决策流 / 活动日志</text>
+      <text x="741" y="158" text-anchor="middle" fill="#6f9c82">（模型徽章·输入/输出）</text>
+      <text x="741" y="184" text-anchor="middle" fill="#274736">测试：用例 + 沙箱真实 I/O</text>
+      <text x="741" y="210" text-anchor="middle" fill="#274736">总结：结果 + AI 复盘</text>
+      <!-- bg panel -->
+      <rect x="872" y="20" width="174" height="360" rx="10" fill="#fdf3e3" stroke="#ecd3a1"/>
+      <text x="959" y="44" text-anchor="middle" font-weight="700" fill="#8f5f14">后台面板（浮出）</text>
+      <text x="959" y="70" text-anchor="middle" fill="#5c451d">状态过滤 + Clear</text>
+      <text x="959" y="96" text-anchor="middle" fill="#5c451d">本会话任务分解：</text>
+      <text x="959" y="114" text-anchor="middle" fill="#a98b52">🧠 Harness</text>
+      <text x="959" y="132" text-anchor="middle" fill="#a98b52">🤖 Agent ×N</text>
+      <text x="959" y="150" text-anchor="middle" fill="#a98b52">🧩 Sub-agent</text>
+      <text x="959" y="168" text-anchor="middle" fill="#a98b52">🔧 Tool（含确认卡）</text>
+      <text x="959" y="186" text-anchor="middle" fill="#a98b52">📦 Sandbox</text>
+      <text x="959" y="210" text-anchor="middle" fill="#5c451d">每条 View transcript</text>
+      <text x="959" y="234" text-anchor="middle" fill="#5c451d">跨会话：报告任务</text>
+      <text x="959" y="252" text-anchor="middle" fill="#5c451d">（实时阶段+下载）</text>
+      <text x="959" y="270" text-anchor="middle" fill="#5c451d">+ 可重连的其它运行</text>
+      <text x="959" y="298" text-anchor="middle" fill="#a98b52">协作信号均指回聊天区</text>
+    </g>
+    <text x="530" y="418" font-size="12" fill="#8c99aa" text-anchor="middle">图 11-1 · 四个面板一屏协作：全部是同一条 SSE 事件流的纯投影，历史回放与实时渲染同构。</text>
+  </svg>
+  </figure>
+</section>
+
+<!-- ═══════════════════════ 第 12 章 ═══════════════════════ -->
+<section class="ch" id="c12">
+  <h2>12. 数据层与可观测性<small>33 张表 · data/ 文件布局 · 遥测</small></h2>
+  <div class="grid2">
+    <div class="kv"><b>身份与治理</b><br>tenants · users · sessions · memberships · roles/permissions · audit_log —— 每张业务表带 tenant_id，<code>tenantScope()</code> 统一谓词。</div>
+    <div class="kv"><b>定义（是什么）</b><br>workflows · workflow_versions · agents · agent_versions · deployments · event_types · event_listeners —— 智能体 CRUD（改名 PATCH title / 删除 DELETE，带运行历史时软下线保审计，<code>?force=1</code> 才连历史清）。</div>
+    <div class="kv"><b>运行时血液（发生了什么）</b><br>runs（含 code_ran 回执）· steps · events · tasks · artifacts —— runs.agent_id RESTRICT 外键：历史不可被静默抹掉。</div>
+    <div class="kv"><b>工厂记忆</b><br>factory_runs（全量 transcript）· factory_conversations（对话+ctx 快照）· factory_reflections · factory_skills · factory_tools · tool_stats。</div>
+    <div class="kv"><b>可观测性三件套</b><br>llm_calls（每次模型调用：路由/时延/token/降级）· event_store（因果链 causationId）· acceptance_scores（验收逐项趋势）。</div>
+    <div class="kv"><b>data/ 文件布局</b><br>logs/&lt;租户&gt;/runs/*.log（NDJSON，SSE 可追）· factory-drafts/&lt;域&gt;/*.json · factory-ontologies/&lt;租户&gt;/*.json · reports/&lt;租户&gt;/*.html|pdf + _jobs/*.json（任务落盘）。</div>
+  </div>
+  <div class="callout"><b>一条运行的完整可追溯链：</b>事件（events + NDJSON 账本）→ 触发 run（runs 行 + 文件日志 + SSE）→ 每步 steps（输入/输出 sidecar）→ LLM 调用（llm_calls）→ 产物（artifacts）→ 跨 agent 因果（event_store.causationId）→ 验收（acceptance_scores）。任何一个「为什么」都有表可查。</div>
+</section>
+
+<!-- ═══════════════════════ 附录 ═══════════════════════ -->
+<section class="ch" id="c13">
+  <h2>附录 A. 关键文件地图</h2>
+  <table>
+    <tr><th>子系统</th><th>关键文件</th></tr>
+    <tr><td>Harness 主循环</td><td><code>packages/agent-factory/src/conductor.ts</code>（回合/门/折叠/熔断）· <code>brain-types.ts</code>（31 种事件）· <code>stream-gateway.ts</code>（模型路由+遥测）</td></tr>
+    <tr><td>生成系统工具</td><td><code>packages/agent-factory/src/tools.ts</code>（41 工具：design_agent / capability_resolve / analyze_with_code / create_tool / generate_report…）</td></tr>
+    <tr><td>离体运行</td><td><code>apps/api/src/services/agent-factory/run-registry.ts</code> · 路由 <code>apps/api/src/routes/v1/agent-factory.ts</code>（stream/inject/stop/background/report/drafts…）</td></tr>
+    <tr><td>端口组合根</td><td><code>apps/api/src/services/agent-factory/index.ts</code>（makeFactoryPorts：本体三级源/沙箱三模式/存储/报告）</td></tr>
+    <tr><td>代码执行</td><td><code>packages/runtime/src/codeact.ts</code>（真执行 + ctx.spawn）· <code>packages/agent-factory/src/code-lint.ts</code>（AST 安审）</td></tr>
+    <tr><td>运行时引擎</td><td><code>packages/runtime/src/register.ts</code>（Inngest 函数化/信封/blob/补偿/subflow）· <code>step-engine.ts</code>（工具循环/四级解析）</td></tr>
+    <tr><td>工具体系</td><td><code>packages/tools/src/registry.ts</code>（全局 15 项）· <code>packages/tools/src/declarative/http-tool.ts</code>（SSRF 守卫）· <code>apps/api/.../declarative-tool.ts</code>（库管理）</td></tr>
+    <tr><td>报告管线</td><td><code>apps/api/src/services/agent-factory/report-jobs.ts</code>（确定性分析）· <code>packages/agents/src/system/report-agent.ts</code>（忠实性契约）· <code>packages/tools/src/viz|report</code></td></tr>
+    <tr><td>前端工厂</td><td><code>apps/web/.../factory/page.tsx</code> · <code>model.ts</code>（事件→块投影）· <code>interaction-dock.tsx</code> · <code>background-panel.tsx</code> · <code>workers.ts</code> · <code>ontology-manager.tsx</code></td></tr>
+    <tr><td>数据层</td><td><code>packages/db/src/schema.ts</code>（33 表）· <code>apps/api/src/services/agent-factory/mailbox.ts</code>（HITL 邮箱）</td></tr>
+  </table>
+  <p style="color:var(--ink3);font-size:12.5px">姊妹篇：<code>docs/agent-factory-technical-book.html</code>（工厂大脑专著）· <code>docs/agent-factory-architecture-audit.html</code>（八维审计）· <code>docs/design/factory-ops-sidebar-and-report-agent.md</code>（本轮设计史）。</p>
+</section>
+
+<!-- ═══════════════════════ 附录 B ═══════════════════════ -->
+<section class="ch" id="c14">
+  <h2>附录 B. 框架 → 现状差距与改进路线<small>按 §1.5 总纲逐项对照</small></h2>
+  <p>大框架确立后，对照代码现状的诚实盘点——这是「按大框架改进工厂」的行动清单，按优先级排序：</p>
+  <table>
+    <tr><th>编号</th><th>差距</th><th>现状</th><th>改进</th><th>落点</th><th>优先级</th></tr>
+    <tr><td><b>G1</b></td><td>能力解析门（支柱④「选型优先于制造」缺 agents/SKILLS 面）</td><td>工具面已有（语义排序+沙箱战绩）；但设计前<b>看不见舰队</b>——已有 functions/草稿/技能没有显式选型步，每次从零造</td><td>新工具 <code>capability_resolve</code>：understand 之后、create_plan 之前，对每个动作输出「复用 / 组合 / 新造(tool|sub-agent|skill|agent 判据)」决策表，结论恒存</td><td>ports.fleet 新端口 + tools.ts + 折叠摘要</td><td><span class="badge b-green">✅ 已完成</span>确定性三面解析 + 5 契约测试 + 真实链路证明（5/6 复用）</td></tr>
+    <tr><td><b>G2</b></td><td>回流飞轮下半环（B→A 生产回流）</td><td>沙箱域战绩已回流（tool_stats）</td><td>fleet.list() 附带近 14 天生产战绩（prodRuns/prodFailRate，capability_resolve 内联展示 ⚠ 高失败）；反复翻车 agent 当日落一条反思（幂等标记去重）</td><td>ports.FleetCatalog + index.ts 聚合</td><td><span class="badge b-green">✅ 已完成</span>活体验证：14 舰队 7 个带真实战绩</td></tr>
+    <tr><td><b>G3</b></td><td>角色分治推广（不止理解角色）</td><td>understand 已四维分治</td><td>critique_plan 三视角并行（链路完整/规则合规/IO 契约），problem 去重合并，&lt;2 位成功诚实降级单跳；计划 ≥4 agent 或规则 &gt;60 自动触发</td><td>tools.ts + specialists.ts</td><td><span class="badge b-green">✅ 已完成</span>3 契约测试</td></tr>
+    <tr><td><b>G4</b></td><td>系统 A 的即席 CodeAct</td><td>A 的代码执行面是预置的</td><td>新工具 <code>analyze_with_code</code>：大脑亲笔小段 JS → AST 安审（禁 I/O/网络/模块 + 死循环启发式）→ 全局遮蔽 + async 超时竞速纯计算沙盒 → 结构化结果（认知专家通道冒泡，UI 可见）</td><td>inline-codeact.ts + tools.ts</td><td><span class="badge b-green">✅ 已完成</span>8 契约测试</td></tr>
+    <tr><td><b>G5</b></td><td>交付域 spawn 的独立观测</td><td>B 域 ctx.spawn 只冒泡进父</td><td>spawn 条目携带 ok/durationMs/depth 随 spawnedSubAgents 链上浮（inspect/晋升路径可见）+ 进程日志一行；独立 run 行版本待 schema 演进</td><td>runtime codeact.ts</td><td><span class="badge b-green">✅ lite 完成</span></td></tr>
+    <tr><td><b>G6</b></td><td>双推理面统一遥测</td><td>仅 A 面进 llm_calls</td><td>llm-gateway setGatewayCallSink（成/败都记，ChatRequest.purpose 归因 agent:xxx）→ conversationId="runtime" 面标记并表</td><td>gateway.ts + llm.ts + run-engine</td><td><span class="badge b-green">✅ 已完成</span>活体验证：runtime 首行落表</td></tr>
+    <tr><td><b>G7</b></td><td>design_agent 内部 ReAct 循环（把外层 8 次回环前移）</td><td>设计角色交草稿后靠外层 review→refine 反复挨打</td><td>提交前 draft→确定性自检（分支覆盖/规则泄漏/幻觉事件，零 LLM）→ 命中硬问题跑一次内部精修→提交改进版；失败兜底原稿（见 §5.5 图 5-2）</td><td>design-loop.ts + tools.ts</td><td><span class="badge b-green">✅ 已完成</span>10 契约测试 + LIVE（ProcessResume 幻觉事件当场自纠）</td></tr>
+    <tr><td><b>G8</b></td><td>能力缺口反射弧 + Allmeta 掉线优雅降级 + PDF 意图兜底</td><td>报告缺 PDF 就糊过去；Allmeta 挂→工厂域塌到 2 个；聊天刷屏</td><td>system-prompt ⑦缺能力就造 + generate_report 意图升 format=both + composite 掉线兜底本地产物域 + validate_graph 软警告折一行 + 聊天默认折叠思考</td><td>system-prompt.ts + tools.ts + composite-ontology-source.ts + transcript.tsx</td><td><span class="badge b-green">✅ 已完成</span>活体全验证</td></tr>
+  </table>
+  <div class="callout good"><b>路线完成度：G1–G8 全部落地</b>（G5 为 lite 版，独立 run 行待 schema 演进）。加上此前已达成：意图门与四折叠幸存者（意图/介入/理解/能力解析）✓ · 认知专家 + 子大脑双通道 ✓ · 四维分治理解 ✓ · 三视角评审 ✓ · 即席 CodeAct ✓ · design 内部循环 ✓ · 两座桥 ✓ · 产物 CodeAct 分级回执 ✓ · 报告管线 ✓ · 系统全景视图 ✓ · 双面遥测并表 ✓ —— 生成系统的「选型 → 派生 → 执行 → 回流」四拍闭环已成，且每一拍都能在设计当下自纠。整体测试：23 typecheck 任务 + api 624 + agent-factory 269 全过。</div>
+</section>
+
+<footer>Agentic Operator · 全栈分层技术架构讲解书 · 生成于 2026-07-02 · 所有数字（41 工具 / 15 注册 / 33 表 / 14 provider / 31 事件 / 6 阶段）均自代码核验</footer>
+</main>
+</body>
+</html>

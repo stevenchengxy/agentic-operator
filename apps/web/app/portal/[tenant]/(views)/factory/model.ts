@@ -22,7 +22,7 @@ export interface RefineDiff { systemPromptChanged: boolean; toolsAdded: string[]
 export type Block =
   | { kind: "think"; id: string; text: string }
   | { kind: "message"; id: string; text: string }
-  | { kind: "tool"; id: string; name: string; reasoning: string; input?: unknown; ok?: boolean; summary?: string; output?: string; model?: string; tier?: string }
+  | { kind: "tool"; id: string; name: string; reasoning: string; role?: string; elapsedS?: number; progressNote?: string; input?: unknown; ok?: boolean; summary?: string; output?: string; model?: string; tier?: string }
   | { kind: "plan"; id: string; summary: string; agents: number }
   | { kind: "validation"; id: string; ok: boolean; issues: string[] }
   | { kind: "sandbox"; id: string; ev: Record<string, unknown> }
@@ -75,7 +75,9 @@ export function toBlocks(events: BrainEvent[]): Block[] {
         blocks.push({ kind: "message", id, text });
         break;
       }
-      case "tool.call": flush(); blocks.push({ kind: "tool", id: String(e.id ?? id), name: String(e.name ?? ""), reasoning: String(e.reasoning ?? ""), input: e.input, model: currentModel || undefined, tier: currentTier || undefined }); break;
+      case "tool.call": flush(); blocks.push({ kind: "tool", id: String(e.id ?? id), name: String(e.name ?? ""), role: e.role ? String(e.role) : undefined, reasoning: String(e.reasoning ?? ""), input: e.input, model: currentModel || undefined, tier: currentTier || undefined }); break;
+      // #HEARTBEAT — 长工具心跳：把 elapsed/升级提示写回打开中的 tool block（慢/卡/死可区分）。
+      case "tool.progress": { const pb = [...blocks].reverse().find((b) => b.kind === "tool" && b.id === String(e.id)) as Extract<Block, { kind: "tool" }> | undefined; if (pb && pb.ok === undefined) { pb.elapsedS = Number(e.elapsedS ?? 0) || undefined; if (e.note) pb.progressNote = String(e.note); } break; }
       case "tool.result": { const tb = [...blocks].reverse().find((b) => b.kind === "tool" && b.id === String(e.id)) as Extract<Block, { kind: "tool" }> | undefined; if (tb) { tb.ok = Boolean(e.ok); tb.summary = String(e.summary ?? ""); tb.output = e.output ? String(e.output) : undefined; } break; }
       case "plan": flush(); blocks.push({ kind: "plan", id, summary: String((e.plan as Record<string, unknown>)?.summary ?? ""), agents: ((e.plan as Record<string, unknown>)?.agents as unknown[])?.length ?? 0 }); break;
       case "validation": flush(); blocks.push({ kind: "validation", id, ok: Boolean(e.ok), issues: (e.issues as string[]) ?? [] }); break;

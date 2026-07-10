@@ -32,6 +32,8 @@ import { closeDb, getRawSqlite } from "./client";
  */
 const TABLES_TO_WIPE = [
   "steps",
+  "llm_turns",
+  "run_summaries",
   "artifacts",
   "agent_memory_short",
   "agent_memory_long",

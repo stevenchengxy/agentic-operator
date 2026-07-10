@@ -36,11 +36,12 @@ const SESSION_TTL_SECONDS = 60 * 60 * 24 * 30; // 30d
  * neither is configured. In dev we fall back to a fixed string so the portal
  * works out of the box; production MUST set one (the boot guard warns).
  */
+const DEV_SESSION_SECRET_FALLBACK = "dev-only-do-not-use-in-prod";
 function getSessionSecret(): Uint8Array {
   const raw =
     process.env.AUTH_SESSION_SECRET ??
     process.env.SESSION_SECRET ??
-    "dev-only-do-not-use-in-prod";
+    DEV_SESSION_SECRET_FALLBACK;
   return new TextEncoder().encode(raw);
 }
 
@@ -305,15 +306,35 @@ export async function authenticate(req: FastifyRequest): Promise<AuthedContext |
  * Boot-time guard: fail fast on env combos that would silently bypass auth.
  */
 export function assertAuthModeSafe(): void {
-  if (process.env.AUTH_MODE !== "dev") return;
+  const isDev = process.env.AUTH_MODE === "dev";
+  const isProd = process.env.NODE_ENV === "production";
 
-  if (process.env.NODE_ENV === "production") {
+  // AUTH_MODE=dev + NODE_ENV=production is the single biggest footgun (every unauth'd request becomes
+  // the dev-tenant admin). Name it FIRST so the error is actionable for exactly that combo, before the
+  // more generic secret check below.
+  if (isDev && isProd) {
     throw new Error(
       "AUTH_MODE=dev is incompatible with NODE_ENV=production — the dev-user " +
         "unlock would bypass real authentication. Unset AUTH_MODE for prod or " +
         "run with NODE_ENV=development.",
     );
   }
+
+  // #AUDIT-FIX(P0-07) — production 必须配置一个真实、足够随机的 session secret；缺失或仍是 dev
+  // 固定回退值即启动失败（否则攻击者可伪造/预测会话签名）。这个检查独立于 AUTH_MODE。
+  if (isProd) {
+    const secret = process.env.AUTH_SESSION_SECRET ?? process.env.SESSION_SECRET ?? "";
+    if (!secret || secret === DEV_SESSION_SECRET_FALLBACK) {
+      throw new Error(
+        "生产启动失败：AUTH_SESSION_SECRET/SESSION_SECRET 未设置或仍是 dev 回退值——会话签名可被伪造。请设置一个 ≥32 字节的随机密钥。",
+      );
+    }
+    if (Buffer.byteLength(secret, "utf8") < 32) {
+      throw new Error("生产启动失败：session secret 少于 32 字节，随机性不足。请设置一个 ≥32 字节的随机密钥。");
+    }
+  }
+
+  if (!isDev) return;
 
   const slug = process.env.AGENTIC_DEV_TENANT ?? "raas";
   const tenant = getDb().select({ id: tenants.id }).from(tenants).where(eq(tenants.slug, slug)).all()[0];

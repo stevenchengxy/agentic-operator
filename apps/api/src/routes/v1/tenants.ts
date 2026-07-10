@@ -727,7 +727,7 @@ export async function tenantsRoutes(app: FastifyInstance): Promise<void> {
       if (slug === "__system" || isReservedSlug(slug)) {
         return reply.fail(
           "cannot_archive_system",
-          `system tenant "${slug}" cannot be archived`,
+          `system domain "${slug}" cannot be deleted`,
           400,
         );
       }
@@ -744,7 +744,7 @@ export async function tenantsRoutes(app: FastifyInstance): Promise<void> {
       if (row.archivedAt) {
         return reply.fail(
           "already_archived",
-          `tenant "${slug}" is already archived`,
+          `domain "${slug}" is already deleted`,
           409,
         );
       }
@@ -753,7 +753,7 @@ export async function tenantsRoutes(app: FastifyInstance): Promise<void> {
       if (active.runs > 0 || active.tasks > 0) {
         return reply.fail(
           "has_active_work",
-          `tenant has ${active.runs} active runs and ${active.tasks} open tasks; resolve them before archiving`,
+          `domain has ${active.runs} active runs and ${active.tasks} open tasks; resolve them before deleting`,
           409,
         );
       }

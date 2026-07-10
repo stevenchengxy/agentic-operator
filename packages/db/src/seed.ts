@@ -35,11 +35,11 @@ const TENANT_FIXTURES = [
     color: "#d0ff00",
   },
   {
-    // 招聘-v1 — faithful 1:1 migration of the old AO recruitment domain's 6
+    // RAAS-v1 — faithful 1:1 migration of the old AO recruitment domain's 6
     // production agents (models/zhaopin-v1/). Slug is lowercase-Latin (required
-    // by tenantSlugFromFolder); the Chinese label lives in `name`.
+    // by tenantSlugFromFolder); the RAAS-v1 label lives in `name`.
     slug: "zhaopin",
-    name: "招聘-v1",
+    name: "RAAS-v1",
     subtitle: "招聘 6-agent 流水线 · JD/简历/查重/规则/匹配/面试邀约",
     color: "#65e0a3",
   },

@@ -15,7 +15,12 @@ import type { OntologyAction, DomainOntology } from "./ontology-types";
 import { compileGraph, verifyGraph, coverageGap } from "./graph";
 import { acceptanceGate } from "./acceptance";
 import { parsePlan, validatePlan } from "./plan-projection";
-import { deriveContractGraph, contractIssueStrings, contractAgentIssueMap } from "./contract";
+import { deriveContractGraph, contractIssueStringsBySeverity, contractAgentIssueMap } from "./contract";
+import { evaluateExecutionFidelity, expectedFieldsByEvent } from "./execution-fidelity";
+import { attributeFidelityFailures, attributionSummary } from "./failure-attribution";
+import { proposeOntologyRevisions, revisionSummary } from "./ontology-revision";
+import { deriveBusinessFlow } from "./business-flow";
+import { shouldSuggestSplit } from "./reasoning-policy";
 import { buildToolCatalog, suggestToolsForAction, rankRealTools, groundToolPicks, ungroundedEventTokens, searchRealTools } from "./tool-catalog";
 import { specToAgentCode, validateAgentCode, probeAgentModule } from "./codegen";
 import { lintGeneratedToolCode } from "./code-lint";
@@ -23,7 +28,7 @@ import { safeFetch } from "./egress-guard";
 import { generate_test_cases, proposeTestCases } from "./test-cases";
 import { runSpecialists, buildOntologySpecialistTasks, synthesizeUnderstanding } from "./specialists";
 import { runInlineAnalysis } from "./inline-codeact";
-import { designSelfCheck, internalDesignRefine, innerLoopEnabled } from "./design-loop";
+import { designSelfCheck, internalDesignRefine, innerLoopEnabled, isSideEffectfulTool } from "./design-loop";
 import { chatJson, isGatewayConfigured } from "./stream-gateway";
 import { modelChain } from "./model-router";
 
@@ -104,6 +109,15 @@ function djb2(s: string): string {
   for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
   return (h >>> 0).toString(36);
 }
+/** #AUDIT-FIX(P2-03) — 本体【内容】哈希（不止数量）：规则文本/event_data 字段/trigger·emit/
+ *  对象属性变了但总数没变时，旧的"数量签名"会漏判漂移。折进 read_ontology 的 drift 签名与沙箱
+ *  证据指纹，等量换血也能被识破、陈旧沙箱绿证会因本体变化自动失效。 */
+export function ontologyContentHash(ont: { actions?: unknown[]; events?: unknown[]; rules?: unknown[]; objects?: unknown[] } | null | undefined): string {
+  if (!ont) return "0";
+  const norm = (arr: unknown[] | undefined) => (arr ?? []).map((x) => JSON.stringify(x)).sort().join("\u0001");
+  return djb2([norm(ont.actions), norm(ont.events), norm(ont.rules), norm(ont.objects)].join("\u0002"));
+}
+
 /** Fingerprint tying sandbox evidence to the exact specs (incl. code) that ran. */
 export function specsFingerprint(specs: GeneratedAgentSpec[]): string {
   return specs
@@ -241,7 +255,7 @@ function buildSpec(
   };
 }
 
-const cardOf = (s: GeneratedAgentSpec) => ({ slug: s.slug, actionName: s.actionName, short: s.short, nameZh: s.nameZh, trigger: s.trigger, emit: s.emit, tools: s.tools, unresolved: s.unresolvedTools });
+const cardOf = (s: GeneratedAgentSpec) => ({ slug: s.slug, actionName: s.actionName, short: s.short, nameZh: s.nameZh, trigger: s.trigger, emit: s.emit, tools: s.tools, unresolved: s.unresolvedTools, isSubAgent: s.isSubAgent === true });
 const designOf = (s: GeneratedAgentSpec) => ({ reasoning: s.designReasoning ?? "", systemPrompt: s.systemPrompt, toolRationale: s.toolRationale ?? "", decisionLogic: s.decisionLogic ?? "", code: s.generatedCode, codeSource: s.codeSource, codeExecuted: s.codeExecuted ?? false, probeReason: s.probeReason });
 
 /** Render the spec's reference .ts AND grade whether it can truly EXECUTE (CodeAct) in the sandbox:
@@ -282,11 +296,41 @@ const read_ontology: BrainTool = {
     "读业务域本体：对象(DataObjects 属性)、动作(actor/trigger/triggered_event/description/inputs/outputs/is_rule_check/suggested_tools)、事件【含 payload 字段(event_data，权威 I/O 契约)+ state_mutations】、规则、事件流摘要(入口/终态/链路/闸口)、可复用技能库。这是你设计 agent 的事实地基——事件名/动作名/字段名/工具名都以这里为准，input_schema/output_schema 直接以事件的 payload 字段为准，不要脑补。",
   parameters: params({}),
   async execute(_args, ctx) {
-    const ont = await ctx.ports.ontology.fetchOntology(ctx.domain);
+    let ont: DomainOntology;
+    try {
+      ont = await ctx.ports.ontology.fetchOntology(ctx.domain);
+    } catch (e) {
+      // #NATIVE — 未命中【不写死话术、不写死分支】：把事实摆全（哪个域、底层错误、当前各来源
+      // 合并后的可用域清单、平台支持上传本体 JSON 建新域），怎么向用户解释/引导由你推理决定。
+      // 查找链路本身是分层的：租户上传的本体优先 → 本地 models/ → live Allmeta（错误文本里通常
+      // 带来源信息）。唯一的硬约束：别编造本体、别不告知就擅自换域。
+      const domains = await ctx.ports.ontology.listDomains().catch(() => [] as Array<{ id: string; name?: string }>);
+      const list = domains.slice(0, 40).map((d) => (d.name && d.name !== d.id ? `${d.id}(${d.name})` : d.id));
+      return {
+        ok: false,
+        summary:
+          `读不到域「${ctx.domain}」的本体。事实：底层错误=「${String((e as Error).message ?? e).slice(0, 180)}」；` +
+          `当前可用域(${domains.length} 个)=${list.join("、") || "（任何来源都没有可用域）"}；` +
+          `平台支持用户上传 actions/events/dataObjects/rules 的 JSON 文件创建新的业务域（聊天框 📎 上传即可，租户内立即可用）。` +
+          `基于这些事实自行判断并回应用户——别编造本体，也别不打招呼就换域。`,
+        output: {
+          requestedDomain: ctx.domain,
+          error: String((e as Error).message ?? e).slice(0, 300),
+          availableDomains: domains.map((d) => ({ id: d.id, name: d.name })),
+          canUploadOntologyJson: true,
+        },
+      };
+    }
     // #4: pin a signature on first read; flag drift on a re-read (the live Allmeta graph changed
     // under already-built specs) so the brain doesn't silently work against swapped ground truth.
-    const sig = `${ont.actions.length}/${ont.events.length}/${ont.objects.length}/${ont.rules.length}`;
+    // #AUDIT-FIX(P2-03) — 数量 + 内容哈希：等量换血（改规则文本/字段但总数不变）也判为漂移。
+    const sig = `${ont.actions.length}/${ont.events.length}/${ont.objects.length}/${ont.rules.length}#${ontologyContentHash(ont)}`;
     const drift = ctx.ontologySig && ctx.ontologySig !== sig ? `⚠ 本体自上次读取已变化（${ctx.ontologySig}→${sig}）：已设计的 specs 是基于旧本体的，请核对一致性。` : "";
+    // #AUDIT-FIX(P2-04) — 严格源退化明示：本体是 Allmeta 失败后的薄 artifact（可能缺 events/objects/rules），
+    // 告知 AI 别据此当完整本体设计/发布；需要完整本体时提示用户修复 Allmeta 连接或上传本体。
+    const degradedNote = (ont as { degraded?: { from: string; reason: string } }).degraded
+      ? `⚠ 本体为【退化源】：严格源 ${(ont as { degraded: { from: string } }).degraded.from} 读取失败，当前是本地薄 artifact，可能缺事件/对象/规则明细（原因：${(ont as { degraded: { reason: string } }).degraded.reason}）。据此设计要谨慎，别当完整本体；需要完整本体请修复严格源连接或让用户上传本体。`
+      : "";
     ctx.ontologySig = sig;
     ctx.ontology = ont;
     // catalog = ontology tool_use ∪ any AI-authored persisted tools (Tool-Smith)
@@ -307,7 +351,7 @@ const read_ontology: BrainTool = {
     ctx.emit({ t: "catalog", domain: ctx.domain, actions: ont.actions.length, events: ont.events.length, agentActions: agentActions.length });
     return {
       ok: true,
-      summary: `${drift ? drift + " " : ""}本体已读：${ont.actions.length} 动作（${agentActions.length} 个要造 agent）· ${ont.events.length} 事件 · ${ont.objects.length} 对象 · ${ont.rules.length} 规则 · 工具库 ${ctx.toolCatalog.length} 个 · 技能库 ${skills.length} 个（source=${ont.source}）· 下一步先 understand_ontology 把本体读懂消化（别读了就忘）`,
+      summary: `${degradedNote ? degradedNote + " " : ""}${drift ? drift + " " : ""}本体已读：${ont.actions.length} 动作（${agentActions.length} 个要造 agent）· ${ont.events.length} 事件 · ${ont.objects.length} 对象 · ${ont.rules.length} 规则 · 工具库 ${ctx.toolCatalog.length} 个 · 技能库 ${skills.length} 个（source=${ont.source}）· 下一步先 understand_ontology 把本体读懂消化（别读了就忘）`,
       output: {
         domain: ctx.domain,
         agentActions: agentActions.map((a) => ({
@@ -391,7 +435,7 @@ const understand_ontology: BrainTool = {
   name: "understand_ontology",
   description:
     "读完 read_ontology 后【先做一次显式理解+消化】再规划/设计：让 AI 把本体读懂的结论结构化输出——要造哪些 agent 及其职责、事件链怎么串、哪些是规则闸口、哪些产出是交给外部平台消费的「外部交接终态」、哪里有歧义/缺字段需要先 ask_user。结论会被记住贯穿后续设计。这是把『隐式读懂』变成『可见且被记住的理解』，create_plan 前调它。",
-  parameters: params({ focus: { type: "string", description: "（可选）想重点理解的子问题" }, deep: { type: "boolean", description: "（可选）强制四维分治深读（objects/rules/actions/events 各派一位认知专家并行）；大本体会自动触发" } }),
+  parameters: params({ focus: { type: "string", description: "（可选）想重点理解的子问题" }, deep: { type: "boolean", description: "（可选）四维分治深读（objects/rules/actions/events 各派一位认知专家并行汇总）。是否深读由你判断：域大（规则多/对象多/动作多）、歧义重、或首次接触该域时建议 true；小域单跳即可" } }),
   async execute(args, ctx) {
     if (!ctx.ontology) return { ok: false, summary: "请先 read_ontology。" };
     const ont = ctx.ontology;
@@ -412,7 +456,12 @@ const understand_ontology: BrainTool = {
     // 单跳消化大本体必然稀释（262 条规则在 v1 digest 里只剩 12 个名字）；超过阈值时按维度
     // fan out 四位专家（各拿本维度全量 + 全域概况），再由合成者 reduce 成整体理解。
     // 专家过半失败 → 诚实降级回 v1 单跳；再失败 → 确定性骨架。永不硬失败。
-    const deep = args.deep === true || ont.rules.length > 60 || ont.objects.length > 20 || ont.actions.length > 8;
+    // #NATIVE — 深读与否是【你的】决策（deep 参数），不再由本体规模阈值或 policy 确定性强制。
+    // 规模事实会在结果里给你（后面 scaleHint）；policy/经验回喂的建议经 [推理路线] 消息呈给你参考。
+    const deep = args.deep === true;
+    if (deep) ctx.emit({ t: "message", text: "🧠 深读分治启动：对象/规则/动作/事件 4 位认知专家并行分析中（大本体通常需要 1~3 分钟；期间每 ~15s 有心跳回执，不是卡住）。" });
+    const large = ont.rules.length > 60 || ont.objects.length > 20 || ont.actions.length > 8;
+    const scaleHint = !deep && large ? `（规模提示：${ont.rules.length} 规则/${ont.objects.length} 对象/${ont.actions.length} 动作——如需更稳的理解可再调 understand_ontology(deep=true) 四维分治）` : "";
     if (deep) {
       ctx.emit({ t: "message", text: `🧠 本体较大（${ont.actions.length} 动作 · ${ont.rules.length} 规则 · ${ont.objects.length} 对象）——派 4 位认知专家按维度并行深读…` });
       const results = await runSpecialists(ctx, buildOntologySpecialistTasks(ont));
@@ -461,7 +510,7 @@ const understand_ontology: BrainTool = {
     const nBuild = Array.isArray(parsed.agentsToBuild) ? (parsed.agentsToBuild as unknown[]).length : 0;
     const gates = Array.isArray(parsed.ruleGates) ? (parsed.ruleGates as string[]) : [];
     ctx.emit({ t: "reflect", kind: "understanding", lesson: `本体理解：要造 ${nBuild} 个 agent；规则闸 ${gates.join("、") || "无"}；外部交接 ${ext.length} 处；${ambig.length ? `⚠ 待澄清 ${ambig.length} 处：${ambig.slice(0, 3).join("；")}` : "无明显歧义"}。` });
-    return { ok: true, summary: `已显式理解并记住本体${ambig.length ? `；有 ${ambig.length} 处歧义，建议先 ask_user 再设计：${ambig.slice(0, 2).join("；")}` : "（无明显歧义，可 create_plan）"}`, output: parsed };
+    return { ok: true, summary: `已显式理解并记住本体${ambig.length ? `；有 ${ambig.length} 处歧义，建议先 ask_user 再设计：${ambig.slice(0, 2).join("；")}` : "（无明显歧义，可 create_plan）"}${scaleHint}`, output: parsed };
   },
 };
 
@@ -554,7 +603,7 @@ const analyze_with_code: BrainTool = {
   async execute(args, ctx) {
     const purpose = String(args.purpose ?? "").trim() || "代码分析";
     const code = String(args.code ?? "");
-    ctx.emit({ t: "subagent.start", task: `认知专家 · 代码分析（${purpose.slice(0, 24)}）` });
+    ctx.emit({ t: "subagent.start", task: `认知专家 · 代码分析（${purpose.slice(0, 24)}）`, role: "代码分析专家" });
     const input = {
       ontology: ctx.ontology ? { actions: ctx.ontology.actions, events: ctx.ontology.events, rules: ctx.ontology.rules, objects: ctx.ontology.objects } : null,
       specs: ctx.specs.map((s) => ({ actionName: s.actionName, slug: s.slug, trigger: s.trigger, emit: s.emit, tools: s.tools })),
@@ -575,8 +624,8 @@ const critique_plan: BrainTool = {
   name: "critique_plan",
   description:
     "create_plan 之后、大规模 design_agent 之前，让 AI【独立审查并挑战这份分解计划】：agent 是否多了/少了、事件链顺序对不对、规则闸口认对没、有没有把外部交接误当断链、跨 agent 的 I/O 契约是否对齐。发现问题就改计划(create_plan version+1)再设计——不走过场。",
-  parameters: params({}),
-  async execute(_args, ctx) {
+  parameters: params({ deep: { type: "boolean", description: "（可选）三视角深评（链路完整/规则合规/IO 契约三位评审并行汇总）。是否深评由你判断：计划里 agent 多、规则密、或历史上这个难度出过保真违约时建议 true" } }),
+  async execute(args, ctx) {
     if (!ctx.currentPlan) return { ok: false, summary: "还没 create_plan。" };
     if (!ctx.ontology) return { ok: false, summary: "请先 read_ontology。" };
     const plan = ctx.currentPlan;
@@ -593,7 +642,7 @@ const critique_plan: BrainTool = {
     // ── G3 三视角分治评审（附录 B）：计划够大时，单跳评审必然顾此失彼——派三位视角专家
     // 并行挑战（链路完整 / 规则合规 / IO 契约），按 problem 去重合并；≥2 位专家成功才采用，
     // 否则诚实降级回单跳。事件冒泡沿用认知专家通道（UI 免费可视化）。
-    const deepReview = plan.agents.length >= 4 || ctx.ontology.rules.length > 60;
+    const deepReview = args.deep === true; // #NATIVE — 深评与否由你决定（deep 参数）；计划大/规则多/历史保真教训时建议 true
     if (deepReview) {
       const und = ctx.ontologyUnderstanding ? `\n【本体理解（四维分治结论）】${ctx.ontologyUnderstanding.slice(0, 1200)}` : "";
       const mkTask = (id: string, role: string, focus: string, extra: string) => ({
@@ -653,10 +702,12 @@ const design_agent: BrainTool = {
   parameters: params(
     {
       action: { type: "string", description: "动作名（read_ontology agentActions[].name）" },
+      role_name: { type: "string", description: "（可选）这个 function 的人类可读【显示名】（≤12 字，如「简历守门员」）——仅用于 UI 卡片/业务流全景的称呼；注意：角色设定属于生成过程中的工作者（过程角色），不属于交付的 functions。" },
       system_prompt: { type: "string", description: "你亲自写的中文系统提示：职责/依据/决策。要具体，别套模板。" },
       tools: { type: "array", items: { type: "string" }, description: "为它挑的工具（用 suggested_tools/available_tools 真名；没合适的留空并说明）" },
       decision_logic: { type: "string", description: "必填：分支决策逻辑——依据什么条件走哪个分支、成功/失败/拦截各 emit 什么事件、异常怎么兜底。UI 卡片与复审都读它。" },
       tool_rationale: { type: "string" },
+      compensation_event: { type: "string", description: "#SAGA 可选：这个 agent 硬失败时 runtime 自动 emit 的【补偿事件】名（如 INVITATION_CANCELLED），用于撤销已发生的外部副作用（邀约已发/JD 已发布/已写外部系统）。有副作用工具的 agent 强烈建议声明；优先用本体已有事件名或与用户约定的补偿事件。" },
       input_schema: { type: "array", items: { type: "object", properties: { field: { type: "string" }, type: { type: "string" }, description: { type: "string" }, source: { type: "string" } }, required: ["field", "type"] } },
       output_schema: { type: "array", items: { type: "object", properties: { field: { type: "string" }, type: { type: "string" }, description: { type: "string" }, source: { type: "string" } }, required: ["field", "type"] } },
       plan: {
@@ -712,6 +763,9 @@ const design_agent: BrainTool = {
         isGate,
         ruleLeak: !isGate && promptEmbedsRule(`${rawPrompt}\n${rawLogic}`, ruleIdentifiers(ctx)),
         ungroundedEvents: ungroundedEventTokens([`${rawPrompt}\n${rawLogic}`], knownEv0),
+        // #SAGA — 副作用工具却没补偿事件 → 自检软警告（⑥），提醒大脑设计撤销路径。
+        sideEffectful: Array.isArray(args.tools) && (args.tools as string[]).some((t) => isSideEffectfulTool(String(t))),
+        hasCompensation: Boolean(String(args.compensation_event ?? "").trim()),
       });
       const first = designSelfCheck(draftOf());
       if (first.hardCount > 0 && isGatewayConfigured() && innerLoopEnabled()) {
@@ -733,9 +787,10 @@ const design_agent: BrainTool = {
     let tools = grounded.resolved;
     // FLOOR: if the brain picked nothing, fall back to ontology-declared tools + the top
     // semantically-ranked REAL tools (#C) — so an action that declared none still binds a real tool.
+    let autoFloored: string[] = [];
     if (tools.length === 0) {
       const sug = suggestToolsForAction(action, ctx.realTools ?? []);
-      if (sug.length) tools = sug;
+      if (sug.length) { tools = sug; autoFloored = [...sug]; } // #AUDIT-FIX(M19) — 自动补底必须被看见
     }
 
     let systemPrompt = rawPrompt; // 可能已被内部设计循环精修
@@ -780,8 +835,15 @@ const design_agent: BrainTool = {
     }
 
     const spec = buildSpec(action, ctx.domain, authored, inputSchema, outputSchema);
+    // 显示名（非角色设定——角色属于过程 agents）：AI 给的显示名优先于描述截断兜底，
+    // 仅供 UI 称呼；缺省时保留 buildSpec 的自动派生（永不为空）。
+    const roleName = String(args.role_name ?? "").trim().slice(0, 18);
+    if (roleName) spec.nameZh = roleName;
     if (plan.length) spec.plan = plan;
     spec.unresolvedTools = grounded.unresolved;
+    // #SAGA — 补偿事件透传到 spec → mapToManifest 的 compensation_event → runtime 硬失败时幂等 emit。
+    const comp = String(args.compensation_event ?? "").trim();
+    if (comp) spec.compensationEvent = comp;
     spec.stateBindings = deriveStateBindings(action, ctx.ontology); // R5
     // auto-render readable code so every agent HAS code (codegen_agent can override w/ AI code), and
     // GRADE it so a compilable+safe render actually EXECUTES in the sandbox (true CodeAct), not just
@@ -801,7 +863,7 @@ const design_agent: BrainTool = {
     ctx.specs = ctx.specs.filter((s) => s.actionName !== name);
     ctx.specs.push(spec);
     ctx.lastSandbox = null;
-    ctx.emit({ t: "agent.created", spec: cardOf(spec), design: designOf(spec) });
+    ctx.emit({ t: "agent.created", spec: cardOf(spec), design: designOf(spec), forAgent: spec.actionName });
     ctx.emit({ t: "code", actionName: name, code: spec.generatedCode ?? "", codeSource: "render" });
     const execNote = spec.codeExecuted ? " · ⚙ 代码已过 编译+安全+加载探针，沙箱将真实执行（CodeAct）" : ` · 📄 声明式执行${spec.probeReason ? `（代码未过加载探针：${spec.probeReason}）` : ""}`;
 
@@ -819,9 +881,9 @@ const design_agent: BrainTool = {
       (plan.length ? ` · 🧭 已采纳 ${plan.length} 步可重放 plan（每步独立 step.run）` : " · 💡 建议补一份多步 plan（每个外部/写入步骤独立可重放）");
     return {
       ok: true,
-      summary: `已提交「${spec.nameZh}」(${agentActionNames.length - remaining.length}/${agentActionNames.length}) · 工具 ${spec.tools.length} 个 · 已渲染代码${execNote}${warn}`,
+      summary: `已提交「${spec.nameZh}」(${agentActionNames.length - remaining.length}/${agentActionNames.length}) · 工具 ${spec.tools.length} 个 · 已渲染代码${execNote}${warn}${autoFloored.length ? `｜🧲 你留空了 tools，系统按语义排名自动补底：${autoFloored.join("、")}——如不合适请显式改绑或 ask_user 与用户确认` : ""}`,
       output: {
-        committed: spec.short, tools: spec.tools, unresolved: spec.unresolvedTools, done: agentActionNames.length - remaining.length, total: agentActionNames.length, remaining, needsCodegen: false,
+        committed: spec.short, tools: spec.tools, unresolved: spec.unresolvedTools, autoFlooredTools: autoFloored.length ? autoFloored : undefined, done: agentActionNames.length - remaining.length, total: agentActionNames.length, remaining, needsCodegen: false,
         // #W3-1 — PROACTIVE provisioning: a structured gap signal (not just prose warnings) so the
         // brain/UI can act on "this agent lacks a capability" with concrete next actions.
         provisioning: noTool || grounded.unresolved.length
@@ -843,6 +905,7 @@ const design_subagent: BrainTool = {
     "把一个已 design_agent 的【复杂父 agent】拆出一个【子 agent】——可部署的辅助函数，父 agent 通过 plan 的 invoke 步骤同步调它（层层套的 harness）。子 agent 不是本体动作、不计入覆盖，但会真实注册+被父 invoke。用于把大 agent 分解成 父+子 都能上线的函数。也用于【固化】运行时 ctx.spawn 出来的子 agent：把它的完整 .ts 代码用 code 参数传进来即晋升为可部署子 agent（会过 TS+安全校验）。",
   parameters: params(
     {
+      critical: { type: "boolean", description: "（建议显式声明）这个子任务对父 agent 是否关键：true=子失败即父失败（terminal）；false/缺省=失败降级为空结果继续（soft）。按业务后果判断，别默认都非关键。" },
       parent_action: { type: "string", description: "父 agent 的动作名（已 design_agent）" },
       task: { type: "string", description: "子 agent 负责的子任务（一句话，决定它的 slug）" },
       system_prompt: { type: "string", description: "子 agent 的中文系统提示（职责/决策）；不写会按父+任务生成一句" },
@@ -916,14 +979,17 @@ const design_subagent: BrainTool = {
     // Wire the parent → invoke(sub). If the parent has no plan, seed a logic step first so it keeps
     // its main work, THEN the invoke. Idempotent: don't add a second invoke for the same sub.
     const idemKey = String(args.idempotency_key_from ?? "").trim() || parent.inputSchema?.[0]?.field || "subject";
-    const invokeStep: PlanStep = { stepId: `invoke-${taskKebab}`, kind: "invoke", invoke: subShort, idempotencyKeyFrom: idemKey, onError: "soft", defaultResult: {}, timeoutS: 60, description: `同步调用子 agent ${subShort}：${task}` };
+    // #AUDIT-FIX(L32) — 子任务关键性由 AI 显式声明（critical=true → terminal：子 agent 失败即父
+    // 失败），不再硬编码 soft+{}（旧行为把关键子任务的失败静默换成空对象继续）。
+    const subCritical = args.critical === true;
+    const invokeStep: PlanStep = { stepId: `invoke-${taskKebab}`, kind: "invoke", invoke: subShort, idempotencyKeyFrom: idemKey, onError: subCritical ? "terminal" : "soft", ...(subCritical ? {} : { defaultResult: {} }), timeoutS: 60, description: `同步调用子 agent ${subShort}：${task}${subCritical ? "（关键子任务：失败即父失败）" : "（非关键：失败降级为空结果）"}` };
     const basePlan: PlanStep[] = parent.plan && parent.plan.length ? parent.plan : [{ stepId: `${kebab(parentName)}-logic`, kind: "logic", description: (parent.designReasoning ?? parentName).slice(0, 120) }];
     parent.plan = basePlan.some((s) => s.kind === "invoke" && s.invoke === subShort) ? basePlan : [...basePlan, invokeStep];
 
     ctx.specs = ctx.specs.filter((s) => s.slug !== subSlug);
     ctx.specs.push(sub);
     ctx.lastSandbox = null;
-    ctx.emit({ t: "agent.created", spec: cardOf(sub), design: designOf(sub) });
+    ctx.emit({ t: "agent.created", spec: cardOf(sub), design: designOf(sub), forAgent: sub.actionName, parentAgent: parentName });
     ctx.emit({ t: "reflect", kind: "subagent", lesson: `为「${parent.nameZh}」拆出子 agent ${subShort}（${task}）——${promoted ? "由运行时 spawn 晋升" : "新设计"}，父通过 invoke 同步调用；两者都是可部署函数。` });
     // Composition note: for a CodeAct parent (codeExecuted), the invoke runs as a SEPARATE plan step
     // AFTER the parent's handler — the handler can't use the sub's result inline. To use a sub-agent
@@ -964,7 +1030,7 @@ const codegen_agent: BrainTool = {
     spec.probeReason = undefined;
     ctx.lastSandbox = null;
     ctx.emit({ t: "code", actionName: name, code, codeSource: "ai" });
-    ctx.emit({ t: "agent.created", spec: cardOf(spec), design: designOf(spec) });
+    ctx.emit({ t: "agent.created", spec: cardOf(spec), design: designOf(spec), forAgent: spec.actionName });
     return { ok: true, summary: `「${spec.nameZh}」的代码已采纳（你亲手写、TS 校验通过）。`, output: { codeSource: "ai" } };
   },
 };
@@ -996,7 +1062,11 @@ const refine_agent: BrainTool = {
     const GLOBAL_REFINE_FACTOR = Number(process.env.FACTORY_GLOBAL_REFINE_FACTOR) || 3;
     const priorAttempts = history.length;
     if (priorAttempts >= REFINE_BUDGET) {
-      return { ok: false, summary: `agent「${name}」已 refine ${priorAttempts} 次，达到重试上限——别再硬修了。要么 revert_refine("${name}") 回滚到最好的一版并接受，要么 verify_chain 看链路全貌定位真断点；若方向就是错的，create_plan 重新规划，或 analyze_failure 诚实记根因。`, output: { actionName: name, attemptsUsed: priorAttempts, budget: REFINE_BUDGET, advice: "revert_or_verify_or_replan" } };
+      // #ADAPT — 卡住才拆：复杂 agent 磨到预算上限，多半是"一个 agent 承载了太多步骤"，
+      // 正确动作是 design_subagent 拆出同步 invoke 子 agent，而不是第 N+1 次改 prompt。
+      const spSplit = ctx.specs.find((x) => x.actionName === name || x.short === name);
+      const splitNote = shouldSuggestSplit(spSplit) ? `该 agent 较复杂（${spSplit?.tools?.length ?? 0} 工具${spSplit?.plan?.length ? `、${spSplit.plan.length} 步 plan` : ""}）——符合"卡住才拆"：考虑 design_subagent 把最容易失败的子步骤拆成同步 invoke 子 agent，父 agent 只保留编排。` : "";
+      return { ok: false, summary: `agent「${name}」已 refine ${priorAttempts} 次，达到重试上限——别再硬修了。${splitNote}要么 revert_refine("${name}") 回滚到最好的一版并接受，要么 verify_chain 看链路全貌定位真断点；若方向就是错的，create_plan 重新规划，或 analyze_failure 诚实记根因。`, output: { actionName: name, attemptsUsed: priorAttempts, budget: REFINE_BUDGET, advice: splitNote ? "split_or_revert_or_replan" : "revert_or_verify_or_replan" } };
     }
     const totalRefines = Object.values(ctx.attemptHistory).reduce((s, h) => s + (h?.length ?? 0), 0);
     const globalCap = GLOBAL_REFINE_FACTOR * Math.max(1, ctx.specs.length);
@@ -1007,7 +1077,9 @@ const refine_agent: BrainTool = {
     // Refuse further refines and steer to verify_chain / revert / replan instead of burning budget.
     const recent = history.slice(-2).map((h) => h.delta).filter((d): d is number => typeof d === "number");
     if (recent.length === 2 && recent.every((d) => Math.abs(d) < 5)) {
-      return { ok: false, summary: `agent「${name}」最近两轮 refine 分数几乎没动（Δ ${recent.join("、")}）——继续磨大概率无效。改走 verify_chain 看链路全貌、revert_refine 回滚到最好一版、或 create_plan 重新规划。`, output: { actionName: name, recentDeltas: recent, advice: "converged_stop_refining" } };
+      const spConv = ctx.specs.find((x) => x.actionName === name || x.short === name);
+      const convSplit = shouldSuggestSplit(spConv) ? `该 agent 较复杂（${spConv?.tools?.length ?? 0} 工具${spConv?.plan?.length ? `、${spConv.plan.length} 步 plan` : ""}），"卡住才拆"（ADaPT）：考虑 design_subagent 拆出子步骤。` : "";
+      return { ok: false, summary: `agent「${name}」最近两轮 refine 分数几乎没动（Δ ${recent.join("、")}）——继续磨大概率无效。${convSplit}改走 verify_chain 看链路全貌、revert_refine 回滚到最好一版、或 create_plan 重新规划。`, output: { actionName: name, recentDeltas: recent, advice: "converged_stop_refining" } };
     }
     const priorScore = scoreTotal(scoreSpec(spec, history.length));
     // #W2 — structured review findings (from review_agent/review_context/review_completeness) can be
@@ -1046,7 +1118,7 @@ const refine_agent: BrainTool = {
       diff: { systemPromptChanged: !!args.system_prompt, toolsAdded: spec.tools.filter((t) => !toolsBefore.includes(t)), toolsRemoved: toolsBefore.filter((t) => !spec.tools.includes(t)), decisionLogicChanged: typeof args.decision_logic === "string" },
     });
     ctx.emit({ t: "score.delta", actionName: name, priorTotal: priorScore, newTotal: newScore, delta, regression, dimensions: newDims });
-    ctx.emit({ t: "agent.created", spec: cardOf(spec), design: designOf(spec) });
+    ctx.emit({ t: "agent.created", spec: cardOf(spec), design: designOf(spec), forAgent: spec.actionName });
     return { ok: true, summary: `已精修「${spec.nameZh}」 · 分 ${priorScore}→${newScore}(${delta >= 0 ? "+" : ""}${delta})${regression ? " · ⚠ 退步了，可 revert_refine 回滚" : ""} · 记得重新 sandbox_run`, output: { priorScore, newScore, delta, regression, attempt: history.length } };
   },
 };
@@ -1073,7 +1145,7 @@ const revert_refine: BrainTool = {
     if (spec.codeSource !== "ai") await renderExecutableCode(spec);
     ctx.lastSandbox = null;
     ctx.emit({ t: "revert", actionName: name, revertedToAttempt: last.attemptNumber - 1 });
-    ctx.emit({ t: "agent.created", spec: cardOf(spec), design: designOf(spec) });
+    ctx.emit({ t: "agent.created", spec: cardOf(spec), design: designOf(spec), forAgent: spec.actionName });
     return { ok: true, summary: `已把「${spec.nameZh}」回滚到第 ${last.attemptNumber} 次精修之前。`, output: {} };
   },
 };
@@ -1142,16 +1214,18 @@ const validate_graph: BrainTool = {
     const gap = coverageGap(ctx.ontology.actions, ctx.specs.map((s) => s.actionName));
     const contract = deriveContractGraph(ctx.specs, ctx.domain, canonicalEventFields(ctx.ontology));
     const contractMap = contractAgentIssueMap(contract);
-    // 契约问题分级：payload_gap（下游读了没人写的字段）= 硬问题，入主列表；non_canonical_field
-    // （字段本体没声明、运行时靠 envelope 携带）= 软警告，折成一行摘要——否则十几条一起灌爆上下文、
-    // 触发过早压缩、让 review→refine 反复被同样的噪声打回（正是抖动的根因）。
-    const contractLines = contractIssueStrings(contract);
-    const hardContract = contractLines.filter((l) => l.includes("字段缺口"));
-    const softContract = contractLines.filter((l) => !l.includes("字段缺口"));
+    // #SIMPLIFY 契约问题分级（结构化，替代旧的 summary 字符串 includes 判断——那种写法既脆、
+    // 又漏了 type_mismatch/type_conflict 两类硬问题）：硬 = 运行期会解析爆炸，入主列表；
+    // 软（untyped/non_canonical，envelope 可携带）折一行摘要，防止灌爆上下文触发过早压缩。
+    const { hard: hardContract, soft: softContract } = contractIssueStringsBySeverity(contract);
+    // #NATIVE（设计期契约降级）— 契约问题不再阻断（不翻 ok）：它们是【高置信事实提醒】——
+    // 双方 schema 都是 AI 自己声明的，冲突=自相矛盾，提醒即修；真正的裁判是沙箱真实执行的
+    // 保真结果（execution_fidelity，10 判据之一）。静态分析只告知，不替 AI 决定能否继续。
+    const contractAdvisory = hardContract.map((l) => `⚠[契约提醒·高置信] ${l}`);
     const issues: string[] = [
       ...(gap.length ? [`缺少 agent 的动作：${gap.join("、")}`] : []),
-      ...v.issues.map((i) => (i.kind === "missing_producer" ? `「${i.action}」消费的 ${i.event} 没人产出` : i.kind === "orphan_emit" ? `「${i.action}」产出的 ${i.event} 没人消费且非终态` : i.kind === "unreachable_node" ? `「${i.action}」从入口不可达` : i.kind === "no_entry" ? "无入口节点" : "到不了终态")),
-      ...hardContract,
+      ...v.issues.map((i) => (i.kind === "missing_producer" ? `「${i.action}」消费的 ${i.event} 没人产出` : i.kind === "orphan_emit" ? `「${i.action}」产出的 ${i.event} 没人消费且非终态` : i.kind === "unreachable_node" ? `「${i.action}」从入口不可达` : i.kind === "dead_end" ? `「${i.action}」从入口可达但到不了任何终态（困在环里/死路——补一条通向终态的分支或显式声明退出）` : i.kind === "no_entry" ? "无入口节点" : "到不了终态")),
+      ...contractAdvisory,
       ...(softContract.length ? [`（另有 ${softContract.length} 处字段靠 envelope 携带，非阻断——如需严格对齐可补进本体）`] : []),
     ];
     const emptyTools = ctx.specs.filter((s) => !s.tools?.length && !s.hitl).map((s) => s.short);
@@ -1159,10 +1233,17 @@ const validate_graph: BrainTool = {
     const agentIssueMap: Record<string, unknown[]> = {};
     for (const i of v.issues) if ("action" in i) (agentIssueMap[i.action] ??= []).push(i);
     for (const [action, list] of Object.entries(contractMap)) agentIssueMap[action] = [...(agentIssueMap[action] ?? []), ...list];
-    const ok = gap.length === 0 && v.ok && contract.ok && emptyTools.length === 0;
+    // ok = 结构性事实（覆盖齐 + 事件图闭合 + 有工具）。契约提醒不计入——设计期不阻断，
+    // 沙箱保真才是行为裁判（AI 无视提醒 → 真实失败 + #ATTRIB 定位会把它带回来）。
+    const ok = gap.length === 0 && v.ok && emptyTools.length === 0;
     ctx.lastValidation = { ok, agentIssueMap };
     ctx.emit({ t: "validation", ok, issues, agentIssueMap });
-    return { ok, summary: ok ? "事件图闭合 ✓（覆盖 + 字段合同）" : `未闭合：${issues.slice(0, 4).join("；")}`, output: { ok, issues, agentIssueMap, coverageGap: gap, contract: { ok: contract.ok, payloadGaps: contract.events.filter((e) => e.payloadGaps.length).map((e) => ({ event: e.name, missing: e.payloadGaps })) } } };
+    // #BIZFLOW — the moment specs + ontology + boundary decisions are all on hand, derive the
+    // complete business-flow model (external platforms · reads/calls/writes · branch semantics)
+    // so the UI can render the generated end-to-end business diagram.
+    ctx.emit({ t: "flow.business", model: deriveBusinessFlow(ctx.specs, ctx.ontology, ctx.boundaryEvents) as unknown as Record<string, unknown> });
+    const contractNote = contractAdvisory.length ? `；另有 ${contractAdvisory.length} 条契约提醒（高置信，建议当场修——沙箱保真会按真实行为裁定）：${contractAdvisory.slice(0, 2).join("；")}` : "";
+    return { ok, summary: ok ? `事件图闭合 ✓（覆盖 + 结构）${contractNote}` : `未闭合：${issues.slice(0, 4).join("；")}${contractNote}`, output: { ok, issues, agentIssueMap, coverageGap: gap, contract: { ok: contract.ok, payloadGaps: contract.events.filter((e) => e.payloadGaps.length).map((e) => ({ event: e.name, missing: e.payloadGaps })) } } };
   },
 };
 
@@ -1211,8 +1292,20 @@ const sandbox_run: BrainTool = {
       // legitimate terminal in the verdict — not a broken chain (matches validate_graph).
       boundaryEvents: (ctx.boundaryEvents ?? []).map((b) => ({ event: b.event, kind: b.kind })),
     });
-    const sbFp = specsFingerprint(ctx.specs);
-    const fresh = { specsFingerprint: sbFp, deployed: res.functionsRegistered, agentsRan: res.ran, ranAgents: res.runs.map((r) => r.id), reachedTerminal: res.reachedSuccessTerminal || res.fullChainRan, reachedSuccessTerminal: res.reachedSuccessTerminal, fullChainRan: res.fullChainRan, codeRanAgents: res.codeRanAgents ?? [], degradedAgents: res.degradedAgents, simulated: res.simulated ?? false, ts: Date.now() };
+    // #AUDIT-FIX(M10) — 证据指纹必须包含【测试用例 + 真实值覆盖】：换了更严的用例后，新一轮
+    // 真实失败曾被旧指纹的通过记录 OR 掉（finish 拿陈旧证据过关）。用例变 → 指纹变 → 从零取证。
+    const testFp = (() => { let h = 0; const str = JSON.stringify({ c: (ctx.testCases ?? []).map((c) => ({ e: c.entryEvent, p: c.payload, k: c.kind })), o: ctx.testDataOverrides ?? {} }); for (let i = 0; i < str.length; i++) { h = (h * 31 + str.charCodeAt(i)) | 0; } return h.toString(36); })();
+    // #AUDIT-FIX(P2-03) — 本体内容哈希进证据指纹：本体变化（等量换血）使旧沙箱绿证自动失效。
+    const sbFp = `${specsFingerprint(ctx.specs)}:${testFp}:${ontologyContentHash(ctx.ontology)}`;
+    // #R3 — grade REAL execution fidelity: does each agent's ACTUAL emitted payload satisfy the
+    // downstream field contract? Only for a real (non-simulated) run with captured agentRuns —
+    // a simulated/mock run has nothing real to grade (→ undefined ⇒ acceptance stays lenient).
+    const canonFields = canonicalEventFields(ctx.ontology);
+    const fidelity =
+      !res.simulated && Array.isArray(res.agentRuns) && res.agentRuns.length
+        ? evaluateExecutionFidelity(res.agentRuns, expectedFieldsByEvent(deriveContractGraph(ctx.specs, ctx.domain, canonFields), canonFields))
+        : null;
+    const fresh = { specsFingerprint: sbFp, deployed: res.functionsRegistered, agentsRan: res.ran, ranAgents: res.runs.map((r) => r.id), reachedTerminal: res.reachedSuccessTerminal || res.fullChainRan, reachedSuccessTerminal: res.reachedSuccessTerminal, fullChainRan: res.fullChainRan, codeRanAgents: res.codeRanAgents ?? [], degradedAgents: res.degradedAgents, fidelityFailures: fidelity ? fidelity.failingShorts : undefined, simulated: res.simulated ?? false, ts: Date.now() };
     // Keep the STRONGEST evidence across same-fingerprint runs — snapshot-timing flakiness (a re-run
     // that samples too early → ran=0 → reachedSuccessTerminal=false) must NOT downgrade a prior pass,
     // or finish dead-loops. A spec change bumps the fingerprint → start fresh (no stale credit).
@@ -1221,7 +1314,16 @@ const sandbox_run: BrainTool = {
     // degradedAgents — degradation is purely spec-derived (an agent with no tools/hitl), identical
     // across same-fingerprint runs, so never carry a stale "clean" value forward over a new run.
     ctx.lastSandbox = prev && prev.specsFingerprint === sbFp
-      ? { ...fresh, reachedSuccessTerminal: fresh.reachedSuccessTerminal || prev.reachedSuccessTerminal, fullChainRan: fresh.fullChainRan || prev.fullChainRan, reachedTerminal: fresh.reachedTerminal || prev.reachedTerminal, codeRanAgents: [...new Set([...(fresh.codeRanAgents ?? []), ...((prev as { codeRanAgents?: string[] }).codeRanAgents ?? [])])] }
+      ? {
+          ...fresh,
+          reachedSuccessTerminal: fresh.reachedSuccessTerminal || prev.reachedSuccessTerminal,
+          fullChainRan: fresh.fullChainRan || prev.fullChainRan,
+          reachedTerminal: fresh.reachedTerminal || prev.reachedTerminal,
+          codeRanAgents: [...new Set([...(fresh.codeRanAgents ?? []), ...((prev as { codeRanAgents?: string[] }).codeRanAgents ?? [])])],
+          // #R3 review fix — an UNGRADED re-run (no agentRuns captured / simulated) must not launder a
+          // prior real fidelity failure into a lenient pass: keep the strongest available evidence.
+          fidelityFailures: fresh.fidelityFailures ?? prev.fidelityFailures,
+        }
       : fresh;
     ctx.emit({
       t: "sandbox",
@@ -1247,6 +1349,8 @@ const sandbox_run: BrainTool = {
       // an injected fault). Dropped previously; now surfaced so the UI can prove error propagation.
       caseVerdicts: res.caseVerdicts,
       simulated: res.simulated,
+      // #R3 — which agents' REAL emit payload violated the downstream contract (execution fidelity).
+      fidelityFailures: fidelity?.failingShorts,
       // #D: how the chain closed — N internal chains + M legitimate external handoffs.
       internalChains: res.internalChains,
       externalTerminals: res.externalTerminals,
@@ -1261,25 +1365,47 @@ const sandbox_run: BrainTool = {
         }
       }
     }
-    const ok = res.functionsRegistered > 0 && res.fullChainRan;
+    // #ATTRIB — 保真违约的结构化定位：join 契约图，产出"回哪个 agent、改什么"的定点指令。
+    // 论据：LLM 事后读日志归因仅 53.5% 准——所以这里直接把答案算出来，别让大脑猜。
+    const attribution = fidelity && !fidelity.ok
+      ? attributeFidelityFailures(fidelity, deriveContractGraph(ctx.specs, ctx.domain, canonFields))
+      : [];
+    const attribNote = attribution.length ? `\n${attributionSummary(attribution)}` : "";
+    // #REVISION — 本体漂移对账：真实载荷与 canonical 持续不一致 → 修订提案（提案不写回，
+    // 大脑走 ask_user 确认）。只在真实（非模拟）运行上取证。
+    const revisions = !res.simulated && Array.isArray(res.agentRuns) && res.agentRuns.length && canonFields
+      ? proposeOntologyRevisions(res.agentRuns, canonFields)
+      : [];
+    if (revisions.length) ctx.emit({ t: "ontology.revision", proposals: revisions });
+    const revisionNote = revisions.length ? `\n${revisionSummary(revisions)}` : "";
+    const ok = res.functionsRegistered > 0 && res.fullChainRan && (fidelity?.ok ?? true);
     // Be honest: a simulated pass is graph-closure inference, NOT a real run. Say so in
     // the summary the brain reads (so it never claims a real "跑通"); FACTORY_REAL_DEPLOY=1 for real.
     const simNote = res.simulated ? "（⚠ 模拟验证：按事件图闭包推断会跑通，未真实部署执行；设 FACTORY_REAL_DEPLOY=1 做真实部署验证）" : "（真实部署执行 ✓）";
     // R2: a swallowed fire used to look like a silent ran:0 — now surface which entry events failed to dispatch.
     const failedFires = (res.fires ?? []).filter((f) => !f.ok);
     const fireNote = failedFires.length ? ` · ⚠ ${failedFires.length} 个入口事件没发成功：${failedFires.map((f) => `${f.event}(${f.error ?? "失败"})`).join("；")}` : "";
+    // #AUDIT-FIX(H2) — 环境归因：app 没在 Inngest 完成注册时 ran:0 是【环境问题】，绝不能让
+    // 大脑当成"事件名没对齐"去 refine agents（既往 finish-loop 死循环的同类根因）。
+    const envNote = !res.simulated && res.appReady === false
+      ? ` · 🛑 环境问题：沙箱 app 未在 Inngest dev server 完成注册${res.syncError ? `（${res.syncError.slice(0, 120)}）` : "（readiness 超时）"}——ran:0 与 agent 设计无关，检查 Inngest 是否在跑 / AGENTIC_SERVE_ORIGIN 配置，别去改 agent`
+      : "";
     // Phase 5 — close the reflection loop: a non-passing sandbox run AUTO-records a failure
     // reflection (it never did before — the brain had to remember to analyze_failure), so the next
     // build for this domain learns from it without manual prompting.
     if (!ok) {
-      const lesson = res.degradedAgents.length
-        ? `降级 agent：${res.degradedAgents.join("、")} —— 多为没绑到真实工具。下次先 ask_user 接入真实工具/补 I/O 契约，再 design_agent。`
-        : failedFires.length
-          ? `入口事件没发成功：${failedFires.map((f) => f.event).join("、")} —— 检查事件名是否对齐本体、Inngest 是否在跑。`
-          : "事件链没到成功终态——用 inspect_run 看断在哪个 agent，多半是 trigger/emit 没对齐本体事件名。";
-      await ctx.ports.reflection.record(ctx.domain, { summary: `沙箱未跑通：部署${res.functionsRegistered}·跑${res.ran}·成功终态=${res.reachedSuccessTerminal}`, lesson, failedStep: "sandbox_chain", kind: "failure" }).catch(() => {});
+      const lesson = (!res.simulated && res.appReady === false)
+        ? `环境问题：沙箱 app 未在 Inngest 注册成功${res.syncError ? `（${res.syncError.slice(0, 100)}）` : ""}——ran:0 不是 agent 设计问题；先修环境（Inngest dev server / serve URL），别 refine agent。`
+        : attribution.length
+        ? `保真违约（emit 载荷不满足下游契约）：${attribution.map((a) => `${a.agentShort}→${a.event}(${a.recommend})`).join("；")}。按定位指令定点修，别整链重造。`
+        : res.degradedAgents.length
+          ? `降级 agent：${res.degradedAgents.join("、")} —— 多为没绑到真实工具。下次先 ask_user 接入真实工具/补 I/O 契约，再 design_agent。`
+          : failedFires.length
+            ? `入口事件没发成功：${failedFires.map((f) => f.event).join("、")} —— 检查事件名是否对齐本体、Inngest 是否在跑。`
+            : "事件链没到成功终态——用 inspect_run 看断在哪个 agent，多半是 trigger/emit 没对齐本体事件名。";
+      await ctx.ports.reflection.record(ctx.domain, { summary: `沙箱未跑通：部署${res.functionsRegistered}·跑${res.ran}·成功终态=${res.reachedSuccessTerminal}${fidelity && !fidelity.ok ? `·保真${Math.round(fidelity.fidelity * 100)}%` : ""}`, lesson, failedStep: fidelity && !fidelity.ok ? "execution_fidelity" : "sandbox_chain", kind: "failure" }).catch(() => {});
     }
-    return { ok, summary: ok ? `沙箱已部署 ${res.functionsRegistered} 函数、跑 ${res.ran}、到成功终态 ✓${simNote}${fireNote}` : `沙箱未完全跑通：部署 ${res.functionsRegistered}、跑 ${res.ran}、成功终态=${res.reachedSuccessTerminal}${res.degradedAgents.length ? `、降级:${res.degradedAgents.join("、")}` : ""}${res.simulated ? "（模拟）" : ""}${fireNote}`, output: res };
+    return { ok, summary: ok ? `沙箱已部署 ${res.functionsRegistered} 函数、跑 ${res.ran}、到成功终态 ✓${fidelity ? `、保真 ${Math.round(fidelity.fidelity * 100)}%` : ""}${simNote}${fireNote}${revisionNote}` : `沙箱未完全跑通：部署 ${res.functionsRegistered}、跑 ${res.ran}、成功终态=${res.reachedSuccessTerminal}${fidelity && !fidelity.ok ? `、保真违约 ${fidelity.failingShorts.join("、")}` : ""}${res.degradedAgents.length ? `、降级:${res.degradedAgents.join("、")}` : ""}${res.simulated ? "（模拟）" : ""}${fireNote}${envNote}${attribNote}${revisionNote}`, output: res };
   },
 };
 
@@ -1423,7 +1549,7 @@ const review_context: BrainTool = {
       for (const e of s.emit ?? []) if (e && e !== "—" && !knownEvents.has(e)) findings.push(`「${s.nameZh}」产出事件「${e}」本体里不存在`);
     }
     const contract = deriveContractGraph(ctx.specs, ctx.domain, canonicalEventFields(ctx.ontology));
-    for (const line of contractIssueStrings(contract).filter((l) => l.includes("字段缺口"))) findings.push(line);
+    for (const line of contractIssueStringsBySeverity(contract).hard) findings.push(line); // #SIMPLIFY 结构化分级
     // Tier 2 — LLM: did each agent READ its context correctly (vs the ontology understanding)?
     let judge: string[] = [];
     if (isGatewayConfigured()) {
@@ -1913,7 +2039,7 @@ const finish: BrainTool = {
 const ask_user: BrainTool = {
   name: "ask_user",
   description:
-    "拿不准 / 缺信息 / 测试卡住、且你自己判断不了时，直接问用户——不要瞎猜、也不要把 agent 默默降级。给一个清晰的问题 + 2-4 个具体可选项（其中标一个 recommended:true 作你的最佳推荐），用户可以选一个或补充文字。典型：某外部平台 API 的 input/output 工具库里查不到、需求歧义、某测试反复失败拿不准根因、是否要造模拟桩。问完【暂停等用户回答】再继续，别在等待时调别的工具。",
+    "拿不准 / 缺信息 / 测试卡住、且你自己判断不了时，直接问用户——不要瞎猜、也不要把 agent 默默降级。给一个清晰的问题 + 2-4 个具体可选项（其中标一个 recommended:true 作你的最佳推荐），用户可以选一个或补充文字。典型：某外部平台 API 的 input/output 工具库里查不到、需求歧义、某测试反复失败拿不准根因、是否要造模拟桩。问完【暂停等用户回答】再继续，别在等待时调别的工具。同一问题问过一次就不会再打断用户——会直接把上次的答案回放给你。",
   parameters: params(
     {
       question: { type: "string", description: "要问用户的具体问题（一句话说清你需要什么）" },
@@ -1929,16 +2055,29 @@ const ask_user: BrainTool = {
   async execute(args, ctx) {
     const question = String(args.question ?? "").trim();
     if (!question) return { ok: false, summary: "question 不能为空。" };
+    // #ASK-DEDUP（审查修复：同一问题跨轮重复问）— 问过且已有答案 → 直接回放，不再打断用户。
+    const norm = normalizeQuestion(question);
+    const prior = ctx.askedQuestions?.[norm];
+    if (prior !== undefined && prior !== "") {
+      return { ok: true, summary: `这个问题已经问过了，用户当时的答复是：「${prior}」——直接采用这个答案继续，别再重复问。`, output: { question, answer: prior, replayed: true } };
+    }
     const options = Array.isArray(args.options)
       ? (args.options as Array<Record<string, unknown>>).map((o) => ({ label: String(o.label ?? ""), value: String(o.value ?? o.label ?? ""), recommended: Boolean(o.recommended) })).filter((o) => o.label)
       : undefined;
     const context = args.context ? String(args.context) : undefined;
+    (ctx.askedQuestions ??= {})[norm] = ""; // pending 标记：答案由 conductor 的澄清门写入
     ctx.clarifyPrompt = { question, options, context };
     ctx.awaitingClarify = true;
     ctx.emit({ t: "clarify", question, options, context, awaitingAnswer: true });
     return { ok: true, summary: `已向用户提问并【暂停等待回答】：「${question}」。用户回答后我会把答案发给你，你再继续——别在等待时调别的工具。`, output: { question, options, awaitingAnswer: true } };
   },
 };
+
+/** #ASK-DEDUP — 问题归一化键：去标点/空白、小写。同义改写不追求识别（那要语义比对，成本高
+ *  且误伤风险大）——只拦"字面上基本相同的问题被反复问"这一最常见的泛化来源。 */
+export function normalizeQuestion(q: string): string {
+  return q.toLowerCase().replace(/[\s，。？！,.?!、:："'（）()【】\[\]-]+/g, "").slice(0, 120);
+}
 
 // supply_test_data — contact / credential / id fields (an interview email, a callback URL, an API
 // key, a real candidate id) should NOT be tested with demo placeholders (candidate@example.com,
@@ -2058,6 +2197,7 @@ const create_mock_agent: BrainTool = {
     "为某个外部平台 / 服务造一个【模拟 agent】，让沙箱把链路跑通（真实外部 API 不在工具库、或没有真实 key 时）。它消费外发事件、产出该平台会回传的事件，prompt 写成『模拟 <平台>：按契约产出代表性 payload』。诚实标注为 mock，不算本体动作。",
   parameters: params(
     {
+      user_confirmed: { type: "boolean", description: "【结构性前置】必须为 true 且【只有在用户明确同意用模拟桩之后】才允许传 true（先 ask_user 给出真实接入/模拟/去掉三选项）。未确认就调用会被拒绝。" },
       platform: { type: "string", description: "被模拟的外部平台 / 服务名（如 RoboHire、Email、企业微信）" },
       trigger: { type: "array", items: { type: "string" }, description: "它消费的事件（外发给该平台的事件）" },
       emit: { type: "array", items: { type: "string" }, description: "它产出的事件（该平台会回传的事件）" },
@@ -2070,6 +2210,16 @@ const create_mock_agent: BrainTool = {
     const trigger = Array.isArray(args.trigger) ? (args.trigger as string[]).map(String).filter(Boolean) : [];
     const emit = Array.isArray(args.emit) ? (args.emit as string[]).map(String).filter(Boolean) : [];
     if (!platform || !trigger.length || !emit.length) return { ok: false, summary: "platform / trigger / emit 都必填。" };
+    // #AUDIT-FIX(L31) — 「先问用户再造桩」从 prompt 散文升级为结构闸（与 stageAdmission 同款
+    // 原则：顺序由结构强制）。要求 user_confirmed=true 且 askedQuestions 里存在一条已答的、
+    // 提及该平台的澄清记录——两个证据都在才放行。
+    if (args.user_confirmed !== true) {
+      return { ok: false, summary: `未经用户确认不能造模拟桩。先 ask_user 给出三选项（① 接入真实 ${platform} / ② 先用模拟桩跑通 / ③ 去掉该环节），用户明确选择模拟后，再带 user_confirmed:true 重新调用。` };
+    }
+    const platformAsked = Object.entries(ctx.askedQuestions ?? {}).some(([q, a]) => a && a !== "" && (q.includes(platform.toLowerCase().replace(/[^a-z0-9一-鿿]/g, "")) || q.includes("模拟") || q.includes("mock")));
+    if (!platformAsked) {
+      return { ok: false, summary: `没有找到与「${platform}」相关的已答澄清记录——user_confirmed 必须以真实的 ask_user 确认为前提，不能自行断言。先 ask_user 征求用户选择。` };
+    }
     const actionName = `mock_${kebab(platform).replace(/-/g, "_")}`;
     const sp = String(args.system_prompt ?? "").trim() || `你在沙箱里【模拟外部平台「${platform}」】：收到 ${trigger.join(" / ")} 后，按事件契约产出代表性的 ${emit.join(" / ")} payload（真实感数据，字段对齐 event_data），让事件链能端到端跑通。这是模拟桩，不是真实集成。`;
     const spec: GeneratedAgentSpec = {
@@ -2083,7 +2233,7 @@ const create_mock_agent: BrainTool = {
     ctx.specs = ctx.specs.filter((s) => s.actionName !== actionName);
     ctx.specs.push(spec);
     ctx.lastSandbox = null;
-    ctx.emit({ t: "agent.created", spec: cardOf(spec), design: designOf(spec) });
+    ctx.emit({ t: "agent.created", spec: cardOf(spec), design: designOf(spec), forAgent: spec.actionName });
     // #C: record a "needs real integration" punch-list item — a mock closes the sandbox chain but
     // isn't deployable, so surface exactly what the FDE must wire post-generation.
     await ctx.ports.reflection.record(ctx.domain, { summary: `需要真实集成：${platform}（当前用模拟桩 ${spec.slug} 让链路跑通）`, lesson: `「${actionName}」依赖外部平台「${platform}」。晋升前需：① 在工具库接入 ${platform} 的真实工具（或 create_tool 包装其 HTTP API），② 提供其凭证/配置(env/config)，③ 把模拟桩 ${spec.slug} 换成真实 agent。`, failedStep: `external_integration_pending:${platform}`, kind: "caveat" }).catch(() => {});
@@ -2139,12 +2289,12 @@ const generate_report: BrainTool = {
         const links = st.artifacts.map((a) => `${a.label} → /v1/artifacts/${a.id}`).join("；");
         return {
           ok: true,
-          summary: `报告已生成${st.title ? `「${st.title}」` : ""}：${links}${st.note ? `（${st.note}）` : ""}。告诉用户：在右上「后台任务」面板点击下载即可，不必贴出报告全文。`,
+          summary: `报告已生成${st.title ? `「${st.title}」` : ""}：${links}${st.note ? `（${st.note}）` : ""}。告诉用户：在右上「后台任务」面板点击下载即可，不必贴出报告全文。【重要】你没有读过报告正文——转述时只说标题/下载位置/审校状态，绝不要编造报告的章节目录或内容摘要（如"漏斗/图谱/热力图"这类正文里可能根本不存在的东西）。`,
           output: { jobId: job.id, title: st.title, artifacts: st.artifacts, note: st.note },
         };
       }
     }
-    return { ok: true, summary: `报告仍在后台生成（任务 ${job.id}）——完成后出现在右上「后台任务」面板，用户可随时下载。你可以继续其它工作，不用等待。`, output: { jobId: job.id, background: true } };
+    return { ok: true, summary: `报告仍在后台生成（任务 ${job.id}）——完成后出现在右上「后台任务」面板，用户可随时下载。你可以继续其它工作，不用等待。【重要】你没有也不会读到报告正文——之后向用户转述时只说任务状态与下载位置，绝不要编造报告内容/目录。`, output: { jobId: job.id, background: true } };
   },
 };
 

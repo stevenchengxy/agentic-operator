@@ -153,7 +153,7 @@ export async function agentFactoryRoutes(app: FastifyInstance) {
     return reply.ok({ uploads: await new FsUploadedOntologyStore().list(req.auth.tenantSlug) });
   });
 
-  app.post<{ Body: { name?: string; ontology?: unknown } }>("/agent-factory/ontology-upload", async (req, reply) => {
+  app.post<{ Body: { name?: string; ontology?: unknown; domainId?: string } }>("/agent-factory/ontology-upload", async (req, reply) => {
     requirePermission(req, "agents.write");
     if (!req.auth?.tenantSlug) return reply.fail("unauthorized", "需要租户上下文", 401);
     const name = String(req.body?.name ?? "").trim();
@@ -161,8 +161,12 @@ export async function agentFactoryRoutes(app: FastifyInstance) {
     if (req.body?.ontology == null) return reply.fail("bad_request", "ontology（JSON 内容）不能为空。", 400);
     // Body-size guard: refuse an oversized bundle (DoS / memory) — well above any real ontology.
     if (JSON.stringify(req.body.ontology).length > 4_000_000) return reply.fail("too_large", "本体 JSON 过大（>4MB）。", 413);
+    // Optional: ATTACH the ontology to an existing/selected 业务域 (store under its id) instead of
+    // minting a new file-named domain. The store slugifies it, so a built-in/Allmeta domain gets a
+    // tenant-scoped uploaded overlay that shadows it for this tenant.
+    const domainId = String(req.body?.domainId ?? "").trim() || undefined;
     try {
-      const meta = await new FsUploadedOntologyStore().save(req.auth.tenantSlug, name, req.body.ontology);
+      const meta = await new FsUploadedOntologyStore().save(req.auth.tenantSlug, name, req.body.ontology, domainId);
       return reply.ok({ uploaded: meta });
     } catch (e) {
       return reply.fail("invalid_ontology", (e as Error).message ?? "本体校验失败", 400);

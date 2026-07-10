@@ -181,6 +181,12 @@ export function Sidebar({ tenants, version = "v0.6.2" }: SidebarProps) {
             matchPrefix
           />
           <NavItem href={`${base}/logs`} icon="logs" label={t("nav.logs")} />
+          <NavItem
+            href={`${base}/reasoning`}
+            icon="spark"
+            label={t("nav.reasoning")}
+            matchPrefix
+          />
         </NavGroup>
         <NavGroup label={t("nav.group.manage")}>
           <NavItem

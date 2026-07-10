@@ -12,7 +12,7 @@
 // observed; the deploy itself (functions registered) is verifiable from the commit.
 
 import path from "node:path";
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import type { SandboxDeployer, SandboxDeployResult, GeneratedAgentSpec, OntologyAction, AgentRunIO } from "@agentic/agent-factory";
 import { compileGraph, verifyGraph, projectPlanToActions, verificationPolicy, synthesizeMockExternalAgents, externalInputEvents, caseOutcomeFromRuns, chainVerdictByKind } from "@agentic/agent-factory";
 import { getDb, tenants, runs, agents, steps, events, eq, and, desc, asc } from "@agentic/db";
@@ -21,6 +21,7 @@ import { makeId } from "@agentic/shared";
 import { getTenantInngest, appIdForTenant } from "@agentic/runtime";
 import { validate as miValidate, commit as miCommit } from "../manifest-import";
 import { syncTenantApp, probeApp } from "../inngest-sync";
+import { getLLMGateway } from "../llm";
 
 const FAILISH = /FAIL|REJECT|ERROR|CONFLICT|DENIED|FAILED/i;
 // A run-row STATUS that means the agent finished (runtime sets `ok`; the DryRun sim uses "Completed")
@@ -153,6 +154,8 @@ export function mapToManifest(specs: GeneratedAgentSpec[]): unknown[] {
       // executor=Agent rules for THIS action — attach it via tool_use config so it resolves live.
       tool_use: tools.map((t) => (t === "ontology.fetchActionRules" ? { name: t, config: { domain: s.domainId, action: s.actionName } } : { name: t })),
       typescript_code: s.generatedCode,
+      // #SAGA（§6.6）— 补偿事件透传：硬失败时 runtime（register.ts）幂等 emit 它，撤销外部副作用。
+      ...(s.compensationEvent ? { compensation_event: s.compensationEvent } : {}),
       // Phase 1 — project the spec's STRUCTURED plan[] into ordered manifest actions (one durable
       // step.run each: tool / condition / invoke / logic), giving the generated agent the per-step
       // durability + branching + soft-fail of a hand-written production agent. When the spec has no
@@ -168,13 +171,14 @@ export class ManifestSandboxDeployer implements SandboxDeployer {
   constructor() {
     // manifest-import requires AGENTIC_MODELS_DIR; default it to the repo models dir.
     if (!process.env.AGENTIC_MODELS_DIR) {
-      for (const c of [path.resolve(process.cwd(), "models"), path.resolve(process.cwd(), "../../models")]) {
-        try {
-          process.env.AGENTIC_MODELS_DIR = c;
-          break;
-        } catch {
-          /* keep trying */
-        }
+      // #AUDIT-FIX(M11) — 旧循环 try/catch 包的是永不抛错的 env 赋值（永远取第一个候选，回退
+      // 列表形同虚设）。真判据是目录存在与否；都不存在则明确告警而不是静默乱指。
+      const candidates = [path.resolve(process.cwd(), "models"), path.resolve(process.cwd(), "../../models")];
+      const hit = candidates.find((c) => { try { return existsSync(c); } catch { return false; } });
+      if (hit) process.env.AGENTIC_MODELS_DIR = hit;
+      else {
+        process.env.AGENTIC_MODELS_DIR = candidates[0]!;
+        try { console.warn(`[sandbox] AGENTIC_MODELS_DIR 未配置且候选目录都不存在（${candidates.join(" / ")}）——manifest 导入将失败，请设置 AGENTIC_MODELS_DIR`); } catch { /* best-effort */ }
       }
     }
   }
@@ -199,6 +203,23 @@ export class ManifestSandboxDeployer implements SandboxDeployer {
     // side-effect-free. Real model / live tools / cassette replay require explicit env opt-in.
     const vpolicy = verificationPolicy();
     console.info(`[sandbox] verification policy — model=${vpolicy.realModel ? "real" : "mock"} tools=${vpolicy.toolMode} budgetTokens=${vpolicy.budgetTokens || "∞(mock)"} judgeBlocking=${vpolicy.judgeIsBlocking}`);
+    // #NOMOCK — "real means real": when the policy intends a REAL model but the CONSTRUCTED gateway is
+    // the mock (echo) provider (e.g. a runtime demo toggle flipped it, or config drift), REFUSE the
+    // run — never grade "跑通" against mock completions, which would fabricate a green verdict. Fail
+    // closed with a clear reason. NODE_ENV=test legitimately uses the mock model (realModel=false there).
+    if (vpolicy.realModel && process.env.NODE_ENV !== "test") {
+      let prov = "";
+      try { prov = getLLMGateway().defaultProvider; } catch { /* singleton unbuilt — leave empty */ }
+      if (prov === "mock") {
+        console.warn("[sandbox] ⚠️  拒绝在 MOCK 网关上判定「跑通」——realModel=true 但网关为 mock。");
+        return {
+          appId, functionsRegistered: 0, ran: 0, deployed: 0,
+          reachedSuccessTerminal: false, fullChainRan: false,
+          degradedAgents: ["沙箱拒绝：LLM 网关当前为 MOCK（回声、非真实模型），不能据此判定「跑通」。请恢复真实 provider（见 /health 的 llmGateway.mock，或 POST /v1/demo/stop）后重试。"],
+          runs: [], fingerprint: "", simulated: false,
+        };
+      }
+    }
     // T2 — compute the event graph + the entries we'll fire, then AUTO-SYNTHESIZE mock external-
     // platform agents to close any external handoff (orphan trigger), so the chain runs end-to-end
     // in the isolated sandbox. Mock slugs contain "-mock-" (excluded from the real-deliverable count).
@@ -230,11 +251,18 @@ export class ManifestSandboxDeployer implements SandboxDeployer {
     // in-process handler, but the dev server never DISCOVERS the sandbox app unless we PUT its
     // serve URL — without this, fired events route to an app Inngest never saw (silent ran:0).
     // Best-effort + no-op under NODE_ENV=test; then a brief wait so the dev server introspects it.
-    await syncTenantApp(ctx.tenantSlug).catch(() => {});
+    // #AUDIT-FIX(H2) — 注册失败的诊断曾被三重丢弃（sync 结果丢、readiness 布尔无人消费、
+    // 结果类型无字段）→ 大脑只看到 ran:0 并按「事件名没对齐」错误归因死循环。现在全程保留。
+    let syncError: string | undefined;
+    const syncRes = await syncTenantApp(ctx.tenantSlug).catch((e) => ({ ok: false as const, error: String((e as Error)?.message ?? e) }));
+    if (syncRes && typeof syncRes === "object" && "ok" in syncRes && !(syncRes as { ok: boolean }).ok) {
+      syncError = String((syncRes as { error?: unknown }).error ?? "sync failed").slice(0, 240);
+      try { console.warn(`[sandbox] Inngest app 注册失败：${syncError}`); } catch { /* best-effort */ }
+    }
     // Readiness poll (replaces a blind fixed sleep): wait until the Inngest dev server has actually
     // introspected the sandbox app and registered its functions, so the events we fire next route
     // to live triggers instead of an app Inngest hasn't finished discovering (the silent ran:0).
-    await this.waitForAppReady(appIdForTenant(ctx.tenantSlug), functionsRegistered);
+    const appReady = await this.waitForAppReady(appIdForTenant(ctx.tenantSlug), functionsRegistered);
 
     // 3) fire the entry event(s) — the events consumed but produced by no agent.
     //    Registered functions trigger on `${tenantSlug}/${eventName}` (register.ts:139),
@@ -327,6 +355,8 @@ export class ManifestSandboxDeployer implements SandboxDeployer {
       agentRuns,
       fingerprint: committed.deployment_id ?? "",
       simulated: false, // real Inngest registration + run
+      appReady, // #AUDIT-FIX(H2)
+      ...(syncError ? { syncError } : {}),
       fires,
       // R2: the ids we registered this commit (id = spec.slug per mapToManifest) — proof, not a count.
       registeredIds: functionsRegistered > 0 ? allSpecs.map((s) => s.slug) : [],
@@ -385,12 +415,16 @@ export class ManifestSandboxDeployer implements SandboxDeployer {
   }
 
   private collectAgentRuns(tenantId: string, since: Date, specs: GeneratedAgentSpec[], tenantSlug: string): AgentRunIO[] {
-    let rows: Array<{ runId: string; status: string; subject: string | null; agentName: string | null }> = [];
+    let rows: Array<{ runId: string; status: string; subject: string | null; agentName: string | null; emittedEvent: string | null; emittedPayloadRef: string | null }> = [];
     try {
       rows = getDb()
-        .select({ runId: runs.id, status: runs.status, subject: runs.subject, agentName: agents.name })
+        // review fix (#R3): join the ACTUAL emitted event — outputEvent/outputPayload must be the
+        // real emit (which branch fired + the assembled envelope payload), not spec.emit[0] + the
+        // last step's raw return value. execution_fidelity grades THIS artifact.
+        .select({ runId: runs.id, status: runs.status, subject: runs.subject, agentName: agents.name, emittedEvent: events.name, emittedPayloadRef: events.payloadRef })
         .from(runs)
         .leftJoin(agents, eq(agents.id, runs.agentId))
+        .leftJoin(events, eq(events.id, runs.emittedEventId))
         .where(and(eq(runs.tenantId, tenantId), gt(runs.startedAt, since)))
         .orderBy(desc(runs.startedAt))
         .limit(50)
@@ -410,6 +444,38 @@ export class ManifestSandboxDeployer implements SandboxDeployer {
       if (!p) return null;
       try { return JSON.parse(readFileSync(p, "utf8")) as Record<string, unknown>; } catch { return null; }
     };
+    // The emitted event's payload lives in the NDJSON ledger behind `<path>#<byteOffset>`
+    // (appendToLedger). Read the record at that offset and return its `data` — the REAL
+    // assembled envelope payload that went onto the wire.
+    const readLedgerPayload = (ref: string | null): Record<string, unknown> | null => {
+      if (!ref) return null;
+      const hash = ref.lastIndexOf("#");
+      if (hash <= 0) return null;
+      const file = ref.slice(0, hash);
+      const offset = Number(ref.slice(hash + 1));
+      if (!Number.isFinite(offset) || offset < 0) return null;
+      try {
+        const raw = readFileSync(file, "utf8");
+        if (offset >= raw.length) return null;
+        const nl = raw.indexOf("\n", offset);
+        const line = raw.slice(offset, nl === -1 ? undefined : nl);
+        const rec = JSON.parse(line) as { data?: unknown };
+        if (!(rec && typeof rec.data === "object" && rec.data !== null && !Array.isArray(rec.data))) return null;
+        // #AUDIT-FIX(M9) — 载荷里被 blob 卸载的字段（{__ref:"blob",...}）会被保真评估当成
+        // object≠string 的契约违约（>8KB 合法字符串字段全部假阳性）。按 contentType 还原为
+        // 字符串占位（类型正确即可，内容用 preview 表示——保真查的是类型/存在性，不是全文）。
+        const data = { ...(rec.data as Record<string, unknown>) };
+        for (const [k, v] of Object.entries(data)) {
+          if (v && typeof v === "object" && !Array.isArray(v) && (v as { __ref?: unknown }).__ref === "blob") {
+            const ref = v as { preview?: unknown; bytes?: unknown };
+            data[k] = `${String(ref.preview ?? "")}…[blob ${String(ref.bytes ?? "?")}B 已卸载]`;
+          }
+        }
+        return data;
+      } catch {
+        return null;
+      }
+    };
     const runIO = (runId: string): { input: Record<string, unknown> | null; output: Record<string, unknown> | null } => {
       try {
         const ss = getDb().select({ inputRef: steps.inputRef, outputRef: steps.outputRef }).from(steps).where(eq(steps.runId, runId)).orderBy(asc(steps.ord)).all();
@@ -421,6 +487,10 @@ export class ManifestSandboxDeployer implements SandboxDeployer {
     return rows.map((r) => {
       const spec = specs.find((s) => s.short === r.agentName || s.slug === r.agentName);
       const io = runIO(r.runId);
+      // review fix: prefer the REAL emit (actual branch + assembled envelope payload from the
+      // ledger); fall back to the old approximation (first declared emit + last step output)
+      // only when the run emitted nothing / the ledger ref is unreadable.
+      const emittedPayload = readLedgerPayload(r.emittedPayloadRef);
       return {
         agentSlug: spec?.slug ?? r.agentName ?? r.runId,
         agentShort: spec?.nameZh ?? r.agentName ?? "agent",
@@ -429,9 +499,12 @@ export class ManifestSandboxDeployer implements SandboxDeployer {
         triggerEvent: r.subject,
         inputPayload: io.input,
         tools: spec?.tools ?? [],
-        outputEvent: spec?.emit?.[0] ?? null,
+        // No recorded emit ⇒ outputEvent null (honest: nothing went on the wire; fidelity skips it,
+        // the failure itself is chain_ran/status territory). Never guess spec.emit[0] — that graded
+        // reject-branch runs against the success branch's contract.
+        outputEvent: r.emittedEvent ?? null,
         reasoning: "",
-        outputPayload: io.output,
+        outputPayload: emittedPayload ?? io.output,
         runId: r.runId,
         url: `/portal/${encodeURIComponent(tenantSlug)}/runs/${encodeURIComponent(r.runId)}`,
       };

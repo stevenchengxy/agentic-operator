@@ -49,6 +49,7 @@ export const PERMISSIONS = [
   "agents.invoke",
   "runs.cancel",
   "runs.replay",
+  "runs.delete",
   "events.publish",
   "tasks.resolve",
 
@@ -107,6 +108,7 @@ const OPERATOR_EXTRA: Permission[] = [
   "agents.invoke",
   "runs.cancel",
   "runs.replay",
+  "runs.delete",
   "events.publish",
   "tasks.resolve",
 ];

@@ -6,7 +6,7 @@
  * timeline (now incl. the previously-invisible score deltas + reverts), reflections, and skills.
  */
 
-import { Panel, Button } from "@/app/portal/components";
+import { Panel, Button, HelpTip, Markdown } from "@/app/portal/components";
 import { Ledger } from "./atoms";
 import type { Block } from "./model";
 
@@ -48,7 +48,7 @@ export function RunSummary({ blocks, lastBudget, analysis, analyzing, canAnalyze
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
       {(intents.length > 0 || interventions.length > 0) && (
-        <Panel title="大脑对你的理解" padded={false}>
+        <Panel title={<span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>大脑对你的理解<HelpTip>意图与介入是折叠幸存者——对话再长、重启多少次，大脑都记得。</HelpTip></span>} padded={false}>
           <div style={{ display: "flex", flexDirection: "column" }}>
             {intents.map((t, i) => (
               <div key={`i-${i}`} style={{ display: "flex", gap: 8, padding: "8px 12px", borderTop: i ? "1px solid var(--border)" : "none", fontSize: 12, lineHeight: 1.55 }}>
@@ -62,7 +62,6 @@ export function RunSummary({ blocks, lastBudget, analysis, analyzing, canAnalyze
                 <span style={{ color: "var(--text-2)" }}>{t}</span>
               </div>
             ))}
-            <div style={{ padding: "6px 12px", fontSize: 10.5, color: "var(--text-4)", borderTop: "1px solid var(--border)" }}>意图与介入是折叠幸存者——对话再长、重启多少次，大脑都记得。</div>
           </div>
         </Panel>
       )}
@@ -98,7 +97,7 @@ export function RunSummary({ blocks, lastBudget, analysis, analyzing, canAnalyze
                 {a.scored && a.model ? <span title="评审使用的模型" style={{ fontSize: 10, color: "var(--text-3)", fontFamily: "var(--mono)", border: "1px solid var(--border)", borderRadius: 4, padding: "0 5px" }}>🧠 {String(a.model).split("/").pop()}</span> : null}
                 <span style={{ marginLeft: "auto" }}><Button onClick={onAnalyze} disabled={analyzing}>{analyzing ? "评审中…" : "重新评审"}</Button></span>
               </div>
-              {a.summary ? <div style={{ fontSize: 12.5, color: "var(--text-2)", marginTop: 8, lineHeight: 1.6 }}>{String(a.summary)}</div> : null}
+              {a.summary ? <div style={{ fontSize: 12.5, color: "var(--text-2)", marginTop: 8, lineHeight: 1.6 }}><Markdown>{String(a.summary)}</Markdown></div> : null}
               <ReviewList label="问题" items={a.problems} color="var(--red)" />
               <ReviewList label="建议" items={a.suggestions} color="var(--green)" />
               <ReviewList label="优点" items={a.strengths} color="var(--text-3)" />
@@ -117,7 +116,7 @@ export function RunSummary({ blocks, lastBudget, analysis, analyzing, canAnalyze
 
       <Panel title="精修时间线" padded={false}>
         <div style={{ display: "flex", flexDirection: "column" }}>
-          {scores.length === 0 && reverts.length === 0 && <div style={{ padding: 12, fontSize: 11.5, color: "var(--text-4)" }}>还没精修——大脑校验后若发现问题会在这里逐轮记录评分变化</div>}
+          {scores.length === 0 && reverts.length === 0 && <div style={{ padding: 12, fontSize: 11.5, color: "var(--text-4)", display: "flex", alignItems: "center", gap: 6 }}>还没精修 <HelpTip>大脑校验后若发现问题会在这里逐轮记录评分变化</HelpTip></div>}
           {(() => { const attempt: Record<string, number> = {}; return scores.map((s, i) => {
             attempt[s.action] = (attempt[s.action] ?? 0) + 1; // #6 — per-agent round number (逐轮打分)
             return (
@@ -134,9 +133,9 @@ export function RunSummary({ blocks, lastBudget, analysis, analyzing, canAnalyze
       </Panel>
 
       {/* Empty ledgers don't render — no more bordered "还没…" placeholder panels cluttering 总结. */}
-      {plans.length > 0 && <Ledger title="构建计划" items={plans} empty="还没规划" />}
-      {refines.length > 0 && <Ledger title="修订记录" items={refines} empty="还没修订" />}
-      {reflects.length > 0 && <Ledger title="学到的经验（反思）" items={reflects} empty="还没反思" />}
+      {plans.length > 0 && <Ledger title="构建计划" items={plans} empty="还没规划" markdown />}
+      {refines.length > 0 && <Ledger title="修订记录" items={refines} empty="还没修订" markdown />}
+      {reflects.length > 0 && <Ledger title="学到的经验（反思）" items={reflects} empty="还没反思" markdown />}
       {skills.length > 0 && <Ledger title="技能" items={skills} empty="本次没造技能" />}
     </div>
   );

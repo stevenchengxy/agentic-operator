@@ -2,6 +2,8 @@ export {
   inngest,
   getTenantInngest,
   appIdForTenant,
+  mainTenantSlug,
+  isMainTenant,
   allTenantClients,
   SYSTEM_SLUG,
   type EventMap,

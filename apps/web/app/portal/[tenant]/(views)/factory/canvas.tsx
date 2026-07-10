@@ -11,7 +11,7 @@
  */
 
 import { Fragment, useMemo } from "react";
-import { Empty } from "@/app/portal/components";
+import { Empty, HelpTip } from "@/app/portal/components";
 import type { AgentCardData, FactoryStageId, StageState } from "./model";
 
 // ── stage rail (compact, always-pinned progress) ──────────────────────────────────
@@ -41,6 +41,63 @@ export function StageRail({ stages, current, running, refineCount }: { stages: S
         <div style={{ position: "absolute", left: 0, top: 0, height: 3, borderRadius: 2, width: `${pct}%`, background: "var(--signal)", transition: "width 0.4s ease" }} />
       </div>
       {refineCount > 0 && <div style={{ fontSize: 10.5, color: "var(--amber)", marginTop: 5 }}>↺ 修订回环 ×{refineCount}</div>}
+    </div>
+  );
+}
+
+// ── progress SPINE (full-width status band: 业务域 · 阶段+健康 · 成本 · 后台) ──────────────
+// One merged band that replaces the old right-pane StageRail + left-rail HealthStrip + budget
+// figure. Health checks fold onto their owning stage segment as colored pips (green=ok,
+// amber=待办/未过, dim=未开始); hover a pip for its label. Pure projection — same stages/checks
+// the rest of the cockpit derives, just consolidated into one row.
+const HEALTH_BY_STAGE: Partial<Record<FactoryStageId, number[]>> = { design: [0, 1, 2], validate: [3], sandbox: [4] };
+
+export function FactorySpine({
+  stages, current, running, refineCount, domainName, healthChecks, budgetTokens, awaitingHint, onOpenBg,
+}: {
+  stages: StageState[];
+  current: FactoryStageId | null;
+  running: boolean;
+  refineCount: number;
+  domainName: string;
+  healthChecks: Array<{ ok: boolean | undefined; label: string }>;
+  budgetTokens: number;
+  awaitingHint: string | null;
+  onOpenBg: () => void;
+}) {
+  const pipColor = (ok: boolean | undefined) => (ok === true ? "var(--green)" : ok === false ? "var(--amber)" : "var(--text-4)");
+  return (
+    <div style={{ display: "flex", alignItems: "stretch", gap: 12, minHeight: 46, padding: "0 14px", borderBottom: "1px solid var(--border)", background: "var(--panel-3)", flexShrink: 0 }}>
+      <div title={domainName} style={{ display: "flex", alignItems: "center", gap: 7, alignSelf: "center", background: "var(--panel)", border: "1px solid var(--border)", borderRadius: 8, padding: "5px 10px", fontSize: 12, color: "var(--text-2)", whiteSpace: "nowrap", maxWidth: 210, minWidth: 0 }}>
+        🗂 <b style={{ color: "var(--text)", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis" }}>{domainName || "未选业务域"}</b>
+      </div>
+      <div style={{ flex: 1, display: "flex", alignItems: "center", gap: 2, minWidth: 0, overflow: "hidden" }}>
+        {stages.map((s, i) => {
+          const isActive = s.id === current && running && s.status !== "ok";
+          const on = s.status !== "idle";
+          const pips = HEALTH_BY_STAGE[s.id];
+          return (
+            <Fragment key={s.id}>
+              {i > 0 && <span style={{ color: "var(--text-4)", fontSize: 10 }}>›</span>}
+              <div className={isActive ? "fct-stage-active" : undefined} title={s.label} style={{ display: "flex", flexDirection: "column", justifyContent: "center", gap: 3, padding: "5px 9px", borderRadius: 8, background: isActive ? "linear-gradient(180deg, rgba(208,255,0,0.10), transparent)" : "transparent", minWidth: 0 }}>
+                <span style={{ fontSize: 11.5, whiteSpace: "nowrap", display: "flex", alignItems: "center", gap: 5, color: on ? (s.status === "ok" ? "var(--text-2)" : s.status === "error" ? "var(--red)" : "var(--text)") : "var(--text-3)", fontWeight: isActive ? 600 : 400 }}>
+                  {s.status === "ok" && <span style={{ color: "var(--green)", fontSize: 10 }}>✓</span>}
+                  {isActive && <span style={{ width: 7, height: 7, borderRadius: "50%", background: "var(--signal)", boxShadow: "0 0 0 3px rgba(208,255,0,0.18)" }} />}
+                  {s.label}
+                </span>
+                {pips && <span style={{ display: "flex", gap: 3 }}>{pips.map((ci) => <span key={ci} title={healthChecks[ci]?.label} style={{ width: 5, height: 5, borderRadius: "50%", background: pipColor(healthChecks[ci]?.ok) }} />)}</span>}
+              </div>
+            </Fragment>
+          );
+        })}
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 9, alignSelf: "center", flexShrink: 0 }}>
+        {refineCount > 0 && <span title="修订回环" style={{ fontSize: 10.5, color: "var(--amber)", fontFamily: "var(--mono)" }}>↺ ×{refineCount}</span>}
+        {budgetTokens > 0 && <span title="本次运行的累计 token" style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-3)" }}>◷ {Math.round(budgetTokens / 1000)}k</span>}
+        <button onClick={onOpenBg} title="后台任务" style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, color: "var(--text-2)", background: "var(--panel)", border: `1px solid ${awaitingHint ? "var(--amber)" : "var(--border)"}`, borderRadius: 20, padding: "4px 10px", cursor: "pointer" }}>
+          后台{awaitingHint && <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--amber)" }} />}
+        </button>
+      </div>
     </div>
   );
 }
@@ -97,7 +154,7 @@ export function EventGraph({
     return { nodes, edges, pos, Wd, Hd, producers, consumers };
   }, [agents]);
 
-  if (!agents.length) return <Empty title="还没有智能体" hint="大脑进入「设计」阶段后，事件流图会随生成逐个长出来" />;
+  if (!agents.length) return <Empty title={<>还没有智能体 <HelpTip>大脑进入「设计」阶段后，事件流图会随生成逐个长出来</HelpTip></>} />;
 
   const curve = (x1: number, y1: number, x2: number, y2: number) => `M ${x1} ${y1} C ${x1} ${(y1 + y2) / 2}, ${x2} ${(y1 + y2) / 2}, ${x2} ${y2}`;
   return (

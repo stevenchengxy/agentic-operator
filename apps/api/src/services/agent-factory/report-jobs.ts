@@ -21,9 +21,11 @@ import { agentRegistry } from "@agentic/agents";
 import { substituteCharts, type ReportChart, type ReportInput, type ReportOutput } from "@agentic/agents/system";
 import { renderSvgChart, htmlFileToPdf, findChrome, reportArchiveDir } from "@agentic/tools";
 import type { DomainOntology, OntologyAction } from "@agentic/agent-factory";
+import { verifyReportGrounding, correctionInstruction, residualWarningHtml, looksDegenerate, chatOnce, isGatewayConfigured } from "@agentic/agent-factory";
 import { artifacts, getDb } from "@agentic/db";
 import { makeId } from "@agentic/shared";
 
+import { getLLMGateway } from "../llm";
 import { makeFactoryPorts } from "./index";
 
 export type ReportFormat = "html" | "pdf" | "both";
@@ -439,6 +441,7 @@ function insertArtifactRow(tenantId: string, runId: string, kind: string, filePa
 async function runJob(job: ReportJob): Promise<void> {
   const setPhase = (p: string) => {
     job.phase = p;
+    persistJob(job); // #AUDIT-FIX(L33) — 每个阶段落盘：重启后已归档的产物/进度不再被 finally 的 error 覆盖丢失
   };
   try {
     setPhase("读取本体");
@@ -457,8 +460,6 @@ async function runJob(job: ReportJob): Promise<void> {
     const digest = buildDigest(ont);
 
     setPhase("撰写报告");
-    const agent = agentRegistry.get("reportGenerator");
-    if (!agent) throw new Error("reportGenerator agent 未注册（bootstrap 未加载 @agentic/agents/system）。");
     const input: ReportInput = {
       subject: `业务域「${job.domainName}」(${job.domain}) 的 Ontology 领域分析 — ${ont.actions.length} 动作 / ${ont.events.length} 事件 / ${ont.rules.length} 规则 / ${ont.objects.length} 数据对象`,
       title: `${job.domainName} · Ontology 领域分析报告`,
@@ -467,29 +468,121 @@ async function runJob(job: ReportJob): Promise<void> {
       data: digest,
       charts,
     };
-    const result = await agent.run(input as never, {
-      tenantSlug: job.tenantSlug,
-      correlationId: makeId("cor"),
-      invocationId: job.id,
-    });
-    job.runId = result.runId;
-    const output = result.output as ReportOutput | null;
-    if (!output?.html) throw new Error("报告 agent 未产出 HTML。");
-    job.title = output.title;
+    // #NOMOCK — 工厂交付物绝不能走 mock 网关：主 LLM 网关为 mock（apps/api/.env.local
+    // LLM_DEFAULT_PROVIDER=mock，为保护生产代理而设）时，reportGenerator(BaseAgent) 只会回声
+    // "Mock response…"。这里【直接】用工厂网关（FACTORY_/CUSTOM_/OPENAI_，真实模型）撰写，
+    // 跳过注定 mock 的 BaseAgent 调用；两者都不可用才诚实报错。
+    // #NOMOCK — key off the CONSTRUCTED gateway's provider (not a re-parse of env): an empty/typo'd
+    // LLM_DEFAULT_PROVIDER now fails closed at config.ts, but if the singleton was ever built on mock
+    // (demo toggle, opt-in) the BaseAgent path would echo — detect that too, then route via the factory
+    // gateway. The env regexes stay as a belt-and-suspenders for a mock-named model on a real provider.
+    let constructedProvider = "";
+    try { constructedProvider = getLLMGateway().defaultProvider; } catch { /* singleton unbuilt → env-only check */ }
+    const mainMock =
+      constructedProvider === "mock" ||
+      /^mock$/i.test(process.env.LLM_DEFAULT_PROVIDER ?? "") ||
+      /mock/i.test(process.env.LLM_DEFAULT_MODEL ?? "");
+    const factoryReady = isGatewayConfigured();
+    const writeViaFactory = async (violations?: import("@agentic/agent-factory").ReportViolation[]): Promise<string> => {
+      const chartHint = charts.length ? `可在合适位置引用图表占位符（原样输出，服务端替换为 SVG）：${charts.map((c) => `{{CHART:${c.id}}}`).join(" ")}。` : "";
+      const sys =
+        "你是资深业务架构分析师。基于给定的本体数据摘要（digest JSON）撰写一份【完整、专业、中文】的领域分析报告，输出为一段完整 HTML 片段（<article>…</article>，内联少量样式即可，不要 <html>/<head>）。" +
+        "结构：执行摘要 → 业务链路解读（结合 analysis.eventGraph 的事件分类与 suggestedBridges）→ 规则体系（用 analysis.ruleAnalysis 的全量统计，正文可引用 rulesSample 明细）→ 数据模型 → 断链与风险 → 可执行建议。" +
+        chartHint +
+        "硬规则：所有事件/动作/工具/对象名和所有计数【只能】来自给定数据，禁止编造或概数化；不确定就不写。" +
+        (violations && violations.length ? `\n【上一稿的接地错误，逐条修正后重写】：\n${correctionInstruction(violations)}` : "");
+      const usr = `报告标题：${input.title}\n分析重点：${job.focus ?? "（无）"}\n数据（digest JSON）：\n${JSON.stringify(digest).slice(0, 90_000)}`;
+      return (await chatOnce(sys, usr, { maxTokens: 16000, purpose: "report-write" }).catch(() => "")) || "";
+    };
+
+    let baseHtml: string;
+    let narrativeVia: string;
+    let degen: { degenerate: boolean; reason?: string };
+    if (mainMock && factoryReady) {
+      // 主网关是 mock → 直接用工厂网关（真实）撰写，不浪费一次 mock 调用。
+      setPhase("撰写报告 · 工厂网关（真实模型）");
+      baseHtml = await writeViaFactory();
+      narrativeVia = "工厂网关撰写（真实模型，主网关为 mock）";
+      degen = looksDegenerate(baseHtml);
+      job.title = String(input.title);
+      job.runId = job.runId || makeId("run");
+    } else {
+      const agent = agentRegistry.get("reportGenerator");
+      if (!agent) throw new Error("reportGenerator agent 未注册（bootstrap 未加载 @agentic/agents/system）。");
+      const result = await agent.run(input as never, { tenantSlug: job.tenantSlug, correlationId: makeId("cor"), invocationId: job.id });
+      job.runId = result.runId;
+      const output = result.output as ReportOutput | null;
+      if (!output?.html) throw new Error("报告 agent 未产出 HTML。");
+      baseHtml = output.html;
+      narrativeVia = "reportGenerator agent（主 LLM 网关）";
+      degen = looksDegenerate(baseHtml);
+      job.title = output.title;
+      // 主网关本以为真实却退化 → 工厂网关兜底重写。
+      if (degen.degenerate && factoryReady) {
+        setPhase("主网关退化 · 工厂网关重写");
+        const alt = await writeViaFactory();
+        if (alt && !looksDegenerate(alt).degenerate) { baseHtml = alt; narrativeVia = "工厂网关回退撰写（主网关退化）"; degen = looksDegenerate(alt); job.title = String(input.title); }
+      }
+    }
+    if (degen.degenerate) {
+      throw new Error(
+        `报告正文生成退化（${degen.reason}）——拒绝交付非报告内容。工厂网关（FACTORY_GATEWAY_*/CUSTOM_LLM_*/OPENAI_*）不可用或也退化：请配置一个真实的工厂网关模型后重试（主 LLM 网关当前为 mock：apps/api/.env.local LLM_DEFAULT_PROVIDER）。`,
+      );
+    }
+
+    // #REPORT-VERIFY — 接地审校闭环（自己检查 → 定向纠错 → 复检 → 诚实披露残留）。
+    // ① 检查：正文引用的事件/动作/工具/对象名必须能在【模型看到的 digest ∪ 本体全量】核到，
+    //    四类核心计数必须命中合法数集；② 违规 → 一次定向修正重写（把"错在哪、去哪核对"逐条
+    //    喂回模型）；③ 复检仍残留 → 报告内插入可见"审校警示"块——绝不静默交付错误内容。
+    setPhase("接地审校");
+    let finalHtml = baseHtml;
+    let check = verifyReportGrounding(finalHtml, ont, digest);
+    let verifyNote = "审校通过 ✓（正文引用与计数均可在源数据核到）";
+    if (!check.ok) {
+      setPhase("审校修正");
+      try {
+        // #NOMOCK — 修正重写统一走工厂网关（真实模型）：无论初稿来自哪条通道，修正都用真实
+        // 模型（主网关 mock 时 agent 重试只会再回声一次）。
+        let retryHtml: string | null = null;
+        if (factoryReady) {
+          const fixed = await writeViaFactory(check.violations);
+          retryHtml = fixed && !looksDegenerate(fixed).degenerate ? fixed : null;
+        }
+        if (retryHtml) {
+          const recheck = verifyReportGrounding(retryHtml, ont, digest);
+          // 只有修正稿确实更干净才采用（否则保留原稿，避免越修越糟）。
+          if (recheck.violations.length < check.violations.length) {
+            finalHtml = retryHtml;
+            check = recheck;
+          }
+        }
+      } catch {
+        /* 修正重写失败 → 走残留披露路径 */
+      }
+      if (check.ok) {
+        verifyNote = "审校通过（经 1 次自动修正）✓";
+      } else {
+        verifyNote = `审校残留 ${check.violations.length} 处（已在报告内可见标注，请勿采信标注处）`;
+        const warn = residualWarningHtml(check.violations);
+        finalHtml = finalHtml.includes("</body>") ? finalHtml.replace("</body>", () => `${warn}\n</body>`) : `${finalHtml}${warn}`;
+        job.note = job.note ? `${job.note}；${verifyNote}` : verifyNote;
+      }
+    }
 
     // Deterministic methodology footer — sampling scope / linkage method / classification
     // provenance must reach the reader regardless of whether the model remembered to disclose.
     const ra = (digest as { analysis?: { ruleAnalysis?: { linkageMethod?: string } } }).analysis?.ruleAnalysis;
-    const footer = `\n<section style="max-width:880px;margin:32px auto 8px;padding:14px 18px;border:1px solid #ddd;border-radius:10px;background:#fafafa;font-size:12.5px;color:#666;line-height:1.7"><b style="color:#444">附：数据与方法</b><br>· 数据源：业务域「${escStr(job.domainName ?? job.domain)}」本体全量（${ont.actions.length} 动作 · ${ont.events.length} 事件 · ${ont.rules.length} 规则 · ${ont.objects.length} 数据对象）。<br>· 规则统计基于全量；正文引用的规则明细来自分层采样（${escStr(String((digest as Record<string, unknown>).rulesSampleNote ?? ""))}）。<br>· 规则→动作关联方法：${escStr(ra?.linkageMethod ?? "（未知）")}。<br>· 事件分类（外部入口 / 内部链路 / 终态或外部交接）与断链候选由系统按生产者-消费者关系确定性判定，图表由确定性渲染器生成；模型仅负责业务解读。</section>`;
-    const withFooter = output.html.includes("</body>") ? output.html.replace("</body>", () => `${footer}\n</body>`) : `${output.html}${footer}`;
+    const footer = `\n<section style="max-width:880px;margin:32px auto 8px;padding:14px 18px;border:1px solid #ddd;border-radius:10px;background:#fafafa;font-size:12.5px;color:#666;line-height:1.7"><b style="color:#444">附：数据与方法</b><br>· 数据源：业务域「${escStr(job.domainName ?? job.domain)}」本体全量（${ont.actions.length} 动作 · ${ont.events.length} 事件 · ${ont.rules.length} 规则 · ${ont.objects.length} 数据对象）。<br>· 规则统计基于全量；正文引用的规则明细来自分层采样（${escStr(String((digest as Record<string, unknown>).rulesSampleNote ?? ""))}）。<br>· 规则→动作关联方法：${escStr(ra?.linkageMethod ?? "（未知）")}。<br>· 事件分类（外部入口 / 内部链路 / 终态或外部交接）与断链候选由系统按生产者-消费者关系确定性判定，图表由确定性渲染器生成；模型仅负责业务解读。<br>· 撰写通道：${escStr(narrativeVia)}。<br>· 接地审校：${escStr(verifyNote)}。</section>`;
+    const withFooter = finalHtml.includes("</body>") ? finalHtml.replace("</body>", () => `${footer}\n</body>`) : `${finalHtml}${footer}`;
     const html = substituteCharts(withFooter, charts);
     const dir = reportArchiveDir(job.tenantSlug);
     fs.mkdirSync(dir, { recursive: true });
     const stem = `ontology-${job.domain.replace(/[^a-zA-Z0-9_-]+/g, "-").slice(0, 40)}-${job.id.slice(-6)}`;
     const htmlPath = path.join(dir, `${stem}.html`);
     fs.writeFileSync(htmlPath, html);
-    const htmlArt = insertArtifactRow(job.tenantId, result.runId, "text/html", htmlPath);
+    const htmlArt = insertArtifactRow(job.tenantId, job.runId ?? job.id, "text/html", htmlPath);
     job.artifacts.push({ id: htmlArt.id, kind: "text/html", size: htmlArt.size, label: "HTML 报告" });
+    persistJob(job); // #AUDIT-FIX(L33)
 
     if (job.format === "pdf" || job.format === "both") {
       setPhase("打印 PDF");
@@ -501,8 +594,9 @@ async function runJob(job: ReportJob): Promise<void> {
         try {
           const pdfPath = path.join(dir, `${stem}.pdf`);
           await htmlFileToPdf(htmlPath, pdfPath);
-          const pdfArt = insertArtifactRow(job.tenantId, result.runId, "application/pdf", pdfPath);
+          const pdfArt = insertArtifactRow(job.tenantId, job.runId ?? job.id, "application/pdf", pdfPath);
           job.artifacts.push({ id: pdfArt.id, kind: "application/pdf", size: pdfArt.size, label: "PDF 报告" });
+        persistJob(job); // #AUDIT-FIX(L33)
         } catch (e) {
           job.note = `PDF 打印失败：${(e as Error).message ?? String(e)}。HTML 版本已生成。`;
         }

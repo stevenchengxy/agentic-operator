@@ -79,6 +79,8 @@ async function checkLLMGateway(): Promise<NonNullable<HealthReport["llmGateway"]
       defaultProvider: g.defaultProvider,
       defaultModel: process.env.LLM_DEFAULT_MODEL ?? undefined,
       providers: g.listProviders().length,
+      // #NOMOCK — explicit flag so a mock runtime can never masquerade as real (one curl reveals it).
+      mock: g.defaultProvider === "mock",
     };
   } catch {
     return { ok: false };

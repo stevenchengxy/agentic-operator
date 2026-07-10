@@ -145,8 +145,9 @@ export const AgentSchema = z
     // tool-use loop. Opt-in per agent → zero effect on hand-authored tenants (RAAS et al.).
     generated: z.boolean().optional(),
     // #G — true CodeAct: when set (only for AI-written code), the runtime EXECUTES the agent's
-    // typescript_code handler in the sandbox instead of the default prompt (gated by
-    // FACTORY_EXEC_GENERATED, dry-run tools, falls back on any error). Default off.
+    // typescript_code handler in the sandbox instead of the default prompt. Isolation invariant:
+    // runs ONLY on `-sb` sandbox tenants; FACTORY_EXEC_GENERATED=0 is the kill switch (default ON);
+    // any load/exec failure falls back to the declarative path (and counts as code-not-ran).
     codeExecuted: z.boolean().optional(),
     // Scheduled-trigger fields. Declared explicitly so that legacy manifests
     // serialising `""` as the placeholder coerce to `undefined`; otherwise

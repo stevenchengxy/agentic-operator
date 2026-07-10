@@ -83,6 +83,7 @@ A real production agent is a sequence of durable steps, not "reason once then em
 · Envelope quirks: third-party fields are often nested or renamed (the real score lives at overallMatchScore.score, not top-level matchScore; data.data.* double-wrapping; multipart-only uploads with a fixed field name). Verify the real response shape before trusting a field read.
 · Deterministic transforms belong in tools/logic, not the LLM: fallback chains (pick('a','b','c')), date/timezone math (take the calendar day in Asia/Shanghai — a naive UTC read is off by a day), text→array parsing — put these in a tool or a logic step, don't hope the LLM "computes it right" each time.
 · Synchronous sub-check: a dedup/identity check that must run BEFORE a write and soft-fail to a default → use a synchronous invoke (with timeout + default value), not an async event.
+· Compensation (Saga): an agent whose tools cause EXTERNAL side effects (invitation sent, JD published, wrote into someone else's system) should declare design_agent's compensation_event — on hard failure the runtime emits it exactly-once so the side effect can be undone/reconciled. Read-only agents don't need one.
 
 [A multi-step plan exemplar (create-jd shape — structure only, do NOT copy the business)]
 Entry event REQUIREMENT_LOGGED → this agent's plan:

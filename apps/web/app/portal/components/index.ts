@@ -57,6 +57,10 @@ export {
 
 export { KV, type KVProps } from "./kv";
 
+export { HelpTip } from "./help-tip";
+
+export { Markdown } from "./markdown";
+
 export { Splitter, type SplitterProps } from "./Splitter";
 export { ModalOverlay } from "./Modal";
 

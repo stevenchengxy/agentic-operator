@@ -119,7 +119,66 @@ export const ListRunsQuery = z.object({
   q: z.string().optional(),
   /** Filter to a parent run's children (trace-tree lazy expand). */
   parentRunId: z.string().optional(),
+  /**
+   * Pagination (opt-in). When `page` is present the list endpoint returns a
+   * {@link PaginatedRuns} envelope instead of a bare array — 1-indexed page,
+   * `pageSize` rows each (default 50, capped 200). Existing callers that omit
+   * `page` keep getting the legacy bare array, so nothing breaks.
+   */
+  page: z.coerce.number().int().positive().optional(),
+  pageSize: z.coerce.number().int().positive().max(200).optional(),
+  /**
+   * Recycle-bin lens. `"1"`/`"true"` returns ONLY soft-deleted (tombstoned)
+   * runs; anything else (or absent) returns only live runs. String-typed
+   * because query params arrive as strings and `z.coerce.boolean` treats the
+   * literal `"false"` as truthy.
+   */
+  deleted: z.enum(["1", "true", "0", "false"]).optional(),
 });
+export type ListRunsQuery = z.infer<typeof ListRunsQuery>;
+
+/**
+ * Server-side paginated runs envelope. Returned by `GET /v1/runs?page=…`.
+ * `total` is the full filtered row count (for page-count math); `rows` is the
+ * current page.
+ */
+export const PaginatedRuns = z.object({
+  rows: z.array(RunRow),
+  total: z.number(),
+  page: z.number(),
+  pageSize: z.number(),
+});
+export type PaginatedRuns = z.infer<typeof PaginatedRuns>;
+
+/** Response of `DELETE /v1/runs/:id` — soft-delete (recoverable via restore). */
+export const DeleteRunResponse = z.object({
+  id: z.string(),
+  deleted: z.boolean(),
+  note: z.string(),
+});
+export type DeleteRunResponse = z.infer<typeof DeleteRunResponse>;
+
+/** Response of `POST /v1/runs/:id/restore` — un-tombstone a soft-deleted run. */
+export const RestoreRunResponse = z.object({
+  id: z.string(),
+  restored: z.boolean(),
+  note: z.string(),
+});
+export type RestoreRunResponse = z.infer<typeof RestoreRunResponse>;
+
+/**
+ * Response of the bulk `DELETE /v1/runs?scope=…` maintenance actions.
+ *   - `oldest` — soft-delete the N oldest finished runs (清理最旧 N 条)
+ *   - `all`    — soft-delete every finished run for the tenant (一键清空)
+ *   - `purge`  — HARD-delete every already-tombstoned run + its log files
+ *                (清空回收站; irreversible)
+ */
+export const BulkDeleteRunsResponse = z.object({
+  scope: z.enum(["oldest", "all", "purge"]),
+  deleted: z.number(),
+  note: z.string(),
+});
+export type BulkDeleteRunsResponse = z.infer<typeof BulkDeleteRunsResponse>;
 
 /**
  * A human task this run is currently blocked on (HITL `waitForEvent`). Lets
@@ -163,3 +222,30 @@ export const CancelRunResponse = z.object({
   note: z.string(),
 });
 export type CancelRunResponse = z.infer<typeof CancelRunResponse>;
+
+/**
+ * AI summary of a run (W2). Lazily generated on first open and cached in
+ * `run_summaries`. On success `businessDetails` describes the business outcome;
+ * on failure `problem` + `likelyCauses` (guessed from the error) + `suggestions`
+ * describe what went wrong and how to fix it. `scored=false` + empty findings
+ * means digest-only (no LLM gateway) — the `digest` still carries the raw
+ * activity narrative.
+ */
+export const RunSummary = z.object({
+  scored: z.boolean(),
+  status: z.string(),
+  headline: z.string(),
+  narrative: z.string(),
+  businessDetails: z.array(z.string()),
+  problem: z.string().nullable(),
+  likelyCauses: z.array(z.string()),
+  suggestions: z.array(z.string()),
+  model: z.string(),
+  digest: z.string(),
+  createdAt: z.coerce.date().nullable().optional(),
+});
+export type RunSummary = z.infer<typeof RunSummary>;
+
+/** `GET /v1/runs/:id/summary` (cached, may be null) + `POST` (generate). */
+export const RunSummaryResponse = z.object({ summary: RunSummary.nullable() });
+export type RunSummaryResponse = z.infer<typeof RunSummaryResponse>;

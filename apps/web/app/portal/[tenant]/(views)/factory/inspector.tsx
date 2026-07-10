@@ -9,7 +9,7 @@
  */
 
 import { useState } from "react";
-import { Button } from "@/app/portal/components";
+import { Button, Markdown } from "@/app/portal/components";
 import { chip, Field, CodeBox } from "./atoms";
 import type { AgentCardData, AgentIO } from "./model";
 
@@ -114,8 +114,8 @@ export function AgentInspector({ agent, io, score, versions, onBack, onShowCode,
 
       {(agent.reasoning || agent.decisionLogic || agent.systemPrompt) && (
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {agent.reasoning && <Field label="设计推理" text={agent.reasoning} />}
-          {agent.decisionLogic && <Field label="分支决策逻辑" text={agent.decisionLogic} />}
+          {agent.reasoning && <Field label="设计推理" text={agent.reasoning} markdown />}
+          {agent.decisionLogic && <Field label="分支决策逻辑" text={agent.decisionLogic} markdown />}
           {agent.systemPrompt && <Field label="system prompt（指令）" text={agent.systemPrompt} mono />}
         </div>
       )}
@@ -134,7 +134,7 @@ export function AgentInspector({ agent, io, score, versions, onBack, onShowCode,
           </div>
           {io.inputPayload && <Field label="输入" text={JSON.stringify(io.inputPayload, null, 2)} mono />}
           {io.outputPayload && <Field label="输出" text={JSON.stringify(io.outputPayload, null, 2)} mono />}
-          {io.reasoning && <div style={{ fontSize: 11.5, color: "var(--text-2)", marginTop: 6, lineHeight: 1.5 }}>{io.reasoning}</div>}
+          {io.reasoning && <div style={{ fontSize: 11.5, color: "var(--text-2)", marginTop: 6, lineHeight: 1.5 }}><Markdown>{io.reasoning}</Markdown></div>}
         </div>
       )}
 

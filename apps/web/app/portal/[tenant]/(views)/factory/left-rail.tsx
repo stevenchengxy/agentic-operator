@@ -14,7 +14,7 @@ import type { DomainRow, RunRow, DraftRow } from "./model";
 
 const SECTION_LABEL: React.CSSProperties = { fontSize: 10.5, color: "var(--text-3)", fontFamily: "var(--mono)", textTransform: "uppercase", letterSpacing: "0.04em" };
 
-export function CollapsibleSection({ title, badge, storageKey, defaultOpen = true, children }: { title: string; badge?: ReactNode; storageKey: string; defaultOpen?: boolean; children: ReactNode }) {
+export function CollapsibleSection({ title, badge, storageKey, defaultOpen = true, children }: { title: ReactNode; badge?: ReactNode; storageKey: string; defaultOpen?: boolean; children: ReactNode }) {
   const [open, setOpen] = useState(defaultOpen);
   useEffect(() => { try { const v = localStorage.getItem(storageKey); if (v != null) setOpen(v === "1"); } catch { /* ignore */ } }, [storageKey]);
   const toggle = () => setOpen((o) => { const n = !o; try { localStorage.setItem(storageKey, n ? "1" : "0"); } catch { /* ignore */ } return n; });
@@ -30,7 +30,7 @@ export function CollapsibleSection({ title, badge, storageKey, defaultOpen = tru
   );
 }
 
-export function DomainList({ domains, domain, query, setQuery, onSelect }: { domains: DomainRow[]; domain: string; query: string; setQuery: (v: string) => void; onSelect: (id: string) => void }) {
+export function DomainList({ domains, domain, query, setQuery, onSelect, uploadedIds, onDeleteUpload }: { domains: DomainRow[]; domain: string; query: string; setQuery: (v: string) => void; onSelect: (id: string) => void; uploadedIds?: Set<string>; onDeleteUpload?: (id: string, name: string) => void }) {
   const q = query.trim().toLowerCase();
   const shown = q ? domains.filter((d) => (d.name ?? d.id).toLowerCase().includes(q) || d.id.toLowerCase().includes(q)) : domains;
   return (
@@ -39,14 +39,21 @@ export function DomainList({ domains, domain, query, setQuery, onSelect }: { dom
       {shown.length === 0 && <div style={{ fontSize: 11, color: "var(--text-4)", padding: "4px 2px" }}>没有匹配的业务域</div>}
       {shown.map((d) => {
         const active = d.id === domain;
+        // 上传本体产生的业务域可就地删除（🗑）；内置/在线本体没有 onDeleteUpload → 不可删。
+        const deletable = Boolean(uploadedIds?.has(d.id) && onDeleteUpload);
         return (
-          <button key={d.id} className="factory-cta" onClick={() => onSelect(d.id)} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", textAlign: "left", padding: "8px 10px", marginBottom: 3, borderRadius: 8, border: "1px solid " + (active ? "var(--signal)" : "transparent"), background: active ? "var(--panel-2)" : "transparent", color: "var(--text)", cursor: "pointer", fontSize: 12.5 }}>
-            <span style={{ width: 3, alignSelf: "stretch", borderRadius: 2, background: active ? "var(--signal)" : "transparent", flexShrink: 0 }} />
-            <span style={{ minWidth: 0, flex: 1 }}>
-              <span style={{ display: "block", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.name ?? d.id}</span>
-              {d.counts ? <span style={{ display: "block", fontSize: 10, color: "var(--text-3)", marginTop: 1 }}>{d.counts.actions} 动作 · {d.counts.events} 事件</span> : null}
-            </span>
-          </button>
+          <div key={d.id} style={{ display: "flex", alignItems: "stretch", gap: 2, marginBottom: 3 }}>
+            <button className="factory-cta" onClick={() => onSelect(d.id)} style={{ display: "flex", alignItems: "center", gap: 8, flex: 1, minWidth: 0, textAlign: "left", padding: "8px 10px", borderRadius: 8, border: "1px solid " + (active ? "var(--signal)" : "transparent"), background: active ? "var(--panel-2)" : "transparent", color: "var(--text)", cursor: "pointer", fontSize: 12.5 }}>
+              <span style={{ width: 3, alignSelf: "stretch", borderRadius: 2, background: active ? "var(--signal)" : "transparent", flexShrink: 0 }} />
+              <span style={{ minWidth: 0, flex: 1 }}>
+                <span style={{ display: "block", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.name ?? d.id}</span>
+                {d.counts ? <span style={{ display: "block", fontSize: 10, color: "var(--text-3)", marginTop: 1 }}>{d.counts.actions} 动作 · {d.counts.events} 事件</span> : null}
+              </span>
+            </button>
+            {deletable && (
+              <button onClick={() => onDeleteUpload!(d.id, d.name ?? d.id)} title="删除本地本体（业务域将从列表消失）" aria-label={`删除本地本体 ${d.name ?? d.id}`} className="factory-cta" style={{ flexShrink: 0, background: "none", border: "1px solid transparent", borderRadius: 8, color: "var(--text-4)", cursor: "pointer", fontSize: 12, padding: "0 6px" }}>🗑</button>
+            )}
+          </div>
         );
       })}
     </div>

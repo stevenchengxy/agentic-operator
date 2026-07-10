@@ -69,11 +69,11 @@ afterEach(() => {
 });
 
 describe("understand_ontology v2 — deep fan-out", () => {
-  it("large ontology triggers the four-specialist fan-out and lands the synthesis in ctx", async () => {
+  it("deep=true (#NATIVE AI 自决) triggers the four-specialist fan-out and lands the synthesis in ctx", async () => {
     vi.mocked(runSpecialists).mockResolvedValue(OK4 as never);
     vi.mocked(synthesizeUnderstanding).mockResolvedValue("整体理解：1 个 agent；主链 RESUME_DOWNLOADED→RESUME_PROCESSED；规则闸=身份去重。");
     const { ctx, events } = ctxWith(bigOntology());
-    const r = await understand.execute({}, ctx);
+    const r = await understand.execute({ deep: true }, ctx);
     expect(r.ok).toBe(true);
     expect((r.output as { mode: string }).mode).toBe("deep");
     expect(ctx.ontologyUnderstanding).toContain("整体理解");
@@ -96,7 +96,7 @@ describe("understand_ontology v2 — deep fan-out", () => {
   it("specialists mostly failing degrades HONESTLY to the single-shot/skeleton path", async () => {
     vi.mocked(runSpecialists).mockResolvedValue(OK4.map((r) => ({ ...r, ok: false })) as never);
     const { ctx, events } = ctxWith(bigOntology());
-    const r = await understand.execute({}, ctx);
+    const r = await understand.execute({ deep: true }, ctx);
     // v1 single-shot then runs against the fake key → chatJson fails → deterministic skeleton.
     expect(r.ok).toBe(true);
     expect(r.summary).toContain("骨架");

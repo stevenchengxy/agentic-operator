@@ -14,6 +14,7 @@ import { PROVIDER_IDS } from "@agentic/contracts";
 import type { GatewayConfig } from "./types";
 
 const DEFAULT_TIMEOUT_MS = 60_000;
+let mockFallbackWarned = false;
 let deprecationWarned = false;
 
 export interface AdapterEnvSlice {
@@ -65,8 +66,30 @@ export function resolveConfig(
     deprecationWarned = true;
   }
 
-  const provider: ProviderId =
-    rawProvider && isProviderId(rawProvider) ? rawProvider : "mock";
+  // #NOMOCK — silent mock fallback is the root enabler of "looks-real, actually-mock" (the historical
+  // "Mock response from mock-model-v1…" report bug). It is now a FAIL-CLOSED invariant, not a warning:
+  //   - Normalize case/whitespace first, so "Custom" / " custom " resolve to a real provider instead
+  //     of silently dropping to mock.
+  //   - A recognized provider id (incl. an EXPLICIT `mock`) is honored.
+  //   - An EMPTY or INVALID (typo'd) provider id THROWS outside test/demo/opt-in — refusing to run the
+  //     whole gateway on a canned echo. Mock stays the legitimate default ONLY when NODE_ENV=test,
+  //     AGENTIC_DEMO_MODE=true, or the explicit AGENTIC_ALLOW_MOCK=1 opt-in is set.
+  const normProvider = (rawProvider ?? "").trim().toLowerCase();
+  const providerValid = isProviderId(normProvider);
+  const mockAllowed = env.NODE_ENV === "test" || env.AGENTIC_DEMO_MODE === "true" || env.AGENTIC_ALLOW_MOCK === "1";
+  if (!providerValid && !mockAllowed) {
+    throw new Error(
+      `[llm-gateway] LLM_DEFAULT_PROVIDER 未设置或无效（"${rawProvider ?? ""}"）。拒绝在非 test/demo 进程回退到 ` +
+        `MOCK 提供商（回声、非真实模型）——这正是「看着像真、实为 mock」的根因。请设置一个真实 provider（如 ` +
+        `custom + CUSTOM_LLM_BASE_URL），或显式设 AGENTIC_ALLOW_MOCK=1 才允许 mock。`,
+    );
+  }
+  if (!providerValid && mockAllowed && env.NODE_ENV !== "test" && env.AGENTIC_DEMO_MODE !== "true" && !mockFallbackWarned) {
+    mockFallbackWarned = true;
+    // eslint-disable-next-line no-console
+    console.warn(`[llm-gateway] ⚠️  AGENTIC_ALLOW_MOCK=1 且 LLM_DEFAULT_PROVIDER 未设置/无效 → 使用 MOCK 提供商（回声、非真实模型）。`);
+  }
+  const provider: ProviderId = providerValid ? (normProvider as ProviderId) : "mock";
   const model = rawModel && rawModel.trim().length > 0 ? rawModel : null;
   const timeoutMs = Number(env.LLM_REQUEST_TIMEOUT_MS ?? DEFAULT_TIMEOUT_MS);
 

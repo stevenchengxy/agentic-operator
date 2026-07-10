@@ -80,10 +80,13 @@ function pickList(raw: Record<string, unknown>, ...keys: string[]): Record<strin
 export interface UploadedOntologyMeta { id: string; name: string; counts: { actions: number; events: number; objects: number; rules: number; workflow: number }; updatedAt: string }
 
 /** Normalize a raw uploaded bundle → DomainOntology. Throws (fail-closed) if there are no actions
- *  (the factory must not hallucinate against an empty stub). */
-export function normalizeBundle(name: string, raw: unknown): { ontology: DomainOntology; meta: UploadedOntologyMeta } {
+ *  (the factory must not hallucinate against an empty stub). When `forcedDomainId` is given the
+ *  bundle is stored UNDER that domain (slugified) instead of one derived from `name` — this is how an
+ *  upload ATTACHES to the currently-selected 业务域 (overriding/updating it) rather than minting a new
+ *  file-named domain. Always a slug, so the store's slug-based has()/ids() stay consistent. */
+export function normalizeBundle(name: string, raw: unknown, forcedDomainId?: string): { ontology: DomainOntology; meta: UploadedOntologyMeta } {
   const obj = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
-  const domainId = slugifyDomain(name);
+  const domainId = forcedDomainId ? slugifyDomain(forcedDomainId) : slugifyDomain(name);
   const actions = pickList(obj, "actions", "action").map(normalizeAction);
   if (!actions.length) throw new Error("上传的本体里没有任何 action（actions 为空）——工厂不会对空壳生成（避免幻觉）。请至少提供一个动作。");
   const events = pickList(obj, "events", "event") as unknown as DomainOntology["events"];
@@ -108,9 +111,10 @@ export class FsUploadedOntologyStore {
     return path.join(dir(tenant), `${slugifyDomain(domainId)}.json`);
   }
 
-  /** Validate + persist a raw uploaded bundle for `tenant`. Returns the meta (id = slugified name). */
-  async save(tenant: string, name: string, raw: unknown): Promise<UploadedOntologyMeta> {
-    const { ontology, meta } = normalizeBundle(name, raw);
+  /** Validate + persist a raw uploaded bundle for `tenant`. Returns the meta (id = slugified name,
+   *  or slugified `forcedDomainId` when attaching to an existing/selected domain). */
+  async save(tenant: string, name: string, raw: unknown, forcedDomainId?: string): Promise<UploadedOntologyMeta> {
+    const { ontology, meta } = normalizeBundle(name, raw, forcedDomainId);
     await fs.mkdir(dir(tenant), { recursive: true });
     const payload: StoredFile = { name, updatedAt: meta.updatedAt, ontology };
     await fs.writeFile(this.file(tenant, ontology.domainId), JSON.stringify(payload, null, 2), "utf8");

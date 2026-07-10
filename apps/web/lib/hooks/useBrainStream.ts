@@ -143,8 +143,11 @@ export function useBrainStream(req: BrainStreamRequest | null): UseBrainStreamRe
     });
     es.onerror = () => {
       if (watchdog) clearTimeout(watchdog);
-      setRunning(false);
       es.close();
+      // #AUDIT-FIX(L26) — 连接断开≠运行结束：服务器端 run 往往还在继续。旧行为静默把 UI 置为
+      // "已结束"且无任何提示（残缺 transcript 被当成完整结果）。现在如实告知 + 指引重连。
+      setRunning(false);
+      setError("连接中断——服务器端运行可能仍在继续。刷新页面或重新打开本会话即可重连并回放完整过程。");
     };
 
     return () => {

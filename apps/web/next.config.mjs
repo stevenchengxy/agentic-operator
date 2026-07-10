@@ -33,6 +33,10 @@ const API_URL = process.env.AGENTIC_API_URL ?? "http://localhost:3540";
  */
 /** @type {import("next").NextConfig} */
 const nextConfig = {
+  // Emit a self-contained server bundle at .next/standalone — the web Dockerfile
+  // COPYs it (runtime stage) + runs `node apps/web/server.js`. Without this Next
+  // never produces the standalone folder and the container build fails on COPY.
+  output: "standalone",
   outputFileTracingRoot: path.join(__dirname, "../.."),
   transpilePackages: ["@agentic/contracts"],
   typedRoutes: true,

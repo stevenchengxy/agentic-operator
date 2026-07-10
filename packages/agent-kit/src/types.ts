@@ -23,6 +23,10 @@ export interface ToolContext {
   subject?: string;
   /** Correlation id threaded through every step in this run. */
   correlationId: string;
+  /** The run id (runs.id) for this execution. Lets a tool tag durable side
+   *  effects (e.g. `records.upsert`) with their originating run WITHOUT a
+   *  tools→runtime import cycle. Optional for back-compat. */
+  runId?: string;
   /** Tenant slug (e.g. "raas"). */
   tenantSlug: string;
   /** The trigger event that fired this run, if any. */

@@ -1,0 +1,1053 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Agent 工厂优化 · Contract-First 双系统架构 + 学术支撑 + 蓝图审查</title>
+<style>
+  :root{
+    --bg:#0a0e14; --bg2:#0e141d; --panel:#141b27; --panel2:#0f1721; --panel3:#1a2432;
+    --border:#243040; --border2:#33435a;
+    --text:#eef3f9; --text2:#b4c0ce; --text3:#8090a4; --text4:#63718a;
+    --blue:#74b9ff; --cyan:#54d7ca; --green:#63d495; --amber:#f1be5c; --red:#ff8093; --violet:#b39dff; --pink:#f39ac3;
+    --mono:"SF Mono",ui-monospace,Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:linear-gradient(180deg,#0a0e14 0,#0b1119 340px,#0a0e14 100%);color:var(--text);font:15px/1.68 var(--sans)}
+  a{color:var(--cyan);text-decoration:none}
+  a:hover{text-decoration:underline}
+  code{font-family:var(--mono);font-size:.85em;color:#d9eeff;background:#0b1220;border:1px solid var(--border);border-radius:6px;padding:1px 6px}
+  pre{margin:14px 0;padding:16px 18px;overflow:auto;color:#dce7f5;background:#070c13;border:1px solid var(--border);border-radius:12px;font:12.5px/1.62 var(--mono)}
+  pre code{background:none;border:none;padding:0;color:inherit}
+  .layout{display:grid;grid-template-columns:280px minmax(0,1fr);max-width:1480px;margin:0 auto}
+  nav{position:sticky;top:0;align-self:start;height:100vh;overflow:auto;padding:24px 16px 64px;border-right:1px solid var(--border);background:rgba(11,17,26,.9);backdrop-filter:blur(10px)}
+  nav .brand{display:flex;gap:10px;align-items:center;margin-bottom:16px}
+  nav .mark{width:40px;height:40px;border-radius:11px;background:linear-gradient(135deg,var(--green),var(--cyan));color:#06120f;display:grid;place-items:center;font-weight:900;letter-spacing:-.04em;font-size:15px}
+  nav h1{margin:0;font-size:13px;line-height:1.3}
+  nav .sub{color:var(--text4);font:10.5px/1.3 var(--mono);margin-top:3px}
+  nav a{display:block;color:var(--text2);font-size:12.5px;padding:5px 8px;margin:1px 0;border-radius:8px}
+  nav a:hover{color:var(--text);background:var(--panel)}
+  nav a.small{padding-left:18px;color:var(--text4);font-size:11.5px}
+  nav .grp{color:var(--text4);font:700 10px/1 var(--mono);text-transform:uppercase;letter-spacing:.12em;margin:16px 8px 4px}
+  main{min-width:0;padding:44px 54px 120px}
+  header.hero{border:1px solid var(--border);background:linear-gradient(160deg,rgba(20,27,39,.96),rgba(15,23,33,.96));border-radius:18px;padding:34px 36px;margin-bottom:30px;overflow:hidden}
+  .eyebrow{font:700 11px/1 var(--mono);color:var(--green);text-transform:uppercase;letter-spacing:2px;margin-bottom:12px}
+  .hero h1{margin:0 0 14px;font-size:31px;line-height:1.2;letter-spacing:-.03em}
+  .hero p{max-width:86ch;margin:0;color:var(--text2);font-size:15.4px}
+  .meta{display:flex;gap:8px;flex-wrap:wrap;margin-top:22px}
+  .pill{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--border2);border-radius:999px;color:var(--text2);background:#0f1620;padding:5px 11px;font:11.5px/1 var(--mono)}
+  .pill b{color:var(--text)}
+  section{margin:0 0 46px;scroll-margin-top:20px}
+  h2{display:flex;align-items:center;gap:10px;margin:52px 0 8px;padding-top:18px;border-top:1px solid var(--border);font-size:22px;line-height:1.3;letter-spacing:-.02em}
+  h2 .n{font:800 12px/1 var(--mono);color:#06120f;background:var(--green);border-radius:8px;padding:5px 8px}
+  h3{margin:26px 0 6px;color:var(--text);font-size:16.5px;letter-spacing:-.01em}
+  h4{margin:0 0 7px;font-size:13.5px;color:var(--text)}
+  p{margin:8px 0;color:var(--text2)}
+  .lead{color:var(--text);font-size:15.6px}
+  .muted{color:var(--text3)}
+  .small{font-size:12px;color:var(--text4)}
+  ul,ol{color:var(--text2);padding-left:20px}
+  li{margin:5px 0}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+  .grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+  .card{border:1px solid var(--border);background:var(--panel);border-radius:14px;padding:16px 18px}
+  .card p{margin:6px 0 0;font-size:13.3px}
+  .card h4 .tag{margin-right:6px}
+  .metric{border:1px solid var(--border);background:var(--panel2);border-radius:12px;padding:14px 15px}
+  .metric .k{color:var(--text4);font:700 11px/1.3 var(--mono);text-transform:uppercase;letter-spacing:.04em;margin-bottom:7px}
+  .metric .v{font-size:16.5px;color:var(--text);font-weight:720;letter-spacing:-.01em}
+  .tag{display:inline-block;border:1px solid var(--border2);border-radius:7px;color:var(--text2);padding:2px 7px;margin:2px 4px 2px 0;font:11px/1.3 var(--mono)}
+  .tag.blue{color:var(--blue);border-color:rgba(116,185,255,.55)}
+  .tag.cyan{color:var(--cyan);border-color:rgba(84,215,202,.55)}
+  .tag.green{color:var(--green);border-color:rgba(99,212,149,.55)}
+  .tag.amber{color:var(--amber);border-color:rgba(241,190,92,.55)}
+  .tag.red{color:var(--red);border-color:rgba(255,128,147,.55)}
+  .tag.violet{color:var(--violet);border-color:rgba(179,157,255,.55)}
+  .callout{border-left:3px solid var(--cyan);background:rgba(84,215,202,.07);border-radius:0 12px 12px 0;padding:13px 16px;margin:16px 0;color:var(--text2)}
+  .callout b{color:var(--text)}
+  .callout.good{border-left-color:var(--green);background:rgba(99,212,149,.07)}
+  .callout.warn{border-left-color:var(--amber);background:rgba(241,190,92,.07)}
+  .callout.risk{border-left-color:var(--red);background:rgba(255,128,147,.08)}
+  .callout.key{border-left-color:var(--violet);background:rgba(179,157,255,.08)}
+  .fig{border:1px solid var(--border);background:var(--panel);border-radius:16px;padding:18px;margin:18px 0;overflow:auto}
+  .figcap{margin-top:10px;color:var(--text4);text-align:center;font:12px/1.5 var(--mono)}
+  table{width:100%;border-collapse:collapse;margin:14px 0;font-size:13px}
+  th,td{text-align:left;vertical-align:top;padding:9px 10px;border-bottom:1px solid var(--border)}
+  th{color:var(--text4);text-transform:uppercase;letter-spacing:.04em;font:700 11px/1.4 var(--mono)}
+  td{color:var(--text2)}
+  td b{color:var(--text)}
+  .tocbox{columns:2;column-gap:24px}
+  .tocbox a{display:block;color:var(--text2);padding:4px 0;break-inside:avoid;font-size:13px}
+  svg{display:block;max-width:100%;height:auto}
+  .legend{display:flex;flex-wrap:wrap;justify-content:center;gap:14px;margin-top:10px;color:var(--text4);font:11.5px/1 var(--mono)}
+  .legend span{display:inline-flex;align-items:center;gap:6px}
+  .dot{width:10px;height:10px;border-radius:3px;display:inline-block}
+  .roadmap{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin:16px 0}
+  .phase{border:1px solid var(--border);background:var(--panel2);border-radius:13px;padding:13px 14px}
+  .phase .num{display:inline-grid;place-items:center;width:24px;height:24px;border-radius:8px;background:var(--green);color:#06120f;font:800 12px/1 var(--mono);margin-bottom:8px}
+  .phase h4{font-size:13px}
+  .phase p{font-size:12.3px;color:var(--text3)}
+  .ref{border:1px solid var(--border);background:var(--panel2);border-radius:10px;padding:11px 14px;margin:8px 0}
+  .ref .t{color:var(--text);font-weight:650;font-size:13.5px}
+  .ref .m{color:var(--text4);font:11px/1.5 var(--mono);margin:2px 0 5px}
+  .ref p{margin:4px 0;font-size:12.8px}
+  .vbadge{display:inline-block;border-radius:6px;padding:1px 7px;font:10px/1.5 var(--mono);margin-left:6px}
+  .vbadge.ok{color:var(--green);border:1px solid rgba(99,212,149,.5)}
+  .vbadge.warn{color:var(--amber);border:1px solid rgba(241,190,92,.5)}
+  footer{margin-top:56px;padding-top:18px;border-top:1px solid var(--border);color:var(--text4);font-size:12px}
+  .kpi{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:14px 0}
+  .kpi .b{border:1px solid var(--border);background:var(--panel);border-radius:13px;padding:15px 16px}
+  .kpi .b .n{font-size:26px;font-weight:800;letter-spacing:-.03em}
+  .kpi .b .l{color:var(--text3);font-size:12px;margin-top:2px}
+  @media(max-width:1000px){
+    .layout{grid-template-columns:1fr}
+    nav{display:none}
+    main{padding:26px 20px 82px}
+    .grid2,.grid3,.grid4,.roadmap,.kpi{grid-template-columns:1fr}
+    .tocbox{columns:1}
+    .hero h1{font-size:24px}
+  }
+</style>
+</head>
+<body>
+<div class="layout">
+<nav>
+  <div class="brand">
+    <div class="mark">CF</div>
+    <div>
+      <h1>Contract-First Factory</h1>
+      <div class="sub">优化 · 论文 · 蓝图审查</div>
+    </div>
+  </div>
+  <a href="#summary">0 · 执行摘要与核心判断</a>
+  <div class="grp">Part A · 现状</div>
+  <a href="#twosystem">1 · 两套系统的形式化</a>
+  <a href="#current">2 · 现状诊断：6+6 functions</a>
+  <a href="#rootcause">3 · 为什么生成不出"真跑通"的 functions</a>
+  <div class="grp">Part B · 学术支撑</div>
+  <a href="#papers">4 · 论文映射总览</a>
+  <a class="small" href="#papers-1">4.1 理解 · 拆分 · 自适应方法</a>
+  <a class="small" href="#papers-2">4.2 澄清式提问 ask_user</a>
+  <a class="small" href="#papers-3">4.3 通信 · 合成 · durable</a>
+  <div class="grp">Part C · 审查与方案</div>
+  <a href="#blueprint">5 · Codex 蓝图审查（宏→微）</a>
+  <a href="#target">6 · 优化方案 · Contract-First</a>
+  <a class="small" href="#spine">6.1 契约脊柱</a>
+  <a class="small" href="#router">6.2 前置自适应路由</a>
+  <a class="small" href="#decomp">6.3 按需分解 + 共享 harness</a>
+  <a class="small" href="#exec">6.4 打通代码执行闭环</a>
+  <a class="small" href="#backtrack">6.5 结构化回退归因</a>
+  <a class="small" href="#saga">6.6 补偿与失败语义</a>
+  <a href="#ontology">7 · 本体使用原则（业务硬 · 认知开放）</a>
+  <a class="small" href="#open-vocab">7.1 · 开放词汇 + 记忆锚点（已实现）</a>
+  <a href="#askuser">8 · ask_user 硬化</a>
+  <a href="#ui">9 · 后台 per-agent 卡片</a>
+  <div class="grp">Part D · 落地</div>
+  <a href="#roadmap">10 · 路线图（重排优先级）</a>
+  <a href="#delta">11 · 与蓝图的差异对照</a>
+  <a href="#risks">12 · 风险与边界</a>
+  <a href="#shipped">13 · 已落地（代码+测试）</a>
+  <a href="#refs">附 · 论文清单与核验状态</a>
+</nav>
+
+<main>
+<header class="hero">
+  <div class="eyebrow">Technical Architecture Report · 2026-07-09</div>
+  <h1>Agent 工厂优化 · Contract-First 双系统架构 · 学术支撑 · Codex 蓝图审查</h1>
+  <p>本报告基于对<b>新旧两个 repo 六个生成 / 六个在跑 functions 的实证分析</b>、<b>三轮学术检索（20 篇经对抗核验 + 14 篇经典/已知补充）</b>、以及对 Codex《Ontology-Guided Dynamic Prompt & Subagent Planning》蓝图的逐层审查，给出一套优化方案。核心结论一句话：工厂当前<b>真正卡住"跑通"的不是 prompt 质量，而是运行期契约保真度</b>——10,780 次运行里只有 6 次真正执行了生成代码（且全是手写 agent），主导失败是 <code>output_parse_error</code>（emit 载荷与 schema 不符）。因此优化的脊柱应该是<b>契约（Contract），而非 Prompt Ledger</b>；蓝图把最大投资押在了错误的瓶颈上。</p>
+  <div class="meta">
+    <span class="pill"><b>方案</b> Contract-First Agent Factory</span>
+    <span class="pill"><b>系统 A</b> 工厂流水线 · 共享 Harness</span>
+    <span class="pill"><b>系统 B</b> 可部署 Inngest functions</span>
+    <span class="pill"><b>脊柱</b> Event/Payload/Capability/Failure 契约</span>
+    <span class="pill"><b>论文</b> 34 篇 · 三主题</span>
+  </div>
+</header>
+
+<section id="summary">
+<h2><span class="n">0</span>执行摘要与核心判断</h2>
+
+<div class="kpi">
+  <div class="b"><div class="n" style="color:var(--red)">6 / 10,780</div><div class="l">真正 <code>code_ran=1</code> 的运行数（且全部来自手写 RAAS agent，生成 agent 为 0）</div></div>
+  <div class="b"><div class="n" style="color:var(--amber)">output_parse_error</div><div class="l">主导运行期失败：emit 载荷不满足下游 schema（expected object）</div></div>
+  <div class="b"><div class="n" style="color:var(--cyan)">1 套</div><div class="l">固定 6 阶段流水线服务<b>所有</b>需求——按"规模"而非"问题类型"自适应</div></div>
+  <div class="b"><div class="n" style="color:var(--green)">20+14</div><div class="l">经核验 / 已知补充的可落地论文，逐篇给出代码落点</div></div>
+</div>
+
+<p class="lead">你问的三件事——(1) 让工厂能理解并拆分用户问题、判断该用什么推理方法；(2) 把 <code>ask_user</code> 从"泛化提问"做扎实；(3) 为"agent 间通信 + 交付可部署 Inngest functions"找到架构级论文支撑——都指向同一个更深的问题：<b>工厂现在能"生成"agent，但生成物离"真正能跑起来的业务流程"还差一层运行期保真</b>。下面是四条贯穿全文的判断。</p>
+
+<div class="grid2">
+  <div class="card"><h4><span class="tag red">判断一</span>瓶颈定位错了</h4><p>Codex 蓝图把 80% 篇幅投在 <b>Prompt/Payload Compiler + Ledger + Lint + 版本回滚</b>。但实证数据显示：生成 agent 从不执行自己的代码，失败是 <code>output_parse_error</code>——这是<b>运行期数据契约</b>问题，不是 prompt 措辞问题。再漂亮的 prompt 也修不了"emit 出来的对象下游 parse 不了"。<b>脊柱应是契约，Prompt Compiler 是叶子。</b></p></div>
+  <div class="card"><h4><span class="tag green">判断二</span>两套系统要用一根契约脊柱缝合</h4><p>你说的很准：系统 A 是流水线、系统 B 是交付产物。但两者今天各记各的。真正让 A 能"决策返回哪个 agent 节点"的，不是让 harness 读 transcript 猜（论文证明 LLM 事后归因只有 53.5% 准），而是让 A 和 B 共享一份 <b>Event/Payload 契约 + 因果图</b>，B 的失败沿因果链结构化定位到 A 的责任节点。</p></div>
+  <div class="card"><h4><span class="tag cyan">判断三</span>自适应要放到流水线"入口"</h4><p>现在 6 阶段流水线对"生成整条 workflow / 只分析 / 只改一个 agent / 只答疑"一视同仁，仅按 ontology 规模数（rules&gt;60）切换分治深度。论文（AdaptThink / Route-to-Reason / ADaPT / Meta-Reasoner）一致主张：<b>先按问题类型与难度选流水线形状与推理策略</b>，再进入执行。这正是你要的"判断用什么方法"。</p></div>
+  <div class="card"><h4><span class="tag violet">判断四</span>不建"内部小本体"——业务契约硬、认知词汇开放</h4><p>业务层本体（外部输入）只做两件事：<b>投影给理解</b> + <b>编译成 wire 契约</b>（直接消灭 <code>output_parse_error</code>）。工厂<b>内部不再引入任何"小本体/认知框架"</b>——分类词汇（系统 kind、emit 语义、意图类型）全部开放（#OPEN-VOCAB），"不忘本体"靠记忆锚点心跳（#ANCHOR）而非结构化框子。蓝图的六图 Micro Ontology Kernel 整体不采纳。</p></div>
+</div>
+
+<div class="callout key">
+  <b>一句话方案：</b>把工厂从"会生成 agent"升级为"会生成<b>能跑通</b>的 agent"——做法是给两套系统装一根 <b>契约脊柱</b>（Contract Spine）：从 ontology 先编译出<b>事件/载荷契约</b>，再让每个 agent 针对契约生成、针对契约校验、针对契约<b>真实执行</b>、失败时沿因果图<b>定点回退</b>。Prompt 编译、Reasoning Router、ask_user 硬化、per-agent 卡片，都挂在这根脊柱上，而不是取代它。
+</div>
+</section>
+
+<!-- ============ PART A ============ -->
+<section id="twosystem">
+<h2><span class="n">1</span>两套系统的形式化</h2>
+<p class="lead">先把你口述的两套系统钉成一张可实现的图，并映射到真实代码位置。这是后面所有优化的地基。</p>
+
+<div class="fig">
+<svg viewBox="0 0 1180 560" xmlns="http://www.w3.org/2000/svg" font-family="var(--mono)">
+  <defs>
+    <marker id="a1" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#74b9ff"/></marker>
+    <marker id="a2" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#54d7ca"/></marker>
+    <marker id="a3" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#63d495"/></marker>
+    <marker id="a4" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#ff8093"/></marker>
+    <style>
+      .bx{fill:#141b27;stroke:#33435a;stroke-width:1.2}
+      .bx2{fill:#0f1721;stroke:#243040;stroke-width:1.2}
+      .t{fill:#eef3f9;font-size:12.5px;font-weight:700}
+      .s{fill:#b4c0ce;font-size:10px}
+      .m{fill:#8090a4;font-size:9px}
+      .lab{fill:#63718a;font-size:10px;font-weight:700}
+    </style>
+  </defs>
+
+  <!-- System A container -->
+  <rect x="26" y="60" width="700" height="460" rx="18" fill="#0e141d" stroke="#33435a"/>
+  <text x="46" y="90" fill="#54d7ca" font-size="14" font-weight="700">系统 A · 工厂流水线（Factory Harness）</text>
+  <text x="46" y="108" class="m">一个共享推理 harness，多个 agent 阶段串行推进</text>
+
+  <rect x="46" y="128" width="220" height="70" rx="12" class="bx2" stroke="#74b9ff"/>
+  <text x="156" y="154" class="t" text-anchor="middle">User Goal + Intent Gate</text>
+  <text x="156" y="174" class="s" text-anchor="middle">理解意图 · 明确 tasks</text>
+
+  <rect x="300" y="128" width="180" height="70" rx="12" class="bx2" stroke="#54d7ca"/>
+  <text x="390" y="154" class="t" text-anchor="middle">Factory Harness</text>
+  <text x="390" y="174" class="s" text-anchor="middle">选下一个 active agent</text>
+
+  <rect x="514" y="128" width="188" height="70" rx="12" class="bx2" stroke="#f1be5c"/>
+  <text x="608" y="150" class="t" text-anchor="middle">Agent Loop 验收</text>
+  <text x="608" y="169" class="s" text-anchor="middle">达标→下一步</text>
+  <text x="608" y="185" class="s" text-anchor="middle">不达标→返工</text>
+
+  <!-- shared harness inside an agent -->
+  <rect x="46" y="228" width="656" height="150" rx="14" fill="#0f1721" stroke="#33435a"/>
+  <text x="66" y="252" fill="#b39dff" font-size="12" font-weight="700">被选中的 Active Agent：共享同一套推理 harness</text>
+  <rect x="66" y="266" width="150" height="94" rx="10" class="bx"/>
+  <text x="141" y="290" class="t" text-anchor="middle">理解意图</text>
+  <text x="141" y="309" class="s" text-anchor="middle">局部 TaskFrame</text>
+  <text x="141" y="326" class="s" text-anchor="middle">拆 sub-tasks</text>
+  <text x="141" y="347" class="m" text-anchor="middle">shared reasoning</text>
+
+  <rect x="232" y="266" width="150" height="94" rx="10" class="bx"/>
+  <text x="307" y="290" class="t" text-anchor="middle">按需选择</text>
+  <text x="307" y="309" class="s" text-anchor="middle">Sub-agent?</text>
+  <text x="307" y="326" class="s" text-anchor="middle">Skill? Tool?</text>
+  <text x="307" y="347" class="m" text-anchor="middle">or 工具库检索</text>
+
+  <rect x="398" y="266" width="150" height="94" rx="10" class="bx"/>
+  <text x="473" y="290" class="t" text-anchor="middle">完成子任务</text>
+  <text x="473" y="309" class="s" text-anchor="middle">specialist /</text>
+  <text x="473" y="326" class="s" text-anchor="middle">sub-brain /</text>
+  <text x="473" y="347" class="m" text-anchor="middle">builder / phases</text>
+
+  <rect x="564" y="266" width="120" height="94" rx="10" class="bx" stroke="#63d495"/>
+  <text x="624" y="298" class="t" text-anchor="middle">AgentResult</text>
+  <text x="624" y="318" class="s" text-anchor="middle">产物+证据</text>
+  <text x="624" y="336" class="s" text-anchor="middle">+缺口</text>
+
+  <rect x="46" y="404" width="656" height="88" rx="12" class="bx2" stroke="#63d495"/>
+  <text x="374" y="432" class="t" text-anchor="middle">生成 / 校验 / 测试 / 找问题 / 返工（agent loop 标准）</text>
+  <text x="374" y="456" class="s" text-anchor="middle">read · understand · plan · critique · design · codegen · validate · sandbox · finish</text>
+  <text x="374" y="476" class="m" text-anchor="middle">当前实现：packages/agent-factory/src/conductor.ts + tools.ts</text>
+
+  <!-- System B -->
+  <rect x="770" y="60" width="384" height="460" rx="18" fill="#0e141d" stroke="#33435a"/>
+  <text x="790" y="90" fill="#63d495" font-size="14" font-weight="700">系统 B · 交付产物</text>
+  <text x="790" y="108" class="m">部署在 Inngest 上的业务 workflow functions</text>
+
+  <rect x="790" y="130" width="344" height="66" rx="12" class="bx2" stroke="#63d495"/>
+  <text x="962" y="156" class="t" text-anchor="middle">Manifest → Inngest functions</text>
+  <text x="962" y="176" class="s" text-anchor="middle">register.ts · 一 agent 一 function</text>
+
+  <rect x="790" y="212" width="344" height="150" rx="12" fill="#0f1721" stroke="#243040"/>
+  <text x="962" y="238" class="s" text-anchor="middle">事件链：evt → agent → emit → agent …</text>
+  <rect x="808" y="252" width="94" height="46" rx="9" class="bx"/><text x="855" y="280" class="s" text-anchor="middle">CreateJD</text>
+  <rect x="916" y="252" width="94" height="46" rx="9" class="bx"/><text x="963" y="280" class="s" text-anchor="middle">Process</text>
+  <rect x="1024" y="252" width="94" height="46" rx="9" class="bx"/><text x="1071" y="280" class="s" text-anchor="middle">RuleCheck</text>
+  <rect x="808" y="308" width="94" height="46" rx="9" class="bx"/><text x="855" y="336" class="s" text-anchor="middle">Match</text>
+  <rect x="916" y="308" width="94" height="46" rx="9" class="bx"/><text x="963" y="336" class="s" text-anchor="middle">Identity</text>
+  <rect x="1024" y="308" width="94" height="46" rx="9" class="bx"/><text x="1071" y="336" class="s" text-anchor="middle">Invite</text>
+
+  <rect x="790" y="378" width="344" height="60" rx="12" class="bx2" stroke="#ff8093"/>
+  <text x="962" y="403" class="t" text-anchor="middle" fill="#ff8093">运行期失败：output_parse_error</text>
+  <text x="962" y="423" class="s" text-anchor="middle">emit 载荷 ≠ 下游 schema · 依赖失败</text>
+
+  <rect x="790" y="452" width="344" height="52" rx="12" class="bx2" stroke="#63d495"/>
+  <text x="962" y="483" class="t" text-anchor="middle">生产遥测 / run IO / 审计</text>
+
+  <!-- flows -->
+  <line x1="266" y1="163" x2="298" y2="163" stroke="#74b9ff" stroke-width="1.6" marker-end="url(#a1)"/>
+  <line x1="480" y1="163" x2="512" y2="163" stroke="#54d7ca" stroke-width="1.6" marker-end="url(#a2)"/>
+  <line x1="390" y1="198" x2="390" y2="226" stroke="#54d7ca" stroke-width="1.6" marker-end="url(#a2)"/>
+  <line x1="216" y1="313" x2="230" y2="313" stroke="#b39dff" stroke-width="1.4" marker-end="url(#a2)"/>
+  <line x1="382" y1="313" x2="396" y2="313" stroke="#b39dff" stroke-width="1.4" marker-end="url(#a2)"/>
+  <line x1="548" y1="313" x2="562" y2="313" stroke="#b39dff" stroke-width="1.4" marker-end="url(#a2)"/>
+  <path d="M624 360 C624 388,374 384,374 402" fill="none" stroke="#63d495" stroke-width="1.5" marker-end="url(#a3)"/>
+  <path d="M608 198 C608 214,624 226,624 264" fill="none" stroke="#f1be5c" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#a2)"/>
+
+  <!-- A -> B deploy -->
+  <path d="M702 448 C740 448,752 165,788 163" fill="none" stroke="#63d495" stroke-width="1.8" marker-end="url(#a3)"/>
+  <text x="748" y="300" class="lab" text-anchor="middle" transform="rotate(-90 748 300)">promote / deploy</text>
+
+  <!-- B failure -> A backtrack -->
+  <path d="M790 408 C560 540,300 560,390 200" fill="none" stroke="#ff8093" stroke-width="1.6" stroke-dasharray="6 5" marker-end="url(#a4)"/>
+  <text x="470" y="548" class="lab" fill="#ff8093" text-anchor="middle">失败沿因果图回退到责任 agent 节点（结构化，非 LLM 猜）</text>
+</svg>
+<div class="figcap">图 1 · 两套系统 + 契约脊柱：A 生成 B，B 的失败沿因果图结构化回退到 A 的责任节点</div>
+<div class="legend">
+  <span><i class="dot" style="background:var(--blue)"></i>意图/调度</span>
+  <span><i class="dot" style="background:var(--cyan)"></i>工厂 harness</span>
+  <span><i class="dot" style="background:var(--violet)"></i>agent 共享推理</span>
+  <span><i class="dot" style="background:var(--green)"></i>交付/证据</span>
+  <span><i class="dot" style="background:var(--red)"></i>失败回退</span>
+</div>
+</div>
+
+<table>
+  <tr><th>你的表述</th><th>形式化角色</th><th>真实代码落点</th><th>现状</th></tr>
+  <tr><td>工厂内部整个 Harness，多个 agent 工作流</td><td><b>系统 A · Factory Harness</b></td><td><code>conductor.ts</code> ReAct 主循环 + stage 闸门</td><td>✅ 已有，单层调度</td></tr>
+  <tr><td>每个 agent 共享一个推理 harness 理解意图、明确 tasks</td><td><b>Agent-local Harness</b></td><td><code>parseUserIntent()</code>（specialists.ts）+ 阶段工具</td><td>⚠️ 意图门仅做结构化转写，无难度/风险判定</td></tr>
+  <tr><td>针对不同 sub-task 决定生成 Sub-agent / Skill / Tool 或从工具库选</td><td><b>Capability 决策</b></td><td><code>capability_resolve</code> · <code>spawn_subagent</code> · <code>design_subagent</code> · <code>search_tools</code></td><td>⚠️ 能力已全，但决策是名字匹配启发式，非能力契约</td></tr>
+  <tr><td>agent loop 标准检查是否返工或进入下一环节</td><td><b>Agent Loop / Evidence Gate</b></td><td><code>critique_plan</code> · <code>validate_graph</code> · <code>acceptanceGate</code></td><td>⚠️ 验收看"图闭合"，不看"真执行"</td></tr>
+  <tr><td>根据 Ontology 业务流程生成的 functions</td><td><b>系统 B · 交付产物</b></td><td><code>models/&lt;slug&gt;/workflow*.json</code> → <code>register.ts</code> → Inngest</td><td>⚠️ 走声明式 <code>actions[]</code>，生成代码从不执行</td></tr>
+  <tr><td>交付有问题，harness 决策返回哪个 agent 节点</td><td><b>结构化回退归因</b></td><td>（缺失）今天靠 <code>refine_agent</code> 读错误日志再猜</td><td>❌ 未实现，且 LLM 事后归因不可靠（见 §4.3）</td></tr>
+  <tr><td>AI 无法解决时（缺信息/流程不清）harness 决定是否 ask_user</td><td><b>VOI-gated ask_user</b></td><td><code>ask_user</code>（tools.ts）+ conductor clarify gate</td><td>❌ 无去重/无信息增益选题/超时回退用 label</td></tr>
+</table>
+
+<div class="callout good">
+  <b>关键对齐：</b>你的心智模型和 Codex 蓝图的"系统 A/B + 两层 harness"是一致的、正确的。分歧只在<b>脊柱选谁</b>——蓝图选了 Prompt，本报告用实证数据论证应该选 Contract。下面先看数据。
+</div>
+</section>
+
+<section id="current">
+<h2><span class="n">2</span>现状诊断：6 个生成 vs 6 个在跑</h2>
+<p class="lead">新 repo 的工厂已经成功"finish"过一次，生成了 6 个招聘域 agent；旧 repo（<code>~/Desktop/agenticOperator</code>）有 6 个手写 agent 真正在生产跑。把两边并起来看，答案非常清楚。</p>
+
+<h3>2.1 新 repo · 6 个生成 agent（tenant: agents-generation）</h3>
+<table>
+  <tr><th>Agent</th><th>trigger → emit</th><th>tool_use</th><th>codeExecuted</th><th>真实执行路径</th></tr>
+  <tr><td><code>ProcessResumeAgent</code></td><td>RESUME_DOWNLOADED → RESUME_PROCESSED / RESUME_LOCKED_CONFLICT</td><td>fs.readFromInbox, parseResumeApi, http.fetch, ontology.fetchActionRules</td><td>manifest 标 true</td><td>声明式 <code>actions[]</code></td></tr>
+  <tr><td><code>RuleCheckForMatchResume</code></td><td>RESUME_PROCESSED → MATCH_RULE_CHECK_PASSED/FAILED</td><td>ontology.fetchActionRules, http.fetch</td><td>true</td><td>声明式 <code>actions[]</code></td></tr>
+  <tr><td><code>RuleCheckForCandidateIdentity</code></td><td>RESUME_PROCESSED → IDENTITY_CHECK_PASSED/FAILED</td><td>ontology.fetchActionRules, http.fetch</td><td>true</td><td>声明式 <code>actions[]</code></td></tr>
+  <tr><td><code>MatchResumeAgent</code></td><td>MATCH_RULE_CHECK_PASSED → MATCH_PASSED_*/FAILED</td><td>matchResumeApi, http.fetch</td><td>true</td><td>声明式 + <code>invoke</code> 子 agent</td></tr>
+  <tr><td><code>CreateJDAgent</code></td><td>REQUIREMENT_LOGGED/… → JD_GENERATED</td><td>ontology.fetchActionRules, http.fetch</td><td>true</td><td>声明式 <code>actions[]</code></td></tr>
+  <tr><td><code>InviteInternalInterview</code></td><td>INTERVIEW_INVITATION_REQUESTED → INTERVIEW_INVOKED</td><td>http.fetch, send_email</td><td>true</td><td>声明式 <code>actions[]</code></td></tr>
+</table>
+
+<div class="callout risk">
+  <b>最重要的一个实证事实（已用 SQLite 直接核对 <code>data/agentic.db</code>）：</b>
+  <ul style="margin:8px 0 0">
+    <li><b>10,780 次运行，只有 6 次 <code>code_ran=1</code></b>——而这 6 次全部是手写 RAAS agent（<code>raas-evaluate-interview</code>、<code>raas-assign-recruit-tasks</code>、<code>raas-create-jd</code>、<code>raas-publish-jd</code>）。</li>
+    <li><b>所有 <code>agents-gener-*</code> 生成 agent 的 <code>code_ran</code> 全是 0</b>（例如 <code>agents-gener-rule-check-for-candidate-identity</code> 跑了 103 次，无一执行生成代码）。</li>
+    <li>生成的 <code>typescript_code</code> 只是<b>"可读脚手架"</b>，运行时真正执行的是 manifest 的声明式 <code>actions[]</code>（<code>sandbox-deployer.ts:projectPlanToActions</code>）。</li>
+    <li>主导失败 <code>output_parse_error: expected object</code>（78 次）+ <code>not_configured: AWS Bedrock</code>（78 次）——前者是 emit 载荷不满足下游 schema，是<b>契约</b>问题；后者是 provider 未配置。</li>
+  </ul>
+  换句话说：工厂今天说的"跑通"，实际含义是<b>"声明式 plan 在 Inngest 上串起来了"，不是"生成的代码真的按业务语义执行并产出合法下游事件"</b>。这就是"生成不出真正能跑的 functions"的根。
+</div>
+
+<h3>2.2 旧 repo · 6 个手写 agent 为什么真能跑</h3>
+<p>旧 AO 的招聘链（<code>server/inngest/agents/*.ts</code>）在生产真跑，靠的不是更好的 prompt，而是一层<b>工程韧性</b>——这正是生成 agent 缺的：</p>
+<div class="grid2">
+  <div class="card"><h4><span class="tag green">分级错误处理</span></h4><p>4xx（如 RoboHire 400）→ 捕获、分类 error_code、<b>emit FAILED 事件</b>（不 rethrow）；5xx/网络 → 交给 Inngest 重试。生成 agent 只有 <code>on_error: terminal|soft</code> 声明，没有"业务失败 vs 依赖失败"的分流。</p></div>
+  <div class="card"><h4><span class="tag green">软降级</span></h4><p>Neo4j 挂 → rule check 按 fail-close 返回；LLM 超时 → 退到 tier-1 精确匹配。生成 agent 缺乏"依赖不可用时的安全默认"。</p></div>
+  <div class="card"><h4><span class="tag green">载荷契约对账</span></h4><p><code>contract.ts</code> 逐事件核对：producer 实际写的字段 vs consumer 期待的字段 → <code>payload_gap</code>。这正是能消灭 <code>output_parse_error</code> 的机制，新 repo 只在 <code>validate_graph</code> 里做了"字段缺失警告"，没有类型级强校验。</p></div>
+  <div class="card"><h4><span class="tag green">Write-Through 持久化</span></h4><p>每个 <code>step.run</code> 完成即写 Postgres（run/activity 行），每步幂等键稳定。这让"哪个 step 产生了什么"可归因——正是结构化回退需要的因果记录。</p></div>
+</div>
+
+<h3>2.3 生成 agent 真正做对的地方（别丢）</h3>
+<ul>
+  <li><b>动态规则绑定</b>：rule-gate agent 都带 <code>ontology.fetchActionRules{domain,action}</code>，运行时拉规则，绝不把阈值写死进 prompt。这比旧 repo 把规则埋进 prompt 更先进——蓝图应保留并推广。</li>
+  <li><b>结构化 plan[]</b>：每步是可持久化的 manifest action（condition/tool/logic/invoke），带 <code>retries</code>、<code>depends_on</code>、<code>idempotency_key_from</code>、<code>on_error</code>——durability 语义比旧 repo 的散文 actions 更细。</li>
+  <li><b>供应商静默降级检测</b>：ProcessResume 的 <code>check-parse-quality</code> 步显式识别"API 成功但关键字段为空 = 解析错误"——这是很成熟的失败语义，值得沉淀进失败本体。</li>
+</ul>
+</section>
+
+<section id="rootcause">
+<h2><span class="n">3</span>为什么生成不出"真正能跑通"的 functions</h2>
+<p>把 §2 的现象归纳成六条根因，每条都对应后面的一个优化点。</p>
+<table>
+  <tr><th>#</th><th>根因</th><th>证据 / 代码落点</th><th>对应优化</th></tr>
+  <tr><td>R1</td><td><b>代码生成与执行脱节</b>：生成 <code>typescript_code</code> 只是脚手架，运行走声明式回退，<code>codeExecuted</code> 生成期默认不置真，<code>FACTORY_EXEC_GENERATED</code> 网关默认关。</td><td><code>codegen.ts:renderExecutableCode</code>、<code>sandbox-deployer.ts</code>、DB <code>code_ran=6/10780</code></td><td><a href="#exec">§6.4 打通执行闭环</a></td></tr>
+  <tr><td>R2</td><td><b>无运行期类型契约</b>：<code>tool_use[].input_schema</code>/<code>action.input_schema</code> 为 <code>unknown</code>，emit 载荷不做类型校验；下游 parse 才炸。</td><td><code>message-envelope.ts:171</code>（只报缺失不校验类型）、<code>output_parse_error×78</code></td><td><a href="#spine">§6.1 契约脊柱</a></td></tr>
+  <tr><td>R3</td><td><b>验收只看图闭合不看真执行</b>：<code>acceptanceGate</code> 接受"chain 到达终态"，不要求"真实 sandbox 跑出 schema 合法的下游事件"。</td><td><code>finish-gate.test.ts</code>、sandbox 可 simulated</td><td><a href="#exec">§6.4</a> + <a href="#spine">§6.1</a></td></tr>
+  <tr><td>R4</td><td><b>分解粒度写死</b>：始终"1 个 ontology action = 1 个 agent"，不按执行难度按需分解；复杂 action 与简单 action 同等对待。</td><td>create_plan 固定形状、无难度评估</td><td><a href="#decomp">§6.3 按需分解</a></td></tr>
+  <tr><td>R5</td><td><b>无失败归因 → 无法定点返工</b>：交付失败时 <code>refine_agent</code> 读错误日志再猜，不知道该回退到链上哪个 agent。</td><td>无 causation-based attribution</td><td><a href="#backtrack">§6.5 结构化回退</a></td></tr>
+  <tr><td>R6</td><td><b>只生成 happy path</b>：不生成补偿事件、不生成负例测试、HITL 步骤经常不落地；不 happy 的分支根本没被验证过。</td><td>manifest 支持 <code>compensation_event</code> 但工厂不生成；test case 只有正例</td><td><a href="#saga">§6.6 补偿与失败语义</a></td></tr>
+</table>
+</section>
+
+<!-- ============ PART B ============ -->
+<section id="papers">
+<h2><span class="n">4</span>学术支撑：论文 → 适配点 → 代码落点</h2>
+<p class="lead">三轮检索共 34 篇。第 1、2 主题 20 篇全部经 3 票对抗核验通过；第 3 主题的通信/失败实证 10 篇经核验，另有 14 篇经典/知名工作因检索配额限制<b>本会话未再独立核验</b>（元数据据既有知识，附录标注，建议正式引用前复核）。下面按你的三个问题分组，每篇只给"核心方法一句话 + 对本项目的具体落点"。完整题录见<a href="#refs">附录</a>。</p>
+
+<div id="papers-1"></div>
+<h3>4.1 理解用户问题 · 拆分 · 判断该用什么推理方法</h3>
+<p class="muted">这一支直接回答你的第一个诉求——"根据用户问题和需求，判断用什么方法和思路推理"。一致结论：<b>推理策略与分解深度应按任务难度与执行器能力动态决定，而非静态选一套</b>。</p>
+
+<div class="ref"><div class="t">ADaPT · As-Needed Decomposition and Planning <span class="vbadge ok">核验</span></div><div class="m">Prasad et al. · NAACL 2024 Findings · arXiv:2311.05772</div>
+<p><b>方法：</b>仅当执行器 LLM 无法直接完成子任务时才递归分解，分解深度自适应任务复杂度与模型能力。</p>
+<p><b>落点：</b>直击 R4。把"1 action = 1 agent"改成"先让 agent 直接尝试该 action，卡住再用已有的 <code>invoke</code>/<code>subflow</code> 拆子 agent"——分解触发器 = 执行失败信号，而非静态规则。天然对应你说的"针对不同 sub-task 再选择是否生成 sub-agent"。</p></div>
+
+<div class="ref"><div class="t">Plan-and-Solve Prompting <span class="vbadge ok">核验</span></div><div class="m">Wang et al. · ACL 2023 · arXiv:2305.04091</div>
+<p><b>方法：</b>zero-shot 两段式——先制定"把任务切成子任务"的计划，再逐项执行；诊断三类错误（计算/缺步/语义误解）。</p>
+<p><b>落点：</b><code>create_plan</code> 用 PS+ 结构化提示；三类错误分类可作为 reflection 阶段"按错误类型选补救策略"的判据（重算/补步/重述需求）。</p></div>
+
+<div class="ref"><div class="t">Route-to-Reason (RTR) · 模型与推理策略联合路由 <span class="vbadge warn">preprint</span></div><div class="m">Pan et al. · 2025 · arXiv:2505.19435</div>
+<p><b>方法：</b>学习模型与策略的压缩表示，按任务难度在预算约束下于推理时<b>联合</b>选 (LLM, strategy)。</p>
+<p><b>落点：</b>你们已有 34-model gateway 的 model-tier 路由，RTR 把"选模型"和"选推理策略"合并成一个 learned router；训练信号可直接取自 <code>runs</code> 表历史成败 + token 成本。见 <a href="#router">§6.2</a>。</p></div>
+
+<div class="ref"><div class="t">Meta-Reasoner · think about how to think <span class="vbadge ok">核验</span></div><div class="m">Sui et al. · ACL 2026 (accepted) · arXiv:2502.19918</div>
+<p><b>方法：</b>用 contextual bandit（LinUCB）以当前推理状态的 progress report 为 context，动态选元策略 arm（回溯/换法/重启/澄清/继续）。</p>
+<p><b>落点：</b>把 factory 的 stage 事件 + sandbox 判定编码为 context，arms = revise/re-plan/ask_user/继续，替代现有固定 rule-gate cascade；bandit 权重跨 run 持久化到 <code>agent_memory</code> 持续学习。这正是把"agent loop 是否返工"从写死阈值升级为可学习策略。</p></div>
+
+<div class="ref"><div class="t">DEPS · Describe, Explain, Plan and Select <span class="vbadge ok">核验</span></div><div class="m">Wang et al. · NeurIPS 2023 · arXiv:2302.01560</div>
+<p><b>方法：</b>plan→execute→描述回喂→失败自解释→再规划；另配可训练 goal-selector 按"预计完成步数"给候选子目标排序（可行性由学习模块判，不全靠 LLM）。</p>
+<p><b>落点：</b>sandbox 执行回执（<code>code_ran</code> receipts）→ describe/explain → 修订 plan，与 finish-loop 同构。goal-selector 思路 = 用 tool-registry 元数据 + 历史成功率对候选子任务做<b>能力感知排序</b>，避免生成"当前工具集根本执行不了"的 manifest（直击 R4）。</p></div>
+
+<div class="ref"><div class="t">AdaptThink · 学会何时思考 <span class="vbadge ok">核验</span></div><div class="m">Zhang et al. · EMNLP 2025 Main · arXiv:2505.13417</div>
+<p><b>方法：</b>实证简单任务 NoThinking 优于 deep thinking；用 RL 让模型按难度自适应选 Thinking/NoThinking（长度 −53%、精度 +2.4%）。</p>
+<p><b>落点：</b>为"入口按需求分级推理"提供实证——简单请求走轻量直答路径，复杂请求才升 deep-thinking tier。难度判定本身作为进入 planner 前的<b>第一个路由决策</b>（见 <a href="#router">§6.2</a>）。</p></div>
+
+<div id="papers-2"></div>
+<h3>4.2 澄清式提问 ask_user（解决"泛化提问"）</h3>
+<p class="muted">直接回答你的第二个诉求。一致结论：<b>基模型默认直接给错答案而不主动澄清，必须显式门控；"何时问"要建模、"问什么"要用信息增益选，而非让 LLM 自由生成</b>。</p>
+
+<div class="ref"><div class="t">Ask-before-Plan · Proactive Agent Planning <span class="vbadge ok">核验</span></div><div class="m">Zhang et al. · EMNLP 2024 Findings · arXiv:2406.12639</div>
+<p><b>方法：</b>提出 Proactive Agent Planning 任务——基于<b>用户对话 + agent-环境（工具）双上下文</b>预测是否需要澄清；Clarification-Execution-Planning (CEP) 三专职 agent；配套 benchmark。</p>
+<p><b>落点：</b>"何时问"应同时依赖对话与<b>工具执行反馈</b>——工具报错/空结果本身就是提问触发器（sandbox 回执可直接当信号）。CEP = 把澄清门做成独立 agent 而非单体 prompt。其 benchmark 可做 ask_user gating 的回归测试集。</p></div>
+
+<div class="ref"><div class="t">Active Task Disambiguation · EIG 选题 <span class="vbadge ok">核验</span></div><div class="m">Kobalczyk et al. · ICLR 2025 Spotlight · arXiv:2502.04485</div>
+<p><b>方法：</b>把澄清提问建模为 Bayesian Experimental Design——选对"可行解空间"<b>期望信息增益（EIG）最大</b>的问题，胜过只在问题空间里让 LLM 直接生成澄清问题。</p>
+<p><b>落点：</b>这是消灭"泛化提问"的直接方案——ask_user 先采样 N 个候选方案（候选 manifest/plan），再问<b>最能区分这些候选</b>的问题。成本 O(NM) 次 LLM 调用，可用小模型采样候选降本。见 <a href="#askuser">§8</a>。</p></div>
+
+<div class="ref"><div class="t">CLAM · Selective Clarification <span class="vbadge warn">preprint</span></div><div class="m">Kuhn, Gal, Farquhar (Oxford) · 2022 · arXiv:2212.07769</div>
+<p><b>方法：</b>detect→ask→answer 三段式——先显式判定问题是否歧义，仅歧义时才生成澄清问题；实证现成 LLM 默认直接给错答案（被 2024-2026 多篇后续复证）。</p>
+<p><b>落点：</b>ask_user 的<b>最小可行门控</b>就是把"歧义检测"做成独立前置步骤，绝不指望基模型自发提问。其 "adjusted accuracy"（对多余提问计罚）可作为衡量"提问克制度"的量化指标。</p></div>
+
+<div class="ref"><div class="t">CLAMBER · 歧义识别与澄清基准 <span class="vbadge ok">核验</span></div><div class="m">Zhang et al. · ACL 2024 Main · arXiv:2405.12063</div>
+<p><b>方法：</b>三维八类歧义分类学 + ~12K 样本 benchmark，系统评测 LLM 识别并澄清歧义查询的能力（结论：普遍问不出高质量澄清问题）。</p>
+<p><b>落点：</b>把 taxonomy 编进 ask_user 检测 prompt——先判歧义<b>类别</b>再决定问什么（按类别分派针对性问题模板）；benchmark 离线评测歧义检测组件的召回/精度。</p></div>
+
+<div id="papers-3"></div>
+<h3>4.3 多智能体通信 + 工作流合成 + durable execution（交付 Inngest functions）</h3>
+<p class="muted">直接回答你的第三个诉求——"agent 内部通信 + 最终交付可部署 Inngest functions 的架构"。这是最贴你系统 B 的一支。</p>
+
+<h4 style="margin-top:18px;color:var(--cyan)">A · agent 间通信机制</h4>
+<div class="ref"><div class="t">MetaGPT · 结构化消息 + 消息池 + 依赖触发 <span class="vbadge ok">核验</span></div><div class="m">Hong et al. · ICLR 2024 oral · arXiv:2308.00352</div>
+<p><b>方法：</b>agent 以 schema 化结构化文档通信（非自由对话）；共享消息池发布订阅；action 仅在全部前置依赖到齐后触发。</p>
+<p><b>落点：</b>这是"把 agent 通信编译成事件驱动 durable 触发"最直接的学术对应物——消息池≈事件总线，订阅过滤≈<code>${tenantSlug}/${name}</code> 命名空间匹配，依赖齐备触发≈<code>step.waitForEvent</code> 门控 + <code>depends_on</code>。你们已经在做，MetaGPT 给了理论背书与"结构化优于对话"的原则。</p></div>
+
+<div class="ref"><div class="t">AutoGen · conversable agent 抽象 <span class="vbadge ok">核验</span></div><div class="m">Wu et al. · COLM 2024 · arXiv:2308.08155</div>
+<p><b>方法：</b>单一抽象内混合 LLM/工具/人类输入；交互拓扑用自然语言+代码显式编程（conversation programming）。</p>
+<p><b>落点：</b>一个生成 agent ↔ 一个 durable function，其 step 序列天然交错 LLM <code>step.run</code>、工具 dispatch、HITL <code>step.waitForEvent</code>；"拓扑是可编程工件而非涌现属性"正是工厂"把编排编译为部署工件"的前提。</p></div>
+
+<div class="ref"><div class="t">ChatDev · chat chain 阶段化流水线 <span class="vbadge ok">核验</span></div><div class="m">Qian et al. · ACL 2024 · arXiv:2307.07924</div>
+<p><b>方法：</b>chat chain 决定"说什么"（有序 phase/subtask 链），communicative dehallucination 决定"怎么说"（角色反转追问再作结）。</p>
+<p><b>落点：</b>chat chain = "把 agent 会话编译成有序 workflow steps"的原型——每个 phase ↔ 一个 durable step 或子 workflow，阶段产物 memoize。对应你说的"agent 内部 workflow 不同 phases"。</p></div>
+
+<h4 style="margin-top:18px;color:var(--red)">B · 可靠性实证（论证为什么要 durable step-level 记录）</h4>
+<div class="ref"><div class="t">MAST · Why Do Multi-Agent LLM Systems Fail? <span class="vbadge ok">核验</span></div><div class="m">Cemri et al. (UC Berkeley) · 2025 · arXiv:2503.13657</div>
+<p><b>方法：</b>首个 MAS 失败分类法——1,642 traces、14 失败模式聚为 3 类（系统设计 41.8% / agent 间失调 36.9% / 任务验证 21.3%）；同模型下仅改系统设计即 +15.6%。</p>
+<p><b>落点：</b>最强证据支持"编译<b>协调结构</b>（而非堆模型）是正确杠杆"。14 个失败模式逐条映射到 durable 缓解手段——<code>step memoization</code> 防 conversation reset、显式事件 contract 防 information withholding、内建验证 step 防 verification 缺失。<b>直接作为失败本体的种子词表（见 <a href="#ontology">§7</a>）。</b></p></div>
+
+<div class="ref"><div class="t">Which Agent Causes Task Failures and When? · 失败归因 <span class="vbadge ok">核验</span></div><div class="m">Zhang, Yin et al. · ICML 2025 Spotlight · arXiv:2505.00212</div>
+<p><b>方法：</b>提出自动失败归因任务 + 否定性实证——LLM 事后读 transcript 定位责任 agent 仅 <b>53.5%</b>、定位失败 step 仅 <b>14.2%</b>，部分低于随机；o1/R1 也不可用。</p>
+<p><b>落点：</b><b>决定性论据</b>——你说的"harness 决策返回哪个 agent 节点"如果靠 LLM 读日志猜，会不可靠。必须让每个 agent step 的输入/输出成为一等可归因的持久工件，用<b>因果图结构化定位</b>（见 <a href="#backtrack">§6.5</a>），这正是 durable execution 的核心卖点。</p></div>
+
+<div class="ref"><div class="t">TRAIL · agentic 错误分类基准 <span class="vbadge ok">核验</span></div><div class="m">Deshpande et al. (Patronus AI) · 2025 · arXiv:2505.08638</div>
+<p><b>方法：</b>形式化 agentic 系统错误 taxonomy（推理/系统执行/规划协调）+ 148 条人工标注 trace。</p>
+<p><b>落点：</b>其 taxonomy 以 workflow trace 为标注单元，与 Inngest run/step 日志同构，可直接做<b>生成后 sandbox 验证阶段的错误标注 schema</b>——把 R6 的负例测试结果归到标准错误类别。</p></div>
+
+<h4 style="margin-top:18px;color:var(--blue)">C · 通信协议 / 互操作</h4>
+<div class="ref"><div class="t">Agent 互操作协议综述 · MCP / ACP / A2A / ANP <span class="vbadge warn">preprint</span></div><div class="m">Ehtesham et al. · 2025 · arXiv:2505.02279</div>
+<p><b>方法：</b>沿交互模式/发现/通信/安全四维比较四个新兴协议。</p>
+<p><b>落点：</b>(a) MCP（JSON-RPC 工具调用层）正对应你们 step-engine 把 MCP 工具折叠进 tenant registry；(b) <b>A2A 的类型化任务生命周期状态机</b>（submitted/working/completed/failed/canceled）是"生成 agent 间以类型化事件在 Inngest functions 间交接任务"的可引用协议基础——直接给 §6.1 契约脊柱的"事件即带状态的任务"提供标准。</p></div>
+
+<div class="ref"><div class="t">Agora · 通信三难困境 <span class="vbadge warn">preprint</span></div><div class="m">Marro et al. (Oxford) · 2024 · arXiv:2410.11905</div>
+<p><b>方法：</b>形式化 versatility / efficiency / portability 三者难以兼得。</p>
+<p><b>落点：</b>为"编译期固化结构化事件 contract（牺牲 versatility 换 efficiency+portability），同时保留 LLM 自由对话作回退"的<b>双层通信设计</b>提供理论框架——恰好对应 manifest 声明式事件 schema + LLM tool-use loop 的双层结构。</p></div>
+
+<h4 style="margin-top:18px;color:var(--green)">D · 工作流自动生成/编译（"生成 functions"的核心文献）</h4>
+<p class="small">⚠️ 本组因检索配额限制，本会话未再独立核验；均为知名工作，元数据据既有知识，正式引用前建议复核 arXiv 号/venue。</p>
+<div class="ref"><div class="t">AFlow · MCTS 搜索代码表示的 workflow <span class="vbadge warn">未再核验</span></div><div class="m">Zhang et al. · ICLR 2025 oral · arXiv:2410.10762</div>
+<p><b>方法：</b>把 agentic workflow 优化建模为"在代码表示的 workflow 空间里的搜索"，用 MCTS + 代码修改 + 执行反馈迭代。Node（LLM 调用单元）/ Operator（Node 组合）经边连接。</p>
+<p><b>落点：</b>AFlow 搜索的工件<b>就是可执行代码</b>——直接类比"把业务流程编译成 step-based durable functions"。Node/Operator 天然映射为 Inngest 里可 memoize/replay 的 step。给工厂"生成后再搜索优化 workflow 结构"提供方法论（今天工厂是一次性生成，无结构搜索）。</p></div>
+
+<div class="ref"><div class="t">ADAS · Automated Design of Agentic Systems <span class="vbadge warn">未再核验</span></div><div class="m">Hu, Zhou, Clune · 2024 · arXiv:2408.08435</div>
+<p><b>方法：</b>meta agent 在<b>代码空间</b>编程出新的 agent 设计，迭代累积到 archive。</p>
+<p><b>落点：</b>正是你们工厂的抽象母题——"用一个 agent 生成别的 agent 的代码"。ADAS 的 archive（历史设计库）= 你们的 fleet + skills store 应演进的方向：生成物入库、可检索复用。</p></div>
+
+<div class="ref"><div class="t">GPTSwarm · Language Agents as Optimizable Graphs <span class="vbadge warn">未再核验</span></div><div class="m">Zhuge et al. · ICML 2024 · arXiv:2402.16823</div>
+<p><b>方法：</b>把 agent 系统建成计算图，节点是操作、边可优化。</p>
+<p><b>落点：</b>你们的 manifest 事件图就是这种图。GPTSwarm 说明"边（agent 间连接）本身可作为优化对象"——为 §6.1 的契约脊柱之上做"连接优化"（哪些 emit→trigger 边该增删）提供思路。</p></div>
+
+<div class="ref"><div class="t">LLMCompiler · 并行函数调用编译为 DAG <span class="vbadge warn">未再核验</span></div><div class="m">Kim et al. · ICML 2024 · arXiv:2312.04511</div>
+<p><b>方法：</b>把函数调用编译成有依赖的并行 DAG 执行计划（planner + task-fetching + executor）。</p>
+<p><b>落点：</b>最贴"compiler"语义的一篇——你们的 <code>plan[]</code>（condition/invoke/subflow）就是这种 DAG。LLMCompiler 的"先编译出依赖图再并行执行"支持 §6.1"契约先行、按依赖并行"。</p></div>
+
+<div class="ref"><div class="t">StateFlow · 状态机建模任务求解 <span class="vbadge warn">未再核验</span></div><div class="m">Wu et al. · COLM 2024 · arXiv:2403.11322</div>
+<p><b>方法：</b>把 LLM 任务求解建模为有限状态机（状态=阶段，转移=条件）。</p>
+<p><b>落点：</b>你们的 stage 闸门 + A2A 任务状态机的结合点。生成 agent 的内部 <code>plan[]</code> 可显式建成 FSM，让 condition/depends_on 成为转移守卫——比现在的线性 action 列表更能表达业务分支。</p></div>
+
+<div class="ref"><div class="t">AgentSquare / MaAS / Flows <span class="vbadge warn">未再核验</span></div><div class="m">AgentSquare arXiv:2410.06153 · MaAS(agentic supernet) arXiv:2502.04180 · Flows arXiv:2308.01285</div>
+<p><b>方法：</b>模块化 agent 搜索（planning/reasoning/tool/memory 四模块）/ 从 supernet 采样任务相关的多 agent 架构 / 组合式 flow 抽象。</p>
+<p><b>落点：</b>共同支持"agent 结构应从模块空间<b>搜索/采样</b>得到，而非固定模板"——直接对应 R4：工厂不该对所有 action 用同一 agent 模板。中长期：让 <code>design_agent</code> 从模块空间选形，而非填一个固定 spec。</p></div>
+
+<h4 style="margin-top:18px;color:var(--violet)">E · durable execution / 补偿事务</h4>
+<div class="ref"><div class="t">SagaLLM · 把 Saga 补偿事务用于 LLM 多智能体规划 <span class="vbadge ok">核验</span></div><div class="m">Chang & Geng (Stanford) · PVLDB Vol.18 2025 · arXiv:2503.11951</div>
+<p><b>方法：</b>把 Garcia-Molina & Salem 1987 的 Saga 补偿事务实例化到多 agent LLM 规划：持久内存 + 自动补偿 + 独立验证 agent；放松严格 ACID 换 workflow 级一致性与恢复。</p>
+<p><b>落点：</b><b>连接 LLM-MAS 与 durable systems 两个文献体系的桥梁</b>。与 Inngest"step memoization + 补偿模式替代分布式事务"是同一权衡。直接支撑 §6.6：为副作用 agent（invite/publish）生成 <code>compensation_event</code> 处理器。</p></div>
+
+<div class="ref"><div class="t">Sagas / Durable Functions / ExoFlow / Beldi / Boki / Netherite <span class="vbadge warn">未再核验</span></div><div class="m">Sagas(SIGMOD 1987) · Durable Functions(OOPSLA 2021) · ExoFlow(OSDI 2023) · Beldi(OSDI 2020) · Boki(SOSP 2021) · Netherite(VLDB 2022)</div>
+<p><b>方法（systems 经典）：</b>补偿事务原文 / 有状态 serverless 的 replay 语义 / exactly-once DAG workflow / 事务性有状态 serverless / 共享日志 / 高效 serverless workflow 执行。</p>
+<p><b>落点：</b>这些是 Inngest 本身所属的谱系，给你们"为什么 step-level memoization + replay + 补偿是正确的持久化模型"提供一等引用。<b>Durable Functions 的 replay 语义</b>解释了 CLAUDE.md 里强调的"每个 DB 写必须在 <code>step.run</code> 内"这条纪律的理论来源；<b>ExoFlow 的 exactly-once</b>是生成 workflow 应达到的正确性目标。</p></div>
+
+<div class="callout">
+  <b>核验状态说明：</b>第三轮（AFlow/ADAS/GPTSwarm/LLMCompiler/StateFlow/AgentSquare/MaAS/Flows + durable 系统经典）撞上检索会话配额（4:10pm Asia/Shanghai 重置），未能跑完 3 票对抗核验。这些都是被广泛引用的知名工作，我按既有知识给出元数据并已在附录明确标注；<b>如需把它们写进对外正式材料，建议配额恢复后补一轮核验或人工复核 arXiv 号/venue</b>。第 1、2 主题与第 3 主题的 A/B/C/E 组共 20 篇均已通过核验。
+</div>
+</section>
+
+<!-- ============ PART C ============ -->
+<section id="blueprint">
+<h2><span class="n">5</span>Codex 蓝图审查（从大架构到小技术）</h2>
+<p class="lead">按你的要求，从宏观架构一路审到 schema 细节。先说结论：<b>蓝图的方向对、两系统与两层 harness 的框架正确、createJD/ruleCheck 试点选得好；但它把最大投资押在 Prompt/Payload Compiler 上，而实证瓶颈是运行期契约保真——这是最需要纠正的一点。</b>下面分三层。</p>
+
+<h3>5.1 宏观层（架构哲学）</h3>
+<table>
+  <tr><th></th><th>评价</th><th>说明</th></tr>
+  <tr><td><span class="tag green">强</span></td><td>系统 A/B 分离正确</td><td>"生成系统 A / 运行系统 B"与你的心智模型一致，也与本报告 §1 一致。</td></tr>
+  <tr><td><span class="tag green">强</span></td><td>两层 harness 正确</td><td>Factory-level Router 选 active agent + Agent-local Router 决定是否拆 sub-agent，精确对应你说的"每个 agent 共享一个推理 harness"。</td></tr>
+  <tr><td><span class="tag red">最大问题</span></td><td><b>押错了瓶颈</b></td><td>蓝图 §3.1–3.3、§5、§10 的重心是 PromptSpec/PromptBlock/PromptInstance/Compiler/Ledger/版本回滚。但 DB 实证：生成 agent 从不执行自己代码，失败是 <code>output_parse_error</code>（契约问题）。<b>再好的 prompt 也修不了"emit 的对象下游 parse 不了"。</b>Prompt 编译是叶子，Contract 才是脊柱。</td></tr>
+  <tr><td><span class="tag amber">问题</span></td><td>Micro Ontology Kernel 过度工程</td><td>一次性引入 Domain/Capability/Reasoning/Prompt/Evidence/Failure 六张图 + Linter + Ledger + Compiler + Router + Policy optimizer，正好踩中蓝图自己 §11 列的"JSON 假精确 / schema_fillers"风险。v1 应收敛到"复用已有事件/工具目录 + 一个 reasoning ledger + 一个 evidence ledger"。</td></tr>
+  <tr><td><span class="tag amber">问题</span></td><td>Router 停留在静态查表</td><td>§7 的 Router 是"任务特征→harness"的静态映射表——这恰恰复刻了现状"按规模不按类型自适应"的老毛病。论文（Meta-Reasoner/Route-to-Reason）的强版本是<b>基于 outcome 遥测的 learned/bandit 策略</b>；蓝图把它降级为 §10 Phase 5 的远期 DSPy/OPRO 附加项。</td></tr>
+</table>
+
+<h3>5.2 中观层（组件设计）</h3>
+<table>
+  <tr><th></th><th>评价</th><th>说明</th></tr>
+  <tr><td><span class="tag green">强</span></td><td>Prompt/Payload 双编译 + 试点选型</td><td>把"外部 AI payload 也当 prompt-like 上下文纳入账本"是好洞察；先做 createJD（验证 block 编译）+ ruleCheck（验证接地/证据/fail-close）是对的切入。</td></tr>
+  <tr><td><span class="tag red">缺失</span></td><td>Evidence Gate 没接"真执行"</td><td>蓝图有 Evidence Graph/sandbox receipt，但没直面"生成代码 <code>code_ran=0</code>"的现实，也没提已存在的 <code>codeExecuted</code>/<code>FACTORY_EXEC_GENERATED</code>/<code>probeAgentModule</code>/<code>code_really_ran</code> 验收（P1a 已落地）。它在<b>从零设计</b>一个 Evidence Gate，却没建在已有的代码执行回执之上。</td></tr>
+  <tr><td><span class="tag red">缺失</span></td><td>"回退到哪个 agent"没有机制</td><td>你的明确诉求——harness 决策返回哪个节点——蓝图只把它列为 Evidence Gate 的 enum（advance/retry/backtrack/…），没给"选哪个上游 agent"的机制。而这正是失败归因问题，论文证明 LLM 事后读日志只有 53.5% 准。蓝图没把这两件事连起来。</td></tr>
+  <tr><td><span class="tag amber">薄弱</span></td><td>ask_user 处理太浅</td><td>只有一个 AskUserBlock + "OpenQuestion blocks Goal 才问"。没触及你关心的"泛化"实痛点（无去重、无 EIG 选题、超时回退用 label 而非 value）。</td></tr>
+</table>
+
+<h3>5.3 微观层（schema / 技术细节）</h3>
+<ul>
+  <li><b><code>AgentInvocation</code> 混淆两类东西</b>：其 <code>selectedAgentSlug</code> 例子同时列了工厂内部工具（<code>design_agent</code>/<code>codegen_agent</code>/<code>validate_graph</code>/<code>sandbox_run</code>）和"某个已生成的 runtime agent"。前者是系统 A 内部设计动作，后者是系统 B 产物调用——本质不同，混在一个类型里会让 dispatcher 混乱。应拆成 <code>FactoryStageInvocation</code>（A 内部）与 <code>RuntimeAgentInvocation</code>（B 产物）。</li>
+  <li><b><code>ReasoningNode.type</code> 有 ~24 个变体</b>：是"把一切塞进一张图"的症状，过度归一化。v1 用 2-3 个窄类型（Commitment / Evidence / OpenQuestion）足矣。</li>
+  <li><b>ORV 分数公式缺"执行保真"项</b>：<code>0.25·grounding + 0.25·coverage + 0.20·closure + 0.20·evidence_density − 0.10·contradiction_debt</code>——权重未验证，且<b>五项没有一项衡量"生成代码是否真跑出 schema 合法的 emit"</b>。按 R2 的现实，一条链可以 ORV 0.9+ 却依然 <code>output_parse_error</code>。必须加一项 <code>execution_fidelity</code>（真实 sandbox 跑出合法下游事件的 agent 比例）。</li>
+  <li><b>持久化重复造轮子</b>：蓝图说"Phase 1-2 存 <code>factory_conversations.ctx.reasoningOntology</code> JSON"，但代码已把 BrainEvents 持久化到 <code>factory_runs.transcriptJson</code>。应复用既有 transcript 持久化，而非另开一条平行存储。</li>
+  <li><b>只字未提已有的执行网关</b>：<code>codeExecuted</code> 开关、<code>FACTORY_EXEC_GENERATED=1</code>、<code>probeAgentModule</code>、<code>runs.code_ran</code> 回执——这些是"真跑通"的现成抓手，蓝图完全没纳入。优化应<b>激活并收紧</b>它们，而不是绕过。</li>
+</ul>
+
+<div class="callout warn">
+  <b>审查总评：</b>蓝图是一份高质量的"Prompt 治理"方案，作为 §6.1 契约脊柱之上的<b>第二层</b>价值很高，但不该当第一层。把它的落地顺序反过来——先建契约与执行保真，再上 Prompt Compiler——就从"优化了正确的东西但顺序错了"变成"优化了正确的东西且顺序对"。§10 路线图给出重排后的顺序。
+</div>
+</section>
+
+<section id="target">
+<h2><span class="n">6</span>优化方案 · Contract-First Agent Factory</h2>
+<p class="lead">不推翻蓝图，而是给它换一根脊柱、补三块缺失、重排优先级。核心：<b>一根契约脊柱贯穿 A 与 B</b>，Prompt Compiler / Reasoning Router / ask_user / per-agent 卡片都挂在脊柱上。</p>
+
+<div class="fig">
+<svg viewBox="0 0 1180 620" xmlns="http://www.w3.org/2000/svg" font-family="var(--mono)">
+  <defs>
+    <marker id="t1" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#74b9ff"/></marker>
+    <marker id="t2" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#54d7ca"/></marker>
+    <marker id="t3" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#63d495"/></marker>
+    <marker id="t4" markerWidth="10" markerHeight="10" refX="8" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#ff8093"/></marker>
+    <style>
+      .bx{fill:#141b27;stroke:#33435a;stroke-width:1.2}
+      .bx2{fill:#0f1721;stroke:#243040;stroke-width:1.2}
+      .t{fill:#eef3f9;font-size:12px;font-weight:700}
+      .s{fill:#b4c0ce;font-size:9.5px}
+      .m{fill:#8090a4;font-size:9px}
+    </style>
+  </defs>
+
+  <!-- Front router -->
+  <rect x="30" y="26" width="230" height="66" rx="12" class="bx2" stroke="#74b9ff"/>
+  <text x="145" y="52" class="t" text-anchor="middle">Intent + 难度/类型分类</text>
+  <text x="145" y="72" class="s" text-anchor="middle">§6.2 选流水线形状 + 策略</text>
+
+  <rect x="290" y="26" width="230" height="66" rx="12" class="bx2" stroke="#54d7ca"/>
+  <text x="405" y="52" class="t" text-anchor="middle">Reasoning Policy Router</text>
+  <text x="405" y="72" class="s" text-anchor="middle">bandit · learned from runs</text>
+
+  <!-- CONTRACT SPINE (the backbone) -->
+  <rect x="30" y="120" width="1120" height="96" rx="14" fill="#0e141d" stroke="#54d7ca" stroke-width="2"/>
+  <text x="52" y="146" fill="#54d7ca" font-size="14" font-weight="700">契约脊柱 · Contract Spine（§6.1 · 一切挂在这里）</text>
+  <rect x="52" y="158" width="248" height="46" rx="9" class="bx" stroke="#54d7ca"/><text x="176" y="180" class="t" text-anchor="middle">Event / Payload 契约</text><text x="176" y="196" class="m" text-anchor="middle">producer字段·consumer期待·类型</text>
+  <rect x="316" y="158" width="230" height="46" rx="9" class="bx" stroke="#74b9ff"/><text x="431" y="180" class="t" text-anchor="middle">Capability 契约</text><text x="431" y="196" class="m" text-anchor="middle">tool/skill/agent·precond·effect</text>
+  <rect x="562" y="158" width="230" height="46" rx="9" class="bx" stroke="#ff8093"/><text x="677" y="180" class="t" text-anchor="middle">Failure 契约</text><text x="677" y="196" class="m" text-anchor="middle">MAST/TRAIL 失败模式词表</text>
+  <rect x="808" y="158" width="320" height="46" rx="9" class="bx" stroke="#63d495"/><text x="968" y="180" class="t" text-anchor="middle">Evidence / Causation 账本</text><text x="968" y="196" class="m" text-anchor="middle">sandbox 回执 · code_ran · causationId</text>
+
+  <!-- System A stages consuming spine -->
+  <rect x="30" y="248" width="1120" height="150" rx="14" fill="#0f1721" stroke="#33435a"/>
+  <text x="52" y="272" fill="#b39dff" font-size="12" font-weight="700">系统 A · 每个 stage 都针对契约生成与校验（共享 harness）</text>
+  <rect x="52" y="286" width="150" height="96" rx="10" class="bx"/><text x="127" y="312" class="t" text-anchor="middle">契约先行</text><text x="127" y="330" class="s" text-anchor="middle">从 ontology</text><text x="127" y="346" class="s" text-anchor="middle">先编译事件</text><text x="127" y="362" class="m" text-anchor="middle">/载荷契约</text>
+  <rect x="216" y="286" width="150" height="96" rx="10" class="bx"/><text x="291" y="312" class="t" text-anchor="middle">按需分解</text><text x="291" y="330" class="s" text-anchor="middle">ADaPT</text><text x="291" y="346" class="s" text-anchor="middle">卡住才拆</text><text x="291" y="362" class="m" text-anchor="middle">sub-agent</text>
+  <rect x="380" y="286" width="150" height="96" rx="10" class="bx"/><text x="455" y="312" class="t" text-anchor="middle">针对契约设计</text><text x="455" y="330" class="s" text-anchor="middle">emit 字段</text><text x="455" y="346" class="s" text-anchor="middle">编译期校验</text><text x="455" y="362" class="m" text-anchor="middle">design_agent</text>
+  <rect x="544" y="286" width="150" height="96" rx="10" class="bx" stroke="#63d495"/><text x="619" y="312" class="t" text-anchor="middle">真实执行</text><text x="619" y="330" class="s" text-anchor="middle">codeExecuted</text><text x="619" y="346" class="s" text-anchor="middle">sandbox 真跑</text><text x="619" y="362" class="m" text-anchor="middle">§6.4</text>
+  <rect x="708" y="286" width="150" height="96" rx="10" class="bx" stroke="#f1be5c"/><text x="783" y="312" class="t" text-anchor="middle">补偿+负例</text><text x="783" y="330" class="s" text-anchor="middle">compensation</text><text x="783" y="346" class="s" text-anchor="middle">失败语义</text><text x="783" y="362" class="m" text-anchor="middle">§6.6</text>
+  <rect x="872" y="286" width="256" height="96" rx="10" class="bx" stroke="#63d495"/><text x="1000" y="312" class="t" text-anchor="middle">执行保真验收</text><text x="1000" y="332" class="s" text-anchor="middle">真跑出 schema 合法 emit 才 finish</text><text x="1000" y="352" class="s" text-anchor="middle">ORV + execution_fidelity</text><text x="1000" y="370" class="m" text-anchor="middle">acceptanceGate 收紧</text>
+
+  <!-- System B -->
+  <rect x="30" y="430" width="760" height="86" rx="12" class="bx2" stroke="#63d495"/>
+  <text x="410" y="458" class="t" text-anchor="middle">系统 B · 部署在 Inngest 的 functions（事件链 + 类型化载荷 + 补偿）</text>
+  <text x="410" y="480" class="s" text-anchor="middle">register.ts · step.run/sendEvent/waitForEvent · 每域一个 Inngest app</text>
+  <text x="410" y="500" class="m" text-anchor="middle">运行时对 emit 载荷做契约校验：不合法直接 typed reject，不再 output_parse_error</text>
+
+  <rect x="820" y="430" width="308" height="86" rx="12" class="bx2" stroke="#ff8093"/>
+  <text x="974" y="458" class="t" text-anchor="middle" fill="#ff8093">结构化回退归因（§6.5）</text>
+  <text x="974" y="480" class="s" text-anchor="middle">沿 causationId 定位首个违约 agent</text>
+  <text x="974" y="500" class="m" text-anchor="middle">不靠 LLM 猜 · 结构化定点返工</text>
+
+  <!-- Telemetry loop -->
+  <rect x="230" y="552" width="720" height="46" rx="12" class="bx2" stroke="#b39dff"/>
+  <text x="590" y="580" class="t" text-anchor="middle">遥测飞轮：System B 生产 outcome → 回喂 Router / 失败本体 / reflection memory</text>
+
+  <!-- arrows -->
+  <line x1="260" y1="59" x2="288" y2="59" stroke="#74b9ff" stroke-width="1.6" marker-end="url(#t1)"/>
+  <line x1="405" y1="92" x2="405" y2="118" stroke="#54d7ca" stroke-width="1.6" marker-end="url(#t2)"/>
+  <line x1="590" y1="216" x2="590" y2="246" stroke="#54d7ca" stroke-width="1.6" marker-end="url(#t2)"/>
+  <line x1="450" y1="398" x2="410" y2="428" stroke="#63d495" stroke-width="1.6" marker-end="url(#t3)"/>
+  <path d="M974 430 C974 410,880 400,872 384" fill="none" stroke="#ff8093" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#t4)"/>
+  <path d="M974 516 C974 540,300 540,300 384" fill="none" stroke="#ff8093" stroke-width="1.5" stroke-dasharray="6 5" marker-end="url(#t4)"/>
+  <path d="M590 552 C590 528,405 118,405 94" fill="none" stroke="#b39dff" stroke-width="1.3" stroke-dasharray="6 5" marker-end="url(#t2)"/>
+</svg>
+<div class="figcap">图 6 · Contract-First 目标架构：契约脊柱贯穿 A/B，执行保真验收 + 结构化回退 + 遥测飞轮</div>
+</div>
+
+<h3 id="spine">6.1 契约脊柱（Contract Spine）——最高优先级</h3>
+<p>把"事件 + 载荷 + 能力 + 失败"做成一份<b>小而强类型</b>的契约，作为整个工厂的类型系统。它不是"reasoning ontology"，是"数据契约"。</p>
+<pre><code>// 从 ontology 先编译出的事件契约（每个业务事件一条）
+type EventContract = {
+  name: string;                    // "RESUME_PROCESSED"
+  producedBy: string[];            // 哪些 agent emit
+  consumedBy: string[];            // 哪些 agent trigger
+  payload: FieldSpec[];            // 字段名 + 类型 + required + 来源(ontology 对象.属性)
+  taskState?: "submitted"|"working"|"completed"|"failed"|"canceled"; // A2A 式生命周期
+};
+type FieldSpec = { name:string; type:"string"|"number"|"bool"|"object"|"array"; required:boolean; source:string };
+</code></pre>
+<ul>
+  <li><b>生成期</b>：<code>design_agent</code> 生成 emit 载荷时，用 <code>EventContract.payload</code> 做<b>类型级</b>校验（不只字段缺失警告）——编译期就挡住 R2。</li>
+  <li><b>运行期</b>：<code>register.ts</code> emit 前对载荷做契约校验，不合法 → typed reject + 归因，而不是让下游 <code>output_parse_error</code>。这直接复用 <code>message-envelope.ts</code> 已有的 <code>contractFields</code>，只是从"报缺失"升级为"校类型 + 拒绝"。</li>
+  <li><b>来源</b>：旧 repo 的 <code>contract.ts</code>（<code>payload_gap</code>）已经证明这条路；A2A 协议给"事件即带状态的任务"提供标准；MetaGPT 给"结构化消息优于对话"背书。</li>
+</ul>
+
+<h3 id="router">6.2 前置自适应路由（回答"判断该用什么方法"）</h3>
+<p>在流水线<b>入口</b>加一层分类，先选"流水线形状 + 推理策略"，再进入执行——把现在"一套 6 阶段服务所有"改成"按问题类型/难度走不同路径"。</p>
+<table>
+  <tr><th>请求类型</th><th>流水线形状</th><th>推理策略（论文）</th></tr>
+  <tr><td>生成整条 workflow（你说的主场景）</td><td>full: read→understand→contract→plan→critique→design→exec→verify→finish</td><td>Plan-and-Solve + 按需分解(ADaPT)</td></tr>
+  <tr><td>只改一个 agent</td><td>skinny: 定位→针对契约 refine→exec→verify</td><td>Reflexion 定点修复</td></tr>
+  <tr><td>只分析/答疑</td><td>analyze-only：无 sandbox</td><td>Direct / NoThinking(AdaptThink)</td></tr>
+  <tr><td>信息缺失/流程不清</td><td>直接进 ask_user 门</td><td>EIG 选题（§8）</td></tr>
+</table>
+<p><b>#NATIVE 修订（2026-07-09 定稿）：路由只按【意图类型】选流水线形状与档位；分治深度回归原生 AI 推理。</b>规模/难度/历史教训不再确定性地强制任何推理形状——它们作为【事实与建议】经 <code>[推理路线]</code> 消息注入上下文（如"262 规则/44 对象——如需更稳可 deep=true"、"该难度历史保真违约率高，建议深评"），<code>understand_ontology</code> / <code>critique_plan</code> 的 <code>deep</code> 参数由 AI 自行决定。经验回喂（policy-learning：arm 按 pipeline×难度带统计保真/成功率）同样只产生<b>建议</b>，随消息呈给 AI，不再被工具强制消费。这既保留了"信息充分的自适应"，又移除了"Ontology 规模理念替 AI 做推理决策"的最后残留。</p>
+
+<h3 id="decomp">6.3 按需分解 + 共享 harness（回答"每个 agent 自己判断是否生成 sub-agent"）</h3>
+<ul>
+  <li><b>不再"1 action = 1 agent"写死</b>：先让 active agent 直接尝试处理该 ontology action；只有当能力契约显示"当前工具集覆盖不了"或 sandbox 试跑失败时，才用已有的 <code>invoke</code>/<code>subflow</code>/<code>design_subagent</code> 拆子 agent（ADaPT 的 as-needed）。</li>
+  <li><b>能力感知排序</b>（DEPS goal-selector）：拆之前用 Capability 契约 + 历史成功率给候选子任务打"可执行分"，避免生成"当前工具跑不了"的子 agent。</li>
+  <li><b>共享 harness 的落地</b>：每个 agent 进入时注入统一的 <code>Agent-local TaskFrame</code>（局部目标 + 允许工具 + 输出契约 + 预算），复用现有 <code>runSpecialists</code> / <code>spawn_subagent</code>，但把它们的触发从"规模阈值"改成"契约缺口 + 执行失败信号"。</li>
+</ul>
+
+<h3 id="exec">6.4 打通代码执行闭环（把 code_ran 从 0 拉起来）——直击 R1/R3</h3>
+<p>这是"真正跑通"的核心动作，而且抓手已存在，只需激活收紧：</p>
+<ol>
+  <li>生成期让 <code>design_agent</code>/<code>codegen_agent</code> 对<b>确定性动作</b>（工具编排、条件分支、载荷组装）置 <code>codeExecuted=true</code>，把生成代码从"脚手架"变"执行体"；LLM 决策步仍走声明式。</li>
+  <li>sandbox 阶段在 <code>FACTORY_EXEC_GENERATED=1 + -sb</code> 网关下<b>真实执行</b>生成代码（<code>probeAgentModule</code> 先验证可加载），失败自动回退声明式——但<b>把这次回退记为"代码未跑"的证据</b>，而不是当成功。</li>
+  <li><b>验收收紧</b>：<code>acceptanceGate</code> 从"chain 到达终态"升级为"每个非 HITL agent 至少一次真实 sandbox 跑出 <b>schema 合法的下游事件</b>"（用 §6.1 契约校验）。这就是 ORV 里缺的 <code>execution_fidelity</code> 项。</li>
+</ol>
+
+<h3 id="backtrack">6.5 结构化回退归因（回答"harness 决策返回哪个 agent 节点"）</h3>
+<p>论文证明 LLM 事后读 transcript 归因只有 53.5% 准。所以<b>别让 harness 猜</b>，用已有的因果记录定位：</p>
+<ul>
+  <li>carry-forward 信封已带 <code>causationId</code>/<code>producedBy</code>/<code>provenance</code>（<code>message-envelope.ts</code>）——交付失败时，沿 causation 链找<b>第一个 emit 违反其 EventContract 的 agent</b>，回退到<b>那个节点</b>。</li>
+  <li>违约类型直接映射到 Failure 契约（MAST/TRAIL 词表）→ 决定补救策略：契约字段缺失 → 回 design；工具报错 → 回 capability 决策；依赖失败 → 不返工，标 infra；信息缺失 → ask_user。</li>
+  <li>这把你说的"harness 决策返回哪个节点"从"读日志猜"变成"沿因果图定点"，是结构化的、可复现的。</li>
+</ul>
+
+<h3 id="saga">6.6 补偿与失败语义（让不 happy 的路径也跑通）——直击 R6</h3>
+<ul>
+  <li><b>生成补偿</b>（SagaLLM / Sagas）：对有副作用的 agent（invite 已发、JD 已发布），工厂自动生成 <code>compensation_event</code> 处理器——manifest 已支持该字段，只是工厂现在不生成。</li>
+  <li><b>业务失败 vs 依赖失败分流</b>（借旧 repo 的 4xx/5xx 纪律）：生成 agent 时注入"依赖失败不得写成业务 FAIL"的策略，并把它编进 emit 契约的失败分支。</li>
+  <li><b>负例测试合成</b>（TRAIL taxonomy 种子）：test case 不只 happy path，按失败契约生成"空简历/候选人被锁/字段缺失/依赖 down"等负例，让软降级真的被验证过。</li>
+</ul>
+</section>
+
+<section id="ontology">
+<h2><span class="n">7</span>本体使用原则：业务契约硬 · 认知词汇开放</h2>
+<p class="lead">最终定稿（取代本报告早期版本的"小型 Ontology 排序表"）：<b>工厂内部不建任何本体</b>。业务层本体是唯一的本体，它是<b>外部输入</b>，工厂对它只做三个动作——投影、编译、锚定；工厂自己的认知词汇（系统分类、emit 语义、意图类型、修复动作）一律<b>开放</b>，不再有"内部小本体/认知框架"这个概念（蓝图的六图 Micro Ontology Kernel 整体不采纳；早期版本主张的"契约/能力/失败/承诺账本四样小本体"也统一收编为：<b>契约是编译产物、能力是目录查询、失败是开放词表、承诺是折叠幸存文本</b>——都不是"本体"，不需要图、不需要 schema 治理）。</p>
+
+<table>
+  <tr><th>工厂对业务本体的三个动作</th><th>做什么</th><th>刚性</th><th>落点</th></tr>
+  <tr><td><b>投影（Project）</b></td><td>按当前任务切相关子图给理解/规划——只读，不重建、不复制进内部结构。</td><td><span class="tag green">开放</span>——AI 可质疑、可提出本体没有的概念（ambiguities/修订提案）</td><td><code>read_ontology</code> / <code>understand_ontology</code></td></tr>
+  <tr><td><b>编译（Compile）</b></td><td>把 <code>event_data</code> 编译成 functions 之间的 wire 载荷契约 + 把规则闸编译成运行时动态拉取。</td><td><span class="tag red">硬</span>——但面积刻意最小：只有权威字段 required、未知类型放行、类型冲突降级 unknown</td><td><code>contract.ts</code> / <code>execution-fidelity</code> / <code>ontology.fetchActionRules</code></td></tr>
+  <tr><td><b>锚定（Anchor）</b></td><td>按心跳把本体事实 + 消化结论 + 还欠覆盖重新注入对话——保证长跑不忘，替代"把理解锁进结构"。</td><td><span class="tag green">开放</span>——事实提醒，不指挥</td><td><code>ontology-anchor.ts</code>（#ANCHOR）</td></tr>
+</table>
+
+<div class="callout key">
+  <b>一句话：</b>本体在工厂里的身份是【外部事实源 + wire 类型系统 + 记忆锚点】，不是【内部认知结构】。刚性只存在于 functions 之间的载荷契约上（那是修 <code>output_parse_error</code> 的钥匙），其余一切认知分类保持开放词汇，随使用生长。
+</div>
+
+<h3 id="open-vocab">7.1 实现记录（2026-07-09）：开放词汇 + 记忆锚点<span class="vbadge ok">已实现</span></h3>
+<p><b>必须分清两层本体，刚性只属于其中一层：</b>①<b>业务层本体</b>（外部输入：动作/事件/对象/规则）——它的载荷契约钉在 functions 之间的 wire 上，是类型系统，该硬；②<b>内部小本体</b>（工厂自己的认知词汇：系统分类 kind、emit 语义、意图类型、修复动作类型）——它是 AI 理解世界的分类框，写成固定枚举 = 把工厂的认知锁死在写代码那天。本次修订把后者全部改为<b>开放词汇</b>：</p>
+<table>
+  <tr><th>原则</th><th>做法（已落码）</th></tr>
+  <tr><td><b>写入端永远开放</b></td><td>kind/role/emit 语义/意图类型/修复动作 全部改为 <code>Known | (string &amp; {})</code> 开放联合；<code>declaredSystems</code> 不再把词表外的 kind 静默归并成 external_platform（旧行为会丢掉"消息队列/审批流"这类新型集成的真实身份）——原词保留。</td></tr>
+  <tr><td><b>归一化只在消费端</b></td><td><code>normalizeSystemKind()</code> 只服务 UI 上色/分组，未知词优雅降级为默认渲染；意图门写出词表外的新类型（如「对比」）原样透传，selectPolicy 走 full 安全默认并把新词写进 reasons。</td></tr>
+  <tr><td><b>Constraint Drag 仪表</b></td><td>业务流模型新增 <code>unmodeled: {kinds, roles}</code>——词表外新词的清点。高频出现 = 已知词表该扩了，这是"内部本体是否在勒住 AI"的直接监控（蓝图提出过该指标，现在真装上了）。</td></tr>
+  <tr><td><b>协议封闭、认知开放</b></td><td>三样保持封闭并有明确理由：BrainEvent 的 <code>t</code> 判别子（前后端 wire 协议）、三种 hard-fail 契约判定（业务层 wire）、难度带（我们算出的度量刻度，不是 AI 提出的概念）。</td></tr>
+</table>
+<p><b>配套的记忆锚点循环（#ANCHOR）：</b>去掉写死的词汇框之后，"不忘本体"改由<b>心跳式 re-grounding</b>保证——折叠幸存（ctx.ontologyUnderstanding）解决"压缩时不丢"，锚点循环解决"长跑中变淡"：每 N 轮（默认 8，<code>FACTORY_ONTOLOGY_ANCHOR_EVERY</code> 可调）把【本体核心事实 + 消化结论 + 还欠覆盖的动作清单 + 当前路线】作为事实提醒重新注入对话，只陈述不指挥。UI 侧以 reflect(kind=anchor) 心跳可见。</p>
+<div class="callout warn"><b>同日事故修复（运行无响应）：</b>所有工厂 LLM 调用此前没有超时——provider 挂起/网络黑洞时流不再产出 chunk，run 永远停在"运行中…"直到前端 staleness 兜底报"已无响应"（understand_ontology 四维分治期间实测复现）。已在最底层咽喉点 <code>streamTurn</code> 装<b>空转看门狗</b>：流只要在动就续命（长输出永不误杀），静默超过 <code>FACTORY_LLM_IDLE_TIMEOUT_MS</code>（默认 90s）即中止并翻译为可诊断错误，上层按既有降级链（四维→单跳→骨架）继续而不是死等。</div>
+</section>
+
+<section id="askuser">
+<h2><span class="n">8</span>ask_user 硬化（消除"泛化提问"）</h2>
+<p class="lead">现状（代码核实）：无去重、无"先自己推断再问"的成本权衡、无每轮提问上限、无答案校验、超时回退用 <b>label 而非 value</b>、UI 只显示最新一问。用 §4.2 的四篇论文逐条修。</p>
+<table>
+  <tr><th>缺陷</th><th>论文方案</th><th>落地改法</th></tr>
+  <tr><td>该不该问全靠 LLM 自觉，默认不问就给错答案</td><td>CLAM detect→ask→answer</td><td>把"歧义/缺口检测"做成独立前置步骤（不塞进主 prompt）；只有检测命中才进 ask_user。</td></tr>
+  <tr><td>问题泛化、选项空泛（"要不要用真实工具？"）</td><td>Active Task Disambiguation（EIG）</td><td>先用小模型采样 N 个候选方案（候选 manifest/plan/字段填法），问<b>最能区分这些候选</b>的问题，并把候选直接作为选项。</td></tr>
+  <tr><td>不区分歧义类别，问法一刀切</td><td>CLAMBER taxonomy</td><td>按歧义类别（词汇/语义欠指定/认知不确定）分派针对性问题模板。</td></tr>
+  <tr><td>"何时问"只看对话，不看执行</td><td>Ask-before-Plan（双上下文）</td><td>把 sandbox 报错/空结果也作为提问触发器：工具执行失败即候选提问点。</td></tr>
+  <tr><td>同一问题跨轮重复问</td><td>—（工程）</td><td>加 <code>ctx.askedQuestions</code> 去重（按归一化问题 + 目标字段）。</td></tr>
+  <tr><td>无成本权衡，能问就问</td><td>VOI 门</td><td>只有 EIG（信息价值）&gt; 提问成本（打断用户 + 延迟）时才问；否则用 recommended 默认继续。</td></tr>
+  <tr><td>超时回退用 label 当决策文本</td><td>—（bug）</td><td>超时回退写入 <code>option.value</code>（机器可用值），而非人类可读 label。</td></tr>
+  <tr><td>答案无校验（"我不知道"被当值用）</td><td>—（工程）</td><td>对答案做类型/枚举校验，非法答案重问或降级。</td></tr>
+  <tr><td>UI 只显示最新一问，问题队列不可见</td><td>—（UI）</td><td>interaction dock 显示 pending 问题队列 + 每问的 context。</td></tr>
+</table>
+</section>
+
+<section id="ui">
+<h2><span class="n">9</span>后台任务 · 宏观→微观的 agent 决策卡片 + 右栏可视化</h2>
+<p class="lead">你的诉求升级了：不只"每个 function 一张卡"，而是<b>点进一个 function，能以卡片形式、从宏观到微观看到它内部这个 agent 的运行 / 推理 / 决策 / 生成了哪些 sub-agent / 开了哪些 workflow phases</b>。同时右栏要有更多"可视化内部过程"的面板。这一节给出四层卡片模型 + 右栏面板设计。<b>支撑它的后端字段（<code>forAgent</code>/<code>parentAgent</code>/<code>fidelityFailures</code>）本次已经写进代码（见 <a href="#shipped">第 13 节</a>）</b>，所以这不是纸上设计，而是可直接接的 UI。</p>
+
+<h3>9.1 四层卡片模型：Run → Function → 决策卡组 → Sub-agent（可递归）</h3>
+<p>把"宏观→微观"落成一个可无限下钻的卡片栈。每一层都是卡片，点开进入下一层，面包屑可回退：</p>
+<div class="grid4">
+  <div class="card"><h4><span class="tag cyan">L0</span> Factory Run</h4><p>整次生成：ORV / 执行保真仪表、契约健康、阶段进度、总 token/成本。一屏看懂"这批 function 生成得怎么样"。</p></div>
+  <div class="card"><h4><span class="tag blue">L1</span> Function 卡</h4><p>每个生成 agent 一张：状态点 · trigger→emit mini-SVG · 执行保真徽章（✓/⚠）· <code>N tools·M sub·v{ver}</code>。点击展开 L2。</p></div>
+  <div class="card"><h4><span class="tag violet">L2</span> 决策卡组</h4><p>该 agent 内部 harness 的活动，<b>按类型拆成 6 张小卡</b>（计划/思考/工具/问题/子agent·phases/真实 I/O）——这就是"宏观→微观展现决策"。</p></div>
+  <div class="card"><h4><span class="tag green">L3</span> Sub-agent 卡</h4><p>L2 的"子agent"卡里，每个 sub-agent 自己又是一张卡，可再展开它<b>自己的 L2 决策卡组</b>（递归）。parentAgent 归组。</p></div>
+</div>
+
+<div class="fig">
+<svg viewBox="0 0 1060 620" xmlns="http://www.w3.org/2000/svg" font-family="var(--mono)">
+  <defs><style>
+    .bx{fill:#141b27;stroke:#33435a;stroke-width:1.2}
+    .bx2{fill:#0f1721;stroke:#243040;stroke-width:1}
+    .t{fill:#eef3f9;font-size:11.5px;font-weight:700}
+    .s{fill:#b4c0ce;font-size:9.5px}
+    .m{fill:#8090a4;font-size:8.5px}
+    .hd{fill:#54d7ca;font-size:10px;font-weight:700}
+    .lv{fill:#63718a;font:700 9px var(--mono)}
+  </style></defs>
+
+  <!-- L0 run bar -->
+  <text x="20" y="20" class="lv">L0 · FACTORY RUN</text>
+  <rect x="20" y="28" width="1020" height="52" rx="10" class="bx" stroke="#54d7ca"/>
+  <text x="36" y="50" class="t">Agents-generation · 本次生成</text>
+  <text x="36" y="68" class="m">6 function · 阶段 8/8</text>
+  <rect x="300" y="40" width="150" height="28" rx="8" class="bx2" stroke="#63d495"/><text x="375" y="58" class="s" text-anchor="middle" fill="#63d495">执行保真 5/6 · 83%</text>
+  <rect x="466" y="40" width="180" height="28" rx="8" class="bx2" stroke="#f1be5c"/><text x="556" y="58" class="s" text-anchor="middle" fill="#f1be5c">契约健康 1 type_mismatch</text>
+  <rect x="662" y="40" width="150" height="28" rx="8" class="bx2"/><text x="737" y="58" class="s" text-anchor="middle">code_ran 4/6</text>
+  <rect x="828" y="40" width="196" height="28" rx="8" class="bx2"/><text x="926" y="58" class="s" text-anchor="middle">ORV 0.81 · 12.4k tok</text>
+
+  <!-- L1 function cards -->
+  <text x="20" y="104" class="lv">L1 · FUNCTION 卡（每个生成 agent 一张）</text>
+  <rect x="20" y="112" width="150" height="58" rx="9" class="bx"/><text x="95" y="134" class="t" text-anchor="middle">CreateJD</text><text x="95" y="152" class="s" text-anchor="middle">✓ 保真通过</text>
+  <rect x="182" y="112" width="168" height="58" rx="9" class="bx" stroke="#54d7ca" stroke-width="2"/><text x="266" y="132" class="t" text-anchor="middle">ProcessResume ▼</text><text x="266" y="150" class="s" text-anchor="middle">4🔧 · 1 sub · v3</text><text x="266" y="164" class="m" text-anchor="middle">点击展开 →</text>
+  <rect x="362" y="112" width="150" height="58" rx="9" class="bx" stroke="#f1be5c"/><text x="437" y="134" class="t" text-anchor="middle">RuleCheck×2</text><text x="437" y="152" class="s" text-anchor="middle" fill="#f1be5c">⚠ 类型不符</text>
+  <rect x="524" y="112" width="150" height="58" rx="9" class="bx"/><text x="599" y="134" class="t" text-anchor="middle">Match</text><text x="599" y="152" class="s" text-anchor="middle">✓ invoke sub</text>
+  <rect x="686" y="112" width="150" height="58" rx="9" class="bx"/><text x="761" y="134" class="t" text-anchor="middle">Invite</text><text x="761" y="152" class="s" text-anchor="middle">✓ send_email</text>
+
+  <!-- L2 decision cards -->
+  <text x="20" y="196" class="lv">L2 · ProcessResume 的决策卡组（该 agent 内部 harness — 宏观→微观）</text>
+  <rect x="20" y="204" width="1020" height="248" rx="12" fill="#0e141d" stroke="#54d7ca"/>
+
+  <rect x="36" y="222" width="320" height="100" rx="9" class="bx2"/><text x="50" y="242" class="hd">🧠 计划</text><text x="50" y="260" class="s">意图：简历→标准候选档案</text><text x="50" y="276" class="s">plan[]: validate→split→read→</text><text x="50" y="290" class="s">parse→quality→lock→emit</text><text x="50" y="310" class="m">agent.created.design.reasoning + plan[]</text>
+
+  <rect x="372" y="222" width="320" height="100" rx="9" class="bx2"/><text x="386" y="242" class="hd">💭 思考</text><text x="386" y="260" class="s">"供应商可能静默降级——"</text><text x="386" y="276" class="s">"parse 成功但字段空=错误"</text><text x="386" y="310" class="m">think delta（forAgent 归组）</text>
+
+  <rect x="708" y="222" width="316" height="100" rx="9" class="bx2"/><text x="722" y="242" class="hd">🔧 工具（forAgent 归组 ✓已实现）</text><text x="722" y="260" class="s">fs.readFromInbox ✓ · parseResumeApi ✓</text><text x="722" y="276" class="s">ontology.fetchActionRules{锁定} ✓</text><text x="722" y="310" class="m">tool.call/tool.result.forAgent</text>
+
+  <rect x="36" y="334" width="320" height="100" rx="9" class="bx2" stroke="#f1be5c"/><text x="50" y="354" class="hd" fill="#f1be5c">⚠ 发现的问题</text><text x="50" y="372" class="s">锁定冲突→RESUME_LOCKED_CONFLICT</text><text x="50" y="388" class="s">emit.score 类型 string≠number</text><text x="50" y="422" class="m">validation.agentIssueMap + 契约 issue + fidelity</text>
+
+  <rect x="372" y="334" width="320" height="100" rx="9" class="bx2" stroke="#b39dff"/><text x="386" y="354" class="hd" fill="#b39dff">🧩 生成的 sub-agent / phases</text><text x="386" y="372" class="s">→ lock-candidate-ownership (invoke)</text><text x="386" y="388" class="s">phases: parse → quality-gate → lock</text><text x="386" y="422" class="m">agent.created.parentAgent ✓已实现</text>
+
+  <rect x="708" y="334" width="316" height="100" rx="9" class="bx2" stroke="#63d495"/><text x="722" y="354" class="hd" fill="#63d495">📦 真实 I/O + 保真</text><text x="722" y="372" class="s">◂ RESUME_DOWNLOADED{...}</text><text x="722" y="388" class="s">▸ RESUME_PROCESSED{candidate_id..}</text><text x="722" y="422" class="m">sandbox.agentRuns + fidelityFailures ✓</text>
+
+  <!-- L3 sub-agent -->
+  <text x="20" y="478" class="lv">L3 · Sub-agent 卡（从 🧩 递归展开，自己又有一整套 L2 决策卡组）</text>
+  <rect x="372" y="486" width="440" height="118" rx="11" class="bx" stroke="#b39dff"/>
+  <text x="392" y="508" class="t" fill="#b39dff">lock-candidate-ownership · sub-agent</text>
+  <rect x="392" y="520" width="120" height="34" rx="7" class="bx2"/><text x="452" y="541" class="s" text-anchor="middle">🧠 计划</text>
+  <rect x="524" y="520" width="120" height="34" rx="7" class="bx2"/><text x="584" y="541" class="s" text-anchor="middle">🔧 工具</text>
+  <rect x="656" y="520" width="140" height="34" rx="7" class="bx2"/><text x="726" y="541" class="s" text-anchor="middle">📦 真实 I/O</text>
+  <text x="392" y="578" class="m">parentAgent=processResume · 可再下钻（递归 L2）</text>
+  <text x="392" y="594" class="m">来源 design_subagent → agent.created(forAgent=sub, parentAgent=parent)</text>
+  <line x1="530" y1="434" x2="530" y2="484" stroke="#b39dff" stroke-width="1.4" stroke-dasharray="4 3"/>
+</svg>
+<div class="figcap">图 9a · 四层宏观→微观卡片栈：Run → Function → 决策卡组(6 张) → Sub-agent(可递归)。标 ✓已实现 的字段本次已写进代码</div>
+</div>
+
+<h3>9.2 右栏可视化：在 StageRail + tab 之上，加四块"看内部过程"的面板</h3>
+<p>现有右栏是 StageRail + 5 个 tab（flow/大脑/测试/总结/后台）。保留它，但补上直接可视化"契约脊柱 + 执行保真 + 决策路径"的面板——这些正是本次后端新增数据能点亮的：</p>
+<div class="fig">
+<svg viewBox="0 0 720 460" xmlns="http://www.w3.org/2000/svg" font-family="var(--mono)">
+  <defs><style>
+    .rb{fill:#141b27;stroke:#33435a;stroke-width:1.2}
+    .rb2{fill:#0f1721;stroke:#243040;stroke-width:1}
+    .rt{fill:#eef3f9;font-size:11px;font-weight:700}
+    .rs{fill:#8090a4;font-size:9px}
+  </style></defs>
+  <rect x="16" y="16" width="688" height="40" rx="9" class="rb"/><text x="32" y="41" class="rt">StageRail（保留）· read→plan→design→validate→sandbox→deliver</text>
+
+  <rect x="16" y="68" width="336" height="150" rx="10" class="rb" stroke="#54d7ca"/>
+  <text x="32" y="90" class="rt" fill="#54d7ca">① 契约健康矩阵</text>
+  <text x="32" y="108" class="rs">事件 × 状态（gap / type_mismatch / fidelity）</text>
+  <rect x="32" y="120" width="150" height="18" rx="4" class="rb2"/><text x="40" y="133" class="rs">RESUME_PROCESSED</text><rect x="188" y="120" width="16" height="16" rx="3" fill="#f1be5c"/><rect x="208" y="120" width="16" height="16" rx="3" fill="#63d495"/>
+  <rect x="32" y="144" width="150" height="18" rx="4" class="rb2"/><text x="40" y="157" class="rs">MATCH_PASSED</text><rect x="188" y="144" width="16" height="16" rx="3" fill="#63d495"/><rect x="208" y="144" width="16" height="16" rx="3" fill="#63d495"/>
+  <text x="32" y="188" class="rs">数据：deriveContractGraph.issues</text>
+  <text x="32" y="204" class="rs">+ sandbox.fidelityFailures ✓</text>
+
+  <rect x="368" y="68" width="336" height="150" rx="10" class="rb" stroke="#63d495"/>
+  <text x="384" y="90" class="rt" fill="#63d495">② 执行保真仪表</text>
+  <circle cx="470" cy="150" r="42" fill="none" stroke="#243040" stroke-width="10"/>
+  <path d="M470 108 A42 42 0 1 1 428 150" fill="none" stroke="#63d495" stroke-width="10" stroke-linecap="round"/>
+  <text x="470" y="146" class="rt" text-anchor="middle" font-size="16">83%</text>
+  <text x="470" y="162" class="rs" text-anchor="middle">5/6 agent</text>
+  <text x="556" y="140" class="rs">真实 emit 满足</text><text x="556" y="154" class="rs">下游契约的比例</text><text x="556" y="176" class="rs">= ORV 缺的那项</text>
+
+  <rect x="16" y="230" width="336" height="212" rx="10" class="rb" stroke="#b39dff"/>
+  <text x="32" y="252" class="rt" fill="#b39dff">③ Harness 决策时间线</text>
+  <text x="32" y="270" class="rs">为什么选下一个 agent / 为什么返工</text>
+  <circle cx="40" cy="292" r="4" fill="#63d495"/><text x="54" y="296" class="rs">design ProcessResume ✓</text>
+  <circle cx="40" cy="314" r="4" fill="#f1be5c"/><text x="54" y="318" class="rs">validate → type_mismatch(score)</text>
+  <circle cx="40" cy="336" r="4" fill="#b39dff"/><text x="54" y="340" class="rs">refine ProcessResume（对齐类型）</text>
+  <circle cx="40" cy="358" r="4" fill="#63d495"/><text x="54" y="362" class="rs">sandbox → 保真 ✓ · advance</text>
+  <text x="32" y="392" class="rs">数据：stage · refine · score.delta ·</text>
+  <text x="32" y="406" class="rs">§6.5 结构化回退（causationId）</text>
+
+  <rect x="368" y="230" width="336" height="212" rx="10" class="rb" stroke="#74b9ff"/>
+  <text x="384" y="252" class="rt" fill="#74b9ff">④ 推理小地图（DAG，按保真着色）</text>
+  <rect x="392" y="272" width="70" height="26" rx="6" class="rb2" stroke="#63d495"/><text x="427" y="289" class="rs" text-anchor="middle">CreateJD</text>
+  <rect x="392" y="316" width="70" height="26" rx="6" class="rb2" stroke="#63d495"/><text x="427" y="333" class="rs" text-anchor="middle">Process</text>
+  <rect x="500" y="316" width="70" height="26" rx="6" class="rb2" stroke="#f1be5c"/><text x="535" y="333" class="rs" text-anchor="middle">RuleChk</text>
+  <rect x="608" y="316" width="70" height="26" rx="6" class="rb2" stroke="#63d495"/><text x="643" y="333" class="rs" text-anchor="middle">Match</text>
+  <line x1="462" y1="329" x2="498" y2="329" stroke="#33435a"/><line x1="570" y1="329" x2="606" y2="329" stroke="#33435a"/>
+  <text x="384" y="374" class="rs">复用 EventGraph，节点色 = 保真状态</text>
+  <text x="384" y="390" class="rs">活跃 agent 脉冲；点节点 → L2 决策卡组</text>
+  <text x="384" y="418" class="rs">绿=保真通过 · 黄=有问题 · 红=违约</text>
+</svg>
+<div class="figcap">图 9b · 右栏四块新面板：① 契约健康矩阵 ② 执行保真仪表 ③ Harness 决策时间线 ④ 保真着色的推理小地图</div>
+</div>
+
+<h3>9.3 每张卡的数据源（✓ = 本次已提交后端字段）</h3>
+<table>
+  <tr><th>卡片 / 面板</th><th>BrainEvent · 字段</th><th>状态</th></tr>
+  <tr><td>L2 · 🔧 工具（按 agent 归组）</td><td><code>tool.call</code>/<code>tool.result</code> 的 <code>forAgent</code></td><td><span class="tag green">✓ 已提交</span> conductor 计算 <code>args.action</code>；workers.ts 已优先用它</td></tr>
+  <tr><td>L2 · 🧩 sub-agent / L3</td><td><code>agent.created.parentAgent</code> / <code>forAgent</code></td><td><span class="tag green">✓ 已提交</span> design_subagent emit 带上</td></tr>
+  <tr><td>L2 · 📦 真实 I/O + 保真</td><td><code>sandbox.agentRuns</code> + <code>sandbox.fidelityFailures</code></td><td><span class="tag green">✓ 已提交</span> fidelity 已算入 sandbox 事件</td></tr>
+  <tr><td>右栏 ① 契约健康 / ② 保真仪表</td><td><code>deriveContractGraph.issues</code> + <code>fidelityFailures</code></td><td><span class="tag green">✓ 后端就绪</span>（type_mismatch 已加入 contract）</td></tr>
+  <tr><td>L2 · 🧠 计划 / 💭 思考</td><td><code>agent.created.design.reasoning</code> + <code>plan[]</code> + <code>think</code></td><td><span class="tag cyan">已有</span> 事件已携带</td></tr>
+  <tr><td>L2 · ⚠ 问题</td><td><code>validation.agentIssueMap</code> + 契约 issue + fidelity error</td><td><span class="tag cyan">已有</span> + 本次契约/保真补强</td></tr>
+  <tr><td>前端下钻卡片壳（L1→L2→L3 递归）</td><td><code>background-panel.tsx</code> 内联展开 + 复用 <code>inspector.tsx</code></td><td><span class="tag amber">待建</span> 纯 UI，数据已全</td></tr>
+</table>
+<div class="callout good"><b>结论：</b>你要的"宏观→微观的 agent 决策卡片 + 右栏可视化"现在<b>数据链是完整的</b>——本次已把归属字段（<code>forAgent</code>/<code>parentAgent</code>）、执行保真（<code>fidelityFailures</code>）、契约类型检查写进后端并全绿。剩下的纯是前端把卡片壳搭出来（background-panel 内联递归展开 + 四块右栏面板），无需再等任何后端数据。</div>
+
+<h3>9.4 业务流全景：从 Ontology 推理生成完整业务流程图（已实现）</h3>
+<p>对照手绘的"6 个真实 Inngest Agents 业务工作流图"逐层分析老 repo 的 action JSON（<code>neo4j_data/招聘-v1/.../actions_v0_1_004.json</code>，24 个 action）后确认：<b>本体把业务世界说清楚了，但完全没说集成世界</b>——</p>
+<table>
+  <tr><th>手绘图中的信息</th><th>action JSON 里有吗</th><th>工厂现在怎么补</th></tr>
+  <tr><td>事件链 + 失败分支（RESUME_LOCKED_CONFLICT 等）</td><td><span class="tag green">有</span> trigger / triggered_event</td><td>直接用 + FAILISH/PARKISH 语义分类</td></tr>
+  <tr><td>数据写入（落 Resume/Candidate 哪些字段）</td><td><span class="tag green">有</span> side_effects.data_changes（object + CREATE/MODIFY + property_impacted）</td><td>直接提升为 agent 的 <b>writes</b></td></tr>
+  <tr><td>通知（招聘专员 · InApp）</td><td><span class="tag green">有</span> side_effects.notifications</td><td>直接提升为 <b>notifies</b></td></tr>
+  <tr><td>步骤分解 + 步骤内规则</td><td><span class="tag green">有</span> action_steps[]（object_type: tool/logic + rules）</td><td>已被 plan[] 投影消费</td></tr>
+  <tr><td><b>外部平台身份</b>（RoboHire / MinIO / Partner PG / Allmeta / RAAS·HSM）</td><td><span class="tag red">完全没有</span>——step 只说"这是个 tool"，不说谁提供</td><td><b>推理兜底</b>：按工具名分类（fs.*→文件收件箱、ontology.*→规则库、*Api→外部服务、send_email→通知通道）+ 入口事件无人产出→外部触发源 + boundary 分类的 consumer 平台</td></tr>
+  <tr><td>事件的外部来源（REQUIREMENT_LOGGED 由 RAAS 发）</td><td><span class="tag red">没有</span>（event 只有内部 source_action）</td><td>入口分析 + <code>BoundaryEvent.consumer</code></td></tr>
+  <tr><td>side_effect 落到哪个物理系统（Partner PG vs Allmeta）</td><td><span class="tag red">没有</span>（只有逻辑对象）</td><td>建议声明（见下）；未声明时归到逻辑对象层</td></tr>
+</table>
+<p><b>双轨方案（均已编码）：</b>① <b>声明轨</b>——建议在 action JSON 里加可选 <code>integration</code> 块，工厂优先信它：</p>
+<pre><code>"integration": {
+  "systems": [
+    { "name": "RoboHire",  "kind": "external_api", "role": "calls",  "capability": "parse-resume" },
+    { "name": "MinIO",     "kind": "file_store",   "role": "reads" },
+    { "name": "PartnerPG", "kind": "datastore",    "role": "writes", "objects": ["Resume","Candidate"] }
+  ]
+}</code></pre>
+<p>② <b>推理轨</b>——没有声明时，纯函数 <code>deriveBusinessFlow(specs, ontology, boundaryEvents)</code>（<code>packages/agent-factory/src/business-flow.ts</code>，7 测试全绿）从工具绑定/side_effects/入口与边界分析推出完整模型，<code>validate_graph</code> 后 emit <code>flow.business</code> 事件；右栏"智能体"tab 新增第三视图 <b>业务流全景</b>（<code>business-flow-panel.tsx</code>）：外部平台目录条 + 每 agent 一条泳道（外部来源 → trigger → agent → 📥读/🌐调/🗄️写/✉️通知 → emit 分支按语义着色：链内蓝/失败红/暂挂紫/外部交接黄/终态绿）——正是手绘图的自动生成版。</p>
+</section>
+
+<!-- ============ PART D ============ -->
+<section id="roadmap">
+<h2><span class="n">10</span>落地路线图（对蓝图重排优先级）</h2>
+<p class="lead">蓝图先做 Prompt Ledger、后做执行验收。<b>本报告把顺序反过来：先让"跑通"成立（契约 + 执行保真），再上可观测，再上自适应，Prompt Compiler 放最后。</b>因为"跑通"是当前唯一硬瓶颈。</p>
+<div class="roadmap">
+  <div class="phase"><div class="num">1</div><h4>契约脊柱 + 执行保真</h4><p>Event/Payload 契约（运行期类型校验）+ 打通 codeExecuted 真跑 + acceptanceGate 加 execution_fidelity。<b>直接把 code_ran 从 0 拉起来、消灭 output_parse_error。</b></p></div>
+  <div class="phase"><div class="num">2</div><h4>结构化回退 + 补偿</h4><p>沿 causationId 定位违约 agent 回退 + 失败本体（MAST/TRAIL 词表）+ 生成 compensation_event + 负例测试。让不 happy 路径也跑通。</p></div>
+  <div class="phase"><div class="num">3</div><h4>per-agent 卡片可观测</h4><p>补 forAgent/parentAgent 归属 + 后台面板下钻卡片。你要的 UI 愿景，数据已在，小改动。</p></div>
+  <div class="phase"><div class="num">4</div><h4>前置自适应路由 + ask_user 硬化</h4><p>入口按类型/难度选流水线形状（bandit）+ 按需分解 + EIG 选题 + detect→ask→answer + 超时回退用 value。</p></div>
+  <div class="phase"><div class="num">5</div><h4>Prompt Compiler + 遥测飞轮</h4><p>蓝图的 PromptBlock/Ledger/版本回滚 + DSPy/OPRO 优化，建在稳定的契约脊柱上；System B 生产 outcome 回喂 Router/失败本体/reflection。</p></div>
+</div>
+<p class="small">说明：阶段 5 = 蓝图的主体内容，价值仍在，只是从"第一层"降为"第五层"。阶段 1-2 是新增的、直击"真跑通"的核心，也是蓝图最缺的部分。</p>
+</section>
+
+<section id="delta">
+<h2><span class="n">11</span>与 Codex 蓝图的差异对照</h2>
+<table>
+  <tr><th>维度</th><th>Codex 蓝图</th><th>本报告（Contract-First）</th></tr>
+  <tr><td>脊柱</td><td>Prompt/Payload Compiler + Ledger</td><td><b>Event/Payload/Capability/Failure 契约</b>；Prompt Compiler 降为第五层</td></tr>
+  <tr><td>"跑通"的定义</td><td>图闭合 + sandbox receipt + Ontology Proof</td><td><b>真实执行 code_ran + emit 满足契约 schema</b>（execution_fidelity）</td></tr>
+  <tr><td>核心瓶颈</td><td>隐含假设是 prompt 质量</td><td>实证锁定为<b>运行期契约保真</b>（code_ran=6/10780, output_parse_error×78）</td></tr>
+  <tr><td>Router</td><td>静态"任务特征→harness"查表 + 远期 DSPy</td><td><b>入口 bandit 路由</b>（Meta-Reasoner/Route-to-Reason），从 runs 学习</td></tr>
+  <tr><td>分解</td><td>未触及"1 action=1 agent"</td><td><b>按需分解</b>（ADaPT）+ 能力感知排序（DEPS）</td></tr>
+  <tr><td>"返回哪个 agent"</td><td>Evidence Gate 的 enum，无机制</td><td><b>沿 causationId 结构化定位</b>（失败归因论文证明 LLM 猜不准）</td></tr>
+  <tr><td>失败路径</td><td>FailureSemanticsBlock（prompt 层）</td><td><b>生成 compensation_event + 负例测试</b>（SagaLLM/TRAIL），运行期层</td></tr>
+  <tr><td>本体的角色</td><td>六张图内部 Kernel（Domain/Capability/Reasoning/Prompt/Evidence/Failure）</td><td><b>不建内部本体</b>：业务本体只做投影/编译/锚定三动作；内部认知词汇全部开放（#OPEN-VOCAB）+ 记忆锚点心跳（#ANCHOR）</td></tr>
+  <tr><td>ask_user</td><td>一个 AskUserBlock</td><td><b>detect→ask→answer + EIG 选题 + VOI 门 + 去重 + value 回退</b></td></tr>
+  <tr><td>已有抓手</td><td>未提 codeExecuted/FACTORY_EXEC_GENERATED/code_ran</td><td><b>激活并收紧</b>已有的代码执行网关与回执</td></tr>
+  <tr><td>落地顺序</td><td>先 Prompt Ledger 后执行验收</td><td><b>先契约+执行保真，Prompt 最后</b></td></tr>
+</table>
+</section>
+
+<section id="risks">
+<h2><span class="n">12</span>风险与边界</h2>
+<table>
+  <tr><th>风险</th><th>表现</th><th>缓解</th></tr>
+  <tr><td>契约过严压制生成</td><td>类型约束太死，agent 生成不出合法 emit 反而卡死</td><td>契约 v1 只对<b>关键业务字段</b>强类型，其余 open；探索阶段 warning，交付阶段才 hard。</td></tr>
+  <tr><td>真跑代码引入副作用</td><td>sandbox 真执行触发外部 API/发邮件</td><td>沿用旧 repo 的 <code>forceDryRun</code>：sandbox 工具返回 mock，只有 promote 后才真调；真实值走 §8 的 supply_test_data。</td></tr>
+  <tr><td>bandit 冷启动</td><td>runs 数据不足时路由乱选</td><td>先用规则先验初始化 arm，积累 outcome 后再让 bandit 主导；保留 escalation ladder 兜底。</td></tr>
+  <tr><td>因果归因误判</td><td>causationId 链断裂时定位不到责任 agent</td><td>契约校验点 = 归因锚点，链断则回退到最近有效锚点 + 标记 gap；不 fallback 到 LLM 猜。</td></tr>
+  <tr><td>失败本体过拟合招聘域</td><td>MAST/TRAIL 词表 + 招聘特有失败混淆</td><td>分层：通用失败模式（MAST 14 类）+ 域特有（供应商静默降级等）分开维护。</td></tr>
+  <tr><td>论文第三组未再核验</td><td>AFlow 等元数据可能有 venue/号偏差</td><td>对外正式引用前，配额恢复后补一轮核验或人工复核（见附录标注）。</td></tr>
+  <tr><td>过度可观测拖慢</td><td>每 agent 五面板事件量大</td><td>归属字段是轻量补充；下钻按需加载，transcript 已有 100k 事件 buffer + fold。</td></tr>
+</table>
+</section>
+
+<section id="shipped">
+<h2><span class="n">13</span>已落地：本次提交的代码 + 测试</h2>
+<p class="lead">这一节不是设计，是<b>已经写进代码、TDD 跑绿的东西</b>。本次按路线图 <b>Phase 1（契约脊柱 + 执行保真）</b> 和 UI 数据链落了三个后端切片 + 一个前端改动，全部<b>纯函数优先、先写测试再实现</b>。</p>
+
+<div class="kpi">
+  <div class="b"><div class="n" style="color:var(--green)">292 ✓</div><div class="l">agent-factory 全套测试通过（38 文件；新增 23 个断言）</div></div>
+  <div class="b"><div class="n" style="color:var(--green)">23/23</div><div class="l">全 monorepo <code>tsc --noEmit</code> 通过（web/api/runtime/tenants 全清）</div></div>
+  <div class="b"><div class="n" style="color:var(--cyan)">3+1</div><div class="l">三个后端切片 + 一个前端改动，均additive、低风险</div></div>
+  <div class="b"><div class="n" style="color:var(--violet)">TDD</div><div class="l">红→绿：先写 contract-types / execution-fidelity 测试再实现</div></div>
+</div>
+
+<h3>13.1 切片一 · 契约脊柱的类型级 + 运行期校验（直击 output_parse_error）</h3>
+<p>扩展已有的 <code>packages/agent-factory/src/contract.ts</code>（原本只查字段"有没有"，不查"类型对不对"，且无运行期校验器）：</p>
+<ul>
+  <li><b>运行期校验器</b> <code>validateEventPayload(payload, expected)</code>：payload 不是对象 → <code>not_object</code>（正是实测的 <code>expected object, received undefined</code>）；缺字段 → <code>missing</code>；类型不符 → <code>type_mismatch</code>。<b>宽松</b>：unknown 声明类型 + null 值不判错，避免过度拒绝。</li>
+  <li><b>设计期 type_mismatch</b>：<code>deriveContractGraph</code> 新增两条检查——producer emit 的类型 vs 本体 canonical <code>event_data</code>；consumer 期望的类型 vs 事件实际提供的类型。命中即 <code>ok=false</code>，在 <code>validate_graph</code> 阶段就挡住（不用等运行时下游炸）。</li>
+  <li>类型规整 <code>normalizeDeclaredType</code>（String/text/Integer/float/JSON/list… → 5 类已知型，其余 → unknown 宽松跳过）+ <code>runtimeType</code> + <code>canonicalEventFields</code>。</li>
+  <li>测试：<code>contract-types.test.ts</code>（16 例）覆盖 not_object / missing / type_mismatch / 宽松 / 设计期 producer&consumer 双向；原 <code>contract.test.ts</code> 10 例全部不回归。</li>
+</ul>
+
+<h3>13.2 切片二 · 执行保真（ORV 里缺的那一项）</h3>
+<ul>
+  <li>新增纯模块 <code>execution-fidelity.ts</code>：<code>evaluateExecutionFidelity(agentRuns, expectedByEvent)</code> —— 对沙箱真实 I/O 逐个 agent，把它<b>实际 emit 的 payload</b> 用上面的校验器验证下游契约；跳过 degraded / 无下游契约的终态事件（宽松）。产出 <code>fidelity</code> 比例 + <code>failingShorts</code>。</li>
+  <li>接进验收：<code>acceptance.ts</code> 新增第 10 条 criterion <code>execution_fidelity</code>；<code>tools.ts</code> 在 <code>sandbox_run</code> 真实（非模拟）跑完后计算并写入 <code>ctx.lastSandbox.fidelityFailures</code>。<b>无证据时宽松放行</b>（保住既有绿色 finish），有真实违约时才挡。</li>
+  <li>测试：<code>execution-fidelity.test.ts</code>（5 例）+ <code>acceptance.test.ts</code>（+2 例：无证据放行 / 有违约拦截）。</li>
+</ul>
+
+<h3>13.3 切片三 · 每个 agent 的事件归属（点亮 §9 的宏观→微观卡片）</h3>
+<ul>
+  <li><code>brain-types.ts</code> 加字段：<code>tool.call</code>/<code>tool.result</code> 的 <code>forAgent</code>、<code>agent.created</code> 的 <code>forAgent</code>/<code>parentAgent</code>、<code>subagent.start/done</code> 的 <code>parentAgent</code>、<code>sandbox</code> 的 <code>fidelityFailures</code>。</li>
+  <li>emit 侧：<code>conductor.ts</code> 从 <code>args.action</code>/<code>parent_action</code> 算 <code>forAgent</code>；<code>tools.ts</code> 6 个 <code>agent.created</code> 站点带上 <code>forAgent</code>（design_subagent 额外带 <code>parentAgent</code>）。</li>
+  <li>前端 <code>workers.ts</code>：<code>tool.call</code>→agent 归组<b>优先用可靠的 <code>forAgent</code></b>，仅在缺失/agent 尚未创建时回退到旧的子串猜测（消除误归属）。</li>
+</ul>
+
+<h3>13.4 改动清单</h3>
+<table>
+  <tr><th>文件</th><th>改动</th><th>测试</th></tr>
+  <tr><td><code>packages/agent-factory/src/contract.ts</code></td><td>+类型规整/运行期校验器/设计期 type_mismatch/canonicalEventFields</td><td><code>contract-types.test.ts</code> 16 ✓</td></tr>
+  <tr><td><code>packages/agent-factory/src/execution-fidelity.ts</code> <span class="tag green">新</span></td><td>纯执行保真评估器</td><td><code>execution-fidelity.test.ts</code> 5 ✓</td></tr>
+  <tr><td><code>packages/agent-factory/src/acceptance.ts</code></td><td>+<code>execution_fidelity</code> criterion（宽松）</td><td><code>acceptance.test.ts</code> +2 ✓</td></tr>
+  <tr><td><code>packages/agent-factory/src/tools.ts</code></td><td>sandbox 计算 fidelity + agent.created 带 forAgent</td><td>全套 292 ✓ 不回归</td></tr>
+  <tr><td><code>packages/agent-factory/src/conductor.ts</code></td><td>tool.call/result 带 forAgent</td><td>typecheck ✓</td></tr>
+  <tr><td><code>packages/agent-factory/src/brain-types.ts</code></td><td>BrainEvent 联合体加归属/保真字段</td><td>typecheck ✓</td></tr>
+  <tr><td><code>apps/web/.../factory/workers.ts</code></td><td>tool.call 归组优先 forAgent</td><td>web typecheck ✓</td></tr>
+</table>
+
+<div class="callout good"><b>可复核：</b><code>pnpm --filter @agentic/agent-factory run test</code> → 38 文件 292 通过；<code>pnpm typecheck</code> → 23/23。这三个切片正是路线图 Phase 1 的骨架（契约类型化 + 执行保真），也把 §9 卡片 UI 需要的后端数据一次性补齐——下一步是 §6.4 打通 <code>codeExecuted</code> 真跑，让 <code>execution_fidelity</code> 从"能评估"变成"每次都在真实执行上评估"。</div>
+</section>
+
+<section id="refs">
+<h2><span class="n">附</span>论文清单与核验状态</h2>
+<p class="small"><span class="vbadge ok">核验</span> = 本会话经 3 票对抗核验通过；<span class="vbadge warn">preprint</span> = 已核验但为未经同行评审的 arXiv 预印本；<span class="vbadge warn">未再核验</span> = 知名工作，因检索配额限制本会话未再独立核验，元数据据既有知识，正式引用前建议复核。</p>
+
+<h3>主题 1 · 理解 / 拆分 / 自适应方法选择</h3>
+<div class="tocbox">
+  <a href="https://arxiv.org/abs/2311.05772">ADaPT · NAACL 2024 Findings · 2311.05772 ✓</a>
+  <a href="https://arxiv.org/abs/2305.04091">Plan-and-Solve · ACL 2023 · 2305.04091 ✓</a>
+  <a href="https://arxiv.org/abs/2505.19435">Route-to-Reason · 2025 preprint · 2505.19435</a>
+  <a href="https://arxiv.org/abs/2502.19918">Meta-Reasoner · ACL 2026 · 2502.19918 ✓</a>
+  <a href="https://arxiv.org/abs/2302.01560">DEPS · NeurIPS 2023 · 2302.01560 ✓</a>
+  <a href="https://arxiv.org/abs/2505.13417">AdaptThink · EMNLP 2025 · 2505.13417 ✓</a>
+</div>
+<h3>主题 2 · 澄清式提问 ask_user</h3>
+<div class="tocbox">
+  <a href="https://arxiv.org/abs/2406.12639">Ask-before-Plan · EMNLP 2024 Findings · 2406.12639 ✓</a>
+  <a href="https://arxiv.org/abs/2502.04485">Active Task Disambiguation · ICLR 2025 Spotlight · 2502.04485 ✓</a>
+  <a href="https://arxiv.org/abs/2212.07769">CLAM · 2022 preprint · 2212.07769</a>
+  <a href="https://arxiv.org/abs/2405.12063">CLAMBER · ACL 2024 · 2405.12063 ✓</a>
+</div>
+<h3>主题 3 · 通信 / 失败实证 / 协议 / 合成 / durable</h3>
+<div class="tocbox">
+  <a href="https://arxiv.org/abs/2308.00352">MetaGPT · ICLR 2024 oral · 2308.00352 ✓</a>
+  <a href="https://arxiv.org/abs/2308.08155">AutoGen · COLM 2024 · 2308.08155 ✓</a>
+  <a href="https://arxiv.org/abs/2307.07924">ChatDev · ACL 2024 · 2307.07924 ✓</a>
+  <a href="https://arxiv.org/abs/2503.13657">MAST 失败分类 · 2025 · 2503.13657 ✓</a>
+  <a href="https://arxiv.org/abs/2505.00212">失败归因 · ICML 2025 Spotlight · 2505.00212 ✓</a>
+  <a href="https://arxiv.org/abs/2505.08638">TRAIL · 2025 · 2505.08638 ✓</a>
+  <a href="https://arxiv.org/abs/2501.06322">协作机制综述 · 2025 preprint · 2501.06322</a>
+  <a href="https://arxiv.org/abs/2505.02279">互操作协议综述 · 2025 preprint · 2505.02279</a>
+  <a href="https://arxiv.org/abs/2410.11905">Agora · 2024 preprint · 2410.11905</a>
+  <a href="https://arxiv.org/abs/2503.11951">SagaLLM · PVLDB 2025 · 2503.11951 ✓</a>
+  <a href="https://arxiv.org/abs/2410.10762">AFlow · ICLR 2025 · 2410.10762 ⚠</a>
+  <a href="https://arxiv.org/abs/2408.08435">ADAS · 2024 · 2408.08435 ⚠</a>
+  <a href="https://arxiv.org/abs/2402.16823">GPTSwarm · ICML 2024 · 2402.16823 ⚠</a>
+  <a href="https://arxiv.org/abs/2410.06153">AgentSquare · 2024 · 2410.06153 ⚠</a>
+  <a href="https://arxiv.org/abs/2312.04511">LLMCompiler · ICML 2024 · 2312.04511 ⚠</a>
+  <a href="https://arxiv.org/abs/2403.11322">StateFlow · COLM 2024 · 2403.11322 ⚠</a>
+  <a href="https://arxiv.org/abs/2308.01285">Flows · 2023 · 2308.01285 ⚠</a>
+  <a href="https://arxiv.org/abs/2502.04180">MaAS agentic supernet · 2025 · 2502.04180 ⚠</a>
+  <a href="https://dl.acm.org/doi/10.1145/38713.38742">Sagas · SIGMOD 1987 ⚠</a>
+  <a href="https://dl.acm.org/doi/10.1145/3485510">Durable Functions · OOPSLA 2021 ⚠</a>
+  <a href="https://www.usenix.org/conference/osdi23/presentation/zhuang">ExoFlow · OSDI 2023 ⚠</a>
+  <a href="https://www.usenix.org/conference/osdi20/presentation/zhang-haoran">Beldi · OSDI 2020 ⚠</a>
+  <a href="https://dl.acm.org/doi/10.1145/3477132.3483541">Boki · SOSP 2021 ⚠</a>
+  <a href="https://www.vldb.org/pvldb/vol15/p1591-burckhardt.pdf">Netherite · VLDB 2022 ⚠</a>
+</div>
+</section>
+
+<footer>
+  <div><b>Agent 工厂优化 · Contract-First 双系统架构报告</b> · 2026-07-09</div>
+  <div>基于：新旧 repo 6+6 functions 实证 · <code>data/agentic.db</code> 直查（code_ran 6/10780）· 三轮学术检索（20 核验 + 14 已知）· Codex 蓝图逐层审查</div>
+  <div>Generated for local workspace: <code>/Users/yuhancheng/Desktop/agentic operator_new</code></div>
+</footer>
+</main>
+</div>
+</body>
+</html>

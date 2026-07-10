@@ -12,6 +12,8 @@ dist
 .env
 .env.local
 .env.*.local
+# operator's real production secrets (compose env_file) — never commit
+.env.production
 # env / file backups — may contain plaintext secrets (e.g. .env.local.bak)
 *.bak
 

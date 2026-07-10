@@ -245,6 +245,16 @@ export function recordRunFinish(id: string, fields: { status: string; tokensUsed
   }
 }
 
+/** #AUDIT-FIX(M21) — 运行中的轻量转录镜像：只更新 transcriptJson（不动 status/统计字段），
+ *  每 ~5s 由 run-registry 调用；崩溃后 factory_runs 行的转录不再冻结在上一次交互。 */
+export function recordRunTranscript(id: string, transcript: unknown[]): void {
+  try {
+    getDb().update(factoryRuns).set({ transcriptJson: transcript, updatedAt: new Date() }).where(eq(factoryRuns.id, id)).run();
+  } catch {
+    /* mirror best-effort */
+  }
+}
+
 const toISO = (d: unknown): string => (d instanceof Date ? d.toISOString() : String(d));
 
 /** History list. Scoped to a tenant (0021 — was unfiltered, leaking runs across tenants) and

@@ -22,10 +22,26 @@ export interface PromoteResult {
 const idOf = (a: unknown): string | undefined => (a && typeof a === "object" ? (a as { id?: string }).id : undefined);
 
 /** Promote a domain's drafts (all, or the given slugs) into the tenant's live workflow. */
+/** #NOMOCK — a mock/simulation agent must NEVER reach live production. create_mock_agent stubs and
+ *  synthesized external-platform stubs are sandbox-closure scaffolds; if promoted, production would
+ *  run a fake platform returning canned success. Detect by slug/marker and refuse. */
+function isMockDraft(d: { slug: string; spec?: unknown }): boolean {
+  if (/-mock-ext-|(^|[-_])mock([-_]|$)|(^|[-_])simulate([-_]|$)|mock_/i.test(d.slug)) return true;
+  const sp = d.spec as { isMock?: boolean; mock?: boolean } | undefined;
+  return sp?.isMock === true || sp?.mock === true;
+}
+
 export async function promoteDrafts(domain: string, slugs: string[] | undefined, ctx: TenantCtx): Promise<PromoteResult> {
   const all = await new FsAgentDraftStore().list(domain);
   const want = slugs && slugs.length ? new Set(slugs) : null;
-  const chosen = want ? all.filter((d) => want.has(d.slug)) : all;
+  const requested = want ? all.filter((d) => want.has(d.slug)) : all;
+  // #NOMOCK — mock/simulation drafts are sandbox-closure scaffolds, not production. If the user
+  // explicitly named mock slugs → refuse loudly (don't silently drop). Otherwise filter them out.
+  const mockChosen = requested.filter(isMockDraft);
+  if (mockChosen.length && want) {
+    throw new Error(`拒绝晋升模拟桩到生产：${mockChosen.map((d) => d.slug).join("、")}。模拟 agent 是沙箱闭链脚手架，生产会调到假平台（假成功）。请接入真实集成后再晋升，或不要选中它们。`);
+  }
+  const chosen = requested.filter((d) => !isMockDraft(d));
   if (!chosen.length) return { promoted: [], total: 0, functionsRegistered: 0, liveAgents: loadLiveManifest(ctx).length };
 
   // Map the chosen drafts to manifest agents (same mapping the sandbox deploy uses).

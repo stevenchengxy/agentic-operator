@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>熔炉骨架 · Foundry Harness — 三方融合技术框架(现状 × 契约流水线蓝图 × 用户期待)</title>
+<style>
+  :root {
+    --bg: #0b0f14; --panel: #111823; --panel2: #0e141d; --border: #1e2a3a; --border2: #2a3a50;
+    --text: #dce6f2; --text2: #93a4ba; --text3: #5f7188;
+    --signal: #4ecdc4; --amber: #e8b84b; --red: #e06c5f; --green: #6fcf97; --blue: #5b9bd5; --purple: #a78bda;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: var(--bg); color: var(--text); font: 15px/1.75 -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", sans-serif; }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 48px 28px 120px; }
+  h1 { font-size: 30px; line-height: 1.3; letter-spacing: .5px; }
+  h1 .en { display:block; font-size: 15px; color: var(--text2); font-weight: 500; margin-top: 6px; }
+  .meta { color: var(--text3); font-size: 13px; margin: 10px 0 26px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 34px; }
+  .chip { border: 1px solid var(--border2); border-radius: 999px; padding: 4px 14px; font-size: 12.5px; color: var(--text2); background: var(--panel2); }
+  .chip b { color: var(--signal); font-weight: 600; }
+  h2 { font-size: 21px; margin: 54px 0 6px; padding-top: 22px; border-top: 1px solid var(--border); }
+  h2 .no { color: var(--signal); font-family: var(--mono); font-size: 15px; margin-right: 10px; }
+  h2 .sub { display:block; font-size: 13.5px; color: var(--text2); font-weight: 400; margin-top: 3px; }
+  h3 { font-size: 16.5px; margin: 26px 0 8px; color: var(--signal); }
+  p { margin: 10px 0; color: var(--text); }
+  p.dim, li.dim { color: var(--text2); }
+  ul, ol { margin: 10px 0 10px 22px; }
+  li { margin: 6px 0; }
+  code { font-family: var(--mono); font-size: 12.8px; background: #16202e; border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; color: #9fd3cd; white-space: nowrap; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 18px 22px; margin: 16px 0; }
+  .card.accent { border-left: 3px solid var(--signal); }
+  .card.warn { border-left: 3px solid var(--amber); }
+  .card.danger { border-left: 3px solid var(--red); }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
+  @media (max-width: 860px){ .grid2, .grid3 { grid-template-columns: 1fr; } }
+  table { width: 100%; border-collapse: collapse; margin: 14px 0; font-size: 13.5px; }
+  th { text-align: left; color: var(--text2); font-weight: 600; border-bottom: 2px solid var(--border2); padding: 8px 10px; white-space: nowrap; }
+  td { border-bottom: 1px solid var(--border); padding: 8px 10px; vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  .tag { display: inline-block; border-radius: 5px; padding: 1px 9px; font-size: 11.5px; font-weight: 700; letter-spacing: .4px; white-space: nowrap; }
+  .t-adopt { background: #12321f; color: var(--green); border: 1px solid #1d4d30; }
+  .t-fix { background: #33270f; color: var(--amber); border: 1px solid #524015; }
+  .t-add { background: #16283e; color: var(--blue); border: 1px solid #234064; }
+  .t-correct { background: #3a1a16; color: var(--red); border: 1px solid #5c2a24; }
+  .t-keep { background: #241f38; color: var(--purple); border: 1px solid #3a3358; }
+  .kbd { font-family: var(--mono); font-size: 12px; color: var(--text2); }
+  .svgbox { background: var(--panel2); border: 1px solid var(--border); border-radius: 12px; padding: 14px; margin: 18px 0; overflow-x: auto; }
+  .toc { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 6px 18px; margin: 18px 0 8px; font-size: 13.5px; }
+  .toc a { color: var(--text2); text-decoration: none; }
+  .toc a:hover { color: var(--signal); }
+  .num { color: var(--signal); font-family: var(--mono); margin-right: 6px; }
+  .foot { margin-top: 70px; padding-top: 18px; border-top: 1px solid var(--border); color: var(--text3); font-size: 12.5px; }
+  .hl { color: var(--signal); font-weight: 600; }
+  .rd { color: var(--red); } .am { color: var(--amber); } .gn { color: var(--green); } .bl { color: var(--blue); } .pu { color: var(--purple); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>熔炉骨架 · Foundry Harness
+<span class="en">三方融合技术框架:现状 as-built × 契约流水线蓝图(Contract-Line Foundry) × 你重申的期待 —— 采最先进优点,补真实缺口</span></h1>
+<div class="meta">Agent Factory · 融合蓝图 · 2026-07-10 · 基于两份地面实况调查(旧 AO 六 agent 代码画像 + 现工厂 42 工具/交付路径逐文件核对),所有 file:line 均已按当日仓库快照核实</div>
+
+<div class="chips">
+  <span class="chip">脊柱 <b>契约流水线(采纳)</b></span>
+  <span class="chip">新增 <b>能力梯 + 可实例化技能</b></span>
+  <span class="chip">交付 <b>双目标:manifest + TS 函数文件</b></span>
+  <span class="chip">纠错 <b>蓝图漏了已有 SkillStore</b></span>
+  <span class="chip">可视化 <b>泳道 SVG 生成器</b></span>
+  <span class="chip">期待清单 <b>8/8 对齐</b></span>
+</div>
+
+<div class="toc">
+  <a href="#s1"><span class="num">01</span>你的期待 → 逐条对齐表</a>
+  <a href="#s2"><span class="num">02</span>三方对照:谁提供什么</a>
+  <a href="#s3"><span class="num">03</span>对蓝图的判读:采纳/修正/纠错</a>
+  <a href="#s4"><span class="num">04</span>融合架构总览(SVG)</a>
+  <a href="#s5"><span class="num">05</span>主管与站长团队</a>
+  <a href="#s6"><span class="num">06</span>能力梯与技能锻造(你的核心诉求)</a>
+  <a href="#s7"><span class="num">07</span>双目标交付物:TS 函数文件成为一等公民</a>
+  <a href="#s8"><span class="num">08</span>测试与隔离(采纳蓝图 P0)</a>
+  <a href="#s9"><span class="num">09</span>推理策略选择器(采纳+既有事实)</a>
+  <a href="#s10"><span class="num">10</span>监督独立 · 缺陷生命周期 · 治理闭环</a>
+  <a href="#s11"><span class="num">11</span>业务流泳道 SVG 生成器</a>
+  <a href="#s12"><span class="num">12</span>修订路线(P0–P7,每期证明一件事)</a>
+  <a href="#s13"><span class="num">13</span>诚实风险与待拍板</a>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="s1"><span class="no">01</span>你的期待 → 逐条对齐表<span class="sub">你重申的 harness 系统愿景,逐条映射到融合框架的承载机制。8 条全部有归宿,其中 2 条是现状和蓝图都没有、本框架新增的。</span></h2>
+
+<table>
+<tr><th style="width:44%">你的原话(期待)</th><th>承载机制</th><th style="width:90px">来源</th></tr>
+<tr><td>① 中央有一个大脑(主管),主管内部也有推理</td><td>主管 Foreman = <code>runBrain</code> 减法改造:保留回合循环/断点/压缩/park-gates(<span class="kbd">conductor.ts:294,288,107,517-702</span>),剥掉 worker 工具,只剩指挥动作空间</td><td><span class="tag t-adopt">蓝图</span></td></tr>
+<tr><td>② 推理可按任务选择不同思考方式</td><td>双轴推理策略选择器:轴1 流水线形状(既有 <span class="kbd">reasoning-policy.ts:94</span>) + 轴2 策略自选(ReAct/reflection/debate 一等,ToT/CoT/combo 跟进),主管盖章 + 站内子问题两个高度</td><td><span class="tag t-adopt">蓝图</span></td></tr>
+<tr><td>③ 主管可自由调度运行中的 agents(agent leaders)</td><td>主管按 ReAct 自主决定 delegate 给哪个站长;门只做质量准入(工件在场+门绿),不限制调度自由(<span class="kbd">stageAdmission 泛化,conductor.ts:184</span>)</td><td><span class="tag t-adopt">蓝图</span></td></tr>
+<tr><td>④ 每个 agent leader 底下可有自己的 sub-agents</td><td>站长复用既有嵌套骨架 <code>spawn_subagent</code>(递归 <span class="kbd">conductor.ts:276</span>,深度帽 2)——从「只读研究员」升级为「站长工具集 ∩ 子范围」的可写工人</td><td><span class="tag t-fix">升级既有</span></td></tr>
+<tr><td>⑤ 缺 sub-agent → 用写好的工具写 SKILL → SKILL 生成这个 sub-agent</td><td><b>能力梯 + 可实例化技能</b>(§06):既有 <code>create_skill</code>/<code>use_skill</code>/<code>DrizzleSkillStore</code>(<span class="kbd">tools.ts:1719,1764 · stores.ts:142</span>)升级为 <code>spawnable</code> 技能 → <code>instantiate_subagent(skill)</code>;缺技能则 <code>skill_forge</code> 现场锻造</td><td><span class="tag t-add">本框架新增</span></td></tr>
+<tr><td>⑥ 推理/发现/设计/code/review/纠错/反思/检查/迭代、选择 tools/SKILLS/agents</td><td>五站流水线(分析→编码→评审→测试→监督) + 版本锁定缺陷返工环 + 反思写回(<span class="kbd">ports.ts:125</span>) + 能力梯六级选择(§06)</td><td><span class="tag t-adopt">蓝图+既有</span></td></tr>
+<tr><td>⑦ 最终交付可部署 Inngest 的 functions 代码(像旧 AO 六文件)</td><td><b>双目标交付物</b>(§07):<code>manifest_agent</code>(现路径保留) + <code>ts_function_module</code>(新一等公民,黄金范例锚定,tsc 编译 + 隔离单测 + 集成 + 安全后交付 .ts 工件)</td><td><span class="tag t-add">本框架新增</span></td></tr>
+<tr><td>⑧ 随时 ask_user 介入;可视化画出完整 SVG 流程图</td><td>ask_user park-gates 原样保留(主管为唯一升级席);<b>泳道 SVG 生成器</b>(§11)——数据已齐(<span class="kbd">business-flow.ts:157</span>),只缺一个纯渲染器</td><td><span class="tag t-keep">保留</span> <span class="tag t-add">新增</span></td></tr>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="s2"><span class="no">02</span>三方对照:谁提供什么<span class="sub">融合的原则:蓝图给组织与质量结构,现状给经过实战的底座,你的期待给两个两边都没有的增量(能力生长 + TS 交付形态)。</span></h2>
+
+<div class="grid3">
+<div class="card">
+<h3 style="margin-top:0">现状 as-built 提供</h3>
+<ul class="dim" style="font-size:13.5px">
+<li>断点续跑 detached driver + 压缩 + park-gates(实战验证)</li>
+<li>42+1 工具面、六段准入门(<span class="kbd">tools.ts:2301</span>)</li>
+<li>真 Inngest 沙箱观测(<span class="kbd">sandbox-deployer.ts:197</span>)</li>
+<li>契约保真 + 确定性归因(<span class="kbd">execution-fidelity.ts:64 · failure-attribution.ts:93</span>)</li>
+<li>10 判据验收门 + finish 拒绝声明式回退</li>
+<li><b>已有技能库</b>(promptFragment+推荐工具+决策规则,效果统计排名)</li>
+<li>反思写回、策略臂统计、HITL 三 park-gate</li>
+</ul>
+</div>
+<div class="card">
+<h3 style="margin-top:0">契约流水线蓝图提供</h3>
+<ul class="dim" style="font-size:13.5px">
+<li>主管导演制(减法改造,只指挥不动手)</li>
+<li>真独立团队 = 可写角色受限子脑</li>
+<li>监督者四条结构性独立(最值钱机制)</li>
+<li>版本锁定缺陷 + finish 清零(建议→结构)</li>
+<li><code>runGeneratedModule</code> 真隔离执行(P0 修复)</li>
+<li>双轴推理策略选择器(诚实版:手调表承重)</li>
+<li>治理 cron 幂等 rework(闭上被动回流缺口)</li>
+</ul>
+</div>
+<div class="card accent">
+<h3 style="margin-top:0">你的期待带来(两边都缺)</h3>
+<ul class="dim" style="font-size:13.5px">
+<li><b>能力生长闭环</b>:缺 sub-agent → SKILL 锻造 → 实例化(蓝图团队是静态编制,现状技能只织入提示词)</li>
+<li><b>TS 函数文件一等交付</b>:对准旧 AO 六文件形态,黄金范例锚定(蓝图只泛化到「任意代码」,现状 .ts 是「不直接运行」的参考渲染 <span class="kbd">codegen.ts:138</span>)</li>
+<li><b>泳道 SVG 可视化交付</b>(两边都没提;数据已存在)</li>
+</ul>
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="s3"><span class="no">03</span>对蓝图的判读:采纳 / 修正 / 纠错<span class="sub">蓝图整体质量高——诊断诚实、锚点准确、durability 故事不吹牛。融合框架采纳其脊柱,但有 4 处需要修正或纠错。</span></h2>
+
+<table>
+<tr><th style="width:100px">判定</th><th>条目</th><th>说明</th></tr>
+<tr><td><span class="tag t-adopt">采纳</span></td><td>装配线脊柱 + 顺序门控交接</td><td>单 detached driver + 断点续跑上做顺序工位,不引入多驱动并发——评审团 fit=9,与现底座零冲突。<b>原样采纳。</b></td></tr>
+<tr><td><span class="tag t-adopt">采纳</span></td><td>监督者四条结构性独立</td><td>全新子脑只喂证据、只读工具集、独立 review 模型档、只对主管汇报。整份蓝图最值钱的机制,<b>原样采纳</b>。</td></tr>
+<tr><td><span class="tag t-adopt">采纳</span></td><td>版本锁定缺陷 + finish 清零 + 治理 cron</td><td>把「评审是建议」变成「缺陷必须复验关闭」;被动 caveat 变主动 rework。<b>原样采纳</b>(cron 幂等键 <code>(functionId, window)</code> 设计正确)。</td></tr>
+<tr><td><span class="tag t-adopt">采纳</span></td><td><code>runGeneratedModule</code> 隔离重建</td><td>P0 安全问题(同进程 <code>new Function</code> 无超时,<span class="kbd">codeact.ts:135,288</span>)。worker_thread+resourceLimits 起步、容器藏在端口后硬化,<b>原样采纳</b>。</td></tr>
+<tr><td><span class="tag t-fix">修正</span></td><td>五团队是静态编制</td><td>蓝图团队 roster 固定,与你「灵活调度、按需生长」的期待冲突。<b>修正:</b>五站作为<b>质量结构</b>保留(门与缺陷按站路由),但站长可经<b>能力梯</b>动态实例化 L2 sub-agents(§06)——组织静态、用工动态。</td></tr>
+<tr><td><span class="tag t-fix">修正</span></td><td>交付物「泛化到任意代码」但没锚定目标形态</td><td>你要的不是抽象的「任意函数」而是<b>具体的</b>旧 AO 风格 <code>inngest.createFunction</code> TS 文件。<b>修正:</b><code>ts_function_module</code> 成为一等 deliverableKind,黄金范例(旧六文件)锚定 codegen,三类定制槽位显式化(§07)。</td></tr>
+<tr><td><span class="tag t-correct">纠错</span></td><td>29 处复用映射表<b>漏了已有技能库</b></td><td>蓝图通篇未提 <code>create_skill</code>/<code>use_skill</code>(<span class="kbd">tools.ts:1719,1764</span>)与 <code>DrizzleSkillStore</code> 效果统计(<span class="kbd">stores.ts:142,174-185</span>)。这不是小遗漏——你的诉求⑤恰好要靠它承载。融合框架把它升级为可实例化技能(§06),<b>扩展而非新建</b>。</td></tr>
+<tr><td><span class="tag t-correct">纠错</span></td><td>无可视化交付面</td><td>蓝图没有任何业务流程图生成能力的规划;而泳道数据(<span class="kbd">business-flow.ts:157</span> 的 <code>BusinessFlowModel</code>)已经 1:1 覆盖你手绘 SVG 的五泳道要素。补一个纯渲染器即可(§11)。</td></tr>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="s4"><span class="no">04</span>融合架构总览<span class="sub">主管导演制之下:五站质量流水线(蓝图) × 站内动态用工与能力生长(你的期待) × 双目标交付(修正) × 证据面与治理环(蓝图)。</span></h2>
+
+<div class="svgbox">
+<svg viewBox="0 0 1180 780" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, 'PingFang SC', sans-serif">
+  <defs>
+    <marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#4ecdc4"/></marker>
+    <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#e06c5f"/></marker>
+    <marker id="a3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#5f7188"/></marker>
+  </defs>
+  <style>
+    .lane { fill:#0e141d; stroke:#1e2a3a; rx:12; }
+    .box { fill:#16202e; stroke:#2a3a50; }
+    .box2 { fill:#12321f; stroke:#1d4d30; }
+    .box3 { fill:#241f38; stroke:#3a3358; }
+    .box4 { fill:#33270f; stroke:#524015; }
+    .box5 { fill:#3a1a16; stroke:#5c2a24; }
+    .tt { font-size:14px; font-weight:700; fill:#dce6f2; }
+    .tx { font-size:11.5px; fill:#93a4ba; }
+    .tm { font-size:10.5px; fill:#5f7188; font-family:ui-monospace,Menlo,monospace; }
+    .lt { font-size:12px; font-weight:700; fill:#4ecdc4; letter-spacing:1px; }
+    .fl { fill:none; stroke:#4ecdc4; stroke-width:1.8; marker-end:url(#a1); }
+    .rw { fill:none; stroke:#e06c5f; stroke-width:1.6; stroke-dasharray:5 4; marker-end:url(#a2); }
+    .gv { fill:none; stroke:#5f7188; stroke-width:1.5; stroke-dasharray:2 4; marker-end:url(#a3); }
+  </style>
+
+  <!-- L0 Foreman -->
+  <rect class="lane" x="20" y="16" width="1140" height="96" rx="12"/>
+  <text class="lt" x="36" y="40">L0 主管 · FOREMAN(导演制,只指挥不动手)</text>
+  <rect class="box" x="36" y="52" width="180" height="46" rx="8"/><text class="tt" x="48" y="72" font-size="12.5">意图 + 策略盖章</text><text class="tm" x="48" y="88">双轴选择器 §09</text>
+  <rect class="box" x="232" y="52" width="150" height="46" rx="8"/><text class="tt" x="244" y="72" font-size="12.5">delegate 派工</text><text class="tm" x="244" y="88">自由调度站长</text>
+  <rect class="box" x="398" y="52" width="170" height="46" rx="8"/><text class="tt" x="410" y="72" font-size="12.5">工件门 admit()</text><text class="tm" x="410" y="88">上游工件在场+门绿</text>
+  <rect class="box5" x="584" y="52" width="180" height="46" rx="8"/><text class="tt" x="596" y="72" font-size="12.5">缺陷仲裁 + 返工路由</text><text class="tm" x="596" y="88">按归因回确切工位</text>
+  <rect class="box4" x="780" y="52" width="150" height="46" rx="8"/><text class="tt" x="792" y="72" font-size="12.5">ask_user 升级席</text><text class="tm" x="792" y="88">park-gates 保留</text>
+  <rect class="box2" x="946" y="52" width="198" height="46" rx="8"/><text class="tt" x="958" y="72" font-size="12.5">finish(0 阻塞缺陷)</text><text class="tm" x="958" y="88">监督+测试签核</text>
+
+  <!-- L1 stations -->
+  <rect class="lane" x="20" y="132" width="1140" height="150" rx="12"/>
+  <text class="lt" x="36" y="156">L1 站长 · AGENT LEADERS(可写子脑 · 角色提示词 · 受限工具集 · 站内自选策略)</text>
+  <rect class="box" x="36" y="170" width="200" height="98" rx="10"/>
+  <text class="tt" x="50" y="192">分析站</text><text class="tx" x="50" y="210">意图→ContractSpec</text><text class="tx" x="50" y="226">子契约+验收+字段契约</text><text class="tm" x="50" y="246">ToT→debate</text><text class="tm" x="50" y="260">runSpecialists·critique_plan</text>
+  <rect class="box" x="252" y="170" width="200" height="98" rx="10"/>
+  <text class="tt" x="266" y="192">编码站</text><text class="tx" x="266" y="210">1 子契约→CodeArtifact</text><text class="tx" x="266" y="226">编译+加载探针+自审</text><text class="tm" x="266" y="246">ReAct+reflection</text><text class="tm" x="266" y="260">design-loop.ts:52,106</text>
+  <rect class="box" x="468" y="170" width="200" height="98" rx="10"/>
+  <text class="tt" x="482" y="192">评审站(测前)</text><text class="tx" x="482" y="210">主观预筛·cite-the-span</text><text class="tx" x="482" y="226">合规/契合/元认知</text><text class="tm" x="482" y="246">tier-1确定性→三镜LLM</text><text class="tm" x="482" y="260">tools.ts:1472,1536,1578</text>
+  <rect class="box" x="684" y="170" width="200" height="98" rx="10"/>
+  <text class="tt" x="698" y="192">测试站</text><text class="tx" x="698" y="210">单测+集成+安全</text><text class="tx" x="698" y="226">真 c8 覆盖率·cassette</text><text class="tm" x="698" y="246">CodeTester 端口 §08</text><text class="tm" x="698" y="260">runGeneratedModule</text>
+  <rect class="box3" x="900" y="170" width="244" height="98" rx="10"/>
+  <text class="tt" x="914" y="192">监督站(独立审计)</text><text class="tx" x="914" y="210">全新脑·只喂证据·只读工具</text><text class="tx" x="914" y="226">确定性归因→版本锁定缺陷</text><text class="tm" x="914" y="246">attributeFidelityFailures:93</text><text class="tm" x="914" y="260">独立 review 模型档·只报主管</text>
+
+  <!-- L2 + capability ladder -->
+  <rect class="lane" x="20" y="302" width="700" height="150" rx="12"/>
+  <text class="lt" x="36" y="326">L2 SUB-AGENTS(站长派生 · 深度帽 2 · 站长工具集∩子范围)</text>
+  <rect class="box" x="36" y="340" width="200" height="92" rx="10"/>
+  <text class="tt" x="50" y="362" font-size="12.5">研究员(既有)</text><text class="tx" x="50" y="380">只读调查·并行深读</text><text class="tm" x="50" y="398">spawn_subagent</text><text class="tm" x="50" y="414">conductor.ts:257,276</text>
+  <rect class="box2" x="252" y="340" width="210" height="92" rx="10"/>
+  <text class="tt" x="266" y="362" font-size="12.5">技能实例工人(新)</text><text class="tx" x="266" y="380">从 spawnable SKILL 实例化</text><text class="tm" x="266" y="398">instantiate_subagent(skill)</text><text class="tm" x="266" y="414">角色提示词+工具面+策略默认</text>
+  <rect class="box" x="478" y="340" width="222" height="92" rx="10"/>
+  <text class="tt" x="492" y="362" font-size="12.5">编码工人(升级)</text><text class="tx" x="492" y="380">可写:每子契约一个</text><text class="tm" x="492" y="398">写→编译→读诊断→精修</text><text class="tm" x="492" y="414">提交版本化 CodeArtifact</text>
+
+  <rect class="lane" x="740" y="302" width="420" height="150" rx="12"/>
+  <text class="lt" x="756" y="326">能力梯 · CAPABILITY LADDER(§06)</text>
+  <text class="tx" x="756" y="350">① FleetCatalog 已交付函数复用</text>
+  <text class="tx" x="756" y="370">② 全局工具registry / 租户工具 ③ MCP</text>
+  <text class="tx" x="756" y="390">④ SkillStore.spawnable → 实例化 sub-agent</text>
+  <text class="tx" x="756" y="410"><tspan fill="#4ecdc4" font-weight="700">⑤ skill_forge 锻造新技能</tspan>(缺了就现场写)</text>
+  <text class="tx" x="756" y="430">⑥ create_tool / extract_api_schema 造工具</text>
+
+  <!-- Evidence plane -->
+  <rect class="lane" x="20" y="472" width="1140" height="86" rx="12"/>
+  <text class="lt" x="36" y="496">证据面 · EVIDENCE PLANE</text>
+  <rect class="box" x="36" y="508" width="260" height="38" rx="8"/><text class="tx" x="48" y="532">版本化工件(append-only,绝不覆盖)</text>
+  <rect class="box5" x="312" y="508" width="290" height="38" rx="8"/><text class="tx" x="324" y="532">版本锁定缺陷(免压缩·须 Tester 复验关闭)</text>
+  <rect class="box" x="618" y="508" width="250" height="38" rx="8"/><text class="tx" x="630" y="532">执行保真 + cassette 逐位复放</text>
+  <rect class="box" x="884" y="508" width="260" height="38" rx="8"/><text class="tx" x="896" y="532">反思/技能/策略臂 跨运行写回</text>
+
+  <!-- Deliverables -->
+  <rect class="lane" x="20" y="578" width="700" height="120" rx="12"/>
+  <text class="lt" x="36" y="602">双目标交付 · DUAL-TARGET(§07)</text>
+  <rect class="box" x="36" y="614" width="320" height="72" rx="10"/>
+  <text class="tt" x="50" y="636" font-size="12.5">manifest_agent(现路径,保留)</text>
+  <text class="tx" x="50" y="654">plan[]→durable actions→step-engine</text>
+  <text class="tm" x="50" y="672">mapToManifest · plan-projection.ts:102</text>
+  <rect class="box2" x="372" y="614" width="330" height="72" rx="10"/>
+  <text class="tt" x="386" y="636" font-size="12.5">ts_function_module(新一等公民)</text>
+  <text class="tx" x="386" y="654">inngest.createFunction 独立 .ts 文件</text>
+  <text class="tm" x="386" y="672">黄金范例锚定 · 3 定制槽位 · import-profile</text>
+
+  <rect class="lane" x="740" y="578" width="420" height="120" rx="12"/>
+  <text class="lt" x="756" y="602">治理闭环 · GOVERNANCE(Inngest cron)</text>
+  <text class="tx" x="756" y="626">14 天失败率 + 保真回归 + 安全发现聚合</text>
+  <text class="tx" x="756" y="646">越阈值→监督者归因→人签核</text>
+  <text class="tx" x="756" y="666">幂等 rework run,keyed (functionId, window)</text>
+  <text class="tm" x="756" y="686">从责任工位重入 · finish 重新门控</text>
+
+  <!-- Viz strip -->
+  <rect class="lane" x="20" y="716" width="1140" height="50" rx="12"/>
+  <text class="lt" x="36" y="740">可视化交付 · <tspan fill="#93a4ba" font-weight="400" font-size="11.5px">泳道 SVG 生成器(§11):BusinessFlowModel → 触发源/事件/Agent/外部读写/失败分支 五泳道图,报告内嵌 + 独立下载 · 工厂自身进度沿用 brain-flow</tspan></text>
+
+  <!-- flows -->
+  <path class="fl" d="M136 112 V132"/>
+  <path class="fl" d="M136 268 V302"/>
+  <path class="fl" d="M352 268 L352 302"/>
+  <path class="fl" d="M236 219 H252"/>
+  <path class="fl" d="M452 219 H468"/>
+  <path class="fl" d="M668 219 H684"/>
+  <path class="fl" d="M884 219 H900"/>
+  <path class="fl" d="M370 452 V578"/>
+  <path class="fl" d="M537 452 L537 578"/>
+  <path class="rw" d="M1022 268 C1022 290 700 285 674 112"/>
+  <path class="rw" d="M950 638 C930 640 880 640 868 620 C830 560 700 540 602 527"/>
+  <path class="gv" d="M950 690 C500 760 180 740 120 698"/>
+  <path class="fl" d="M840 452 L840 472" transform="translate(0,0)"/>
+  <path class="fl" d="M950 302 L950 282" transform="translate(0,0)"/>
+</svg>
+</div>
+
+<div class="card accent">
+<p><b>一句话读图:</b>主管只指挥(L0);五个站长是真正独立的可写子脑(L1);站长按需从既有嵌套骨架派生 L2 工人——<span class="hl">缺人手就走能力梯,缺技能就锻造技能再实例化</span>;一切产出走证据面(版本化工件+版本锁定缺陷);交付有两个目标形态;交付后治理 cron 盯生产、越阈值经人签核幂等重开返工。<b>运行仍是单 detached driver + 断点续跑——不搬 Inngest、不引入多驱动并发</b>(蓝图最务实的一条,原样保留)。</p>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="s5"><span class="no">05</span>主管与站长团队<span class="sub">采纳蓝图 §03/§04,标注与现有代码的确切嫁接点。核心手法是「减法造主管、升级造站长」——不重写。</span></h2>
+
+<ul>
+<li><b>主管 = <code>runBrain</code> 的导演半身。</b>保留:回合循环、每回合断点 <code>serializeCtx</code>(<span class="kbd">conductor.ts:288</span>)、自动压缩(<span class="kbd">:107</span>)、clarify/approval/boundary park-gates(<span class="kbd">:517-702</span>)。剥掉:全部 worker 工具。动作空间只剩 <code>{intake, route, delegate, read-artifact, arbitrate-defect, gate, escalate-HITL, finish}</code>。</li>
+<li><b>站长 = 升级的 <code>spawn_subagent</code>。</b>现状是只读研究子脑(14 个只读工具,<span class="kbd">tools.ts:2352</span>);升级为「角色提示词 + 每站定制工具集」的可写子脑。信任边界从「只读」变为「每站工具面」:监督站只拿只读+归因,编码站拿 codegen/refine,评审站零改码工具。<b>顺序执行,一次一个活跃站长</b>——断点续跑语义不变。</li>
+<li><b>工件门。</b><code>stageAdmission</code>(<span class="kbd">conductor.ts:184</span>)从「按工具名准入」泛化为「<code>admit(nextStation, workItem)</code>:上游工件在场且门为绿」。编码等 ContractSpec;测试等能编译的 CodeArtifact;finish 等监督+测试签核且 0 阻塞缺陷。</li>
+<li><b>单一多角色提示词必须拆。</b><span class="kbd">system-prompt.ts:121</span> 的「一个大脑扮演多角色」是「假团队」根源(蓝图诊断①,核实属实)——拆成 foreman/analyst/coder/reviewer/tester/supervisor 六份角色提示词。UI 侧 <span class="kbd">process-roles.ts:14</span> 的展示角色恰好能 1:1 映射到真子脑,前端叙事不用改。</li>
+<li><b>返工路由不是盲目重试。</b>红门时读监督者 <code>AuditVerdict.responsibleStation</code>(来自确定性 <span class="kbd">attributeFidelityFailures:93</span>)把单元打回确切工位;每工位有限返工预算,耗尽升级 ask_user 而非死循环。</li>
+</ul>
+
+<!-- ============================================================ -->
+<h2 id="s6"><span class="no">06</span>能力梯与技能锻造<span class="sub">你的诉求⑤的完整落地——也是对蓝图最大的补充。不是新建:是把仓库里已经存在但蓝图漏掉的技能库,升级成「可实例化」。</span></h2>
+
+<div class="card warn">
+<p><b>先纠正一个事实(包括我自己之前的说法):工厂已有技能层。</b><code>create_skill</code>(<span class="kbd">tools.ts:1719</span>)/<code>use_skill</code>(<span class="kbd">:1764</span>)= <code>{promptFragment(织入 design_agent), recommendedTools, decisionRule, general?}</code>,由 <code>DrizzleSkillStore</code>(<span class="kbd">stores.ts:142</span>)持久化,带 <code>useCount/evalCount/successCount</code> 效果排名(<span class="kbd">:174-185</span>),sub-agent 也能著技能(共享库)。<b>缺的只是一步:技能今天只能「织入提示词」,不能「生成一个 sub-agent」。</b></p>
+</div>
+
+<h3>6.1 技能升级:从提示词碎片到可实例化配方</h3>
+<p>给 Skill 增加可选的 <code>spawnSpec</code> 字段(向后兼容,老技能照常织入):</p>
+<div class="card"><p class="kbd" style="white-space:pre-wrap">Skill {
+  // —— 既有字段(不动)——
+  promptFragment, recommendedTools[], decisionRule, general?,
+  useCount, evalCount, successCount,          // 效果统计,已有
+  // —— 新增:可实例化 ——
+  spawnSpec?: {
+    roleName: string          // 「信封解包工」「错误分类审计员」…
+    systemPrompt: string      // 完整角色提示词(非碎片)
+    toolAllowlist: string[]   // ∩ 派生站长自己的工具面(不越权)
+    strategyDefault: "react" | "reflection" | "debate"
+    exemplarRefs: string[]    // 黄金范例锚点(如旧六文件的具体模式)
+    checklist: string[]       // 完工自检清单
+  }
+}</p></div>
+
+<h3>6.2 能力梯:六级解析,一级比一级贵</h3>
+<p>任何站长遇到「我需要一个我没有的能力」时,按梯解析(每级都是既有原语,一个新工具 <code>resolve_capability_ladder</code> 把它们串起来并记录决策):</p>
+<table>
+<tr><th style="width:56px">级</th><th>问题</th><th>动作</th><th>既有承载</th></tr>
+<tr><td>①</td><td>已交付函数里有吗?</td><td>直接复用/组合</td><td><code>capability_resolve</code> + FleetCatalog</td></tr>
+<tr><td>②</td><td>工具库里有吗?</td><td>直接调用</td><td><code>search_tools</code> + 全局 registry</td></tr>
+<tr><td>③</td><td>MCP 服务器有吗?</td><td>折叠为 <code>&lt;server&gt;.&lt;tool&gt;</code> 调用</td><td>既有 MCP 解析链</td></tr>
+<tr><td>④</td><td>技能库里有可实例化技能吗?</td><td><code>instantiate_subagent(skill)</code> → L2 工人</td><td>SkillStore(升级后)+ <code>spawn_subagent</code> 骨架</td></tr>
+<tr><td>⑤</td><td><b>都没有?锻造。</b></td><td><code>skill_forge</code>:派一个研究员 sub-agent 调研该能力(读范例/文档/工具目录),写出带 <code>spawnSpec</code> 的新技能 → 回到④实例化</td><td><code>create_skill</code> 升级 + 既有研究员派生</td></tr>
+<tr><td>⑥</td><td>能力本质是「缺工具」?</td><td>造声明式工具再走②</td><td><code>create_tool</code> / <code>extract_api_schema</code>(文档→工具)</td></tr>
+</table>
+<ul>
+<li class="dim"><b>权限约束:</b>实例化的 sub-agent 工具面 = <code>spawnSpec.toolAllowlist ∩ 派生站长的工具面</code>——技能永远不能给工人越站长之权。锻造出的新技能首次实例化前,若含写权限工具,经 ask_user 确认(主管升级席)。</li>
+<li class="dim"><b>学习闭环:</b>实例化工人的成败写回该技能的 <code>successCount</code>(既有统计),差技能自然沉底;反思(<span class="kbd">ports.ts:125</span>)引用技能 id,下次锻造前先读同类失败教训。</li>
+<li class="dim"><b>诚实边界:</b>这不是自我进化的魔法——⑤级锻造的产物就是一份「角色提示词+工具面+范例锚点」的结构化配方,质量取决于范例与本体;它的价值是<b>把一次性摸索固化为可复用资产</b>,不是发明新算法。</li>
+</ul>
+
+<!-- ============================================================ -->
+<h2 id="s7"><span class="no">07</span>双目标交付物:TS 函数文件成为一等公民<span class="sub">基于旧 AO 六文件的代码画像(专项调查),把「像那六个文件一样的代码」变成可验收的确切规格,而非愿望。</span></h2>
+
+<h3>7.1 地面实况:目标形态到底长什么样</h3>
+<table>
+<tr><th>事实</th><th>对生成器的含义</th></tr>
+<tr><td>六文件骨架高度规整:注册配置→暂停闸→双日志→信封解包→step 包裹→emit+notify→返回对象,<b>约 30% 可机械生成</b></td><td>骨架 = 确定性模板(非 LLM),从 ContractSpec 直接渲染;LLM 不碰样板</td></tr>
+<tr><td>step 原语只用了三个:<code>step.run</code>(全部外部调用)、<code>step.sendEvent</code>(出站事件)、<code>step.invoke</code>(仅 resume-parser 同步查重)。<b>无 waitForEvent/cancelOn/并发键</b></td><td>生成器动作空间可以收得很窄——三原语覆盖全部目标形态,验收器也只需理解三原语</td></tr>
+<tr><td><b>60-75% 是三类定制逻辑:</b>①字段映射/文本扁平化(40+ 字段 prompt 组装);②错误分类路由(业务 FAIL / 可恢复 park / 不可恢复 emit / 强制持久化 rethrow,六 agent 各不同);③多路径/循环控制流(三路 JR 收敛、双路分叉、fan-out)</td><td>ContractSpec 的子契约必须显式带三个槽位:<code>fieldMapping</code>、<code>errorTaxonomy</code>、<code>controlFlow</code>——缺槽即 ambiguity,走 ask_user,<b>不许猜</b></td></tr>
+<tr><td>共享基础设施全部「import 不生成」:RoboHire/MinIO/Partner-PG/allmeta/依赖健康分类/通知等都是库调用</td><td>codegen 带 <b>import-profile</b>(允许 import 的模块清单+签名);profile 有两套:new-AO 运行时(全局工具registry)与 old-AO server(<code>@/lib/*</code>)</td></tr>
+</table>
+
+<h3>7.2 交付物矩阵</h3>
+<table>
+<tr><th style="width:170px">deliverableKind</th><th>产物</th><th>执行/验收路径</th><th>状态</th></tr>
+<tr><td><code>manifest_agent</code></td><td>声明式 manifest(plan[]→durable actions)</td><td>step-engine 执行(<span class="kbd">step-engine.ts:627,691,749</span>);-sb 真 Inngest 沙箱观测;10 判据验收</td><td><span class="tag t-keep">现路径,保留</span></td></tr>
+<tr><td><code>ts_function_module</code></td><td><b>独立 .ts 文件</b>:<code>inngest.createFunction({id,name,retries,triggers},handler)</code>,旧 AO 风格,黄金范例锚定</td><td>tsc 编译 → <code>runGeneratedModule</code> 隔离单测(真 c8)→ cassette 集成 → 安全 pass → 可选注册到 -sb Inngest 真观测 → .ts 工件交付(草稿库落盘 + 可下载)</td><td><span class="tag t-add">新一等公民</span></td></tr>
+<tr><td><code>report</code> / <code>tool</code></td><td>分析报告 / 声明式工具</td><td>既有 generate_report / create_tool 路径</td><td><span class="tag t-keep">保留</span></td></tr>
+</table>
+
+<h3>7.3 ts_function_module 的生成管线(编码站内部)</h3>
+<ol>
+<li><b>骨架渲染(确定性):</b>从子契约渲染注册配置、暂停闸、日志、信封解包、emit 骨架——扩展既有 <code>specToAgentCode</code>(<span class="kbd">codegen.ts:105</span>)从「参考渲染」升格为「交付渲染」,撕掉「不直接运行」标签(<span class="kbd">codegen.ts:138</span>)。</li>
+<li><b>槽位填充(LLM,范例锚定):</b>三个定制槽各配黄金范例片段(如错误分类槽 → rule-check 的 <code>isInfraFailure</code> park 模式、interview-inviter 的终态码分级);<code>codegen_agent</code>(既有,TS 编译器校验)在骨架内填槽,不重写骨架。</li>
+<li><b>编译+探针:</b>tsc 严格编译 + 加载探针(泛化既有 <code>probeAgentModule</code>);失败读诊断精修(ReAct)。</li>
+<li><b>验收(kind 条件化):</b><code>unit_pass + coverage_met + integration_pass + security_clean</code>(fail-closed)替代 manifest 专用的 chain_ran 判据;<code>code_really_ran</code> 语义沿用——<b>没在隔离里真执行过的代码不许 finish</b>(现有原则,<span class="kbd">acceptance.ts</span> 延伸)。</li>
+</ol>
+<div class="card accent"><p><b>首个证明目标(P1 验收):</b>从招聘本体出发,工厂自主生成一个 <code>resume-parser</code> 等价的 <code>ts_function_module</code>(含 step.invoke 查重 + UNPARSEABLE/依赖降级错误路由),在隔离内通过单测+cassette 集成,并在 -sb Inngest 上真跑通一条 <code>RESUME_DOWNLOADED → RESUME_PROCESSED</code> 链。<b>这就是你说的「生成像那六个文件一样的代码」的最小可证版本。</b></p></div>
+
+<!-- ============================================================ -->
+<h2 id="s8"><span class="no">08</span>测试与隔离<span class="sub">采纳蓝图 §06 全部(它是对的),此处只记结论与我们的两点强调。</span></h2>
+<ul>
+<li><b>P0 事实(核实属实):</b>今天 <code>runGeneratedCode</code>(<span class="kbd">codeact.ts:135</span>)TS→CJS 后 <code>new Function</code> 同进程执行(<span class="kbd">:147,159</span>),<code>await handler</code> 无 wall-clock/内存上限(<span class="kbd">:288</span>),非 runtime import 被 stub 成 <code>{}</code>(<span class="kbd">:156</span>)。死循环挂 api、带依赖代码测不了——<b>两个 P0 都是真的</b>。</li>
+<li><b>重建为 <code>runGeneratedModule</code>:</b>任意导出、worker_thread + resourceLimits + terminate 硬超时、allow-list 供货依赖(= §07 的 import-profile,一物两用)、隔离内真 c8 覆盖率;安全/动态围堵用 child_process/容器 + egress guard,security_clean fail-closed。全部藏在 <code>FactoryPorts.codeTester</code> 端口后,底座可硬化不动契约。</li>
+<li><b>保留两条隔离不变量:</b><code>FACTORY_EXEC_GENERATED</code> 门(<span class="kbd">codeact.ts:140</span>)+ <code>-sb</code> 租户串检(<span class="kbd">:143</span>)——每个新入口都要过。</li>
+<li><b>强调一:</b>worker_thread 不是安全边界(蓝图自己承认)——按测试种类分档隔离是正确权衡,macOS 开发机 vs Linux CI 的信任分裂列入待拍板(§13)。</li>
+<li><b>强调二:</b>manifest 路径的 -sb 真 Inngest 观测(<span class="kbd">sandbox-deployer.ts:197</span>)<b>不动</b>——它是活的、live-proven 的;CodeTester 是兄弟端口,按 deliverableKind 选,不是替代。</li>
+</ul>
+
+<!-- ============================================================ -->
+<h2 id="s9"><span class="no">09</span>推理策略选择器<span class="sub">采纳蓝图 §07(它的诚实版设计是对的),锚定现状事实。</span></h2>
+<ul>
+<li><b>现状(核实):</b><code>selectPolicy</code>(<span class="kbd">reasoning-policy.ts:94</span>)只选流水线形状(full/skinny/analyze/ask_first)+ tierBias;真正的推理深度由 AI 自主(<code>deep</code> 参数,#NATIVE 原则)。这是「形状路由」,不是「策略选择」——蓝图诊断②属实。</li>
+<li><b>升级为双轴:</b>轴1 形状(既有);轴2 策略 = ReAct / reflection(<span class="kbd">design-loop.ts:52,106</span> 泛化)/ debate(<span class="kbd">critique_plan tools.ts:623</span> 泛化)三个 Day-1 一等策略,ToT(<span class="kbd">runSpecialists specialists.ts:75</span> 泛化 N 分叉)/CoT/combo 预算内跟进。两个高度:主管为每站盖默认;站内子问题经 <code>select_strategy</code> 重分类。</li>
+<li><b>诚实约束(照抄蓝图,它说得对):</b>承重的是手调表 + 策略→原语映射;policy-learning 臂扩到 <code>(strategy|team|band)</code> 只加不减(<span class="kbd">policy-learning.ts:45</span>)——能降级坏策略,不探索新策略。<b>别当学习 bandit 卖。</b>昂贵策略门控给复杂/返工场景。</li>
+<li><b>与 #NATIVE 原则不冲突:</b>策略表给「默认」,AI 保留否决权(可带理由改选)——延续「政策只加不减、深度 AI 自主」的既有立场,避免回到「按规模写死决策」的老路。</li>
+</ul>
+
+<!-- ============================================================ -->
+<h2 id="s10"><span class="no">10</span>监督独立 · 缺陷生命周期 · 治理闭环<span class="sub">蓝图最强的三件套,原样采纳。只列要点与嫁接点。</span></h2>
+<div class="grid3">
+<div class="card"><h3 style="margin-top:0">监督者四条独立</h3><ul class="dim" style="font-size:13px"><li>全新子脑:只喂工件+契约+证据,绝不喂生产者思维链</li><li>只读+归因工具集,物理上无 codegen/deploy</li><li>独立 review 模型档(<span class="kbd">model-router</span> 评审档)</li><li>只对主管汇报,不向被审计团队汇报</li></ul></div>
+<div class="card"><h3 style="margin-top:0">缺陷生命周期</h3><ul class="dim" style="font-size:13px"><li>版本锁定(锚定工件版本,免压缩,cited span 持久)</li><li>阻塞缺陷 → finish 硬清零</li><li>关闭须 Tester 复验,不许自我背书</li><li>返工按 <code>responsibleStation</code> 路由,限预算,耗尽升 ask_user</li></ul></div>
+<div class="card"><h3 style="margin-top:0">治理 cron</h3><ul class="dim" style="font-size:13px"><li>常驻 Inngest cron(继承 <span class="kbd">register.ts:152</span> durability 纪律)</li><li>聚合 14 天失败率 + 保真回归 + 安全发现</li><li>越阈值 → 监督者对生产运行归因 → 人签核</li><li>幂等 rework:<code>step.sendEvent</code> keyed <code>(functionId, window)</code></li></ul></div>
+</div>
+<p class="dim">评审站 ≠ 监督站:主观/LLM/测前/贴着编码 vs 客观/证据/测后/跨生产——硬 schema + 时序边界隔开,避免重复劳动(蓝图 §05 的区分,采纳)。</p>
+
+<!-- ============================================================ -->
+<h2 id="s11"><span class="no">11</span>业务流泳道 SVG 生成器<span class="sub">你手绘的那张六 agent 泳道图,数据侧已经全部存在——缺的只是一个纯 SVG 渲染器。这是全路线里性价比最高的一项。</span></h2>
+
+<h3>11.1 数据已齐(核实)</h3>
+<table>
+<tr><th>你的图里的泳道要素</th><th>已存在的数据源</th></tr>
+<tr><td>触发源(RAAS/HSM、MinIO 上传…)</td><td><code>BusinessFlowModel.agents[].triggers.{external,source}</code> + <code>entries[]</code>(<span class="kbd">business-flow.ts:157</span>)</td></tr>
+<tr><td>Trigger/Emit 事件框(含语义着色)</td><td><code>agents[].emits[].semantic</code>(success/failure/外部交接,<span class="kbd">:49,:149</span>)</td></tr>
+<tr><td>Agent 卡(id/职责/文件)</td><td><code>agents[]</code> + spec 元数据(nameZh/role)</td></tr>
+<tr><td>外部读/调/写框(Partner PG、RoboHire、Allmeta…)</td><td><code>agents[].{reads,calls,writes,notifies}</code> + <code>externals[]</code>(声明轨 <code>integration.systems</code> 优先)</td></tr>
+<tr><td>失败/park 分支(红/紫框)</td><td><code>emits[].semantic === "failure"</code> + 错误分类槽(§07 新增后更完整)</td></tr>
+<tr><td>跨泳道事件连线</td><td><code>compileGraph()</code> 的 <code>DomainGraph.edges</code>(<span class="kbd">graph.ts:81</span>)</td></tr>
+</table>
+
+<h3>11.2 落点</h3>
+<ul>
+<li><b>新纯函数 <code>renderWorkflowSvg(model, opts)</code></b>:与 <code>renderSvgChart</code>(<span class="kbd">svg-chart.ts:193</span>)同风格——确定性、零依赖、纯函数;每 agent 一条横向泳道,泳道内 触发源→事件→agent→外部读写→emit 分支,跨泳道事件用曲线连接(你那张图的布局语法)。现有 <code>svgChart.flow</code> 只是单线蛇形(<span class="kbd">:143</span>),不动它,新加 kind。</li>
+<li><b>三个消费点:</b>①报告内嵌(<code>{{CHART:id}}</code> 占位符机制已有);②工厂 finish 时作为交付工件之一落盘(和 .ts / manifest 并列,可下载);③portal 业务流 tab 提供「导出 SVG」(现 HTML/flex 面板 <span class="kbd">business-flow-panel.tsx:78</span> 保留为交互视图,SVG 为交付视图)。</li>
+<li><b>验收:</b>对招聘域六 agent 跑一次,输出与你手绘图同构(六泳道、失败分支红框、跨道事件连线)的 SVG——像素不必一样,<b>结构要素必须一个不少</b>。</li>
+</ul>
+
+<!-- ============================================================ -->
+<h2 id="s12"><span class="no">12</span>修订路线(P0–P7)<span class="sub">相对蓝图 7 期的三处改动:①你的核心产出(TS 交付)提前到 P1;②泳道 SVG 插入 P1.5(便宜、高可见);③技能锻造成为独立 P5。每期仍然只证明一件事。</span></h2>
+
+<table>
+<tr><th style="width:72px">期</th><th>做什么</th><th>证明什么</th><th style="width:120px">相对蓝图</th></tr>
+<tr><td><b>P0</b></td><td><code>runGeneratedModule</code>:worker_thread 隔离、硬超时+内存、allow-list 供货、真 c8;保留两条隔离不变量</td><td>通用代码能安全执行,死循环再也挂不住 api(修 <span class="kbd">codeact.ts:288</span> 两个 P0)</td><td><span class="tag t-adopt">同蓝图</span></td></tr>
+<tr><td><b>P1</b></td><td>CodeTester 端口 + kind 条件化验收 + <b><code>ts_function_module</code> 一等交付</b>(骨架模板+三槽位+import-profile+黄金范例)</td><td><b>工厂真的生成出一个 resume-parser 等价 .ts 文件并在隔离+(-sb)Inngest 上跑通</b>——你的核心期待的最小可证版本</td><td><span class="tag t-fix">加料提前</span></td></tr>
+<tr><td><b>P1.5</b></td><td><code>renderWorkflowSvg</code> 泳道渲染器 + 报告/交付/导出三消费点</td><td>招聘域自动画出与你手绘图同构的六 agent 泳道 SVG</td><td><span class="tag t-add">新增</span></td></tr>
+<tr><td><b>P2</b></td><td>主管减法拆分 + 首个真团队(分析站)+ 工件门泛化</td><td>真团队隔离 + 硬门交接,断点续跑不破</td><td><span class="tag t-adopt">同蓝图</span></td></tr>
+<tr><td><b>P3</b></td><td>独立监督者 + 版本锁定缺陷 + 归因返工 + 预算升级</td><td>阻塞缺陷交付前必须解决且复验;监督者无法自我背书</td><td><span class="tag t-adopt">同蓝图</span></td></tr>
+<tr><td><b>P4</b></td><td>双轴推理策略选择器(三策略一等)</td><td>难/易任务上按子任务策略确实改变行为;学习局限诚实上报</td><td><span class="tag t-adopt">同蓝图</span></td></tr>
+<tr><td><b>P5</b></td><td><b>能力梯 + 可实例化技能</b>:<code>spawnSpec</code>、<code>instantiate_subagent</code>、<code>skill_forge</code>、<code>resolve_capability_ladder</code></td><td>一次「缺能力→锻造技能→实例化工人→完工写回统计」的全闭环真实发生</td><td><span class="tag t-add">新增</span></td></tr>
+<tr><td><b>P6</b></td><td>动态安全 pass(child_process/容器 + egress guard,Linux CI seccomp)</td><td>对抗式生成代码的逃逸/外泄在运行时被抓,不只 lint 时</td><td><span class="tag t-adopt">同蓝图</span></td></tr>
+<tr><td><b>P7</b></td><td>治理 cron 主动闭环</td><td>生产回归从责任工位重入、被修复+复验</td><td><span class="tag t-adopt">同蓝图</span></td></tr>
+</table>
+
+<p class="dim">排序理由:P0 是一切生成代码测试的安全前提;P1/P1.5 让你最快看到「期待⑦+⑧」的实物证据;组织重构(P2/P3)在交付形态站稳后进行——<b>价值先行,结构随后</b>。P5 依赖 P2 的站长骨架(实例化工人挂在站长之下),故排后。</p>
+
+<!-- ============================================================ -->
+<h2 id="s13"><span class="no">13</span>诚实风险与待拍板<span class="sub">继承蓝图 §13 全部七条(仍然成立),追加融合框架特有的三条新风险与三个待拍板。</span></h2>
+
+<h3>新增风险(融合框架特有)</h3>
+<ul>
+<li><b>双目标漂移。</b><code>manifest_agent</code> 与 <code>ts_function_module</code> 两条交付路径若各自演化,验收判据/保真语义会分叉。缓解:验收器只认统一的 <code>AcceptanceReport</code>(kind 条件化是判据集不同,不是两套验收器);契约脊柱(事件/payload)两路共用。</li>
+<li><b>范例过拟合。</b>黄金范例锚定可能让生成器只会写「像旧六文件的招聘 agent」。缓解:范例按<b>模式</b>组织(错误分类模式、fan-out 模式、backfill 模式)而非按文件整体;新领域首单强制走 ask_user 校准三槽位。</li>
+<li><b>技能实例化的权限面。</b>spawnable 技能携带工具面,锻造质量差的技能可能实例化出乱写的工人。缓解:工具面交集约束(永不越站长之权)+ 写权限技能首用 ask_user + 效果统计沉底 + 版本锁定缺陷照常覆盖工人产出。</li>
+</ul>
+
+<h3>待拍板(进正式 spec 前)</h3>
+<ul>
+<li><b>import-profile 的两套目标</b>:ts_function_module 默认生成 new-AO 运行时形态(import 全局工具),还是同时支持 old-AO server 形态(<code>@/lib/*</code>)?后者可直接落进旧仓库,但意味着维护两份 profile。<span class="am">建议:P1 只做 new-AO profile,old-AO profile 作为导出选项后置。</span></li>
+<li><b>ts_function_module 的部署终态</b>:交付 .ts 工件后,「注册为真 Inngest 函数」走哪条路——动态 loader(风险:生产 eval)还是构建期纳入(安全:走既有 manifest-import commit 流程的兄弟通道)?<span class="am">建议:沙箱可动态、生产必构建期。</span></li>
+<li><b>蓝图既有七条开放问题</b>(工位级归因可靠性、macOS 隔离底座、策略冷启动、ToT/debate 泛化成本、allow-list 供货安全、断点/压缩预算、返工预算调参)——全部仍然有效,原样继承。</li>
+</ul>
+
+<div class="foot">
+熔炉骨架 · Foundry Harness — 融合自:①现工厂 as-built(两份地面实况调查逐文件核对);②《契约流水线工厂 · Contract-Line Foundry》蓝图(采纳脊柱,纠错 2 处,修正 2 处);③你重申的 harness 期待(8 条全对齐,其中能力梯+TS 一等交付+泳道 SVG 为本框架新增)。<br>
+这是设计蓝图,非实现。下一步:定稿 → 正式 spec → spec 评审 → 按 P0 起实施。所有 file:line 基于 2026-07-10 仓库快照。
+</div>
+
+</div>
+</body>
+</html>

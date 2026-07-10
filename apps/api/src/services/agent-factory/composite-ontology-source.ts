@@ -80,8 +80,12 @@ export class CompositeOntologySource implements OntologySource {
     } catch (e) {
       // Allmeta down → degrade to the local promoted artifact (manifest derives thin actions from
       // the workflow agents). Surfaces the same domain listDomains showed as a fallback, coherently.
+      // #AUDIT-FIX(P2-04) — 退化不再静默：标记 degraded（薄 artifact 可能缺 events/objects/rules），
+      // 让 read_ontology 明示"本体不完整、非严格源"，避免据此设计/自动发布而不自知。
       try {
-        return await this.manifest.fetchOntology(domainId);
+        const thin = await this.manifest.fetchOntology(domainId);
+        try { console.warn(`[ontology] Allmeta 严格源失败，退化到本地 artifact：${domainId} — ${String((e as Error)?.message ?? e).slice(0, 120)}`); } catch { /* best-effort */ }
+        return { ...thin, degraded: { from: "allmeta", reason: String((e as Error)?.message ?? e).slice(0, 160) } };
       } catch {
         throw e; // no local artifact either → the original Allmeta error is the honest one
       }

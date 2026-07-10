@@ -79,6 +79,13 @@ export const HealthReport = z.object({
       defaultProvider: z.string().optional(),
       defaultModel: z.string().optional(),
       providers: z.number().optional(),
+      /**
+       * #NOMOCK — true when the CONSTRUCTED gateway is the mock (echo) provider, so a mock runtime
+       * can never masquerade as real. Ops/UI can surface a persistent "MOCK LLM ACTIVE" banner from
+       * one curl instead of trusting the boot log. Distinct from demoMode: mock can be active via a
+       * runtime demo toggle even when the boot env said production.
+       */
+      mock: z.boolean().optional(),
     })
     .optional(),
   /**
