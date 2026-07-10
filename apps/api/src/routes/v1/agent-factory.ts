@@ -130,6 +130,24 @@ export async function agentFactoryRoutes(app: FastifyInstance) {
     return reply.ok({ domain, slug, code, filename: `${slug}.ts` });
   });
 
+  // #P7-infra — 治理闭环:列出【待人签核】的返工建议(生产回归越阈值,由治理巡检产出)。
+  app.get("/agent-factory/governance", async (req, reply) => {
+    requirePermission(req, "agents.read");
+    if (!req.auth) return reply.fail("unauthorized", "需要租户上下文", 401);
+    const { fsGovernanceStore } = await import("../../services/agent-factory/fleet-governance-runner");
+    const decisions = await fsGovernanceStore.list(req.auth.tenantSlug);
+    return reply.ok({ decisions, enabled: process.env.AGENTIC_GOVERNANCE === "1", scheduled: process.env.AGENTIC_GOVERNANCE === "1" });
+  });
+
+  // #P7-infra — 手动触发一次治理巡检(不等定时;仍只 SURFACE 建议,不自动开返工 run)。
+  app.post("/agent-factory/governance/sweep", async (req, reply) => {
+    requirePermission(req, "agents.invoke");
+    if (!req.auth) return reply.fail("unauthorized", "需要租户上下文", 401);
+    const { runGovernanceSweep } = await import("../../services/agent-factory/fleet-governance-runner");
+    const r = await runGovernanceSweep(req.auth.tenantSlug);
+    return reply.ok(r);
+  });
+
   // Delete a single generated-function DRAFT before it's promoted (user declined it). File-based
   // draft store; never touches live agents. domain required to scope the delete.
   app.delete<{ Params: { slug: string }; Querystring: { domain?: string } }>("/agent-factory/drafts/:slug", async (req, reply) => {

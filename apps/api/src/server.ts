@@ -24,6 +24,7 @@ import { llmRoutes } from "./routes/v1/llm";
 import { manifestImportRoutes } from "./routes/v1/manifest-import";
 import { tenantsRoutes } from "./routes/v1/tenants";
 import { usageRoutes } from "./routes/v1/usage";
+import { observabilityRoutes } from "./routes/v1/observability";
 import { budgetsRoutes } from "./routes/v1/budgets";
 import { auditRoutes } from "./routes/v1/audit";
 import { streamRoutes } from "./routes/v1/stream";
@@ -115,6 +116,11 @@ export async function build() {
   // through `installGracefulShutdown`). No-op when nothing is running.
   app.addHook("onClose", async () => {
     stopDemoRunner();
+    // #P7-infra — stop the governance sweep timer on shutdown (no-op if it never started).
+    try {
+      const { stopGovernanceRunner } = await import("./services/agent-factory/fleet-governance-runner");
+      stopGovernanceRunner();
+    } catch { /* best-effort */ }
     // #SCALE-FANOUT — quit Redis fanout clients so SIGTERM drains instead of hanging on sockets.
     try {
       const { stopRedisFanout } = await import("./services/fanout-redis");
@@ -153,6 +159,7 @@ export async function build() {
       // Settings → Usage / Audit / Budgets surfaces. Previously dead-on-
       // arrival files (P0-LOG-D1 / 03-logging-audit.md).
       await v1.register(usageRoutes);
+      await v1.register(observabilityRoutes);
       await v1.register(budgetsRoutes);
       await v1.register(auditRoutes);
       // Sprint 1 Phase 3 + Sprint 2 Obs: live SSE event stream, tenant

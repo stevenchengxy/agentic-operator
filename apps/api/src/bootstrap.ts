@@ -60,6 +60,7 @@ import {
   isDemoMode,
 } from "./config/demo-mode.js";
 import { startDemoRunner } from "./services/demo-runner.js";
+import { startGovernanceRunner } from "./services/agent-factory/fleet-governance-runner.js";
 import { runSeedRich } from "../scripts/seed-rich.js";
 
 /**
@@ -395,6 +396,20 @@ export async function bootstrapRuntime(): Promise<BootstrapResult> {
     });
     stopDemoRunner = runner.stop;
   }
+
+  // #P7-infra — 治理巡检:定时对每个租户的已交付 function 聚合近 14 天生产战绩 → 建议返工(待人签核,
+  // 不自动开)。内部 gated(AGENTIC_GOVERNANCE=1 且非 test),无条件调用安全(默认 no-op)。收尾由
+  // server.ts 的 onClose 调 stopGovernanceRunner()(与 demo-runner 同款模块级 stop)。
+  startGovernanceRunner({
+    tenantSlugs: () => {
+      try {
+        const { getDb, tenants } = require("@agentic/db") as typeof import("@agentic/db");
+        return getDb().select({ slug: tenants.slug }).from(tenants).all().map((r) => r.slug).filter(Boolean);
+      } catch {
+        return [];
+      }
+    },
+  });
 
   return { inngest, functions: allFns, stopDemoRunner };
 }
