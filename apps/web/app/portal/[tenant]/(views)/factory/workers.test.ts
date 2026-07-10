@@ -31,6 +31,19 @@ describe("deriveSessionTasks drill (#UI-DRILL)", () => {
     expect(t.drill?.decisionLogic).toContain("score>40");
   });
 
+  it("#P4+ projects a forAgent strategy choice onto that agent's drill (each agent's own reasoning method)", () => {
+    const tasks = deriveSessionTasks(
+      [
+        created("d-processResume", "processResume"),
+        ev({ t: "strategy", mode: "combo", steps: ["tot", "debate", "reflection"], chosenBy: "ai", rationale: "复杂设计+高风险落地", forAgent: "processResume" }),
+      ],
+      false,
+    );
+    const t = tasks.find((x) => x.agentSlug === "d-processResume")!;
+    expect(t.drill?.strategy).toBe("tot → debate → reflection");
+    expect(t.transcript.some((it) => it.label?.includes("推理方法"))).toBe(true);
+  });
+
   it("attaches sub-agents via parentAgent and marks isSubAgent from the spec flag", () => {
     const tasks = deriveSessionTasks(
       [

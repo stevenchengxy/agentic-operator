@@ -148,6 +148,11 @@ function AgentDrillIn({ task, taskBySlug, depth = 0, parts, flush }: { task: Ses
     : { display: "flex", flexDirection: "column", gap: 6, marginTop: 4, paddingLeft: 16, borderLeft: "2px solid var(--border-2)" };
   return (
     <div style={wrap}>
+      {show("reasoning") && d.strategy && (
+        <DrillCard icon="🧭" title="推理方法（AI 自选，非默认 ReAct）">
+          <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--signal)", fontWeight: 600 }}>{d.strategy}</span>
+        </DrillCard>
+      )}
       {show("reasoning") && d.reasoning && <DrillCard icon="🧠" title="计划 · 设计推理"><Markdown>{d.reasoning.slice(0, 500)}</Markdown></DrillCard>}
       {show("reasoning") && d.decisionLogic && <DrillCard icon="🔀" title="分支决策逻辑"><Markdown>{d.decisionLogic.slice(0, 400)}</Markdown></DrillCard>}
       {show("tools") && toolItems.length > 0 && (

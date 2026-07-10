@@ -43,6 +43,8 @@ export interface SessionTask {
 export interface AgentDrill {
   /** 设计推理（harness 为这个 agent 想了什么）。 */
   reasoning: string;
+  /** #P4+ — 这个 agent 自选的推理方法/组合（如 "tot → debate"；不默认 ReAct）。 */
+  strategy?: string;
   /** 分支决策逻辑。 */
   decisionLogic: string;
   /** 校验/契约/保真发现的问题（validation.agentIssueMap + fidelity）。 */
@@ -80,6 +82,8 @@ interface AgentAcc {
   // #UI-DRILL — drill-in payload accumulated per agent
   reasoning?: string;
   decisionLogic?: string;
+  // #P4+ — the reasoning method/combo this agent chose (e.g. "tot → debate")；AI 自选,非默认 ReAct。
+  strategy?: string;
   parentAgent?: string;
   problems: string[];
   refineCritiques: string[];
@@ -403,6 +407,20 @@ export function deriveSessionTasks(events: BrainEvent[], running: boolean): Sess
       case "skill.created":
         harnessItems.push({ id: nid(), kind: "event", label: `造技能 ${s(e.name)}`, detail: clip(s(e.purpose), 80), ok: true });
         break;
+      case "strategy": {
+        // #P4+ — AI 就某子问题自选的推理方法/组合(不默认 ReAct)。归给对应 agent(forAgent)或当前 agent,
+        // 显示在它的卡上;无归属则进 harness。
+        const chain = (Array.isArray(e.steps) ? (e.steps as unknown[]).map((x) => s(x)) : []).filter(Boolean).join(" → ") || "react";
+        const via = s(e.chosenBy) === "ai" ? "AI 自选" : "默认";
+        const target = agentOf(s(e.forAgent)) ?? (currentAgentSlug ? agents.get(currentAgentSlug) : undefined);
+        if (target) {
+          target.strategy = chain;
+          target.transcript.push({ id: nid(), kind: "event", label: `推理方法：${chain}`, detail: clip(s(e.rationale), 90) });
+        } else {
+          harnessItems.push({ id: nid(), kind: "event", label: `推理方法：${chain}（${via}）`, detail: clip(s(e.rationale), 90) });
+        }
+        break;
+      }
       case "compaction":
         harnessItems.push({ id: nid(), kind: "stage", label: "上下文折叠", detail: clip(s(e.summary), 100) });
         break;
@@ -507,6 +525,7 @@ export function deriveSessionTasks(events: BrainEvent[], running: boolean): Sess
       transcript: a.transcript.slice(-140),
       drill: {
         reasoning: a.reasoning ?? "",
+        strategy: a.strategy,
         decisionLogic: a.decisionLogic ?? "",
         problems: [...a.problems, ...(a.fidelityFail ? ["执行保真失败：真实 emit 载荷不满足下游契约"] : [])],
         refineCritiques: a.refineCritiques,
