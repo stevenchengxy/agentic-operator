@@ -14,6 +14,16 @@ export { makeGeneratedAgentPrompt } from "./generated-agent";
 export { runGeneratedCode } from "./codeact";
 // #P0a — isolated worker_thread runner for arbitrary generated modules (time + memory bounded).
 export { runGeneratedModule, type ModuleRunResult, type RunModuleOpts } from "./module-runner";
+// #P6-1 — stronger-isolation sibling: child-process runner with a SCRUBBED env (strips real creds),
+// throwaway cwd, SIGKILL wall-clock, memory cap, and string-code-gen denied. scrubEnv is pure + tested.
+export {
+  runGeneratedModuleProcess,
+  scrubEnv,
+  DEFAULT_ENV_ALLOWLIST,
+  SECRET_ENV_PATTERN,
+  type RunModuleProcOpts,
+  type ScrubEnvOpts,
+} from "./module-runner-proc";
 // #REDESIGN FU1 — the delivered-tier AgentRuntime adapter (power-strip contract).
 export { makeDeliveredRuntime, type DeliveredRuntimeDeps } from "./delivered-runtime";
 // #COMMS — inter-agent message envelope: carry-forward payload assembler + content-addressed offload.

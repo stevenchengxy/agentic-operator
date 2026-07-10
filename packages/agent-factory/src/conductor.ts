@@ -455,7 +455,7 @@ export async function* runBrain(opts: {
           ? "[推理路线] 本次是修改请求且已有设计成果：先定位目标 agent → refine_agent 定点修 → validate_graph（必要时 sandbox_run）验证。【不要】create_plan 全量重造。"
           : policy.pipeline === "ask_first"
             ? "[推理路线] 本体理解已标出多处歧义：先 ask_user 澄清最关键的 1-2 处（给具体选项），拿到答案再进入设计。"
-            : `[推理路线] 完整生成路线。默认推理策略=${policy.strategy}（可按理由否决改选：react 工具循环 / reflection 自评重写 / debate 挑战者+评委 / tot K 分叉 / cot 单链）。参考事实与建议（深读/深评等分治深度由你在工具的 deep 参数里自行决定）：${policy.reasons.slice(-3).join("；")}${suggests.length ? `；${suggests.join("；")}` : ""}`;
+            : `[推理路线] 完整生成路线。推理【不默认 ReAct】——${policy.strategy} 只是先验建议；请你按每个子问题/意图【自己选】推理方法,可以是单个也可以是【组合】(如 tot→debate→reflection)。有的任务不适合 ReAct（如高风险裁决更适合 debate、复杂设计更适合 tot、纯分析用 cot、返工用 reflection）。需要时调 select_strategy 声明你的选择+理由（也可先不传 proposed 让它给你菜单）。分治深度（understand_ontology/critique_plan 的 deep 参数）同样由你定。参考事实：${policy.reasons.slice(-3).join("；")}${suggests.length ? `；${suggests.join("；")}` : ""}`;
     if (guide) messages.push({ role: "user", content: guide });
   }
 

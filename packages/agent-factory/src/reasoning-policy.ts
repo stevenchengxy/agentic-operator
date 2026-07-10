@@ -154,6 +154,58 @@ export function selectStrategy(input: {
   return { strategy, expensive: EXPENSIVE_STRATEGIES.has(strategy), reasons };
 }
 
+// ── AI 自选推理【组合】(#STRATEGY-COMBO) ─────────────────────────────────────
+// 用户要求(2026-07-10):推理【不默认 ReAct】——AI 按任务/意图自选推理方法【组合】。有的任务不适合
+// ReAct,有的适合组合。所以:selectStrategy 的手调表只作【先验建议】,AI 经 select_strategy 工具【声明】
+// 自己就当前子问题选的策略(单个或组合 DAG)+ 理由;这里是纯解析/校验层(确定性、可测)。
+export const KNOWN_STRATEGIES: ReadonlySet<string> = new Set(["react", "reflection", "debate", "tot", "cot"]);
+
+/** 每个策略【是什么/何时用】——注入给 AI 做选择依据(不是替它选)。 */
+export const STRATEGY_DESC: Record<string, string> = {
+  react: "工具循环:观察→行动→再观察(写→编译→读诊断→精修)。适合边做边探、有工具反馈的任务。",
+  reflection: "产出→自评→重写:先给一版再自我批评并定点重写。适合返工、锁定失败 span、质量打磨。",
+  debate: "挑战者+评委:多方对抗式论证后综合。适合高风险裁决、评审、易错的设计决策。",
+  tot: "思维树:K 个分叉并行探索→打分→剪枝。适合解空间大、需发散再收敛的复杂设计。",
+  cot: "单链思维:一段连续推理直接给结论。适合纯分析/答疑等无需工具、无需探索的任务。",
+};
+
+export type StrategyStep = { strategy: ReasoningStrategy; note?: string };
+export type StrategyPlan = {
+  mode: "single" | "combo";
+  /** single=1 步;combo=有序步骤(依次执行,如 tot→debate→reflection)。 */
+  steps: StrategyStep[];
+  rationale: string;
+  /** ai=AI 自己选的;default=没选到 → 表建议/兜底。 */
+  chosenBy: "ai" | "default";
+  /** 词表外策略名(开放词汇:保留,消费端未识别时按 react 处理,反复出现=值得立新原语)。 */
+  unknown: string[];
+};
+
+/** 解析 AI 提出的策略选择:接受单策略("reflection")或组合("tot→debate→reflection"、"cot+debate"、
+ *  数组)。分隔符 →/->/|/,/、/+/空格 都认。空/全空 → 回退 react 并标 chosenBy=default。开放词汇:
+ *  未知策略名保留在 steps + unknown(不静默塌缩),便于遥测与将来立新原语。 */
+export function parseStrategyPlan(
+  raw: string | string[] | undefined,
+  opts: { rationale?: string; chosenBy?: "ai" | "default" } = {},
+): StrategyPlan {
+  const rationale = (opts.rationale ?? "").trim();
+  const tokens = (Array.isArray(raw) ? raw : String(raw ?? "").split(/\s*(?:→|->|\||,|、|\+|\s)+\s*/))
+    .map((t) => t.trim().toLowerCase())
+    .filter(Boolean);
+  if (!tokens.length) {
+    return { mode: "single", steps: [{ strategy: "react" }], rationale: rationale || "未指定 → 默认 react", chosenBy: "default", unknown: [] };
+  }
+  const unknown = tokens.filter((t) => !KNOWN_STRATEGIES.has(t));
+  const steps: StrategyStep[] = tokens.map((t) => ({ strategy: t }));
+  return { mode: steps.length > 1 ? "combo" : "single", steps, rationale, chosenBy: opts.chosenBy ?? "ai", unknown };
+}
+
+/** 一句话描述一个策略计划(供 UI 卡片 + 上下文注入)。 */
+export function describeStrategyPlan(plan: StrategyPlan): string {
+  const chain = plan.steps.map((s) => s.strategy).join(" → ");
+  return `${plan.mode === "combo" ? "组合" : "策略"} ${chain}${plan.chosenBy === "ai" ? "(AI 自选)" : "(默认)"}${plan.rationale ? ` — ${plan.rationale}` : ""}`;
+}
+
 export function selectPolicy(input: {
   intentKind: IntentKind;
   difficulty: Difficulty;

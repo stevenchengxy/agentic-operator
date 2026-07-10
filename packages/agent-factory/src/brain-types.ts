@@ -170,6 +170,8 @@ export type BrainEvent =
   // bias was selected for THIS request). Emitted right after the intent gate; UI renders it as
   // the "推理策略" chip so the choice is explainable, not implicit.
   | { t: "policy"; pipeline: string; strategy?: string; band: string; deepUnderstand: boolean; deepCritique: boolean; tierBias?: string | null; reasons: string[] }
+  // #STRATEGY-COMBO — AI 就某子问题自选的推理方法【组合】(单个或 tot→debate→reflection 之类)。
+  | { t: "strategy"; mode: "single" | "combo"; steps: string[]; chosenBy: "ai" | "default"; rationale: string; forAgent?: string }
   // #REVISION — 证据驱动的本体修订提案（真实沙箱载荷 vs canonical event_data 持续不一致）。
   // 工厂只提案不写回；大脑据此 ask_user 确认（"AI 提案 → 人确认 → 生效"，同 boundary-gate 范式）。
   | { t: "ontology.revision"; proposals: Array<{ kind: string; event: string; field: string; observedType: string; canonicalType?: string; occurrences: number; evidence: string }> }

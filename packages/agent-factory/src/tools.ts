@@ -20,6 +20,7 @@ import { evaluateExecutionFidelity, expectedFieldsByEvent } from "./execution-fi
 import { attributeFidelityFailures, attributionSummary } from "./failure-attribution";
 import { proposeOntologyRevisions, revisionSummary } from "./ontology-revision";
 import { resolveCapabilityLadder } from "./capability-ladder";
+import { parseStrategyPlan, describeStrategyPlan, selectStrategy, estimateDifficulty, classifyIntentKind, STRATEGY_DESC, type StrategyContext } from "./reasoning-policy";
 import { deriveBusinessFlow } from "./business-flow";
 import { shouldSuggestSplit } from "./reasoning-policy";
 import { buildToolCatalog, suggestToolsForAction, rankRealTools, groundToolPicks, ungroundedEventTokens, searchRealTools } from "./tool-catalog";
@@ -1828,6 +1829,45 @@ const resolve_capability_ladder: BrainTool = {
   },
 };
 
+// #STRATEGY-COMBO — AI 自选推理方法【组合】。推理【不默认 ReAct】:你按当前子问题/意图,自己选一个
+// 策略或一个【组合】(如 tot→debate→reflection),并给理由。不传 proposed → 返回一个【先验建议】(表 +
+// 各策略说明)供你参考,你再决定。传 proposed → 记录你的选择并广播(UI 每张 agent 卡会显示它在用什么推理)。
+const select_strategy: BrainTool = {
+  name: "select_strategy",
+  description:
+    "选择本次子问题用什么推理方法(不默认 ReAct,由你按任务/意图判断)。可选单个或【组合】:react(工具循环)/reflection(产出→自评→重写)/debate(挑战者+评委)/tot(思维树 K 分叉)/cot(单链)。不传 proposed → 我给你先验建议 + 各策略适用场景;传 proposed(如「tot→debate→reflection」或「cot」)+ rationale → 记录你的选择。有的任务不适合 ReAct,组合往往比单一更好。",
+  parameters: params(
+    {
+      subproblem: { type: "string", description: "你正要推理的子问题/当前决策(一句话)" },
+      context: { type: "string", description: "语境(可选):plan/design/code/review/arbitrate/finish/analyze/subproblem" },
+      proposed: { type: "string", description: "你选的策略或组合(可选)。单个如「reflection」,组合如「tot→debate→reflection」。不传=让我先给建议。" },
+      rationale: { type: "string", description: "为什么这么选(为什么这个任务适合/不适合某策略)" },
+    },
+    ["subproblem"],
+  ),
+  async execute(args, ctx) {
+    const subproblem = String(args.subproblem ?? "").trim();
+    const ctxKind = (String(args.context ?? "subproblem").trim() || "subproblem") as StrategyContext;
+    const forAgent = (ctx as unknown as { currentAgentSlug?: string }).currentAgentSlug;
+    // 先验建议:确定性表按 意图+难度+语境 给一个默认——只作参考,不替 AI 选。
+    const difficulty = estimateDifficulty(ctx.ontology ?? null);
+    const suggestion = selectStrategy({ intentKind: classifyIntentKind(ctx.userIntent), difficulty, context: ctxKind });
+
+    if (!args.proposed) {
+      const menu = Object.entries(STRATEGY_DESC).map(([k, v]) => `  · ${k}:${v}`).join("\n");
+      return {
+        ok: true,
+        summary: `先验建议:${suggestion.strategy}(${suggestion.reasons[suggestion.reasons.length - 1]})。你可采纳,或自选单个/组合。`,
+        output: { suggestion: suggestion.strategy, expensive: suggestion.expensive, why: suggestion.reasons, menu: STRATEGY_DESC, hint: `可选策略与适用场景:\n${menu}\n组合示例:复杂设计「tot→debate」;高风险落地「debate→reflection」;简单答疑「cot」。` },
+      };
+    }
+    const plan = parseStrategyPlan(String(args.proposed), { rationale: String(args.rationale ?? ""), chosenBy: "ai" });
+    ctx.emit({ t: "strategy", mode: plan.mode, steps: plan.steps.map((s) => String(s.strategy)), chosenBy: plan.chosenBy, rationale: plan.rationale, forAgent });
+    const unknownNote = plan.unknown.length ? `(词表外策略「${plan.unknown.join("、")}」已保留,消费端按 react 处理)` : "";
+    return { ok: true, summary: `已选推理${describeStrategyPlan(plan)}${unknownNote}`, output: { plan: { mode: plan.mode, steps: plan.steps.map((s) => s.strategy), chosenBy: plan.chosenBy }, suggestion: suggestion.strategy } };
+  },
+};
+
 const fetch_doc: BrainTool = {
   name: "fetch_doc",
   description: "Doc-Fetcher：抓取一个【公网】开发文档/API 说明页面的文本，作为造工具(create_tool)或设计 agent 的依据。走 SSRF 防护（拒绝内网/本机/元数据地址）。",
@@ -2388,6 +2428,7 @@ export const FACTORY_TOOLS: BrainTool[] = [
   create_skill,
   use_skill,
   resolve_capability_ladder,
+  select_strategy,
   analyze_failure,
   finish,
 ];
@@ -2399,4 +2440,4 @@ export const __ruleTestHelpers = { ruleIdentifiers, promptEmbedsRule, looksLikeR
 // R9: subagents are still read-only for AGENT/tool authoring, but gain scoped SKILL authoring
 // (create_skill persists to the shared store so the parent + future runs absorb it) and
 // constraint introspection. spawn_subagent is added by the conductor under a depth cap.
-export const SUBAGENT_TOOLS: BrainTool[] = [read_ontology, list_domains, describe_domain, describe_object, list_agents, read_spec, inspect_run, web_search, search_tools, fetch_doc, extract_api_schema, analyze_failure, create_skill, resolve_capability_ladder, describe_design_constraints];
+export const SUBAGENT_TOOLS: BrainTool[] = [read_ontology, list_domains, describe_domain, describe_object, list_agents, read_spec, inspect_run, web_search, search_tools, fetch_doc, extract_api_schema, analyze_failure, create_skill, resolve_capability_ladder, select_strategy, describe_design_constraints];

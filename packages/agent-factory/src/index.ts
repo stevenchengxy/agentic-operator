@@ -43,3 +43,5 @@ export * from "./business-flow-svg";
 export * from "./capability-ladder";
 // #P1 — ts_function_module renderer (inngest.createFunction 形态,对标旧 AO 六文件):
 export * from "./ts-function-module";
+// #P2.5-Tester — 把交付形态变成可跑测试模块 + 验收判据(纯变换,执行在 apps/api):
+export * from "./function-tester";

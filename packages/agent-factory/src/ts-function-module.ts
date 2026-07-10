@@ -78,13 +78,18 @@ export function renderTsFunctionModule(spec: GeneratedAgentSpec, opts: TsFunctio
     ? tools.map((t) => {
         const v = camel(t.split(".").pop() || "call");
         const id = stepId(v, `${spec.slug}-${t}`);
+        // 骨架把每个外部调用包在 step.run(稳定 id) 里(幂等 + durable,重放只产一行),但【工具调用本身
+        // 是接线 TODO】——真部署时:new-AO 经运行时工具 registry、old-AO import 后直调。骨架返回占位对象,
+        // 这样生成的 handler 无未定义引用、可被 Tester 隔离真跑(证据:先证明控制流+emit 跑通)。
         return [
-          `      // 外部调用包在 step.run(稳定 id) 里:幂等 + durable(重放只产一行)。`,
+          `      // 外部调用「${t}」包在 step.run(稳定 id):幂等 + durable。`,
           `      const ${v}Result = await step.run(${JSON.stringify(id)}, async () => {`,
           profile === "old-ao"
-            ? `        return await ${v}(mapped); // TODO(填槽 fieldMapping 后传对形状)`
-            : `        return await (ctx as any)?.tools?.run?.(${JSON.stringify(t)}, mapped) ?? {};`,
+            ? `        // TODO(接线):import ${v} 后 \`return await ${v}(mapped)\`。骨架先占位。`
+            : `        // TODO(接线):经运行时工具 registry 调用 ${JSON.stringify(t)}。骨架先占位。`,
+          `        return {} as Record<string, unknown>;`,
           `      });`,
+          `      void ${v}Result;`,
         ].join("\n");
       }).join("\n")
     : "      // (无外部调用)";

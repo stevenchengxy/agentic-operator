@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { classifyIntentKind, estimateDifficulty, selectPolicy, selectStrategy, shouldSuggestSplit } from "./reasoning-policy";
+import { classifyIntentKind, estimateDifficulty, selectPolicy, selectStrategy, parseStrategyPlan, describeStrategyPlan, shouldSuggestSplit } from "./reasoning-policy";
 import type { Difficulty } from "./reasoning-policy";
 import type { DomainOntology } from "./ontology-types";
 
@@ -128,6 +128,39 @@ describe("#STRATEGY selectStrategy (轴2 推理策略选择器)", () => {
     const p = selectPolicy({ intentKind: "generate", difficulty: complexD, hasSpecs: false });
     expect(p.pipeline).toBe("full");
     expect(["react", "reflection", "debate", "tot", "cot"]).toContain(p.strategy);
+  });
+});
+
+describe("#STRATEGY-COMBO parseStrategyPlan (AI 自选推理组合,不默认 ReAct)", () => {
+  it("单策略", () => {
+    const p = parseStrategyPlan("reflection", { rationale: "返工" });
+    expect(p.mode).toBe("single");
+    expect(p.steps.map((s) => s.strategy)).toEqual(["reflection"]);
+    expect(p.chosenBy).toBe("ai");
+  });
+  it("组合(多种分隔符 →/+/,/、/空格 都认)", () => {
+    for (const raw of ["tot→debate→reflection", "tot + debate + reflection", "tot, debate, reflection", "tot、debate、reflection", "tot debate reflection", "tot->debate->reflection"]) {
+      const p = parseStrategyPlan(raw);
+      expect(p.mode).toBe("combo");
+      expect(p.steps.map((s) => s.strategy)).toEqual(["tot", "debate", "reflection"]);
+    }
+  });
+  it("数组输入", () => {
+    expect(parseStrategyPlan(["cot", "debate"]).steps.map((s) => s.strategy)).toEqual(["cot", "debate"]);
+  });
+  it("空 → 回退 react 且 chosenBy=default(不是 AI 选的)", () => {
+    const p = parseStrategyPlan("");
+    expect(p.steps.map((s) => s.strategy)).toEqual(["react"]);
+    expect(p.chosenBy).toBe("default");
+  });
+  it("开放词汇:未知策略保留在 steps + unknown(不静默塌缩)", () => {
+    const p = parseStrategyPlan("tot→自研反演→debate");
+    expect(p.steps.map((s) => s.strategy)).toEqual(["tot", "自研反演", "debate"]);
+    expect(p.unknown).toEqual(["自研反演"]);
+  });
+  it("describeStrategyPlan 可读", () => {
+    expect(describeStrategyPlan(parseStrategyPlan("tot→debate", { rationale: "复杂设计" }))).toContain("组合 tot → debate");
+    expect(describeStrategyPlan(parseStrategyPlan("cot"))).toContain("策略 cot");
   });
 });
 

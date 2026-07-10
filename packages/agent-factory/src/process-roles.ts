@@ -63,6 +63,7 @@ export const ROLE_OF_TOOL: Record<string, string> = {
   create_skill: "技能工程师",
   use_skill: "技能工程师",
   resolve_capability_ladder: "能力规划师",
+  select_strategy: "推理策略师",
   generate_report: "报告撰写人",
 };
 
