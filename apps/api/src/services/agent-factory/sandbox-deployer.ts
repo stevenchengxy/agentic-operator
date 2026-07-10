@@ -241,9 +241,12 @@ export class ManifestSandboxDeployer implements SandboxDeployer {
     if (blocking.length) {
       return { appId, functionsRegistered: 0, ran: 0, deployed: 0, reachedSuccessTerminal: false, fullChainRan: false, degradedAgents: [...degradedAgents, ...blocking.map((i) => i.message ?? "lint error")], runs: [], fingerprint: "", simulated: false };
     }
-    const committed = await miCommit({ mode: "commit", workflow: manifest, target: "production", confirm_overwrite: true, deployment_id: preview.deployment_id, conflict_resolutions: [] }, ctx);
-    const functionsRegistered = committed.inngest_fns_registered ?? 0;
-    if (functionsRegistered === 0) {
+    const committed = await miCommit({ mode: "commit", workflow: manifest, target: "production", confirm_overwrite: true, conflict_resolutions: [], deployment_id: preview.deployment_id }, ctx);
+    // #INNGEST-FIX(B2) — clamp to ≥0. A failed reregister returns inngest_fns_registered = -1; `?? 0`
+    // let -1 slip past the `=== 0` deploy-failed guard (Math.max(0,…) makes it 0 → guard fires →
+    // honest "deploy failed" instead of a masked non-zero-but-ran:0.
+    const functionsRegistered = Math.max(0, committed.inngest_fns_registered ?? 0);
+    if (functionsRegistered <= 0) {
       return { appId, functionsRegistered: 0, ran: 0, deployed: specs.length, reachedSuccessTerminal: false, fullChainRan: false, degradedAgents, runs: [], fingerprint: committed.deployment_id ?? "", simulated: false };
     }
 
