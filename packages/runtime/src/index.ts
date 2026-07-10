@@ -12,6 +12,8 @@ export { helloFn } from "./hello";
 export { registerAgent, findMissingTenantPrompts, type RegisterContext } from "./register";
 export { makeGeneratedAgentPrompt } from "./generated-agent";
 export { runGeneratedCode } from "./codeact";
+// #P0a — isolated worker_thread runner for arbitrary generated modules (time + memory bounded).
+export { runGeneratedModule, type ModuleRunResult, type RunModuleOpts } from "./module-runner";
 // #REDESIGN FU1 — the delivered-tier AgentRuntime adapter (power-strip contract).
 export { makeDeliveredRuntime, type DeliveredRuntimeDeps } from "./delivered-runtime";
 // #COMMS — inter-agent message envelope: carry-forward payload assembler + content-addressed offload.

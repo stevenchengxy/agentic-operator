@@ -17,7 +17,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button, HelpTip, Markdown } from "@/app/portal/components";
 import { tenantHeader } from "@/lib/hooks/tenant-header";
 import type { BrainEvent } from "@/lib/hooks/useBrainStream";
-import { FullModal } from "./atoms";
+import { chip } from "./atoms";
 import type { RunRow } from "./model";
 import { deriveSessionTasks, deriveGeneratedTools, type SessionTask, type SessionTaskStatus } from "./workers";
 
@@ -73,12 +73,16 @@ const STATUS_COLOR: Record<SessionTaskStatus, string> = {
   idle: "var(--text-3)",
 };
 const STATUS_LABEL: Record<SessionTaskStatus, string> = { running: "运行中", ok: "已完成", error: "失败", idle: "—" };
+// Claude-Desktop grouping: 运行中 → 等待 → 完成/失败. Recency (workers' order-desc) is the in-group tiebreak.
+const STATUS_RANK: Record<SessionTaskStatus, number> = { running: 0, idle: 1, ok: 2, error: 2 };
 
-function Dot({ status }: { status: SessionTaskStatus }) {
+function Dot({ status, size = 8 }: { status: SessionTaskStatus; size?: number }) {
+  // `color` drives the `.health-pulse::before` ping ring (it uses currentColor) so the breathing
+  // halo matches the status hue instead of inheriting the muted text color.
   return (
     <span
       className={status === "running" ? "health-pulse" : undefined}
-      style={{ display: "inline-block", width: 8, height: 8, borderRadius: "50%", background: STATUS_COLOR[status], flexShrink: 0 }}
+      style={{ display: "inline-block", width: size, height: size, borderRadius: "50%", background: STATUS_COLOR[status], color: STATUS_COLOR[status], flexShrink: 0 }}
     />
   );
 }
@@ -94,7 +98,7 @@ const durOf = (a?: number, b?: number): string => {
   return sec < 60 ? `${sec}s` : `${Math.floor(sec / 60)}m ${sec % 60}s`;
 };
 
-const ICON_OF_KIND: Record<string, string> = { think: "🧠", tool: "🔧", gate: "🙋", stage: "▶", event: "•", error: "✗" };
+const ICON_OF_KIND: Record<string, string> = { think: "🧠", message: "💬", tool: "🔧", gate: "🙋", stage: "▶", event: "•", error: "✗" };
 
 function TaskTranscript({ task }: { task: SessionTask }) {
   return (
@@ -128,16 +132,25 @@ function DrillCard({ icon, title, color, children }: { icon: string; title: stri
   );
 }
 
-function AgentDrillIn({ task, taskBySlug, depth = 0 }: { task: SessionTask; taskBySlug: Map<string, SessionTask>; depth?: number }) {
+type DrillPart = "reasoning" | "tools" | "problems" | "subs" | "io";
+
+/** Render an agent's L2 decision cards. `parts` scopes which cards show, so the detail drawer can
+ *  slice this into 工作流/决策 · Sub-agents · 测试 sections; omit it (or pass nothing) for the full set.
+ *  `flush` drops the left rail + top margin when the caller is already a section body (drawer). */
+function AgentDrillIn({ task, taskBySlug, depth = 0, parts, flush }: { task: SessionTask; taskBySlug: Map<string, SessionTask>; depth?: number; parts?: DrillPart[]; flush?: boolean }) {
   const [openSub, setOpenSub] = useState<string | null>(null);
   const d = task.drill;
   if (!d) return null;
+  const show = (p: DrillPart) => !parts || parts.includes(p);
   const toolItems = task.transcript.filter((it) => it.kind === "tool").slice(-8);
+  const wrap: React.CSSProperties = flush
+    ? { display: "flex", flexDirection: "column", gap: 6 }
+    : { display: "flex", flexDirection: "column", gap: 6, marginTop: 4, paddingLeft: 16, borderLeft: "2px solid var(--border-2)" };
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 4, paddingLeft: 16, borderLeft: "2px solid var(--border-2)" }}>
-      {d.reasoning && <DrillCard icon="🧠" title="计划 · 设计推理"><Markdown>{d.reasoning.slice(0, 500)}</Markdown></DrillCard>}
-      {d.decisionLogic && <DrillCard icon="🔀" title="分支决策逻辑"><Markdown>{d.decisionLogic.slice(0, 400)}</Markdown></DrillCard>}
-      {toolItems.length > 0 && (
+    <div style={wrap}>
+      {show("reasoning") && d.reasoning && <DrillCard icon="🧠" title="计划 · 设计推理"><Markdown>{d.reasoning.slice(0, 500)}</Markdown></DrillCard>}
+      {show("reasoning") && d.decisionLogic && <DrillCard icon="🔀" title="分支决策逻辑"><Markdown>{d.decisionLogic.slice(0, 400)}</Markdown></DrillCard>}
+      {show("tools") && toolItems.length > 0 && (
         <DrillCard icon="🔧" title="用了什么工具（harness 归组）">
           {toolItems.map((it) => (
             <div key={it.id}>
@@ -146,13 +159,13 @@ function AgentDrillIn({ task, taskBySlug, depth = 0 }: { task: SessionTask; task
           ))}
         </DrillCard>
       )}
-      {(d.problems.length > 0 || d.refineCritiques.length > 0) && (
+      {show("problems") && (d.problems.length > 0 || d.refineCritiques.length > 0) && (
         <DrillCard icon="⚠️" title="发现的问题 · 修订" color="var(--amber)">
           {d.problems.map((p, i) => <div key={`p${i}`}>· {p}</div>)}
           {d.refineCritiques.slice(-3).map((c, i) => <div key={`c${i}`} style={{ color: "var(--text-4)" }}>↻ {c}</div>)}
         </DrillCard>
       )}
-      {d.subAgents.length > 0 && (
+      {show("subs") && d.subAgents.length > 0 && (
         <DrillCard icon="🧩" title="生成的 sub-agent / phases" color="var(--violet)">
           <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
             {d.subAgents.map((sub) => (
@@ -167,7 +180,7 @@ function AgentDrillIn({ task, taskBySlug, depth = 0 }: { task: SessionTask; task
           )}
         </DrillCard>
       )}
-      {d.io && (
+      {show("io") && d.io && (
         <DrillCard icon="📦" title={`真实执行 I/O${d.fidelityFail ? " · ⚠ 契约违约" : ""}`} color={d.fidelityFail ? "var(--red)" : "var(--green)"}>
           <div style={{ fontFamily: "var(--mono)", fontSize: 10.5 }}>
             ◂ {d.io.triggerEvent ?? "—"} → ▸ {d.io.outputEvent ?? "（无产出事件）"} · {d.io.status ?? ""}
@@ -175,7 +188,7 @@ function AgentDrillIn({ task, taskBySlug, depth = 0 }: { task: SessionTask; task
           {d.io.output && <div style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--text-4)", marginTop: 2 }}>{d.io.output.slice(0, 300)}</div>}
         </DrillCard>
       )}
-      {!d.reasoning && !toolItems.length && !d.problems.length && !d.subAgents.length && !d.io && (
+      {!parts && !d.reasoning && !toolItems.length && !d.problems.length && !d.subAgents.length && !d.io && (
         <div style={{ fontSize: 10.5, color: "var(--text-4)" }}>这个 agent 还没有可下钻的决策记录。</div>
       )}
     </div>
@@ -183,6 +196,85 @@ function AgentDrillIn({ task, taskBySlug, depth = 0 }: { task: SessionTask; task
 }
 
 const KIND_ICON: Record<SessionTask["kind"], string> = { harness: "🧠", agent: "🤖", subagent: "🧩", tool: "🔧", sandbox: "📦" };
+
+// ── 测试 · I/O section — the agent's real sandbox trigger→emit + input/output payload snapshots. ──
+function AgentIoPanel({ io, fidelityFail }: { io: { triggerEvent?: string; outputEvent?: string; status?: string; input?: string; output?: string }; fidelityFail?: boolean }) {
+  const label: React.CSSProperties = { fontSize: 10, color: "var(--text-3)", fontFamily: "var(--mono)", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 3 };
+  const box: React.CSSProperties = { fontFamily: "var(--mono)", fontSize: 10.5, color: "var(--text-2)", background: "var(--panel-3)", borderRadius: 6, padding: "6px 8px", whiteSpace: "pre-wrap", wordBreak: "break-word", lineHeight: 1.5, maxHeight: 260, overflow: "auto" };
+  const statusColor = /error|fail/i.test(io.status ?? "") ? "var(--red)" : /ok|complet/i.test(io.status ?? "") ? "var(--green)" : "var(--text-3)";
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 11.5, fontFamily: "var(--mono)", color: statusColor }}>状态 {io.status || "—"}</span>
+        {fidelityFail && <span style={{ fontSize: 10.5, color: "var(--red)", border: "1px solid var(--red)", borderRadius: 6, padding: "1px 7px" }}>⚠ 契约违约</span>}
+      </div>
+      <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+        {io.triggerEvent && chip(`◂ ${io.triggerEvent}`, "var(--blue)")}
+        {io.outputEvent && chip(`▸ ${io.outputEvent}`, "var(--violet)")}
+      </div>
+      {io.input && <div><div style={label}>输入 payload</div><div style={box}>{io.input}</div></div>}
+      {io.output && <div><div style={label}>输出 payload</div><div style={box}>{io.output}</div></div>}
+      {!io.input && !io.output && <div style={{ fontSize: 11, color: "var(--text-4)" }}>本次沙箱运行没有记录到载荷快照。</div>}
+    </div>
+  );
+}
+
+/* ── #UI-DRAWER — Claude-Desktop style detail drawer: click a background task card → a right-side
+   drawer titled with the agent name, sectioned into 工作流·决策 / Sub-agents / 推理过程 / 测试·I/O.
+   A fixed sheet on wide screens; on a phone `min(472px,100vw)` collapses it to full-width. Esc or a
+   backdrop click closes. Non-agent tasks (harness/tool/sandbox) show just the 推理过程 transcript. ── */
+function AgentDetailDrawer({ task, taskBySlug, onClose, onSelectAgent }: { task: SessionTask; taskBySlug: Map<string, SessionTask>; onClose: () => void; onSelectAgent?: (slug: string) => void }) {
+  const d = task.drill;
+  const hasWorkflow = !!(d && (d.reasoning || d.decisionLogic || task.transcript.some((it) => it.kind === "tool") || d.problems.length || d.refineCritiques.length));
+  const hasSubs = !!(d && d.subAgents.length);
+  const io = d?.io;
+  const hasIo = !!(io && (io.triggerEvent || io.outputEvent || io.input || io.output || d?.fidelityFail));
+  const sections = useMemo(() => {
+    const out: Array<{ key: string; label: string }> = [];
+    if (hasWorkflow) out.push({ key: "flow", label: "工作流 · 决策" });
+    if (hasSubs) out.push({ key: "subs", label: `Sub-agents · ${d!.subAgents.length}` });
+    out.push({ key: "transcript", label: "推理过程" });
+    if (hasIo) out.push({ key: "test", label: "测试 · I/O" });
+    return out;
+  }, [hasWorkflow, hasSubs, hasIo, d]);
+  const [sec, setSec] = useState<string>(sections[0]?.key ?? "transcript");
+  // Sections grow as events stream in (io/subs appear late) — keep the active one valid.
+  useEffect(() => { setSec((cur) => (sections.some((s) => s.key === cur) ? cur : sections[0]?.key ?? "transcript")); }, [sections]);
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  }, [onClose]);
+  return (
+    <>
+      <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.4)", zIndex: "var(--z-modal)" as unknown as number }} />
+      <div className="rise" role="dialog" aria-label={`${task.title} 详情`} style={{ position: "fixed", top: 0, right: 0, bottom: 0, width: "min(472px, 100vw)", zIndex: "var(--z-modal)" as unknown as number, background: "var(--panel-2)", borderLeft: "2px solid var(--signal)", boxShadow: "-16px 0 44px rgba(0,0,0,.32)", display: "flex", flexDirection: "column" }}>
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 9, padding: "13px 14px", borderBottom: "1px solid var(--border)" }}>
+          <span style={{ marginTop: 4 }}><Dot status={task.status} /></span>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 13.5, fontWeight: 700, color: "var(--text)", lineHeight: 1.4 }}>{KIND_ICON[task.kind]} {task.title}</div>
+            <div style={{ fontSize: 10.5, color: "var(--text-3)", fontFamily: "var(--mono)", marginTop: 3, lineHeight: 1.5, wordBreak: "break-word" }}>{task.typeLabel} · {STATUS_LABEL[task.status]}{task.meta ? ` · ${task.meta}` : ""}</div>
+          </div>
+          {task.agentSlug && onSelectAgent && <button onClick={() => onSelectAgent(task.agentSlug!)} style={primaryLinkBtn} title="在右栏打开完整检查器">检查器 →</button>}
+          <button onClick={onClose} title="关闭 (Esc)" style={{ background: "none", border: "none", color: "var(--text-3)", cursor: "pointer", fontSize: 17, lineHeight: 1 }}>✕</button>
+        </div>
+        {sections.length > 1 && (
+          <div style={{ display: "flex", gap: 5, padding: "9px 12px 0", flexWrap: "wrap" }}>
+            {sections.map((s) => (
+              <button key={s.key} onClick={() => setSec(s.key)} style={{ fontSize: 11, padding: "4px 11px", borderRadius: 20, cursor: "pointer", whiteSpace: "nowrap", border: `1px solid ${sec === s.key ? "var(--signal)" : "var(--border)"}`, background: sec === s.key ? "var(--panel-3)" : "transparent", color: sec === s.key ? "var(--text)" : "var(--text-3)" }}>{s.label}</button>
+            ))}
+          </div>
+        )}
+        <div style={{ flex: 1, overflow: "auto", padding: 14 }}>
+          {sec === "flow" && d && <AgentDrillIn task={task} taskBySlug={taskBySlug} parts={["reasoning", "tools", "problems"]} flush />}
+          {sec === "subs" && d && <AgentDrillIn task={task} taskBySlug={taskBySlug} parts={["subs"]} flush />}
+          {sec === "transcript" && <TaskTranscript task={task} />}
+          {sec === "test" && io && <AgentIoPanel io={io} fidelityFail={d?.fidelityFail} />}
+        </div>
+      </div>
+    </>
+  );
+}
 
 export interface BackgroundPanelProps {
   tenant: string;
@@ -204,9 +296,8 @@ export interface BackgroundPanelProps {
 
 export function BackgroundPanel({ tenant, domain, events, running, convId, viewingRunId, liveRunId, awaitingHint, onReconnectRun, onSelectAgent, onClose, inline }: BackgroundPanelProps) {
   const sessionTasks = useMemo(() => deriveSessionTasks(events, running), [events, running]);
-  // #UI-DRILL — slug→task 索引供子 agent 递归下钻；展开集合按 task id 记忆。
+  // #UI-DRILL — slug→task 索引供子 agent 递归下钻（抽屉里的 Sub-agents 分区用）。
   const taskBySlug = useMemo(() => new Map(sessionTasks.filter((t) => t.agentSlug).map((t) => [t.agentSlug!, t])), [sessionTasks]);
-  const [drillIds, setDrillIds] = useState<Set<string>>(new Set());
   const runTools = useMemo(() => deriveGeneratedTools(events), [events]);
   const [openTaskId, setOpenTaskId] = useState<string | null>(null);
   const openTask = useMemo(() => sessionTasks.find((t) => t.id === openTaskId) ?? null, [sessionTasks, openTaskId]);
@@ -343,7 +434,9 @@ export function BackgroundPanel({ tenant, domain, events, running, convId, viewi
   const passes = (s: SessionTaskStatus) =>
     filter === "all" ? true : filter === "running" ? s === "running" : filter === "done" ? s === "ok" : s === "error";
 
-  const visibleTasks = sessionTasks.filter((t) => passes(t.status));
+  // Stable sort (workers already ordered by recency) → running float to the top, done sink.
+  const visibleTasks = sessionTasks.filter((t) => passes(t.status)).sort((a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status]);
+  const visibleRunningCount = visibleTasks.filter((t) => t.status === "running").length;
   const visibleJobs = bg.jobs.filter((j) => passes(j.status === "running" ? "running" : j.status === "done" ? "ok" : "error"));
   // 其它仍在运行、可重连的会话（历史/已完成的去左栏「历史运行」看，别在这里堆）。
   const otherLiveRuns = bg.runs.filter((r) => r.status === "running" && r.live && r.id !== liveRunId && r.id !== viewingRunId);
@@ -358,10 +451,14 @@ export function BackgroundPanel({ tenant, domain, events, running, convId, viewi
         ? { display: "flex", flexDirection: "column" }
         : { position: "fixed", top: 0, right: 0, bottom: 0, width: 400, maxWidth: "92vw", zIndex: "var(--z-overlay)" as unknown as number, background: "var(--panel)", borderLeft: "1px solid var(--border)", boxShadow: "-16px 0 40px rgba(0,0,0,.28)", display: "flex", flexDirection: "column" }}
     >
+      {/* #UI-DRAWER — click any task card → its detail drawer (view transcript + 工作流/sub/推理/测试). */}
       {openTask && (
-        <FullModal title={`${KIND_ICON[openTask.kind]} ${openTask.title} · 过程`} onClose={() => setOpenTaskId(null)}>
-          <TaskTranscript task={openTask} />
-        </FullModal>
+        <AgentDetailDrawer
+          task={openTask}
+          taskBySlug={taskBySlug}
+          onClose={() => setOpenTaskId(null)}
+          onSelectAgent={openTask.agentSlug ? (slug) => { setOpenTaskId(null); onSelectAgent(slug); } : undefined}
+        />
       )}
 
       {/* header（浮出模式才有标题/✕；inline 时 报告 按钮并入筛选行） */}
@@ -412,13 +509,31 @@ export function BackgroundPanel({ tenant, domain, events, running, convId, viewi
           </div>
         )}
 
-        {/* ── 本会话任务（Harness / Agents / Sub-agents / Tools / Sandbox）── */}
+        {/* ── 本会话任务（Harness / Agents / Sub-agents / Tools / Sandbox）—— 点卡片进入详情抽屉 ── */}
+        {visibleTasks.length > 0 && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "0 2px 1px", fontSize: 11 }}>
+            <span style={{ fontWeight: 600, color: "var(--text-2)" }}>{visibleTasks.length} 项后台任务</span>
+            {visibleRunningCount > 0 && (
+              <span style={{ color: "var(--signal)", display: "inline-flex", alignItems: "center", gap: 5 }}>
+                <Dot status="running" size={7} />{visibleRunningCount} 运行中
+              </span>
+            )}
+          </div>
+        )}
         {visibleTasks.map((t) => {
           const askThis = t.kind === "tool" && pendingToolNames.has(t.title.replace(/^造工具 /, ""));
           const toolName = t.title.replace(/^造工具 /, "");
-          const drilled = drillIds.has(t.id);
           return (
-            <div key={t.id} style={{ border: `1px solid ${askThis ? "var(--amber)" : "var(--border)"}`, borderRadius: 10, padding: "9px 11px", background: "var(--panel-2)", display: "flex", flexDirection: "column", gap: 5 }}>
+            <div
+              key={t.id}
+              className="factory-cta"
+              role="button"
+              tabIndex={0}
+              title="查看详情"
+              onClick={() => setOpenTaskId(t.id)}
+              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setOpenTaskId(t.id); } }}
+              style={{ border: `1px solid ${askThis ? "var(--amber)" : "var(--border)"}`, borderRadius: 10, padding: "9px 11px", background: "var(--panel-2)", display: "flex", flexDirection: "column", gap: 6, cursor: "pointer" }}
+            >
               <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
                 <span style={{ marginTop: 5 }}><Dot status={t.status} /></span>
                 <div style={{ flex: 1, minWidth: 0 }}>
@@ -430,25 +545,15 @@ export function BackgroundPanel({ tenant, domain, events, running, convId, viewi
                   </div>
                   {t.meta && <div style={{ fontSize: 10.5, color: "var(--text-3)", fontFamily: "var(--mono)", marginTop: 1 }}>{t.meta}</div>}
                 </div>
+                <span aria-hidden style={{ color: "var(--text-4)", fontSize: 16, lineHeight: 1, alignSelf: "center", flexShrink: 0 }}>›</span>
               </div>
               {askThis && <div style={{ fontSize: 11, color: "var(--amber)", paddingLeft: 16 }}>大脑刚创建了这个工具 —— 存入工具库供以后复用吗？</div>}
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", paddingLeft: 16 }}>
-                {askThis && (
-                  <>
-                    <button onClick={() => acceptTool(toolName)} style={{ ...linkBtn, border: "1px solid var(--green)", color: "var(--green)" }}>✓ 保留</button>
-                    <button onClick={() => void declineTool(toolName)} style={linkBtn}>✗ 删除</button>
-                  </>
-                )}
-                {t.drill && (
-                  <button onClick={() => setDrillIds((prev) => { const n = new Set(prev); if (n.has(t.id)) n.delete(t.id); else n.add(t.id); return n; })}
-                    style={drilled ? { ...primaryLinkBtn } : linkBtn}>
-                    {drilled ? "▾ 收起决策" : "▸ 决策下钻"}
-                  </button>
-                )}
-                <button onClick={() => setOpenTaskId(t.id)} style={linkBtn}>View transcript</button>
-                {t.agentSlug && <button onClick={() => onSelectAgent(t.agentSlug!)} style={linkBtn}>在右栏查看 →</button>}
-              </div>
-              {drilled && t.drill && <AgentDrillIn task={t} taskBySlug={taskBySlug} />}
+              {askThis && (
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", paddingLeft: 16 }}>
+                  <button onClick={(e) => { e.stopPropagation(); acceptTool(toolName); }} style={{ ...linkBtn, border: "1px solid var(--green)", color: "var(--green)" }}>✓ 保留</button>
+                  <button onClick={(e) => { e.stopPropagation(); void declineTool(toolName); }} style={linkBtn}>✗ 删除</button>
+                </div>
+              )}
             </div>
           );
         })}

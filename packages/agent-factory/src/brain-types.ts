@@ -169,7 +169,7 @@ export type BrainEvent =
   // #POLICY — the entrance router's decision (why this pipeline shape / specialist depth / tier
   // bias was selected for THIS request). Emitted right after the intent gate; UI renders it as
   // the "推理策略" chip so the choice is explainable, not implicit.
-  | { t: "policy"; pipeline: string; band: string; deepUnderstand: boolean; deepCritique: boolean; tierBias?: string | null; reasons: string[] }
+  | { t: "policy"; pipeline: string; strategy?: string; band: string; deepUnderstand: boolean; deepCritique: boolean; tierBias?: string | null; reasons: string[] }
   // #REVISION — 证据驱动的本体修订提案（真实沙箱载荷 vs canonical event_data 持续不一致）。
   // 工厂只提案不写回；大脑据此 ask_user 确认（"AI 提案 → 人确认 → 生效"，同 boundary-gate 范式）。
   | { t: "ontology.revision"; proposals: Array<{ kind: string; event: string; field: string; observedType: string; canonicalType?: string; occurrences: number; evidence: string }> }
@@ -341,6 +341,8 @@ export interface BrainCtx {
    *  新形状原样携带，消费端未识别按 full 兜底（认知开放、协议封闭）。 */
   policy?: {
     pipeline: string;
+    /** #STRATEGY — 轴2 默认推理策略（react/reflection/debate/tot/cot，开放词汇）。 */
+    strategy?: string;
     deepUnderstand: boolean;
     deepCritique: boolean;
     tierBias: "fast" | null;

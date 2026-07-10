@@ -19,6 +19,7 @@ import { deriveContractGraph, contractIssueStringsBySeverity, contractAgentIssue
 import { evaluateExecutionFidelity, expectedFieldsByEvent } from "./execution-fidelity";
 import { attributeFidelityFailures, attributionSummary } from "./failure-attribution";
 import { proposeOntologyRevisions, revisionSummary } from "./ontology-revision";
+import { resolveCapabilityLadder } from "./capability-ladder";
 import { deriveBusinessFlow } from "./business-flow";
 import { shouldSuggestSplit } from "./reasoning-policy";
 import { buildToolCatalog, suggestToolsForAction, rankRealTools, groundToolPicks, ungroundedEventTokens, searchRealTools } from "./tool-catalog";
@@ -1779,6 +1780,54 @@ const use_skill: BrainTool = {
   },
 };
 
+// #P5 — 能力梯:发现"需要一个当前没有的能力"时,按六级从便宜到贵解析怎么获得它。这是【顾问式】
+// 工具——它综合你已经用 search_tools/list_agents 查到的命中(经参数传入)+ 技能库现状,给出该走哪级
+// + 下一步该调哪个工具。真正的实例化/锻造执行(instantiate_subagent / skill_forge)依赖站长工具面
+// (P2.5),本工具先把决策与路由做对、可解释。
+const resolve_capability_ladder: BrainTool = {
+  name: "resolve_capability_ladder",
+  description:
+    "能力梯(#P5):当你或某 agent 需要一个当前没有的能力时,用它决定怎么获得——六级从便宜到贵:①复用已交付函数 ②工具库 ③MCP ④实例化 active 技能 ⑤锻造新技能(带 spawnSpec,落 draft,监督下首用)⑥造工具。传 need 描述;若你已用 search_tools/list_agents 查到命中,把 fleet_has/tool_hit/mcp_hit 传进来;能力本质是缺工具就传 is_missing_tool=true。返回推荐动作 + 下一步该调的工具。",
+  parameters: params(
+    {
+      need: { type: "string", description: "缺什么能力(自然语言)" },
+      fleet_has: { type: "boolean", description: "已交付函数是否覆盖(来自 list_agents/capability_resolve)" },
+      tool_hit: { type: "string", description: "search_tools 命中的工具名(无则不传)" },
+      mcp_hit: { type: "string", description: "命中的 MCP 工具名 <server>.<tool>(无则不传)" },
+      is_missing_tool: { type: "boolean", description: "该能力本质是缺一个工具/集成(而非缺会推理的 sub-agent)" },
+    },
+    ["need"],
+  ),
+  async execute(args, ctx) {
+    const need = String(args.need ?? "").trim();
+    if (!need) return { ok: false, summary: "need 为空——描述你缺的能力。" };
+    // 技能库:找一个 active 且带 spawnSpec(可实例化)、名称/用途与 need 相关的技能。
+    const skills = ctx.ports.skills ? await ctx.ports.skills.list(ctx.domain).catch(() => []) : [];
+    const needWords = need.toLowerCase().split(/[\s，,、]+/).filter((w) => w.length >= 2);
+    const spawnable = skills.filter((s) => s.spawnSpec && (s.lifecycle ?? "active") === "active");
+    const skillHit = spawnable.find((s) => needWords.some((w) => `${s.name}${s.purpose}`.toLowerCase().includes(w)));
+    const anySkillHit = skillHit ?? skills.find((s) => s.spawnSpec && needWords.some((w) => `${s.name}${s.purpose}`.toLowerCase().includes(w)));
+    const res = resolveCapabilityLadder({
+      description: need,
+      fleetHas: !!args.fleet_has,
+      toolHas: (args.tool_hit ? String(args.tool_hit) : null) || null,
+      mcpHas: (args.mcp_hit ? String(args.mcp_hit) : null) || null,
+      skillHas: anySkillHit ? { slug: anySkillHit.slug, lifecycle: anySkillHit.lifecycle ?? "active" } : null,
+      isMissingTool: !!args.is_missing_tool,
+    });
+    const nextTool: Record<string, string> = {
+      reuse_function: "list_agents / capability_resolve 拿到函数并复用/组合",
+      call_tool: `直接把工具「${res.target}」绑进 design_agent 的 tool_use`,
+      call_mcp: `调用 MCP 工具「${res.target}」`,
+      instantiate_subagent: `use_skill「${res.target}」调入(实例化执行依赖 P2.5 站长工具面)`,
+      forge_skill: "create_skill(写 promptFragment+决策规则,将来补 spawnSpec 落 draft)+ 需要调研就 spawn_subagent",
+      create_tool: "create_tool 或 extract_api_schema(文档→工具)",
+    };
+    ctx.emit({ t: "reflect", kind: "capability", lesson: `能力梯:${need} → L${res.level} ${res.action}${res.target ? `(${res.target})` : ""}` });
+    return { ok: true, summary: `能力梯 L${res.level}:${res.reason}。下一步 → ${nextTool[res.action]}`, output: { ...res, nextTool: nextTool[res.action] } };
+  },
+};
+
 const fetch_doc: BrainTool = {
   name: "fetch_doc",
   description: "Doc-Fetcher：抓取一个【公网】开发文档/API 说明页面的文本，作为造工具(create_tool)或设计 agent 的依据。走 SSRF 防护（拒绝内网/本机/元数据地址）。",
@@ -2338,6 +2387,7 @@ export const FACTORY_TOOLS: BrainTool[] = [
   create_tool,
   create_skill,
   use_skill,
+  resolve_capability_ladder,
   analyze_failure,
   finish,
 ];
@@ -2349,4 +2399,4 @@ export const __ruleTestHelpers = { ruleIdentifiers, promptEmbedsRule, looksLikeR
 // R9: subagents are still read-only for AGENT/tool authoring, but gain scoped SKILL authoring
 // (create_skill persists to the shared store so the parent + future runs absorb it) and
 // constraint introspection. spawn_subagent is added by the conductor under a depth cap.
-export const SUBAGENT_TOOLS: BrainTool[] = [read_ontology, list_domains, describe_domain, describe_object, list_agents, read_spec, inspect_run, web_search, search_tools, fetch_doc, extract_api_schema, analyze_failure, create_skill, describe_design_constraints];
+export const SUBAGENT_TOOLS: BrainTool[] = [read_ontology, list_domains, describe_domain, describe_object, list_agents, read_spec, inspect_run, web_search, search_tools, fetch_doc, extract_api_schema, analyze_failure, create_skill, resolve_capability_ladder, describe_design_constraints];

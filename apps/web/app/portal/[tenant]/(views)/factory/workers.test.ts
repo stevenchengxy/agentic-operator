@@ -62,6 +62,44 @@ describe("deriveSessionTasks drill (#UI-DRILL)", () => {
     expect(harness.transcript.some((it) => it.label === "沙箱工程师 · sandbox_run")).toBe(true);
   });
 
+  // #per-agent-think — the attribution cursor routes think/message bursts onto the agent currently
+  // being worked on, so its card shows its own reasoning stream (not just event summaries).
+  it("attaches per-agent think slices to the current agent while keeping them in the harness too", () => {
+    const tasks = deriveSessionTasks(
+      [
+        created("d-processResume", "processResume"),
+        ev({ t: "think", delta: "先确认 processResume 的输出契约字段，再决定要不要精修" }),
+        ev({ t: "tool.call", id: "c1", name: "refine_agent", reasoning: "对齐类型", input: {}, forAgent: "processResume" }),
+        ev({ t: "tool.result", id: "c1", ok: true, summary: "done" }),
+      ],
+      false,
+    );
+    const t = tasks.find((x) => x.agentSlug === "d-processResume")!;
+    expect(t.transcript.some((it) => it.kind === "think" && it.detail?.includes("输出契约"))).toBe(true);
+    // no regression: the harness card still carries the same reasoning burst.
+    const harness = tasks.find((x) => x.kind === "harness")!;
+    expect(harness.transcript.some((it) => it.kind === "think" && it.detail?.includes("输出契约"))).toBe(true);
+  });
+
+  it("routes a free-form message to the current agent and does NOT leak harness reasoning onto it", () => {
+    const tasks = deriveSessionTasks(
+      [
+        created("d-processResume", "processResume"),
+        ev({ t: "message", text: "processResume 设计完成，输出契约已对齐下游。" }),
+        // sandbox is harness-scope → cursor resets; the following reasoning must stay in the harness.
+        ev({ t: "tool.call", id: "c2", name: "sandbox_run", reasoning: "整链真跑", input: {} }),
+        ev({ t: "think", delta: "整条事件链已闭合，可以结束了" }),
+        ev({ t: "done", status: "finished" }),
+      ],
+      false,
+    );
+    const t = tasks.find((x) => x.agentSlug === "d-processResume")!;
+    expect(t.transcript.some((it) => it.kind === "message" && it.detail?.includes("输出契约"))).toBe(true);
+    expect(t.transcript.some((it) => it.detail?.includes("事件链已闭合"))).toBe(false);
+    const harness = tasks.find((x) => x.kind === "harness")!;
+    expect(harness.transcript.some((it) => it.kind === "think" && it.detail?.includes("事件链已闭合"))).toBe(true);
+  });
+
   it("captures validation problems per agent and sandbox real I/O + fidelity failure", () => {
     const tasks = deriveSessionTasks(
       [

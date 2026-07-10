@@ -37,3 +37,9 @@ export * from "./tools";
 export * from "./test-cases";
 export * from "./report-verify";
 export * from "./conductor";
+// business-flow SVG renderer (融合蓝图 P1.5 — pure swimlane visual):
+export * from "./business-flow-svg";
+// #P5 — capability ladder + spawnable-skill model (融合蓝图 §06):
+export * from "./capability-ladder";
+// #P1 — ts_function_module renderer (inngest.createFunction 形态,对标旧 AO 六文件):
+export * from "./ts-function-module";

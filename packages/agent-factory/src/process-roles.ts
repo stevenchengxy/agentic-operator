@@ -62,6 +62,7 @@ export const ROLE_OF_TOOL: Record<string, string> = {
   extract_api_schema: "工具工程师",
   create_skill: "技能工程师",
   use_skill: "技能工程师",
+  resolve_capability_ladder: "能力规划师",
   generate_report: "报告撰写人",
 };
 

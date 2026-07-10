@@ -148,6 +148,11 @@ export interface LibrarySkill {
   useCount: number;
   evalCount: number;
   successCount: number;
+  // #P5 — 可实例化技能(向后兼容:老技能无这两个字段,仍照常织入 promptFragment)。
+  /** 若存在,则该技能可经 instantiate_subagent 生成一个 L2 sub-agent(不只织入提示词)。 */
+  spawnSpec?: import("./capability-ladder").SpawnSpec;
+  /** 生命周期:缺省视为 active(老技能);锻造品落 draft,首用成功才 active。 */
+  lifecycle?: import("./capability-ladder").SkillLifecycle;
 }
 
 /** Persistent skills library — create/use/persist + effectiveness scoring. */

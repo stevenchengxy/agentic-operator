@@ -89,7 +89,8 @@ export default function FactoryPage() {
   const [injectNote, setInjectNote] = useState("");
   const [req, setReq] = useState<{ tenant: string; domain?: string; goal?: string; conversation?: string; reconnectRunId?: string; nonce: number } | null>(null);
   const [viewingRun, setViewingRun] = useState<{ id: string; transcript: BrainEvent[] } | null>(null);
-  const [tab, setTab] = useState<"flow" | "brain" | "test" | "summary" | "bg">("flow");
+  // 右栏是常驻的「后台任务」sidebar（Claude-Desktop 式）——bg 是默认主视图；智能体/大脑/测试/总结按需切换。
+  const [tab, setTab] = useState<"flow" | "brain" | "test" | "summary" | "bg">("bg");
   const [deliverView, setDeliverView] = useState<"cards" | "graph" | "biz">("cards"); // #F — agent card list default; biz = #BIZFLOW 业务流全景
   const [brainView, setBrainView] = useState<"flow" | "log" | "map">("flow");
   const [selectedSlug, setSelectedSlug] = useState<string | null>(null);
@@ -216,7 +217,7 @@ export default function FactoryPage() {
   // ── actions ──
   // Reset the in-memory conversation view WITHOUT touching durable storage (so switching domains
   // keeps each domain's saved thread). 新会话 additionally drops the current domain's saved thread.
-  const resetConversation = () => { setConv(""); setReq(null); setViewingRun(null); setSelectedSlug(null); setTab("flow"); setAnalysis(null); };
+  const resetConversation = () => { setConv(""); setReq(null); setViewingRun(null); setSelectedSlug(null); setTab("bg"); setAnalysis(null); };
   const newConversation = () => {
     // Drop this domain's saved thread AND the reconnect handle, so a fresh start isn't hijacked by
     // the on-mount reconnect effect resurrecting the previous run.
@@ -508,7 +509,7 @@ export default function FactoryPage() {
         />
       )}
 
-      <div style={{ flex: 1, position: "relative", display: "grid", gridTemplateColumns: `${leftOpen ? "238px" : "48px"} 1fr ${rightOpen ? "420px" : "0px"}`, minHeight: 0, transition: "grid-template-columns 0.2s ease" }}>
+      <div style={{ flex: 1, position: "relative", display: "grid", gridTemplateColumns: `${leftOpen ? "238px" : "48px"} 1fr ${rightOpen ? "440px" : "0px"}`, minHeight: 0, transition: "grid-template-columns 0.2s ease" }}>
         {/* 栏收起/展开：手柄贴在各自分隔线上（不再挤在页头，方向不再歧义）。 */}
         <button
           title={leftOpen ? "收起左栏" : "展开左栏"}
@@ -518,7 +519,7 @@ export default function FactoryPage() {
         <button
           title={rightOpen ? "收起右栏" : "展开右栏"}
           onClick={toggleRight}
-          style={{ position: "absolute", right: rightOpen ? 420 : 0, top: "50%", transform: rightOpen ? "translate(50%, -50%)" : "translateY(-50%)", zIndex: "var(--z-overlay)" as unknown as number, width: 18, height: 48, borderRadius: rightOpen ? 9 : "9px 0 0 9px", border: "1px solid var(--border)", background: "var(--panel)", color: "var(--text-3)", cursor: "pointer", fontSize: 12, lineHeight: 1, padding: 0, transition: "right 0.2s ease" }}
+          style={{ position: "absolute", right: rightOpen ? 440 : 0, top: "50%", transform: rightOpen ? "translate(50%, -50%)" : "translateY(-50%)", zIndex: "var(--z-overlay)" as unknown as number, width: 18, height: 48, borderRadius: rightOpen ? 9 : "9px 0 0 9px", border: "1px solid var(--border)", background: "var(--panel)", color: "var(--text-3)", cursor: "pointer", fontSize: 12, lineHeight: 1, padding: 0, transition: "right 0.2s ease" }}
         >{rightOpen ? "›" : "‹"}</button>
         {/* ── left rail ── (pinned to gridColumn 1; a display:none rail is removed from the grid and
             back-fills the other panes into the wrong tracks, so the collapsed state is a 48px ICON
@@ -649,16 +650,20 @@ export default function FactoryPage() {
           </div>
         </div>
 
-        {/* ── right pane: pinned stage rail + 4 tabs (智能体 / 大脑 / 测试 / 总结), 可收起 + 每 tab 全屏 ── */}
+        {/* ── right pane: 常驻「后台任务」sidebar（默认主视图，Claude-Desktop 式）+ 智能体/大脑/测试/总结
+            分段切换, 可收起 + 每视图全屏。后台任务视图里点 agent 卡 → 右侧详情抽屉看 view transcript。 ── */}
         {rightOpen && (
         <div style={{ gridColumn: 3, minWidth: 0, display: "flex", flexDirection: "column", minHeight: 0 }}>
           {/* Stage rail moved to the top progress SPINE (阶段+健康+成本 merged). The pending-interaction
               cue is surfaced by the spine's 后台 badge + the center InteractionDock, so it's not duplicated here. */}
-          <div style={{ display: "flex", borderBottom: "1px solid var(--border)", alignItems: "center" }}>
-            {([["flow", `智能体${agents.length ? ` · ${agents.length}` : ""}`], ["brain", "大脑"], ["test", `测试${testCaseList.length || sandboxRuns.length ? ` · ${testCaseList.length || sandboxRuns.length}` : ""}`], ["summary", "总结"], ["bg", `${awaitingHint ? "● " : ""}后台`]] as Array<["flow" | "brain" | "test" | "summary" | "bg", string]>).map(([k, label]) => (
-              <button key={k} onClick={() => { setTab(k); setSelectedSlug(null); }} style={{ flex: "1 0 auto", padding: "9px 6px", fontSize: 11.5, fontWeight: 600, whiteSpace: "nowrap", background: "none", border: "none", borderBottom: tab === k ? "2px solid var(--signal)" : "2px solid transparent", color: tab === k ? "var(--text)" : "var(--text-3)", cursor: "pointer", transition: "color 0.15s ease, border-color 0.15s ease" }}>{label}</button>
-            ))}
-            <button title="全屏查看当前标签" onClick={() => setFullscreen(tab)} style={{ padding: "0 10px", background: "none", border: "none", cursor: "pointer", color: "var(--text-3)", display: "inline-flex", alignItems: "center" }}>
+          {/* 紧凑分段控件：后台任务(默认) | 智能体 | 大脑 | 测试 | 总结。后台任务是常驻主视图。 */}
+          <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", borderBottom: "1px solid var(--border)" }}>
+            <div style={{ display: "flex", gap: 5, flex: 1, minWidth: 0, overflowX: "auto" }}>
+              {([["bg", `${awaitingHint ? "● " : ""}后台任务`], ["flow", `智能体${agents.length ? ` · ${agents.length}` : ""}`], ["brain", "大脑"], ["test", `测试${testCaseList.length || sandboxRuns.length ? ` · ${testCaseList.length || sandboxRuns.length}` : ""}`], ["summary", "总结"]] as Array<["flow" | "brain" | "test" | "summary" | "bg", string]>).map(([k, label]) => (
+                <button key={k} onClick={() => { setTab(k); setSelectedSlug(null); }} style={{ flex: "0 0 auto", padding: "5px 10px", fontSize: 11.5, fontWeight: 600, whiteSpace: "nowrap", borderRadius: 20, cursor: "pointer", border: `1px solid ${tab === k ? "var(--signal)" : "var(--border)"}`, background: tab === k ? "var(--panel-2)" : "transparent", color: tab === k ? "var(--text)" : "var(--text-3)", transition: "color 0.15s ease, border-color 0.15s ease" }}>{label}</button>
+              ))}
+            </div>
+            <button title="全屏查看当前标签" onClick={() => setFullscreen(tab)} style={{ padding: "0 4px", background: "none", border: "none", cursor: "pointer", color: "var(--text-3)", display: "inline-flex", alignItems: "center", flexShrink: 0 }}>
               <Icon name="external" size={14} />
             </button>
           </div>

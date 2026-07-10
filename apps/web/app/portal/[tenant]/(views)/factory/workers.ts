@@ -15,7 +15,7 @@ export type SessionTaskStatus = "running" | "ok" | "error" | "idle";
 
 export interface TaskTranscriptItem {
   id: string;
-  kind: "think" | "tool" | "gate" | "stage" | "event" | "error";
+  kind: "think" | "message" | "tool" | "gate" | "stage" | "event" | "error";
   label: string;
   detail?: string;
   ok?: boolean;
@@ -113,6 +113,13 @@ export function deriveSessionTasks(events: BrainEvent[], running: boolean): Sess
   let doneStatus: string | null = null;
   let sawError = false;
   let harnessLastIdx = 0;
+  // #per-agent-think — attribution cursor: the slug of the agent currently being worked on. Moves
+  // onto an agent at agent.created / a forAgent-targeted tool.call / code|refine|inspect|score, and
+  // returns to the harness (null) on any harness-scope boundary (harness-level tool.call, sandbox,
+  // gates, stage, subagent, done…). think/message bursts flush onto whatever this points at, so an
+  // agent card shows its own reasoning stream — not just event summaries. Purely a function of the
+  // event order → deterministic on replay.
+  let currentAgentSlug: string | null = null;
   const callsById = new Map<string, TaskTranscriptItem>();
   const callKeysById = new Map<string, string[]>();
   let idc = 0;
@@ -124,6 +131,10 @@ export function deriveSessionTasks(events: BrainEvent[], running: boolean): Sess
     if (!t) return;
     thinkBursts++;
     harnessItems.push({ id: nid(), kind: "think", label: "推理", detail: clip(t, 160) });
+    // Also attribute the burst to the agent under the cursor. Harness keeps the full stream above,
+    // so this is additive — no regression to the harness card.
+    const cur = currentAgentSlug ? agents.get(currentAgentSlug) : undefined;
+    if (cur) { cur.transcript.push({ id: nid(), kind: "think", label: "推理", detail: clip(t, 200) }); cur.lastEventIdx = Math.max(cur.lastEventIdx, harnessLastIdx); }
   };
 
   const agentOf = (key: string): AgentAcc | undefined => {
@@ -146,6 +157,21 @@ export function deriveSessionTasks(events: BrainEvent[], running: boolean): Sess
         thinkBuf += s(e.delta);
         harnessLastIdx = idx;
         break;
+      case "message": {
+        // A free-form (no-tool-call) reply. The same text usually streamed as think deltas first,
+        // so drop the buffer when it duplicates the message (mirrors toBlocks) before recording it.
+        const text = s(e.text).trim();
+        const b = thinkBuf.trim();
+        if (b && text && (b === text || text.startsWith(b) || b.startsWith(text))) thinkBuf = "";
+        flushThink();
+        if (text) {
+          harnessItems.push({ id: nid(), kind: "message", label: "回复", detail: clip(text, 220) });
+          const cur = currentAgentSlug ? agents.get(currentAgentSlug) : undefined;
+          if (cur) { cur.transcript.push({ id: nid(), kind: "message", label: "回复", detail: clip(text, 260) }); cur.lastEventIdx = idx; }
+        }
+        harnessLastIdx = idx;
+        break;
+      }
       case "tool.call": {
         flushThink();
         toolCalls++;
@@ -174,6 +200,9 @@ export function deriveSessionTasks(events: BrainEvent[], running: boolean): Sess
             }
           }
         }
+        // #per-agent-think — a forAgent-targeted call moves the cursor onto that agent (subsequent
+        // reasoning is about it); an untargeted call is harness orchestration → back to the harness.
+        currentAgentSlug = targeted ? targeted.slug : null;
         callKeysById.set(s(e.id), keys);
         break;
       }
@@ -235,6 +264,7 @@ export function deriveSessionTasks(events: BrainEvent[], running: boolean): Sess
         });
         agents.set(slug, acc);
         harnessItems.push({ id: nid(), kind: "event", label: `产出智能体 ${acc.name}`, ok: true });
+        currentAgentSlug = slug; // subsequent reasoning is about the agent we just designed
         break;
       }
       case "code": {
@@ -242,6 +272,7 @@ export function deriveSessionTasks(events: BrainEvent[], running: boolean): Sess
         if (a) {
           a.lastEventIdx = idx;
           a.transcript.push({ id: nid(), kind: "event", label: `生成代码（${s(e.codeSource) || "render"}）`, ok: true });
+          currentAgentSlug = a.slug;
         }
         break;
       }
@@ -254,6 +285,7 @@ export function deriveSessionTasks(events: BrainEvent[], running: boolean): Sess
           a.lastEventIdx = idx;
           a.transcript.push({ id: nid(), kind: "event", label: "修订", detail: clip(s(e.critique), 120) });
           if (s(e.critique)) a.refineCritiques.push(clip(s(e.critique), 200));
+          currentAgentSlug = a.slug;
         }
         break;
       }
@@ -262,12 +294,13 @@ export function deriveSessionTasks(events: BrainEvent[], running: boolean): Sess
         if (a) {
           const d = Number(e.delta ?? 0);
           a.transcript.push({ id: nid(), kind: "event", label: `评分 ${d >= 0 ? `▲+${d}` : `▼${d}`}`, ok: !e.regression });
+          currentAgentSlug = a.slug;
         }
         break;
       }
       case "revert": {
         const a = agentOf(s(e.actionName));
-        if (a) a.transcript.push({ id: nid(), kind: "event", label: `回滚到第 ${s(e.revertedToAttempt)} 版之前`, ok: false });
+        if (a) { a.transcript.push({ id: nid(), kind: "event", label: `回滚到第 ${s(e.revertedToAttempt)} 版之前`, ok: false }); currentAgentSlug = a.slug; }
         break;
       }
       case "inspect": {
@@ -276,11 +309,13 @@ export function deriveSessionTasks(events: BrainEvent[], running: boolean): Sess
           a.lastEventIdx = idx;
           if (e.error || s(e.status) === "error") a.error = s(e.error) || "运行出错";
           a.transcript.push({ id: nid(), kind: "event", label: `试运行 ${s(e.status)}`, detail: e.error ? clip(s(e.error), 100) : undefined, ok: !e.error && s(e.status) !== "error" });
+          currentAgentSlug = a.slug;
         }
         break;
       }
       case "sandbox": {
         flushThink();
+        currentAgentSlug = null; // whole-chain deploy → harness scope
         harnessLastIdx = idx;
         const ok = Boolean(e.fullChainRan) || Boolean(e.reachedSuccessTerminal);
         const items: TaskTranscriptItem[] = [];
@@ -317,6 +352,7 @@ export function deriveSessionTasks(events: BrainEvent[], running: boolean): Sess
         break;
       }
       case "validation": {
+        currentAgentSlug = null; // graph-wide validation → harness scope
         // #UI-DRILL — per-agent problems from validate_graph (agentIssueMap keyed by actionName)
         const map = (e.agentIssueMap as Record<string, unknown[]> | undefined) ?? {};
         for (const [action, list] of Object.entries(map)) {
@@ -333,6 +369,7 @@ export function deriveSessionTasks(events: BrainEvent[], running: boolean): Sess
       }
       case "subagent.start": {
         flushThink();
+        currentAgentSlug = null; // a spawned sub-brain is not a deployed agent → harness scope
         harnessLastIdx = idx;
         const task = s(e.task);
         // #ROLE — 子大脑的角色由 AI 在 spawn 时自动设定（开放词汇）；卡片用角色称呼它。
@@ -352,6 +389,7 @@ export function deriveSessionTasks(events: BrainEvent[], running: boolean): Sess
       }
       case "tool.created":
         flushThink();
+        currentAgentSlug = null; // tool authoring → harness scope
         harnessLastIdx = idx;
         toolTasks.push({ name: s(e.name), desc: s(e.description), idx });
         harnessItems.push({ id: nid(), kind: "event", label: `造工具 ${s(e.name)}`, ok: true });
@@ -398,27 +436,33 @@ export function deriveSessionTasks(events: BrainEvent[], running: boolean): Sess
       }
       case "clarify":
         flushThink();
+        currentAgentSlug = null; // HITL gate → harness scope
         harnessItems.push({ id: nid(), kind: "gate", label: "询问用户", detail: clip(s(e.question), 120) });
         break;
       case "test.cases":
         flushThink();
+        currentAgentSlug = null;
         harnessItems.push({ id: nid(), kind: "gate", label: "等待测试用例确认", detail: `${((e.cases as unknown[]) ?? []).length} 个用例` });
         break;
       case "boundary.cases":
         flushThink();
+        currentAgentSlug = null;
         harnessItems.push({ id: nid(), kind: "gate", label: "等待边界事件分类", detail: `${((e.proposals as unknown[]) ?? []).length} 个` });
         break;
       case "stage": {
+        currentAgentSlug = null; // a new stage is a harness-level phase transition
         if (s(e.status) === "active") harnessItems.push({ id: nid(), kind: "stage", label: `进入阶段 · ${s(e.stage)}${s(e.role) ? `（${s(e.role)}）` : ""}` });
         break;
       }
       case "error":
         flushThink();
+        currentAgentSlug = null;
         sawError = true;
         harnessItems.push({ id: nid(), kind: "error", label: "出错", detail: clip(s(e.message), 140), ok: false });
         break;
       case "done":
         flushThink();
+        currentAgentSlug = null;
         doneStatus = s(e.status);
         harnessItems.push({ id: nid(), kind: "event", label: `结束 · ${doneStatus}`, ok: doneStatus === "finished" });
         break;

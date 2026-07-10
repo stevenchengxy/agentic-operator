@@ -4,6 +4,7 @@ import type { ReasoningPolicy } from "./reasoning-policy";
 
 const basePolicy = (over: Partial<ReasoningPolicy> = {}): ReasoningPolicy => ({
   pipeline: "full",
+  strategy: "react",
   deepUnderstand: false,
   deepCritique: false,
   tierBias: null,

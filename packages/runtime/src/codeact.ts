@@ -107,6 +107,10 @@ async function lintSpawnCode(code: string): Promise<{ ok: boolean; violations: s
   if (ast !== null) { for (const v of ast) violations.push(`危险 API：${v}`); }
   else { const m = code.match(DANGEROUS_API); if (m) violations.push(`危险 API：${m[0].slice(0, 40)}`); }
   if (!/defineAgent|handler\s*\(/.test(code)) violations.push("没有 defineAgent/handler 结构");
+  // #AUDIT-FIX(P0b) — a synchronous infinite loop locks the event loop and CANNOT be preempted by the
+  // async handler timeout (which only bounds awaits). Reject the obvious unbounded-sync-loop shapes up
+  // front (mirrors inline-codeact.ts); the P0a worker_thread runner is the definitive backstop.
+  if (/while\s*\(\s*(?:true|1)\s*\)|for\s*\(\s*;\s*;\s*\)/.test(code)) violations.push("疑似无界同步循环（while(true)/for(;;)）——请写有界循环");
   return { ok: violations.length === 0, violations };
 }
 
@@ -285,7 +289,23 @@ export async function runGeneratedCode(
       },
     };
 
-    const result = await Promise.resolve(def.handler(input, agentCtx));
+    // #AUDIT-FIX(P0b NOMOCK-adjacent) — HARD async timeout on the AI-written handler. Historically
+    // `await def.handler(...)` had NO wall-clock bound (a hung await — e.g. a never-resolving external
+    // call or an accidental infinite async chain — would stall the run indefinitely). Race it against a
+    // timeout so a runaway handler is abandoned and the caller falls back to the declarative path.
+    // NOTE: this bounds ASYNC hangs (I/O, awaits, LLM stalls); a purely SYNCHRONOUS hot loop
+    // (`while(true){}`) still locks this event loop — that is caught earlier by the lint sync-loop
+    // heuristic and, definitively, by the P0a worker_thread runner (runGeneratedModule). Full
+    // event-loop-safe isolation is P0a's job; this is the in-process floor.
+    const handlerTimeoutMs = Number(process.env.FACTORY_CODEACT_TIMEOUT_MS) || 120_000;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const result = await Promise.race([
+      Promise.resolve(def.handler(input, agentCtx)),
+      new Promise<never>((_, rej) => {
+        timer = setTimeout(() => rej(new Error(`生成代码 handler 执行超时（>${handlerTimeoutMs}ms）——已放弃，回退声明式路径`)), handlerTimeoutMs);
+        timer.unref?.();
+      }),
+    ]).finally(() => { if (timer) clearTimeout(timer); });
     const base = result && typeof result === "object" ? (result as Record<string, unknown>) : { result };
     // `_emit` lets register.ts's branch-emit (selectEmittedEvent) honor the handler's chosen event.
     const data = emitted[0] ? { ...base, _emit: emitted[0].event } : base;

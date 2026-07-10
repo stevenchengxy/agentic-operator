@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { classifyIntentKind, estimateDifficulty, selectPolicy, shouldSuggestSplit } from "./reasoning-policy";
+import { classifyIntentKind, estimateDifficulty, selectPolicy, selectStrategy, shouldSuggestSplit } from "./reasoning-policy";
+import type { Difficulty } from "./reasoning-policy";
 import type { DomainOntology } from "./ontology-types";
 
 function ont(nAgents: number, nRules: number, opts?: { branchy?: number; nObjects?: number }): DomainOntology {
@@ -92,6 +93,41 @@ describe("#OPEN-VOCAB open intent vocabulary", () => {
     const p = selectPolicy({ intentKind: "对比", difficulty: estimateDifficulty(null), hasSpecs: false });
     expect(p.pipeline).toBe("full");
     expect(p.reasons.join()).toContain("新意图类型「对比」");
+  });
+});
+
+describe("#STRATEGY selectStrategy (轴2 推理策略选择器)", () => {
+  const simpleD: Difficulty = { band: "simple", score: 6, reasons: [] };
+  const complexD: Difficulty = { band: "complex", score: 60, reasons: [] };
+
+  it("high-risk contexts (arbitrate/finish/review) default to debate", () => {
+    for (const context of ["arbitrate", "finish", "review"] as const) {
+      const s = selectStrategy({ intentKind: "generate", difficulty: simpleD, context });
+      expect(s.strategy).toBe("debate");
+      expect(s.expensive).toBe(true);
+    }
+  });
+  it("rework → reflection (lock the failing span)", () => {
+    const s = selectStrategy({ intentKind: "modify", difficulty: complexD, context: "code", isRework: true });
+    expect(s.strategy).toBe("reflection");
+  });
+  it("complex plan/design → tot; simple → react", () => {
+    expect(selectStrategy({ intentKind: "generate", difficulty: complexD, context: "plan" }).strategy).toBe("tot");
+    expect(selectStrategy({ intentKind: "generate", difficulty: simpleD, context: "plan" }).strategy).toBe("react");
+  });
+  it("analyze context → cot (cheap single chain)", () => {
+    expect(selectStrategy({ intentKind: "question", difficulty: simpleD, context: "analyze" }).strategy).toBe("cot");
+  });
+  it("fast bias downshifts an expensive strategy — EXCEPT high-stakes contexts", () => {
+    // complex design would be tot, but fast bias pulls it back to react
+    expect(selectStrategy({ intentKind: "generate", difficulty: complexD, context: "design", tierBias: "fast" }).strategy).toBe("react");
+    // finish stays debate even under fast bias (worth the cost)
+    expect(selectStrategy({ intentKind: "generate", difficulty: simpleD, context: "finish", tierBias: "fast" }).strategy).toBe("debate");
+  });
+  it("selectPolicy now carries a strategy on the dual axis", () => {
+    const p = selectPolicy({ intentKind: "generate", difficulty: complexD, hasSpecs: false });
+    expect(p.pipeline).toBe("full");
+    expect(["react", "reflection", "debate", "tot", "cot"]).toContain(p.strategy);
   });
 });
 

@@ -68,7 +68,7 @@ function buildStateSummary(ctx: BrainCtx): string {
   // forget, however long the run gets. Appended per goal, kept verbatim through every fold.
   if (ctx.userIntent) lines.push(`用户意图(意图门·逐条累积): ${ctx.userIntent.slice(0, 500)}`);
   // #POLICY — 折叠后大脑仍要记得"这次请求走什么路线"（analyze 别 sandbox、skinny 别全量重走）。
-  if (ctx.policy) lines.push(`推理路线(前置路由): ${ctx.policy.pipeline}${ctx.policy.deepUnderstand ? "·深读" : ""}${ctx.policy.deepCritique ? "·深评" : ""}${ctx.policy.tierBias ? `·${ctx.policy.tierBias}档` : ""} — ${ctx.policy.reasons.slice(0, 2).join("；")}`);
+  if (ctx.policy) lines.push(`推理路线(前置路由): ${ctx.policy.pipeline}${ctx.policy.strategy ? `·策略 ${ctx.policy.strategy}` : ""}${ctx.policy.deepUnderstand ? "·深读" : ""}${ctx.policy.deepCritique ? "·深评" : ""}${ctx.policy.tierBias ? `·${ctx.policy.tierBias}档` : ""} — ${ctx.policy.reasons.slice(0, 2).join("；")}`);
   // capability_resolve 的选型结论（复用/组合/新造）——设计阶段的"别造重复轮子"依据。
   if (ctx.capabilityResolution) lines.push(`能力解析(选型优先于制造): ${ctx.capabilityResolution.slice(0, 600)}`);
   if (ctx.humanDirectives.length) lines.push(`人工介入指令: ${ctx.humanDirectives.join(" / ")}`);
@@ -439,7 +439,7 @@ export async function* runBrain(opts: {
       policy = adjustPolicyWithStats(policy, stats, difficulty.band);
     } catch { /* 无统计 → 原样 */ }
     ctx.policy = { ...policy, band: difficulty.band };
-    emit({ t: "policy", pipeline: policy.pipeline, band: difficulty.band, deepUnderstand: policy.deepUnderstand, deepCritique: policy.deepCritique, tierBias: policy.tierBias, reasons: policy.reasons });
+    emit({ t: "policy", pipeline: policy.pipeline, strategy: policy.strategy, band: difficulty.band, deepUnderstand: policy.deepUnderstand, deepCritique: policy.deepCritique, tierBias: policy.tierBias, reasons: policy.reasons });
     // #POLICY — 非 full 路线：把路线指令直接注入对话（阶段闸门不动——它守的是"生成时的顺序"，
     // 路线守的是"这次要不要生成"；analyze/skinny 由大脑按指令执行，指令进 messages 可折叠幸存）。
     // #NATIVE — full 路线也注入一条【事实与建议】（决定权在 AI）：难度事实、经验回喂的深评建议
@@ -455,7 +455,7 @@ export async function* runBrain(opts: {
           ? "[推理路线] 本次是修改请求且已有设计成果：先定位目标 agent → refine_agent 定点修 → validate_graph（必要时 sandbox_run）验证。【不要】create_plan 全量重造。"
           : policy.pipeline === "ask_first"
             ? "[推理路线] 本体理解已标出多处歧义：先 ask_user 澄清最关键的 1-2 处（给具体选项），拿到答案再进入设计。"
-            : `[推理路线] 完整生成路线。参考事实与建议（深读/深评等分治深度由你在工具的 deep 参数里自行决定）：${policy.reasons.slice(-3).join("；")}${suggests.length ? `；${suggests.join("；")}` : ""}`;
+            : `[推理路线] 完整生成路线。默认推理策略=${policy.strategy}（可按理由否决改选：react 工具循环 / reflection 自评重写 / debate 挑战者+评委 / tot K 分叉 / cot 单链）。参考事实与建议（深读/深评等分治深度由你在工具的 deep 参数里自行决定）：${policy.reasons.slice(-3).join("；")}${suggests.length ? `；${suggests.join("；")}` : ""}`;
     if (guide) messages.push({ role: "user", content: guide });
   }
 

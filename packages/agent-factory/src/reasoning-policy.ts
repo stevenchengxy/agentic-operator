@@ -76,10 +76,37 @@ export function estimateDifficulty(ontology: DomainOntology | null | undefined):
 export type KnownPipelineShape = "full" | "skinny" | "analyze" | "ask_first";
 export type PipelineShape = KnownPipelineShape | (string & {});
 
+// ── 轴2：推理策略（#STRATEGY，融合蓝图 §09 双轴选择器的第二轴）──────────────────
+// #OPEN-VOCAB — 策略是【开放词汇】：三个 Day-1 一等策略（react/reflection/debate，各自映射到真实
+// 执行原语）+ tot/cot 预算内跟进；AI/配置可提新策略（消费端未识别时按 react 处理）。
+//   react      → streamTurn 工具循环（写→编译→读诊断→精修）= 默认，最便宜
+//   reflection → designSelfCheck→internalDesignRefine（产出→自评→一次性重写）= 返工/锁定 span
+//   debate     → critique_plan 作挑战者 + 评委综合 = 高风险裁决（仲裁/finish/评审）/复杂设计
+//   tot        → runSpecialists K 分叉 + 打分剪枝 = 复杂生成/设计（贵，门控）
+//   cot        → 单 scratchpad chatOnce = 纯分析/答疑（便宜）
+export type KnownReasoningStrategy = "react" | "reflection" | "debate" | "tot" | "cot";
+export type ReasoningStrategy = KnownReasoningStrategy | (string & {});
+/** 昂贵策略集：门控给复杂/返工/高风险场景，简单场景一律降到 react/cot。 */
+const EXPENSIVE_STRATEGIES: ReadonlySet<string> = new Set(["debate", "tot", "combo"]);
+
+/** 做决策的语境（哪个工位 / 哪种裁决）。决定默认策略。 */
+export type StrategyContext =
+  | "plan" | "design" | "code" | "review" | "arbitrate" | "finish" | "analyze" | "subproblem";
+
+export type StrategySelection = {
+  strategy: ReasoningStrategy;
+  /** 是否昂贵策略（供预算门控 + UI 标注）。 */
+  expensive: boolean;
+  reasons: string[];
+};
+
 export type ReasoningPolicy = {
   /** 流水线形状：full=完整生成流程；skinny=定位→refine→verify（已有 specs 的修改）；
    *  analyze=只读分析/答疑（不 sandbox）；ask_first=先澄清再动。 */
   pipeline: PipelineShape;
+  /** #STRATEGY — 轴2：本次运行主语境的默认推理策略（L1 建议）。站内子问题可经 select_strategy
+   *  就该子问题的意图重新分类。与 #NATIVE 一致：这是【建议+reasons】，AI 保留带理由的否决权。 */
+  strategy: ReasoningStrategy;
   /** #NATIVE — 【建议】非强制：深读/深评与否由 AI 在调用 understand_ontology / critique_plan
    *  时用 deep 参数原生决定。这两个位只承载建议来源（如经验回喂"该难度下历史保真违约率高"），
    *  经 [推理路线] 消息呈给 AI 参考——绝不由本体规模等 schema 信号确定性地替 AI 做决定。 */
@@ -90,6 +117,42 @@ export type ReasoningPolicy = {
   /** 全程携带的决策依据（emit 给 UI + 注入上下文，回答"为什么这么选"）。 */
   reasons: string[];
 };
+
+/** #STRATEGY — 轴2 策略选择器：按语境 + 难度 + 返工/歧义 选一个推理策略。承重的是这张手调表 +
+ *  策略→原语映射（policy-learning 只作保守降级，不探索），与融合蓝图 §09 的诚实版一致。
+ *  高风险语境（仲裁/finish/评审）默认 debate；返工默认 reflection；复杂生成/设计升 tot；
+ *  纯分析降 cot；其余 react。fast 偏置或简单难度会把昂贵策略降回 react/cot。 */
+export function selectStrategy(input: {
+  intentKind: IntentKind;
+  difficulty: Difficulty;
+  context: StrategyContext;
+  isRework?: boolean;
+  ambiguityCount?: number;
+  tierBias?: "fast" | null;
+}): StrategySelection {
+  const { context, difficulty } = input;
+  const isRework = !!input.isRework;
+  const complex = difficulty.band === "complex";
+  const wantCheap = input.tierBias === "fast" || difficulty.band === "simple";
+  const reasons: string[] = [`语境=${context}`, `难度=${difficulty.band}`];
+
+  let strategy: ReasoningStrategy;
+  if (isRework) { strategy = "reflection"; reasons.push("返工 → reflection（锁定失败 span，产出→自评→重写）"); }
+  else if (context === "arbitrate" || context === "finish") { strategy = "debate"; reasons.push("高风险裁决 → debate（挑战者+评委，不轻信单次判断）"); }
+  else if (context === "review") { strategy = "debate"; reasons.push("评审 → debate（独立评委对抗式）"); }
+  else if (context === "analyze") { strategy = "cot"; reasons.push("纯分析/答疑 → cot（单 scratchpad，便宜）"); }
+  else if (context === "code") { strategy = "react"; reasons.push("编码 → react（写→编译→读诊断→精修）+ reflection 自审"); }
+  else if ((context === "plan" || context === "design") && complex) { strategy = "tot"; reasons.push("复杂生成/设计 → tot（K 分叉打分剪枝）"); }
+  else { strategy = "react"; reasons.push("默认 → react（工具循环）"); }
+
+  // 预算门控：便宜语境不用昂贵策略（高风险语境例外——仲裁/finish/评审值这个钱）。
+  const highStakes = context === "arbitrate" || context === "finish" || context === "review";
+  if (wantCheap && EXPENSIVE_STRATEGIES.has(strategy) && !highStakes) {
+    reasons.push(`${input.tierBias === "fast" ? "fast 偏置" : "简单难度"} → 昂贵策略 ${strategy} 降为 ${context === "analyze" ? "cot" : "react"}`);
+    strategy = context === "analyze" ? "cot" : "react";
+  }
+  return { strategy, expensive: EXPENSIVE_STRATEGIES.has(strategy), reasons };
+}
 
 export function selectPolicy(input: {
   intentKind: IntentKind;
@@ -103,22 +166,29 @@ export function selectPolicy(input: {
   const ambiguity = input.ambiguityCount ?? 0;
   const reasons: string[] = [`意图=${intentKind}`, `难度=${difficulty.band}(${difficulty.score})`, ...difficulty.reasons.slice(0, 3)];
 
+  // #STRATEGY — 轴2 默认策略随主语境 + 档位偏置一起选出，进 policy.strategy + reasons。
+  const strat = (context: StrategyContext, tierBias: "fast" | null): ReasoningStrategy => {
+    const s = selectStrategy({ intentKind, difficulty, context, ambiguityCount: ambiguity, tierBias });
+    reasons.push(`策略=${s.strategy}${s.expensive ? "(贵)" : ""}：${s.reasons[s.reasons.length - 1]}`);
+    return s.strategy;
+  };
+
   // 纯答疑/报告：不进生成流水线，降档省钱。
   if (intentKind === "question" || intentKind === "report" || intentKind === "analyze") {
     reasons.push("只读请求 → analyze 轻路径 + fast 档");
-    return { pipeline: "analyze", deepUnderstand: false, deepCritique: false, tierBias: "fast", reasons };
+    return { pipeline: "analyze", strategy: strat("analyze", "fast"), deepUnderstand: false, deepCritique: false, tierBias: "fast", reasons };
   }
 
   // 歧义重的生成：建议先澄清（policy 只建议，ask_user 门控仍由大脑执行）。
   if (ambiguity >= 2 && intentKind === "generate") {
     reasons.push(`歧义 ${ambiguity} 处 → 建议先 ask_user 再设计`);
-    return { pipeline: "ask_first", deepUnderstand: false, deepCritique: false, tierBias: null, reasons };
+    return { pipeline: "ask_first", strategy: strat("plan", null), deepUnderstand: false, deepCritique: false, tierBias: null, reasons };
   }
 
   // 修改类 + 已有 specs：跳过全量重走，定位→refine→verify。
   if (intentKind === "modify" && hasSpecs) {
     reasons.push("修改已有 agent → skinny 路径（定位→refine→verify）");
-    return { pipeline: "skinny", deepUnderstand: false, deepCritique: false, tierBias: null, reasons };
+    return { pipeline: "skinny", strategy: strat("code", null), deepUnderstand: false, deepCritique: false, tierBias: null, reasons };
   }
 
   // #OPEN-VOCAB — 词表外的新意图类型：走 full 安全默认，但把新词显式带进 reasons（遥测可见，
@@ -129,7 +199,7 @@ export function selectPolicy(input: {
   // #NATIVE — 生成类：规模/难度只作为【事实】进 reasons（AI 参考后自行决定 deep 参数），
   // 不再由 difficulty.band 确定性地强制分治深度（那是"Ontology 理念替 AI 推理"的残留）。
   reasons.push("分治深度由你决定：understand_ontology / critique_plan 的 deep 参数按需传 true");
-  return { pipeline: "full", deepUnderstand: false, deepCritique: false, tierBias: null, reasons };
+  return { pipeline: "full", strategy: strat("plan", null), deepUnderstand: false, deepCritique: false, tierBias: null, reasons };
 }
 
 /** #ADAPT — "卡住才拆"（ADaPT, NAACL 2024）的分解触发判定：一个 agent 反复 refine 无效且
