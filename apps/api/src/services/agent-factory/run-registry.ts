@@ -54,7 +54,13 @@ export function hasRun(runId: string): boolean {
   return runsReg.has(runId);
 }
 
-function emit(r: ActiveRun, e: BrainEvent): void {
+function emit(r: ActiveRun, e0: BrainEvent): void {
+  // #OBSERVABILITY — stamp a REAL server-side wall-clock ts on every event at the single emit choke
+  // point, so the UI can render true per-phase / per-agent durations (Workflow-panel style) for BOTH
+  // live AND replayed runs (client arrival time would cluster on reconnect). Idempotent: never
+  // re-stamp an event that already carries ts. Cast: the strict BrainEvent union has no ts member; the
+  // web side reads it as an optional field (BrainEvent = {t;[k]:unknown}).
+  const e: BrainEvent = (e0 as { ts?: number }).ts != null ? e0 : ({ ...(e0 as Record<string, unknown>), ts: Date.now() } as unknown as BrainEvent);
   // Keep the most recent MAX_BUFFER events (drop oldest if over) so the run OUTCOME — the tail:
   // sandbox result + done — is never lost on a very long run (the old `< MAX` guard dropped the
   // tail, hiding exactly what the reviewer needs).

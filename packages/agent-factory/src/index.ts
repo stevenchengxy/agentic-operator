@@ -47,3 +47,5 @@ export * from "./ts-function-module";
 export * from "./function-tester";
 // #P3 — 独立监督者审计 + 版本锁定缺陷(finish 门清零):
 export * from "./supervisor";
+// #P7 — 治理闭环纯核心(生产回归从责任工位重入,融合蓝图 §08):
+export * from "./fleet-governance";

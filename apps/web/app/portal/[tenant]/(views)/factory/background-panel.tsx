@@ -20,6 +20,7 @@ import type { BrainEvent } from "@/lib/hooks/useBrainStream";
 import { chip } from "./atoms";
 import type { RunRow } from "./model";
 import { deriveSessionTasks, deriveGeneratedTools, type SessionTask, type SessionTaskStatus } from "./workers";
+import { derivePhaseTimeline, type PhaseGroup } from "./phase-timeline";
 
 async function apiGet<T>(path: string): Promise<T | null> {
   try {
@@ -299,6 +300,64 @@ export interface BackgroundPanelProps {
   inline?: boolean;
 }
 
+// #OBSERVABILITY — Workflow→Phase→Agent 遥测视图(参考 Claude 的 Workflow 面板)。把一次运行按六段
+// stage 分 phase,每 phase 显示真实 tokens/tools/time + 展开看在此阶段跑过的子脑(专家/研究员)。
+function fmtMs(ms: number): string {
+  if (!ms || ms < 0) return "—";
+  const sec = Math.round(ms / 1000);
+  return sec < 60 ? `${sec}s` : `${Math.floor(sec / 60)}m${String(sec % 60).padStart(2, "0")}s`;
+}
+function fmtTok(n: number): string { return n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(n); }
+
+function PhaseRow({ p }: { p: PhaseGroup }) {
+  const [open, setOpen] = useState(false);
+  const dot: SessionTaskStatus = p.status === "active" ? "running" : p.status === "error" ? "error" : "ok";
+  return (
+    <div style={{ border: "1px solid var(--border)", borderRadius: 8, background: "var(--panel-2)", overflow: "hidden" }}>
+      <button onClick={() => p.agents.length && setOpen((v) => !v)} style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, padding: "7px 10px", cursor: p.agents.length ? "pointer" : "default", background: "transparent", border: "none", color: "var(--text)" }}>
+        <Dot status={dot} size={7} />
+        <span style={{ fontSize: 12.5, fontWeight: 600, flex: 1, textAlign: "left" }}>{p.label}</span>
+        <span style={{ fontFamily: "var(--mono)", fontSize: 10.5, color: "var(--text-3)", display: "flex", gap: 8 }}>
+          {p.agents.length > 0 && <span>{p.agents.length} 子脑</span>}
+          <span>{p.tools} 工具</span>
+          {p.tokens > 0 && <span>{fmtTok(p.tokens)} tok</span>}
+          <span>{fmtMs(p.durationMs)}</span>
+        </span>
+        {p.agents.length > 0 && <span style={{ fontSize: 10, color: "var(--text-3)" }}>{open ? "▾" : "▸"}</span>}
+      </button>
+      {open && p.agents.length > 0 && (
+        <div style={{ padding: "0 10px 8px 24px", display: "flex", flexDirection: "column", gap: 3 }}>
+          {p.agents.map((a) => (
+            <div key={a.key} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11 }}>
+              <Dot status={a.status} size={6} />
+              <span style={{ flex: 1, color: "var(--text-2)" }}>{a.name}</span>
+              <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--text-3)" }}>{a.durationMs ? fmtMs(a.durationMs) : ""}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PhaseTimelineView({ events }: { events: BrainEvent[] }) {
+  const tl = useMemo(() => derivePhaseTimeline(events), [events]);
+  if (tl.phases.length < 2 && tl.totalTools === 0) return null; // nothing meaningful yet
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6, border: "1px solid var(--border)", borderRadius: 10, padding: "9px 10px", background: "var(--panel)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11 }}>
+        <span style={{ fontWeight: 700, color: "var(--text-2)" }}>工作流 · {tl.phases.length} 阶段</span>
+        <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--text-3)", marginLeft: "auto", display: "flex", gap: 8 }}>
+          <span>{tl.totalTools} 工具</span>
+          {tl.totalTokens > 0 && <span>{fmtTok(tl.totalTokens)} tok</span>}
+          <span>{fmtMs(tl.totalDurationMs)}</span>
+        </span>
+      </div>
+      {tl.phases.map((p) => <PhaseRow key={p.stage} p={p} />)}
+    </div>
+  );
+}
+
 export function BackgroundPanel({ tenant, domain, events, running, convId, viewingRunId, liveRunId, awaitingHint, onReconnectRun, onSelectAgent, onClose, inline }: BackgroundPanelProps) {
   const sessionTasks = useMemo(() => deriveSessionTasks(events, running), [events, running]);
   // #UI-DRILL — slug→task 索引供子 agent 递归下钻（抽屉里的 Sub-agents 分区用）。
@@ -513,6 +572,9 @@ export function BackgroundPanel({ tenant, domain, events, running, convId, viewi
             <Button icon="spark" tone="primary" onClick={() => void startReport()} disabled={!domain || reportBusy}>{reportBusy ? "启动中…" : "生成，进入后台"}</Button>
           </div>
         )}
+
+        {/* ── 工作流阶段遥测（Workflow→Phase→Agent，参考 Claude 面板）—— 自门控:无阶段则不显示 ── */}
+        <PhaseTimelineView events={events} />
 
         {/* ── 本会话任务（Harness / Agents / Sub-agents / Tools / Sandbox）—— 点卡片进入详情抽屉 ── */}
         {visibleTasks.length > 0 && (
