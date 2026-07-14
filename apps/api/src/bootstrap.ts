@@ -35,6 +35,8 @@ import {
   bootstrapCodeAgents,
   setGateway as setAgentGateway,
 } from "@agentic/agents";
+import { setIntegrationResolver } from "@agentic/tools";
+import { resolveCredsByTenantSlug } from "./services/integration-store";
 import "@agentic/agents/system";
 import type { TenantRegistry } from "@agentic/agent-kit";
 import { getMcpManager, type McpServerConfig } from "@agentic/mcp";
@@ -139,6 +141,13 @@ export async function bootstrapRuntime(): Promise<BootstrapResult> {
   const gateway = getLLMGateway();
   setAgentGateway(gateway);
   setRuntimeGateway(gateway);
+
+  // Wire the integration credential resolver so DB-backed integrations
+  // (Settings → Integrations, e.g. GoHire) reach the global tool family at
+  // dispatch time. @agentic/tools stays DB-free — it just calls this seam.
+  setIntegrationResolver((tenantSlug, provider) =>
+    resolveCredsByTenantSlug(tenantSlug, provider),
+  );
   // UC-V11-22 / AR-GAP-07 — wire the prometheus metrics registry into
   // the manifest engine. Without this the registry exists but
   // `runs_total`, `run_duration_ms` stay flat for any traffic the

@@ -24,6 +24,83 @@
       "breakpoints": true
     },
     {
+      "idx": 3,
+      "version": "6",
+      "when": 1779182461562,
+      "tag": "0003_temporal_columns",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1779600000000,
+      "tag": "0004_parent_run",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1779600100000,
+      "tag": "0005_tenant_budgets",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1779600200000,
+      "tag": "0006_schema_meta",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1779600300000,
+      "tag": "0007_soft_delete",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1779600400000,
+      "tag": "0008_runs_is_test",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1779600500000,
+      "tag": "0009_webhook_subscriptions",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1779600600000,
+      "tag": "0010_agent_memory",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1779700000000,
+      "tag": "0011_tenant_lifecycle",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1779750000000,
+      "tag": "0012_import_recovery",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "6",
+      "when": 1779800000000,
+      "tag": "0013_confused_vertigo",
+      "breakpoints": true
+    },
+    {
       "idx": 14,
       "version": "6",
       "when": 1779900000000,
@@ -35,6 +112,13 @@
       "version": "6",
       "when": 1779950000000,
       "tag": "0015_dpl_one_live_per_target",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "6",
+      "when": 1780000000000,
+      "tag": "0016_integrations",
       "breakpoints": true
     }
   ]

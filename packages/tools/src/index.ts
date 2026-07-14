@@ -30,9 +30,21 @@ export {
 // Re-export the category sub-packages so external consumers can import
 // the descriptors directly when they want (e.g. for tests).
 export * as robohire from "./robohire";
+export * as gohire from "./gohire";
 export * as fs from "./fs";
 export * as http from "./http";
 export * as meta from "./meta";
+
+// DI seam: apps/api injects a resolver at boot so DB-backed integration
+// credentials (configured in Settings → Integrations) reach the GoHire tool
+// family without `@agentic/tools` importing the database layer.
+export {
+  setIntegrationResolver,
+  hasIntegrationResolver,
+  resolveIntegrationCreds,
+  type IntegrationCreds,
+  type IntegrationResolver,
+} from "./integrations";
 
 // ─── (2) legacy runTool fallback — used by step-engine's type:"tool" path ──
 

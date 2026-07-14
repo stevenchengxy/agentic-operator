@@ -41,6 +41,13 @@ import {
   robohireHealthApi,
 } from "./robohire";
 import {
+  gohireHealthApi,
+  gohireMatchResumeApi,
+  gohireParseResumeApi,
+  gohireParseJdApi,
+  gohireInviteCandidateApi,
+} from "./gohire";
+import {
   readFromInbox,
   writeMarkdownToArchive,
   writeHtmlToArchive,
@@ -119,6 +126,30 @@ const ROBOHIRE_CONFIG_SCHEMA: Record<string, ToolFieldSchema> = {
     type: "string",
     default: "https://api.robohire.io/api/v1",
     description: "Override the RoboHire API base URL.",
+  },
+  timeout_ms: { type: "number", default: 30000 },
+};
+
+// Shared config block for every GoHire wrapper. Identical knobs to RoboHire,
+// but the NORMAL credential source is the DB-backed integration configured in
+// Settings → Integrations (provider="gohire"); these manifest keys are an
+// explicit per-agent override on top of that. See gohire/rest-helper.ts.
+const GOHIRE_CONFIG_SCHEMA: Record<string, ToolFieldSchema> = {
+  api_key_env: {
+    type: "string",
+    description:
+      "Name of the env var holding the API key. Overridden by the Settings → Integrations key; overrides global GOHIRE_API_KEY.",
+  },
+  api_key: {
+    type: "string",
+    description:
+      "Literal API key — prefer the Settings integration (encrypted at rest) or api_key_env.",
+  },
+  base_url: {
+    type: "string",
+    default: "https://api.gohire.io/v1",
+    description:
+      "Override the GoHire API base URL. Normally set once in Settings → Integrations.",
   },
   timeout_ms: { type: "number", default: 30000 },
 };
@@ -328,6 +359,137 @@ const REGISTRATIONS: ToolRegistration[] = [
         },
       },
       sourcePath: "packages/tools/src/robohire/invite-candidate.ts",
+    },
+  },
+
+  // ── gohire.* ──────────────────────────────────────────────────────────────
+  // GoHire ATS — a drop-in alternative to the robohire.* family. Credentials
+  // are configured in Settings → Integrations (DB-backed, encrypted) and
+  // resolved per-tenant at dispatch time; manifest config can still override.
+  {
+    descriptor: gohireHealthApi,
+    catalog: {
+      name: "gohireHealthApi",
+      category: "gohire",
+      summary:
+        "GET {base}/health on GoHire — smoke-test reachability + the configured API key.",
+      description:
+        "Cheap canary to confirm the GoHire base URL + key set in Settings → Integrations are accepted before invoking heavier endpoints. Returns the upstream body under .data. Also backs the Settings 'Test connection' affordance.",
+      argsSchema: {},
+      argsExample: {},
+      configSchema: GOHIRE_CONFIG_SCHEMA,
+      configExample: { base_url: "https://api.gohire.io/v1" },
+      returnsSchema: {
+        data: { type: "object", description: "Upstream JSON, e.g. { status: 'ok' }" },
+      },
+      returnsExample: { data: { status: "ok" } },
+      sourcePath: "packages/tools/src/gohire/health.ts",
+    },
+  },
+  {
+    descriptor: gohireParseJdApi,
+    catalog: {
+      name: "gohireParseJdApi",
+      category: "gohire",
+      summary:
+        "POST {base}/parse-jd on GoHire — structures a job description (text, URL, or base64 PDF).",
+      description:
+        "Forwards the request body verbatim, so the LLM can pass any of the documented shapes. Upstream validation errors surface as tool_result:is_error so the model can self-correct.",
+      argsSchema: {
+        jd_text: {
+          type: "string",
+          description: "Plain-text JD body. Provide this OR jd_url OR jd_base64.",
+        },
+        jd_url: { type: "string", description: "Fetchable JD URL." },
+        jd_base64: { type: "string", description: "Base64-encoded JD PDF." },
+      },
+      argsExample: { jd_text: "## Senior Backend Engineer\n\nResponsibilities: ..." },
+      configSchema: GOHIRE_CONFIG_SCHEMA,
+      configExample: { base_url: "https://api.gohire.io/v1" },
+      returnsSchema: {
+        data: { type: "object", description: "Structured JD requirements from GoHire." },
+      },
+      sourcePath: "packages/tools/src/gohire/parse-jd.ts",
+    },
+  },
+  {
+    descriptor: gohireParseResumeApi,
+    catalog: {
+      name: "gohireParseResumeApi",
+      category: "gohire",
+      summary:
+        "POST {base}/parse-resume (multipart) on GoHire — resume PDF → structured candidate data.",
+      description:
+        "Pass {resume_base64, filename?, mime?} OR {resume_url} OR no args (chains from the previous tool's output, e.g. fs.readFromInbox). The wrapper handles multipart encoding so the caller stays in JSON-shaped input. Returns the upstream success body verbatim under .data.",
+      argsSchema: {
+        resume_base64: { type: "string", description: "Base64-encoded resume PDF." },
+        resume_url: { type: "string", description: "Fetchable resume URL (downloaded then forwarded)." },
+        filename: { type: "string", description: "Optional upload filename." },
+        mime: { type: "string", description: "Optional content-type hint." },
+      },
+      argsExample: {},
+      configSchema: GOHIRE_CONFIG_SCHEMA,
+      configExample: { base_url: "https://api.gohire.io/v1" },
+      returnsSchema: {
+        data: { type: "object", description: "Structured candidate data from GoHire." },
+      },
+      chainsWith: ["fs.readFromInbox"],
+      sourcePath: "packages/tools/src/gohire/parse-resume.ts",
+    },
+  },
+  {
+    descriptor: gohireMatchResumeApi,
+    catalog: {
+      name: "gohireMatchResumeApi",
+      category: "gohire",
+      summary:
+        "POST {base}/match-resume on GoHire — score a resume against a JD. The GoHire counterpart to matchResumeApi.",
+      description:
+        "REQUIRED FIELDS: { resume: string, jd: string } — both plain-text full-body strings (NOT field references, NOT URLs). Returns the same normalised envelope as robohire's matchResumeApi — { matchScore, verdict, hiringRecommendation, summary, raw } — so a tenant can switch ATS providers without touching a downstream prompt.",
+      argsSchema: {
+        resume: { type: "string", required: true, description: "Full plain-text resume body." },
+        jd: { type: "string", required: true, description: "Full plain-text job-description body." },
+      },
+      argsExample: { resume: "Jane Doe — Senior Backend Engineer ...", jd: "## Senior Backend Engineer ..." },
+      configSchema: GOHIRE_CONFIG_SCHEMA,
+      configExample: { base_url: "https://api.gohire.io/v1" },
+      returnsSchema: {
+        matchScore: { type: "number | null", description: "0-100 or null when upstream omitted." },
+        verdict: { type: "string | null" },
+        hiringRecommendation: { type: "string | null" },
+        summary: { type: "string | null" },
+        raw: { type: "object", description: "Full upstream analysis for the detailed breakdown." },
+      },
+      returnsExample: {
+        matchScore: 82,
+        verdict: "Strong Match",
+        hiringRecommendation: "Invite to interview",
+        summary: "Backend stack aligns; strong concurrency experience.",
+        raw: {},
+      },
+      sourcePath: "packages/tools/src/gohire/match-resume.ts",
+    },
+  },
+  {
+    descriptor: gohireInviteCandidateApi,
+    catalog: {
+      name: "gohireInviteCandidateApi",
+      category: "gohire",
+      summary:
+        "POST {base}/invite-candidate on GoHire — generate an interview invitation for a candidate.",
+      description:
+        "Accepts {candidate_name, job_title, ...} (passed through verbatim). Returns the upstream body under .data.",
+      argsSchema: {
+        candidate_name: { type: "string", description: "Candidate display name." },
+        job_title: { type: "string", description: "Role the invitation is for." },
+      },
+      argsExample: { candidate_name: "Jane Doe", job_title: "Senior Backend Engineer" },
+      configSchema: GOHIRE_CONFIG_SCHEMA,
+      configExample: { base_url: "https://api.gohire.io/v1" },
+      returnsSchema: {
+        data: { type: "object", description: "Invitation payload from GoHire." },
+      },
+      sourcePath: "packages/tools/src/gohire/invite-candidate.ts",
     },
   },
 

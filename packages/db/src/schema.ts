@@ -658,6 +658,70 @@ export const idempotencyKeys = sqliteTable(
   }),
 );
 
+/**
+ * External-service integrations configured per tenant in Settings →
+ * Integrations (e.g. the GoHire ATS). One row per (tenant, provider).
+ *
+ * The API key is encrypted at rest with AES-256-GCM — only the ciphertext
+ * (`key_cipher`), the 12-byte IV (`key_iv`), the 16-byte auth tag
+ * (`key_tag`), and the per-row KDF salt (`key_salt`) are stored; the
+ * plaintext never touches the DB. `key_masked` is a display-safe
+ * `gh_ab…wxyz` fragment so the UI can show "a key is set" without
+ * decrypting. The decrypt path lives in apps/api
+ * (`services/integration-store.ts`); the GoHire tool family reads the
+ * decrypted creds through the injected `resolveIntegrationCreds` seam.
+ *
+ * `base_url` + the key are both nullable so a row can exist half-configured
+ * (e.g. base URL saved, key pending). `status` is the last connection-test
+ * result so the Settings list can show a health pill without re-probing.
+ */
+export const integrations = sqliteTable(
+  "integrations",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    /** Stable provider key, e.g. "gohire". Matches the GoHire tools' lookup. */
+    provider: text("provider").notNull(),
+    /** Human-readable display name shown in the Settings list. */
+    name: text("name").notNull(),
+    /** Operator-configured base URL (no trailing slash). */
+    baseUrl: text("base_url"),
+    /** AES-256-GCM ciphertext of the API key (hex). Null when unset. */
+    keyCipher: text("key_cipher"),
+    /** 12-byte IV (hex). */
+    keyIv: text("key_iv"),
+    /** 16-byte GCM auth tag (hex). */
+    keyTag: text("key_tag"),
+    /** Per-row scrypt salt (hex) used to derive the encryption key. */
+    keySalt: text("key_salt"),
+    /** Display-safe masked key (e.g. "gh_ab…wxyz"); never the plaintext. */
+    keyMasked: text("key_masked"),
+    /** Last connection-test outcome: "unconfigured" | "ok" | "error". */
+    status: text("status").notNull().default("unconfigured"),
+    /** When the connection was last tested. */
+    lastCheckedAt: integer("last_checked_at", { mode: "timestamp_ms" }),
+    /** Last connection-test error message (null when ok). */
+    lastError: text("last_error"),
+    enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+    createdBy: text("created_by"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+  },
+  (t) => ({
+    tenantProviderUq: uniqueIndex("integration_tenant_provider_uq").on(
+      t.tenantId,
+      t.provider,
+    ),
+    tenantIdx: index("integration_tenant_idx").on(t.tenantId),
+  }),
+);
+
 // ─── Relations (used by Drizzle's relational queries) ───────────────────────
 
 export const tenantsRelations = relations(tenants, ({ many }) => ({

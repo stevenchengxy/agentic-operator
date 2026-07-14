@@ -29,6 +29,7 @@ import { tenantCodeRoutes } from "./routes/v1/tenant-code";
 import { workflowRoutes } from "./routes/v1/workflow";
 import { demoRoutes } from "./routes/v1/demo";
 import { toolsRoutes } from "./routes/v1/tools";
+import { integrationsRoutes } from "./routes/v1/integrations";
 import { stopDemoRunner } from "./services/demo-runner";
 import { inngestRoute } from "./routes/inngest";
 import { bootstrapRuntime } from "./bootstrap";
@@ -139,6 +140,9 @@ export async function build() {
       // Global tool catalog — drives the Tools view in the portal so
       // manifest authors can browse what's available without spelunking.
       await v1.register(toolsRoutes);
+      // External-service integrations (Settings → Integrations). GoHire ATS
+      // base URL + encrypted API key, read by the GoHire tool family.
+      await v1.register(integrationsRoutes);
     },
     { prefix: "/v1" },
   );
