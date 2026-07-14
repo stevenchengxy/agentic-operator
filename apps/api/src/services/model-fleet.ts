@@ -82,8 +82,13 @@ function isFleetRole(s: unknown): s is FleetRole {
 
 export function listFleet(tenantSlug: string): ModelFleetEntry[] {
   return load()
-    .entries.filter((e) => e.tenantSlug === tenantSlug)
-    .sort((a, b) => b.addedAt - a.addedAt);
+    .entries.map((entry, index) => ({ entry, index }))
+    .filter(({ entry }) => entry.tenantSlug === tenantSlug)
+    // Date.now() can repeat for back-to-back writes. File order is the
+    // authoritative insertion order, so use the later array position as a
+    // deterministic newest-first tie-breaker.
+    .sort((a, b) => b.entry.addedAt - a.entry.addedAt || b.index - a.index)
+    .map(({ entry }) => entry);
 }
 
 export interface AddFleetInput {

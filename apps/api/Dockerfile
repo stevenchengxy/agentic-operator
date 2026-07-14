@@ -29,7 +29,7 @@
 #     agentic-api:dev
 
 # --- base ----------------------------------------------------------------
-FROM node:26-slim AS base
+FROM node:26.5.0-slim AS base
 ENV PNPM_HOME=/pnpm
 ENV PATH="$PNPM_HOME:$PATH"
 # Better-sqlite3 requires Python and a C++ toolchain to build natively.
@@ -42,7 +42,7 @@ RUN apt-get update \
       ca-certificates \
       tini \
  && rm -rf /var/lib/apt/lists/*
-# node:26-slim does NOT ship corepack; install pnpm via npm to keep the
+# node:26.5.0-slim does NOT ship corepack; install pnpm via npm to keep the
 # layer reproducible (avoids `corepack: not found`).
 RUN npm install --global pnpm@11.1.2
 WORKDIR /app
@@ -77,7 +77,7 @@ COPY models models
 RUN pnpm --filter @agentic/api... typecheck
 
 # --- runtime -------------------------------------------------------------
-FROM node:26-slim AS runtime
+FROM node:26.5.0-slim AS runtime
 ENV NODE_ENV=production
 ENV PNPM_HOME=/pnpm
 ENV PATH="$PNPM_HOME:$PATH"

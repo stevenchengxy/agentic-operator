@@ -120,6 +120,13 @@ export const AgentSchema = z
     ontology_instructions: emptyStringToUndef,
     tool_use: toolUseSchema,
     typescript_code: emptyStringToUndef,
+    /**
+     * Opt-in marker for agents authored by the deploy wizard. Generated
+     * agents use `ontology_instructions` as their complete system prompt and
+     * the runtime-provided generic user turn, so they do not require a
+     * tenant-specific TypeScript `definePrompt` implementation.
+     */
+    generated: z.boolean().optional(),
     // Scheduled-trigger fields. Declared explicitly so that legacy manifests
     // serialising `""` as the placeholder coerce to `undefined`; otherwise
     // `.passthrough()` would let the raw empty string flow through and the
@@ -223,8 +230,20 @@ async function resolveModelFile(
     const base = c.replace(/\.json$/, "");
     const versioned = allFiles
       .filter((f) => new RegExp(`^${base}_v\\d+(\\.\\d+)*\\.json$`).test(f))
-      .sort()
-      .reverse();
+      .sort((a, b) => {
+        const readVersion = (file: string): number[] => {
+          const match = file.match(/_v(\d+(?:\.\d+)*)\.json$/);
+          return (match?.[1] ?? "0").split(".").map(Number);
+        };
+        const av = readVersion(a);
+        const bv = readVersion(b);
+        const width = Math.max(av.length, bv.length);
+        for (let i = 0; i < width; i += 1) {
+          const delta = (bv[i] ?? 0) - (av[i] ?? 0);
+          if (delta !== 0) return delta;
+        }
+        return b.localeCompare(a);
+      });
     if (versioned.length > 0) return path.join(dir, versioned[0]!);
   }
   return null;

@@ -204,7 +204,7 @@ function CodeStep() {
     --target prod
 
 ✓ Bundled 22 agents (4 changed)
-✓ Compiled handlers (TypeScript 5.6, Node 22)
+✓ Compiled handlers (TypeScript 5.6, Node 26.5.0)
 ✓ Uploaded to /var/agentic/deploys/raas/2026.05.16-b/
 ✓ Registered with Inngest worker · 1842 active runs migrated
 → Live in 3.4s`}</CodeBlock>

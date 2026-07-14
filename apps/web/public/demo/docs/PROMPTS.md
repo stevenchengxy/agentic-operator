@@ -61,7 +61,7 @@ the **refined** brief we'd hand to an engineering agent (Claude Code) today.
 > runtime must load it without code changes.
 >
 > **Stack** (all latest stable as of May 2026):
-> - **Next.js 15** App Router · **React 19** · **TypeScript 5** · **Node 22**
+> - **Next.js 16.2.10** App Router · **React 19** · **TypeScript 6** · **Node 26.5.0**
 > - **Inngest** as the durable event bus / step-function engine
 > - **SQLite** via `better-sqlite3` for metadata; **Drizzle ORM** for schema
 > - **Files** on disk for logs (`logs/runs/<date>/<run-id>.log`), event

@@ -3,12 +3,11 @@
 /**
  * DeployAgentModal — 6-step wizard for adding a new agent to the workflow.
  *
- * Live data via canonical TanStack hooks (useEvents for event-name
- * autocomplete + useDag for the workflow stage list). Models are passed
- * in from the page (audit 01 D-11).
+ * Live data via canonical TanStack hooks. Prompt generation and deployment
+ * are server-backed; the prompt remains fully editable before deployment.
  */
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   ActorTag,
   Badge,
@@ -19,16 +18,19 @@ import {
   Panel,
 } from "@/app/portal/components";
 import { useDag } from "@/lib/hooks/useAgents";
-import { useEvents } from "@/lib/hooks/useEvents";
+import { useEventCatalog, useEvents } from "@/lib/hooks/useEvents";
+import { type ToolUseSchema } from "@/app/portal/components/agent-code/samples";
+import { AgentToolUseEditPanel } from "@/app/portal/components/agent-code/EditPanels";
+import { useFleet } from "@/lib/hooks/useModelFleet";
+import { useTools, type ToolCatalogEntry } from "@/lib/hooks/useTools";
 import {
-  AGENT_SAMPLE_TOOL_USE,
-  AGENT_SAMPLE_TS_CODE,
-  type ToolUseSchema,
-} from "@/app/portal/components/agent-code/samples";
-import {
-  AgentCodeEditPanel,
-  AgentToolUseEditPanel,
-} from "@/app/portal/components/agent-code/EditPanels";
+  useDeployAuthoredAgent,
+  useGenerateAgentPrompt,
+  type GenerateAgentPromptBody,
+} from "@/lib/hooks/useAgentAuthoring";
+import { useTenant } from "@/app/portal/lib/use-tenant";
+import { useToast } from "@/app/portal/components/toast";
+import { normalizeAuthoredEventName } from "./event-name";
 
 // Static workflow ontology labels — mirrors the dashboard funnel.
 const STAGE_LABELS: Record<number, string> = {
@@ -42,11 +44,6 @@ const STAGE_LABELS: Record<number, string> = {
   7: "Submit",
 };
 
-interface ModelInfo {
-  id: string;
-  name: string;
-}
-
 const AGENT_TEMPLATES = [
   { id: "blank", actor: "Agent" as const, name: "Blank agent", desc: "Empty handler. Bring your own steps + prompt.", color: "var(--text-3)" },
   { id: "classify", actor: "Agent" as const, name: "Classifier", desc: "Single LLM call, returns one of N labels. Cheap and fast.", color: "var(--blue)" },
@@ -54,61 +51,61 @@ const AGENT_TEMPLATES = [
   { id: "rag", actor: "Agent" as const, name: "RAG retriever", desc: "Embeds question, fetches top-k chunks, answers with citations.", color: "var(--violet)" },
   { id: "loop", actor: "Agent" as const, name: "Tool-loop agent", desc: "Iterates tool calls until done. Use for research, browsing, data lookups.", color: "var(--signal)" },
   { id: "human", actor: "Human" as const, name: "Human approval", desc: "Pauses the workflow for an operator to approve, reject, or supplement.", color: "var(--violet)" },
-];
-
-const COMMON_TOOLS = [
-  { id: "db.query", kind: "Data", hint: "Read from the run-state DB" },
-  { id: "db.upsert", kind: "Data", hint: "Write/update rows" },
-  { id: "db.lock", kind: "Data", hint: "Acquire a distributed lock" },
-  { id: "http.fetch", kind: "Network", hint: "HTTP GET/POST with retry" },
-  { id: "llm.generate", kind: "Model", hint: "Direct LLM call (escape hatch)" },
-  { id: "llm.evaluate", kind: "Model", hint: "LLM-as-judge rubric scoring" },
-  { id: "ocr.parse", kind: "Document", hint: "PDF → text + structure" },
-  { id: "nlp.extract", kind: "Document", hint: "Entity / field extraction" },
-  { id: "pdf.compose", kind: "Document", hint: "Render markdown → PDF" },
-  { id: "scoring.match", kind: "Domain", hint: "Resume↔JD matcher (RAAS)" },
-  { id: "email.send", kind: "Notify", hint: "Transactional email" },
-  { id: "wechat.notify", kind: "Notify", hint: "WeChat Work bot" },
-  { id: "ats.adapter", kind: "Integration", hint: "Client ATS submit" },
-];
+] as const;
 
 type Template = (typeof AGENT_TEMPLATES)[number];
 
 export function DeployAgentModal({
   onClose,
-  models,
 }: {
   onClose: () => void;
-  models: ModelInfo[];
 }) {
+  const tenant = useTenant();
+  const toast = useToast();
   const { data: dag } = useDag();
   const { data: liveEvents = [] } = useEvents({ limit: 100 });
+  const { data: eventCatalog = [] } = useEventCatalog();
+  const { data: fleet = [], isLoading: fleetLoading } = useFleet();
+  const { data: toolCatalog, isLoading: toolsLoading } = useTools();
+  const generatePrompt = useGenerateAgentPrompt();
+  const deployAgent = useDeployAuthoredAgent();
   // Derive stages from the live DAG (set of stage indices in use).
   const stages = useMemo(() => {
     const used = new Set<number>();
     for (const a of dag?.agents ?? []) used.add(a.stage);
+    for (const id of Object.keys(STAGE_LABELS)) used.add(Number(id));
     return Array.from(used)
       .sort((a, b) => a - b)
       .map((id) => ({ id, label: STAGE_LABELS[id] ?? `Stage ${id}` }));
   }, [dag]);
-  // Event-name catalog combines names seen on the live stream + every name
-  // declared by an agent in the DAG.
-  const events = useMemo(() => {
+  const [createdEvents, setCreatedEvents] = useState<string[]>([]);
+  // Event-name catalog combines persisted ontology rows, names seen on the
+  // live stream, and every name declared by an agent in the DAG.
+  const existingEvents = useMemo(() => {
     const set = new Set<string>();
+    for (const e of eventCatalog) set.add(e.name);
     for (const e of liveEvents) set.add(e.name);
     for (const a of dag?.agents ?? []) {
       for (const n of a.triggers) set.add(n);
       for (const n of a.emits) set.add(n);
     }
-    return Array.from(set).sort().map((name) => ({ name }));
-  }, [liveEvents, dag]);
+    return Array.from(set).sort();
+  }, [eventCatalog, liveEvents, dag]);
+  const events = useMemo(
+    () => Array.from(new Set([...existingEvents, ...createdEvents])).sort(),
+    [existingEvents, createdEvents],
+  );
+  const draftNewEvents = useMemo(
+    () => createdEvents.filter((name) => !existingEvents.includes(name)),
+    [createdEvents, existingEvents],
+  );
   const [step, setStep] = useState(0);
   const [template, setTemplate] = useState<Template | null>(null);
   const [name, setName] = useState("");
   const [title, setTitle] = useState("");
   const [desc, setDesc] = useState("");
   const [stage, setStage] = useState(5);
-  const [model, setModel] = useState(models[0]?.name ?? "");
+  const [fleetId, setFleetId] = useState("");
   const [tools, setTools] = useState<string[]>([]);
   const [triggers, setTriggers] = useState<string[]>([]);
   const [emits, setEmits] = useState<string[]>([]);
@@ -116,34 +113,168 @@ export function DeployAgentModal({
   const [timeout, setTimeoutVal] = useState(120);
   const [concurrency, setConcurrency] = useState(8);
   const [implTab, setImplTab] = useState<"prompt" | "code" | "tools" | "bind">("prompt");
-  const [tsCode, setTsCode] = useState(AGENT_SAMPLE_TS_CODE);
-  const [toolUse, setToolUse] = useState<ToolUseSchema[]>(AGENT_SAMPLE_TOOL_USE);
+  const [tsCode, setTsCode] = useState("");
+  const [toolUse, setToolUse] = useState<ToolUseSchema[]>([]);
+  const [systemPrompt, setSystemPrompt] = useState("");
+  const [promptError, setPromptError] = useState<string | null>(null);
+  const [deployError, setDeployError] = useState<string | null>(null);
 
   const steps = ["Template", "Identity", "Events", "Implementation", "Behavior", "Review"];
 
+  const selectedModel = fleet.find((entry) => entry.id === fleetId);
+  const availableTools = toolCatalog?.tools ?? [];
+  const nameValid = /^[a-z][A-Za-z0-9]*$/.test(name);
+  const identityValid = nameValid && title.trim().length > 0 && desc.trim().length >= 10;
+  const eventsValid = triggers.length > 0;
+  const implementationValid = systemPrompt.trim().length >= 40;
+  const behaviorValid = retries >= 0 && retries <= 10 && timeout >= 1 && timeout <= 3600 && concurrency >= 1 && concurrency <= 100;
+  const allValid = Boolean(template) && identityValid && eventsValid && implementationValid && behaviorValid;
+
+  useEffect(() => {
+    if (fleetId || fleet.length === 0) return;
+    setFleetId((fleet.find((entry) => entry.role === "primary") ?? fleet[0])!.id);
+  }, [fleet, fleetId]);
+
   function pickTemplate(t: Template) {
     setTemplate(t);
-    if (t.id === "classify") setTools(["llm.generate"]);
-    if (t.id === "extract") setTools(["llm.generate", "db.upsert"]);
-    if (t.id === "rag") setTools(["http.fetch", "llm.generate"]);
-    if (t.id === "loop") setTools(["http.fetch", "db.query", "llm.generate"]);
     setStep(1);
   }
+
+  function promptBody(): GenerateAgentPromptBody {
+    return {
+      name,
+      title: title.trim(),
+      description: desc.trim(),
+      actor: template?.actor ?? "Agent",
+      template: template?.id ?? "blank",
+      stage,
+      triggers,
+      emits,
+      tools: authoredTools(),
+      ...(selectedModel
+        ? { provider: selectedModel.provider as GenerateAgentPromptBody["provider"], model: selectedModel.modelName }
+        : {}),
+    };
+  }
+
+  function authoredTools(): GenerateAgentPromptBody["tools"] {
+    return toolUse.map((tool) => ({
+      name: tool.name,
+      description: tool.description,
+      input_schema: tool.input_schema,
+    }));
+  }
+
+  async function requestSystemPrompt() {
+    if (!identityValid || !eventsValid || !template) return;
+    setPromptError(null);
+    try {
+      const result = await generatePrompt.mutateAsync(promptBody());
+      setSystemPrompt(result.systemPrompt);
+    } catch (error) {
+      setPromptError(error instanceof Error ? error.message : "Could not generate the system prompt");
+    }
+  }
+
   function next() {
+    if (step === 2) {
+      setStep(3);
+      if (!systemPrompt.trim()) void requestSystemPrompt();
+      return;
+    }
     setStep((s) => Math.min(steps.length - 1, s + 1));
   }
   function back() {
     setStep((s) => Math.max(0, s - 1));
   }
-  function toggleTool(id: string) {
-    setTools((ts) => (ts.includes(id) ? ts.filter((t) => t !== id) : [...ts, id]));
+  function toToolUse(tool: ToolCatalogEntry): ToolUseSchema {
+    const fields = tool.argsSchema ?? {};
+    return {
+      name: tool.name,
+      description: tool.description ?? tool.summary,
+      input_schema: {
+        type: "object",
+        properties: Object.fromEntries(
+          Object.entries(fields).map(([key, field]) => [
+            key,
+            { type: field.type || "string", ...(field.description ? { description: field.description } : {}) },
+          ]),
+        ),
+        required: Object.entries(fields).filter(([, field]) => field.required).map(([key]) => key),
+      },
+    };
+  }
+
+  function toggleTool(tool: ToolCatalogEntry) {
+    const isSelected = tools.includes(tool.name);
+    setTools((current) => isSelected ? current.filter((name) => name !== tool.name) : [...current, tool.name]);
+    setToolUse((current) => isSelected
+      ? current.filter((entry) => entry.name !== tool.name)
+      : current.some((entry) => entry.name === tool.name) ? current : [...current, toToolUse(tool)]);
   }
   function addEvent(set: React.Dispatch<React.SetStateAction<string[]>>, val: string) {
-    const v = val.trim().toUpperCase().replace(/[^A-Z0-9_]/g, "_");
-    if (v) set((arr) => (arr.includes(v) ? arr : [...arr, v]));
+    const v = normalizeAuthoredEventName(val);
+    if (!v) return;
+    if (!existingEvents.includes(v)) {
+      setCreatedEvents((current) => current.includes(v) ? current : [...current, v]);
+    }
+    set((arr) => (arr.includes(v) ? arr : [...arr, v]));
   }
   function removeEvent(set: React.Dispatch<React.SetStateAction<string[]>>, v: string) {
     set((arr) => arr.filter((x) => x !== v));
+  }
+  function addSingleEmit(val: string) {
+    const v = normalizeAuthoredEventName(val);
+    if (!v) return;
+    if (!existingEvents.includes(v)) {
+      setCreatedEvents((current) => current.includes(v) ? current : [...current, v]);
+    }
+    setEmits([v]);
+  }
+
+  function canContinue(): boolean {
+    if (step === 0) return Boolean(template);
+    if (step === 1) return identityValid;
+    if (step === 2) return eventsValid;
+    if (step === 3) return implementationValid && !generatePrompt.isPending;
+    if (step === 4) return behaviorValid;
+    return allValid;
+  }
+
+  async function deploy() {
+    if (!template || !allValid) return;
+    setDeployError(null);
+    try {
+      const context = promptBody();
+      const result = await deployAgent.mutateAsync({
+        name: context.name,
+        title: context.title,
+        description: context.description,
+        actor: context.actor,
+        template: context.template,
+        stage: context.stage,
+        triggers: context.triggers,
+        emits: context.emits,
+        ...(context.provider ? { provider: context.provider } : {}),
+        ...(context.model ? { model: context.model } : {}),
+        systemPrompt,
+        toolUse: authoredTools(),
+        retries,
+        timeoutS: timeout,
+        concurrency,
+        ...(tsCode.trim() ? { typescriptCode: tsCode } : {}),
+      });
+      toast({
+        tone: "green",
+        title: `${result.agent.title} deployed`,
+        description: `${result.runtime.functionId} is loaded in the live runtime.${result.events.created.length > 0 ? ` ${result.events.created.length} new event type${result.events.created.length === 1 ? "" : "s"} created.` : ""}`,
+      });
+      onClose();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Agent deployment failed";
+      setDeployError(message);
+      toast({ tone: "red", title: "Deploy failed", description: message });
+    }
   }
 
   return (
@@ -166,7 +297,7 @@ export function DeployAgentModal({
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontSize: 14, color: "var(--text)", fontWeight: 500 }}>Deploy new agent</div>
             <div style={{ fontSize: 11, color: "var(--text-3)" }}>
-              Added as a draft to workflow <span className="mono">raas</span>. Connect it to events on the workflow canvas after deploy.
+              Saves a new manifest version for <span className="mono">{tenant}</span> and loads the agent into the live runtime.
             </div>
           </div>
           <button
@@ -267,6 +398,9 @@ export function DeployAgentModal({
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, maxWidth: 760 }}>
               <EditField label="Name (id)" hint="lowercase camelCase, used in events & logs">
                 <EditText value={name} onChange={setName} mono />
+                {name.length > 0 && !nameValid && (
+                  <InlineMessage tone="red">Start with a lowercase letter and use letters or numbers only.</InlineMessage>
+                )}
               </EditField>
               <EditField label="Title" hint="Shown in the operator UI">
                 <EditText value={title} onChange={setTitle} />
@@ -274,6 +408,9 @@ export function DeployAgentModal({
               <div style={{ gridColumn: "1 / -1" }}>
                 <EditField label="Description" hint="One paragraph. Shown in the workflow graph inspector.">
                   <EditTextarea value={desc} onChange={setDesc} rows={3} />
+                  {desc.length > 0 && desc.trim().length < 10 && (
+                    <InlineMessage tone="red">Describe the agent in at least 10 characters.</InlineMessage>
+                  )}
                 </EditField>
               </div>
               <EditField label="Workflow stage" hint="Column on the workflow canvas.">
@@ -304,22 +441,27 @@ export function DeployAgentModal({
 
           {step === 2 && (
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, maxWidth: 760 }}>
-              <EditField label="Listens to (triggers)" hint="Pick existing events from the workflow, or type new EVENT_NAMEs.">
+              <EditField label="Listens to (triggers)" hint="Pick an existing event or create a new event type. New types are saved when the agent is deployed.">
                 <EventPicker
                   selected={triggers}
                   onAdd={(v) => addEvent(setTriggers, v)}
                   onRemove={(v) => removeEvent(setTriggers, v)}
                   tone="blue"
-                  all={events.map((e) => e.name)}
+                  all={events}
+                  newEvents={draftNewEvents}
                 />
+                {triggers.length === 0 && (
+                  <InlineMessage tone="amber">At least one trigger is required so the runtime can start this agent.</InlineMessage>
+                )}
               </EditField>
-              <EditField label="Emits (outbound)" hint="The events this agent publishes. Downstream agents listen to these.">
+              <EditField label="Emits (outbound)" hint="Pick or create the event this agent publishes. Downstream agents can listen to it.">
                 <EventPicker
                   selected={emits}
-                  onAdd={(v) => addEvent(setEmits, v)}
+                  onAdd={addSingleEmit}
                   onRemove={(v) => removeEvent(setEmits, v)}
                   tone="green"
-                  all={events.map((e) => e.name)}
+                  all={events}
+                  newEvents={draftNewEvents}
                 />
               </EditField>
             </div>
@@ -395,8 +537,8 @@ export function DeployAgentModal({
                 <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8, padding: "4px 0" }}>
                   <span style={{ fontSize: 11, color: "var(--text-3)" }}>Model</span>
                   <select
-                    value={model}
-                    onChange={(e) => setModel(e.target.value)}
+                    value={fleetId}
+                    onChange={(e) => setFleetId(e.target.value)}
                     style={{
                       background: "var(--panel-2)",
                       border: "1px solid var(--border-2)",
@@ -408,11 +550,15 @@ export function DeployAgentModal({
                       outline: "none",
                     }}
                   >
-                    {models.length === 0 ? (
-                      <option value="">No models configured</option>
+                    {fleetLoading ? (
+                      <option value="">Loading models…</option>
+                    ) : fleet.length === 0 ? (
+                      <option value="">Workspace default</option>
                     ) : (
-                      models.map((m) => (
-                        <option key={m.id} value={m.name}>{m.name}</option>
+                      fleet.map((entry) => (
+                        <option key={entry.id} value={entry.id}>
+                          {entry.alias || entry.modelName} · {entry.provider}
+                        </option>
                       ))
                     )}
                   </select>
@@ -420,24 +566,67 @@ export function DeployAgentModal({
               </div>
 
               {implTab === "prompt" && (
-                <EditField
-                  label="System prompt"
-                  hint="Prepended to every request. Use {{vars}} to interpolate run context."
-                >
-                  <EditTextarea
-                    value={`You are an automated agent named ${name || "<name>"} in the RAAS workflow.\nGoal: ${title || "<title>"}.\n\nFollow these rules:\n- Emit one structured progress event per step.\n- Never block on human input — emit a HUMAN_TASK event if needed.\n- Be conservative; if uncertain, fall through to manual review.`}
-                    onChange={() => {}}
-                    rows={14}
-                    mono
-                  />
-                </EditField>
+                <div>
+                  <div style={{ display: "flex", alignItems: "end", gap: 10 }}>
+                    <div style={{ flex: 1 }}>
+                      <EditField
+                        label="System prompt"
+                        hint="Generated from the description, events, and tools. Review and edit it before deployment."
+                      >
+                        <EditTextarea
+                          value={systemPrompt}
+                          onChange={setSystemPrompt}
+                          rows={18}
+                          mono
+                        />
+                      </EditField>
+                    </div>
+                    <Button
+                      tone="default"
+                      icon="spark"
+                      onClick={() => void requestSystemPrompt()}
+                      disabled={generatePrompt.isPending || !identityValid || !eventsValid}
+                      style={{ marginBottom: 11 }}
+                    >
+                      {generatePrompt.isPending ? "Generating…" : systemPrompt ? "Regenerate" : "Generate"}
+                    </Button>
+                  </div>
+                  {generatePrompt.isPending && (
+                    <InlineMessage tone="signal">Building a comprehensive prompt from the agent description…</InlineMessage>
+                  )}
+                  {promptError && <InlineMessage tone="red">{promptError}</InlineMessage>}
+                  {!generatePrompt.isPending && !promptError && systemPrompt.trim().length > 0 && systemPrompt.trim().length < 40 && (
+                    <InlineMessage tone="red">The system prompt must contain at least 40 characters.</InlineMessage>
+                  )}
+                </div>
               )}
 
               {implTab === "code" && (
-                <AgentCodeEditPanel value={tsCode} onChange={setTsCode} height={480} />
+                <EditField
+                  label="TypeScript source (optional)"
+                  hint="Stored with the manifest as implementation metadata. Generated manifest agents execute through the system prompt and runtime tool loop."
+                >
+                  <EditTextarea value={tsCode} onChange={setTsCode} rows={18} mono />
+                </EditField>
               )}
               {implTab === "tools" && (
-                <AgentToolUseEditPanel tools={toolUse} onChange={setToolUse} />
+                toolUse.length > 0 ? (
+                  <AgentToolUseEditPanel tools={toolUse} onChange={setToolUse} />
+                ) : (
+                  <div
+                    style={{
+                      padding: 24,
+                      background: "var(--panel-2)",
+                      border: "1px solid var(--border)",
+                      borderRadius: 5,
+                      color: "var(--text-3)",
+                      fontSize: 12,
+                      lineHeight: 1.6,
+                    }}
+                  >
+                    No tools selected. Choose workspace tools under <span className="mono" style={{ color: "var(--text-2)" }}>Tool bindings</span>; their live schemas will appear here for editing.
+                  </div>
+                )
               )}
 
               {implTab === "bind" && (
@@ -455,12 +644,19 @@ export function DeployAgentModal({
                       padding: 2,
                     }}
                   >
-                    {COMMON_TOOLS.map((t) => {
-                      const on = tools.includes(t.id);
+                    {toolsLoading && (
+                      <div style={{ color: "var(--text-3)", fontSize: 11.5 }}>Loading workspace tools…</div>
+                    )}
+                    {!toolsLoading && availableTools.length === 0 && (
+                      <div style={{ color: "var(--text-3)", fontSize: 11.5 }}>No workspace tools are registered.</div>
+                    )}
+                    {availableTools.map((tool) => {
+                      const on = tools.includes(tool.name);
                       return (
                         <button
-                          key={t.id}
-                          onClick={() => toggleTool(t.id)}
+                          key={tool.name}
+                          onClick={() => toggleTool(tool)}
+                          title={tool.description ?? tool.summary}
                           style={{
                             display: "flex",
                             alignItems: "center",
@@ -486,8 +682,8 @@ export function DeployAgentModal({
                           >
                             {on && <Icon name="check" size={9} style={{ color: "#000" }} />}
                           </span>
-                          <span className="mono" style={{ fontSize: 11.5, color: "var(--text)" }}>{t.id}</span>
-                          <Badge tone="muted" style={{ marginLeft: "auto" }}>{t.kind}</Badge>
+                          <span className="mono" style={{ fontSize: 11.5, color: "var(--text)" }}>{tool.name}</span>
+                          <Badge tone="muted" style={{ marginLeft: "auto" }}>{tool.category}</Badge>
                         </button>
                       );
                     })}
@@ -523,21 +719,10 @@ export function DeployAgentModal({
                   suffix="runs"
                 />
               </EditField>
-              <EditField label="Concurrency key" hint="Partition by a payload field — one run per key at a time.">
-                <EditText value="${event.payload.candidate_id}" mono onChange={() => {}} />
-              </EditField>
               <div style={{ gridColumn: "1 / -1" }}>
-                <EditField label="Dead-letter queue" hint="Where failed runs go after retries are exhausted.">
-                  <Seg
-                    value="audit"
-                    onChange={() => {}}
-                    options={[
-                      { value: "audit", label: "Audit log (default)" },
-                      { value: "queue", label: "DLQ for replay" },
-                      { value: "human", label: "Page human · #ops-alerts" },
-                    ]}
-                  />
-                </EditField>
+                <InlineMessage tone="signal">
+                  Concurrency is partitioned by the runtime event subject. Exhausted retries are recorded in the run and audit logs.
+                </InlineMessage>
               </div>
             </div>
           )}
@@ -548,33 +733,29 @@ export function DeployAgentModal({
                 <CodeBlock>
                   {JSON.stringify(
                     {
-                      id: `${stage}-new`,
+                      id: `${stage}-${name.replace(/([a-z0-9])([A-Z])/g, "$1-$2").toLowerCase() || "new-agent"}`,
                       name: name || "newAgent",
                       title: title || "New agent",
-                      actor: template?.actor || "Agent",
-                      stage,
-                      template: template?.id,
-                      triggers,
-                      emits,
-                      tools,
-                      model,
-                      retries: { max: retries, backoff: "exponential" },
-                      concurrency: { limit: concurrency, key: "${event.payload.candidate_id}" },
+                      description: desc,
+                      actor: [template?.actor || "Agent"],
+                      trigger: triggers,
+                      actions: [
+                        {
+                          order: "1",
+                          name: name || "newAgent",
+                          description: desc,
+                          type: template?.actor === "Human" ? "manual" : "logic",
+                        },
+                      ],
+                      triggered_event: emits,
+                      generated: template?.actor !== "Human",
+                      ontology_instructions: systemPrompt,
+                      tool_use: toolUse,
+                      model: selectedModel?.modelName,
+                      retries,
+                      concurrency: { enabled: true, max_concurrent_executions: concurrency },
                       timeout_s: timeout,
-                      typescript_code:
-                        template?.actor === "Human"
-                          ? null
-                          : `<inline · ${tsCode.split("\n").length} lines>`,
-                      tool_use:
-                        template?.actor === "Human"
-                          ? []
-                          : toolUse.map((t) => ({
-                              name: t.name,
-                              description: t.description,
-                              params: Object.keys(
-                                (t.input_schema && t.input_schema.properties) || {},
-                              ),
-                            })),
+                      ...(tsCode.trim() ? { typescript_code: `<inline · ${tsCode.split("\n").length} lines>` } : {}),
                     },
                     null,
                     2,
@@ -583,27 +764,42 @@ export function DeployAgentModal({
               </Panel>
               <div>
                 <Panel title="Pre-flight" padded>
-                  <ValidationLine ok={!!name} warn={!name} label="Identity valid" hint={name ? "✓" : "name required"} />
-                  <ValidationLine ok={triggers.length > 0} warn={triggers.length === 0} label={`${triggers.length} trigger event(s)`} />
+                  <ValidationLine ok={identityValid} label="Identity valid" hint={identityValid ? "ready" : "name, title, description required"} />
+                  <ValidationLine ok={triggers.length > 0} label={`${triggers.length} trigger event(s)`} />
                   <ValidationLine ok={emits.length > 0} warn={emits.length === 0} label={`${emits.length} emit event(s)`} />
-                  <ValidationLine ok label={`${tools.length} tool bindings`} />
+                  <ValidationLine ok={implementationValid} label="System prompt ready" hint={`${systemPrompt.trim().length} chars`} />
+                  <ValidationLine ok label={`${tools.length} live tool binding(s)`} />
                   {template?.actor !== "Human" && (
-                    <ValidationLine ok label={`typescript_code · ${tsCode.split("\n").length} lines`} hint="compiles" />
+                    <ValidationLine ok label={tsCode.trim() ? `typescript_code metadata · ${tsCode.split("\n").length} lines` : "No TypeScript metadata"} />
                   )}
                   {template?.actor !== "Human" && (
                     <ValidationLine
-                      ok={toolUse.length > 0}
+                      ok
                       warn={toolUse.length === 0}
                       label={`tool_use · ${toolUse.length} defined`}
-                      hint="schemas valid"
+                      hint={toolUse.length ? "live catalog schemas" : "optional"}
                     />
                   )}
-                  <ValidationLine ok label="Model accessible" hint={model} />
+                  <ValidationLine ok label="Model selection" hint={selectedModel ? `${selectedModel.provider}/${selectedModel.modelName}` : "workspace default"} />
+                  <ValidationLine ok={behaviorValid} label="Runtime limits valid" />
                 </Panel>
                 <Panel title="Deploy target" padded style={{ marginTop: 12 }}>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                    <DeployTargetRow on label="Staging · raas-stage" sub="Smoke test before prod" />
-                    <DeployTargetRow label="Production · raas" sub="Live event stream" warn />
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 10,
+                      padding: "8px 10px",
+                      background: "var(--panel-2)",
+                      border: "1px solid var(--signal)",
+                      borderRadius: 4,
+                    }}
+                  >
+                    <Icon name="deploy" size={12} style={{ color: "var(--signal)" }} />
+                    <div>
+                      <div style={{ fontSize: 12, color: "var(--text)" }}>Live runtime · <span className="mono">{tenant}</span></div>
+                      <div style={{ fontSize: 10.5, color: "var(--text-3)" }}>Persist manifest, create a workflow version, and hot-load the runtime function</div>
+                    </div>
                   </div>
                   <div
                     style={{
@@ -617,9 +813,10 @@ export function DeployAgentModal({
                       lineHeight: 1.55,
                     }}
                   >
-                    Will save as <span className="mono" style={{ color: "var(--text-2)" }}>raas@2026.05.18-draft</span>. Roll forward to prod from the Deployments page.
+                    Deployment succeeds only after the API confirms <span className="mono" style={{ color: "var(--text-2)" }}>{tenant}.{name || "agentName"}</span> is registered and running.
                   </div>
                 </Panel>
+                {deployError && <InlineMessage tone="red">{deployError}</InlineMessage>}
               </div>
             </div>
           )}
@@ -646,12 +843,12 @@ export function DeployAgentModal({
           <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
             <Button tone="ghost" onClick={onClose}>Cancel</Button>
             {step < steps.length - 1 ? (
-              <Button tone="primary" onClick={next}>
-                Continue
+              <Button tone="primary" onClick={next} disabled={!canContinue()}>
+                {step === 2 && generatePrompt.isPending ? "Generating…" : "Continue"}
               </Button>
             ) : (
-              <Button tone="primary" icon="deploy" onClick={onClose}>
-                Deploy to staging
+              <Button tone="primary" icon="deploy" onClick={() => void deploy()} disabled={!allValid || deployAgent.isPending}>
+                {deployAgent.isPending ? "Deploying…" : "Deploy agent"}
               </Button>
             )}
           </div>
@@ -818,12 +1015,14 @@ function EventPicker({
   onRemove,
   tone,
   all,
+  newEvents,
 }: {
   selected: string[];
   onAdd: (v: string) => void;
   onRemove: (v: string) => void;
   tone: "blue" | "green";
   all: string[];
+  newEvents: string[];
 }) {
   const [input, setInput] = useState("");
   const colorMap = {
@@ -831,9 +1030,18 @@ function EventPicker({
     green: { fg: "var(--green)", bg: "rgba(101,224,163,0.08)", bd: "rgba(101,224,163,0.30)" },
   } as const;
   const c = colorMap[tone] ?? colorMap.blue;
+  const normalizedInput = normalizeAuthoredEventName(input);
   const suggestions = input
-    ? all.filter((e) => e.toLowerCase().includes(input.toLowerCase()) && !selected.includes(e)).slice(0, 6)
+    ? all.filter((e) => e.toLowerCase().includes(input.toLowerCase()) && e !== normalizedInput && !selected.includes(e)).slice(0, 6)
     : [];
+  const canAddInput = Boolean(normalizedInput) && !selected.includes(normalizedInput);
+  const isNewInput = canAddInput && !all.includes(normalizedInput);
+
+  function commitInput(value = input) {
+    if (!normalizeAuthoredEventName(value)) return;
+    onAdd(value);
+    setInput("");
+  }
 
   return (
     <div>
@@ -859,6 +1067,9 @@ function EventPicker({
             }}
           >
             {t}
+            {newEvents.includes(t) && (
+              <span style={{ fontSize: 8, fontWeight: 700, letterSpacing: "0.06em", opacity: 0.75 }}>NEW</span>
+            )}
             <button
               onClick={() => onRemove(t)}
               aria-label={`Remove ${t}`}
@@ -875,11 +1086,11 @@ function EventPicker({
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter" && input.trim()) {
-              onAdd(input);
-              setInput("");
+              e.preventDefault();
+              commitInput();
             }
           }}
-          placeholder="Type EVENT_NAME, press enter…"
+          placeholder="Search or name a new event…"
           style={{
             width: "100%",
             background: "var(--panel-2)",
@@ -892,7 +1103,7 @@ function EventPicker({
             outline: "none",
           }}
         />
-        {suggestions.length > 0 && (
+        {(suggestions.length > 0 || canAddInput) && (
           <div
             style={{
               position: "absolute",
@@ -909,12 +1120,34 @@ function EventPicker({
               overflow: "auto",
             }}
           >
+            {canAddInput && (
+              <button
+                type="button"
+                onClick={() => commitInput()}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 7,
+                  width: "100%",
+                  padding: "7px 8px",
+                  fontSize: 11.5,
+                  color: isNewInput ? "var(--signal)" : "var(--text-2)",
+                  textAlign: "left",
+                  borderBottom: suggestions.length > 0 ? "1px solid var(--border)" : "none",
+                  background: isNewInput ? "rgba(203,255,0,0.05)" : "transparent",
+                }}
+              >
+                <Icon name="plus" size={10} />
+                <span>{isNewInput ? "Create new event" : "Use event"}</span>
+                <span className="mono" style={{ marginLeft: "auto", color: "var(--text)" }}>{normalizedInput}</span>
+              </button>
+            )}
             {suggestions.map((s) => (
               <button
+                type="button"
                 key={s}
                 onClick={() => {
-                  onAdd(s);
-                  setInput("");
+                  commitInput(s);
                 }}
                 style={{
                   display: "flex",
@@ -971,37 +1204,29 @@ function ValidationLine({
   );
 }
 
-function DeployTargetRow({
-  label,
-  sub,
-  on,
-  warn,
+function InlineMessage({
+  children,
+  tone,
 }: {
-  label: string;
-  sub: string;
-  on?: boolean;
-  warn?: boolean;
+  children: React.ReactNode;
+  tone: "signal" | "amber" | "red";
 }) {
+  const color = tone === "signal" ? "var(--signal)" : tone === "amber" ? "var(--amber)" : "var(--red)";
   return (
-    <label
+    <div
       style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 10,
-        padding: "8px 10px",
-        background: "var(--panel-2)",
-        border: "1px solid var(--border)",
+        marginTop: 6,
+        padding: "6px 8px",
+        background: "var(--bg-2)",
+        border: `1px solid color-mix(in srgb, ${color} 35%, transparent)`,
         borderRadius: 4,
-        cursor: "pointer",
+        color,
+        fontSize: 11,
+        lineHeight: 1.5,
       }}
     >
-      <input type="checkbox" defaultChecked={on} style={{ accentColor: "var(--signal)" }} />
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 12, color: "var(--text)" }}>{label}</div>
-        <div style={{ fontSize: 10.5, color: "var(--text-3)" }}>{sub}</div>
-      </div>
-      {warn && <Badge tone="amber">requires approval</Badge>}
-    </label>
+      {children}
+    </div>
   );
 }
 

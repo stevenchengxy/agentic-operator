@@ -32,6 +32,7 @@ import {
   useRun,
   useReplayRun,
   useCancelRun,
+  useRunArtifacts,
   type RunListRow,
   type StepRow,
 } from "@/lib/hooks/useRuns";
@@ -40,6 +41,7 @@ import { useAgents, useAgent, type AgentListRow } from "@/lib/hooks/useAgents";
 // directly here to satisfy delta D-7 (Runs detail "agent" tab).
 import { AgentCodeTab } from "@/app/portal/components/agent-code/AgentCodeTab";
 import { TraceTree } from "@/app/portal/components/runs/TraceTree";
+import { tenantHeader } from "@/lib/hooks/tenant-header";
 
 const STATUS_TO_DOT: Record<string, StatusName> = {
   running: "running",
@@ -52,7 +54,7 @@ const STATUS_TO_DOT: Record<string, StatusName> = {
   idle: "idle",
 };
 
-type Tab = "timeline" | "trace" | "logs" | "io" | "events" | "agent";
+type Tab = "timeline" | "trace" | "logs" | "io" | "artifacts" | "events" | "agent";
 
 export default function RunDetailPage() {
   const params = useParams<{ id?: string }>();
@@ -108,6 +110,7 @@ function RunDetail({ run, steps, tab, setTab, tenant }: RunDetailProps) {
   );
   const agentDetailQuery = useAgent(agentRow?.kebabId ?? null);
   const agentDetail = agentDetailQuery.data ?? null;
+  const { data: artifacts = [] } = useRunArtifacts(run.id);
   const testRun = (run as { testRun?: boolean }).testRun === true;
   const isReplay = Boolean(run.parentRunId);
   // The Stop button is only meaningful for runs that haven't finished. We
@@ -342,7 +345,7 @@ function RunDetail({ run, steps, tab, setTab, tenant }: RunDetailProps) {
           flexShrink: 0,
         }}
       >
-        {(["timeline", "trace", "logs", "io", "events", "agent"] as const).map((t) => (
+        {(["timeline", "trace", "logs", "io", "artifacts", "events", "agent"] as const).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -406,6 +409,7 @@ function RunDetail({ run, steps, tab, setTab, tenant }: RunDetailProps) {
       )}
       {tab === "logs" && <LogsTab runId={run.id} tenant={tenant} />}
       {tab === "io" && <IOTab run={run} agent={agentRow} tenant={tenant} />}
+      {tab === "artifacts" && <ArtifactsTab runId={run.id} artifacts={artifacts} />}
       {tab === "events" && <RunEventsTab run={run} />}
 
       {/* Failed-run error panel (any tab except agent) */}
@@ -439,6 +443,61 @@ function RunDetail({ run, steps, tab, setTab, tenant }: RunDetailProps) {
         </Panel>
       )}
     </div>
+  );
+}
+
+function ArtifactsTab({
+  runId,
+  artifacts,
+}: {
+  runId: string;
+  artifacts: Array<{ id: string; kind: string; size: number; createdAt: string; downloadPath: string }>;
+}) {
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [content, setContent] = useState<string>("");
+  const [error, setError] = useState<string | null>(null);
+  const selected = artifacts.find((artifact) => artifact.id === (selectedId ?? artifacts[0]?.id));
+
+  useEffect(() => {
+    if (!selected) return;
+    let cancelled = false;
+    setError(null);
+    setContent("");
+    void fetch(selected.downloadPath, { credentials: "same-origin", headers: { Accept: "application/json", ...tenantHeader() } })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`artifact request failed (${response.status})`);
+        return response.text();
+      })
+      .then((text) => { if (!cancelled) setContent(text); })
+      .catch((err) => { if (!cancelled) setError(err instanceof Error ? err.message : "Could not load artifact"); });
+    return () => { cancelled = true; };
+  }, [selected?.id, selected?.downloadPath]);
+
+  if (artifacts.length === 0) {
+    return <Empty title="No JSON artifacts yet" hint={`Run ${runId} has not produced a persisted output file.`} />;
+  }
+  return (
+    <Panel title="Persisted run artifacts" subtitle="Local JSON output captured by the runtime" padded={false}>
+      <div style={{ display: "grid", gridTemplateColumns: "220px 1fr", minHeight: 340 }}>
+        <div style={{ borderRight: "1px solid var(--border)", padding: 10 }}>
+          {artifacts.map((artifact) => (
+            <button
+              key={artifact.id}
+              onClick={() => setSelectedId(artifact.id)}
+              style={{ display: "block", width: "100%", textAlign: "left", padding: "9px 10px", borderRadius: 4, background: selected?.id === artifact.id ? "var(--panel-3)" : "transparent", color: "var(--text)" }}
+            >
+              <div className="mono" style={{ fontSize: 11 }}>{artifact.kind}</div>
+              <div style={{ marginTop: 3, fontSize: 10.5, color: "var(--text-3)" }}>{Math.round(artifact.size / 1024 * 10) / 10} KB</div>
+            </button>
+          ))}
+        </div>
+        <div style={{ padding: 14, overflow: "auto" }}>
+          {error && <div style={{ color: "var(--red)" }}>{error}</div>}
+          {!error && !content && <div style={{ color: "var(--text-3)" }}>Loading JSON…</div>}
+          {content && <CodeBlock>{content}</CodeBlock>}
+        </div>
+      </div>
+    </Panel>
   );
 }
 

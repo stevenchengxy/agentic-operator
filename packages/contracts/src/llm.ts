@@ -10,7 +10,7 @@
 import { z } from "zod";
 import { PROVIDER_IDS } from "./providers";
 
-export const ProviderIdSchema = z.enum(PROVIDER_IDS as unknown as [string, ...string[]]);
+export const ProviderIdSchema = z.enum(PROVIDER_IDS);
 
 // P1-CON-01 — typed content blocks for multi-modal and tool-use.
 // `tool` is the SDK's role for tool-result messages (matches Anthropic's

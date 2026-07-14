@@ -177,3 +177,20 @@ export function _inspectRegistryForTests(): {
     tenant: state.fns.tenant.length,
   };
 }
+
+/** Snapshot the function ids currently served by the mutable handler. */
+export function listInngestFunctionIds(): string[] {
+  const all = [...state.fns.base, ...state.fns.codeAgent, ...state.fns.tenant];
+  return all.flatMap((fn) => {
+    try {
+      const id = fn.id();
+      return typeof id === "string" ? [id] : [];
+    } catch {
+      return [];
+    }
+  });
+}
+
+export function isInngestFunctionRegistered(id: string): boolean {
+  return listInngestFunctionIds().includes(id);
+}

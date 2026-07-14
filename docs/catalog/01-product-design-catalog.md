@@ -216,7 +216,7 @@ Drawn from PRD §4. Each persona walks 3-5 canonical journeys with the exact cli
 
 | Step | Surface | Outcome |
 |---|---|---|
-| 1 | `/deployments` | LiveCards: Workflow `raas@2026.05.16` · Runtime `node-26.1.0` · Inngest `3w · 0 lag`. |
+| 1 | `/deployments` | LiveCards: Workflow `raas@2026.05.16` · Runtime `node-26.5.0` · Inngest `3w · 0 lag`. |
 | 2 | History row "2026.05.16-a · draft" | Click "Promote" → `POST /v1/deployments/:id/rollback` (forward direction same endpoint) → status flips to `live`. |
 | 3 | Toast confirms | Bootstrap reflows; new agents/edges live within ~5s. |
 

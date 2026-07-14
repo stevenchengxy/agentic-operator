@@ -26,9 +26,12 @@ import type {
 } from "@agentic/agent-kit";
 import type { ActionSpec } from "./manifest";
 import { getRuntimeGateway } from "./llm-host";
+import { makeGeneratedAgentPrompt } from "./generated-agent";
+import { writeRunLog, type RunLogContext } from "./log-writer";
 import type {
   ChatContentBlock,
   ChatMessage,
+  ProviderId,
   ToolDef,
   ToolUseBlock,
   ToolResultBlock,
@@ -50,8 +53,18 @@ export interface ToolUseEntry {
 
 interface AgentSlots {
   name?: string;
+  /** Internal tenant identity used for gateway budget attribution. */
+  tenantId?: string;
   description?: string;
   ontology_instructions?: string;
+  /** Wizard-authored agents use the runtime's generic user-turn prompt. */
+  generated?: boolean;
+  /** Provider-native model selected in the deploy wizard. */
+  model?: string;
+  /** Explicit provider selected in the deploy wizard. */
+  provider?: ProviderId;
+  /** Per-call gateway timeout authored in the manifest. */
+  timeout_s?: number;
   /**
    * Declarative tool roster from the manifest's `agent.tool_use[]`. When
    * non-empty AND a matching `tenantRegistry.tools[name]` exists, the
@@ -72,6 +85,71 @@ function resolveMaxIters(): number {
   if (!raw) return MAX_TOOL_USE_ITERS_DEFAULT;
   const n = Number(raw);
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : MAX_TOOL_USE_ITERS_DEFAULT;
+}
+
+/**
+ * Observability for the manifest execution path.
+ *
+ * Until now this engine was silent: an LLM turn or a tool call (success OR
+ * failure) produced ZERO log output, so a tool that threw mid-loop was
+ * invisible to monitoring — the error was fed back to the model as a
+ * `tool_result: is_error` and then vanished. `emitStepLog` fixes that by
+ * fanning every lifecycle event out to two surfaces:
+ *
+ *   1. stdout/stderr — a single greppable `[step-engine] <event> k=v …` line
+ *      so terminal tails + external log aggregators (and the Inngest dev
+ *      console) see tool dispatch + errors live.
+ *   2. the per-run file log (`data/logs/<tenant>/runs/<date>/<run>.log`) when
+ *      a RunLogContext is available — this is what the portal's Logs view
+ *      tails over SSE, so the same trace shows up in-product.
+ *
+ * File-log writes are best-effort: a logging failure must never abort a real
+ * agent run, so we swallow + console.warn instead of throwing.
+ */
+type StepLogLevel = "DEBUG" | "INFO" | "WARN" | "ERROR";
+
+function fmtConsoleFields(fields: Record<string, unknown>): string {
+  return Object.entries(fields)
+    .map(([k, v]) => `${k}=${typeof v === "string" ? v : JSON.stringify(v)}`)
+    .join(" ");
+}
+
+async function emitStepLog(
+  logCtx: RunLogContext | undefined,
+  level: StepLogLevel,
+  event: string,
+  fields: Record<string, unknown>,
+): Promise<void> {
+  const line = `[step-engine] ${event} ${fmtConsoleFields(fields)}`;
+  if (level === "ERROR") console.error(line);
+  else if (level === "WARN") console.warn(line);
+  else console.info(line);
+
+  if (logCtx) {
+    try {
+      await writeRunLog(logCtx, level, event, fields);
+    } catch (err) {
+      console.warn(
+        `[step-engine] run-log write failed for ${event} (run=${logCtx.runId}):`,
+        err,
+      );
+    }
+  }
+}
+
+/** Build a RunLogContext from the tool context + the optional runId the
+ *  register loop threads in. Returns undefined when there's no runId (ad-hoc
+ *  callers / tests) so console logging still fires but file writes are skipped. */
+function deriveLogCtx(
+  ctx: ToolContext | undefined,
+  runId: string | undefined,
+): RunLogContext | undefined {
+  if (!runId || !ctx) return undefined;
+  return {
+    tenantSlug: ctx.tenantSlug ?? "unknown",
+    runId,
+    correlationId: ctx.correlationId ?? "no-correlation",
+  };
 }
 
 export interface StepInput {
@@ -193,6 +271,7 @@ async function callLLM(
   agent?: AgentSlots,
   tenantRegistry?: TenantRegistry,
   ctx?: ToolContext,
+  logCtx?: RunLogContext,
 ): Promise<{
   text: string;
   tokensIn: number;
@@ -221,7 +300,9 @@ async function callLLM(
   const tools: ToolDef[] = [];
   if (agent?.tool_use && agent.tool_use.length > 0) {
     for (const entry of agent.tool_use) {
-      const handler = tenantRegistry?.tools?.[entry.name];
+      const handler =
+        tenantRegistry?.tools?.[entry.name] ??
+        (agent.generated ? globalToolRegistry.get(entry.name) : undefined);
       if (!handler) continue;
       tools.push({
         name: entry.name,
@@ -232,6 +313,10 @@ async function callLLM(
       });
     }
   }
+  // `agent.tool_use[]` is the execution allow-list, not merely a hint to the
+  // provider. A provider must not be able to manufacture an undeclared tool
+  // call and reach any globally registered handler.
+  const allowedToolNames = new Set(tools.map((tool) => tool.name));
 
   const messages: ChatMessage[] = [
     { role: "system", content: systemContent },
@@ -252,7 +337,13 @@ async function callLLM(
     const response = await gateway.chat({
       messages,
       model: preferredModel,
+      provider: agent?.provider,
+      timeoutMs:
+        typeof agent?.timeout_s === "number"
+          ? agent.timeout_s * 1_000
+          : undefined,
       tools: tools.length > 0 ? tools : undefined,
+      tenantId: agent?.tenantId,
       tenantSlug: ctx?.tenantSlug,
     });
     totalIn += response.tokensIn ?? 0;
@@ -261,6 +352,17 @@ async function callLLM(
     lastModel = response.model;
 
     const requestedCalls = response.toolCalls ?? [];
+    await emitStepLog(logCtx, "INFO", "llm.call", {
+      agent: ctx?.agentName ?? agent?.name ?? "unknown",
+      action: ctx?.actionName ?? "—",
+      tenant: ctx?.tenantSlug ?? "unknown",
+      provider: response.provider,
+      model: response.model,
+      iter: iter + 1,
+      tokens_in: response.tokensIn ?? 0,
+      tokens_out: response.tokensOut ?? 0,
+      tools_requested: requestedCalls.length,
+    });
     if (requestedCalls.length === 0) {
       // Model returned prose — we're done.
       finalText = response.text;
@@ -290,8 +392,10 @@ async function callLLM(
       // shadows a global tool. The MCP layer already folds its tools into
       // tenantRegistry under namespaced names ("<server>.<tool>"), so it's
       // covered by the first lookup.
-      const handler =
-        tenantRegistry?.tools?.[call.name] ?? globalToolRegistry.get(call.name);
+      const callIsAllowed = allowedToolNames.has(call.name);
+      const handler = callIsAllowed
+        ? tenantRegistry?.tools?.[call.name] ?? globalToolRegistry.get(call.name)
+        : undefined;
 
       // Per-tenant config plumbing: lift the manifest's
       // `tool_use[i].config` blob into ctx.config so global tools can be
@@ -319,11 +423,31 @@ async function callLLM(
       };
 
       const startedAt = Date.now();
+      const resolvedVia = !callIsAllowed
+        ? "not-allowed"
+        : tenantRegistry?.tools?.[call.name]
+          ? "tenant"
+          : globalToolRegistry.get(call.name)
+            ? "global"
+            : "unresolved";
+      await emitStepLog(logCtx, "INFO", "tool.call", {
+        agent: ctx?.agentName ?? agent?.name ?? "unknown",
+        tool: call.name,
+        resolved_via: resolvedVia,
+        iter: iter + 1,
+        subject: ctx?.subject ?? "—",
+      });
       let outputBody: string;
       let isError = false;
       let outputData: unknown = null;
+      let errorMessage: string | null = null;
       try {
         if (!handler) {
+          if (!callIsAllowed) {
+            throw new Error(
+              `tool '${call.name}' is not declared in this agent's tool_use allow-list`,
+            );
+          }
           throw new Error(
             `tool '${call.name}' not registered for this tenant and not found in global registry`,
           );
@@ -338,17 +462,36 @@ async function callLLM(
         totalOut += r.tokensOut ?? 0;
       } catch (err) {
         isError = true;
-        outputBody = JSON.stringify({
-          error: String(err instanceof Error ? err.message : err),
-        });
+        errorMessage = String(err instanceof Error ? err.message : err);
+        outputBody = JSON.stringify({ error: errorMessage });
       }
+      const durationMs = Date.now() - startedAt;
+      // The headline fix: a tool failure is now LOUD. Previously this error
+      // only ever reached the model (as is_error) and never any operator
+      // surface — a flaky external API looked like a silent stall. We log it
+      // at ERROR to both stdout and the per-run file log so it shows up in
+      // monitoring + the portal Logs view, with the upstream message intact.
+      await emitStepLog(
+        logCtx,
+        isError ? "ERROR" : "INFO",
+        isError ? "tool.error" : "tool.ok",
+        {
+          agent: ctx?.agentName ?? agent?.name ?? "unknown",
+          tool: call.name,
+          duration_ms: durationMs,
+          iter: iter + 1,
+          ...(isError
+            ? { error: errorMessage ?? "unknown" }
+            : { bytes: outputBody.length }),
+        },
+      );
       toolCalls.push({
         id: call.id,
         name: call.name,
         input: call.input,
         output: outputData,
         isError,
-        durationMs: Date.now() - startedAt,
+        durationMs,
       });
 
       const resultBlock: ToolResultBlock = {
@@ -411,6 +554,7 @@ async function runTenantPrompt(
   prompt: PromptDescriptor,
   agent?: AgentSlots,
   tenantRegistry?: TenantRegistry,
+  logCtx?: RunLogContext,
 ): Promise<StepOutput> {
   const rendered = prompt.template(ctx);
   const result = await callLLM(
@@ -420,6 +564,7 @@ async function runTenantPrompt(
     agent,
     tenantRegistry,
     ctx,
+    logCtx,
   );
   let validated: unknown = result.text;
   if (prompt.output) {
@@ -482,6 +627,14 @@ async function writeStepArtifacts(
 
 export async function runAction(input: StepInput): Promise<StepOutput> {
   const { ctx, action, tenantRegistry, agent, runId, stepOrd } = input;
+  const logCtx = deriveLogCtx(ctx, runId);
+
+  await emitStepLog(logCtx, "INFO", "action.start", {
+    agent: ctx?.agentName ?? agent?.name ?? "unknown",
+    action: action.name,
+    type: action.type,
+    subject: ctx?.subject ?? "—",
+  });
 
   let result: StepOutput;
   switch (action.type) {
@@ -507,8 +660,35 @@ export async function runAction(input: StepInput): Promise<StepOutput> {
             ? ((toolUseEntry as { config?: Record<string, unknown> }).config ?? undefined)
             : undefined;
         const enrichedCtx: ToolContext = toolConfig ? { ...ctx, config: toolConfig } : ctx;
+        const toolStartedAt = Date.now();
+        await emitStepLog(logCtx, "INFO", "tool.call", {
+          agent: ctx?.agentName ?? agent?.name ?? "unknown",
+          tool: action.name,
+          resolved_via: tenantTool ? "tenant" : "global",
+          via: "action",
+          subject: ctx?.subject ?? "—",
+        });
         result = await runTenantTool(enrichedCtx, (tenantTool ?? globalTool)!);
+        await emitStepLog(
+          logCtx,
+          result.ok ? "INFO" : "ERROR",
+          result.ok ? "tool.ok" : "tool.error",
+          {
+            agent: ctx?.agentName ?? agent?.name ?? "unknown",
+            tool: action.name,
+            duration_ms: Date.now() - toolStartedAt,
+            ...(result.ok
+              ? {}
+              : { error: JSON.stringify(result.meta?.schemaError ?? result.meta ?? "tool failed") }),
+          },
+        );
       } else {
+        await emitStepLog(logCtx, "WARN", "tool.call", {
+          agent: ctx?.agentName ?? agent?.name ?? "unknown",
+          tool: action.name,
+          resolved_via: "legacy-mock",
+          via: "action",
+        });
         const r = await runTool(genericCtx(ctx), action.name);
         result = {
           ok: r.ok,
@@ -522,7 +702,18 @@ export async function runAction(input: StepInput): Promise<StepOutput> {
     case "logic": {
       const tenantPrompt = tenantRegistry?.prompts?.[action.name];
       if (tenantPrompt) {
-        result = await runTenantPrompt(ctx, tenantPrompt, agent, tenantRegistry);
+        result = await runTenantPrompt(ctx, tenantPrompt, agent, tenantRegistry, logCtx);
+      } else if (agent?.generated) {
+        result = await runTenantPrompt(
+          ctx,
+          {
+            ...makeGeneratedAgentPrompt(action.name, action.description),
+            model: agent.model,
+          },
+          agent,
+          tenantRegistry,
+          logCtx,
+        );
       } else {
         // UC-V11-25 / AR-GAP-13 — strict mode. Boot-time validation in
         // `packages/runtime/src/bootstrap.ts` refuses to register a tenant
@@ -636,6 +827,31 @@ export async function runAction(input: StepInput): Promise<StepOutput> {
     });
     if (outputArtifact) result.outputArtifact = outputArtifact;
   }
+
+  // Summary line so monitoring can see the action's terminal state + the
+  // model/provider it resolved to + how many tool calls it fanned out into
+  // (and how many of those errored) without parsing every intermediate line.
+  const toolCalls = Array.isArray(result.meta?.toolCalls)
+    ? (result.meta!.toolCalls as ToolCallTrace[])
+    : [];
+  const toolErrors = toolCalls.filter((t) => t.isError).length;
+  await emitStepLog(
+    logCtx,
+    result.ok ? "INFO" : "ERROR",
+    "action.end",
+    {
+      agent: ctx?.agentName ?? agent?.name ?? "unknown",
+      action: action.name,
+      type: action.type,
+      ok: result.ok,
+      ...(result.model ? { model: result.model } : {}),
+      ...(result.provider ? { provider: result.provider } : {}),
+      tokens_in: result.tokensIn ?? 0,
+      tokens_out: result.tokensOut ?? 0,
+      tool_calls: toolCalls.length,
+      tool_errors: toolErrors,
+    },
+  );
 
   return result;
 }

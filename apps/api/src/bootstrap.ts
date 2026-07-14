@@ -43,7 +43,10 @@ import { getLLMGateway } from "./services/llm";
 import { metrics } from "./services/metrics";
 import { reconcileImports } from "./services/reconcile-imports";
 import { getDb, pruneRolledBackDeployments } from "@agentic/db";
-import { reregisterInngest } from "./services/inngest-registry";
+import {
+  initInngestRegistry,
+  reregisterInngest,
+} from "./services/inngest-registry";
 import {
   applyDemoModeOverrides,
   describeDemoMode,
@@ -94,6 +97,23 @@ const TENANT_REGISTRIES: TenantRegistries = {
   insightlab: insightlabTenant,
 };
 
+/**
+ * MCP/Skills-expanded registries are cached after boot so manifest deploys
+ * can rebuild the live Inngest function set without reconnecting external
+ * servers or losing tenant prompt/tool overrides.
+ */
+let cachedExpanded: TenantRegistries = {};
+
+export async function rebuildTenantFns(): Promise<InngestFunction.Any[]> {
+  return bootstrapAll(cachedExpanded);
+}
+
+/** Code-defined agents are synchronously invoked in v1 and add no functions. */
+export async function rebuildCodeAgentFns(): Promise<InngestFunction.Any[]> {
+  await bootstrapCodeAgents();
+  return [];
+}
+
 export async function bootstrapRuntime(): Promise<BootstrapResult> {
   // 0. Surface the demo-mode flag at the very top of the boot log so the
   //    operator can tell at a glance which mode the api is running in
@@ -142,10 +162,17 @@ export async function bootstrapRuntime(): Promise<BootstrapResult> {
   for (const [slug, base] of Object.entries(TENANT_REGISTRIES)) {
     expanded[slug] = await expandTenantRegistry(slug, base);
   }
+  cachedExpanded = expanded;
 
   // 4. Manifest-driven (RAAS etc) Inngest functions.
   const tenantFns = await bootstrapAll(expanded);
   const allFns = [helloFn, ...tenantFns];
+  initInngestRegistry({
+    client: inngest as Inngest.Any,
+    base: [helloFn],
+    codeAgent: [],
+    tenant: tenantFns,
+  });
   console.log(
     `[bootstrap] api serving ${allFns.length} Inngest function(s) (${tenantFns.length} from tenant manifests)`,
   );

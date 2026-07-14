@@ -33,6 +33,7 @@ const API_URL = process.env.AGENTIC_API_URL ?? "http://localhost:3501";
  */
 /** @type {import("next").NextConfig} */
 const nextConfig = {
+  output: "standalone",
   outputFileTracingRoot: path.join(__dirname, "../.."),
   transpilePackages: ["@agentic/contracts"],
   typedRoutes: true,

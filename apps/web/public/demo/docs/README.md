@@ -30,7 +30,7 @@ Recommended path:
 4. **Open the prototype** (`index.html`) in a browser and play with every
    screen. The runtime exists so the portal can show what it shows.
 5. **Build in this order** (each step is independently verifiable):
-   1. Monorepo + tooling (Turborepo, TypeScript 5, Node 22, Next.js 15)
+   1. Monorepo + tooling (Turborepo, TypeScript 6, Node 26.5.0, Next.js 16.2.10)
    2. SQLite schema + Drizzle ORM migrations
    3. Inngest client + a single end-to-end "hello" workflow
    4. Event ingestion API (`POST /api/events`)

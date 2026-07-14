@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { readFile } from "node:fs/promises";
 import { and, eq } from "drizzle-orm";
 import { appendToLedger, inngest } from "@agentic/runtime";
-import { events, eventTypes, getDb } from "@agentic/db";
+import { agents, events, eventTypes, getDb } from "@agentic/db";
 import { makeId } from "@agentic/shared";
 import { IngestEventBody, ListEventsQuery } from "@agentic/contracts";
 import { requireAuth } from "../../plugins/auth";
@@ -17,6 +17,8 @@ import {
   readIdempotencyKey,
   storeIdempotency,
 } from "../../services/idempotency";
+import { getDag } from "../../queries/workflows";
+import { isInngestFunctionRegistered } from "../../services/inngest-registry";
 
 /**
  * SSE limits for `GET /v1/events/stream` per docs/design/event-tester.md §4.2:
@@ -58,13 +60,77 @@ export async function eventsRoutes(app: FastifyInstance) {
       }
     }
 
+    // A caller may keep using the legacy same-tenant `slug/EVENT` spelling,
+    // but it may never choose another tenant's namespace. Previously a
+    // tenant-A token could POST `tenant-b/TRIGGER`: the row was stored under
+    // A while the Inngest envelope was delivered to B. Normalize only after
+    // enforcing that the optional prefix matches the authenticated tenant.
+    const slash = parsed.name.indexOf("/");
+    let bareName = parsed.name;
+    if (slash >= 0) {
+      const requestedTenant = parsed.name.slice(0, slash);
+      if (requestedTenant !== auth.tenantSlug) {
+        return reply.fail(
+          "forbidden_namespace",
+          `Event namespace '${requestedTenant}' does not match authenticated tenant '${auth.tenantSlug}'`,
+          403,
+        );
+      }
+      bareName = parsed.name.slice(slash + 1);
+    }
+    if (!bareName) {
+      return reply.fail("invalid_event_name", "Event name is required", 400);
+    }
+    const tenantNamespacedName = `${auth.tenantSlug}/${bareName}`;
+
+    const db = getDb();
+
+    // Agent-scoped sends are stronger than generic event fanout. Verify the
+    // target against the LIVE workflow version and the mutable Inngest
+    // registry before writing the ledger row. This prevents a 200 response
+    // for an agent that exists in history but is not loaded by this process.
+    if (parsed.targetAgent) {
+      const dag = await getDag(auth.tenantSlug);
+      const liveAgent = dag.agents.find(
+        (agent) => agent.name === parsed.targetAgent,
+      );
+      if (!liveAgent) {
+        return reply.fail(
+          "agent_not_live",
+          `Agent '${parsed.targetAgent}' is not in the live workflow`,
+          409,
+        );
+      }
+      const enabled = db
+        .select({ enabled: agents.enabled })
+        .from(agents)
+        .where(eq(agents.id, liveAgent.id))
+        .all()[0]?.enabled;
+      if (enabled !== true) {
+        return reply.fail(
+          "agent_disabled",
+          `Agent '${parsed.targetAgent}' is disabled`,
+          409,
+        );
+      }
+      if (!liveAgent.triggers.includes(bareName)) {
+        return reply.fail(
+          "agent_not_subscribed",
+          `Agent '${parsed.targetAgent}' does not listen for '${bareName}' in the live workflow`,
+          409,
+        );
+      }
+      const functionId = `${auth.tenantSlug}.${parsed.targetAgent}`;
+      if (!isInngestFunctionRegistered(functionId)) {
+        return reply.fail(
+          "agent_not_running",
+          `Agent '${parsed.targetAgent}' is not registered in the live runtime`,
+          409,
+        );
+      }
+    }
+
     const eventId = makeId("evt");
-    const tenantNamespacedName = parsed.name.includes("/")
-      ? parsed.name
-      : `${auth.tenantSlug}/${parsed.name}`;
-    const bareName = tenantNamespacedName.includes("/")
-      ? tenantNamespacedName.split("/").slice(1).join("/")
-      : tenantNamespacedName;
 
     const payloadRef = await appendToLedger(auth.tenantSlug, {
       id: eventId,
@@ -79,7 +145,6 @@ export async function eventsRoutes(app: FastifyInstance) {
     // expect the column to be populated; without this lookup, SSE rows
     // arrived with `category: null` even when the catalog declared one,
     // breaking the colour-coded category filter in the Events view.
-    const db = getDb();
     const catalogRow = db
       .select({ category: eventTypes.category })
       .from(eventTypes)
@@ -110,14 +175,44 @@ export async function eventsRoutes(app: FastifyInstance) {
       subject: parsed.subject,
       __triggerEventId: eventId,
     };
+    if (parsed.targetAgent) {
+      // Reuse the manifest-invoke metadata key. Runtime functions with the
+      // same trigger receive the envelope, but only this named agent is
+      // allowed to allocate a run row.
+      inngestData.__invokedAgent = parsed.targetAgent;
+    }
     if (parsed.test === true) {
       inngestData.__test = true;
     }
 
-    await inngest.send({
-      name: tenantNamespacedName as `${string}/${string}`,
-      data: inngestData,
-    });
+    try {
+      await inngest.send({
+        name: tenantNamespacedName as `${string}/${string}`,
+        data: inngestData,
+      });
+    } catch (err) {
+      // The row has to exist before dispatch because a fast worker can create
+      // a FK-backed run immediately. If dispatch itself fails, remove that
+      // provisional row so the UI never presents an orphan as a sent event.
+      try {
+        db.delete(events)
+          .where(
+            and(eq(events.id, eventId), eq(events.tenantId, auth.tenantId)),
+          )
+          .run();
+      } catch (cleanupErr) {
+        req.log.error(
+          { cleanupErr, eventId },
+          "event.publish: failed to remove provisional event row",
+        );
+      }
+      req.log.error({ err, eventId }, "event.publish: inngest.send failed");
+      return reply.fail(
+        "event_dispatch_failed",
+        "The runtime did not accept the event; nothing was dispatched",
+        503,
+      );
+    }
 
     // Audit every non-`external` publish (NFR-6). Reviewer guidance: the
     // `source` body field is a hint, not a trust boundary — the auth context
@@ -143,6 +238,7 @@ export async function eventsRoutes(app: FastifyInstance) {
             source: auditedSource,
             auth_via: auth.via ?? null,
             fields: Object.keys(parsed.payload ?? {}),
+            target_agent: parsed.targetAgent ?? null,
           },
         });
       } catch (err) {
@@ -260,9 +356,7 @@ export async function eventsRoutes(app: FastifyInstance) {
       const out = await fetchCausality(auth.tenantSlug, req.query.seed);
       return reply.ok(out);
     }
-    const limit = req.query.limit
-      ? parseInt(req.query.limit, 10)
-      : undefined;
+    const limit = req.query.limit ? parseInt(req.query.limit, 10) : undefined;
     const rows = await listRecentEvents(auth.tenantSlug, {
       limit,
       name: req.query.name,
@@ -291,15 +385,14 @@ export async function eventsRoutes(app: FastifyInstance) {
     // SQLite `unixepoch()` second-boundary: `receivedAt` is stamped at
     // floor(now() in seconds) * 1000, so a cursor of exactly `Date.now()`
     // would miss any row inserted in the current wall-clock second.
-    const sinceParam = req.query.since
-      ? parseInt(req.query.since, 10)
-      : NaN;
-    let cursor = Number.isFinite(sinceParam)
-      ? sinceParam
-      : Date.now() - 1000;
+    const sinceParam = req.query.since ? parseInt(req.query.since, 10) : NaN;
+    let cursor = Number.isFinite(sinceParam) ? sinceParam : Date.now() - 1000;
     const names =
       req.query.names && req.query.names.length > 0
-        ? req.query.names.split(",").map((s) => s.trim()).filter(Boolean)
+        ? req.query.names
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean)
         : null;
 
     let closed = false;

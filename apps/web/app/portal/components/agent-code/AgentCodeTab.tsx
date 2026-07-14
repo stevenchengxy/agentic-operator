@@ -240,7 +240,7 @@ export function AgentCodeTab({ agent }: { agent: AgentCodeShape }) {
           <Panel title="Runtime" padded style={{ height: "100%" }}>
             <div style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 11.5 }}>
               <RuntimeRow label="Language" value="TypeScript 5.6" />
-              <RuntimeRow label="Runtime" value="Node 26 · esm" />
+              <RuntimeRow label="Runtime" value="Node 26.5.0 · esm" />
               <RuntimeRow label="Bundler" value="esbuild" />
               <RuntimeRow label="Source" value="agentic/raas-workflows@main" mono />
               <RuntimeRow label="Last build" value="3.4s · 12 KB minified" />

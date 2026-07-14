@@ -12,6 +12,7 @@ import { runsRoutes } from "./routes/v1/runs";
 import { runsLogsRoute } from "./routes/v1/runs-logs";
 import { tasksRoutes } from "./routes/v1/tasks";
 import { agentsRoutes } from "./routes/v1/agents";
+import { agentAuthoringRoutes } from "./routes/v1/agent-authoring";
 import { agentInvokeRoutes } from "./routes/v1/agent-invoke";
 import { deploymentsRoutes } from "./routes/v1/deployments";
 import { webhooksRoutes } from "./routes/v1/webhooks";
@@ -110,6 +111,7 @@ export async function build() {
       await v1.register(runsLogsRoute);
       await v1.register(tasksRoutes);
       await v1.register(agentsRoutes);
+      await v1.register(agentAuthoringRoutes);
       await v1.register(agentInvokeRoutes);
       await v1.register(deploymentsRoutes);
       await v1.register(webhooksRoutes);

@@ -51,6 +51,7 @@ import {
 } from "@/app/portal/components/agents/AgentTabs";
 import { DeployAgentModal } from "@/app/portal/components/agents/DeployAgentModal";
 import { RunWithInputModal } from "@/app/portal/components/agents/RunWithInputModal";
+import { PublishEventModal } from "@/app/portal/components/events/PublishEventModal";
 import { ImportManifestModal } from "@/app/portal/components/import-manifest/ImportManifestModal";
 
 interface AgentStats {
@@ -63,7 +64,14 @@ interface AgentStats {
 }
 
 function emptyStats(): AgentStats {
-  return { runs: 0, errors: 0, lastRun: 0, tests: 0, lastTestRunId: null, lastTestAt: 0 };
+  return {
+    runs: 0,
+    errors: 0,
+    lastRun: 0,
+    tests: 0,
+    lastTestRunId: null,
+    lastTestAt: 0,
+  };
 }
 
 /**
@@ -111,7 +119,9 @@ export default function AgentDetailPage() {
   const agents = agentsQuery.data ?? [];
   const runs = runsQuery.data ?? [];
   const [query, setQuery] = useState("");
-  const [actorFilter, setActorFilter] = useState<"all" | "Agent" | "Human">("all");
+  const [actorFilter, setActorFilter] = useState<"all" | "Agent" | "Human">(
+    "all",
+  );
   const [listW, setListW] = useState(440);
   const [deployOpen, setDeployOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
@@ -173,16 +183,29 @@ export default function AgentDetailPage() {
         title="Agents"
         subtitle={`${agents.length} agents in this workflow · ${agents.filter((a) => a.actor === "Agent").length} automated · ${agents.filter((a) => a.actor === "Human").length} human`}
         action={[
-          <Button key="upload" icon="upload" small onClick={() => setImportOpen(true)}>
+          <Button
+            key="upload"
+            icon="upload"
+            small
+            onClick={() => setImportOpen(true)}
+          >
             Import manifest
           </Button>,
-          <Button key="new" icon="plus" tone="primary" small onClick={() => setDeployOpen(true)}>
+          <Button
+            key="new"
+            icon="plus"
+            tone="primary"
+            small
+            onClick={() => setDeployOpen(true)}
+          >
             Deploy agent
           </Button>,
         ]}
       />
 
-      <div style={{ flex: 1, display: "flex", flexDirection: "row", minHeight: 0 }}>
+      <div
+        style={{ flex: 1, display: "flex", flexDirection: "row", minHeight: 0 }}
+      >
         {/* List aside */}
         <aside
           style={{
@@ -195,8 +218,19 @@ export default function AgentDetailPage() {
             minHeight: 0,
           }}
         >
-          <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--border)", display: "flex", gap: 8 }}>
-            <SearchInput value={query} onChange={setQuery} placeholder="agent name…" />
+          <div
+            style={{
+              padding: "12px 16px",
+              borderBottom: "1px solid var(--border)",
+              display: "flex",
+              gap: 8,
+            }}
+          >
+            <SearchInput
+              value={query}
+              onChange={setQuery}
+              placeholder="agent name…"
+            />
           </div>
           <div
             style={{
@@ -206,13 +240,22 @@ export default function AgentDetailPage() {
               gap: 6,
             }}
           >
-            <FilterChip active={actorFilter === "all"} onClick={() => setActorFilter("all")}>
+            <FilterChip
+              active={actorFilter === "all"}
+              onClick={() => setActorFilter("all")}
+            >
               All
             </FilterChip>
-            <FilterChip active={actorFilter === "Agent"} onClick={() => setActorFilter("Agent")}>
+            <FilterChip
+              active={actorFilter === "Agent"}
+              onClick={() => setActorFilter("Agent")}
+            >
               Agents
             </FilterChip>
-            <FilterChip active={actorFilter === "Human"} onClick={() => setActorFilter("Human")}>
+            <FilterChip
+              active={actorFilter === "Human"}
+              onClick={() => setActorFilter("Human")}
+            >
               Human
             </FilterChip>
           </div>
@@ -235,7 +278,13 @@ export default function AgentDetailPage() {
           </div>
         </aside>
 
-        <Splitter axis="x" getValue={() => listW} setValue={setListW} min={260} max={720} />
+        <Splitter
+          axis="x"
+          getValue={() => listW}
+          setValue={setListW}
+          min={260}
+          max={720}
+        />
 
         <div style={{ flex: 1, minWidth: 0, overflow: "auto", minHeight: 0 }}>
           {detailQuery.isError ? (
@@ -250,7 +299,11 @@ export default function AgentDetailPage() {
               agent={agent}
               stats={stats.get(selectedKebab) ?? stats.get(agent?.name ?? "")}
               tenant={tenant}
-              onOpenWorkflow={() => router.push(`/portal/${tenant}/workflows` as never)}
+              agentKind={listMatch?.kind}
+              agentEnabled={listMatch?.enabled ?? false}
+              onOpenWorkflow={() =>
+                router.push(`/portal/${tenant}/workflows` as never)
+              }
               onOpenRun={openRun}
               allRuns={runs}
             />
@@ -258,8 +311,13 @@ export default function AgentDetailPage() {
         </div>
       </div>
 
-      {deployOpen && <DeployAgentModal onClose={() => setDeployOpen(false)} models={[]} />}
-      {importOpen && <ImportManifestModal onClose={() => setImportOpen(false)} mode="agent" />}
+      {deployOpen && <DeployAgentModal onClose={() => setDeployOpen(false)} />}
+      {importOpen && (
+        <ImportManifestModal
+          onClose={() => setImportOpen(false)}
+          mode="agent"
+        />
+      )}
     </div>
   );
 }
@@ -291,13 +349,27 @@ function AgentsListCompact({
               padding: "10px 14px",
               borderBottom: "1px solid var(--border)",
               background: active ? "var(--panel-2)" : "transparent",
-              borderLeft: active ? "2px solid var(--signal)" : "2px solid transparent",
+              borderLeft: active
+                ? "2px solid var(--signal)"
+                : "2px solid transparent",
               transition: "background 0.1s",
             }}
           >
-            <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3 }}>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                marginBottom: 3,
+              }}
+            >
               <ActorTag actor={a.actor} />
-              <span className="mono" style={{ fontSize: 10.5, color: "var(--text-3)" }}>{a.kebabId}</span>
+              <span
+                className="mono"
+                style={{ fontSize: 10.5, color: "var(--text-3)" }}
+              >
+                {a.kebabId}
+              </span>
               <span
                 style={{
                   marginLeft: "auto",
@@ -306,10 +378,17 @@ function AgentsListCompact({
                   fontFamily: "var(--mono)",
                 }}
               >
-                {s.runs}r{s.errors > 0 && <span style={{ color: "var(--red)" }}> · {s.errors}e</span>}
+                {s.runs}r
+                {s.errors > 0 && (
+                  <span style={{ color: "var(--red)" }}> · {s.errors}e</span>
+                )}
               </span>
             </div>
-            <div style={{ fontSize: 12.5, color: "var(--text)", fontWeight: 500 }}>{a.title}</div>
+            <div
+              style={{ fontSize: 12.5, color: "var(--text)", fontWeight: 500 }}
+            >
+              {a.title}
+            </div>
           </button>
         );
       })}
@@ -321,6 +400,8 @@ function AgentDetail({
   agent,
   stats,
   tenant,
+  agentKind,
+  agentEnabled,
   onOpenWorkflow,
   onOpenRun,
   allRuns,
@@ -328,27 +409,40 @@ function AgentDetail({
   agent: ViewAgent | null;
   stats: AgentStats | undefined;
   tenant: string;
+  agentKind: "code" | "manifest" | undefined;
+  agentEnabled: boolean;
   onOpenWorkflow: () => void;
   onOpenRun: (id: string) => void;
   allRuns: RunListRow[];
 }) {
   const invoke = useInvokeAgent();
-  const [tab, setTab] = useState<"config" | "io" | "code" | "versions" | "runs">("config");
+  const [tab, setTab] = useState<
+    "config" | "io" | "code" | "versions" | "runs"
+  >("config");
   const [editing, setEditing] = useState(false);
   // "Run with input…" dialog. Decoupled from the default "Test run" path
   // so the operator can drop a real payload (resume + jd, candidate id,
   // etc.) without having to author it into the manifest's input_data
   // declaration.
   const [runInputOpen, setRunInputOpen] = useState(false);
+  const [sendEventOpen, setSendEventOpen] = useState(false);
   // 2-second cooldown after Test run settles. Prevents a rapid double-click
   // (or stuck enter-key) from creating duplicate runs — earlier we saw
   // ~7 TEST-* events fire from accidental repeats. `invoke.isPending`
   // covers the in-flight window; this covers the brief gap between
   // mutation success and a possible second click.
   const [testCooldown, setTestCooldown] = useState(false);
-  void tenant; // tenant is in URL via the layout
-
   if (!agent) return <Empty title="Agent not found" />;
+
+  const canSendEvent =
+    agentKind === "manifest" && agentEnabled && agent.triggers.length > 0;
+  const sendEventTitle = !agentEnabled
+    ? "This agent is disabled. Enable it before publishing a trigger event."
+    : agentKind !== "manifest"
+      ? "Code-defined agents run through direct invoke; event dispatch is available for manifest agents."
+      : agent.triggers.length === 0
+        ? "This agent has no declared trigger events."
+        : `Publish one of ${agent.title}'s trigger events and follow the resulting run.`;
 
   // Runs are keyed by name in the live api payload.
   const recentRuns = allRuns
@@ -387,10 +481,22 @@ function AgentDetail({
       }}
     >
       <header style={{ marginBottom: 16, flexShrink: 0 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            marginBottom: 6,
+          }}
+        >
           <ActorTag actor={agent.actor} />
           <Badge tone="muted">{agent.id}</Badge>
-          <span className="mono" style={{ fontSize: 11.5, color: "var(--text-3)" }}>{agent.name}</span>
+          <span
+            className="mono"
+            style={{ fontSize: 11.5, color: "var(--text-3)" }}
+          >
+            {agent.name}
+          </span>
           {lastTest && (
             <button
               onClick={() => onOpenRun(lastTest.id)}
@@ -409,8 +515,12 @@ function AgentDetail({
                 cursor: "pointer",
               }}
             >
-              <StatusDot status={(lastTest.status as never) ?? "idle"} size={6} />
-              TEST · {fmtAgo(lastTest.startedAt ? Date.parse(lastTest.startedAt) : 0)}
+              <StatusDot
+                status={(lastTest.status as never) ?? "idle"}
+                size={6}
+              />
+              TEST ·{" "}
+              {fmtAgo(lastTest.startedAt ? Date.parse(lastTest.startedAt) : 0)}
             </button>
           )}
           <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
@@ -422,7 +532,12 @@ function AgentDetail({
                 <Button small tone="ghost" onClick={() => setEditing(false)}>
                   Cancel
                 </Button>
-                <Button small icon="check" tone="primary" onClick={() => setEditing(false)}>
+                <Button
+                  small
+                  icon="check"
+                  tone="primary"
+                  onClick={() => setEditing(false)}
+                >
                   Save & deploy
                 </Button>
               </>
@@ -430,6 +545,15 @@ function AgentDetail({
               <>
                 <Button small icon="code" onClick={() => setEditing(true)}>
                   Edit
+                </Button>
+                <Button
+                  small
+                  icon="event"
+                  onClick={() => setSendEventOpen(true)}
+                  disabled={!canSendEvent}
+                  title={sendEventTitle}
+                >
+                  Send event
                 </Button>
                 <Button
                   small
@@ -518,7 +642,9 @@ function AgentDetail({
         />
         <StatCellA
           label="Last run"
-          value={stats?.lastRun && stats.lastRun > 0 ? fmtAgo(stats.lastRun) : "—"}
+          value={
+            stats?.lastRun && stats.lastRun > 0 ? fmtAgo(stats.lastRun) : "—"
+          }
         />
       </div>
 
@@ -558,7 +684,12 @@ function AgentDetail({
           overflow: tab === "code" ? "hidden" : "auto",
         }}
       >
-        {tab === "config" && (editing ? <EditConfigTab agent={agent} models={[]} /> : <ConfigTab agent={agent} />)}
+        {tab === "config" &&
+          (editing ? (
+            <EditConfigTab agent={agent} models={[]} />
+          ) : (
+            <ConfigTab agent={agent} />
+          ))}
         {tab === "io" && <IOConfigTab agent={agent} />}
         {tab === "code" &&
           (editing ? (
@@ -592,6 +723,18 @@ function AgentDetail({
           }}
         />
       )}
+      {sendEventOpen && (
+        <PublishEventModal
+          initialName={agent.triggers[0]}
+          allowedNames={agent.triggers}
+          targetAgent={{ name: agent.name, title: agent.title ?? agent.name }}
+          onClose={() => setSendEventOpen(false)}
+          onOpenRun={(runId) => {
+            setSendEventOpen(false);
+            onOpenRun(runId);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -606,7 +749,9 @@ function StatCellA({
   accent?: string;
 }) {
   return (
-    <div style={{ padding: "12px 16px", borderRight: "1px solid var(--border)" }}>
+    <div
+      style={{ padding: "12px 16px", borderRight: "1px solid var(--border)" }}
+    >
       <div
         style={{
           fontSize: 10,

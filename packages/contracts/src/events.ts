@@ -11,12 +11,28 @@ import { z } from "zod";
  * Both fields are optional → existing callers (CLI, webhooks) keep working
  * with their pre-Event-Tester bodies.
  */
+const PublicEventPayload = z
+  .record(z.string(), z.unknown())
+  .refine(
+    (payload) => Object.keys(payload).every((key) => !key.startsWith("__")),
+    {
+      message:
+        "payload keys beginning with '__' are reserved for runtime metadata",
+    },
+  );
+
 export const IngestEventBody = z.object({
-  name: z.string().min(1),
+  name: z.string().trim().min(1),
   subject: z.string().optional(),
-  payload: z.record(z.string(), z.unknown()).optional(),
+  payload: PublicEventPayload.optional(),
   test: z.boolean().optional(),
   source: z.enum(["operator", "system", "external"]).optional(),
+  /**
+   * Optional agent-scoped delivery. The API verifies that this exact
+   * manifest agent is registered in the authenticated tenant's live runtime
+   * and subscribes to `name`; the runtime then ignores sibling subscribers.
+   */
+  targetAgent: z.string().trim().min(1).max(160).optional(),
 });
 export type IngestEventBody = z.infer<typeof IngestEventBody>;
 

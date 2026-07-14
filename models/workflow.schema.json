@@ -172,6 +172,9 @@
         ]
       },
       "typescript_code": {},
+      "generated": {
+        "type": "boolean"
+      },
       "cron": {},
       "cron_timezone": {}
     },

@@ -1,11 +1,31 @@
 import type { FastifyInstance } from "fastify";
 import { stat } from "node:fs/promises";
 import { createReadStream } from "node:fs";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { artifacts, getDb } from "@agentic/db";
 import { requireAuth } from "../../plugins/auth";
 
 export async function artifactsRoutes(app: FastifyInstance) {
+  app.get<{ Params: { id: string } }>("/runs/:id/artifacts", async (req, reply) => {
+    const auth = requireAuth(req);
+    const rows = getDb()
+      .select({
+        id: artifacts.id,
+        kind: artifacts.kind,
+        size: artifacts.size,
+        createdAt: artifacts.createdAt,
+      })
+      .from(artifacts)
+      .where(and(eq(artifacts.runId, req.params.id), eq(artifacts.tenantId, auth.tenantId)))
+      .all();
+    return reply.ok(
+      rows.map((row) => ({
+        ...row,
+        downloadPath: `/v1/artifacts/${row.id}`,
+      })),
+    );
+  });
+
   app.get<{ Params: { id: string } }>("/artifacts/:id", async (req, reply) => {
     const auth = requireAuth(req);
     const row = getDb()

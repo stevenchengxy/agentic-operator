@@ -184,7 +184,7 @@ export default function AgentsPage() {
         </aside>
       </div>
 
-      {deployOpen && <DeployAgentModal onClose={() => setDeployOpen(false)} models={[]} />}
+      {deployOpen && <DeployAgentModal onClose={() => setDeployOpen(false)} />}
       {importOpen && <ImportManifestModal onClose={() => setImportOpen(false)} mode="agent" />}
 
       {/* preserve unused-import lint pass */}

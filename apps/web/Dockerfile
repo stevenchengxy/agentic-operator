@@ -18,13 +18,13 @@
 #   docker run --rm -p 3599:3599 -e AGENTIC_API_URL=http://api:3501 agentic-web:dev
 
 # --- base ----------------------------------------------------------------
-FROM node:26-slim AS base
+FROM node:26.5.0-slim AS base
 ENV PNPM_HOME=/pnpm
 ENV PATH="$PNPM_HOME:$PATH"
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates tini \
  && rm -rf /var/lib/apt/lists/*
-# node:26-slim does NOT ship corepack; install pnpm via npm.
+# node:26.5.0-slim does NOT ship corepack; install pnpm via npm.
 RUN npm install --global pnpm@11.1.2
 WORKDIR /app
 
@@ -57,7 +57,7 @@ ENV NEXT_TELEMETRY_DISABLED=1
 RUN pnpm --filter @agentic/web build
 
 # --- runtime -------------------------------------------------------------
-FROM node:26-slim AS runtime
+FROM node:26.5.0-slim AS runtime
 ENV NODE_ENV=production
 ENV PORT=3599
 ENV HOSTNAME=0.0.0.0

@@ -95,6 +95,26 @@ export interface EventCatalogEntry {
   raw_payload_schema: unknown;
 }
 
+/** One run in the exact event → run causality graph. */
+export interface EventCausalityRun {
+  id: string;
+  agentName: string | null;
+  status: string;
+  triggerEventId: string | null;
+  emittedEventId: string | null;
+  parentRunId: string | null;
+}
+
+export interface EventCausalityResponse {
+  events: EventRow[];
+  runs: EventCausalityRun[];
+  edges: Array<{
+    from: string;
+    to: string;
+    kind: "triggered_run" | "emitted_event";
+  }>;
+}
+
 /**
  * Event-type catalog for the current tenant — name + description + typed
  * field schema. Used by the Publish-event modal so it can render typed
@@ -126,6 +146,29 @@ export function useEvents(
   });
 }
 
+/**
+ * Follow one published event into the run(s) that consumed it.
+ *
+ * The causal endpoint joins on `runs.trigger_event_id`, rather than the
+ * non-unique event name/subject pair. Polling while the dialog is open closes
+ * the short gap between Inngest accepting the event and the runtime creating
+ * its run row, and also keeps the displayed run status current.
+ */
+export function useEventCausality(
+  eventId: string | null | undefined,
+): UseQueryResult<EventCausalityResponse> {
+  return useQuery({
+    queryKey: ["events", "causality", eventId ?? "__none__"] as const,
+    queryFn: () =>
+      callV1<EventCausalityResponse>(
+        `/v1/events/recent?causality=1&seed=${encodeURIComponent(eventId!)}`,
+      ),
+    enabled: Boolean(eventId),
+    staleTime: 0,
+    refetchInterval: eventId ? 1_000 : false,
+  });
+}
+
 /** Emit a new event: `POST /v1/events`. */
 export function useEmitEvent() {
   const client = useQueryClient();
@@ -134,6 +177,9 @@ export function useEmitEvent() {
       name: string;
       subject?: string;
       payload?: Record<string, unknown>;
+      test?: boolean;
+      source?: "operator" | "system" | "external";
+      targetAgent?: string;
     }) =>
       callV1<{ event_id: string; name: string }>("/v1/events", {
         method: "POST",

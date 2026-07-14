@@ -66,7 +66,11 @@ interface CatalogResponse {
   data: {
     events: Array<{
       name: string;
-      fields: Array<{ name: string; type: string; target_object?: string | null }>;
+      fields: Array<{
+        name: string;
+        type: string;
+        target_object?: string | null;
+      }>;
       source_action?: string | null;
       raw_payload_schema: unknown;
     }>;
@@ -86,15 +90,14 @@ interface InngestCapture {
 function captureInngest(): { calls: InngestCapture[]; restore: () => void } {
   const calls: InngestCapture[] = [];
   const original = inngest.send;
-  (inngest as unknown as { send: typeof inngest.send }).send = (async (
-    payload: { name: string; data: Record<string, unknown> },
-  ) => {
-    calls.push({
-      name: payload.name,
-      data: { ...(payload.data ?? {}) },
-    });
-    return { ids: [makeId("ing")] };
-  }) as typeof inngest.send;
+  (inngest as unknown as { send: typeof inngest.send }).send =
+    (async (payload: { name: string; data: Record<string, unknown> }) => {
+      calls.push({
+        name: payload.name,
+        data: { ...(payload.data ?? {}) },
+      });
+      return { ids: [makeId("ing")] };
+    }) as typeof inngest.send;
   return {
     calls,
     restore: () => {
@@ -135,7 +138,11 @@ describe("Event Tester backend", () => {
           source_action: "ruleCheckerForClientResume",
           event_data: [
             { name: "client_id", type: "String", target_object: "Client" },
-            { name: "candidate_id", type: "String", target_object: "Candidate" },
+            {
+              name: "candidate_id",
+              type: "String",
+              target_object: "Candidate",
+            },
             { name: "rules_passed", type: "Boolean", target_object: null },
           ],
         } as never,
@@ -227,7 +234,11 @@ describe("Event Tester backend", () => {
           body: JSON.stringify({
             name: "CLIENT_RULES_PASSED",
             subject: "category-stamp",
-            payload: { client_id: "cc1", candidate_id: "kk1", rules_passed: true },
+            payload: {
+              client_id: "cc1",
+              candidate_id: "kk1",
+              rules_passed: true,
+            },
           }),
         });
         expect(res.status).toBe(200);
@@ -254,7 +265,10 @@ describe("Event Tester backend", () => {
         const res = await env.fetch("/v1/events", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ name: "UNCATALOGUED_EVENT", subject: "no-cat" }),
+          body: JSON.stringify({
+            name: "UNCATALOGUED_EVENT",
+            subject: "no-cat",
+          }),
         });
         expect(res.status).toBe(200);
         const body = (await res.json()) as PublishResponse;
@@ -295,6 +309,154 @@ describe("Event Tester backend", () => {
       expect(empty).toBeDefined();
       expect(empty!.fields).toEqual([]);
       expect(empty!.raw_payload_schema).toBeNull();
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // Ingest safety — tenant namespace, internal metadata, dispatch atomicity
+  // ─────────────────────────────────────────────────────────────────────
+
+  describe("ingest safety", () => {
+    it("rejects an event addressed to another tenant namespace", async () => {
+      const cap = captureInngest();
+      try {
+        const subject = `foreign-ns-${makeId("tag")}`;
+        const res = await env.fetch("/v1/events", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            name: `some-other-tenant/CLIENT_RULES_PASSED`,
+            subject,
+            payload: { client_id: "c1" },
+          }),
+        });
+
+        expect(res.status).toBe(403);
+        expect(cap.calls).toHaveLength(0);
+        expect(
+          getDb()
+            .select()
+            .from(events)
+            .where(
+              and(eq(events.tenantId, tenantId), eq(events.subject, subject)),
+            )
+            .all(),
+        ).toHaveLength(0);
+      } finally {
+        cap.restore();
+      }
+    });
+
+    it("rejects public payload keys reserved for runtime metadata", async () => {
+      const cap = captureInngest();
+      try {
+        const res = await env.fetch("/v1/events", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            name: "CLIENT_RULES_PASSED",
+            subject: "reserved-metadata",
+            payload: { __test: true, client_id: "c1" },
+          }),
+        });
+
+        expect(res.status).toBe(400);
+        expect(cap.calls).toHaveLength(0);
+      } finally {
+        cap.restore();
+      }
+    });
+
+    it("targets one registered live agent and rejects a trigger it does not subscribe to", async () => {
+      // buildTestEnv bootstraps the real northwind manifest functions into
+      // the mutable registry. Temporarily scope this request to that tenant
+      // so we exercise target preflight + envelope stamping without a live
+      // external Inngest process.
+      const priorTenant = process.env.AGENTIC_DEV_TENANT;
+      process.env.AGENTIC_DEV_TENANT = "northwind";
+      const cap = captureInngest();
+      let publishedEventId: string | undefined;
+      try {
+        const subject = `targeted-${makeId("tag")}`;
+        const res = await env.fetch("/v1/events", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            name: "HIRING_REQUIREMENT_SUBMITTED",
+            targetAgent: "jdAuthorAgent",
+            subject,
+            payload: { requirement: "platform engineer" },
+          }),
+        });
+
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as PublishResponse;
+        publishedEventId = body.data.event_id;
+        expect(cap.calls).toHaveLength(1);
+        expect(cap.calls[0]).toEqual(
+          expect.objectContaining({
+            name: "northwind/HIRING_REQUIREMENT_SUBMITTED",
+            data: expect.objectContaining({
+              __triggerEventId: publishedEventId,
+              __invokedAgent: "jdAuthorAgent",
+              subject,
+            }),
+          }),
+        );
+
+        const wrongTrigger = await env.fetch("/v1/events", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            name: "RESUME_INTAKE_REQUESTED",
+            targetAgent: "jdAuthorAgent",
+            subject: `${subject}-wrong`,
+          }),
+        });
+        expect(wrongTrigger.status).toBe(409);
+        expect(cap.calls).toHaveLength(1);
+      } finally {
+        if (publishedEventId) {
+          getDb().delete(events).where(eq(events.id, publishedEventId)).run();
+        }
+        cap.restore();
+        if (priorTenant === undefined) delete process.env.AGENTIC_DEV_TENANT;
+        else process.env.AGENTIC_DEV_TENANT = priorTenant;
+      }
+    });
+
+    it("removes the provisional event row when runtime dispatch fails", async () => {
+      const original = inngest.send;
+      (inngest as unknown as { send: typeof inngest.send }).send =
+        (async () => {
+          throw new Error("simulated Inngest outage");
+        }) as typeof inngest.send;
+
+      const subject = `dispatch-failure-${makeId("tag")}`;
+      try {
+        const res = await env.fetch("/v1/events", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            name: "CLIENT_RULES_PASSED",
+            subject,
+            payload: { client_id: "c1" },
+          }),
+        });
+
+        expect(res.status).toBe(503);
+        expect(
+          getDb()
+            .select()
+            .from(events)
+            .where(
+              and(eq(events.tenantId, tenantId), eq(events.subject, subject)),
+            )
+            .all(),
+        ).toHaveLength(0);
+      } finally {
+        (inngest as unknown as { send: typeof inngest.send }).send = original;
+      }
     });
   });
 
@@ -444,7 +606,11 @@ describe("Event Tester backend", () => {
           body: JSON.stringify({
             name: "CLIENT_RULES_PASSED",
             subject: "test-flag-true",
-            payload: { client_id: "c1", candidate_id: "k1", rules_passed: true },
+            payload: {
+              client_id: "c1",
+              candidate_id: "k1",
+              rules_passed: true,
+            },
             test: true,
           }),
         });
@@ -456,7 +622,11 @@ describe("Event Tester backend", () => {
           body: JSON.stringify({
             name: "CLIENT_RULES_PASSED",
             subject: "test-flag-false",
-            payload: { client_id: "c2", candidate_id: "k2", rules_passed: true },
+            payload: {
+              client_id: "c2",
+              candidate_id: "k2",
+              rules_passed: true,
+            },
           }),
         });
         expect(r2.status).toBe(200);
@@ -620,7 +790,11 @@ describe("Event Tester backend", () => {
             enabled: true,
           })
           .run();
-        agentRow = db.select().from(agents).where(eq(agents.id, agentId)).all()[0]!;
+        agentRow = db
+          .select()
+          .from(agents)
+          .where(eq(agents.id, agentId))
+          .all()[0]!;
       }
 
       const seedEventId = makeId("evt");
@@ -718,11 +892,21 @@ describe("Event Tester backend", () => {
 
           const edges = body.data.edges ?? [];
           // We should see both kinds of edges along the chain.
-          expect(edges.some((e) => e.from === seedEventId && e.to === runA)).toBe(true);
-          expect(edges.some((e) => e.from === runA && e.to === childEventId)).toBe(true);
-          expect(edges.some((e) => e.from === childEventId && e.to === runB)).toBe(true);
-          expect(edges.some((e) => e.from === runB && e.to === grandchildEventId)).toBe(true);
-          expect(edges.some((e) => e.from === grandchildEventId && e.to === runC)).toBe(true);
+          expect(
+            edges.some((e) => e.from === seedEventId && e.to === runA),
+          ).toBe(true);
+          expect(
+            edges.some((e) => e.from === runA && e.to === childEventId),
+          ).toBe(true);
+          expect(
+            edges.some((e) => e.from === childEventId && e.to === runB),
+          ).toBe(true);
+          expect(
+            edges.some((e) => e.from === runB && e.to === grandchildEventId),
+          ).toBe(true);
+          expect(
+            edges.some((e) => e.from === grandchildEventId && e.to === runC),
+          ).toBe(true);
         });
     });
   });
@@ -779,108 +963,99 @@ describe("Event Tester backend", () => {
         // names filter narrows correctly — confirms the SSE ?names= path
         // doesn't leak the row when the caller asked for a different
         // event type.
-        const filtered = await fetchEventsSince(
-          tenantSlug,
-          before - 1000,
-          ["UNRELATED_NAME"],
+        const filtered = await fetchEventsSince(tenantSlug, before - 1000, [
+          "UNRELATED_NAME",
+        ]);
+        expect(filtered.some((r) => r.id === pubBody.data.event_id)).toBe(
+          false,
         );
-        expect(filtered.some((r) => r.id === pubBody.data.event_id)).toBe(false);
       } finally {
         restore();
       }
     });
 
-    it(
-      "GET /v1/events/stream delivers a published event over a live socket",
-      async () => {
-        // Mirrors TC-14's pattern: fastify.inject() buffers the body so it
-        // can't observe SSE frames. We bind the shared singleton to an
-        // ephemeral port (idempotent — the harness never listens itself)
-        // and fetch the SSE endpoint with a streaming Response.
-        const { build } = await import("../src/server");
-        const app = await build();
-        let port: number | null = null;
-        try {
-          const addr = await app.listen({ port: 0, host: "127.0.0.1" });
-          const m = /:(\d+)/.exec(addr);
-          if (m) port = Number(m[1]);
-        } catch {
-          const a = app.server.address();
-          if (a && typeof a !== "string") port = a.port;
-        }
-        expect(port).toBeTruthy();
+    it("GET /v1/events/stream delivers a published event over a live socket", async () => {
+      // Mirrors TC-14's pattern: fastify.inject() buffers the body so it
+      // can't observe SSE frames. We bind the shared singleton to an
+      // ephemeral port (idempotent — the harness never listens itself)
+      // and fetch the SSE endpoint with a streaming Response.
+      const { build } = await import("../src/server");
+      const app = await build();
+      let port: number | null = null;
+      try {
+        const addr = await app.listen({ port: 0, host: "127.0.0.1" });
+        const m = /:(\d+)/.exec(addr);
+        if (m) port = Number(m[1]);
+      } catch {
+        const a = app.server.address();
+        if (a && typeof a !== "string") port = a.port;
+      }
+      expect(port).toBeTruthy();
 
-        const cap = captureInngest();
-        const ctrl = new AbortController();
-        const stopMarker = `evt-tester-sse-${makeId("tag").slice(-6)}`;
-        try {
-          // Pre-publish into the past so we don't have to race against the
-          // poll. The cursor we hand the route is anchored 1.5s before the
-          // publish wall-clock; the SQLite unixepoch() truncates the row
-          // to the start of its second, so a margin > 1s spans the worst
-          // case.
-          //
-          // We then open the SSE stream with `since` set to (publishTime −
-          // 1500ms), so the FIRST poll tick (≤ 250ms after open) emits a
-          // frame for our row.
-          const pubRes = await env.fetch("/v1/events", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-              name: "CLIENT_RULES_PASSED",
-              subject: stopMarker,
-              payload: {
-                client_id: "c-stream",
-                candidate_id: "k-stream",
-                rules_passed: true,
-              },
-            }),
-          });
-          expect(pubRes.status).toBe(200);
+      const cap = captureInngest();
+      const ctrl = new AbortController();
+      const stopMarker = `evt-tester-sse-${makeId("tag").slice(-6)}`;
+      try {
+        // Pre-publish into the past so we don't have to race against the
+        // poll. The cursor we hand the route is anchored 1.5s before the
+        // publish wall-clock; the SQLite unixepoch() truncates the row
+        // to the start of its second, so a margin > 1s spans the worst
+        // case.
+        //
+        // We then open the SSE stream with `since` set to (publishTime −
+        // 1500ms), so the FIRST poll tick (≤ 250ms after open) emits a
+        // frame for our row.
+        const pubRes = await env.fetch("/v1/events", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            name: "CLIENT_RULES_PASSED",
+            subject: stopMarker,
+            payload: {
+              client_id: "c-stream",
+              candidate_id: "k-stream",
+              rules_passed: true,
+            },
+          }),
+        });
+        expect(pubRes.status).toBe(200);
 
-          const since = Date.now() - 5000;
-          const res = await fetch(
-            `http://127.0.0.1:${port}/v1/events/stream?since=${since}`,
-            { signal: ctrl.signal },
-          );
-          expect(res.status).toBe(200);
-          expect(res.headers.get("content-type")).toContain(
-            "text/event-stream",
-          );
+        const since = Date.now() - 5000;
+        const res = await fetch(
+          `http://127.0.0.1:${port}/v1/events/stream?since=${since}`,
+          { signal: ctrl.signal },
+        );
+        expect(res.status).toBe(200);
+        expect(res.headers.get("content-type")).toContain("text/event-stream");
 
-          const reader = res.body!.getReader();
-          const decoder = new TextDecoder();
-          let buf = "";
+        const reader = res.body!.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
 
-          const readerDone = (async () => {
-            const deadline = Date.now() + 3000;
-            while (Date.now() < deadline) {
-              const { value, done } = await reader.read();
-              if (done) return;
-              buf += decoder.decode(value);
-              if (buf.includes(stopMarker)) return;
-            }
-          })();
+        const readerDone = (async () => {
+          const deadline = Date.now() + 3000;
+          while (Date.now() < deadline) {
+            const { value, done } = await reader.read();
+            if (done) return;
+            buf += decoder.decode(value);
+            if (buf.includes(stopMarker)) return;
+          }
+        })();
 
-          await Promise.race([
-            readerDone,
-            new Promise<void>((_, reject) =>
-              setTimeout(
-                () => reject(new Error("sse frame timeout")),
-                3500,
-              ),
-            ),
-          ]);
+        await Promise.race([
+          readerDone,
+          new Promise<void>((_, reject) =>
+            setTimeout(() => reject(new Error("sse frame timeout")), 3500),
+          ),
+        ]);
 
-          expect(buf).toContain(stopMarker);
-          expect(buf).toMatch(/event: event/);
-        } finally {
-          cap.restore();
-          ctrl.abort();
-        }
-      },
-      10_000,
-    );
+        expect(buf).toContain(stopMarker);
+        expect(buf).toMatch(/event: event/);
+      } finally {
+        cap.restore();
+        ctrl.abort();
+      }
+    }, 10_000);
   });
 
   // ─────────────────────────────────────────────────────────────────────
@@ -897,4 +1072,3 @@ describe("Event Tester backend", () => {
     });
   });
 });
-

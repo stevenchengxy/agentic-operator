@@ -4,7 +4,7 @@
   "private": true,
   "description": "Agentic Operator — event-driven agentic workflow runtime + admin portal",
   "engines": {
-    "node": ">=26.0.0"
+    "node": "26.5.0"
   },
   "packageManager": "pnpm@11.3.0",
   "scripts": {
@@ -34,7 +34,7 @@
     "postinstall": "node scripts/ensure-native-modules.mjs"
   },
   "devDependencies": {
-    "@types/node": "^25.8.0",
+    "@types/node": "^26.1.1",
     "concurrently": "^9.2.1",
     "prettier": "^3.8.3",
     "turbo": "^2.9.14",

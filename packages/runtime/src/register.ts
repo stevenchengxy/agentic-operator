@@ -18,9 +18,11 @@
  */
 
 import { inngest } from "./client";
+import { stat } from "node:fs/promises";
 import { runAction } from "./step-engine";
 import { appendToLedger } from "./event-ledger";
 import { writeRunLog } from "./log-writer";
+import { writeArtifact } from "./artifacts";
 import { correlationFromEvent, withCorrelation } from "./correlation";
 import type { AgentSpec } from "./manifest";
 import { makeId } from "@agentic/shared";
@@ -31,6 +33,7 @@ import {
   runs,
   steps,
   tasks as tasksTable,
+  artifacts,
   getDb,
 } from "@agentic/db";
 import { eq, and } from "drizzle-orm";
@@ -76,6 +79,10 @@ export function findMissingTenantPrompts(args: {
   const prompts = args.tenantRegistry?.prompts ?? {};
   const missing: MissingPromptRef[] = [];
   for (const agent of args.manifest) {
+    // Wizard-authored agents intentionally carry their full prompt in the
+    // manifest and use the runtime's generic user turn. Preserve strict
+    // tenant-prompt validation for every hand-authored agent.
+    if ((agent as { generated?: boolean }).generated) continue;
     for (const action of agent.actions) {
       if (action.type !== "logic") continue;
       if (prompts[action.name]) continue;
@@ -116,6 +123,20 @@ export function formatMissingPromptsError(
 function truncateForLog(s: string, max = 100): string {
   const trimmed = s.replace(/\s+/g, " ").trim();
   return trimmed.length > max ? `${trimmed.slice(0, max - 1)}…` : trimmed;
+}
+
+/**
+ * Generic events fan out to every function sharing their trigger. An
+ * agent-scoped publish stamps `__invokedAgent`; sibling subscribers must
+ * acknowledge the event without allocating a run. Unscoped events preserve
+ * the original fanout behavior.
+ */
+export function eventTargetsAgent(
+  data: Record<string, unknown>,
+  agentName: string,
+): boolean {
+  const target = data.__invokedAgent;
+  return typeof target !== "string" || target === "" || target === agentName;
 }
 
 export function registerAgent(
@@ -165,7 +186,34 @@ export function registerAgent(
         limit: concurrencyCap,
         key: `"${tenantSlug}:" + event.data.subject`,
       },
-      retries: 3,
+      retries: Math.min(
+        20,
+        Math.max(
+          0,
+          Math.floor((agent as AgentSpec & { retries?: number }).retries ?? 3),
+        ),
+      ) as
+        | 0
+        | 1
+        | 2
+        | 3
+        | 4
+        | 5
+        | 6
+        | 7
+        | 8
+        | 9
+        | 10
+        | 11
+        | 12
+        | 13
+        | 14
+        | 15
+        | 16
+        | 17
+        | 18
+        | 19
+        | 20,
       // Operator kill switch (POST /v1/runs/:id/cancel). The route emits
       // `${tenantSlug}/run.cancel` carrying { runId, subject }. We match on
       // subject because the runId is allocated *inside* the function (the
@@ -189,6 +237,13 @@ export function registerAgent(
     },
     async ({ event, step, logger }) => {
       const data = (event.data ?? {}) as Record<string, unknown>;
+      if (!eventTargetsAgent(data, agent.name)) {
+        return {
+          skipped: true,
+          reason: "targeted_event_for_another_agent",
+          targetAgent: data.__invokedAgent,
+        };
+      }
       const subject = typeof data.subject === "string" ? data.subject : null;
       const triggerEventId =
         typeof data.__triggerEventId === "string"
@@ -210,26 +265,27 @@ export function registerAgent(
         const rid = makeId("run");
         const db = getDb();
 
-        const agentRow = db
-          .select()
-          .from(agents)
-          .where(eq(agents.kebabId, agent.id))
-          .all()[0];
-        if (!agentRow) {
-          throw new Error(
-            `[runtime] agent kebab_id=${agent.id} not found in DB — bootstrap must run before functions register`,
-          );
-        }
-        const agentVersionRow = db
-          .select()
+        // Resolve through the exact workflow version. `kebab_id` is only
+        // unique within a workflow, so a global lookup could attach this run
+        // to another tenant that happens to use the same stage/id.
+        const resolvedAgent = db
+          .select({ agent: agents, agentVersion: agentVersions })
           .from(agentVersions)
+          .innerJoin(agents, eq(agents.id, agentVersions.agentId))
           .where(
             and(
-              eq(agentVersions.agentId, agentRow.id),
               eq(agentVersions.workflowVersionId, ctx.workflowVersionId),
+              eq(agents.kebabId, agent.id),
             ),
           )
           .all()[0];
+        if (!resolvedAgent) {
+          throw new Error(
+            `[runtime] agent kebab_id=${agent.id} not found for workflow_version=${ctx.workflowVersionId} — bootstrap must run before functions register`,
+          );
+        }
+        const agentRow = resolvedAgent.agent;
+        const agentVersionRow = resolvedAgent.agentVersion;
 
         const startedAt = Date.now();
         db.insert(runs)
@@ -247,6 +303,20 @@ export function registerAgent(
             logPath: null,
           })
           .run();
+        // run.start is logged HERE, inside the memoized `init` step, so an
+        // Inngest replay/retry (the handler body re-runs, but step.run
+        // returns its cached result without re-executing this callback)
+        // doesn't append a duplicate `run.start` line to the file log.
+        try {
+          await writeRunLog(
+            { tenantSlug, runId: rid, correlationId: cid },
+            "INFO",
+            "run.start",
+            { agent: agent.name, event: event.name, subject: subject ?? "—" },
+          );
+        } catch (err) {
+          logger.warn("run.start log failed", { err: String(err) });
+        }
         return {
           runId: rid,
           correlationId: cid,
@@ -267,15 +337,31 @@ export function registerAgent(
         correlationId,
       };
 
-      await writeRunLog(logCtx, "INFO", "run.start", {
-        agent: agent.name,
-        event: event.name,
-        subject: subject ?? "—",
-      });
+      // Best-effort run-log writer. A logging IO failure must NEVER abort a
+      // real agent run (matches emitStepLog in step-engine.ts). Every call
+      // below is made from INSIDE a step.run() block so Inngest memoizes it —
+      // replays/retries return the cached step result without re-running the
+      // body, so the file log gets exactly one line per real execution
+      // instead of one-per-replay (the prior bug).
+      const safeRunLog = async (
+        level: "INFO" | "WARN" | "ERROR",
+        evt: string,
+        fields: Record<string, unknown>,
+      ): Promise<void> => {
+        try {
+          await writeRunLog(logCtx, level, evt, fields);
+        } catch (err) {
+          logger.warn("run-log write failed", { event: evt, err: String(err) });
+        }
+      };
+
+      // run.start is logged inside the memoized `init` step above; this
+      // Inngest logger line is replay-safe on its own.
       logger.info("run.start", { runId, agent: agent.name, event: event.name });
 
       let tokensIn = 0;
       let tokensOut = 0;
+      let lastModel: string | null = null;
       let lastResult: unknown = null;
 
       for (let i = 0; i < agent.actions.length; i++) {
@@ -341,7 +427,11 @@ export function registerAgent(
               const dbInner = getDb();
               dbInner
                 .update(steps)
-                .set({ status: "failed", error: "task timeout", endedAt: new Date() })
+                .set({
+                  status: "failed",
+                  error: "task timeout",
+                  endedAt: new Date(),
+                })
                 .where(eq(steps.id, initStep.stepId))
                 .run();
               dbInner
@@ -350,7 +440,11 @@ export function registerAgent(
                 .where(eq(tasksTable.id, initStep.taskId))
                 .run();
             });
-            await failRun(runId, `task ${initStep.taskId} timed out`, startedAt);
+            await failRun(
+              runId,
+              `task ${initStep.taskId} timed out`,
+              startedAt,
+            );
             throw new Error("task timeout");
           }
 
@@ -381,6 +475,17 @@ export function registerAgent(
               })
               .where(eq(tasksTable.id, initStep.taskId))
               .run();
+            // step.ok logged inside this memoized block (approve path only —
+            // a reject is surfaced via failRun's run.end below) so replays
+            // don't append a duplicate line.
+            if (resolution.decision !== "reject") {
+              await safeRunLog("INFO", "step.ok", {
+                name: action.name,
+                type: action.type,
+                taskId: initStep.taskId,
+                decision: resolution.decision ?? "approve",
+              });
+            }
           });
 
           if (resolution.decision === "reject") {
@@ -389,12 +494,6 @@ export function registerAgent(
           }
 
           lastResult = resolution.payload ?? null;
-          await writeRunLog(logCtx, "INFO", "step.ok", {
-            name: action.name,
-            type: action.type,
-            taskId: initStep.taskId,
-            decision: resolution.decision ?? "approve",
-          });
           continue;
         }
 
@@ -418,6 +517,14 @@ export function registerAgent(
 
           try {
             const res = await runAction({
+              // Thread the runId so the step engine can append tool-call +
+              // tool-error + llm-call lines to THIS run's log file (the
+              // portal Logs view tails it over SSE). Without it the engine
+              // still logs to stdout but the in-product trace would miss the
+              // per-tool detail. stepOrd is intentionally omitted — passing
+              // it would also switch on the artifact-sidecar JSON writes,
+              // which is a separate (heavier) debugging feature.
+              runId,
               ctx: {
                 agentName: agent.name,
                 actionName: action.name,
@@ -439,8 +546,17 @@ export function registerAgent(
               // crashing.
               agent: {
                 name: agent.name,
+                tenantId: ctx.tenantId,
                 description: agent.description,
                 ontology_instructions: agent.ontology_instructions,
+                generated: (agent as { generated?: boolean }).generated,
+                model: (agent as { model?: string }).model,
+                provider: (
+                  agent as {
+                    provider?: import("@agentic/contracts").ProviderId;
+                  }
+                ).provider,
+                timeout_s: (agent as { timeout_s?: number }).timeout_s,
                 tool_use: Array.isArray(agent.tool_use)
                   ? (agent.tool_use as Array<{
                       name: string;
@@ -462,12 +578,45 @@ export function registerAgent(
               })
               .where(eq(steps.id, sid))
               .run();
+            // Summarise the tool fan-out so the step.ok run-log line carries
+            // model + tool counts without re-reading the engine's per-tool
+            // lines.
+            const traces = Array.isArray(
+              (res.meta as { toolCalls?: unknown } | undefined)?.toolCalls,
+            )
+              ? (
+                  res.meta as {
+                    toolCalls: Array<{ name: string; isError: boolean }>;
+                  }
+                ).toolCalls
+              : [];
+            // step.ok logged HERE, inside the memoized step.run block, so an
+            // Inngest replay/retry doesn't append a duplicate line. Success
+            // path only — a non-ok result is handled by the failRun branch
+            // outside, and a thrown step by step.fail in the catch below.
+            if (res.ok) {
+              await safeRunLog("INFO", "step.ok", {
+                name: action.name,
+                type: action.type,
+                duration: sEnded - sStarted + "ms",
+                tokens_in: res.tokensIn ?? 0,
+                tokens_out: res.tokensOut ?? 0,
+                ...(res.model ? { model: res.model } : {}),
+                ...(res.provider ? { provider: res.provider } : {}),
+                tool_calls: traces.length,
+                tool_errors: traces.filter((t) => t.isError).length,
+              });
+            }
             return {
               ok: res.ok,
               data: res.data,
               tokensIn: res.tokensIn ?? 0,
               tokensOut: res.tokensOut ?? 0,
               durationMs: sEnded - sStarted,
+              model: res.model ?? null,
+              provider: res.provider ?? null,
+              toolCallCount: traces.length,
+              toolErrorCount: traces.filter((t) => t.isError).length,
             };
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
@@ -481,6 +630,18 @@ export function registerAgent(
               })
               .where(eq(steps.id, sid))
               .run();
+            // Surface the thrown step to the run log. Previously a step that
+            // threw (vs. returned ok=false) only left a failed `steps` row +
+            // an Inngest error — nothing in the operator-facing run log until
+            // the run-level `run.end status=failed` line. Logged here, inside
+            // step.run, so it fires exactly once per real execution. Via
+            // safeRunLog so a log IO failure can't mask the original `err`.
+            await safeRunLog("ERROR", "step.fail", {
+              name: action.name,
+              type: action.type,
+              ord,
+              error: message,
+            });
             throw err;
           }
         });
@@ -491,13 +652,9 @@ export function registerAgent(
         }
         tokensIn += stepOutcome.tokensIn;
         tokensOut += stepOutcome.tokensOut;
+        lastModel = stepOutcome.model ?? lastModel;
         lastResult = stepOutcome.data;
-
-        await writeRunLog(logCtx, "INFO", "step.ok", {
-          name: action.name,
-          type: action.type,
-          duration: stepOutcome.durationMs + "ms",
-        });
+        // (step.ok is written inside the memoized step.run block above.)
       }
 
       // Emit downstream event + finalize run — wrapped in step.run so it
@@ -532,9 +689,49 @@ export function registerAgent(
               payloadRef,
             })
             .run();
+          // event.emit logged inside this memoized block (the actual
+          // step.sendEvent stays outside — it's Inngest-idempotent on its own).
+          await safeRunLog("INFO", "event.emit", {
+            name: emittedName,
+            event_id: emittedEventId,
+          });
         }
 
         const endedAtMs = Date.now();
+        const outputArtifactPath = await writeArtifact(
+          runId,
+          "run-output.json",
+          {
+            run_id: runId,
+            agent: agent.name,
+            title: agent.title ?? agent.name,
+            tenant: tenantSlug,
+            status: "ok",
+            trigger: {
+              name: event.name,
+              subject,
+              data,
+            },
+            output: lastResult,
+            emitted_event: emittedName ?? null,
+            tokens: { in: tokensIn, out: tokensOut, model: lastModel },
+            started_at: startedAt.toISOString(),
+            ended_at: new Date(endedAtMs).toISOString(),
+          },
+        );
+        const outputArtifactId = makeId("art");
+        const outputArtifactSize = (await stat(outputArtifactPath)).size;
+        dbInner
+          .insert(artifacts)
+          .values({
+            id: outputArtifactId,
+            tenantId: ctx.tenantId,
+            runId,
+            kind: "application/json",
+            path: outputArtifactPath,
+            size: outputArtifactSize,
+          })
+          .run();
         dbInner
           .update(runs)
           .set({
@@ -543,7 +740,7 @@ export function registerAgent(
             durationMs: endedAtMs - startedAtMs,
             tokensIn,
             tokensOut,
-            model: "mock-model-v1",
+            model: lastModel,
             emittedEventId,
           })
           .where(eq(runs.id, runId))
@@ -561,7 +758,7 @@ export function registerAgent(
           m.runs.inc({
             tenant: tenantSlug,
             agent: agent.name,
-            model: "mock-model-v1",
+            model: lastModel ?? "unknown",
             status: "ok",
           });
           m.runDuration?.observe(endedAtMs - startedAtMs, {
@@ -569,12 +766,21 @@ export function registerAgent(
             agent: agent.name,
           });
         }
+        // run.end logged inside this memoized block so replays don't append
+        // a duplicate terminal line.
+        await safeRunLog("INFO", "run.end", {
+          status: "ok",
+          duration: endedAtMs - startedAtMs + "ms",
+          emitted: emittedName ?? "—",
+        });
         return { emittedEventId, endedAtMs };
       });
 
       // The actual inngest.send must be outside step.run (step results are
       // memoized; sending an event inside a step would re-send on replay).
       // We use step.sendEvent which is Inngest's idempotent send primitive.
+      // The event.emit + run.end LOG lines were already written inside the
+      // memoized `finalize` step above, so they aren't duplicated here.
       if (emittedName && finalize.emittedEventId) {
         await step.sendEvent(`emit.${emittedName}`, {
           name: `${tenantSlug}/${emittedName}` as `${string}/${string}`,
@@ -586,17 +792,7 @@ export function registerAgent(
             __triggerEventId: finalize.emittedEventId,
           }),
         });
-        await writeRunLog(logCtx, "INFO", "event.emit", {
-          name: emittedName,
-          event_id: finalize.emittedEventId,
-        });
       }
-
-      await writeRunLog(logCtx, "INFO", "run.end", {
-        status: "ok",
-        duration: finalize.endedAtMs - startedAtMs + "ms",
-        emitted: emittedName ?? "—",
-      });
 
       return { ok: true, runId, emittedEventId: finalize.emittedEventId };
 
@@ -635,10 +831,17 @@ export function registerAgent(
               status: "failed",
             });
           }
-        });
-        await writeRunLog(logCtx, "ERROR", "run.end", {
-          status: "failed",
-          error: message,
+          // run.end (failed) logged inside this memoized block so a replay
+          // doesn't append a duplicate terminal line, and via try/catch so a
+          // log IO failure can't mask the run failure being recorded.
+          try {
+            await writeRunLog(logCtx, "ERROR", "run.end", {
+              status: "failed",
+              error: message,
+            });
+          } catch (err) {
+            logger.warn("run.end(failed) log failed", { err: String(err) });
+          }
         });
       }
     },

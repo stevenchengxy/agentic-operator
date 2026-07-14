@@ -2,7 +2,7 @@
 
 Event-driven agentic workflow runtime + admin console.
 
-- **`apps/web`** — Next.js 15 + React 19 control plane (UI only)
+- **`apps/web`** — Next.js 16 + React 19 control plane (UI only)
 - **`apps/api`** — Fastify 5 backend (REST + Inngest webhook + SSE log tail + HMAC webhooks)
 - **`packages/runtime`** — Inngest agent registry, manifest loader, step engine
 - **`packages/db`** — Drizzle ORM + better-sqlite3 (WAL mode)
@@ -16,9 +16,9 @@ Event-driven agentic workflow runtime + admin console.
 
 | | Version | Notes |
 |---|---|---|
-| Node | 22 LTS | `.nvmrc` — better-sqlite3 needs Node 22 |
+| Node | 26.5.0 | Exact version pinned in `.nvmrc`, CI, and Docker |
 | TypeScript | 5.7+ | strict |
-| Next.js | 15 | App Router, Webpack dev |
+| Next.js | 16.2.10 | App Router and Turbopack |
 | React | 19 | RSC + inline CSS-in-JS (no Tailwind / shadcn — design fidelity) |
 | Fastify | 5 | api server |
 | Inngest | 3.x | durable event bus, step engine |
@@ -31,7 +31,7 @@ Event-driven agentic workflow runtime + admin console.
 ## Quick start
 
 ```bash
-nvm use 22                    # better-sqlite3 needs Node 22
+nvm use                       # selects Node 26.5.0 from .nvmrc
 pnpm install                  # ~10s, builds native modules
 pnpm db:migrate               # creates data/agentic.db (18 tables)
 pnpm db:seed                  # 3 tenants + 1 admin user
@@ -109,7 +109,7 @@ strip `-vN` suffix). Example: `RAAS-v1` → tenant `raas`.
 ```
 portal/                              ← monorepo root
 ├── apps/
-│   ├── web/                         Next.js 15 (UI only)
+│   ├── web/                         Next.js 16.2.10 (UI only)
 │   │   ├── app/
 │   │   │   ├── layout.tsx           root HTML
 │   │   │   ├── (portal)/            sidebar+topbar route group

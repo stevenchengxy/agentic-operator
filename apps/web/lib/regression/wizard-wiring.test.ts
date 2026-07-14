@@ -43,7 +43,9 @@ function read(rel: string): string {
 
 describe("regression: production wizard wiring", () => {
   describe("ImportManifestModal — must call the real backend", () => {
-    const src = read("app/portal/components/import-manifest/ImportManifestModal.tsx");
+    const src = read(
+      "app/portal/components/import-manifest/ImportManifestModal.tsx",
+    );
 
     it("posts to /v1/tenants/:slug/manifest-import", () => {
       // Either a literal /v1/tenants/.../manifest-import or a template that
@@ -81,12 +83,55 @@ describe("regression: production wizard wiring", () => {
       if (usage.test(src)) {
         // Allow `function buildSampleParse(` definitions; only flag calls.
         // Strip definitions first.
-        const stripped = src.replace(/function\s+buildSampleParse\s*\([^]*?\n\}/g, "");
+        const stripped = src.replace(
+          /function\s+buildSampleParse\s*\([^]*?\n\}/g,
+          "",
+        );
         expect(
           /\bbuildSampleParse\s*\(/.test(stripped),
           "ImportManifestModal calls the mock helper buildSampleParse(). Revert detected.",
         ).toBe(false);
       }
+    });
+  });
+
+  describe("DeployAgentModal — new event authoring", () => {
+    const src = read("app/portal/components/agents/DeployAgentModal.tsx");
+
+    it("loads the tenant event catalog and offers an explicit create action", () => {
+      expect(/\buseEventCatalog\s*\(/.test(src)).toBe(true);
+      expect(src).toContain("Create new event");
+    });
+
+    it("marks draft events and reports created catalog entries after deploy", () => {
+      expect(src).toContain("newEvents={draftNewEvents}");
+      expect(src).toContain("result.events.created.length");
+    });
+  });
+
+  describe("Agent detail — send a trigger event and observe its run", () => {
+    const page = read("app/portal/[tenant]/(views)/agents/[id]/page.tsx");
+    const modal = read("app/portal/components/events/PublishEventModal.tsx");
+    const hooks = read("lib/hooks/useEvents.ts");
+
+    it("opens the production publish modal with the agent trigger allow-list", () => {
+      expect(page).toContain("Send event");
+      expect(page).toContain("allowedNames={agent.triggers}");
+      expect(page).toContain("targetAgent={{ name: agent.name");
+    });
+
+    it("publishes as the operator and waits for the exact event causality link", () => {
+      expect(modal).toContain('source: "operator"');
+      expect(modal).toContain("targetAgent: targetAgent?.name");
+      expect(/useEventCausality\s*\(/.test(modal)).toBe(true);
+      expect(modal).toContain("run.triggerEventId === submitted.id");
+      expect(modal).toContain("✓ Agent started");
+      expect(modal).toContain("Open run");
+    });
+
+    it("polls the exact event seed rather than guessing by name or subject", () => {
+      expect(hooks).toContain("/v1/events/recent?causality=1&seed=");
+      expect(hooks).toContain("refetchInterval: eventId ? 1_000 : false");
     });
   });
 
@@ -113,7 +158,9 @@ describe("regression: production wizard wiring", () => {
       // Either via the exported TENANTS_KEYS constant or a literal
       // ["tenants"] queryKey — accept both.
       const invalidatesViaKeys = /invalidateQueries[^)]*TENANTS_KEYS/.test(src);
-      const invalidatesViaLiteral = /invalidateQueries[^)]*\["tenants"\]/.test(src);
+      const invalidatesViaLiteral = /invalidateQueries[^)]*\["tenants"\]/.test(
+        src,
+      );
       expect(
         invalidatesViaKeys || invalidatesViaLiteral,
         "After tenant create, TanStack ['tenants'] must be invalidated so the sidebar refreshes",
@@ -143,5 +190,4 @@ describe("regression: production wizard wiring", () => {
       }
     });
   });
-
 });

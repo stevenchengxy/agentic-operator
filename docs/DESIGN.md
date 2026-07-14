@@ -171,7 +171,7 @@ Three logical services, deployable as three containers or co-located in one (ope
 
 **Required contracts for production readiness** (*Audit #2 §13 #4*):
 
-1. A **Dockerfile** (Node 26-alpine, pnpm 11, `better_sqlite3.node` resolved via `AGENTIC_SQLITE_BINDING`, tini for signals, `pnpm db:migrate` on first boot).
+1. A **Dockerfile** (Node 26.5.0-slim, pnpm 11, `better_sqlite3.node` resolved via `AGENTIC_SQLITE_BINDING`, tini for signals, `pnpm db:migrate` on first boot).
 2. A **SIGTERM handler** that calls `app.close()` (drains in-flight requests) then `closeDb()`.
 3. **Healthchecks**: liveness (`GET /health`), readiness (DB + Inngest + LLM gateway up).
 4. **Migrations on boot** — see §13.3.

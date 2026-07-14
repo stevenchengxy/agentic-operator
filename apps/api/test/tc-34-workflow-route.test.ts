@@ -82,8 +82,13 @@ describe("TC-34: workflow route", () => {
     const body = await res.json();
     expect(body.ok).toBe(true);
     expect(body.data.folder).toBe("RAAS-v1");
-    expect(body.data.file).toBe("workflow_v1.json");
-    expect(body.data.file_version).toBe(1);
+    const versions = (await readdir(path.join(TMP_ROOT, "RAAS-v1")))
+      .map((file) => file.match(/^workflow_v(\d+)\.json$/)?.[1])
+      .filter((version): version is string => Boolean(version))
+      .map(Number);
+    const latestVersion = Math.max(...versions);
+    expect(body.data.file).toBe(`workflow_v${latestVersion}.json`);
+    expect(body.data.file_version).toBe(latestVersion);
     expect(body.data.schema_version).toBeTypeOf("number");
     expect(Array.isArray(body.data.manifest)).toBe(true);
     expect(body.data.manifest.length).toBeGreaterThan(0);

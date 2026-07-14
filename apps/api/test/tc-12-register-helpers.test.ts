@@ -13,7 +13,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import type { AgentSpec } from "@agentic/runtime";
+import { eventTargetsAgent, type AgentSpec } from "@agentic/runtime";
 import path from "node:path";
 
 // Inline derivations of the contracts — same logic as register.ts, kept here
@@ -26,21 +26,37 @@ function computeFunctionRetries(agent: Pick<AgentSpec, "actions">): number {
   return Math.min(Math.max(max, 3), 10);
 }
 
-function manualTaskTimeout(action: {
-  task_timeout_s?: number;
-}): string {
+function manualTaskTimeout(action: { task_timeout_s?: number }): string {
   const s = action.task_timeout_s;
   if (typeof s === "number" && s > 0) return `${s}s`;
   return "604800s";
 }
 
 describe("TC-12: register.ts helpers", () => {
+  describe("eventTargetsAgent (agent-scoped event delivery)", () => {
+    it("preserves generic fanout when no target metadata is present", () => {
+      expect(eventTargetsAgent({ subject: "REQ-1" }, "researcher")).toBe(true);
+    });
+
+    it("allows only the named agent when subscribers share a trigger", () => {
+      const data = { __invokedAgent: "researcher", subject: "REQ-2" };
+      expect(eventTargetsAgent(data, "researcher")).toBe(true);
+      expect(eventTargetsAgent(data, "reviewer")).toBe(false);
+    });
+  });
+
   describe("computeFunctionRetries (P0-RT-06)", () => {
     it("uses the action max when greater than the default", () => {
       expect(
         computeFunctionRetries({
           actions: [
-            { order: "1", name: "a", description: "", type: "tool", retries: 5 },
+            {
+              order: "1",
+              name: "a",
+              description: "",
+              type: "tool",
+              retries: 5,
+            },
           ],
         }),
       ).toBe(5);
@@ -56,7 +72,13 @@ describe("TC-12: register.ts helpers", () => {
       expect(
         computeFunctionRetries({
           actions: [
-            { order: "1", name: "a", description: "", type: "tool", retries: 50 },
+            {
+              order: "1",
+              name: "a",
+              description: "",
+              type: "tool",
+              retries: 50,
+            },
           ],
         }),
       ).toBe(10);

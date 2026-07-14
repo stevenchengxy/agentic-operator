@@ -1,6 +1,13 @@
 export { inngest, type EventMap } from "./client";
 export { helloFn } from "./hello";
-export { registerAgent, type RegisterContext } from "./register";
+export {
+  registerAgent,
+  eventTargetsAgent,
+  findMissingTenantPrompts,
+  formatMissingPromptsError,
+  type RegisterContext,
+} from "./register";
+export { makeGeneratedAgentPrompt } from "./generated-agent";
 export {
   bootstrapAll,
   bootstrapTenant,
@@ -26,6 +33,7 @@ export {
 } from "./generate-workflow-schema";
 export { runAction } from "./step-engine";
 export { writeRunLog, logPathFor, type LogLevel } from "./log-writer";
+export { writeArtifact, artifactsRoot } from "./artifacts";
 export { appendToLedger, eventLedgerPath } from "./event-ledger";
 export { correlationFromEvent, withCorrelation } from "./correlation";
 export {
@@ -98,8 +106,4 @@ export {
 } from "./retention";
 // P3-RT-01 / P3-RT-02 — cron / scheduler trigger surface (TC-32).
 export { registerCronTriggers, type CronTriggerResult } from "./scheduler";
-export {
-  systemCronFns,
-  __getCronFires,
-  __resetCronFires,
-} from "./system-cron";
+export { systemCronFns, __getCronFires, __resetCronFires } from "./system-cron";

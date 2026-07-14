@@ -15,7 +15,7 @@
                              │              │              │
                        POST  ▼     webhook  ▼      CLI/SDK ▼
               ┌────────────────────────────────────────────────────┐
-              │                Next.js 15 — apps/portal             │
+              │              Next.js 16.2.10 — apps/portal          │
               │  ┌──────────────────┐    ┌─────────────────────┐    │
               │  │  Route handlers  │    │   Admin UI (React)  │    │
               │  │  /api/events     │    │   /portal/*         │    │
@@ -44,7 +44,7 @@
               └──────────────┘  └──────────────┘   └────────────────┘
 ```
 
-- **Next.js 15** hosts both the portal (React 19) and all API routes.
+- **Next.js 16.2.10** hosts the portal (React 19); application data APIs live in Fastify.
 - **Inngest** is the durable event bus + step-function engine. Every agent
   becomes one Inngest function. Inngest handles retries, dead-letter,
   cancellation, fan-out, concurrency keys.
@@ -60,7 +60,7 @@
 ```
 agentic-operator/
 ├── apps/
-│   ├── portal/                 # Next.js 15 — UI + API routes
+│   ├── portal/                 # Next.js 16.2.10 — UI
 │   │   ├── app/
 │   │   │   ├── api/
 │   │   │   │   ├── events/route.ts
@@ -409,7 +409,7 @@ with the full manifest JSON. The differences are how the JSON is produced.
 $ npx agentic deploy raas --version 2026.05.16-b --target prod
 
 ✓ Bundled 22 agents (4 changed)
-✓ Compiled handlers (TypeScript 5, Node 22)
+✓ Compiled handlers (TypeScript 6, Node 26.5.0)
 ✓ Validated manifest
 ✓ Uploaded to /var/agentic/deploys/raas/2026.05.16-b/
 ✓ Registered with Inngest worker · 1842 active runs migrated

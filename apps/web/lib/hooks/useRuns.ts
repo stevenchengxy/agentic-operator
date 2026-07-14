@@ -132,6 +132,22 @@ export function useRun(id: string | null | undefined): UseQueryResult<RunDetail>
   });
 }
 
+export interface RunArtifact {
+  id: string;
+  kind: string;
+  size: number;
+  createdAt: string;
+  downloadPath: string;
+}
+
+export function useRunArtifacts(id: string | null | undefined): UseQueryResult<RunArtifact[]> {
+  return useQuery({
+    queryKey: id ? [...RUN_KEYS.detail(id), "artifacts"] : (["runs", "artifacts", "__none__"] as const),
+    queryFn: () => callV1<RunArtifact[]>(`/v1/runs/${encodeURIComponent(id!)}/artifacts`),
+    enabled: Boolean(id),
+  });
+}
+
 /** Replay a run: `/v1/runs/:id/replay` */
 export function useReplayRun() {
   const client = useQueryClient();

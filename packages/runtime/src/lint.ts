@@ -289,12 +289,15 @@ export function lint(
   for (let i = 0; i < manifest.length; i += 1) {
     const a = manifest[i]! as AgentSpec & {
       model?: string | null;
+      provider?: string | null;
       concurrency?: { enabled: boolean; max_concurrent_executions: number };
       tool_use?: Array<{ name: string }>;
       cron?: string;
     };
     const model = a.model;
     if (model === undefined || model === null || model === "") continue;
+    const explicitProvider = a.provider?.toLowerCase();
+    if (explicitProvider && providerSet.has(explicitProvider)) continue;
     const lower = String(model).toLowerCase();
     // Heuristic mapping from model prefix → provider id (mirrors the
     // adapters' route table). Anything outside the allow-list trips the
