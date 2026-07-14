@@ -40,7 +40,9 @@ type ApiResp<T> = ApiOk<T> | ApiErr;
 async function call<S extends z.ZodTypeAny>(
   schema: S,
   path: string,
-  init: RequestInit & { query?: Record<string, string | number | undefined> } = {},
+  init: RequestInit & {
+    query?: Record<string, string | number | undefined>;
+  } = {},
 ): Promise<z.infer<S>> {
   const url = new URL(path, API_URL);
   if (init.query) {
@@ -65,10 +67,20 @@ async function call<S extends z.ZodTypeAny>(
 // ─── Runs ────────────────────────────────────────────────────────────────
 
 const GetRunPayload = z.object({ run: RunRow, steps: z.array(StepRow) });
-const ReplayRunPayload = z.object({
-  replayed_run: z.string(),
-  new_event_id: z.string(),
-});
+const ReplayRunPayload = z.union([
+  z.object({
+    replayed_run: z.string(),
+    new_event_id: z.string(),
+  }),
+  z.object({
+    runId: z.string(),
+    sessionId: z.string(),
+    status: z.literal("queued"),
+    definitionHash: z.string(),
+    traceUrl: z.string(),
+    outputUrl: z.string(),
+  }),
+]);
 const CancelRunPayload = z.object({
   runId: z.string(),
   status: z.string(),
@@ -77,8 +89,9 @@ const CancelRunPayload = z.object({
 });
 
 export const runs = {
-  list: (opts: z.input<typeof import("@agentic/contracts").ListRunsQuery> = {}) =>
-    call(z.array(RunRow), "/v1/runs", { query: opts as never }),
+  list: (
+    opts: z.input<typeof import("@agentic/contracts").ListRunsQuery> = {},
+  ) => call(z.array(RunRow), "/v1/runs", { query: opts as never }),
   get: (id: string) =>
     call(GetRunPayload, `/v1/runs/${encodeURIComponent(id)}`),
   replay: (id: string) =>
@@ -100,9 +113,14 @@ const ReplayEventPayload = z.object({
 });
 
 export const events = {
-  list: (opts: z.input<typeof import("@agentic/contracts").ListEventsQuery> = {}) =>
-    call(z.array(EventRow), "/v1/events", { query: opts as never }),
-  ingest: (body: { name: string; subject?: string; payload?: Record<string, unknown> }) =>
+  list: (
+    opts: z.input<typeof import("@agentic/contracts").ListEventsQuery> = {},
+  ) => call(z.array(EventRow), "/v1/events", { query: opts as never }),
+  ingest: (body: {
+    name: string;
+    subject?: string;
+    payload?: Record<string, unknown>;
+  }) =>
     call(IngestPayload, "/v1/events", {
       method: "POST",
       body: JSON.stringify(body),
@@ -123,7 +141,10 @@ const ResolvePayload = z.object({
 export const tasks = {
   list: () => call(z.array(TaskRow), "/v1/tasks"),
   get: (id: string) => call(TaskRow, `/v1/tasks/${encodeURIComponent(id)}`),
-  resolve: (id: string, body: { decision: "approve" | "reject"; payload?: unknown }) =>
+  resolve: (
+    id: string,
+    body: { decision: "approve" | "reject"; payload?: unknown },
+  ) =>
     call(ResolvePayload, `/v1/tasks/${encodeURIComponent(id)}/resolve`, {
       method: "POST",
       body: JSON.stringify(body),
@@ -309,7 +330,10 @@ const ManifestFetchUrlPayload = z.object({
   actions: z.array(z.unknown()).optional(),
 });
 
-const ManifestImportResponse = z.union([ManifestImportPreview, ManifestImportCommit]);
+const ManifestImportResponse = z.union([
+  ManifestImportPreview,
+  ManifestImportCommit,
+]);
 
 type ManifestImportBody =
   | {
@@ -330,10 +354,14 @@ type ManifestImportBody =
 
 export const manifest = {
   import: (slug: string, body: ManifestImportBody) =>
-    call(ManifestImportResponse, `/v1/tenants/${encodeURIComponent(slug)}/manifest-import`, {
-      method: "POST",
-      body: JSON.stringify(body),
-    }),
+    call(
+      ManifestImportResponse,
+      `/v1/tenants/${encodeURIComponent(slug)}/manifest-import`,
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      },
+    ),
   fetchUrl: (slug: string, url: string) =>
     call(
       ManifestFetchUrlPayload,

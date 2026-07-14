@@ -37,7 +37,9 @@ import {
   findMissingTenantPrompts,
   formatMissingPromptsError,
   registerAgent,
+  resolveAgentTriggerNames,
 } from "./register";
+import { registerCronTriggers } from "./scheduler";
 import type { TenantRegistry } from "@agentic/agent-kit";
 import type { InngestFunction } from "inngest";
 
@@ -52,6 +54,8 @@ export interface BootstrapTenantResult {
   functions: InngestFunction.Any[];
   agentCount: number;
   registeredCount: number;
+  cronCount: number;
+  invalidCronCount: number;
   eventTypeCount: number;
   entityTypeCount: number;
   tenantTools: number;
@@ -149,10 +153,7 @@ export async function bootstrapTenant(spec: {
     .select()
     .from(workflows)
     .where(
-      and(
-        eq(workflows.tenantId, tenant.id),
-        eq(workflows.slug, workflowSlug),
-      ),
+      and(eq(workflows.tenantId, tenant.id), eq(workflows.slug, workflowSlug)),
     )
     .all()[0];
   if (!workflow) {
@@ -165,7 +166,11 @@ export async function bootstrapTenant(spec: {
         name: workflowSlug,
       })
       .run();
-    workflow = db.select().from(workflows).where(eq(workflows.id, id)).all()[0]!;
+    workflow = db
+      .select()
+      .from(workflows)
+      .where(eq(workflows.id, id))
+      .all()[0]!;
   }
 
   const versionStr = `auto-${hashManifest(manifest)}`;
@@ -241,9 +246,7 @@ export async function bootstrapTenant(spec: {
     let agentRow = db
       .select()
       .from(agents)
-      .where(
-        and(eq(agents.workflowId, workflow.id), eq(agents.kebabId, a.id)),
-      )
+      .where(and(eq(agents.workflowId, workflow.id), eq(agents.kebabId, a.id)))
       .all()[0];
     if (!agentRow) {
       const agentId = makeId("agt");
@@ -288,7 +291,7 @@ export async function bootstrapTenant(spec: {
         .run();
     }
 
-    for (const trigger of a.trigger) {
+    for (const trigger of resolveAgentTriggerNames(a)) {
       const exists = db
         .select()
         .from(eventListeners)
@@ -318,19 +321,25 @@ export async function bootstrapTenant(spec: {
   // Upsert ontology catalogs (RF-1.4 additive tables)
   upsertEventTypes(tenant.id, loaded);
   upsertEntityTypes(tenant.id, loaded);
+  const cron = registerCronTriggers({
+    tenantSlug: spec.tenantSlug,
+    manifest,
+  });
 
   return {
     tenant,
     workflow,
     workflowVersion,
-    functions: registered,
+    functions: [...registered, ...cron.functions],
     agentCount: manifest.length,
     registeredCount: registered.length,
+    cronCount: cron.functions.length,
+    invalidCronCount: cron.invalidCron,
     eventTypeCount: loaded.events.events?.length ?? 0,
     entityTypeCount: loaded.objects.payload?.length ?? 0,
     tenantTools: toolCount,
     tenantPrompts: promptCount,
-    hasTenantPackage: tenantRegistry !== null,
+    hasTenantPackage: tenantRegistry !== undefined,
     deploymentInserted,
   };
 }
@@ -342,7 +351,9 @@ function upsertEventTypes(tenantId: string, loaded: LoadedModels) {
     const existing = db
       .select()
       .from(eventTypes)
-      .where(and(eq(eventTypes.tenantId, tenantId), eq(eventTypes.name, e.name)))
+      .where(
+        and(eq(eventTypes.tenantId, tenantId), eq(eventTypes.name, e.name)),
+      )
       .all()[0];
     const row = {
       tenantId,
@@ -373,10 +384,7 @@ function upsertEntityTypes(tenantId: string, loaded: LoadedModels) {
       .select()
       .from(entityTypes)
       .where(
-        and(
-          eq(entityTypes.tenantId, tenantId),
-          eq(entityTypes.entityId, o.id),
-        ),
+        and(eq(entityTypes.tenantId, tenantId), eq(entityTypes.entityId, o.id)),
       )
       .all()[0];
     const row = {
@@ -426,7 +434,7 @@ export async function bootstrapAll(
         ? `· tenant pkg: ${result.tenantTools} tools, ${result.tenantPrompts} prompts`
         : "· no tenant pkg (declarative)";
       console.log(
-        `[bootstrap] ${f.slug} (${f.folder}): ${result.registeredCount}/${result.agentCount} agents · ${result.eventTypeCount} event types · ${result.entityTypeCount} entities ${tenantPkgNote}`,
+        `[bootstrap] ${f.slug} (${f.folder}): ${result.registeredCount}/${result.agentCount} agents · ${result.cronCount} cron · ${result.eventTypeCount} event types · ${result.entityTypeCount} entities ${tenantPkgNote}`,
       );
     } catch (err) {
       console.error(`[bootstrap] failed to load ${f.folder}:`, err);

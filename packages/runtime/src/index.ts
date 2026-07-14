@@ -3,9 +3,12 @@ export { helloFn } from "./hello";
 export {
   registerAgent,
   eventTargetsAgent,
+  resolveAgentConcurrency,
+  resolveAgentTriggerNames,
   findMissingTenantPrompts,
   formatMissingPromptsError,
   type RegisterContext,
+  type ResolvedAgentConcurrency,
 } from "./register";
 export { makeGeneratedAgentPrompt } from "./generated-agent";
 export {
@@ -33,7 +36,67 @@ export {
 } from "./generate-workflow-schema";
 export { runAction } from "./step-engine";
 export { writeRunLog, logPathFor, type LogLevel } from "./log-writer";
-export { writeArtifact, artifactsRoot } from "./artifacts";
+export {
+  writeArtifact,
+  artifactsRoot,
+  createFilesystemArtifactSink,
+  persistTerminalRunArtifacts,
+  ArtifactPersistenceError,
+  type RuntimeArtifactPersistRequest,
+  type RuntimePersistedArtifact,
+  type RuntimeArtifactSink,
+  type PersistTerminalRunArtifactsInput,
+  type PersistedTerminalRunArtifacts,
+} from "./artifacts";
+export {
+  DEFAULT_PLATFORM_INSTRUCTIONS,
+  AgentInputValidationError,
+  OutputSchemaValidationError,
+  normalizeAgentForExecution,
+  compileAgentOutputSchema,
+  bindTriggerInputs,
+  validateValueAgainstJsonSchema,
+  validateJsonSchemaDocument,
+  validateAgentInputs,
+  compileAgentPrompts,
+  validateAgentUserPromptTemplate,
+  prepareAgentExecution,
+  parseValidateAndRepairOutput,
+  resolveAgentEmissions,
+  finalizeAgentExecution,
+  resolveRestrictedJsonPath,
+  canonicalJson,
+  type RuntimeValidationIssue,
+  type NormalizedAgentExecutionDefinition,
+  type ValidatedAgentInputs,
+  type CompileAgentPromptsOptions,
+  type CompiledAgentPrompts,
+  type AgentExecutionEvent,
+  type PrepareAgentExecutionInput,
+  type PreparedAgentExecution,
+  type OutputRepairRequest,
+  type OutputRepair,
+  type ParseValidateAndRepairOutputInput,
+  type StructuredOutputResult,
+  type EmissionSource,
+  type ResolvedAgentEmission,
+  type ResolveAgentEmissionsInput,
+  type FinalizeAgentExecutionInput,
+  type FinalizedAgentExecution,
+} from "./agent-execution";
+export {
+  appendRuntimeTrace,
+  createBufferedTraceSink,
+  createFilteredTraceSink,
+  shouldPersistRuntimeTrace,
+  type RuntimeTraceKind,
+  type RuntimeTraceLevel,
+  type RuntimeTraceVisibility,
+  type RuntimeTraceStatus,
+  type RuntimeTraceEventDraft,
+  type RuntimeTracePolicy,
+  type RuntimeTraceSink,
+} from "./execution-trace";
 export { appendToLedger, eventLedgerPath } from "./event-ledger";
 export { correlationFromEvent, withCorrelation } from "./correlation";
 export {

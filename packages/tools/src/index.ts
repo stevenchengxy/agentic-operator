@@ -23,6 +23,7 @@
 
 export {
   globalToolRegistry,
+  getGlobalToolCatalogEntry,
   listGlobalTools,
   type ToolCatalogEntry,
 } from "./registry";
@@ -109,7 +110,11 @@ export async function channelPublish(
 
 function guessTool(name: string): ToolName {
   const low = name.toLowerCase();
-  if (low.includes("publish") || low.includes("notify") || low.includes("alert"))
+  if (
+    low.includes("publish") ||
+    low.includes("notify") ||
+    low.includes("alert")
+  )
     return "channel.publish";
   return "http.fetch";
 }

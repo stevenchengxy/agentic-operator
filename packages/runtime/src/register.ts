@@ -19,10 +19,31 @@
 
 import { inngest } from "./client";
 import { stat } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { runAction } from "./step-engine";
 import { appendToLedger } from "./event-ledger";
 import { writeRunLog } from "./log-writer";
-import { writeArtifact } from "./artifacts";
+import {
+  createFilesystemArtifactSink,
+  persistTerminalRunArtifacts,
+  writeArtifact,
+  type RuntimeArtifactSink,
+  type RuntimePersistedArtifact,
+} from "./artifacts";
+import {
+  AgentInputValidationError,
+  OutputSchemaValidationError,
+  bindTriggerInputs,
+  canonicalJson,
+  normalizeAgentForExecution,
+  parseValidateAndRepairOutput,
+  resolveAgentEmissions,
+  validateAgentInputs,
+} from "./agent-execution";
+import {
+  createFilteredTraceSink,
+  type RuntimeTraceSink,
+} from "./execution-trace";
 import { correlationFromEvent, withCorrelation } from "./correlation";
 import type { AgentSpec } from "./manifest";
 import { makeId } from "@agentic/shared";
@@ -34,13 +55,21 @@ import {
   steps,
   tasks as tasksTable,
   artifacts,
+  runEmittedEvents,
+  runTraceEvents,
   getDb,
 } from "@agentic/db";
-import { eq, and } from "drizzle-orm";
+import { eq, and, desc } from "drizzle-orm";
 
 import type { TenantRegistry } from "@agentic/agent-kit";
 import type { InngestFunction } from "inngest";
 import { getRuntimeMetrics } from "./llm-host";
+import type {
+  AgentRunRecord,
+  ProviderId,
+  RunArtifactMetadata,
+  RunEmittedEvent,
+} from "@agentic/contracts";
 
 export interface RegisterContext {
   tenantId: string;
@@ -52,6 +81,13 @@ export interface RegisterContext {
    * manifest action.name → tenant impl when present, generic when absent.
    */
   tenantRegistry?: TenantRegistry;
+  /** Optional override; defaults to the runtime DB trace sink. */
+  traceSink?: RuntimeTraceSink;
+  /** Optional tenant-authorized artifact service for this run. */
+  artifactSinkFactory?: (context: {
+    tenantId: string;
+    runId: string;
+  }) => RuntimeArtifactSink;
 }
 
 /**
@@ -125,6 +161,42 @@ function truncateForLog(s: string, max = 100): string {
   return trimmed.length > max ? `${trimmed.slice(0, max - 1)}…` : trimmed;
 }
 
+function createDbTraceSink(tenantId: string): RuntimeTraceSink {
+  return {
+    append(event) {
+      const db = getDb();
+      const latest = db
+        .select({ seq: runTraceEvents.seq })
+        .from(runTraceEvents)
+        .where(eq(runTraceEvents.runId, event.runId))
+        .orderBy(desc(runTraceEvents.seq))
+        .limit(1)
+        .all()[0];
+      db.insert(runTraceEvents)
+        .values({
+          id: makeId("trc"),
+          tenantId,
+          runId: event.runId,
+          stepId: event.stepId ?? null,
+          parentId: event.parentId ?? null,
+          seq: (latest?.seq ?? 0) + 1,
+          kind: event.kind,
+          level: event.level,
+          name: event.name,
+          status: event.status,
+          startedAt: event.startedAt ?? null,
+          endedAt: event.endedAt ?? null,
+          durationMs: event.durationMs ?? null,
+          summary: event.summary ?? null,
+          dataJson: event.data ?? null,
+          artifactId: event.artifactId ?? null,
+          visibility: event.visibility,
+        })
+        .run();
+    },
+  };
+}
+
 /**
  * Generic events fan out to every function sharing their trigger. An
  * agent-scoped publish stamps `__invokedAgent`; sibling subscribers must
@@ -139,53 +211,106 @@ export function eventTargetsAgent(
   return typeof target !== "string" || target === "" || target === agentName;
 }
 
+export interface ResolvedAgentConcurrency {
+  limit: number;
+  key: string;
+}
+
+/**
+ * Compile Studio concurrency settings into Inngest's expression language.
+ * Only simple event-data JSON paths are accepted; this keeps authored values
+ * data-only and prevents arbitrary expression injection.
+ */
+export function resolveAgentConcurrency(
+  agent: unknown,
+  tenantSlug: string,
+): ResolvedAgentConcurrency | undefined {
+  const config =
+    agent && typeof agent === "object"
+      ? (
+          agent as {
+            concurrency?: {
+              enabled?: boolean;
+              max_concurrent_executions?: number;
+              key?: string;
+            };
+          }
+        ).concurrency
+      : undefined;
+  if (config?.enabled === false) return undefined;
+  if (
+    config?.max_concurrent_executions !== undefined &&
+    (!Number.isInteger(config.max_concurrent_executions) ||
+      config.max_concurrent_executions < 1 ||
+      config.max_concurrent_executions > 1_000)
+  ) {
+    throw new TypeError(
+      "concurrency.max_concurrent_executions must be an integer from 1 to 1000",
+    );
+  }
+  const path = config?.key?.trim() || "$.subject";
+  if (!/^\$(?:\.[A-Za-z_][A-Za-z0-9_]*)+$/.test(path)) {
+    throw new TypeError(
+      `concurrency.key must be a restricted event-data path such as '$.subject' or '$.inputs.candidate.id'`,
+    );
+  }
+  const eventExpression = `event.data.${path.slice(2)}`;
+  return {
+    limit:
+      typeof config?.max_concurrent_executions === "number"
+        ? config.max_concurrent_executions
+        : 8,
+    key: `${JSON.stringify(`${tenantSlug}:`)} + ${eventExpression}`,
+  };
+}
+
+export function resolveAgentTriggerNames(agent: {
+  name: string;
+  trigger: string[];
+  cron?: string | null;
+}): string[] {
+  if (agent.trigger.length > 0) return [...agent.trigger];
+  return typeof agent.cron === "string" && agent.cron.trim().length > 0
+    ? [`__schedule.${agent.name}`]
+    : [];
+}
+
 export function registerAgent(
   agent: AgentSpec,
   ctx: RegisterContext,
 ): InngestFunction.Any | null {
   const tenantSlug = ctx.tenantSlug;
   const fnId = `${tenantSlug}.${agent.name}`;
+  const observability =
+    normalizeAgentForExecution(agent).definition.observability;
+  const traceSinkForRun = (): RuntimeTraceSink =>
+    createFilteredTraceSink(ctx.traceSink ?? createDbTraceSink(ctx.tenantId), {
+      traceLevel: observability?.trace_level,
+      reasoningSummary: observability?.reasoning_summary,
+    });
+  const definitionHash = `sha256:${createHash("sha256")
+    .update(canonicalJson(agent))
+    .digest("hex")}`;
 
-  // No triggers (e.g. `manualEntry`) → register without an event trigger and
-  // skip; the workflow author fires it via an explicit external event.
-  if (agent.trigger.length === 0) {
+  const triggerNames = resolveAgentTriggerNames(agent);
+  // No event or schedule trigger (e.g. manualEntry) → no Inngest function.
+  if (triggerNames.length === 0) {
     return null;
   }
 
-  const triggers = agent.trigger.map((t) => ({
+  const triggers = triggerNames.map((t) => ({
     event: `${tenantSlug}/${t}` as `${string}/${string}`,
   }));
 
-  // Per review M2: prior to this change `register.ts` hardcoded `limit: 8`
-  // and never read `agent.concurrency.max_concurrent_executions`, which made
-  // the lint check `concurrency_excess` a no-op (checking dead config). The
-  // cap is now honoured at registration time. A missing / disabled
-  // `concurrency` block falls back to the historical default of 8.
-  const concurrencyConfig = (
-    agent as AgentSpec & {
-      concurrency?: { enabled?: boolean; max_concurrent_executions?: number };
-    }
-  ).concurrency;
-  const concurrencyCap =
-    concurrencyConfig?.enabled !== false &&
-    typeof concurrencyConfig?.max_concurrent_executions === "number"
-      ? concurrencyConfig.max_concurrent_executions
-      : 8;
+  const concurrency = resolveAgentConcurrency(agent, tenantSlug);
 
   return inngest.createFunction(
     {
       id: fnId,
       name: agent.title ?? agent.name,
-      // P5-TEN-01 (G7) — concurrency key now composes the tenant slug with
-      // the subject. Without the tenant prefix, two tenants whose agents
-      // both process subject="REQ-2041" would share the same Inngest slot
-      // bucket — one heavy tenant could starve another. With the prefix,
-      // each tenant gets its own bucket per subject, and the per-agent
-      // `concurrencyCap` only counts that tenant's traffic.
-      concurrency: {
-        limit: concurrencyCap,
-        key: `"${tenantSlug}:" + event.data.subject`,
-      },
+      // Every enabled key is tenant-prefixed. The default is subject; Studio
+      // may author a restricted event-data path, or disable this limit.
+      ...(concurrency ? { concurrency } : {}),
       retries: Math.min(
         20,
         Math.max(
@@ -219,12 +344,9 @@ export function registerAgent(
       // subject because the runId is allocated *inside* the function (the
       // triggering event doesn't know it yet, and Inngest's `cancelOn.if`
       // can only compare values already present on the trigger envelope).
-      // Subject is the natural correlation: the concurrency key above
-      // already serialises one run per (tenant, subject), so a cancel keyed
-      // on subject hits exactly the in-flight run the operator clicked
-      // Stop on. Trade-off documented in the route handler: if two runs
-      // share a subject (rare — concurrency cap > 1 + same key), both are
-      // cancelled together. For a kill switch this is the correct safety
+      // Cancellation remains subject-scoped even when an authored
+      // concurrency key uses another field. Trade-off: multiple in-flight
+      // runs sharing a subject are cancelled together, the safer kill-switch
       // posture.
       cancelOn: [
         {
@@ -300,9 +422,34 @@ export function registerAgent(
             correlationId: cid,
             subject,
             isTest,
+            invocationSource: "event",
+            definitionHash,
+            outputValid: null,
+            sideEffectMode: isTest ? "suppressed" : "live",
             logPath: null,
           })
           .run();
+        try {
+          const sink = traceSinkForRun();
+          await sink.append({
+            runId: rid,
+            kind: "run",
+            level: "minimal",
+            name: "run.start",
+            status: "running",
+            startedAt: new Date(startedAt),
+            summary: `Started ${isTest ? "test" : "event"} run for ${agent.name}`,
+            data: {
+              agentName: agent.name,
+              eventName: event.name,
+              definitionHash,
+              testRun: isTest,
+            },
+            visibility: "user",
+          });
+        } catch (err) {
+          logger.warn("run.start trace failed", { err: String(err) });
+        }
         // run.start is logged HERE, inside the memoized `init` step, so an
         // Inngest replay/retry (the handler body re-runs, but step.run
         // returns its cached result without re-executing this callback)
@@ -321,6 +468,7 @@ export function registerAgent(
           runId: rid,
           correlationId: cid,
           agentDbId: agentRow.id,
+          agentVersionId: agentVersionRow.id,
           startedAt,
         };
       });
@@ -336,6 +484,13 @@ export function registerAgent(
         runId,
         correlationId,
       };
+      const traceSink = traceSinkForRun();
+      const artifactSink = ctx.artifactSinkFactory?.({
+        tenantId: ctx.tenantId,
+        runId,
+      });
+      const terminalArtifactSink =
+        artifactSink ?? createFilesystemArtifactSink(runId);
 
       // Best-effort run-log writer. A logging IO failure must NEVER abort a
       // real agent run (matches emitStepLog in step-engine.ts). Every call
@@ -362,11 +517,71 @@ export function registerAgent(
       let tokensIn = 0;
       let tokensOut = 0;
       let lastModel: string | null = null;
+      let lastProvider: string | null = null;
+      let lastOutputValid: boolean | null = null;
+      let lastRawResponse: string | undefined;
       let lastResult: unknown = null;
+      let executionInputs: Record<string, unknown> = data;
+      const usesV2Definition =
+        normalizeAgentForExecution(agent).compatibilityMode === "v2";
+      let inputValid = !usesV2Definition;
+
+      await ensureRunNotCancelled("before-input-validation");
+
+      if (usesV2Definition) {
+        try {
+          executionInputs = await step.run("validate-inputs", async () => {
+            const bound = bindTriggerInputs(agent, {
+              name: event.name.replace(`${tenantSlug}/`, ""),
+              data,
+              subject,
+            });
+            const validated = validateAgentInputs(agent, bound);
+            try {
+              await traceSink.append({
+                runId,
+                kind: "input",
+                level: "standard",
+                name: "input.validation",
+                status: "ok",
+                summary: `Validated ${Object.keys(validated.values).length} named input(s)`,
+                data: { inputIds: Object.keys(validated.values) },
+                visibility: "user",
+              });
+            } catch (err) {
+              logger.warn("input.validation trace failed", {
+                err: String(err),
+              });
+            }
+            return validated.values;
+          });
+          inputValid = true;
+        } catch (error) {
+          if (error instanceof AgentInputValidationError) {
+            try {
+              await traceSink.append({
+                runId,
+                kind: "input",
+                level: "minimal",
+                name: "input.validation",
+                status: "failed",
+                summary: "Named input validation failed before execution",
+                data: { issues: error.issues },
+                visibility: "user",
+              });
+            } catch {
+              // The original validation error is the operator-facing cause.
+            }
+            await failRun(runId, error.message, startedAt, error.code);
+          }
+          throw error;
+        }
+      }
 
       for (let i = 0; i < agent.actions.length; i++) {
         const action = agent.actions[i]!;
         const ord = i + 1;
+        await ensureRunNotCancelled(`before-action-${ord}`);
 
         if (action.type === "manual") {
           // Human-in-the-loop step (DESIGN.md §10):
@@ -519,12 +734,14 @@ export function registerAgent(
             const res = await runAction({
               // Thread the runId so the step engine can append tool-call +
               // tool-error + llm-call lines to THIS run's log file (the
-              // portal Logs view tails it over SSE). Without it the engine
-              // still logs to stdout but the in-product trace would miss the
-              // per-tool detail. stepOrd is intentionally omitted — passing
-              // it would also switch on the artifact-sidecar JSON writes,
-              // which is a separate (heavier) debugging feature.
+              // portal Logs view tails it over SSE). The durable step id,
+              // ordinal and trace sink also let the engine persist structured
+              // model/tool/validation evidence and I/O refs.
               runId,
+              stepId: sid,
+              stepOrd: ord,
+              trace: traceSink,
+              finalOutput: i === agent.actions.length - 1,
               ctx: {
                 agentName: agent.name,
                 actionName: action.name,
@@ -533,7 +750,10 @@ export function registerAgent(
                 tenantSlug,
                 event: {
                   name: event.name,
-                  data: (event.data ?? {}) as Record<string, unknown>,
+                  data: {
+                    ...((event.data ?? {}) as Record<string, unknown>),
+                    ...(usesV2Definition ? { inputs: executionInputs } : {}),
+                  },
                 },
                 lastResult,
               },
@@ -544,27 +764,7 @@ export function registerAgent(
               // entry against `tenantRegistry.tools` before passing it to
               // the LLM, so a stale declaration silently no-ops instead of
               // crashing.
-              agent: {
-                name: agent.name,
-                tenantId: ctx.tenantId,
-                description: agent.description,
-                ontology_instructions: agent.ontology_instructions,
-                generated: (agent as { generated?: boolean }).generated,
-                model: (agent as { model?: string }).model,
-                provider: (
-                  agent as {
-                    provider?: import("@agentic/contracts").ProviderId;
-                  }
-                ).provider,
-                timeout_s: (agent as { timeout_s?: number }).timeout_s,
-                tool_use: Array.isArray(agent.tool_use)
-                  ? (agent.tool_use as Array<{
-                      name: string;
-                      description?: string;
-                      input_schema?: unknown;
-                    }>)
-                  : undefined,
-              },
+              agent: { ...agent, tenantId: ctx.tenantId },
               tenantRegistry: ctx.tenantRegistry,
               autoResolveManual: true,
             });
@@ -575,6 +775,14 @@ export function registerAgent(
                 status: res.ok ? "ok" : "failed",
                 endedAt: new Date(sEnded),
                 durationMs: sEnded - sStarted,
+                provider: res.provider ?? null,
+                model: res.model ?? null,
+                tokensIn: res.tokensIn ?? null,
+                tokensOut: res.tokensOut ?? null,
+                inputRef: res.outputArtifact
+                  ? res.outputArtifact.replace(/-output\.json$/, "-input.json")
+                  : null,
+                outputRef: res.outputArtifact ?? null,
               })
               .where(eq(steps.id, sid))
               .run();
@@ -617,6 +825,18 @@ export function registerAgent(
               provider: res.provider ?? null,
               toolCallCount: traces.length,
               toolErrorCount: traces.filter((t) => t.isError).length,
+              outputValid:
+                typeof res.meta?.outputValid === "boolean"
+                  ? res.meta.outputValid
+                  : null,
+              rawResponse:
+                typeof res.meta?.rawResponse === "string"
+                  ? res.meta.rawResponse
+                  : undefined,
+              errorCode:
+                typeof res.meta?.error === "string"
+                  ? res.meta.error
+                  : undefined,
             };
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
@@ -646,105 +866,495 @@ export function registerAgent(
           }
         });
 
-        if (!stepOutcome.ok) {
-          await failRun(runId, "step returned ok=false", startedAt);
-          throw new Error(`step ${action.name} failed`);
-        }
+        // Failed model turns still consumed tokens and can carry the raw
+        // response needed for terminal diagnostics. Capture this evidence
+        // before branching into failRun.
         tokensIn += stepOutcome.tokensIn;
         tokensOut += stepOutcome.tokensOut;
         lastModel = stepOutcome.model ?? lastModel;
+        lastProvider = stepOutcome.provider ?? lastProvider;
+        lastOutputValid = stepOutcome.outputValid ?? lastOutputValid;
+        lastRawResponse = stepOutcome.rawResponse ?? lastRawResponse;
         lastResult = stepOutcome.data;
+
+        if (!stepOutcome.ok) {
+          await failRun(
+            runId,
+            `step ${action.name} returned ok=false${
+              stepOutcome.errorCode ? ` (${stepOutcome.errorCode})` : ""
+            }`,
+            startedAt,
+            stepOutcome.errorCode,
+          );
+          throw new Error(`step ${action.name} failed`);
+        }
+        if (action.type === "condition") {
+          const evaluated =
+            stepOutcome.data !== null &&
+            typeof stepOutcome.data === "object" &&
+            (stepOutcome.data as { evaluated?: unknown }).evaluated === true;
+          const conditionAction = action as {
+            true_action_id?: unknown;
+            false_action_id?: unknown;
+          };
+          const target = evaluated
+            ? conditionAction.true_action_id
+            : conditionAction.false_action_id;
+          if (typeof target === "string" && target.length > 0) {
+            const targetIndex = agent.actions.findIndex(
+              (candidate) =>
+                ((candidate as { id?: unknown }).id ?? candidate.name) ===
+                target,
+            );
+            if (targetIndex <= i) {
+              await failRun(
+                runId,
+                `condition ${action.name} selected invalid target ${target}`,
+                startedAt,
+                "condition_target_invalid",
+              );
+              throw new Error(
+                `condition target '${target}' must be a later action`,
+              );
+            }
+            i = targetIndex - 1;
+          }
+        }
         // (step.ok is written inside the memoized step.run block above.)
       }
 
-      // Emit downstream event + finalize run — wrapped in step.run so it
-      // executes once even with Inngest replays.
-      const emittedName = agent.triggered_event[0];
+      await ensureRunNotCancelled("before-output-validation");
+      if (usesV2Definition && lastOutputValid !== true) {
+        try {
+          const finalValidation = await step.run(
+            "validate-final-output",
+            async () =>
+              parseValidateAndRepairOutput({
+                definition: agent,
+                candidate: lastResult,
+                trace: traceSink,
+                runId,
+              }),
+          );
+          lastResult = finalValidation.value;
+          lastOutputValid = finalValidation.valid;
+          lastRawResponse = finalValidation.rawResponse;
+        } catch (error) {
+          if (error instanceof OutputSchemaValidationError) {
+            lastOutputValid = false;
+            lastRawResponse = error.invalidResponse;
+            await failRun(runId, error.message, startedAt, error.code);
+          }
+          throw error;
+        }
+      }
+
+      await ensureRunNotCancelled("before-finalize");
+
+      // Persist the exact output, map every v2 emission, persist run-record,
+      // and only then mark success. The whole body is memoized by Inngest.
       const finalize = await step.run("finalize", async () => {
         const dbInner = getDb();
-        let emittedEventId: string | null = null;
-        if (emittedName) {
-          emittedEventId = makeId("evt");
-          const payload = {
-            source_agent: agent.name,
-            source_run: runId,
-            subject,
-            last_result: lastResult,
+        const endedAtMs = Date.now();
+        const endedAt = new Date(endedAtMs);
+        const statusAtFinalize = dbInner
+          .select({ status: runs.status })
+          .from(runs)
+          .where(eq(runs.id, runId))
+          .limit(1)
+          .all()[0]?.status;
+        if (statusAtFinalize === "cancelled") {
+          return {
+            cancelled: true,
+            emittedEventId: null,
+            endedAtMs,
+            emissions: [],
           };
+        }
+        if (statusAtFinalize !== "running") {
+          throw new Error(
+            `run_terminal_transition_conflict: expected running, found ${statusAtFinalize ?? "missing"}`,
+          );
+        }
+        const outputFilename =
+          (
+            agent as AgentSpec & {
+              output_config?: { artifact?: { filename?: string } };
+            }
+          ).output_config?.artifact?.filename ?? "output.json";
+
+        let persistedOutput: RuntimePersistedArtifact;
+        let outputArtifactId: string | null;
+        try {
+          persistedOutput = await terminalArtifactSink.persist({
+            role: "output",
+            logicalName: outputFilename,
+            contentType: "application/json",
+            payload: lastResult,
+          });
+          outputArtifactId = registerPersistedArtifact(persistedOutput);
+        } catch (error) {
+          const message = `artifact_persistence_failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`;
+          dbInner
+            .update(runs)
+            .set({
+              status: "failed",
+              endedAt,
+              durationMs: endedAtMs - startedAtMs,
+              outputValid: false,
+              errorMessage: message,
+            })
+            .where(eq(runs.id, runId))
+            .run();
+          throw new Error(message);
+        }
+        let persistedRawResponse: RuntimePersistedArtifact | null = null;
+        let rawResponseArtifactId: string | null = null;
+        const persistRawResponse =
+          (
+            agent as AgentSpec & {
+              output_config?: {
+                artifact?: { persist_raw_response?: boolean };
+              };
+            }
+          ).output_config?.artifact?.persist_raw_response === true;
+        if (persistRawResponse && lastRawResponse !== undefined) {
+          try {
+            persistedRawResponse = await terminalArtifactSink.persist({
+              role: "raw_response",
+              logicalName: "raw-response.txt",
+              contentType: "text/plain; charset=utf-8",
+              payload: lastRawResponse,
+            });
+            rawResponseArtifactId =
+              registerPersistedArtifact(persistedRawResponse);
+          } catch (error) {
+            const message = `artifact_persistence_failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`;
+            dbInner
+              .update(runs)
+              .set({
+                status: "failed",
+                endedAt,
+                durationMs: endedAtMs - startedAtMs,
+                errorMessage: message,
+              })
+              .where(eq(runs.id, runId))
+              .run();
+            throw new Error(message);
+          }
+        }
+
+        const resolvedEmissions = resolveAgentEmissions({
+          definition: agent,
+          inputs: executionInputs,
+          outputs: lastResult,
+          source: {
+            agentName: agent.name,
+            runId,
+            subject,
+            correlationId,
+          },
+          suppress: isTest,
+        });
+        const finalizedEmissions: Array<{
+          name: string;
+          eventId: string | null;
+          payload: Record<string, unknown>;
+          outputPortIds: string[];
+          suppressed: boolean;
+        }> = [];
+        const emittedRecordRows: RunEmittedEvent[] = [];
+
+        for (const emission of resolvedEmissions) {
+          if (emission.suppressed) {
+            finalizedEmissions.push({ ...emission, eventId: null });
+            await safeRunLog("INFO", "event.suppressed", {
+              name: emission.name,
+              reason: "test_mode",
+            });
+            try {
+              await traceSink.append({
+                runId,
+                kind: "event",
+                level: "standard",
+                name: emission.name,
+                status: "skipped",
+                summary: `Suppressed downstream event '${emission.name}' in test mode`,
+                data: { outputPortIds: emission.outputPortIds },
+                visibility: "user",
+              });
+            } catch {
+              // Event persistence remains authoritative when trace is absent.
+            }
+            continue;
+          }
+
+          const eventId = makeId("evt");
+          const emittedAt = new Date();
           const payloadRef = await appendToLedger(tenantSlug, {
-            id: emittedEventId,
-            name: emittedName,
+            id: eventId,
+            name: emission.name,
             subject: subject ?? undefined,
-            data: payload,
-            ts: Date.now(),
+            data: emission.payload,
+            ts: emittedAt.getTime(),
           });
           dbInner
             .insert(events)
             .values({
-              id: emittedEventId,
+              id: eventId,
               tenantId: ctx.tenantId,
-              name: emittedName,
+              name: emission.name,
               sourceAgentId: init.agentDbId,
               subject,
               payloadRef,
             })
             .run();
-          // event.emit logged inside this memoized block (the actual
-          // step.sendEvent stays outside — it's Inngest-idempotent on its own).
+          const outputPortIds =
+            emission.outputPortIds.length > 0 ? emission.outputPortIds : ["*"];
+          for (const outputPortId of outputPortIds) {
+            const linkId = makeId("ree");
+            dbInner
+              .insert(runEmittedEvents)
+              .values({
+                id: linkId,
+                tenantId: ctx.tenantId,
+                runId,
+                eventId,
+                outputPortId,
+                createdAt: emittedAt,
+              })
+              .run();
+            emittedRecordRows.push({
+              id: linkId,
+              eventId,
+              eventName: emission.name,
+              outputPortId,
+              createdAt: emittedAt,
+            });
+          }
+          finalizedEmissions.push({ ...emission, eventId });
           await safeRunLog("INFO", "event.emit", {
-            name: emittedName,
-            event_id: emittedEventId,
+            name: emission.name,
+            event_id: eventId,
+            output_ports: outputPortIds,
           });
+          try {
+            await traceSink.append({
+              runId,
+              kind: "event",
+              level: "standard",
+              name: emission.name,
+              status: "ok",
+              summary: `Prepared downstream event '${emission.name}'`,
+              data: { eventId, outputPortIds },
+              visibility: "user",
+            });
+          } catch {
+            // Event row + ledger are the durable source of truth.
+          }
         }
 
-        const endedAtMs = Date.now();
-        const outputArtifactPath = await writeArtifact(
+        const outputMetadata = outputArtifactId
+          ? toRunArtifactMetadata(outputArtifactId, persistedOutput, endedAt)
+          : null;
+        const rawResponseMetadata =
+          rawResponseArtifactId && persistedRawResponse
+            ? toRunArtifactMetadata(
+                rawResponseArtifactId,
+                persistedRawResponse,
+                endedAt,
+              )
+            : null;
+        const runRecord: AgentRunRecord = {
+          schemaVersion: 1,
           runId,
-          "run-output.json",
-          {
+          tenantId: ctx.tenantId,
+          agentId: init.agentDbId,
+          status: "ok",
+          invocationSource: "event",
+          target: {
+            kind: "live",
+            agentVersionId: init.agentVersionId,
+          },
+          definitionHash,
+          sessionId: null,
+          correlationId,
+          subject,
+          validation: {
+            inputValid: true,
+            outputValid: lastOutputValid,
+            issues: [],
+          },
+          artifacts: [outputMetadata, rawResponseMetadata].filter(
+            (value): value is RunArtifactMetadata => value !== null,
+          ),
+          emittedEvents: emittedRecordRows,
+          model:
+            lastProvider || lastModel
+              ? {
+                  ...(lastProvider
+                    ? { provider: lastProvider as ProviderId }
+                    : {}),
+                  ...(lastModel ? { model: lastModel } : {}),
+                  tokensIn,
+                  tokensOut,
+                }
+              : undefined,
+          timing: {
+            queuedAt: null,
+            startedAt,
+            endedAt,
+            durationMs: endedAtMs - startedAtMs,
+          },
+          error: null,
+        };
+        let runRecordArtifactId: string | null;
+        try {
+          const persistedRunRecord = await terminalArtifactSink.persist({
+            role: "run_record",
+            logicalName: "run-record.json",
+            contentType: "application/json",
+            payload: runRecord,
+          });
+          runRecordArtifactId = registerPersistedArtifact(persistedRunRecord);
+        } catch (error) {
+          const message = `artifact_persistence_failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`;
+          dbInner
+            .update(runs)
+            .set({
+              status: "failed",
+              endedAt,
+              durationMs: endedAtMs - startedAtMs,
+              errorMessage: message,
+            })
+            .where(eq(runs.id, runId))
+            .run();
+          throw new Error(message);
+        }
+
+        // Existing consumers still expect run-output.json. Keep the legacy
+        // envelope as a compatibility artifact while output.json remains the
+        // exact authored shape.
+        try {
+          const legacyPath = await writeArtifact(runId, "run-output.json", {
             run_id: runId,
             agent: agent.name,
             title: agent.title ?? agent.name,
             tenant: tenantSlug,
             status: "ok",
-            trigger: {
-              name: event.name,
-              subject,
-              data,
-            },
+            trigger: { name: event.name, subject, data },
             output: lastResult,
-            emitted_event: emittedName ?? null,
-            tokens: { in: tokensIn, out: tokensOut, model: lastModel },
+            emitted_events: finalizedEmissions.map((item) => item.name),
+            tokens: {
+              in: tokensIn,
+              out: tokensOut,
+              provider: lastProvider,
+              model: lastModel,
+            },
             started_at: startedAt.toISOString(),
-            ended_at: new Date(endedAtMs).toISOString(),
-          },
-        );
-        const outputArtifactId = makeId("art");
-        const outputArtifactSize = (await stat(outputArtifactPath)).size;
-        dbInner
-          .insert(artifacts)
-          .values({
-            id: outputArtifactId,
-            tenantId: ctx.tenantId,
-            runId,
-            kind: "application/json",
-            path: outputArtifactPath,
-            size: outputArtifactSize,
-          })
-          .run();
-        dbInner
+            ended_at: endedAt.toISOString(),
+          });
+          const legacySize = (await stat(legacyPath)).size;
+          dbInner
+            .insert(artifacts)
+            .values({
+              id: makeId("art"),
+              tenantId: ctx.tenantId,
+              runId,
+              kind: "application/json",
+              role: "other",
+              logicalName: "run-output.json",
+              contentType: "application/json",
+              path: legacyPath,
+              size: legacySize,
+            })
+            .run();
+        } catch (error) {
+          logger.warn("legacy run-output artifact failed", {
+            err: String(error),
+          });
+        }
+
+        const emittedEventId =
+          finalizedEmissions.find((item) => item.eventId)?.eventId ?? null;
+        const completed = dbInner
           .update(runs)
           .set({
             status: "ok",
-            endedAt: new Date(endedAtMs),
+            endedAt,
             durationMs: endedAtMs - startedAtMs,
             tokensIn,
             tokensOut,
             model: lastModel,
+            outputValid: lastOutputValid,
             emittedEventId,
           })
-          .where(eq(runs.id, runId))
+          .where(and(eq(runs.id, runId), eq(runs.status, "running")))
           .run();
+        if (completed.changes !== 1) {
+          const currentStatus = dbInner
+            .select({ status: runs.status })
+            .from(runs)
+            .where(eq(runs.id, runId))
+            .limit(1)
+            .all()[0]?.status;
+          if (currentStatus === "cancelled") {
+            return {
+              cancelled: true,
+              emittedEventId: null,
+              endedAtMs,
+              emissions: [],
+            };
+          }
+          throw new Error(
+            `run_terminal_transition_conflict: expected running, found ${currentStatus ?? "missing"}`,
+          );
+        }
+        try {
+          await traceSink.append({
+            runId,
+            kind: "artifact",
+            level: "standard",
+            name: "terminal.artifacts",
+            status: "ok",
+            endedAt,
+            summary: "Persisted mandatory output.json and run-record.json",
+            data: {
+              outputArtifactId,
+              runRecordArtifactId,
+              rawResponseArtifactId,
+            },
+            visibility: "user",
+          });
+          await traceSink.append({
+            runId,
+            kind: "run",
+            level: "minimal",
+            name: "run.end",
+            status: "ok",
+            startedAt,
+            endedAt,
+            durationMs: endedAtMs - startedAtMs,
+            summary: "Agent run completed successfully",
+            data: {
+              emittedEventCount: finalizedEmissions.filter(
+                (item) => item.eventId,
+              ).length,
+              suppressedEventCount: finalizedEmissions.filter(
+                (item) => item.suppressed,
+              ).length,
+            },
+            visibility: "user",
+          });
+        } catch {
+          // Terminal DB state and artifacts must not be rolled back by trace IO.
+        }
 
         // UC-V11-22 / AR-GAP-07 / PF-GAP-08 — Prometheus `runs_total`
         // bump for the manifest engine. Lives inside this `step.run`
@@ -771,35 +1381,235 @@ export function registerAgent(
         await safeRunLog("INFO", "run.end", {
           status: "ok",
           duration: endedAtMs - startedAtMs + "ms",
-          emitted: emittedName ?? "—",
+          emitted:
+            finalizedEmissions
+              .filter((item) => item.eventId)
+              .map((item) => item.name)
+              .join(",") || "—",
         });
-        return { emittedEventId, endedAtMs };
+        return {
+          cancelled: false,
+          emittedEventId,
+          endedAtMs,
+          emissions: finalizedEmissions,
+        };
       });
+
+      if (finalize.cancelled) {
+        await ensureRunNotCancelled("during-finalize");
+        throw new Error("run_cancelled during finalize");
+      }
 
       // The actual inngest.send must be outside step.run (step results are
       // memoized; sending an event inside a step would re-send on replay).
       // We use step.sendEvent which is Inngest's idempotent send primitive.
       // The event.emit + run.end LOG lines were already written inside the
       // memoized `finalize` step above, so they aren't duplicated here.
-      if (emittedName && finalize.emittedEventId) {
-        await step.sendEvent(`emit.${emittedName}`, {
-          name: `${tenantSlug}/${emittedName}` as `${string}/${string}`,
+      for (let index = 0; index < finalize.emissions.length; index += 1) {
+        const emission = finalize.emissions[index]!;
+        if (!emission.eventId || emission.suppressed) continue;
+        await step.sendEvent(`emit.${index}.${emission.name}`, {
+          name: `${tenantSlug}/${emission.name}` as `${string}/${string}`,
           data: withCorrelation(correlationId, {
-            source_agent: agent.name,
-            source_run: runId,
-            subject: subject ?? undefined,
-            last_result: lastResult,
-            __triggerEventId: finalize.emittedEventId,
+            ...emission.payload,
+            __triggerEventId: emission.eventId,
           }),
         });
       }
 
-      return { ok: true, runId, emittedEventId: finalize.emittedEventId };
+      return {
+        ok: true,
+        runId,
+        emittedEventId: finalize.emittedEventId,
+        emittedEventIds: finalize.emissions
+          .map((item: { eventId: string | null }) => item.eventId)
+          .filter((id: string | null): id is string => Boolean(id)),
+      };
+
+      function registerPersistedArtifact(
+        persisted: RuntimePersistedArtifact,
+      ): string | null {
+        if (artifactSink) return persisted.id ?? null;
+        if (!persisted.path) {
+          throw new Error(
+            `artifact_persistence_failed: '${persisted.logicalName}' has no storage path`,
+          );
+        }
+        const artifactId = persisted.id ?? makeId("art");
+        getDb()
+          .insert(artifacts)
+          .values({
+            id: artifactId,
+            tenantId: ctx.tenantId,
+            runId,
+            stepId: persisted.stepId ?? null,
+            kind: persisted.contentType,
+            role: persisted.role,
+            logicalName: persisted.logicalName,
+            contentType: persisted.contentType,
+            sha256: persisted.sha256,
+            schemaId: persisted.schemaId ?? null,
+            metadataJson: (persisted.metadata ?? null) as never,
+            redacted: persisted.redacted,
+            retentionUntil: persisted.retentionUntil ?? null,
+            path: persisted.path,
+            size: persisted.size,
+          })
+          .run();
+        return artifactId;
+      }
+
+      function toRunArtifactMetadata(
+        id: string,
+        persisted: RuntimePersistedArtifact,
+        createdAt: Date,
+      ): RunArtifactMetadata {
+        return {
+          id,
+          runId,
+          stepId: persisted.stepId ?? null,
+          role: persisted.role,
+          logicalName: persisted.logicalName,
+          contentType: persisted.contentType,
+          size: persisted.size,
+          sha256: persisted.sha256,
+          schemaId: persisted.schemaId ?? null,
+          metadata: persisted.metadata ?? null,
+          redacted: persisted.redacted,
+          createdAt,
+          retentionUntil: persisted.retentionUntil ?? null,
+        };
+      }
+
+      async function ensureRunNotCancelled(checkpoint: string): Promise<void> {
+        const current = getDb()
+          .select()
+          .from(runs)
+          .where(eq(runs.id, runId))
+          .limit(1)
+          .all()[0];
+        if (!current || current.status !== "cancelled") return;
+
+        await step.run(`finalize-cancel-${runId}`, async () =>
+          persistCancelledRun(current, checkpoint),
+        );
+
+        throw new Error(`run_cancelled at ${checkpoint}`);
+      }
+
+      async function persistCancelledRun(
+        current: typeof runs.$inferSelect,
+        checkpoint: string,
+      ): Promise<void> {
+        const ended = current.endedAt ?? new Date();
+        const terminalMessage = current.errorMessage ?? "cancelled_by_operator";
+        const cancelledRecord: AgentRunRecord = {
+          schemaVersion: 1,
+          runId,
+          tenantId: ctx.tenantId,
+          agentId: init.agentDbId,
+          status: "cancelled",
+          invocationSource: "event",
+          target: {
+            kind: "live",
+            agentVersionId: init.agentVersionId,
+          },
+          definitionHash,
+          sessionId: null,
+          correlationId,
+          subject,
+          validation: {
+            inputValid,
+            outputValid: lastOutputValid,
+            issues: [],
+          },
+          artifacts: [],
+          emittedEvents: [],
+          model:
+            lastProvider || lastModel
+              ? {
+                  ...(lastProvider
+                    ? { provider: lastProvider as ProviderId }
+                    : {}),
+                  ...(lastModel ? { model: lastModel } : {}),
+                  tokensIn,
+                  tokensOut,
+                }
+              : undefined,
+          timing: {
+            queuedAt: null,
+            startedAt,
+            endedAt: ended,
+            durationMs: Math.max(0, ended.getTime() - startedAtMs),
+          },
+          error: { code: "run_cancelled", message: terminalMessage },
+        };
+        try {
+          // A cancellation can win while success/failure evidence is being
+          // written. Replace any stale terminal envelope so run-record.json
+          // always agrees with the authoritative cancelled DB status.
+          getDb()
+            .delete(artifacts)
+            .where(
+              and(
+                eq(artifacts.runId, runId),
+                eq(artifacts.logicalName, "run-record.json"),
+              ),
+            )
+            .run();
+          const persisted = await persistTerminalRunArtifacts({
+            record: cancelledRecord,
+            sink: terminalArtifactSink,
+          });
+          registerPersistedArtifact(persisted.runRecord);
+        } catch (error) {
+          logger.warn("cancelled run-record persistence failed", {
+            runId,
+            err: String(error),
+          });
+        }
+
+        getDb()
+          .update(runs)
+          .set({
+            endedAt: ended,
+            durationMs: Math.max(0, ended.getTime() - startedAtMs),
+            tokensIn,
+            tokensOut,
+            model: lastModel,
+            outputValid: lastOutputValid,
+            errorMessage: terminalMessage,
+          })
+          .where(and(eq(runs.id, runId), eq(runs.status, "cancelled")))
+          .run();
+        try {
+          await traceSink.append({
+            runId,
+            kind: "run",
+            level: "minimal",
+            name: "run.cancel",
+            status: "ok",
+            startedAt,
+            endedAt: ended,
+            durationMs: Math.max(0, ended.getTime() - startedAtMs),
+            summary: "Agent run cancelled by operator",
+            data: { checkpoint },
+            visibility: "user",
+          });
+          await writeRunLog(logCtx, "WARN", "run.end", {
+            status: "cancelled",
+            checkpoint,
+          });
+        } catch (error) {
+          logger.warn("run.cancel trace/log failed", { err: String(error) });
+        }
+      }
 
       async function failRun(
         rid: string,
         message: string,
         started: Date,
+        errorCode?: string,
       ): Promise<void> {
         // UC-V11-35 / PF-GAP-15 — wrap the run-status flip in `step.run`
         // so Inngest's exactly-once contract serializes it with any
@@ -809,15 +1619,146 @@ export function registerAgent(
         // recovered.
         await step.run(`finalize-fail-${rid}`, async () => {
           const ended = new Date();
-          db.update(runs)
+          const statusBeforeFailure = db
+            .select()
+            .from(runs)
+            .where(eq(runs.id, rid))
+            .limit(1)
+            .all()[0];
+          if (statusBeforeFailure?.status === "cancelled") {
+            await persistCancelledRun(
+              statusBeforeFailure,
+              "during-failure-finalization",
+            );
+            return;
+          }
+          if (
+            !statusBeforeFailure ||
+            statusBeforeFailure.status !== "running"
+          ) {
+            throw new Error(
+              `run_terminal_transition_conflict: expected running, found ${statusBeforeFailure?.status ?? "missing"}`,
+            );
+          }
+          let terminalMessage = message;
+          const failureArtifacts: RunArtifactMetadata[] = [];
+          const persistRawResponse =
+            (
+              agent as AgentSpec & {
+                output_config?: {
+                  artifact?: { persist_raw_response?: boolean };
+                };
+              }
+            ).output_config?.artifact?.persist_raw_response === true;
+          if (persistRawResponse && lastRawResponse !== undefined) {
+            try {
+              const persistedRawResponse = await terminalArtifactSink.persist({
+                role: "raw_response",
+                logicalName: "raw-response.txt",
+                contentType: "text/plain; charset=utf-8",
+                payload: lastRawResponse,
+              });
+              const artifactId =
+                registerPersistedArtifact(persistedRawResponse);
+              if (artifactId) {
+                failureArtifacts.push(
+                  toRunArtifactMetadata(
+                    artifactId,
+                    persistedRawResponse,
+                    ended,
+                  ),
+                );
+              }
+            } catch (error) {
+              terminalMessage = `${terminalMessage}; artifact_persistence_failed: ${
+                error instanceof Error ? error.message : String(error)
+              }`;
+            }
+          }
+          const failedRecord: AgentRunRecord = {
+            schemaVersion: 1,
+            runId: rid,
+            tenantId: ctx.tenantId,
+            agentId: init.agentDbId,
+            status: "failed",
+            invocationSource: "event",
+            target: {
+              kind: "live",
+              agentVersionId: init.agentVersionId,
+            },
+            definitionHash,
+            sessionId: null,
+            correlationId,
+            subject,
+            validation: {
+              inputValid: errorCode !== "input_schema_invalid",
+              outputValid: errorCode === "output_schema_invalid" ? false : null,
+              issues: [],
+            },
+            artifacts: failureArtifacts,
+            emittedEvents: [],
+            model:
+              lastProvider || lastModel
+                ? {
+                    ...(lastProvider
+                      ? { provider: lastProvider as ProviderId }
+                      : {}),
+                    ...(lastModel ? { model: lastModel } : {}),
+                    tokensIn,
+                    tokensOut,
+                  }
+                : undefined,
+            timing: {
+              queuedAt: null,
+              startedAt: started,
+              endedAt: ended,
+              durationMs: ended.getTime() - started.getTime(),
+            },
+            error: {
+              ...(errorCode ? { code: errorCode } : {}),
+              message: terminalMessage,
+            },
+          };
+          try {
+            const persisted = await persistTerminalRunArtifacts({
+              record: failedRecord,
+              sink: terminalArtifactSink,
+            });
+            registerPersistedArtifact(persisted.runRecord);
+          } catch (error) {
+            terminalMessage = `${terminalMessage}; artifact_persistence_failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`;
+          }
+          const failed = db
+            .update(runs)
             .set({
               status: "failed",
               endedAt: ended,
               durationMs: ended.getTime() - started.getTime(),
-              errorMessage: message,
+              tokensIn,
+              tokensOut,
+              model: lastModel,
+              outputValid: errorCode === "output_schema_invalid" ? false : null,
+              errorMessage: terminalMessage,
             })
-            .where(eq(runs.id, rid))
+            .where(and(eq(runs.id, rid), eq(runs.status, "running")))
             .run();
+          if (failed.changes !== 1) {
+            const current = db
+              .select()
+              .from(runs)
+              .where(eq(runs.id, rid))
+              .limit(1)
+              .all()[0];
+            if (current?.status === "cancelled") {
+              await persistCancelledRun(current, "during-failure-finalization");
+              return;
+            }
+            throw new Error(
+              `run_terminal_transition_conflict: expected running, found ${current?.status ?? "missing"}`,
+            );
+          }
 
           // UC-V11-22 / AR-GAP-07 — `runs_total{status="failed"}` so the
           // dashboards see manifest-engine failures, not just code-agent
@@ -827,7 +1768,7 @@ export function registerAgent(
             m.runs.inc({
               tenant: tenantSlug,
               agent: agent.name,
-              model: "mock-model-v1",
+              model: lastModel ?? "unknown",
               status: "failed",
             });
           }
@@ -835,9 +1776,25 @@ export function registerAgent(
           // doesn't append a duplicate terminal line, and via try/catch so a
           // log IO failure can't mask the run failure being recorded.
           try {
+            await traceSink.append({
+              runId: rid,
+              kind: "run",
+              level: "minimal",
+              name: "run.end",
+              status: "failed",
+              startedAt: started,
+              endedAt: ended,
+              durationMs: ended.getTime() - started.getTime(),
+              summary: "Agent run failed",
+              data: {
+                ...(errorCode ? { code: errorCode } : {}),
+                message: terminalMessage,
+              },
+              visibility: "user",
+            });
             await writeRunLog(logCtx, "ERROR", "run.end", {
               status: "failed",
-              error: message,
+              error: terminalMessage,
             });
           } catch (err) {
             logger.warn("run.end(failed) log failed", { err: String(err) });

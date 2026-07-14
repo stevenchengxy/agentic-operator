@@ -17,8 +17,15 @@
  * two files is what caused the FE-P0-1 punch item.
  */
 
-* { box-sizing: border-box; }
-html, body { margin: 0; padding: 0; height: 100%; }
+* {
+  box-sizing: border-box;
+}
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
 body {
   background: var(--bg);
   color: var(--text);
@@ -29,55 +36,176 @@ body {
   text-rendering: optimizeLegibility;
 }
 
-::-webkit-scrollbar { width: 10px; height: 10px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--border-2); border-radius: 10px; border: 2px solid var(--bg); }
-::-webkit-scrollbar-thumb:hover { background: var(--border-3); }
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-2);
+  border-radius: 10px;
+  border: 2px solid var(--bg);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--border-3);
+}
 
-::selection { background: var(--signal); color: #000; }
+::selection {
+  background: var(--signal);
+  color: #000;
+}
 
-.mono { font-family: var(--mono); font-feature-settings: "ss01" on; }
-.display { font-family: var(--display); font-weight: 400; letter-spacing: -0.01em; }
-.muted { color: var(--text-2); }
-.dim { color: var(--text-3); }
-.nowrap { white-space: nowrap; }
+.mono {
+  font-family: var(--mono);
+  font-feature-settings: "ss01" on;
+}
+.display {
+  font-family: var(--display);
+  font-weight: 400;
+  letter-spacing: -0.01em;
+}
+.muted {
+  color: var(--text-2);
+}
+.dim {
+  color: var(--text-3);
+}
+.nowrap {
+  white-space: nowrap;
+}
 
 @keyframes pulse {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.45; transform: scale(0.85); }
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(0.85);
+  }
 }
 @keyframes tick {
-  0% { transform: translateX(-4px); opacity: 0; }
-  10% { opacity: 1; }
-  100% { transform: translateX(0); opacity: 1; }
+  0% {
+    transform: translateX(-4px);
+    opacity: 0;
+  }
+  10% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateX(0);
+    opacity: 1;
+  }
 }
 @keyframes edge-flow {
-  from { stroke-dashoffset: 24; }
-  to { stroke-dashoffset: 0; }
+  from {
+    stroke-dashoffset: 24;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
 }
 @keyframes dot-flow {
-  from { offset-distance: 0%; opacity: 0; }
-  10% { opacity: 1; }
-  90% { opacity: 1; }
-  to { offset-distance: 100%; opacity: 0; }
+  from {
+    offset-distance: 0%;
+    opacity: 0;
+  }
+  10% {
+    opacity: 1;
+  }
+  90% {
+    opacity: 1;
+  }
+  to {
+    offset-distance: 100%;
+    opacity: 0;
+  }
 }
-@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
 @keyframes shimmer {
-  0% { background-position: -200px 0; }
-  100% { background-position: 200px 0; }
+  0% {
+    background-position: -200px 0;
+  }
+  100% {
+    background-position: 200px 0;
+  }
 }
 
 .live-dot {
   display: inline-block;
-  width: 7px; height: 7px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
   background: var(--signal);
   box-shadow: 0 0 6px var(--signal);
   animation: pulse 1.4s infinite;
 }
-.live-dot.green { background: var(--green); box-shadow: 0 0 6px var(--green); }
-.live-dot.amber { background: var(--amber); box-shadow: 0 0 6px var(--amber); }
-.live-dot.red { background: var(--red); box-shadow: 0 0 6px var(--red); }
+.live-dot.green {
+  background: var(--green);
+  box-shadow: 0 0 6px var(--green);
+}
+.live-dot.amber {
+  background: var(--amber);
+  box-shadow: 0 0 6px var(--amber);
+}
+.live-dot.red {
+  background: var(--red);
+  box-shadow: 0 0 6px var(--red);
+}
 
-button { font: inherit; color: inherit; background: none; border: none; cursor: pointer; padding: 0; }
-a { color: inherit; text-decoration: none; }
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+}
+a {
+  color: inherit;
+  text-decoration: none;
+}
+/* Agent Studio — keep the editor usable inside the portal shell at laptop widths. */
+.agent-studio-layout {
+  grid-template-columns: 170px minmax(0, 1fr) 250px;
+}
+
+.agent-studio-layout--test {
+  grid-template-columns: 150px minmax(0, 1fr);
+}
+
+.agent-studio-layout--test .agent-studio-context {
+  display: none;
+}
+
+.agent-studio-test-grid {
+  grid-template-columns: minmax(280px, 0.85fr) minmax(340px, 1.15fr) 250px;
+}
+
+@media (max-width: 1280px) {
+  .agent-studio-layout {
+    grid-template-columns: 150px minmax(0, 1fr);
+  }
+
+  .agent-studio-context {
+    display: none;
+  }
+
+  .agent-studio-test-grid {
+    grid-template-columns: minmax(280px, 0.85fr) minmax(340px, 1.15fr);
+  }
+
+  .agent-studio-test-history {
+    grid-column: 1 / -1;
+    min-height: 220px;
+    max-height: 260px;
+    border-top: 1px solid var(--border);
+  }
+}

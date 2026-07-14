@@ -7,11 +7,14 @@
   "types": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts",
+    "./agent-execution": "./src/agent-execution.ts",
     "./client": "./src/client.ts",
+    "./execution-trace": "./src/execution-trace.ts",
     "./manifest": "./src/manifest.ts",
     "./register": "./src/register.ts"
   },
   "scripts": {
+    "test": "node --test --import tsx src/*.test.ts",
     "typecheck": "tsc --noEmit",
     "rotate-logs": "tsx src/log-rotate.ts",
     "gen:schema": "tsx src/generate-workflow-schema.ts",
@@ -26,6 +29,8 @@
     "@agentic/llm-gateway": "workspace:*",
     "@agentic/shared": "workspace:*",
     "@agentic/tools": "workspace:*",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
     "drizzle-orm": "^0.45.2",
     "inngest": "4.4.0",
     "zod": "^4.4.3"

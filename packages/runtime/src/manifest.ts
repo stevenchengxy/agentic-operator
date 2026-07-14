@@ -9,6 +9,10 @@
 import { z } from "zod";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import {
+  WorkflowManifestCompatSchema,
+  type AgentDefinitionV2,
+} from "@agentic/contracts";
 
 export const ActorEnum = z.enum(["Agent", "Human"]);
 /**
@@ -30,20 +34,32 @@ export const StepTypeEnum = z.enum([
   "subflow",
 ]);
 
-export const ActionSchema = z.object({
-  order: z.string(),
-  name: z.string(),
-  description: z.string().optional().default(""),
-  type: StepTypeEnum,
-  condition: z.string().optional(),
-  task_type: z.string().optional(),
-  retries: z.number().int().nonnegative().optional(),
-  timeout_s: z.number().int().positive().optional(),
-  // P1-RT-03 fields for the new step types.
-  delay_ms: z.number().int().nonnegative().optional(),
-  subflow: z.string().optional(),
-  subflow_input: z.record(z.string(), z.unknown()).optional(),
-});
+export const ActionSchema = z
+  .object({
+    id: z.string().optional(),
+    order: z.string(),
+    name: z.string(),
+    description: z.string().optional().default(""),
+    type: StepTypeEnum,
+    action_prompt: z.string().optional(),
+    tool: z.string().optional(),
+    condition: z.string().optional(),
+    true_action_id: z.string().optional(),
+    false_action_id: z.string().optional(),
+    task_type: z.string().optional(),
+    form_schema: z.record(z.string(), z.unknown()).optional(),
+    awaiting_role: z.string().optional(),
+    retries: z.number().int().nonnegative().optional(),
+    timeout_s: z.number().int().positive().optional(),
+    // P1-RT-03 fields for the new step types.
+    delay_ms: z.number().int().nonnegative().optional(),
+    subflow: z.string().optional(),
+    subflow_input: z.record(z.string(), z.unknown()).optional(),
+    wait_policy: z.enum(["wait", "detach"]).optional(),
+    input_mapping: z.record(z.string(), z.unknown()).optional(),
+    output_mapping: z.record(z.string(), z.unknown()).optional(),
+  })
+  .passthrough();
 export type ActionSpec = z.infer<typeof ActionSchema>;
 
 /** Canonical entry for `agent.tool_use[*]`. */
@@ -106,7 +122,7 @@ const toolUseSchema = z
 // editor cares about (input_data/ontology_instructions/tool_use/typescript_code)
 // are now declared explicitly so empty-string coercion + tool_use shape
 // validation actually run.
-export const AgentSchema = z
+const LegacyAgentSchema = z
   .object({
     id: z.string(),
     name: z.string(),
@@ -137,10 +153,17 @@ export const AgentSchema = z
     cron_timezone: emptyStringToUndef,
   })
   .passthrough();
-export type AgentSpec = z.infer<typeof AgentSchema>;
+
+/**
+ * Keep the introspectable v1 object as the compatibility surface used by the
+ * generated-schema drift gate. V2 is validated by WorkflowManifestCompatSchema
+ * at every disk-loader boundary; passthrough preserves its declared fields.
+ */
+export const AgentSchema = LegacyAgentSchema;
+export type AgentSpec = z.infer<typeof AgentSchema> | AgentDefinitionV2;
 
 export const WorkflowManifestSchema = z.array(AgentSchema);
-export type WorkflowManifest = z.infer<typeof WorkflowManifestSchema>;
+export type WorkflowManifest = AgentSpec[];
 
 export const ActionsManifestSchema = z.array(z.record(z.string(), z.unknown()));
 export type ActionsManifest = z.infer<typeof ActionsManifestSchema>;
@@ -271,14 +294,22 @@ export async function loadManifestFromDisk(
     "manifest.json",
   ]);
   if (!workflowPath) {
-    throw new Error(
-      `[manifest] no workflow.json found in ${workflowDir}`,
-    );
+    throw new Error(`[manifest] no workflow.json found in ${workflowDir}`);
   }
   const actionsPath = await resolveModelFile(workflowDir, ["actions.json"]);
-  const manifest = WorkflowManifestSchema.parse(
-    JSON.parse(await readFile(workflowPath, "utf8")),
-  );
+  const rawWorkflow = JSON.parse(
+    await readFile(workflowPath, "utf8"),
+  ) as unknown;
+  // Canonical compatibility validation accepts both v1 bare arrays and the
+  // v2 envelope. Keep raw v1 agents on the legacy branch so registration
+  // behavior does not change merely because a loader was upgraded.
+  const normalized = WorkflowManifestCompatSchema.parse(rawWorkflow);
+  // A v1 bare array stays on the legacy runtime branch. A versioned envelope
+  // uses the canonical parser's output so defaults and refinements are not
+  // accidentally discarded after successful validation.
+  const manifest: WorkflowManifest = Array.isArray(rawWorkflow)
+    ? WorkflowManifestSchema.parse(rawWorkflow)
+    : normalized.agents;
   const actionsExt = await readJsonFileOptional(
     actionsPath,
     ActionsManifestSchema,

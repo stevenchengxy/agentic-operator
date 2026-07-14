@@ -54,7 +54,14 @@ const STATUS_TO_DOT: Record<string, StatusName> = {
   idle: "idle",
 };
 
-type Tab = "timeline" | "trace" | "logs" | "io" | "artifacts" | "events" | "agent";
+type Tab =
+  | "timeline"
+  | "trace"
+  | "logs"
+  | "io"
+  | "artifacts"
+  | "events"
+  | "agent";
 
 export default function RunDetailPage() {
   const params = useParams<{ id?: string }>();
@@ -126,6 +133,17 @@ function RunDetail({ run, steps, tab, setTab, tenant }: RunDetailProps) {
   async function handleReplay() {
     try {
       const data = await replay.mutateAsync(run.id);
+      if ("runId" in data) {
+        toast({
+          tone: "signal",
+          title: "Replay started",
+          description: `Opening the new run ${data.runId}.`,
+        });
+        router.push(
+          `/portal/${tenant}/runs/${encodeURIComponent(data.runId)}` as never,
+        );
+        return;
+      }
       toast({
         tone: "signal",
         title: "Replay queued",
@@ -206,10 +224,7 @@ function RunDetail({ run, steps, tab, setTab, tenant }: RunDetailProps) {
             flexWrap: "wrap",
           }}
         >
-          <StatusDot
-            status={STATUS_TO_DOT[run.status] ?? "idle"}
-            size={9}
-          />
+          <StatusDot status={STATUS_TO_DOT[run.status] ?? "idle"} size={9} />
           <span
             className="mono"
             style={{ fontSize: 13, color: "var(--text-2)" }}
@@ -230,9 +245,7 @@ function RunDetail({ run, steps, tab, setTab, tenant }: RunDetailProps) {
           </Badge>
           {testRun && <Badge tone="signal">TEST RUN</Badge>}
           {isReplay && <Badge tone="amber">REPLAY</Badge>}
-          {run.triggerEvent && (
-            <Badge tone="muted">↑ {run.triggerEvent}</Badge>
-          )}
+          {run.triggerEvent && <Badge tone="muted">↑ {run.triggerEvent}</Badge>}
           <div
             style={{
               marginLeft: "auto",
@@ -345,7 +358,17 @@ function RunDetail({ run, steps, tab, setTab, tenant }: RunDetailProps) {
           flexShrink: 0,
         }}
       >
-        {(["timeline", "trace", "logs", "io", "artifacts", "events", "agent"] as const).map((t) => (
+        {(
+          [
+            "timeline",
+            "trace",
+            "logs",
+            "io",
+            "artifacts",
+            "events",
+            "agent",
+          ] as const
+        ).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -409,7 +432,9 @@ function RunDetail({ run, steps, tab, setTab, tenant }: RunDetailProps) {
       )}
       {tab === "logs" && <LogsTab runId={run.id} tenant={tenant} />}
       {tab === "io" && <IOTab run={run} agent={agentRow} tenant={tenant} />}
-      {tab === "artifacts" && <ArtifactsTab runId={run.id} artifacts={artifacts} />}
+      {tab === "artifacts" && (
+        <ArtifactsTab runId={run.id} artifacts={artifacts} />
+      )}
       {tab === "events" && <RunEventsTab run={run} />}
 
       {/* Failed-run error panel (any tab except agent) */}
@@ -451,49 +476,104 @@ function ArtifactsTab({
   artifacts,
 }: {
   runId: string;
-  artifacts: Array<{ id: string; kind: string; size: number; createdAt: string; downloadPath: string }>;
+  artifacts: Array<{
+    id: string;
+    kind: string;
+    size: number;
+    createdAt: string;
+    downloadPath: string;
+  }>;
 }) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [content, setContent] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
-  const selected = artifacts.find((artifact) => artifact.id === (selectedId ?? artifacts[0]?.id));
+  const selected = artifacts.find(
+    (artifact) => artifact.id === (selectedId ?? artifacts[0]?.id),
+  );
 
   useEffect(() => {
     if (!selected) return;
     let cancelled = false;
     setError(null);
     setContent("");
-    void fetch(selected.downloadPath, { credentials: "same-origin", headers: { Accept: "application/json", ...tenantHeader() } })
+    void fetch(selected.downloadPath, {
+      credentials: "same-origin",
+      headers: { Accept: "application/json", ...tenantHeader() },
+    })
       .then(async (response) => {
-        if (!response.ok) throw new Error(`artifact request failed (${response.status})`);
+        if (!response.ok)
+          throw new Error(`artifact request failed (${response.status})`);
         return response.text();
       })
-      .then((text) => { if (!cancelled) setContent(text); })
-      .catch((err) => { if (!cancelled) setError(err instanceof Error ? err.message : "Could not load artifact"); });
-    return () => { cancelled = true; };
+      .then((text) => {
+        if (!cancelled) setContent(text);
+      })
+      .catch((err) => {
+        if (!cancelled)
+          setError(
+            err instanceof Error ? err.message : "Could not load artifact",
+          );
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [selected?.id, selected?.downloadPath]);
 
   if (artifacts.length === 0) {
-    return <Empty title="No JSON artifacts yet" hint={`Run ${runId} has not produced a persisted output file.`} />;
+    return (
+      <Empty
+        title="No JSON artifacts yet"
+        hint={`Run ${runId} has not produced a persisted output file.`}
+      />
+    );
   }
   return (
-    <Panel title="Persisted run artifacts" subtitle="Local JSON output captured by the runtime" padded={false}>
-      <div style={{ display: "grid", gridTemplateColumns: "220px 1fr", minHeight: 340 }}>
+    <Panel
+      title="Persisted run artifacts"
+      subtitle="Local JSON output captured by the runtime"
+      padded={false}
+    >
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "220px 1fr",
+          minHeight: 340,
+        }}
+      >
         <div style={{ borderRight: "1px solid var(--border)", padding: 10 }}>
           {artifacts.map((artifact) => (
             <button
               key={artifact.id}
               onClick={() => setSelectedId(artifact.id)}
-              style={{ display: "block", width: "100%", textAlign: "left", padding: "9px 10px", borderRadius: 4, background: selected?.id === artifact.id ? "var(--panel-3)" : "transparent", color: "var(--text)" }}
+              style={{
+                display: "block",
+                width: "100%",
+                textAlign: "left",
+                padding: "9px 10px",
+                borderRadius: 4,
+                background:
+                  selected?.id === artifact.id
+                    ? "var(--panel-3)"
+                    : "transparent",
+                color: "var(--text)",
+              }}
             >
-              <div className="mono" style={{ fontSize: 11 }}>{artifact.kind}</div>
-              <div style={{ marginTop: 3, fontSize: 10.5, color: "var(--text-3)" }}>{Math.round(artifact.size / 1024 * 10) / 10} KB</div>
+              <div className="mono" style={{ fontSize: 11 }}>
+                {artifact.kind}
+              </div>
+              <div
+                style={{ marginTop: 3, fontSize: 10.5, color: "var(--text-3)" }}
+              >
+                {Math.round((artifact.size / 1024) * 10) / 10} KB
+              </div>
             </button>
           ))}
         </div>
         <div style={{ padding: 14, overflow: "auto" }}>
           {error && <div style={{ color: "var(--red)" }}>{error}</div>}
-          {!error && !content && <div style={{ color: "var(--text-3)" }}>Loading JSON…</div>}
+          {!error && !content && (
+            <div style={{ color: "var(--text-3)" }}>Loading JSON…</div>
+          )}
           {content && <CodeBlock>{content}</CodeBlock>}
         </div>
       </div>
@@ -561,7 +641,9 @@ function TimelineTab({ steps, run }: { steps: StepRow[]; run: RunListRow }) {
     <Panel title="Step timeline" padded={false}>
       <div style={{ padding: 16 }}>
         {steps.map((s, i) => {
-          const stepStartedMs = s.startedAt ? Date.parse(s.startedAt) : startedMs;
+          const stepStartedMs = s.startedAt
+            ? Date.parse(s.startedAt)
+            : startedMs;
           const startPct =
             total > 0 ? ((stepStartedMs - startedMs) / total) * 100 : 0;
           const durPct =
@@ -647,7 +729,8 @@ function TimelineTab({ steps, run }: { steps: StepRow[]; run: RunListRow }) {
                 className="mono"
                 style={{
                   fontSize: 11.5,
-                  color: s.status === "running" ? "var(--signal)" : "var(--text-2)",
+                  color:
+                    s.status === "running" ? "var(--signal)" : "var(--text-2)",
                   textAlign: "right",
                 }}
               >
@@ -685,7 +768,8 @@ function LogsTab({ runId, tenant }: { runId: string; tenant: string }) {
       headers: { Accept: "text/event-stream", "x-agentic-tenant": tenant },
     })
       .then(async (res) => {
-        if (!res.ok) throw new Error(`/v1/runs/${runId}/logs: HTTP ${res.status}`);
+        if (!res.ok)
+          throw new Error(`/v1/runs/${runId}/logs: HTTP ${res.status}`);
         const text = await res.text();
         if (cancelled) return;
         const out: string[] = [];
@@ -699,7 +783,8 @@ function LogsTab({ runId, tenant }: { runId: string; tenant: string }) {
           if (raw.startsWith("event:")) currentEvent = raw.slice(6).trim();
           else if (raw.startsWith("data:")) {
             if (currentEvent === "log") out.push(raw.slice(5).trim());
-            else if (currentEvent === "info") out.push(`# ${raw.slice(5).trim()}`);
+            else if (currentEvent === "info")
+              out.push(`# ${raw.slice(5).trim()}`);
           } else if (raw === "") currentEvent = null;
         }
         setLines(out);
@@ -743,10 +828,14 @@ function LogsTab({ runId, tenant }: { runId: string; tenant: string }) {
         }}
       >
         {error && (
-          <div style={{ color: "var(--red)" }}>Failed to load logs: {error}</div>
+          <div style={{ color: "var(--red)" }}>
+            Failed to load logs: {error}
+          </div>
         )}
         {!error && lines.length === 0 && !loading && (
-          <div style={{ color: "var(--text-3)" }}>(no log lines recorded for this run)</div>
+          <div style={{ color: "var(--text-3)" }}>
+            (no log lines recorded for this run)
+          </div>
         )}
         {lines.map((line, i) => {
           let color = "var(--text-2)";

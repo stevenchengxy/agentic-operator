@@ -1,5 +1,18 @@
 import { z } from "zod";
 import { ProviderIdSchema } from "./llm";
+import {
+  AgentActionV2Schema,
+  AgentConcurrencyV2Schema,
+  AgentInputPortV2Schema,
+  AgentObservabilityV2Schema,
+  AgentOutputBindingsV2Schema,
+  AgentOutputConfigV2Schema,
+  AgentOutputPortV2Schema,
+  AgentPromptProvenanceV2Schema,
+  AgentToolLoopV2Schema,
+  AgentToolUseV2Schema,
+  AgentTriggerBindingsV2Schema,
+} from "./agent-definition";
 
 export const ActorEnum = z.enum(["Agent", "Human"]);
 
@@ -21,26 +34,59 @@ export const ListAgentRow = z.object({
 });
 export type ListAgentRow = z.infer<typeof ListAgentRow>;
 
-export const ActionSpec = z.object({
-  order: z.string(),
-  name: z.string(),
-  description: z.string().optional().default(""),
-  type: z.enum(["tool", "logic", "manual"]),
-  condition: z.string().optional(),
-  task_type: z.string().optional(),
-});
+/**
+ * Legacy export retained for existing callers. It now points at the canonical
+ * additive action schema so old manifest upload cannot strip condition/delay/
+ * subflow or action-level resilience fields.
+ */
+export const ActionSpec = AgentActionV2Schema;
 export type ActionSpec = z.infer<typeof ActionSpec>;
 
-export const AgentSpec = z.object({
-  id: z.string(),
-  name: z.string(),
-  title: z.string().optional(),
-  description: z.string().optional().default(""),
-  actor: z.array(ActorEnum).min(1),
-  trigger: z.array(z.string()),
-  actions: z.array(ActionSpec),
-  triggered_event: z.array(z.string()),
-});
+export const AgentSpec = z
+  .object({
+    id: z.string(),
+    name: z.string(),
+    title: z.string().optional(),
+    description: z.string().optional().default(""),
+    actor: z.array(ActorEnum).min(1),
+    trigger: z.array(z.string()),
+    trigger_bindings: AgentTriggerBindingsV2Schema.optional(),
+    inputs: z.array(AgentInputPortV2Schema).min(1).optional(),
+    input_data: z.record(z.string(), z.unknown()).optional(),
+    ontology_instructions: z.string().optional(),
+    user_prompt_template: z.string().optional(),
+    prompt_provenance: AgentPromptProvenanceV2Schema.optional(),
+    tool_use: z
+      .union([
+        z.array(z.union([AgentToolUseV2Schema, z.string().min(1)])),
+        z.literal("").transform(() => undefined),
+      ])
+      .optional(),
+    actions: z.array(ActionSpec),
+    outputs: z.array(AgentOutputPortV2Schema).min(1).optional(),
+    output_config: AgentOutputConfigV2Schema.optional(),
+    triggered_event: z.array(z.string()),
+    output_bindings: AgentOutputBindingsV2Schema.optional(),
+    generated: z.boolean().optional(),
+    provider: ProviderIdSchema.optional(),
+    model: z.string().optional(),
+    temperature: z.number().optional(),
+    max_tokens: z.number().int().positive().optional(),
+    retries: z.number().int().nonnegative().optional(),
+    timeout_s: z.number().int().positive().optional(),
+    concurrency: AgentConcurrencyV2Schema.optional(),
+    tool_loop: AgentToolLoopV2Schema.optional(),
+    cron: z.string().nullable().optional(),
+    cron_timezone: z.string().nullable().optional(),
+    observability: AgentObservabilityV2Schema.optional(),
+    template: z
+      .enum(["blank", "classify", "extract", "rag", "loop", "human"])
+      .optional(),
+    stage: z.number().int().nonnegative().optional(),
+    typescript_code: z.string().optional(),
+    extensions: z.record(z.string(), z.unknown()).optional(),
+  })
+  .passthrough();
 export type AgentSpec = z.infer<typeof AgentSpec>;
 
 export const WorkflowManifest = z.array(AgentSpec);
@@ -128,7 +174,10 @@ export const GenerateAgentPromptBody = z.object({
 export type GenerateAgentPromptBody = z.infer<typeof GenerateAgentPromptBody>;
 
 export const GenerateAgentPromptResponse = z.object({
-  systemPrompt: z.string().min(40).max(16 * 1024),
+  systemPrompt: z
+    .string()
+    .min(40)
+    .max(16 * 1024),
   provider: ProviderIdSchema,
   model: z.string(),
   tokensIn: z.number().nullable(),
@@ -154,12 +203,19 @@ export const DeployAuthoredAgentBody = GenerateAgentPromptBody.omit({
   // The runtime currently emits the first declared event. Keep the deploy
   // contract honest until branching/multi-emit semantics are implemented.
   emits: z.array(AuthoringEventName).max(1),
-  systemPrompt: z.string().trim().min(40).max(16 * 1024),
+  systemPrompt: z
+    .string()
+    .trim()
+    .min(40)
+    .max(16 * 1024),
   toolUse: z.array(AgentAuthoringTool).max(50).default([]),
   retries: z.number().int().min(0).max(10).default(3),
   timeoutS: z.number().int().min(1).max(3_600).default(120),
   concurrency: z.number().int().min(1).max(100).default(8),
-  typescriptCode: z.string().max(64 * 1024).optional(),
+  typescriptCode: z
+    .string()
+    .max(64 * 1024)
+    .optional(),
 });
 export type DeployAuthoredAgentBody = z.infer<typeof DeployAuthoredAgentBody>;
 

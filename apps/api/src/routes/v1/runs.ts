@@ -1,13 +1,22 @@
 import type { FastifyInstance } from "fastify";
 import { readFile } from "node:fs/promises";
-import { eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { agents, events, getDb, runs } from "@agentic/db";
 import { inngest } from "@agentic/runtime";
 import { makeId } from "@agentic/shared";
-import { ListRunsQuery } from "@agentic/contracts";
+import {
+  CreateAgentRunResponseSchema,
+  ListRunsQuery,
+  ReplayStudioRunBodySchema,
+} from "@agentic/contracts";
 import { requireAuth } from "../../plugins/auth";
 import { writeAudit } from "../../plugins/audit";
 import { getRun, listRecentRuns, listSteps } from "../../queries/runs";
+import {
+  finalizeCancelledStudioRun,
+  replayStudioRun,
+  StudioRunInputError,
+} from "../../services/studio-runner";
 
 export async function runsRoutes(app: FastifyInstance) {
   // GET /v1/runs — list
@@ -45,10 +54,47 @@ export async function runsRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const auth = requireAuth(req);
       const db = getDb();
-      const run = db.select().from(runs).where(eq(runs.id, req.params.id)).all()[0];
+      const run = db
+        .select()
+        .from(runs)
+        .where(eq(runs.id, req.params.id))
+        .all()[0];
       if (!run) return reply.fail("not_found", "run not found", 404);
       if (run.tenantId !== auth.tenantId)
         return reply.fail("forbidden", "forbidden", 403);
+      if (["studio", "replay"].includes(run.invocationSource)) {
+        const body = ReplayStudioRunBodySchema.parse(req.body ?? {});
+        try {
+          const replay = CreateAgentRunResponseSchema.parse(
+            await replayStudioRun(auth, run.id, body),
+          );
+          writeAudit({
+            tenantId: auth.tenantId,
+            action: "run.replay",
+            targetType: "run",
+            targetId: replay.runId,
+            meta: {
+              replay_of_run: run.id,
+              version: body.version,
+              session_id: replay.sessionId,
+            },
+          });
+          return reply.ok(replay, 202);
+        } catch (error) {
+          if (error instanceof StudioRunInputError) {
+            return reply.fail(
+              error.code,
+              error.message,
+              error.code.endsWith("missing") || error.code.endsWith("expired")
+                ? 410
+                : 400,
+              undefined,
+              error.issues,
+            );
+          }
+          throw error;
+        }
+      }
       if (!run.triggerEventId)
         return reply.fail("no_trigger", "run has no trigger event", 400);
 
@@ -120,10 +166,32 @@ export async function runsRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const auth = requireAuth(req);
       const db = getDb();
-      const run = db.select().from(runs).where(eq(runs.id, req.params.id)).all()[0];
+      const run = db
+        .select()
+        .from(runs)
+        .where(eq(runs.id, req.params.id))
+        .all()[0];
       if (!run) return reply.fail("not_found", "run not found", 404);
       if (run.tenantId !== auth.tenantId)
         return reply.fail("forbidden", "forbidden", 403);
+      const ensureStudioCancellationEvidence = async () => {
+        if (
+          run.invocationSource !== "studio" &&
+          run.invocationSource !== "replay"
+        ) {
+          return;
+        }
+        await finalizeCancelledStudioRun({
+          tenantId: auth.tenantId,
+          tenantSlug: auth.tenantSlug,
+          runId: run.id,
+        }).catch((err) => {
+          req.log.warn(
+            { err, runId: run.id, action: "run.cancel.evidence_failed" },
+            "cancel: Studio terminal evidence could not be persisted",
+          );
+        });
+      };
 
       // Idempotent no-op when the run already reached a terminal state.
       // `cancelled` is terminal too — re-cancelling an already-cancelled
@@ -131,6 +199,11 @@ export async function runsRoutes(app: FastifyInstance) {
       // re-emit the Inngest cancel event or re-write the audit row.
       const TERMINAL = new Set(["ok", "failed", "cancelled"]);
       if (TERMINAL.has(run.status)) {
+        if (run.status === "cancelled") {
+          // A repeated cancel also self-heals a prior transient artifact
+          // failure while remaining idempotent when evidence already exists.
+          await ensureStudioCancellationEvidence();
+        }
         req.log.info(
           {
             runId: run.id,
@@ -157,15 +230,45 @@ export async function runsRoutes(app: FastifyInstance) {
       // cooperative-cancel poll read this status. Doing the DB write
       // before the Inngest emit means the operator sees the cancel
       // state immediately even if Inngest is unreachable.
-      db.update(runs)
+      const cancelled = db
+        .update(runs)
         .set({
           status: "cancelled",
           endedAt,
           durationMs,
+          outputValid: false,
           errorMessage: "cancelled_by_operator",
         })
-        .where(eq(runs.id, run.id))
+        .where(
+          and(
+            eq(runs.id, run.id),
+            eq(runs.tenantId, auth.tenantId),
+            inArray(runs.status, ["queued", "running", "waiting"]),
+          ),
+        )
         .run();
+      if (cancelled.changes !== 1) {
+        const current = db
+          .select({ status: runs.status })
+          .from(runs)
+          .where(and(eq(runs.id, run.id), eq(runs.tenantId, auth.tenantId)))
+          .limit(1)
+          .all()[0];
+        const status = current?.status ?? run.status;
+        if (status === "cancelled") {
+          await ensureStudioCancellationEvidence();
+        }
+        req.log.info(
+          { runId: run.id, status, action: "run.cancel.race_noop" },
+          "cancel: no-op (terminal transition won the race)",
+        );
+        return reply.ok({
+          runId: run.id,
+          status,
+          cancelled: false,
+          note: `Run already terminal (status=${status}); no action taken.`,
+        });
+      }
 
       writeAudit({
         tenantId: auth.tenantId,
@@ -174,6 +277,8 @@ export async function runsRoutes(app: FastifyInstance) {
         targetId: run.id,
         meta: { previousStatus, durationMs },
       });
+
+      await ensureStudioCancellationEvidence();
 
       // Resolve the agent kind so we can give the operator an accurate
       // `note`. For manifest agents we must fire the Inngest cancel

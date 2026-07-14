@@ -21,20 +21,47 @@
 import type { FastifyInstance } from "fastify";
 import { listGlobalTools } from "@agentic/tools";
 import { requireAuth } from "../../plugins/auth";
+import { getExpandedTenantRegistry } from "../../bootstrap";
 
 export async function toolsRoutes(app: FastifyInstance): Promise<void> {
   app.get("/tools", async (req, reply) => {
-    // requireAuth here purely to scope the response to a logged-in
-    // operator. The catalog itself is global (same for every tenant) —
-    // there's no per-tenant filtering today.
-    requireAuth(req);
-    const tools = listGlobalTools();
+    // The effective catalog is tenant-scoped: tenant overrides and expanded
+    // MCP/skill tools are merged with the global catalog after authentication.
+    const auth = requireAuth(req);
+    const registry = getExpandedTenantRegistry(auth.tenantSlug);
+    const global = listGlobalTools();
+    const globalNames = new Set(
+      global.flatMap((tool) => [tool.name, ...(tool.aliases ?? [])]),
+    );
+    const tools = global.map((tool) => ({
+      ...tool,
+      source: registry?.tools?.[tool.name] ? "tenant_override" : "global",
+      available: true,
+    }));
+    for (const [name, descriptor] of Object.entries(registry?.tools ?? {})) {
+      if (globalNames.has(name)) continue;
+      const source = name.includes(".") ? "mcp_or_skill" : "tenant";
+      tools.push({
+        name,
+        category: source === "tenant" ? "tenant" : name.split(".")[0]!,
+        summary: descriptor.description ?? `Tenant-effective tool '${name}'.`,
+        description: descriptor.description,
+        sourcePath: "tenant-effective registry",
+        source,
+        available: true,
+        sideEffect: "write",
+        testPolicy: "block",
+      });
+    }
+    tools.sort((left, right) =>
+      left.category === right.category
+        ? left.name.localeCompare(right.name)
+        : left.category.localeCompare(right.category),
+    );
     return reply.ok({
       tools,
       count: tools.length,
-      categories: Array.from(
-        new Set(tools.map((t) => t.category)),
-      ).sort(),
+      categories: Array.from(new Set(tools.map((t) => t.category))).sort(),
     });
   });
 }

@@ -41,6 +41,9 @@
         "items": {
           "type": "object",
           "properties": {
+            "id": {
+              "type": "string"
+            },
             "order": {
               "type": "string"
             },
@@ -62,10 +65,32 @@
                 "subflow"
               ]
             },
+            "action_prompt": {
+              "type": "string"
+            },
+            "tool": {
+              "type": "string"
+            },
             "condition": {
               "type": "string"
             },
+            "true_action_id": {
+              "type": "string"
+            },
+            "false_action_id": {
+              "type": "string"
+            },
             "task_type": {
+              "type": "string"
+            },
+            "form_schema": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {}
+            },
+            "awaiting_role": {
               "type": "string"
             },
             "retries": {
@@ -92,10 +117,31 @@
                 "type": "string"
               },
               "additionalProperties": {}
+            },
+            "wait_policy": {
+              "type": "string",
+              "enum": [
+                "wait",
+                "detach"
+              ]
+            },
+            "input_mapping": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {}
+            },
+            "output_mapping": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {}
             }
           },
           "required": [],
-          "additionalProperties": false,
+          "additionalProperties": {},
           "description": "Step in an agent's action list. On disk either `id` or `order` must be present; missing `name` falls back to `id`/`order`, and missing `type` defaults to 'logic' at runtime.",
           "anyOf": [
             {

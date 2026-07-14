@@ -57,6 +57,7 @@ import {
 } from "./config/demo-mode.js";
 import { startDemoRunner } from "./services/demo-runner.js";
 import { runSeedRich } from "../scripts/seed-rich.js";
+import { studioRunnerFn } from "./services/studio-runner";
 
 /**
  * v4 typing: TS2742 surfaces because `InngestFunction` references internal
@@ -105,6 +106,17 @@ const TENANT_REGISTRIES: TenantRegistries = {
  * servers or losing tenant prompt/tool overrides.
  */
 let cachedExpanded: TenantRegistries = {};
+
+/**
+ * Resolve the exact tenant registry used by live manifest functions. Studio
+ * runs use this read-only seam so prompt overrides, tenant tool overrides,
+ * MCP tools, and Skills tools follow the same resolution order as production.
+ */
+export function getExpandedTenantRegistry(
+  tenantSlug: string,
+): TenantRegistry | undefined {
+  return cachedExpanded[tenantSlug];
+}
 
 export async function rebuildTenantFns(): Promise<InngestFunction.Any[]> {
   return bootstrapAll(cachedExpanded);
@@ -175,10 +187,10 @@ export async function bootstrapRuntime(): Promise<BootstrapResult> {
 
   // 4. Manifest-driven (RAAS etc) Inngest functions.
   const tenantFns = await bootstrapAll(expanded);
-  const allFns = [helloFn, ...tenantFns];
+  const allFns = [helloFn, studioRunnerFn, ...tenantFns];
   initInngestRegistry({
     client: inngest as Inngest.Any,
-    base: [helloFn],
+    base: [helloFn, studioRunnerFn],
     codeAgent: [],
     tenant: tenantFns,
   });
@@ -301,7 +313,8 @@ async function expandTenantRegistry(
 
   // --- MCP servers -------------------------------------------------------
   const mcpConfigs = (base.mcpServers ?? []) as McpServerConfig[];
-  let mcpTools: Record<string, import("@agentic/agent-kit").ToolDescriptor> = {};
+  let mcpTools: Record<string, import("@agentic/agent-kit").ToolDescriptor> =
+    {};
   if (mcpConfigs.length > 0) {
     const mgr = getMcpManager();
     try {
@@ -319,7 +332,8 @@ async function expandTenantRegistry(
 
   // --- Skills ------------------------------------------------------------
   const skillDescriptors = (base.skills ?? []) as SkillDescriptor[];
-  let skillTools: Record<string, import("@agentic/agent-kit").ToolDescriptor> = {};
+  let skillTools: Record<string, import("@agentic/agent-kit").ToolDescriptor> =
+    {};
   if (skillDescriptors.length > 0) {
     skillTools = buildSkillTools(skillDescriptors);
     console.log(

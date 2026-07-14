@@ -1,5 +1,5 @@
 /**
- * Drizzle schema for Agentic Operator — 16 tables per DESIGN.md §3.
+ * Drizzle schema for Agentic Operator.
  *
  * Conventions:
  *   - Primary keys are prefixed string IDs (run-, evt-, agt-, …) generated
@@ -101,7 +101,10 @@ export const workflows = sqliteTable(
       .default(now),
   },
   (t) => ({
-    tenantSlugUq: uniqueIndex("workflows_tenant_slug_uq").on(t.tenantId, t.slug),
+    tenantSlugUq: uniqueIndex("workflows_tenant_slug_uq").on(
+      t.tenantId,
+      t.slug,
+    ),
     tenantIdx: index("workflows_tenant_idx").on(t.tenantId),
   }),
 );
@@ -185,6 +188,14 @@ export const agents = sqliteTable(
   "agents",
   {
     id: text("id").primaryKey(),
+    /**
+     * Direct tenant ownership for Studio lookups. Nullable at the Drizzle
+     * boundary during the legacy transition: migration 0017 backfills it and
+     * DB triggers derive it from workflow_id for old insert call sites.
+     */
+    tenantId: text("tenant_id").references(() => tenants.id, {
+      onDelete: "cascade",
+    }),
     workflowId: text("workflow_id")
       .notNull()
       .references(() => workflows.id, { onDelete: "cascade" }),
@@ -195,9 +206,12 @@ export const agents = sqliteTable(
     kind: text("kind", { enum: ["manifest", "code"] })
       .notNull()
       .default("manifest"),
-    enabled: integer("enabled", { mode: "boolean" })
+    enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+    lifecycle: text("lifecycle", {
+      enum: ["draft", "active", "archived"],
+    })
       .notNull()
-      .default(true),
+      .default("active"),
     // P0-DB-01: temporal columns (migration 0003_temporal_columns.sql).
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
     updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
@@ -208,6 +222,11 @@ export const agents = sqliteTable(
       t.kebabId,
     ),
     workflowIdx: index("agents_workflow_idx").on(t.workflowId),
+    tenantIdx: index("agents_tenant_idx").on(t.tenantId),
+    tenantLifecycleIdx: index("agents_tenant_lifecycle_idx").on(
+      t.tenantId,
+      t.lifecycle,
+    ),
   }),
 );
 
@@ -222,11 +241,116 @@ export const agentVersions = sqliteTable(
       .notNull()
       .references(() => workflowVersions.id, { onDelete: "cascade" }),
     manifestJson: text("manifest_json", { mode: "json" }).notNull(),
+    definitionSchemaVersion: integer("definition_schema_version")
+      .notNull()
+      .default(1),
+    contentHash: text("content_hash"),
+    createdBy: text("created_by").references(() => users.id),
+    publishedAt: integer("published_at", { mode: "timestamp_ms" }),
+    changeNote: text("change_note"),
+    // P0-DB-01 added these columns in SQL but the original Drizzle mapping
+    // omitted them. 0017 repairs zero-valued rows and insert-time defaults.
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
   },
   (t) => ({
     agentWfvUq: uniqueIndex("agv_agent_wfv_uq").on(
       t.agentId,
       t.workflowVersionId,
+    ),
+  }),
+);
+
+// ─── Agent Studio drafts + immutable draft revisions ───────────────────────
+
+export const agentDrafts = sqliteTable(
+  "agent_drafts",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    workflowId: text("workflow_id")
+      .notNull()
+      .references(() => workflows.id, { onDelete: "cascade" }),
+    agentId: text("agent_id")
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
+    baseAgentVersionId: text("base_agent_version_id").references(
+      () => agentVersions.id,
+    ),
+    baseWorkflowVersionId: text("base_workflow_version_id").references(
+      () => workflowVersions.id,
+    ),
+    definitionJson: text("definition_json", { mode: "json" }).notNull(),
+    schemaVersion: integer("schema_version").notNull().default(2),
+    contentHash: text("content_hash").notNull(),
+    revision: integer("revision").notNull().default(1),
+    validationStatus: text("validation_status", {
+      enum: ["unvalidated", "valid", "invalid", "stale"],
+    })
+      .notNull()
+      .default("unvalidated"),
+    validationJson: text("validation_json", { mode: "json" }),
+    validatedHash: text("validated_hash"),
+    createdBy: text("created_by").references(() => users.id),
+    updatedBy: text("updated_by").references(() => users.id),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+    deletedAt: integer("deleted_at", { mode: "timestamp_ms" }),
+  },
+  (t) => ({
+    tenantUpdatedIdx: index("agent_drafts_tenant_updated_idx").on(
+      t.tenantId,
+      t.updatedAt,
+    ),
+    agentUpdatedIdx: index("agent_drafts_agent_updated_idx").on(
+      t.agentId,
+      t.updatedAt,
+    ),
+    workflowIdx: index("agent_drafts_workflow_idx").on(t.workflowId),
+    deletedAtIdx: index("agent_drafts_deleted_at_idx").on(t.deletedAt),
+  }),
+);
+
+export const agentDraftRevisions = sqliteTable(
+  "agent_draft_revisions",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    draftId: text("draft_id")
+      .notNull()
+      .references(() => agentDrafts.id, { onDelete: "cascade" }),
+    revision: integer("revision").notNull(),
+    definitionJson: text("definition_json", { mode: "json" }).notNull(),
+    schemaVersion: integer("schema_version").notNull().default(2),
+    contentHash: text("content_hash").notNull(),
+    reason: text("reason", {
+      enum: ["run", "checkpoint", "publish"],
+    }).notNull(),
+    createdBy: text("created_by").references(() => users.id),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+  },
+  (t) => ({
+    draftRevisionUq: uniqueIndex("agent_draft_revisions_draft_revision_uq").on(
+      t.draftId,
+      t.revision,
+    ),
+    tenantCreatedIdx: index("agent_draft_revisions_tenant_created_idx").on(
+      t.tenantId,
+      t.createdAt,
     ),
   }),
 );
@@ -285,7 +409,39 @@ export const eventListeners = sqliteTable(
   }),
 );
 
-// ─── Runs + Steps ────────────────────────────────────────────────────────────
+// ─── Agent Studio sessions + runs + steps ───────────────────────────────────
+
+export const agentRunSessions = sqliteTable(
+  "agent_run_sessions",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    agentId: text("agent_id")
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
+    createdBy: text("created_by").references(() => users.id),
+    title: text("title"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+    lastRunAt: integer("last_run_at", { mode: "timestamp_ms" }),
+  },
+  (t) => ({
+    tenantUpdatedIdx: index("agent_run_sessions_tenant_updated_idx").on(
+      t.tenantId,
+      t.updatedAt,
+    ),
+    agentUpdatedIdx: index("agent_run_sessions_agent_updated_idx").on(
+      t.agentId,
+      t.updatedAt,
+    ),
+  }),
+);
 
 export const runs = sqliteTable(
   "runs",
@@ -298,23 +454,46 @@ export const runs = sqliteTable(
       .notNull()
       .references(() => agents.id),
     agentVersionId: text("agent_version_id").references(() => agentVersions.id),
+    draftRevisionId: text("draft_revision_id").references(
+      () => agentDraftRevisions.id,
+    ),
+    sessionId: text("session_id").references(() => agentRunSessions.id, {
+      onDelete: "set null",
+    }),
     triggerEventId: text("trigger_event_id").references(() => events.id),
     /** P1-RT-04 — parent run id when this run was composed via `subflow`. */
     parentRunId: text("parent_run_id"),
     status: text("status", {
       enum: ["queued", "running", "ok", "failed", "waiting", "cancelled"],
     }).notNull(),
+    queuedAt: integer("queued_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
     startedAt: integer("started_at", { mode: "timestamp_ms" }),
     endedAt: integer("ended_at", { mode: "timestamp_ms" }),
     durationMs: integer("duration_ms"),
     tokensIn: integer("tokens_in"),
     tokensOut: integer("tokens_out"),
+    provider: text("provider"),
     model: text("model"),
     emittedEventId: text("emitted_event_id"),
     errorMessage: text("error_message"),
     logPath: text("log_path"),
     correlationId: text("correlation_id").notNull(),
     subject: text("subject"),
+    invocationSource: text("invocation_source", {
+      enum: ["studio", "event", "api", "replay", "demo"],
+    })
+      .notNull()
+      .default("event"),
+    requestedBy: text("requested_by").references(() => users.id),
+    definitionHash: text("definition_hash"),
+    outputValid: integer("output_valid", { mode: "boolean" }),
+    sideEffectMode: text("side_effect_mode", {
+      enum: ["suppressed", "safe", "live"],
+    })
+      .notNull()
+      .default("live"),
     /** P1-API-04b — soft-delete tombstone. */
     deletedAt: integer("deleted_at", { mode: "timestamp_ms" }),
     /**
@@ -331,12 +510,20 @@ export const runs = sqliteTable(
       t.tenantId,
       t.startedAt,
     ),
+    tenantQueuedIdx: index("runs_tenant_queued_idx").on(t.tenantId, t.queuedAt),
     tenantStatusIdx: index("runs_tenant_status_idx").on(t.tenantId, t.status),
     agentIdx: index("runs_agent_idx").on(t.agentId),
     correlationIdx: index("runs_correlation_idx").on(t.correlationId),
     subjectIdx: index("runs_subject_idx").on(t.subject),
     deletedAtIdx: index("runs_deleted_at_idx").on(t.deletedAt),
     isTestIdx: index("runs_is_test_idx").on(t.isTest),
+    sessionIdx: index("runs_session_idx").on(t.sessionId),
+    draftRevisionIdx: index("runs_draft_revision_idx").on(t.draftRevisionId),
+    agentSourceStartedIdx: index("runs_agent_source_started_idx").on(
+      t.agentId,
+      t.invocationSource,
+      t.startedAt,
+    ),
   }),
 );
 
@@ -368,6 +555,44 @@ export const steps = sqliteTable(
   },
   (t) => ({
     runOrdIdx: index("steps_run_ord_idx").on(t.runId, t.ord),
+  }),
+);
+
+/**
+ * Explicit session messages. Initial Studio runs remain independent; these
+ * rows power the chat/history presentation without silently injecting prior
+ * turns into a later run.
+ */
+export const runMessages = sqliteTable(
+  "run_messages",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => agentRunSessions.id, { onDelete: "cascade" }),
+    runId: text("run_id").references(() => runs.id, { onDelete: "cascade" }),
+    ord: integer("ord").notNull(),
+    role: text("role", {
+      enum: ["system", "user", "assistant", "tool"],
+    }).notNull(),
+    contentJson: text("content_json", { mode: "json" }).notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+  },
+  (t) => ({
+    sessionOrdUq: uniqueIndex("run_messages_session_ord_uq").on(
+      t.sessionId,
+      t.ord,
+    ),
+    tenantCreatedIdx: index("run_messages_tenant_created_idx").on(
+      t.tenantId,
+      t.createdAt,
+    ),
+    runIdx: index("run_messages_run_idx").on(t.runId),
   }),
 );
 
@@ -420,7 +645,33 @@ export const artifacts = sqliteTable(
     runId: text("run_id")
       .notNull()
       .references(() => runs.id, { onDelete: "cascade" }),
+    stepId: text("step_id").references(() => steps.id, {
+      onDelete: "set null",
+    }),
     kind: text("kind").notNull(),
+    role: text("role", {
+      enum: [
+        "definition",
+        "input",
+        "output",
+        "run_record",
+        "raw_response",
+        "step_input",
+        "step_output",
+        "trace",
+        "attachment",
+        "other",
+      ],
+    })
+      .notNull()
+      .default("other"),
+    logicalName: text("logical_name"),
+    contentType: text("content_type"),
+    sha256: text("sha256"),
+    schemaId: text("schema_id"),
+    metadataJson: text("metadata_json", { mode: "json" }),
+    redacted: integer("redacted", { mode: "boolean" }).notNull().default(false),
+    retentionUntil: integer("retention_until", { mode: "timestamp_ms" }),
     path: text("path").notNull(),
     size: integer("size").notNull(),
     createdAt: integer("created_at", { mode: "timestamp_ms" })
@@ -429,6 +680,111 @@ export const artifacts = sqliteTable(
   },
   (t) => ({
     runIdx: index("art_run_idx").on(t.runId),
+    runRoleIdx: index("art_run_role_idx").on(t.runId, t.role),
+    stepIdx: index("art_step_idx").on(t.stepId),
+    sha256Idx: index("art_sha256_idx").on(t.sha256),
+    retentionIdx: index("art_retention_until_idx").on(t.retentionUntil),
+  }),
+);
+
+/** Durable, append-only structured trace used by Studio history and SSE. */
+export const runTraceEvents = sqliteTable(
+  "run_trace_events",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    runId: text("run_id")
+      .notNull()
+      .references(() => runs.id, { onDelete: "cascade" }),
+    stepId: text("step_id").references(() => steps.id, {
+      onDelete: "set null",
+    }),
+    /** Self-parent id is intentionally not an FK so trace ingestion can append
+     * children before a delayed parent update without disabling FK checks. */
+    parentId: text("parent_id"),
+    seq: integer("seq").notNull(),
+    kind: text("kind", {
+      enum: [
+        "run",
+        "input",
+        "prompt",
+        "step",
+        "llm",
+        "tool",
+        "output_validation",
+        "artifact",
+        "event",
+      ],
+    }).notNull(),
+    level: text("level", {
+      enum: ["minimal", "standard", "debug"],
+    })
+      .notNull()
+      .default("standard"),
+    name: text("name").notNull(),
+    status: text("status", {
+      enum: ["pending", "running", "ok", "failed", "skipped"],
+    }).notNull(),
+    startedAt: integer("started_at", { mode: "timestamp_ms" }),
+    endedAt: integer("ended_at", { mode: "timestamp_ms" }),
+    durationMs: integer("duration_ms"),
+    summary: text("summary"),
+    dataJson: text("data_json", { mode: "json" }),
+    artifactId: text("artifact_id").references(() => artifacts.id, {
+      onDelete: "set null",
+    }),
+    visibility: text("visibility", {
+      enum: ["user", "operator", "debug"],
+    })
+      .notNull()
+      .default("user"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+  },
+  (t) => ({
+    runSeqUq: uniqueIndex("run_trace_events_run_seq_uq").on(t.runId, t.seq),
+    tenantCreatedIdx: index("run_trace_events_tenant_created_idx").on(
+      t.tenantId,
+      t.createdAt,
+    ),
+    stepIdx: index("run_trace_events_step_idx").on(t.stepId),
+    parentIdx: index("run_trace_events_parent_idx").on(t.parentId),
+  }),
+);
+
+/** One-to-many link from a run to every downstream event it emitted. */
+export const runEmittedEvents = sqliteTable(
+  "run_emitted_events",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    runId: text("run_id")
+      .notNull()
+      .references(() => runs.id, { onDelete: "cascade" }),
+    eventId: text("event_id")
+      .notNull()
+      .references(() => events.id, { onDelete: "cascade" }),
+    outputPortId: text("output_port_id").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+  },
+  (t) => ({
+    runEventPortUq: uniqueIndex("run_emitted_events_run_event_port_uq").on(
+      t.runId,
+      t.eventId,
+      t.outputPortId,
+    ),
+    tenantCreatedIdx: index("run_emitted_events_tenant_created_idx").on(
+      t.tenantId,
+      t.createdAt,
+    ),
+    eventIdx: index("run_emitted_events_event_idx").on(t.eventId),
   }),
 );
 
@@ -726,6 +1082,9 @@ export const integrations = sqliteTable(
 
 export const tenantsRelations = relations(tenants, ({ many }) => ({
   workflows: many(workflows),
+  agents: many(agents),
+  agentDrafts: many(agentDrafts),
+  agentRunSessions: many(agentRunSessions),
   events: many(events),
   runs: many(runs),
   tasks: many(tasks),
@@ -739,6 +1098,7 @@ export const workflowsRelations = relations(workflows, ({ one, many }) => ({
   }),
   versions: many(workflowVersions),
   agents: many(agents),
+  agentDrafts: many(agentDrafts),
 }));
 
 export const workflowVersionsRelations = relations(
@@ -753,28 +1113,160 @@ export const workflowVersionsRelations = relations(
 );
 
 export const agentsRelations = relations(agents, ({ one, many }) => ({
+  tenant: one(tenants, {
+    fields: [agents.tenantId],
+    references: [tenants.id],
+  }),
   workflow: one(workflows, {
     fields: [agents.workflowId],
     references: [workflows.id],
   }),
   versions: many(agentVersions),
+  drafts: many(agentDrafts),
+  runSessions: many(agentRunSessions),
   runs: many(runs),
 }));
+
+export const agentVersionsRelations = relations(
+  agentVersions,
+  ({ one, many }) => ({
+    agent: one(agents, {
+      fields: [agentVersions.agentId],
+      references: [agents.id],
+    }),
+    workflowVersion: one(workflowVersions, {
+      fields: [agentVersions.workflowVersionId],
+      references: [workflowVersions.id],
+    }),
+    basedDrafts: many(agentDrafts),
+    runs: many(runs),
+  }),
+);
+
+export const agentDraftsRelations = relations(agentDrafts, ({ one, many }) => ({
+  tenant: one(tenants, {
+    fields: [agentDrafts.tenantId],
+    references: [tenants.id],
+  }),
+  workflow: one(workflows, {
+    fields: [agentDrafts.workflowId],
+    references: [workflows.id],
+  }),
+  agent: one(agents, {
+    fields: [agentDrafts.agentId],
+    references: [agents.id],
+  }),
+  baseAgentVersion: one(agentVersions, {
+    fields: [agentDrafts.baseAgentVersionId],
+    references: [agentVersions.id],
+  }),
+  baseWorkflowVersion: one(workflowVersions, {
+    fields: [agentDrafts.baseWorkflowVersionId],
+    references: [workflowVersions.id],
+  }),
+  revisions: many(agentDraftRevisions),
+}));
+
+export const agentDraftRevisionsRelations = relations(
+  agentDraftRevisions,
+  ({ one, many }) => ({
+    draft: one(agentDrafts, {
+      fields: [agentDraftRevisions.draftId],
+      references: [agentDrafts.id],
+    }),
+    runs: many(runs),
+  }),
+);
+
+export const agentRunSessionsRelations = relations(
+  agentRunSessions,
+  ({ one, many }) => ({
+    tenant: one(tenants, {
+      fields: [agentRunSessions.tenantId],
+      references: [tenants.id],
+    }),
+    agent: one(agents, {
+      fields: [agentRunSessions.agentId],
+      references: [agents.id],
+    }),
+    runs: many(runs),
+    messages: many(runMessages),
+  }),
+);
 
 export const runsRelations = relations(runs, ({ one, many }) => ({
   tenant: one(tenants, { fields: [runs.tenantId], references: [tenants.id] }),
   agent: one(agents, { fields: [runs.agentId], references: [agents.id] }),
+  agentVersion: one(agentVersions, {
+    fields: [runs.agentVersionId],
+    references: [agentVersions.id],
+  }),
+  draftRevision: one(agentDraftRevisions, {
+    fields: [runs.draftRevisionId],
+    references: [agentDraftRevisions.id],
+  }),
+  session: one(agentRunSessions, {
+    fields: [runs.sessionId],
+    references: [agentRunSessions.id],
+  }),
   triggerEvent: one(events, {
     fields: [runs.triggerEventId],
     references: [events.id],
   }),
   steps: many(steps),
   tasks: many(tasks),
+  messages: many(runMessages),
+  artifacts: many(artifacts),
+  traceEvents: many(runTraceEvents),
+  emittedEvents: many(runEmittedEvents),
 }));
 
 export const stepsRelations = relations(steps, ({ one }) => ({
   run: one(runs, { fields: [steps.runId], references: [runs.id] }),
 }));
+
+export const runMessagesRelations = relations(runMessages, ({ one }) => ({
+  session: one(agentRunSessions, {
+    fields: [runMessages.sessionId],
+    references: [agentRunSessions.id],
+  }),
+  run: one(runs, { fields: [runMessages.runId], references: [runs.id] }),
+}));
+
+export const artifactsRelations = relations(artifacts, ({ one, many }) => ({
+  run: one(runs, { fields: [artifacts.runId], references: [runs.id] }),
+  step: one(steps, { fields: [artifacts.stepId], references: [steps.id] }),
+  traceEvents: many(runTraceEvents),
+}));
+
+export const runTraceEventsRelations = relations(runTraceEvents, ({ one }) => ({
+  run: one(runs, {
+    fields: [runTraceEvents.runId],
+    references: [runs.id],
+  }),
+  step: one(steps, {
+    fields: [runTraceEvents.stepId],
+    references: [steps.id],
+  }),
+  artifact: one(artifacts, {
+    fields: [runTraceEvents.artifactId],
+    references: [artifacts.id],
+  }),
+}));
+
+export const runEmittedEventsRelations = relations(
+  runEmittedEvents,
+  ({ one }) => ({
+    run: one(runs, {
+      fields: [runEmittedEvents.runId],
+      references: [runs.id],
+    }),
+    event: one(events, {
+      fields: [runEmittedEvents.eventId],
+      references: [events.id],
+    }),
+  }),
+);
 
 export const tasksRelations = relations(tasks, ({ one }) => ({
   tenant: one(tenants, { fields: [tasks.tenantId], references: [tenants.id] }),
@@ -803,12 +1295,18 @@ export const schema = {
   deployments,
   agents,
   agentVersions,
+  agentDrafts,
+  agentDraftRevisions,
   events,
   eventListeners,
+  agentRunSessions,
   runs,
   steps,
+  runMessages,
   tasks,
   artifacts,
+  runTraceEvents,
+  runEmittedEvents,
   auditLog,
   apiTokens,
   eventTypes,
@@ -819,12 +1317,21 @@ export const schema = {
   agentMemoryShort,
   agentMemoryLong,
   idempotencyKeys,
+  integrations,
   tenantsRelations,
   workflowsRelations,
   workflowVersionsRelations,
   agentsRelations,
+  agentVersionsRelations,
+  agentDraftsRelations,
+  agentDraftRevisionsRelations,
+  agentRunSessionsRelations,
   runsRelations,
   stepsRelations,
+  runMessagesRelations,
+  artifactsRelations,
+  runTraceEventsRelations,
+  runEmittedEventsRelations,
   tasksRelations,
   eventsRelations,
 };

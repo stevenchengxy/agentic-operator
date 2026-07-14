@@ -9,14 +9,16 @@
  * dashboard genuinely reflects live traffic vs. stale fixtures.
  *
  * Wiped: `runs`, `steps`, `events`, `tasks`, `audit_log`, `artifacts`,
- *        `event_listeners` (regenerated on bootstrap),
+ *        `run_trace_events`, `run_emitted_events`, `run_messages`,
+ *        `agent_run_sessions`, `event_listeners` (regenerated on bootstrap),
  *        `agent_memory_short`, `agent_memory_long` (per-run scratch),
  *        `idempotency` if present.
  *
  * KEPT:  `tenants`, `users`, `memberships`, `workflows`, `workflow_versions`,
  *        `deployments`, `agents`, `agent_versions`, `event_types`,
  *        `entity_types`, `api_tokens`, `webhook_subscriptions`,
- *        `tenant_budgets`, `_meta`. These are identity + configuration,
+ *        `agent_drafts`, `agent_draft_revisions`, `tenant_budgets`, `_meta`.
+ *        These are identity + configuration,
  *        not runtime traffic.
  *
  * Idempotent. Reports a summary of rows cleared per table.
@@ -31,12 +33,16 @@ import { closeDb, getRawSqlite } from "./client";
  * the trace clean even though SQLite is permissive in WAL mode.
  */
 const TABLES_TO_WIPE = [
+  "run_trace_events",
+  "run_emitted_events",
+  "run_messages",
   "steps",
   "artifacts",
   "agent_memory_short",
   "agent_memory_long",
   "tasks",
   "runs",
+  "agent_run_sessions",
   "events",
   "event_listeners",
   "audit_log",
@@ -113,7 +119,10 @@ async function main(): Promise<void> {
     "[wipe-runtime]          deployments, agents, agent_versions, event_types,",
   );
   console.log(
-    "[wipe-runtime]          entity_types, api_tokens, webhook_subscriptions, tenant_budgets, _meta",
+    "[wipe-runtime]          agent_drafts, agent_draft_revisions, entity_types, api_tokens,",
+  );
+  console.log(
+    "[wipe-runtime]          webhook_subscriptions, tenant_budgets, _meta",
   );
   const report = wipeRuntime();
   console.log(formatReport(report));

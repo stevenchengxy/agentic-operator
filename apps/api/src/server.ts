@@ -30,11 +30,17 @@ import { workflowRoutes } from "./routes/v1/workflow";
 import { demoRoutes } from "./routes/v1/demo";
 import { toolsRoutes } from "./routes/v1/tools";
 import { integrationsRoutes } from "./routes/v1/integrations";
+import { agentStudioRoutes } from "./routes/v1/agent-studio";
 import { stopDemoRunner } from "./services/demo-runner";
 import { inngestRoute } from "./routes/inngest";
 import { bootstrapRuntime } from "./bootstrap";
 
-const MAX_BODY_BYTES = Number(process.env.AGENTIC_MAX_BODY_BYTES ?? 10 * 1024 * 1024);
+// Studio file controls encode uploads as data URLs in the run reservation
+// request. Base64 adds roughly 33%, so the HTTP envelope must be larger than
+// the default 10 MB per-file policy while still remaining globally bounded.
+const MAX_BODY_BYTES = Number(
+  process.env.AGENTIC_MAX_BODY_BYTES ?? 16 * 1024 * 1024,
+);
 
 const PORT = Number(process.env.PORT ?? 3501);
 const HOST = process.env.HOST ?? "0.0.0.0";
@@ -54,7 +60,10 @@ export async function build() {
       level: process.env.LOG_LEVEL ?? "info",
       transport:
         process.env.NODE_ENV !== "production" && process.env.NODE_ENV !== "test"
-          ? { target: "pino-pretty", options: { translateTime: "HH:MM:ss.l", colorize: true } }
+          ? {
+              target: "pino-pretty",
+              options: { translateTime: "HH:MM:ss.l", colorize: true },
+            }
           : undefined,
     },
   });
@@ -72,11 +81,21 @@ export async function build() {
   await app.register(cors, {
     origin: WEB_ORIGIN,
     credentials: true,
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: [
+      "Accept",
+      "Authorization",
+      "Content-Type",
+      "If-Match",
+      "Idempotency-Key",
+      "Last-Event-ID",
+      "X-Agentic-Tenant",
+      "X-Request-Id",
+    ],
     // CORS-restricted browsers strip non-safelisted response headers
     // unless explicitly exposed — without this the `x-request-id` echo
     // above is invisible to the web app.
-    exposedHeaders: ["x-request-id"],
+    exposedHeaders: ["etag", "x-request-id"],
   });
 
   await registerEnvelope(app);
@@ -114,6 +133,7 @@ export async function build() {
       await v1.register(agentsRoutes);
       await v1.register(agentAuthoringRoutes);
       await v1.register(agentInvokeRoutes);
+      await v1.register(agentStudioRoutes);
       await v1.register(deploymentsRoutes);
       await v1.register(webhooksRoutes);
       await v1.register(artifactsRoutes);

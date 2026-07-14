@@ -23,3 +23,5 @@ export * from "./llm";
 export * from "./stream";
 export * from "./tenants";
 export * from "./integrations";
+export * from "./agent-definition";
+export * from "./agent-studio";

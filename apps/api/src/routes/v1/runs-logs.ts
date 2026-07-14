@@ -41,13 +41,9 @@ export async function runsLogsRoute(app: FastifyInstance) {
       const follow = req.query.follow === "1";
       const at = run.startedAt ?? new Date();
       const logRoot = process.env.AGENTIC_LOGS_DIR ?? "./logs";
-      const filePath = path.join(
-        logRoot,
-        runTenantSlug,
-        "runs",
-        dateDir(at),
-        `${run.id}.log`,
-      );
+      const filePath =
+        run.logPath ??
+        path.join(logRoot, runTenantSlug, "runs", dateDir(at), `${run.id}.log`);
 
       reply.raw.writeHead(200, {
         "Content-Type": "text/event-stream; charset=utf-8",
@@ -74,7 +70,9 @@ export async function runsLogsRoute(app: FastifyInstance) {
           await fh.close();
         }
       } catch {
-        reply.raw.write(sseFrame("info", `(log file not yet present: ${filePath})`));
+        reply.raw.write(
+          sseFrame("info", `(log file not yet present: ${filePath})`),
+        );
       }
 
       if (!follow) {

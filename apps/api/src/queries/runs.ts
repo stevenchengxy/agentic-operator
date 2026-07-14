@@ -39,7 +39,12 @@ function hydrateStepInfo(rows: Array<RunRow & { id: string }>): RunRow[] {
   for (const row of db
     .select({ runId: steps.runId, c: sql<number>`count(*)` })
     .from(steps)
-    .where(sql`${steps.runId} IN (${sql.join(runIds.map((id) => sql`${id}`), sql`, `)})`)
+    .where(
+      sql`${steps.runId} IN (${sql.join(
+        runIds.map((id) => sql`${id}`),
+        sql`, `,
+      )})`,
+    )
     .groupBy(steps.runId)
     .all()) {
     countMap.set(row.runId, Number(row.c));
@@ -47,7 +52,12 @@ function hydrateStepInfo(rows: Array<RunRow & { id: string }>): RunRow[] {
 
   // For runs in "running"/"waiting"/"queued" status: find current in-flight step.
   const liveIds = rows
-    .filter((r) => r.status === "running" || r.status === "waiting" || r.status === "queued")
+    .filter(
+      (r) =>
+        r.status === "running" ||
+        r.status === "waiting" ||
+        r.status === "queued",
+    )
     .map((r) => r.id);
   const currentMap = new Map<string, { name: string; ord: number }>();
   if (liveIds.length > 0) {
@@ -61,7 +71,10 @@ function hydrateStepInfo(rows: Array<RunRow & { id: string }>): RunRow[] {
       })
       .from(steps)
       .where(
-        sql`${steps.runId} IN (${sql.join(liveIds.map((id) => sql`${id}`), sql`, `)})`,
+        sql`${steps.runId} IN (${sql.join(
+          liveIds.map((id) => sql`${id}`),
+          sql`, `,
+        )})`,
       )
       .orderBy(steps.runId, desc(steps.ord))
       .all()) {
@@ -84,7 +97,12 @@ function hydrateStepInfo(rows: Array<RunRow & { id: string }>): RunRow[] {
 
 export async function listRecentRuns(
   tenantSlug: string,
-  opts: { limit?: number; status?: string; agentName?: string; query?: string } = {},
+  opts: {
+    limit?: number;
+    status?: string;
+    agentName?: string;
+    query?: string;
+  } = {},
 ): Promise<RunRow[]> {
   const db = getDb();
   const tenantId = await resolveTenantId(tenantSlug);
@@ -104,7 +122,9 @@ export async function listRecentRuns(
     opts.status !== "all" &&
     (VALID_STATUSES as readonly string[]).includes(opts.status)
   ) {
-    whereParts.push(eq(runs.status, opts.status as (typeof VALID_STATUSES)[number]));
+    whereParts.push(
+      eq(runs.status, opts.status as (typeof VALID_STATUSES)[number]),
+    );
   }
   if (opts.agentName) {
     whereParts.push(eq(agents.name, opts.agentName));
@@ -120,16 +140,25 @@ export async function listRecentRuns(
     .select({
       id: runs.id,
       status: runs.status,
+      sessionId: runs.sessionId,
+      agentVersionId: runs.agentVersionId,
+      draftRevisionId: runs.draftRevisionId,
+      invocationSource: runs.invocationSource,
+      definitionHash: runs.definitionHash,
+      outputValid: runs.outputValid,
+      sideEffectMode: runs.sideEffectMode,
       agentName: agents.name,
       agentTitle: agents.title,
       subject: runs.subject,
       triggerEvent: events.name,
       emittedEvent: emittedEventsAlias.name,
+      queuedAt: runs.queuedAt,
       startedAt: runs.startedAt,
       endedAt: runs.endedAt,
       durationMs: runs.durationMs,
       tokensIn: runs.tokensIn,
       tokensOut: runs.tokensOut,
+      provider: runs.provider,
       model: runs.model,
       correlationId: runs.correlationId,
       errorMessage: runs.errorMessage,
@@ -147,7 +176,7 @@ export async function listRecentRuns(
       eq(emittedEventsAlias.id, runs.emittedEventId),
     )
     .where(and(...whereParts))
-    .orderBy(desc(runs.startedAt))
+    .orderBy(desc(runs.queuedAt))
     .limit(opts.limit ?? 50)
     .all()
     .map((r) => ({
@@ -175,16 +204,25 @@ export async function getRun(
     .select({
       id: runs.id,
       status: runs.status,
+      sessionId: runs.sessionId,
+      agentVersionId: runs.agentVersionId,
+      draftRevisionId: runs.draftRevisionId,
+      invocationSource: runs.invocationSource,
+      definitionHash: runs.definitionHash,
+      outputValid: runs.outputValid,
+      sideEffectMode: runs.sideEffectMode,
       agentName: agents.name,
       agentTitle: agents.title,
       subject: runs.subject,
       triggerEvent: events.name,
       emittedEvent: emittedEventsAlias.name,
+      queuedAt: runs.queuedAt,
       startedAt: runs.startedAt,
       endedAt: runs.endedAt,
       durationMs: runs.durationMs,
       tokensIn: runs.tokensIn,
       tokensOut: runs.tokensOut,
+      provider: runs.provider,
       model: runs.model,
       correlationId: runs.correlationId,
       errorMessage: runs.errorMessage,
@@ -227,6 +265,8 @@ export async function listSteps(runId: string): Promise<StepRow[]> {
       startedAt: steps.startedAt,
       endedAt: steps.endedAt,
       durationMs: steps.durationMs,
+      inputRef: steps.inputRef,
+      outputRef: steps.outputRef,
       error: steps.error,
       provider: steps.provider,
       model: steps.model,
@@ -296,9 +336,7 @@ export async function listRecentEvents(
  * exact and respects test/replay semantics.
  */
 function hydrateEventConsumers(
-  rows: Array<
-    Omit<EventRow, "consumers"> & { id: string }
-  >,
+  rows: Array<Omit<EventRow, "consumers"> & { id: string }>,
 ): EventRow[] {
   if (rows.length === 0) return rows;
   const db = getDb();

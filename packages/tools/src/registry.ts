@@ -103,6 +103,10 @@ export interface ToolCatalogEntry {
   aliases?: string[];
   /** Where in the repo the implementation lives. */
   sourcePath: string;
+  /** Operator-facing side-effect classification used by Studio test runs. */
+  sideEffect?: "none" | "read" | "external" | "write";
+  /** Whether Studio may execute the real implementation outside live mode. */
+  testPolicy?: "allow" | "block";
 }
 
 interface ToolRegistration {
@@ -170,7 +174,10 @@ const REGISTRATIONS: ToolRegistration[] = [
       configSchema: ROBOHIRE_CONFIG_SCHEMA,
       configExample: { api_key_env: "TENANT_X_ROBOHIRE_KEY" },
       returnsSchema: {
-        data: { type: "object", description: "Upstream JSON, e.g. { status: 'ok' }" },
+        data: {
+          type: "object",
+          description: "Upstream JSON, e.g. { status: 'ok' }",
+        },
       },
       returnsExample: { data: { status: "ok", uptime_s: 482931 } },
       sourcePath: "packages/tools/src/robohire/health.ts",
@@ -188,7 +195,8 @@ const REGISTRATIONS: ToolRegistration[] = [
       argsSchema: {
         jd_text: {
           type: "string",
-          description: "Plain-text JD body. Provide this OR jd_url OR jd_base64.",
+          description:
+            "Plain-text JD body. Provide this OR jd_url OR jd_base64.",
         },
         jd_url: {
           type: "string",
@@ -247,7 +255,8 @@ const REGISTRATIONS: ToolRegistration[] = [
         },
         resume_url: {
           type: "string",
-          description: "Alternative to resume_base64 — wrapper fetches the URL first.",
+          description:
+            "Alternative to resume_base64 — wrapper fetches the URL first.",
         },
       },
       argsExample: {},
@@ -265,7 +274,11 @@ const REGISTRATIONS: ToolRegistration[] = [
           email: "wei.zhang@example.com",
           skills: { languages: ["TypeScript", "Go"], tools: ["React"] },
           experience: [
-            { role: "Staff Engineer", company: "AgentForge.ai", startDate: "2023" },
+            {
+              role: "Staff Engineer",
+              company: "AgentForge.ai",
+              startDate: "2023",
+            },
           ],
         },
       },
@@ -296,7 +309,8 @@ const REGISTRATIONS: ToolRegistration[] = [
         },
       },
       argsExample: {
-        resume: "Wei Zhang — Staff Engineer with 8 years backend experience ...",
+        resume:
+          "Wei Zhang — Staff Engineer with 8 years backend experience ...",
         jd: "Senior Backend Engineer — Must have Postgres OLTP expertise ...",
       },
       configSchema: ROBOHIRE_CONFIG_SCHEMA,
@@ -307,14 +321,22 @@ const REGISTRATIONS: ToolRegistration[] = [
         },
         verdict: {
           type: "string | null",
-          description: '"Strong Match" / "Moderate Match" / "Weak Match" / "Not Qualified".',
+          description:
+            '"Strong Match" / "Moderate Match" / "Weak Match" / "Not Qualified".',
         },
         hiringRecommendation: {
           type: "string | null",
-          description: '"Strongly Recommend" / "Recommend" / "Do Not Recommend".',
+          description:
+            '"Strongly Recommend" / "Recommend" / "Do Not Recommend".',
         },
-        summary: { type: "string | null", description: "One-line verdict rationale." },
-        raw: { type: "object", description: "Full upstream body for detailed breakdowns." },
+        summary: {
+          type: "string | null",
+          description: "One-line verdict rationale.",
+        },
+        raw: {
+          type: "object",
+          description: "Full upstream body for detailed breakdowns.",
+        },
       },
       returnsExample: {
         matchScore: 96,
@@ -338,7 +360,10 @@ const REGISTRATIONS: ToolRegistration[] = [
       argsSchema: {
         candidate_name: { type: "string", required: true },
         job_title: { type: "string", required: true },
-        resume: { type: "string", description: "Optional resume context for personalisation." },
+        resume: {
+          type: "string",
+          description: "Optional resume context for personalisation.",
+        },
         jd: { type: "string", description: "Optional JD context." },
       },
       argsExample: {
@@ -349,12 +374,14 @@ const REGISTRATIONS: ToolRegistration[] = [
       returnsSchema: {
         data: {
           type: "object",
-          description: "Upstream `{ subject, body, html, ... }` — exact shape varies.",
+          description:
+            "Upstream `{ subject, body, html, ... }` — exact shape varies.",
         },
       },
       returnsExample: {
         data: {
-          subject: "Interview invitation — Senior Backend Engineer @ Northwind AI",
+          subject:
+            "Interview invitation — Senior Backend Engineer @ Northwind AI",
           body: "Hi Wei,\n\nWe'd love to invite you to our 60-minute systems design ...",
         },
       },
@@ -380,7 +407,10 @@ const REGISTRATIONS: ToolRegistration[] = [
       configSchema: GOHIRE_CONFIG_SCHEMA,
       configExample: { base_url: "https://api.gohire.io/v1" },
       returnsSchema: {
-        data: { type: "object", description: "Upstream JSON, e.g. { status: 'ok' }" },
+        data: {
+          type: "object",
+          description: "Upstream JSON, e.g. { status: 'ok' }",
+        },
       },
       returnsExample: { data: { status: "ok" } },
       sourcePath: "packages/tools/src/gohire/health.ts",
@@ -398,16 +428,22 @@ const REGISTRATIONS: ToolRegistration[] = [
       argsSchema: {
         jd_text: {
           type: "string",
-          description: "Plain-text JD body. Provide this OR jd_url OR jd_base64.",
+          description:
+            "Plain-text JD body. Provide this OR jd_url OR jd_base64.",
         },
         jd_url: { type: "string", description: "Fetchable JD URL." },
         jd_base64: { type: "string", description: "Base64-encoded JD PDF." },
       },
-      argsExample: { jd_text: "## Senior Backend Engineer\n\nResponsibilities: ..." },
+      argsExample: {
+        jd_text: "## Senior Backend Engineer\n\nResponsibilities: ...",
+      },
       configSchema: GOHIRE_CONFIG_SCHEMA,
       configExample: { base_url: "https://api.gohire.io/v1" },
       returnsSchema: {
-        data: { type: "object", description: "Structured JD requirements from GoHire." },
+        data: {
+          type: "object",
+          description: "Structured JD requirements from GoHire.",
+        },
       },
       sourcePath: "packages/tools/src/gohire/parse-jd.ts",
     },
@@ -422,8 +458,14 @@ const REGISTRATIONS: ToolRegistration[] = [
       description:
         "Pass {resume_base64, filename?, mime?} OR {resume_url} OR no args (chains from the previous tool's output, e.g. fs.readFromInbox). The wrapper handles multipart encoding so the caller stays in JSON-shaped input. Returns the upstream success body verbatim under .data.",
       argsSchema: {
-        resume_base64: { type: "string", description: "Base64-encoded resume PDF." },
-        resume_url: { type: "string", description: "Fetchable resume URL (downloaded then forwarded)." },
+        resume_base64: {
+          type: "string",
+          description: "Base64-encoded resume PDF.",
+        },
+        resume_url: {
+          type: "string",
+          description: "Fetchable resume URL (downloaded then forwarded).",
+        },
         filename: { type: "string", description: "Optional upload filename." },
         mime: { type: "string", description: "Optional content-type hint." },
       },
@@ -431,7 +473,10 @@ const REGISTRATIONS: ToolRegistration[] = [
       configSchema: GOHIRE_CONFIG_SCHEMA,
       configExample: { base_url: "https://api.gohire.io/v1" },
       returnsSchema: {
-        data: { type: "object", description: "Structured candidate data from GoHire." },
+        data: {
+          type: "object",
+          description: "Structured candidate data from GoHire.",
+        },
       },
       chainsWith: ["fs.readFromInbox"],
       sourcePath: "packages/tools/src/gohire/parse-resume.ts",
@@ -447,18 +492,35 @@ const REGISTRATIONS: ToolRegistration[] = [
       description:
         "REQUIRED FIELDS: { resume: string, jd: string } — both plain-text full-body strings (NOT field references, NOT URLs). Returns the same normalised envelope as robohire's matchResumeApi — { matchScore, verdict, hiringRecommendation, summary, raw } — so a tenant can switch ATS providers without touching a downstream prompt.",
       argsSchema: {
-        resume: { type: "string", required: true, description: "Full plain-text resume body." },
-        jd: { type: "string", required: true, description: "Full plain-text job-description body." },
+        resume: {
+          type: "string",
+          required: true,
+          description: "Full plain-text resume body.",
+        },
+        jd: {
+          type: "string",
+          required: true,
+          description: "Full plain-text job-description body.",
+        },
       },
-      argsExample: { resume: "Jane Doe — Senior Backend Engineer ...", jd: "## Senior Backend Engineer ..." },
+      argsExample: {
+        resume: "Jane Doe — Senior Backend Engineer ...",
+        jd: "## Senior Backend Engineer ...",
+      },
       configSchema: GOHIRE_CONFIG_SCHEMA,
       configExample: { base_url: "https://api.gohire.io/v1" },
       returnsSchema: {
-        matchScore: { type: "number | null", description: "0-100 or null when upstream omitted." },
+        matchScore: {
+          type: "number | null",
+          description: "0-100 or null when upstream omitted.",
+        },
         verdict: { type: "string | null" },
         hiringRecommendation: { type: "string | null" },
         summary: { type: "string | null" },
-        raw: { type: "object", description: "Full upstream analysis for the detailed breakdown." },
+        raw: {
+          type: "object",
+          description: "Full upstream analysis for the detailed breakdown.",
+        },
       },
       returnsExample: {
         matchScore: 82,
@@ -480,14 +542,26 @@ const REGISTRATIONS: ToolRegistration[] = [
       description:
         "Accepts {candidate_name, job_title, ...} (passed through verbatim). Returns the upstream body under .data.",
       argsSchema: {
-        candidate_name: { type: "string", description: "Candidate display name." },
-        job_title: { type: "string", description: "Role the invitation is for." },
+        candidate_name: {
+          type: "string",
+          description: "Candidate display name.",
+        },
+        job_title: {
+          type: "string",
+          description: "Role the invitation is for.",
+        },
       },
-      argsExample: { candidate_name: "Jane Doe", job_title: "Senior Backend Engineer" },
+      argsExample: {
+        candidate_name: "Jane Doe",
+        job_title: "Senior Backend Engineer",
+      },
       configSchema: GOHIRE_CONFIG_SCHEMA,
       configExample: { base_url: "https://api.gohire.io/v1" },
       returnsSchema: {
-        data: { type: "object", description: "Invitation payload from GoHire." },
+        data: {
+          type: "object",
+          description: "Invitation payload from GoHire.",
+        },
       },
       sourcePath: "packages/tools/src/gohire/invite-candidate.ts",
     },
@@ -529,15 +603,22 @@ const REGISTRATIONS: ToolRegistration[] = [
         filename: { type: "string" },
         mime: { type: "string" },
         base64: { type: "string", description: "Base64-encoded file body." },
-        sha256: { type: "string", description: "Hex-encoded SHA-256 of the raw bytes." },
+        sha256: {
+          type: "string",
+          description: "Hex-encoded SHA-256 of the raw bytes.",
+        },
         bytes: { type: "number" },
-        path: { type: "string", description: "Absolute path the file was read from." },
+        path: {
+          type: "string",
+          description: "Absolute path the file was read from.",
+        },
       },
       returnsExample: {
         filename: "wei-zhang.pdf",
         mime: "application/pdf",
         base64: "JVBERi0xLjQK...",
-        sha256: "424ed41387578546f86a4774ce597cc06dd859a1cdf17a353a016120a727b9b9",
+        sha256:
+          "424ed41387578546f86a4774ce597cc06dd859a1cdf17a353a016120a727b9b9",
         bytes: 3057,
         path: "/abs/data/resumes/northwind/inbox/wei-zhang.pdf",
       },
@@ -563,10 +644,14 @@ const REGISTRATIONS: ToolRegistration[] = [
         },
         title: {
           type: "string",
-          description: "Rendered as `# <title>` at the top. Aliases: `jd_title`.",
+          description:
+            "Rendered as `# <title>` at the top. Aliases: `jd_title`.",
         },
       },
-      argsExample: { text: "## Job description\n\nResponsibilities:\n- ...", title: "Senior Backend Engineer" },
+      argsExample: {
+        text: "## Job description\n\nResponsibilities:\n- ...",
+        title: "Senior Backend Engineer",
+      },
       configSchema: {
         subdir: { type: "string", default: "archive" },
         id_prefix: { type: "string", default: "doc" },
@@ -607,7 +692,8 @@ const REGISTRATIONS: ToolRegistration[] = [
         },
         title: {
           type: "string",
-          description: "Used in the auto-wrapped <title>. Aliases: `report_title`.",
+          description:
+            "Used in the auto-wrapped <title>. Aliases: `report_title`.",
         },
       },
       argsExample: {
@@ -642,7 +728,7 @@ const REGISTRATIONS: ToolRegistration[] = [
       summary:
         "Append a line to data/<subdir>/<tenant>/<filename>. Pass { line } verbatim or { data } for auto-formatted k=v.",
       description:
-        "Use as a `type: \"tool\"` step at the end of a workflow leg to drop a grep-friendly trace of the upstream event. The auto-format mode (any non-empty arg object becomes `key=value  key=value`) means an agent can pipe a payload straight in without quoting.",
+        'Use as a `type: "tool"` step at the end of a workflow leg to drop a grep-friendly trace of the upstream event. The auto-format mode (any non-empty arg object becomes `key=value  key=value`) means an agent can pipe a payload straight in without quoting.',
       argsSchema: {
         line: {
           type: "string",
@@ -654,7 +740,13 @@ const REGISTRATIONS: ToolRegistration[] = [
             "Auto-formatted as `key=value  key=value`. Any non-empty arg object also triggers auto-format.",
         },
       },
-      argsExample: { data: { event: "AGENT_TEST1_DONE", agent: "agent-test2", subject: "REQ-123" } },
+      argsExample: {
+        data: {
+          event: "AGENT_TEST1_DONE",
+          agent: "agent-test2",
+          subject: "REQ-123",
+        },
+      },
       configSchema: {
         subdir: { type: "string", default: "logs" },
         filename: { type: "string", default: "workflow.log" },
@@ -666,9 +758,15 @@ const REGISTRATIONS: ToolRegistration[] = [
       },
       configExample: { subdir: "logs", filename: "workflow-test1.log" },
       returnsSchema: {
-        logFile: { type: "string", description: "Absolute path of the log file." },
+        logFile: {
+          type: "string",
+          description: "Absolute path of the log file.",
+        },
         bytesAppended: { type: "number" },
-        line: { type: "string", description: "The line that was written (trimmed)." },
+        line: {
+          type: "string",
+          description: "The line that was written (trimmed).",
+        },
       },
       returnsExample: {
         logFile: "/abs/data/logs/tenant-test1/workflow-test1.log",
@@ -763,7 +861,8 @@ const REGISTRATIONS: ToolRegistration[] = [
         headers: { type: "Record<string,string>" },
         body: {
           type: "unknown",
-          description: "Parsed JSON when Content-Type indicates json; else raw text.",
+          description:
+            "Parsed JSON when Content-Type indicates json; else raw text.",
         },
       },
       returnsExample: {
@@ -785,7 +884,7 @@ const REGISTRATIONS: ToolRegistration[] = [
       summary:
         "Context-introspection smoke test. Returns the ToolContext snapshot so the operator can verify manifest wiring.",
       description:
-        "Drop `{ \"name\": \"meta.ping\" }` into a new tenant's first agent to confirm Inngest dispatch → tenant resolver → tool handler is wired. Also useful for debugging ctx.subject / ctx.lastResult propagation when a downstream tool isn't seeing what you expect.",
+        'Drop `{ "name": "meta.ping" }` into a new tenant\'s first agent to confirm Inngest dispatch → tenant resolver → tool handler is wired. Also useful for debugging ctx.subject / ctx.lastResult propagation when a downstream tool isn\'t seeing what you expect.',
       argsSchema: {},
       argsExample: {},
       configSchema: {},
@@ -842,6 +941,42 @@ function buildRegistry(regs: ToolRegistration[]): Map<string, ToolDescriptor> {
 export const globalToolRegistry: ReadonlyMap<string, ToolDescriptor> =
   buildRegistry(REGISTRATIONS);
 
+const TEST_BLOCKED_TOOLS = new Set([
+  "inviteCandidateApi",
+  "gohireInviteCandidateApi",
+  "fs.writeMarkdownToArchive",
+  "fs.writeHtmlToArchive",
+  "fs.appendToLog",
+  "http.fetch",
+]);
+
+function effectiveCatalogMetadata(catalog: ToolCatalogEntry): ToolCatalogEntry {
+  const testPolicy =
+    catalog.testPolicy ??
+    (TEST_BLOCKED_TOOLS.has(catalog.name) ? "block" : "allow");
+  let sideEffect = catalog.sideEffect;
+  if (!sideEffect) {
+    if (catalog.name === "meta.ping") sideEffect = "none";
+    else if (catalog.name === "fs.readFromInbox") sideEffect = "read";
+    else if (testPolicy === "block") sideEffect = "write";
+    else sideEffect = "external";
+  }
+  return { ...catalog, sideEffect, testPolicy };
+}
+
+/** Resolve canonical catalog policy from either a canonical name or alias. */
+export function getGlobalToolCatalogEntry(
+  name: string,
+): ToolCatalogEntry | undefined {
+  const registration = REGISTRATIONS.find(
+    ({ catalog }) =>
+      catalog.name === name || (catalog.aliases ?? []).includes(name),
+  );
+  return registration
+    ? effectiveCatalogMetadata(registration.catalog)
+    : undefined;
+}
+
 /**
  * Catalog snapshot consumed by GET /v1/tools and the Tools view in the
  * portal. Stable across boots; no I/O. Each entry includes the canonical
@@ -849,7 +984,9 @@ export const globalToolRegistry: ReadonlyMap<string, ToolDescriptor> =
  * can paste straight into a manifest's `tool_use[]`.
  */
 export function listGlobalTools(): ToolCatalogEntry[] {
-  return REGISTRATIONS.map(({ catalog }) => ({ ...catalog })).sort((a, b) => {
+  return REGISTRATIONS.map(({ catalog }) =>
+    effectiveCatalogMetadata(catalog),
+  ).sort((a, b) => {
     if (a.category !== b.category) return a.category.localeCompare(b.category);
     return a.name.localeCompare(b.name);
   });
