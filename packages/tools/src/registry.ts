@@ -787,7 +787,7 @@ const REGISTRATIONS: ToolRegistration[] = [
       summary:
         "Generic JSON HTTP client. Per-tenant base_url + auth + allow-lists via config; per-call { method, path, body, query, headers }.",
       description:
-        "Returns `{ status, ok, headers, body }`. 4xx/5xx return with `ok:false` (does NOT throw) so the LLM can self-correct from the error body. Auth schemes: bearer (default), header (X-API-Key-style), query (?api_key=), none. Optional `allow_methods` and `allow_host` give the operator a tenant-scoped safety perimeter — useful when you want an agent to talk to one specific vendor and nothing else.",
+        "Returns `{ status, ok, headers, body }`. 4xx/5xx return with `ok:false` so the LLM can self-correct. The server must authorize `base_url`; `allow_host` must pin its exact public host; per-call paths stay inside that origin/base path. DNS answers and redirects are revalidated and pinned. Authentication comes only from a populated tenant-owned `api_key_env` (bearer, named header, or query), never literal model input.",
       argsSchema: {
         method: {
           type: "'GET'|'POST'|'PUT'|'PATCH'|'DELETE'",
@@ -797,11 +797,12 @@ const REGISTRATIONS: ToolRegistration[] = [
           type: "string",
           required: true,
           description:
-            "Joined to config.base_url. Absolute URLs (http://…) are used verbatim.",
+            "Relative path joined inside config.base_url. Absolute URLs, protocol-relative values, fragments, and parent-path escapes are rejected.",
         },
         query: {
           type: "Record<string,string|number|boolean>",
-          description: "Appended as URL search params.",
+          description:
+            "Appended as URL search params. Credential-bearing names are rejected.",
         },
         body: {
           type: "unknown",
@@ -810,7 +811,8 @@ const REGISTRATIONS: ToolRegistration[] = [
         },
         headers: {
           type: "Record<string,string>",
-          description: "Merged on top of config.default_headers.",
+          description:
+            "Merged on top of config.default_headers. Auth, cookie, host, and connection-controlled names are rejected.",
         },
       },
       argsExample: {
@@ -821,18 +823,25 @@ const REGISTRATIONS: ToolRegistration[] = [
       configSchema: {
         base_url: {
           type: "string",
-          description: "Prepended to per-call `path` when not absolute.",
+          required: true,
+          description:
+            "Public HTTPS origin/base path authorized by AGENTIC_WORKFLOW_ENDPOINT_ALLOWLIST. Development localhost additionally requires AGENTIC_FETCH_ALLOW_HTTP_LOCALHOST=1.",
         },
         timeout_ms: { type: "number", default: 30000 },
-        default_headers: { type: "Record<string,string>" },
-        api_key: {
-          type: "string",
-          description: "Literal key — prefer api_key_env for tenant isolation.",
+        default_headers: {
+          type: "Record<string,string>",
+          description:
+            "Non-sensitive defaults only; credentials and connection-controlled headers are rejected.",
         },
-        api_key_env: { type: "string" },
+        api_key_env: {
+          type: "string",
+          description:
+            "Populated tenant-owned environment variable name (or an exact server-shared reference). Missing/empty values fail closed.",
+        },
         auth_scheme: {
           type: "'bearer'|'header'|'query'|'none'",
-          default: "bearer",
+          description:
+            "Defaults to bearer when api_key_env is configured, otherwise none.",
         },
         auth_header_name: { type: "string", default: "X-API-Key" },
         auth_query_name: { type: "string", default: "api_key" },
@@ -842,7 +851,9 @@ const REGISTRATIONS: ToolRegistration[] = [
         },
         allow_host: {
           type: "string|string[]",
-          description: "Safety allow-list. Default: any host.",
+          required: true,
+          description:
+            "Exact base_url hostname only; schemes, ports, paths, and wildcards are rejected.",
         },
       },
       configExample: {

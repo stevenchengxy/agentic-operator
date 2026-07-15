@@ -28,9 +28,11 @@ import { auditRoutes } from "./routes/v1/audit";
 import { streamRoutes } from "./routes/v1/stream";
 import { tenantCodeRoutes } from "./routes/v1/tenant-code";
 import { workflowRoutes } from "./routes/v1/workflow";
+import { workflowAuthoringRoutes } from "./routes/v1/workflow-authoring";
 import { demoRoutes } from "./routes/v1/demo";
 import { toolsRoutes } from "./routes/v1/tools";
 import { integrationsRoutes } from "./routes/v1/integrations";
+import { apiTokensRoutes } from "./routes/v1/api-tokens";
 import { agentStudioRoutes } from "./routes/v1/agent-studio";
 import { stopDemoRunner } from "./services/demo-runner";
 import { inngestRoute } from "./routes/inngest";
@@ -155,6 +157,7 @@ export async function build() {
       await v1.register(streamRoutes);
       await v1.register(tenantCodeRoutes);
       await v1.register(workflowRoutes);
+      await v1.register(workflowAuthoringRoutes);
       // Demo-mode runtime toggle — POST /v1/demo/start | /v1/demo/stop |
       // GET /v1/demo/status. Lets the operator flip the synthetic-traffic
       // loop on/off without an api restart.
@@ -165,6 +168,10 @@ export async function build() {
       // External-service integrations (Settings → Integrations). GoHire ATS
       // base URL + encrypted API key, read by the GoHire tool family.
       await v1.register(integrationsRoutes);
+      // Workspace API-token lifecycle for Settings → API tokens. Secrets are
+      // returned once on create/rotate and stored only as bearer-compatible
+      // SHA-256 hashes.
+      await v1.register(apiTokensRoutes);
     },
     { prefix: "/v1" },
   );

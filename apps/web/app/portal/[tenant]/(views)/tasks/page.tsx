@@ -18,14 +18,25 @@ import {
   Button,
   Empty,
   Icon,
-  Kbd,
   Panel,
   ViewHeader,
   FilterChip,
 } from "@/app/portal/components";
 import { fmtAgo } from "@/app/portal/lib/format";
-import { useTasks, type TaskRow as ApiTaskRow } from "@/lib/hooks/useTasks";
+import {
+  useResolveTask,
+  useTasks,
+  type TaskRow as ApiTaskRow,
+} from "@/lib/hooks/useTasks";
 import { useDag, type DagAgent } from "@/lib/hooks/useAgents";
+import { TaskFormFields } from "@/app/portal/components/tasks/TaskFormFields";
+import {
+  buildTaskFormDefinition,
+  buildTaskResolutionPayload,
+  initialTaskFormValues,
+  type TaskDecisionOption,
+  type TaskFormRawValue,
+} from "@/app/portal/components/tasks/task-form";
 
 // Local narrow types for the task records the page renders.
 interface TaskItem {
@@ -37,21 +48,47 @@ interface TaskItem {
   createdAt: number | null;
   awaitingFrom: string | null;
   payload: Record<string, unknown>;
+  formSchema: unknown;
+  preparedContext: unknown;
+  description: string | null;
+}
+
+const LEGACY_TASK_TYPES = new Set([
+  "jdReview",
+  "packageReview",
+  "resumeFix",
+  "requirementReClarification",
+  "packageSupplement",
+  "manualPublish",
+]);
+
+function payloadString(
+  payload: Record<string, unknown>,
+  key: string,
+): string | null {
+  const value = payload[key];
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 function fromApi(t: ApiTaskRow): TaskItem {
   const createdAt = t.createdAt ? Date.parse(t.createdAt) : null;
   const payload =
     (t.payloadJson as Record<string, unknown> | null | undefined) ?? {};
+  const priority = t.priority === "medium" ? "med" : (t.priority ?? "med");
   return {
     id: t.id,
     type: t.type,
     title: t.title,
-    priority: t.priority ?? "med",
+    priority,
     status: t.status,
     createdAt: Number.isFinite(createdAt) ? createdAt : null,
-    awaitingFrom: t.awaitingRole,
+    // Generated runtime tasks carry this on payloadJson today. Prefer the
+    // indexed DB column once populated, but never lose the authored role.
+    awaitingFrom: t.awaitingRole ?? payloadString(payload, "awaitingRole"),
     payload,
+    formSchema: payload.formSchema ?? null,
+    preparedContext: payload.preparedContext ?? null,
+    description: payloadString(payload, "description"),
   };
 }
 
@@ -65,7 +102,7 @@ export default function TasksPage() {
   const dagAgents = dagQuery.data?.agents ?? [];
 
   const tasks = useMemo<TaskItem[]>(
-    () => apiTasks.map(fromApi),
+    () => apiTasks.filter((task) => task.status === "open").map(fromApi),
     [apiTasks],
   );
 
@@ -78,7 +115,8 @@ export default function TasksPage() {
   );
 
   const filtered = useMemo(
-    () => tasks.filter((t) => (filter === "all" ? true : t.priority === filter)),
+    () =>
+      tasks.filter((t) => (filter === "all" ? true : t.priority === filter)),
     [tasks, filter],
   );
 
@@ -134,8 +172,16 @@ export default function TasksPage() {
               <Empty title="Loading tasks…" hint="" />
             ) : filtered.length === 0 ? (
               <Empty
-                title={tasks.length === 0 ? "No human tasks yet" : "No tasks at this priority"}
-                hint={tasks.length === 0 ? "Tasks appear here when an agent emits a HUMAN_TASK event." : ""}
+                title={
+                  tasks.length === 0
+                    ? "No human tasks yet"
+                    : "No tasks at this priority"
+                }
+                hint={
+                  tasks.length === 0
+                    ? "Tasks appear here when an agent emits a HUMAN_TASK event."
+                    : ""
+                }
               />
             ) : (
               filtered.map((t) => (
@@ -152,7 +198,7 @@ export default function TasksPage() {
 
         <div style={{ overflow: "auto", minHeight: 0 }}>
           {selected ? (
-            <TaskDetail task={selected} agents={dagAgents} />
+            <TaskDetail key={selected.id} task={selected} agents={dagAgents} />
           ) : (
             <Empty title="Inbox zero" hint="No pending human tasks" />
           )}
@@ -181,7 +227,9 @@ function TaskRow({
         padding: "12px 14px",
         borderBottom: "1px solid var(--border)",
         background: active ? "var(--panel-2)" : "transparent",
-        borderLeft: active ? "2px solid var(--signal)" : "2px solid transparent",
+        borderLeft: active
+          ? "2px solid var(--signal)"
+          : "2px solid transparent",
       }}
     >
       <div
@@ -234,20 +282,14 @@ function TaskRow({
       </div>
       {task.awaitingFrom ? (
         <div style={{ fontSize: 11, color: "var(--text-3)" }}>
-          {task.awaitingFrom}
+          Awaiting {task.awaitingFrom}
         </div>
       ) : null}
     </button>
   );
 }
 
-function TaskDetail({
-  task,
-  agents,
-}: {
-  task: TaskItem;
-  agents: DagAgent[];
-}) {
+function TaskDetail({ task, agents }: { task: TaskItem; agents: DagAgent[] }) {
   // /v1/tasks payload doesn't carry an agent reference today; surface the
   // closest match by `awaitingRole` (if a Human agent with that title
   // exists). Otherwise the panel falls back to the literal role string.
@@ -297,10 +339,13 @@ function TaskDetail({
           {task.title}
         </h2>
         <div style={{ fontSize: 12.5, color: "var(--text-2)" }}>
-          Pending {agent?.title ?? task.awaitingFrom ?? "operator"} · awaiting{" "}
+          Awaiting{" "}
           <span style={{ color: "var(--text)" }}>
             {task.awaitingFrom ?? "operator"}
           </span>
+          {agent && agent.title !== task.awaitingFrom
+            ? ` · workflow step ${agent.title}`
+            : null}
         </div>
       </header>
 
@@ -309,9 +354,7 @@ function TaskDetail({
       {task.type === "packageReview" && (
         <PackagePayload payload={task.payload} />
       )}
-      {task.type === "resumeFix" && (
-        <ResumeFixPayload payload={task.payload} />
-      )}
+      {task.type === "resumeFix" && <ResumeFixPayload payload={task.payload} />}
       {task.type === "requirementReClarification" && (
         <ClarificationPayload payload={task.payload} />
       )}
@@ -322,48 +365,11 @@ function TaskDetail({
         <ManualPublishPayload payload={task.payload} />
       )}
 
-      {/* Decision actions */}
-      <div
-        style={{
-          marginTop: 20,
-          padding: 16,
-          background: "var(--panel)",
-          border: "1px solid var(--border)",
-          borderRadius: 6,
-        }}
-      >
-        <div
-          style={{
-            fontSize: 10.5,
-            fontFamily: "var(--mono)",
-            textTransform: "uppercase",
-            color: "var(--text-3)",
-            letterSpacing: "0.08em",
-            marginBottom: 10,
-          }}
-        >
-          Decide
-        </div>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <Button tone="primary" icon="check">
-            {decisionLabel(task.type, "primary")}
-          </Button>
-          {decisionLabel(task.type, "secondary") && (
-            <Button>{decisionLabel(task.type, "secondary")}</Button>
-          )}
-          <Button tone="ghost">Snooze</Button>
-          <span
-            style={{
-              marginLeft: "auto",
-              fontSize: 11,
-              color: "var(--text-3)",
-            }}
-          >
-            <Kbd>⌘</Kbd> <Kbd>↵</Kbd> approve · <Kbd>⌘</Kbd> <Kbd>R</Kbd>{" "}
-            reject
-          </span>
-        </div>
-      </div>
+      {!LEGACY_TASK_TYPES.has(task.type) || task.formSchema ? (
+        <GenericTaskContext task={task} />
+      ) : null}
+
+      <TaskDecisionPanel task={task} />
 
       {/* Run context */}
       <Panel title="Workflow context" padded style={{ marginTop: 16 }}>
@@ -375,7 +381,9 @@ function TaskDetail({
             fontSize: 12,
           }}
         >
-          <span style={{ color: "var(--text-3)" }}>Will emit on approve:</span>
+          <span style={{ color: "var(--text-3)" }}>
+            Will emit after resolution:
+          </span>
           {agent?.emits?.map((e) => (
             <Badge key={e} tone="green">
               {e}
@@ -396,6 +404,192 @@ function TaskDetail({
           })()}
         </div>
       </Panel>
+    </div>
+  );
+}
+
+function GenericTaskContext({ task }: { task: TaskItem }) {
+  const agentName = payloadString(task.payload, "agentName");
+  const actionName = payloadString(task.payload, "actionName");
+  const hasContext =
+    task.preparedContext !== null && task.preparedContext !== undefined;
+  return (
+    <Panel
+      title="Decision context"
+      subtitle={actionName ?? task.type}
+      padded
+      style={{ marginTop: 12 }}
+    >
+      {task.description ? (
+        <p
+          style={{
+            margin: "0 0 12px",
+            color: "var(--text-2)",
+            fontSize: 12.5,
+            lineHeight: 1.55,
+          }}
+        >
+          {task.description}
+        </p>
+      ) : null}
+      {agentName ? (
+        <div style={{ marginBottom: 10, fontSize: 11, color: "var(--text-3)" }}>
+          Created by <span className="mono">{agentName}</span>
+        </div>
+      ) : null}
+      {hasContext ? (
+        <pre
+          aria-label="Prepared decision context"
+          style={{
+            margin: 0,
+            maxHeight: 320,
+            overflow: "auto",
+            padding: 12,
+            borderRadius: 4,
+            border: "1px solid var(--border)",
+            background: "var(--panel-2)",
+            color: "var(--text-2)",
+            fontFamily: "var(--mono)",
+            fontSize: 11.5,
+            whiteSpace: "pre-wrap",
+          }}
+        >
+          {typeof task.preparedContext === "string"
+            ? task.preparedContext
+            : JSON.stringify(task.preparedContext, null, 2)}
+        </pre>
+      ) : (
+        <div style={{ color: "var(--text-3)", fontSize: 12 }}>
+          No prepared context was supplied by the preceding step.
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+function TaskDecisionPanel({ task }: { task: TaskItem }) {
+  const definition = useMemo(
+    () => buildTaskFormDefinition(task.formSchema),
+    [task.formSchema],
+  );
+  const [values, setValues] = useState<Record<string, TaskFormRawValue>>(() =>
+    initialTaskFormValues(definition),
+  );
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const resolveTask = useResolveTask();
+
+  function changeField(name: string, value: TaskFormRawValue) {
+    setValues((current) => ({ ...current, [name]: value }));
+    setErrors((current) => {
+      if (!current[name]) return current;
+      const next = { ...current };
+      delete next[name];
+      return next;
+    });
+    if (resolveTask.error) resolveTask.reset();
+  }
+
+  async function submit(option: TaskDecisionOption) {
+    const result = buildTaskResolutionPayload(definition, values, option);
+    if (!result.ok) {
+      setErrors(result.errors);
+      return;
+    }
+    setErrors({});
+    try {
+      await resolveTask.mutateAsync({
+        id: task.id,
+        decision: option.decision,
+        payload: result.payload,
+      });
+    } catch {
+      // React Query exposes the request error below and retains the form so
+      // the operator can correct or retry without re-entering their values.
+    }
+  }
+
+  return (
+    <div
+      style={{
+        marginTop: 20,
+        padding: 16,
+        background: "var(--panel)",
+        border: "1px solid var(--border)",
+        borderRadius: 6,
+      }}
+    >
+      <div
+        style={{
+          fontSize: 10.5,
+          fontFamily: "var(--mono)",
+          textTransform: "uppercase",
+          color: "var(--text-3)",
+          letterSpacing: "0.08em",
+          marginBottom: 10,
+        }}
+      >
+        Operator decision
+      </div>
+      <TaskFormFields
+        definition={definition}
+        values={values}
+        errors={errors}
+        disabled={resolveTask.isPending}
+        onChange={changeField}
+      />
+      <div
+        style={{
+          display: "flex",
+          gap: 8,
+          alignItems: "center",
+          flexWrap: "wrap",
+        }}
+      >
+        {definition.decisions.map((option) => (
+          <Button
+            key={`${option.decision}:${option.formValue}`}
+            tone={
+              option.decision === "approve"
+                ? "primary"
+                : option.decision === "reject"
+                  ? "danger"
+                  : "default"
+            }
+            icon={
+              option.decision === "approve"
+                ? "check"
+                : option.decision === "reject"
+                  ? "x"
+                  : undefined
+            }
+            disabled={resolveTask.isPending}
+            onClick={() => void submit(option)}
+          >
+            {task.formSchema
+              ? option.label
+              : option.decision === "approve"
+                ? decisionLabel(task.type, "primary")
+                : (decisionLabel(task.type, "secondary") ?? option.label)}
+          </Button>
+        ))}
+        <span
+          style={{ marginLeft: "auto", fontSize: 11, color: "var(--text-3)" }}
+        >
+          {resolveTask.isPending
+            ? "Submitting decision…"
+            : "The submitted form becomes the workflow's manual-step output."}
+        </span>
+      </div>
+      {resolveTask.error ? (
+        <div
+          role="alert"
+          style={{ marginTop: 10, color: "var(--red)", fontSize: 11.5 }}
+        >
+          {resolveTask.error instanceof Error
+            ? resolveTask.error.message
+            : "Failed to resolve task."}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -423,11 +617,7 @@ function decisionLabel(
 
 // ─── Payload renderers (6 of 6) ──────────────────────────────────────────────
 
-function JDReviewPayload({
-  payload,
-}: {
-  payload: Record<string, unknown>;
-}) {
+function JDReviewPayload({ payload }: { payload: Record<string, unknown> }) {
   const p = payload as {
     title?: string;
     level?: string;
@@ -538,9 +728,9 @@ function JDReviewPayload({
           >
             <strong style={{ color: "var(--amber)" }}>Heads up · </strong>
             <span style={{ color: "var(--text-2)" }}>
-              This req has been re-opened twice in 2026 Q1. Consider
-              tightening &lsquo;distributed systems fundamentals&rsquo; before
-              posting to BOSS.
+              This req has been re-opened twice in 2026 Q1. Consider tightening
+              &lsquo;distributed systems fundamentals&rsquo; before posting to
+              BOSS.
             </span>
           </div>
         </div>
@@ -549,11 +739,7 @@ function JDReviewPayload({
   );
 }
 
-function PackagePayload({
-  payload,
-}: {
-  payload: Record<string, unknown>;
-}) {
+function PackagePayload({ payload }: { payload: Record<string, unknown> }) {
   const p = payload as {
     candidate?: string;
     matchScore?: number;
@@ -571,9 +757,7 @@ function PackagePayload({
       <Panel
         title="Candidate package"
         padded
-        action={
-          <Badge tone="signal">SCORE {p.matchScore ?? "—"}</Badge>
-        }
+        action={<Badge tone="signal">SCORE {p.matchScore ?? "—"}</Badge>}
       >
         <div
           style={{
@@ -642,11 +826,7 @@ function PackagePayload({
   );
 }
 
-function ResumeFixPayload({
-  payload,
-}: {
-  payload: Record<string, unknown>;
-}) {
+function ResumeFixPayload({ payload }: { payload: Record<string, unknown> }) {
   const p = payload as { file?: string; error?: string };
   return (
     <Panel
@@ -655,7 +835,10 @@ function ResumeFixPayload({
       action={<Badge tone="red">PARSE FAIL</Badge>}
     >
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-        <KV label="File" value={<span className="mono">{p.file ?? "—"}</span>} />
+        <KV
+          label="File"
+          value={<span className="mono">{p.file ?? "—"}</span>}
+        />
         <div>
           <div
             className="mono"
@@ -741,11 +924,7 @@ function ClarificationPayload({
   );
 }
 
-function SupplementPayload({
-  payload,
-}: {
-  payload: Record<string, unknown>;
-}) {
+function SupplementPayload({ payload }: { payload: Record<string, unknown> }) {
   const p = payload as { missing?: string[] };
   return (
     <Panel title="Items requested" padded>
@@ -763,11 +942,7 @@ function SupplementPayload({
               borderRadius: 4,
             }}
           >
-            <Icon
-              name="upload"
-              size={12}
-              style={{ color: "var(--text-3)" }}
-            />
+            <Icon name="upload" size={12} style={{ color: "var(--text-3)" }} />
             <span
               className="mono"
               style={{ fontSize: 12, color: "var(--text)" }}
@@ -822,13 +997,7 @@ function ManualPublishPayload({
 
 // ─── shared bits ─────────────────────────────────────────────────────────────
 
-function SectionList({
-  label,
-  items,
-}: {
-  label: string;
-  items: string[];
-}) {
+function SectionList({ label, items }: { label: string; items: string[] }) {
   return (
     <div>
       <div

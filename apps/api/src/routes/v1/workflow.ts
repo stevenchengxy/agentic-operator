@@ -24,9 +24,10 @@ import {
   CURRENT_SCHEMA_VERSION,
   buildWorkflowJsonSchema,
 } from "@agentic/runtime";
-import { requireAuth } from "../../plugins/auth";
+import { requireAuth, requireWorkspaceWriter } from "../../plugins/auth";
 import { writeAudit } from "../../plugins/audit";
 import { reregisterInngest } from "../../services/inngest-registry";
+import { findWorkflowSecretPolicyIssues } from "../../services/workflow-secret-policy";
 
 /**
  * Cache the JSON Schema build: it's pure and depends only on the Zod
@@ -54,9 +55,9 @@ function modelsRoot(): string {
  * E.g. for slug "raas" this returns [{ folder: "RAAS-v1", version: 1, ... }, …]
  * sorted by version descending so element [0] is the active manifest dir.
  */
-async function findTenantDirs(slug: string): Promise<
-  Array<{ folder: string; version: number; absDir: string }>
-> {
+async function findTenantDirs(
+  slug: string,
+): Promise<Array<{ folder: string; version: number; absDir: string }>> {
   const root = modelsRoot();
   let entries: string[];
   try {
@@ -64,7 +65,8 @@ async function findTenantDirs(slug: string): Promise<
   } catch {
     return [];
   }
-  const matches: Array<{ folder: string; version: number; absDir: string }> = [];
+  const matches: Array<{ folder: string; version: number; absDir: string }> =
+    [];
   for (const folder of entries) {
     if (folder.startsWith(".")) continue;
     const abs = path.join(root, folder);
@@ -89,7 +91,9 @@ async function findTenantDirs(slug: string): Promise<
  * exists we write `workflow_v4.json`. Bare `workflow.json` (no suffix) is
  * treated as v1.
  */
-async function pickNextWorkflowFilename(dir: string): Promise<{ filename: string; nextVersion: number }> {
+async function pickNextWorkflowFilename(
+  dir: string,
+): Promise<{ filename: string; nextVersion: number }> {
   let files: string[] = [];
   try {
     files = await readdir(dir);
@@ -143,7 +147,9 @@ function reorderAgent(agent: Record<string, unknown>): Record<string, unknown> {
   return out;
 }
 
-function serializeManifest(manifest: ReadonlyArray<Record<string, unknown>>): string {
+function serializeManifest(
+  manifest: ReadonlyArray<Record<string, unknown>>,
+): string {
   const ordered = manifest.map(reorderAgent);
   return JSON.stringify(ordered, null, 2) + "\n";
 }
@@ -169,11 +175,19 @@ export async function workflowRoutes(app: FastifyInstance) {
       const auth = requireAuth(req);
       const slug = req.params.slug;
       if (auth.tenantSlug !== slug) {
-        return reply.fail("forbidden", "cannot read another tenant's workflow", 403);
+        return reply.fail(
+          "forbidden",
+          "cannot read another tenant's workflow",
+          403,
+        );
       }
       const dirs = await findTenantDirs(slug);
       if (dirs.length === 0) {
-        return reply.fail("not_found", `no models directory for tenant ${slug}`, 404);
+        return reply.fail(
+          "not_found",
+          `no models directory for tenant ${slug}`,
+          404,
+        );
       }
       const active = dirs[0]!;
       const files = await readdir(active.absDir);
@@ -189,7 +203,11 @@ export async function workflowRoutes(app: FastifyInstance) {
         .sort((a, b) => b.version - a.version);
       const top = sortedByVersion[0];
       if (!top) {
-        return reply.fail("not_found", `no workflow.json in ${active.folder}`, 404);
+        return reply.fail(
+          "not_found",
+          `no workflow.json in ${active.folder}`,
+          404,
+        );
       }
       const raw = JSON.parse(
         await readFile(path.join(active.absDir, top.file), "utf8"),
@@ -225,10 +243,14 @@ export async function workflowRoutes(app: FastifyInstance) {
       target_file?: string;
     };
   }>("/tenants/:slug/workflow", async (req, reply) => {
-    const auth = requireAuth(req);
+    const auth = requireWorkspaceWriter(req);
     const slug = req.params.slug;
     if (auth.tenantSlug !== slug) {
-      return reply.fail("forbidden", "cannot write another tenant's workflow", 403);
+      return reply.fail(
+        "forbidden",
+        "cannot write another tenant's workflow",
+        403,
+      );
     }
     if (!req.body || typeof req.body !== "object") {
       return reply.fail(
@@ -245,12 +267,40 @@ export async function workflowRoutes(app: FastifyInstance) {
         .slice(0, 6)
         .map((i) => `${i.path.join(".")}: ${i.message}`)
         .join("; ");
-      return reply.fail("invalid_manifest", "manifest failed Zod validation", 400, hint);
+      return reply.fail(
+        "invalid_manifest",
+        "manifest failed Zod validation",
+        400,
+        hint,
+      );
+    }
+
+    // This legacy editor route writes directly to the live models directory,
+    // bypassing the immutable authoring/import services. Enforce the same
+    // tenant-scoped credential and endpoint policy before resolving a target
+    // file so a rejected payload cannot create or overwrite any artifact.
+    const policyIssues = findWorkflowSecretPolicyIssues(
+      parsed.data,
+      undefined,
+      { tenantSlug: slug },
+    );
+    if (policyIssues.length > 0) {
+      return reply.fail(
+        "invalid_workflow_manifest",
+        "workflow contains forbidden credentials, secret references, or endpoints",
+        400,
+        undefined,
+        { issues: policyIssues },
+      );
     }
 
     const dirs = await findTenantDirs(slug);
     if (dirs.length === 0) {
-      return reply.fail("not_found", `no models directory for tenant ${slug}`, 404);
+      return reply.fail(
+        "not_found",
+        `no models directory for tenant ${slug}`,
+        404,
+      );
     }
     const active = dirs[0]!;
 
@@ -278,7 +328,9 @@ export async function workflowRoutes(app: FastifyInstance) {
       }
       // Verify the file already exists in the tenant dir — overwrite is
       // only for files we previously served. New files must use new_version.
-      const existing: string[] = await readdir(active.absDir).catch(() => [] as string[]);
+      const existing: string[] = await readdir(active.absDir).catch(
+        () => [] as string[],
+      );
       if (!existing.includes(targetFile)) {
         return reply.fail(
           "not_found",

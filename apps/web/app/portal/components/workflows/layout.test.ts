@@ -11,6 +11,8 @@ import {
   CANVAS_W,
   COL_W,
   LAYOUT,
+  MAX_CANVAS_H,
+  MAX_CANVAS_W,
   MAX_LANE,
   MAX_STAGE,
   NODE_H,
@@ -19,7 +21,9 @@ import {
   PAD_Y,
   ROW_H,
   autoPackLayout,
+  clampCanvasPosition,
   colorVar,
+  dynamicCanvasSize,
   getLayout,
   nodePos,
 } from "./layout";
@@ -65,9 +69,15 @@ describe("workflows/layout LAYOUT map", () => {
 
   it("computes pixel positions deterministically", () => {
     expect(nodePos("1-1")).toEqual({ x: 30, y: 30 });
-    expect(nodePos("16")).toEqual({ x: PAD_X + 7 * COL_W, y: PAD_Y + 1 * ROW_H });
+    expect(nodePos("16")).toEqual({
+      x: PAD_X + 7 * COL_W,
+      y: PAD_Y + 1 * ROW_H,
+    });
     // Bottom-right of the layout
-    expect(nodePos("12")).toEqual({ x: PAD_X + 5 * COL_W, y: PAD_Y + 4 * ROW_H });
+    expect(nodePos("12")).toEqual({
+      x: PAD_X + 5 * COL_W,
+      y: PAD_Y + 4 * ROW_H,
+    });
   });
 
   it("returns origin for unknown ids", () => {
@@ -185,6 +195,46 @@ describe("autoPackLayout — fallback for non-RAAS tenants", () => {
     expect(r1["a"]).toEqual({ stage: 0, lane: 0 });
     expect(r1["b"]).toEqual({ stage: 0, lane: 1 });
     expect(r1["c"]).toEqual({ stage: 0, lane: 2 });
+  });
+});
+
+describe("dynamic workflow canvas", () => {
+  it("preserves the legacy minimum for the hand-tuned RAAS layout", () => {
+    const positions = Object.keys(LAYOUT).map((id) => nodePos(id));
+    expect(dynamicCanvasSize(positions)).toEqual({
+      width: CANVAS_W,
+      height: CANVAS_H,
+    });
+  });
+
+  it("expands to fit a 100-agent vertical workflow", () => {
+    const fallback = autoPackLayout(
+      Array.from({ length: 100 }, (_, index) => ({
+        id: `agent-${String(index).padStart(3, "0")}`,
+        stage: 0,
+      })),
+    );
+    const positions = Object.keys(fallback).map((id) => nodePos(id, fallback));
+    const size = dynamicCanvasSize(positions);
+    expect(size.height).toBeGreaterThan(CANVAS_H);
+    expect(size.height).toBeLessThanOrEqual(MAX_CANVAS_H);
+    for (const position of positions) {
+      expect(position.y + NODE_H).toBeLessThanOrEqual(size.height);
+    }
+  });
+
+  it("caps hostile or non-finite imported coordinates", () => {
+    expect(
+      clampCanvasPosition({ x: Number.POSITIVE_INFINITY, y: -10 }),
+    ).toEqual({ x: 0, y: 0 });
+    expect(clampCanvasPosition({ x: 1e12, y: 1e12 })).toEqual({
+      x: MAX_CANVAS_W - NODE_W,
+      y: MAX_CANVAS_H - NODE_H,
+    });
+    expect(dynamicCanvasSize([{ x: 1e12, y: 1e12 }])).toEqual({
+      width: MAX_CANVAS_W,
+      height: MAX_CANVAS_H,
+    });
   });
 });
 

@@ -125,7 +125,7 @@ describe("manifest-import: validate mode", () => {
     const out = await post({ mode: "validate", workflow });
     expect(out.ok).toBe(true);
     expect(out.data.ok).toBe(true);
-    expect(out.data.schema_version).toBe(1);
+    expect(out.data.schema_version).toBe(2);
     expect(out.data.parsed.agents).toBe(5);
     expect(out.data.parsed.events).toBeGreaterThan(0);
     // No blocking issues; the conflict listing is best-effort.
@@ -138,7 +138,7 @@ describe("manifest-import: validate mode", () => {
     const out = await post({ mode: "validate", workflow });
     expect(out.data.ok).toBe(true);
     expect(out.data.parsed.agents).toBe(5);
-    // Schema version is whatever migrate() returns; current is 1.
+    // Schema version is whatever migrate() returns; current is 2.
     expect(typeof out.data.schema_version).toBe("number");
   });
 

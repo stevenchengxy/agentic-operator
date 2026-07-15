@@ -28,7 +28,7 @@
  * as v1). Always emit `$schemaVersion` after the first save through the editor.
  */
 
-export const CURRENT_SCHEMA_VERSION = 1;
+export const CURRENT_SCHEMA_VERSION = 2;
 
 export interface MigrationStep {
   fromVersion: number;
@@ -42,10 +42,22 @@ export interface MigrationStep {
  * Migrations are applied in order. Each step's `toVersion` must equal the
  * next step's `fromVersion`. The chain must cover [1, CURRENT_SCHEMA_VERSION].
  *
- * Currently empty: there are no breaking changes yet. The scaffolding is in
- * place so the first breaking change can drop in without redesign.
+ * The v1→v2 step is intentionally identity-only: v2 adds an envelope and
+ * additive agent fields, while the shared compatibility parser supplies
+ * defaults after migration.
  */
-export const MIGRATIONS: ReadonlyArray<MigrationStep> = [];
+export const MIGRATIONS: ReadonlyArray<MigrationStep> = [
+  {
+    fromVersion: 1,
+    toVersion: 2,
+    description:
+      "Adopt the additive v2 agent-definition envelope without rewriting legacy agents",
+    // V2 is additive. The shared compatibility schema supplies typed v2
+    // defaults after this boundary, so legacy bare arrays need no destructive
+    // field rewrite here.
+    apply: (input) => input,
+  },
+];
 
 /**
  * Read the `$schemaVersion` from a raw manifest, or default to 1.

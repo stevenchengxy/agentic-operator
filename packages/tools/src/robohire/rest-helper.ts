@@ -30,6 +30,8 @@ export interface RoboHireToolConfig {
   timeout_ms?: number;
 }
 
+const ROBOHIRE_PROVIDER_HOST = "api.robohire.io";
+
 function readConfig(ctx: ToolContext): RoboHireToolConfig {
   const c = ctx.config as Record<string, unknown> | undefined;
   if (!c || typeof c !== "object") return {};
@@ -51,12 +53,38 @@ export function rhBaseUrl(ctx: ToolContext): string {
     : "https://api.robohire.io/api/v1";
 }
 
+function usesCustomManifestEndpoint(config: RoboHireToolConfig): boolean {
+  const raw = config.base_url?.trim();
+  if (!raw) return false;
+  try {
+    const url = new URL(raw);
+    return !(
+      url.protocol === "https:" &&
+      !url.port &&
+      url.hostname === ROBOHIRE_PROVIDER_HOST
+    );
+  } catch {
+    // Invalid manifest endpoints must never unlock a global credential
+    // fallback before fetch eventually rejects the URL.
+    return true;
+  }
+}
+
 export function rhAuthToken(ctx: ToolContext): string {
   const c = readConfig(ctx);
   if (c.api_key && c.api_key.trim().length > 0) return c.api_key.trim();
-  if (c.api_key_env) {
-    const v = (process.env[c.api_key_env] ?? "").trim();
+  if (c.api_key_env !== undefined) {
+    const envName = c.api_key_env.trim();
+    const v = envName ? (process.env[envName] ?? "").trim() : "";
     if (v.length > 0) return v;
+    throw new Error(
+      `RoboHire credential environment variable ${envName || "<empty>"} is not set; refusing to fall back to ROBOHIRE_API_KEY.`,
+    );
+  }
+  if (usesCustomManifestEndpoint(c)) {
+    throw new Error(
+      "RoboHire custom base_url requires an explicit api_key_env; refusing to send ROBOHIRE_API_KEY to a manifest-configured endpoint.",
+    );
   }
   const v = (process.env.ROBOHIRE_API_KEY ?? "").trim();
   if (v.length > 0) return v;

@@ -182,3 +182,47 @@ export const MAX_LANE = 4;
 
 export const CANVAS_W = PAD_X * 2 + (MAX_STAGE + 1) * COL_W;
 export const CANVAS_H = PAD_Y * 2 + (MAX_LANE + 1) * ROW_H;
+
+/**
+ * Authoring supports at most 100 agents. These caps cover both pathological
+ * shapes for that limit (a 100-step chain or 100 agents in one lane) while
+ * preventing an imported coordinate such as `Number.MAX_VALUE` from creating
+ * an unusably large browser layer.
+ */
+export const MAX_CANVAS_W = PAD_X * 2 + 101 * COL_W;
+export const MAX_CANVAS_H = PAD_Y * 2 + 100 * ROW_H;
+
+export interface CanvasPoint {
+  x: number;
+  y: number;
+}
+
+export function clampCanvasPosition(position: CanvasPoint): CanvasPoint {
+  const x = Number.isFinite(position.x) ? position.x : 0;
+  const y = Number.isFinite(position.y) ? position.y : 0;
+  return {
+    x: Math.max(0, Math.min(MAX_CANVAS_W - NODE_W, x)),
+    y: Math.max(0, Math.min(MAX_CANVAS_H - NODE_H, y)),
+  };
+}
+
+/**
+ * Grow the canvas to contain every node plus one padding gutter. The legacy
+ * canvas remains the minimum so existing RAAS screenshots do not move.
+ */
+export function dynamicCanvasSize(positions: Iterable<CanvasPoint>): {
+  width: number;
+  height: number;
+} {
+  let width = CANVAS_W;
+  let height = CANVAS_H;
+  for (const raw of positions) {
+    const position = clampCanvasPosition(raw);
+    width = Math.max(width, position.x + NODE_W + PAD_X);
+    height = Math.max(height, position.y + NODE_H + PAD_Y);
+  }
+  return {
+    width: Math.min(MAX_CANVAS_W, Math.ceil(width)),
+    height: Math.min(MAX_CANVAS_H, Math.ceil(height)),
+  };
+}

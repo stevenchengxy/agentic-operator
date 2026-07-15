@@ -8,6 +8,8 @@
     "start": "next start --port 3599",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:e2e": "playwright test",
     "clean": "rm -rf .next .turbo node_modules"
   },
   "dependencies": {

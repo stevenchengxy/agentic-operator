@@ -1,7 +1,6 @@
 import { and, desc, eq } from "drizzle-orm";
 import {
   agents,
-  agentVersions,
   deployments,
   events,
   getDb,
@@ -10,20 +9,44 @@ import {
   workflows,
   workflowVersions,
 } from "@agentic/db";
-import type { DagAgent, DagEdge } from "@agentic/contracts";
+import type { AgentSpec, DagAgent, DagEdge } from "@agentic/contracts";
 
 const STAGE_PREFIX_REGEX = /^(\d+)/;
 const HOT_WINDOW_MS = 60_000;
 
-interface ManifestShape {
-  trigger?: string[];
-  triggered_event?: string[];
+interface CanvasPosition {
+  x: number;
+  y: number;
 }
 
-export async function getDag(tenantSlug: string): Promise<{
+function canvasPosition(agent: AgentSpec): CanvasPosition | undefined {
+  const extensions = agent.extensions;
+  if (!extensions || typeof extensions !== "object") return undefined;
+  const canvas = extensions.canvas;
+  if (!canvas || typeof canvas !== "object" || Array.isArray(canvas)) {
+    return undefined;
+  }
+  const value = (canvas as Record<string, unknown>).position;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const position = value as Record<string, unknown>;
+  return typeof position.x === "number" && typeof position.y === "number"
+    ? { x: position.x, y: position.y }
+    : undefined;
+}
+
+export async function getDag(
+  tenantSlug: string,
+  requestedSlug?: string,
+): Promise<{
   agents: DagAgent[];
   edges: DagEdge[];
   workflowVersion: string;
+  workflowVersionId: string | null;
+  workflowSlug: string | null;
+  workflowName: string | null;
+  workflowIsLive: boolean;
 }> {
   const db = getDb();
   const tenant = db
@@ -31,7 +54,16 @@ export async function getDag(tenantSlug: string): Promise<{
     .from(tenants)
     .where(eq(tenants.slug, tenantSlug))
     .all()[0];
-  if (!tenant) return { agents: [], edges: [], workflowVersion: "—" };
+  const empty = {
+    agents: [] as DagAgent[],
+    edges: [] as DagEdge[],
+    workflowVersion: "—",
+    workflowVersionId: null,
+    workflowSlug: null,
+    workflowName: null,
+    workflowIsLive: false,
+  };
+  if (!tenant) return empty;
 
   // Prefer the LIVE deployment's workflow_version (correct for daily ops).
   // Fall back to most-recently-created workflow_version if no live deployment.
@@ -47,14 +79,14 @@ export async function getDag(tenantSlug: string): Promise<{
   const liveRow = db
     .select({
       workflowId: workflows.id,
+      workflowSlug: workflows.slug,
+      workflowName: workflows.name,
       versionId: workflowVersions.id,
       version: workflowVersions.version,
+      manifestJson: workflowVersions.manifestJson,
     })
     .from(deployments)
-    .innerJoin(
-      workflowVersions,
-      eq(workflowVersions.id, deployments.versionId),
-    )
+    .innerJoin(workflowVersions, eq(workflowVersions.id, deployments.versionId))
     .innerJoin(workflows, eq(workflows.id, workflowVersions.workflowId))
     .where(
       and(
@@ -66,47 +98,92 @@ export async function getDag(tenantSlug: string): Promise<{
     .orderBy(desc(deployments.deployedAt))
     .all()[0];
 
-  let wfId: string | null = liveRow?.workflowId ?? null;
-  let wfvId: string | null = liveRow?.versionId ?? null;
-  let versionStr: string | null = liveRow?.version ?? null;
-  if (!wfId) {
+  let selected: {
+    workflowId: string;
+    workflowSlug: string;
+    workflowName: string;
+    versionId: string;
+    version: string;
+    manifestJson: unknown;
+  } | null = null;
+
+  if (requestedSlug) {
     const wf = db
       .select()
       .from(workflows)
-      .where(eq(workflows.tenantId, tenant.id))
+      .where(
+        and(
+          eq(workflows.tenantId, tenant.id),
+          eq(workflows.slug, requestedSlug),
+        ),
+      )
       .all()[0];
-    if (!wf) return { agents: [], edges: [], workflowVersion: "—" };
-    wfId = wf.id;
-    const wfv = db
+    if (!wf) return empty;
+    const latest = db
       .select()
       .from(workflowVersions)
       .where(eq(workflowVersions.workflowId, wf.id))
       .orderBy(desc(workflowVersions.createdAt))
       .all()[0];
-    if (!wfv) return { agents: [], edges: [], workflowVersion: "—" };
-    wfvId = wfv.id;
-    versionStr = wfv.version;
+    if (!latest) {
+      return {
+        ...empty,
+        workflowSlug: wf.slug,
+        workflowName: wf.name,
+      };
+    }
+    selected = {
+      workflowId: wf.id,
+      workflowSlug: wf.slug,
+      workflowName: wf.name,
+      versionId: latest.id,
+      version: latest.version,
+      manifestJson: latest.manifestJson,
+    };
+  } else if (liveRow) {
+    selected = liveRow;
+  } else {
+    const wf = db
+      .select()
+      .from(workflows)
+      .where(eq(workflows.tenantId, tenant.id))
+      .orderBy(desc(workflows.createdAt))
+      .all()[0];
+    if (!wf) return empty;
+    const latest = db
+      .select()
+      .from(workflowVersions)
+      .where(eq(workflowVersions.workflowId, wf.id))
+      .orderBy(desc(workflowVersions.createdAt))
+      .all()[0];
+    if (!latest)
+      return { ...empty, workflowSlug: wf.slug, workflowName: wf.name };
+    selected = {
+      workflowId: wf.id,
+      workflowSlug: wf.slug,
+      workflowName: wf.name,
+      versionId: latest.id,
+      version: latest.version,
+      manifestJson: latest.manifestJson,
+    };
   }
 
-  const rows = db
+  const agentRows = db
     .select({
       id: agents.id,
       kebabId: agents.kebabId,
-      name: agents.name,
-      title: agents.title,
-      actor: agents.actor,
-      manifestJson: agentVersions.manifestJson,
     })
     .from(agents)
-    .innerJoin(
-      agentVersions,
-      and(
-        eq(agentVersions.agentId, agents.id),
-        eq(agentVersions.workflowVersionId, wfvId!),
-      ),
-    )
-    .where(eq(agents.workflowId, wfId!))
+    .where(eq(agents.workflowId, selected.workflowId))
     .all();
+  const rowByKebab = new Map(agentRows.map((row) => [row.kebabId, row]));
+  const manifest = Array.isArray(selected.manifestJson)
+    ? (selected.manifestJson as AgentSpec[])
+    : selected.manifestJson &&
+        typeof selected.manifestJson === "object" &&
+        Array.isArray((selected.manifestJson as { agents?: unknown }).agents)
+      ? ((selected.manifestJson as { agents: unknown[] }).agents as AgentSpec[])
+      : [];
 
   const since = new Date(Date.now() - HOT_WINDOW_MS);
   const hotAgents = new Set<string>();
@@ -128,21 +205,28 @@ export async function getDag(tenantSlug: string): Promise<{
     if (e.receivedAt && e.receivedAt >= since) hotEventNames.add(e.name);
   }
 
-  const dagAgents: DagAgent[] = rows.map((r) => {
-    const m = (r.manifestJson ?? {}) as ManifestShape;
-    const stageMatch = r.kebabId.match(STAGE_PREFIX_REGEX);
-    const stage = stageMatch ? parseInt(stageMatch[1]!, 10) : 99;
+  const dagAgents: DagAgent[] = manifest.map((definition) => {
+    const row = rowByKebab.get(definition.id);
+    const stageMatch = definition.id.match(STAGE_PREFIX_REGEX);
+    const stage =
+      typeof definition.stage === "number"
+        ? definition.stage
+        : stageMatch
+          ? parseInt(stageMatch[1]!, 10)
+          : 0;
     return {
-      id: r.id,
-      kebabId: r.kebabId,
-      name: r.name,
-      title: r.title ?? r.name,
-      actor: r.actor,
-      triggers: m.trigger ?? [],
-      emits: m.triggered_event ?? [],
+      id: row?.id ?? definition.id,
+      kebabId: definition.id,
+      name: definition.name,
+      title: definition.title ?? definition.name,
+      actor: definition.actor[0] === "Human" ? "Human" : "Agent",
+      triggers: definition.trigger ?? [],
+      emits: definition.triggered_event ?? [],
       stage,
-      recentRunCount: runCounts.get(r.id) ?? 0,
-      isLive: hotAgents.has(r.id),
+      recentRunCount: row ? (runCounts.get(row.id) ?? 0) : 0,
+      isLive: row ? hotAgents.has(row.id) : false,
+      definition,
+      position: canvasPosition(definition),
     };
   });
 
@@ -177,6 +261,12 @@ export async function getDag(tenantSlug: string): Promise<{
       (a, b) => a.stage - b.stage || a.kebabId.localeCompare(b.kebabId),
     ),
     edges,
-    workflowVersion: versionStr ?? "—",
+    workflowVersion: selected.version,
+    workflowVersionId: selected.versionId,
+    workflowSlug: selected.workflowSlug,
+    workflowName: selected.workflowName,
+    workflowIsLive:
+      liveRow?.workflowId === selected.workflowId &&
+      liveRow.versionId === selected.versionId,
   };
 }

@@ -32,6 +32,7 @@ export const GOHIRE_PROVIDER = "gohire";
 /** Default base URL when nothing is configured. Always overridable — the
  *  whole point of the Settings integration is that the operator sets this. */
 export const GOHIRE_DEFAULT_BASE_URL = "https://api.gohire.io/v1";
+const GOHIRE_PROVIDER_HOST = "api.gohire.io";
 
 /** Per-call config the manifest may pass through. All fields optional. */
 export interface GoHireToolConfig {
@@ -62,15 +63,43 @@ export function ghBaseUrl(ctx: ToolContext): string {
   if (fromStore.length > 0) return fromStore.replace(/\/$/, "");
 
   const fromEnv = (process.env.GOHIRE_BASE_URL ?? "").trim();
-  return fromEnv.length > 0 ? fromEnv.replace(/\/$/, "") : GOHIRE_DEFAULT_BASE_URL;
+  return fromEnv.length > 0
+    ? fromEnv.replace(/\/$/, "")
+    : GOHIRE_DEFAULT_BASE_URL;
+}
+
+function usesCustomManifestEndpoint(config: GoHireToolConfig): boolean {
+  const raw = config.base_url?.trim();
+  if (!raw) return false;
+  try {
+    const url = new URL(raw);
+    return !(
+      url.protocol === "https:" &&
+      !url.port &&
+      url.hostname === GOHIRE_PROVIDER_HOST
+    );
+  } catch {
+    // Invalid manifest endpoints must never unlock an integration/global
+    // credential fallback before fetch eventually rejects the URL.
+    return true;
+  }
 }
 
 export function ghAuthToken(ctx: ToolContext): string {
   const c = readConfig(ctx);
   if (c.api_key && c.api_key.trim().length > 0) return c.api_key.trim();
-  if (c.api_key_env) {
-    const v = (process.env[c.api_key_env] ?? "").trim();
+  if (c.api_key_env !== undefined) {
+    const envName = c.api_key_env.trim();
+    const v = envName ? (process.env[envName] ?? "").trim() : "";
     if (v.length > 0) return v;
+    throw new Error(
+      `GoHire credential environment variable ${envName || "<empty>"} is not set; refusing to fall back to the integration store or GOHIRE_API_KEY.`,
+    );
+  }
+  if (usesCustomManifestEndpoint(c)) {
+    throw new Error(
+      "GoHire custom base_url requires an explicit api_key_env; refusing to send an integration or GOHIRE_API_KEY credential to a manifest-configured endpoint.",
+    );
   }
 
   const integration = resolveIntegrationCreds(ctx.tenantSlug, GOHIRE_PROVIDER);

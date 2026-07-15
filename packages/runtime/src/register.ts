@@ -45,7 +45,7 @@ import {
   type RuntimeTraceSink,
 } from "./execution-trace";
 import { correlationFromEvent, withCorrelation } from "./correlation";
-import type { AgentSpec } from "./manifest";
+import type { ActionSpec, AgentSpec } from "./manifest";
 import { makeId } from "@agentic/shared";
 import {
   agents,
@@ -69,7 +69,9 @@ import type {
   ProviderId,
   RunArtifactMetadata,
   RunEmittedEvent,
+  WorkflowManualTaskResolution,
 } from "@agentic/contracts";
+import { WorkflowManualTaskResolutionSchema } from "@agentic/contracts";
 
 export interface RegisterContext {
   tenantId: string;
@@ -88,6 +90,63 @@ export interface RegisterContext {
     tenantId: string;
     runId: string;
   }) => RuntimeArtifactSink;
+}
+
+export function buildManualTaskPayload(input: {
+  agent: Pick<AgentSpec, "name">;
+  action: ActionSpec;
+  subject: string | null;
+  preparedContext: unknown;
+}): Record<string, unknown> {
+  return {
+    agentName: input.agent.name,
+    actionName: input.action.name,
+    description: input.action.description,
+    subject: input.subject,
+    condition: input.action.condition ?? null,
+    preparedContext: input.preparedContext ?? null,
+    formSchema: input.action.form_schema ?? null,
+    awaitingRole: input.action.awaiting_role ?? "operator",
+  };
+}
+
+export type ManualTaskDecision = "approve" | "reject" | "supplement";
+export type ManualTaskOutcome = "approved" | "rejected" | "supplemented";
+
+export type ManualTaskResolution = WorkflowManualTaskResolution;
+
+/**
+ * Turn the resume event into the stable value exposed to later actions,
+ * output validation, artifacts, and authored event bindings. A rejection is
+ * a successful operator decision, not an infrastructure failure, so callers
+ * can finalize and fan out it exactly like approve/supplement.
+ */
+export function buildManualTaskResolution(input: {
+  taskId: string;
+  decision?: unknown;
+  payload?: unknown;
+}): ManualTaskResolution {
+  const decision = input.decision ?? "approve";
+  if (
+    decision !== "approve" &&
+    decision !== "reject" &&
+    decision !== "supplement"
+  ) {
+    throw new Error(`invalid manual task decision: ${String(decision)}`);
+  }
+  const outcome: ManualTaskOutcome =
+    decision === "approve"
+      ? "approved"
+      : decision === "reject"
+        ? "rejected"
+        : "supplemented";
+  return WorkflowManualTaskResolutionSchema.parse({
+    task_id: input.taskId,
+    status: "resolved",
+    decision,
+    outcome,
+    payload: input.payload ?? null,
+  });
 }
 
 /**
@@ -613,15 +672,18 @@ export function registerAgent(
                 runId,
                 type: action.task_type ?? action.name,
                 title: `${agent.title ?? agent.name} · ${action.name}`,
+                awaitingRole: action.awaiting_role ?? "operator",
                 priority: "medium",
                 status: "open",
-                payloadJson: {
-                  agentName: agent.name,
-                  actionName: action.name,
-                  description: action.description,
+                // A preceding logic/tool step often prepares the decision
+                // brief. Persist it on the task so the operator sees the
+                // evidence that caused the HITL checkpoint.
+                payloadJson: buildManualTaskPayload({
+                  agent,
+                  action,
                   subject,
-                  condition: action.condition ?? null,
-                } as never,
+                  preparedContext: lastResult,
+                }) as never,
               } as never)
               .run();
             return { stepId: sid, taskId: tid, sStarted };
@@ -663,11 +725,16 @@ export function registerAgent(
             throw new Error("task timeout");
           }
 
-          const resolution = (resolved.data ?? {}) as {
+          const resolutionEvent = (resolved.data ?? {}) as {
             taskId: string;
-            decision?: string;
+            decision?: unknown;
             payload?: unknown;
           };
+          const resolution = buildManualTaskResolution({
+            taskId: initStep.taskId,
+            decision: resolutionEvent.decision,
+            payload: resolutionEvent.payload,
+          });
 
           await step.run(`close-task-${ord}`, async () => {
             const dbInner = getDb();
@@ -675,7 +742,9 @@ export function registerAgent(
             dbInner
               .update(steps)
               .set({
-                status: resolution.decision === "reject" ? "failed" : "ok",
+                // Human rejection is a valid domain outcome. Runtime failure
+                // is reserved for timeouts/invalid events/infrastructure.
+                status: "ok",
                 endedAt: new Date(sEnded),
                 durationMs: sEnded - initStep.sStarted,
               })
@@ -690,25 +759,55 @@ export function registerAgent(
               })
               .where(eq(tasksTable.id, initStep.taskId))
               .run();
-            // step.ok logged inside this memoized block (approve path only —
-            // a reject is surfaced via failRun's run.end below) so replays
-            // don't append a duplicate line.
-            if (resolution.decision !== "reject") {
-              await safeRunLog("INFO", "step.ok", {
+            // Domain outcome remains visible even though the durable step
+            // completed successfully. Keep this inside the memoized block so
+            // replays cannot duplicate log/trace audit evidence.
+            await safeRunLog(
+              resolution.decision === "reject" ? "WARN" : "INFO",
+              "step.ok",
+              {
                 name: action.name,
                 type: action.type,
                 taskId: initStep.taskId,
-                decision: resolution.decision ?? "approve",
+                decision: resolution.decision,
+                outcome: resolution.outcome,
+              },
+            );
+            try {
+              await traceSink.append({
+                runId,
+                stepId: initStep.stepId,
+                kind: "step",
+                level: "minimal",
+                name: "manual.resolved",
+                status: "ok",
+                endedAt: new Date(sEnded),
+                durationMs: sEnded - initStep.sStarted,
+                summary: `Operator ${resolution.outcome} the manual task`,
+                data: {
+                  taskId: initStep.taskId,
+                  decision: resolution.decision,
+                  outcome: resolution.outcome,
+                },
+                visibility: "user",
+              });
+            } catch (err) {
+              logger.warn("manual.resolved trace failed", {
+                err: String(err),
               });
             }
           });
 
+          // Every manual outcome has one stable output shape. Later actions,
+          // strict output validation, artifacts, and emitted-event bindings
+          // all consume this exact resolution envelope.
+          lastResult = resolution;
           if (resolution.decision === "reject") {
-            await failRun(runId, "human rejected", startedAt);
-            throw new Error("rejected by human");
+            // A reject terminates remaining work, but intentionally proceeds
+            // through output validation, artifact persistence, and every
+            // authored emitted event below.
+            break;
           }
-
-          lastResult = resolution.payload ?? null;
           continue;
         }
 

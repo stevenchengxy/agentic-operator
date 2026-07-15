@@ -48,7 +48,15 @@
  * wrap any multi-statement work in `db.transaction(() => { ... })()`.
  */
 
-import { mkdir, readdir, readFile, stat, writeFile, rm, rename } from "node:fs/promises";
+import {
+  mkdir,
+  readdir,
+  readFile,
+  stat,
+  writeFile,
+  rm,
+  rename,
+} from "node:fs/promises";
 import { openSync, fsyncSync, closeSync } from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
@@ -73,6 +81,7 @@ import type {
   Conflict,
   Issue,
 } from "@agentic/contracts";
+import { normalizeWorkflowManifest } from "@agentic/contracts";
 import {
   WorkflowManifestSchema,
   ActionsManifestSchema,
@@ -88,6 +97,10 @@ import {
 } from "@agentic/runtime";
 import { getLLMGateway } from "./llm";
 import { reregisterInngest } from "./inngest-registry";
+import {
+  findWorkflowSecretPolicyIssues,
+  isWorkflowSecretPolicyIssueCode,
+} from "./workflow-secret-policy";
 import { writeAudit } from "../plugins/audit";
 
 // Overwrite-guard knobs. The compound rule (per review C2 + PRD §"Overwrite
@@ -98,11 +111,15 @@ import { writeAudit } from "../plugins/audit";
 //   priorN=3   → mod≥1 or churn≥3
 //   priorN=10  → mod≥3 or churn≥5
 //   priorN=100 → mod≥30 or churn≥50
-const OVERWRITE_MOD_RATIO = Number(process.env.AGENTIC_OVERWRITE_MOD_RATIO ?? "0.30");
+const OVERWRITE_MOD_RATIO = Number(
+  process.env.AGENTIC_OVERWRITE_MOD_RATIO ?? "0.30",
+);
 const OVERWRITE_CHURN_RATIO = Number(
   process.env.AGENTIC_OVERWRITE_CHURN_RATIO ?? "0.50",
 );
-const OVERWRITE_MOD_FLOOR = Number(process.env.AGENTIC_OVERWRITE_MOD_FLOOR ?? "1");
+const OVERWRITE_MOD_FLOOR = Number(
+  process.env.AGENTIC_OVERWRITE_MOD_FLOOR ?? "1",
+);
 const OVERWRITE_CHURN_FLOOR = Number(
   process.env.AGENTIC_OVERWRITE_CHURN_FLOOR ?? "3",
 );
@@ -124,9 +141,7 @@ function manifestHash(m: unknown): string {
 const PENDING_TTL_MS = Number(
   process.env.AGENTIC_IMPORT_PENDING_TTL_MS ?? String(60 * 60 * 1000),
 );
-const CONCURRENCY_MAX = Number(
-  process.env.RUNTIME_CONCURRENCY_MAX ?? "8",
-);
+const CONCURRENCY_MAX = Number(process.env.RUNTIME_CONCURRENCY_MAX ?? "8");
 
 /**
  * Best-effort fsync helper. The async `writeFile` resolves once the kernel
@@ -176,6 +191,16 @@ export class PendingImportConflictError extends Error {
   constructor(public readonly deploymentId: string) {
     super("pending_import_in_flight");
     this.name = "PendingImportConflictError";
+  }
+}
+
+export class InvalidPendingImportError extends Error {
+  constructor(
+    public readonly reason: "not_found" | "expired" | "workflow_mismatch",
+    public readonly deploymentId: string,
+  ) {
+    super(`pending_import_${reason}`);
+    this.name = "InvalidPendingImportError";
   }
 }
 
@@ -256,7 +281,8 @@ async function findTenantDirs(
   } catch {
     return [];
   }
-  const matches: Array<{ folder: string; version: number; absDir: string }> = [];
+  const matches: Array<{ folder: string; version: number; absDir: string }> =
+    [];
   for (const folder of entries) {
     if (folder.startsWith(".")) continue;
     const abs = path.join(root, folder);
@@ -371,29 +397,52 @@ function adaptConflicts(conflicts: ReadonlyArray<LintConflict>): Conflict[] {
  * manifest array. Returns `{ obj, key }` for the *parent* of the leaf so
  * the caller can mutate `obj[key]`. Returns null for unresolvable paths.
  */
+const FORBIDDEN_RESOLUTION_KEYS = new Set([
+  "__proto__",
+  "prototype",
+  "constructor",
+]);
+
+function parseResolutionPath(pointer: string): Array<string | number> | null {
+  if (!pointer || pointer.length > 1_024) return null;
+  const tokens: Array<string | number> = [];
+  for (const segment of pointer.split(".")) {
+    const match = segment.match(
+      /^([A-Za-z_$][A-Za-z0-9_$-]*)((?:\[(?:0|[1-9]\d*)\])*)$/,
+    );
+    if (!match || FORBIDDEN_RESOLUTION_KEYS.has(match[1]!)) return null;
+    tokens.push(match[1]!);
+    for (const index of match[2]!.matchAll(/\[(\d+)\]/g)) {
+      const value = Number(index[1]);
+      if (!Number.isSafeInteger(value)) return null;
+      tokens.push(value);
+    }
+  }
+  return tokens;
+}
+
 function resolveJsonPath(
   manifest: WorkflowManifest,
   pointer: string,
 ): { obj: Record<string, unknown> | unknown[]; key: string | number } | null {
-  // Tokens: agents[N], <name>, <name>[N]
-  const tokens = pointer.match(/[^.[\]]+|\[\d+\]/g);
+  const tokens = parseResolutionPath(pointer);
   if (!tokens || tokens.length === 0) return null;
   let cur: unknown = { agents: manifest };
   let parent: unknown = null;
   let parentKey: string | number = "";
-  for (const raw of tokens) {
+  for (const token of tokens) {
     parent = cur;
-    if (raw.startsWith("[")) {
-      const idx = Number(raw.slice(1, -1));
-      parentKey = idx;
+    if (typeof token === "number") {
+      parentKey = token;
       if (!Array.isArray(cur)) return null;
-      cur = (cur as unknown[])[idx];
+      if (!Object.prototype.hasOwnProperty.call(cur, token)) return null;
+      cur = cur[token];
     } else {
-      parentKey = raw;
-      if (!cur || typeof cur !== "object") return null;
-      cur = (cur as Record<string, unknown>)[raw];
+      parentKey = token;
+      if (!cur || typeof cur !== "object" || Array.isArray(cur)) return null;
+      if (!Object.prototype.hasOwnProperty.call(cur, token)) return null;
+      cur = (cur as Record<string, unknown>)[token];
     }
-    if (cur === undefined && tokens.indexOf(raw) < tokens.length - 1) return null;
   }
   if (!parent || typeof parent !== "object") return null;
   return {
@@ -438,9 +487,10 @@ export function applyResolutions(
   const skipAgentIndices = new Set<number>();
   for (const r of resolutions) {
     if (r.action === "skip") {
-      const m = r.path.match(/^agents\[(\d+)\]/);
-      if (m) {
-        skipAgentIndices.add(Number(m[1]));
+      const tokens = parseResolutionPath(r.path);
+      const index = tokens?.[0] === "agents" ? tokens[1] : undefined;
+      if (typeof index === "number" && index >= 0 && index < cloned.length) {
+        skipAgentIndices.add(index);
         applied.push(r.path);
       }
       continue;
@@ -493,34 +543,21 @@ interface LiveSnapshot {
 
 function loadLiveSnapshot(ctx: TenantCtx): LiveSnapshot {
   const db = getDb();
-  // The bootstrap path uses a per-tenant workflow slug `${tenantSlug}-default`.
-  // Look it up here; an absent workflow means a first-time tenant (no prior live).
-  const workflowSlug = `${ctx.tenantSlug}-default`;
-  const wf = db
-    .select()
-    .from(workflows)
-    .where(
-      and(eq(workflows.tenantId, ctx.tenantId), eq(workflows.slug, workflowSlug)),
-    )
-    .all()[0];
-  if (!wf) {
-    return {
-      versionString: null,
-      agents: [],
-      liveDeploymentId: null,
-      workflowId: "",
-      workflowVersionId: null,
-    };
-  }
+  // The live deployment is the source of truth. Earlier code first required
+  // `<tenant>-default` to exist, then queried a tenant-wide live deployment;
+  // that returned an empty prior snapshot for a perfectly valid named
+  // workflow. Joining through workflow_versions gives us the actual owner.
   const liveRow = db
     .select({
       depId: deployments.id,
       versionId: deployments.versionId,
       version: workflowVersions.version,
       manifestJson: workflowVersions.manifestJson,
+      workflowId: workflows.id,
     })
     .from(deployments)
     .innerJoin(workflowVersions, eq(workflowVersions.id, deployments.versionId))
+    .innerJoin(workflows, eq(workflows.id, workflowVersions.workflowId))
     .where(
       and(
         eq(deployments.tenantId, ctx.tenantId),
@@ -529,13 +566,35 @@ function loadLiveSnapshot(ctx: TenantCtx): LiveSnapshot {
       ),
     )
     .all()[0];
+  const storedManifest = liveRow?.manifestJson;
+  const storedAgents = Array.isArray(storedManifest)
+    ? (storedManifest as AgentSpec[])
+    : storedManifest &&
+        typeof storedManifest === "object" &&
+        Array.isArray((storedManifest as { agents?: unknown }).agents)
+      ? (storedManifest as { agents: AgentSpec[] }).agents
+      : [];
   return {
     versionString: liveRow?.version ?? null,
-    agents: (liveRow?.manifestJson as AgentSpec[] | null) ?? [],
+    agents: storedAgents,
     liveDeploymentId: liveRow?.depId ?? null,
-    workflowId: wf.id,
+    workflowId: liveRow?.workflowId ?? "",
     workflowVersionId: liveRow?.versionId ?? null,
   };
+}
+
+function authoringWorkflowSlug(
+  input: Pick<ManifestImportBody, "workflow_slug">,
+  ctx: TenantCtx,
+): string {
+  return input.workflow_slug ?? `${ctx.tenantSlug}-default`;
+}
+
+function authoringWorkflowName(
+  input: Pick<ManifestImportBody, "workflow_slug" | "workflow_name">,
+  ctx: TenantCtx,
+): string {
+  return input.workflow_name ?? authoringWorkflowSlug(input, ctx);
 }
 
 function liveSnapshotForLint(live: LiveSnapshot): LiveWorkflowSnapshot {
@@ -566,6 +625,12 @@ interface PipelineResult {
    */
   migrated: WorkflowManifest;
   /**
+   * Full object written to workflow_versions and disk. V2 workflow-envelope
+   * metadata (for example authoring lineage and description) must survive
+   * publication even though runtime reconciliation iterates the bare agents.
+   */
+  persistedManifest: unknown;
+  /**
    * Enriched form: parsed manifest + any non-canonical extra fields the
    * fixture carried (e.g. `model`, `concurrency`, `tool_use`). The linter
    * inspects this so it can flag `model_not_configured` etc., even though
@@ -578,6 +643,26 @@ interface PipelineResult {
   diff: ManifestDiff;
   prior: LiveSnapshot;
   schemaVersion: number;
+}
+
+function persistedManifest(
+  source: unknown,
+  agents: WorkflowManifest,
+  schemaVersion: number,
+): unknown {
+  if (
+    source &&
+    typeof source === "object" &&
+    !Array.isArray(source) &&
+    Array.isArray((source as { agents?: unknown }).agents)
+  ) {
+    return {
+      ...(source as Record<string, unknown>),
+      $schemaVersion: schemaVersion,
+      agents,
+    };
+  }
+  return agents;
 }
 
 async function runPipeline(
@@ -601,11 +686,17 @@ async function runPipeline(
     const live = loadLiveSnapshot(ctx);
     return {
       migrated: [],
+      persistedManifest: [],
       forLint: [],
       actions: undefined,
       issues,
       conflicts: [],
-      diff: { added: [], removed: [], modified: [], prior_version: live.versionString },
+      diff: {
+        added: [],
+        removed: [],
+        modified: [],
+        prior_version: live.versionString,
+      },
       prior: live,
       schemaVersion: migration.toVersion,
     };
@@ -619,13 +710,14 @@ async function runPipeline(
   const rawArray = Array.isArray(migration.payload)
     ? (migration.payload as Array<Record<string, unknown>>)
     : [];
-  const enriched: WorkflowManifest = (manifestRaw as unknown as Array<Record<string, unknown>>).map(
-    (a, i) => {
-      const rawAgent = rawArray[i];
-      if (!rawAgent || typeof rawAgent !== "object") return a as unknown as AgentSpec;
-      return { ...rawAgent, ...a } as unknown as AgentSpec;
-    },
-  ) as unknown as WorkflowManifest;
+  const enriched: WorkflowManifest = (
+    manifestRaw as unknown as Array<Record<string, unknown>>
+  ).map((a, i) => {
+    const rawAgent = rawArray[i];
+    if (!rawAgent || typeof rawAgent !== "object")
+      return a as unknown as AgentSpec;
+    return { ...rawAgent, ...a } as unknown as AgentSpec;
+  }) as unknown as WorkflowManifest;
 
   // 3. Apply operator resolutions BEFORE diff/lint so the displayed counts
   //    match what will be committed. We apply to both views so the canonical
@@ -634,7 +726,15 @@ async function runPipeline(
     manifestRaw,
     input.conflict_resolutions ?? [],
   );
-  const { manifest } = applyResolutions(enriched, input.conflict_resolutions ?? []);
+  const { manifest } = applyResolutions(
+    enriched,
+    input.conflict_resolutions ?? [],
+  );
+  const persisted = persistedManifest(
+    input.workflow,
+    canonical,
+    migration.toVersion,
+  );
 
   // 4. Validate actions (loose schema is intentional — actions.json is
   //    documentation-ish; only the workflow.json carries runtime contracts).
@@ -645,16 +745,27 @@ async function runPipeline(
       const live = loadLiveSnapshot(ctx);
       return {
         migrated: canonical,
+        persistedManifest: persisted,
         forLint: manifest,
         actions: input.actions,
-        issues: ap.error.issues.slice(0, 50).map((i) => ({
-          path: "actions." + i.path.join("."),
-          message: i.message,
-          severity: "error" as const,
-          code: i.code ?? "actions_invalid",
-        })),
+        issues: [
+          ...ap.error.issues.slice(0, 50).map((i) => ({
+            path: "actions." + i.path.join("."),
+            message: i.message,
+            severity: "error" as const,
+            code: i.code ?? "actions_invalid",
+          })),
+          ...findWorkflowSecretPolicyIssues(persisted, input.actions, {
+            tenantSlug: ctx.tenantSlug,
+          }),
+        ],
         conflicts: [],
-        diff: { added: [], removed: [], modified: [], prior_version: live.versionString },
+        diff: {
+          added: [],
+          removed: [],
+          modified: [],
+          prior_version: live.versionString,
+        },
         prior: live,
         schemaVersion: migration.toVersion,
       };
@@ -676,7 +787,10 @@ async function runPipeline(
     }
   })();
   const providerIds = gateway
-    ? gateway.listProviders().map((p) => p.id as string)
+    ? gateway
+        .listProviders()
+        .filter((provider) => provider.hasKey || provider.id === "mock")
+        .map((provider) => provider.id as string)
     : ["mock"];
   // Build live kebab → id map (for silent_rename detection). Pre-review the
   // lint never saw the live `id` field so renames slipped through.
@@ -684,7 +798,8 @@ async function runPipeline(
   for (const la of live.agents) liveAgentIds.set(la.id, la.id);
   // 6. Lint with the full context.
   const lintRes = lint(manifest, {
-    liveWorkflow: live.agents.length > 0 ? liveSnapshotForLint(live) : undefined,
+    liveWorkflow:
+      live.agents.length > 0 ? liveSnapshotForLint(live) : undefined,
     llmProviders: providerIds,
     concurrencyMax: CONCURRENCY_MAX,
     removedKebabIds,
@@ -693,9 +808,15 @@ async function runPipeline(
 
   return {
     migrated: canonical,
+    persistedManifest: persisted,
     forLint: manifest,
     actions,
-    issues: adaptIssues(lintRes.issues),
+    issues: [
+      ...adaptIssues(lintRes.issues),
+      ...findWorkflowSecretPolicyIssues(persisted, actions, {
+        tenantSlug: ctx.tenantSlug,
+      }),
+    ],
     conflicts: adaptConflicts(lintRes.conflicts),
     diff,
     prior: live,
@@ -787,13 +908,24 @@ export function overwriteGuard(
  * its expires_at is treated as released — boot-time `reconcileImports`
  * sweeps stale rows but we don't want to wait for that.
  */
-function findActivePendingImport(
-  ctx: TenantCtx,
-): { deploymentId: string; workflowVersionId: string } | null {
+function findActivePendingImport(ctx: TenantCtx): {
+  deploymentId: string;
+  workflowVersionId: string;
+  workflowId: string;
+  workflowSlug: string;
+} | null {
   const db = getDb();
   const pending = db
-    .select()
+    .select({
+      deploymentId: deployments.id,
+      workflowVersionId: deployments.versionId,
+      workflowId: workflowVersions.workflowId,
+      workflowSlug: workflows.slug,
+      expiresAt: deployments.expiresAt,
+    })
     .from(deployments)
+    .innerJoin(workflowVersions, eq(workflowVersions.id, deployments.versionId))
+    .innerJoin(workflows, eq(workflows.id, workflowVersions.workflowId))
     .where(
       and(
         eq(deployments.tenantId, ctx.tenantId),
@@ -805,13 +937,17 @@ function findActivePendingImport(
   if (!pending) return null;
   if (pending.expiresAt && pending.expiresAt.getTime() < Date.now()) {
     // Past TTL — drop in line and let the new validate take over.
-    db.delete(deployments).where(eq(deployments.id, pending.id)).run();
+    db.transaction(() => {
+      db.delete(deployments)
+        .where(eq(deployments.id, pending.deploymentId))
+        .run();
+      db.delete(workflowVersions)
+        .where(eq(workflowVersions.id, pending.workflowVersionId))
+        .run();
+    });
     return null;
   }
-  return {
-    deploymentId: pending.id,
-    workflowVersionId: pending.versionId,
-  };
+  return pending;
 }
 
 /**
@@ -832,6 +968,58 @@ export async function validate(
 ): Promise<ManifestImportPreview> {
   const started = Date.now();
 
+  // New Workflow imports are authoring previews, not deployment sessions.
+  // Run the exact migration/resolution/lint pipeline, but do not contend for
+  // the tenant's pending-import lock and do not persist any workflow,
+  // version, deployment, agent, or file row. The caller saves the returned
+  // canonical payload through the ordinary immutable draft API.
+  if (input.draft_only) {
+    const result = await runPipeline(input, ctx);
+    const secretBlocking = result.issues.filter((issue) =>
+      isWorkflowSecretPolicyIssueCode(issue.code),
+    );
+    if (secretBlocking.length > 0) {
+      throw new BlockingIssuesError(secretBlocking);
+    }
+    const elapsedMs = Date.now() - started;
+    const preview: ManifestImportPreview = {
+      ok: result.issues.every((issue) => issue.severity !== "error"),
+      schema_version: result.schemaVersion,
+      parsed: {
+        agents: result.migrated.length,
+        events: eventsFromManifest(result.migrated).size,
+        actions: result.actions?.length ?? 0,
+      },
+      issues: result.issues,
+      conflicts: result.conflicts,
+      diff: result.diff,
+      prior: {
+        version: result.prior.versionString,
+        agents: result.prior.agents.length,
+        live_deployment_id: result.prior.liveDeploymentId,
+      },
+      normalized_workflow: result.persistedManifest,
+      normalized_actions: result.actions ?? null,
+      elapsed_ms: elapsedMs,
+    };
+    writeAuditSafely(auditCtx, {
+      tenantId: ctx.tenantId,
+      action: "manifest.import.validate_draft",
+      targetType: "workflow",
+      targetId: authoringWorkflowSlug(input, ctx),
+      meta: {
+        ok: preview.ok,
+        agents: result.migrated.length,
+        issues: result.issues.length,
+        conflicts: result.conflicts.length,
+        schema_version: result.schemaVersion,
+        persisted: false,
+        elapsed_ms: elapsedMs,
+      },
+    });
+    return preview;
+  }
+
   // One-pending-per-tenant lock policy:
   //   - No body.deployment_id + no pending row → fresh lock (new dpl- id)
   //   - No body.deployment_id + pending row    → auto-reuse the pending row
@@ -844,9 +1032,17 @@ export async function validate(
   // so it can offer a Resume/Cancel banner — see review C5 + design.md
   // §"Wizard back-navigation".
   const existingPending = findActivePendingImport(ctx);
+  if (input.deployment_id && !existingPending) {
+    throw new InvalidPendingImportError("not_found", input.deployment_id);
+  }
+  const targetWorkflowSlug = authoringWorkflowSlug(input, ctx);
   let reuseDeploymentId: string | null = null;
   if (existingPending) {
-    if (!input.deployment_id || input.deployment_id === existingPending.deploymentId) {
+    if (
+      existingPending.workflowSlug === targetWorkflowSlug &&
+      (!input.deployment_id ||
+        input.deployment_id === existingPending.deploymentId)
+    ) {
       reuseDeploymentId = existingPending.deploymentId;
     } else {
       throw new PendingImportConflictError(existingPending.deploymentId);
@@ -854,6 +1050,14 @@ export async function validate(
   }
 
   const result = await runPipeline(input, ctx);
+  const secretBlocking = result.issues.filter((issue) =>
+    isWorkflowSecretPolicyIssueCode(issue.code),
+  );
+  if (secretBlocking.length > 0) {
+    // Unlike ordinary lint feedback, a credential-bearing payload must never
+    // be retained in the pending workflow_version used for wizard resume.
+    throw new BlockingIssuesError(secretBlocking);
+  }
   const ok = result.issues.every((i) => i.severity !== "error");
 
   // Persist the pending lock row. Even when `ok=false` we keep the row —
@@ -864,12 +1068,15 @@ export async function validate(
   const db = getDb();
   db.transaction(() => {
     // Lazy-create the tenant workflow row (same shape as bootstrap).
-    const workflowSlug = `${ctx.tenantSlug}-default`;
+    const workflowSlug = targetWorkflowSlug;
     let wf = db
       .select()
       .from(workflows)
       .where(
-        and(eq(workflows.tenantId, ctx.tenantId), eq(workflows.slug, workflowSlug)),
+        and(
+          eq(workflows.tenantId, ctx.tenantId),
+          eq(workflows.slug, workflowSlug),
+        ),
       )
       .all()[0];
     if (!wf) {
@@ -879,7 +1086,7 @@ export async function validate(
           id: wfId,
           tenantId: ctx.tenantId,
           slug: workflowSlug,
-          name: workflowSlug,
+          name: authoringWorkflowName(input, ctx),
         })
         .run();
       wf = db.select().from(workflows).where(eq(workflows.id, wfId)).all()[0]!;
@@ -894,7 +1101,7 @@ export async function validate(
       if (oldRow) {
         db.update(workflowVersions)
           .set({
-            manifestJson: result.migrated as unknown as object,
+            manifestJson: result.persistedManifest as object,
             actionsJson: (result.actions ?? null) as unknown as object,
           })
           .where(eq(workflowVersions.id, oldRow.versionId))
@@ -913,7 +1120,7 @@ export async function validate(
           id: workflowVersionId,
           workflowId: wf.id,
           version: `pending-${deploymentId}`,
-          manifestJson: result.migrated as unknown as object,
+          manifestJson: result.persistedManifest as object,
           actionsJson: (result.actions ?? null) as unknown as object,
         })
         .run();
@@ -933,11 +1140,11 @@ export async function validate(
 
   // Resolve the workflow_version id we actually used (for the response).
   const actualWfvId = reuseDeploymentId
-    ? db
+    ? (db
         .select({ versionId: deployments.versionId })
         .from(deployments)
         .where(eq(deployments.id, reuseDeploymentId))
-        .all()[0]?.versionId ?? workflowVersionId
+        .all()[0]?.versionId ?? workflowVersionId)
     : workflowVersionId;
 
   const elapsedMs = Date.now() - started;
@@ -1043,9 +1250,7 @@ export async function cancel(
  * where two near-simultaneous commits both pick the same N+1). The handle
  * is closed immediately — the actual content lands via `rename()` later.
  */
-async function pickAndReserveNextFilename(
-  slug: string,
-): Promise<{
+async function pickAndReserveNextFilename(slug: string): Promise<{
   targetDir: string;
   workflowPath: string;
   actionsPath: string;
@@ -1069,7 +1274,10 @@ async function pickAndReserveNextFilename(
       return {
         targetDir,
         workflowPath: wfPath,
-        actionsPath: path.join(targetDir, `actions_v${picked.nextVersion}.json`),
+        actionsPath: path.join(
+          targetDir,
+          `actions_v${picked.nextVersion}.json`,
+        ),
         nextVersion: picked.nextVersion,
       };
     } catch (err) {
@@ -1078,7 +1286,9 @@ async function pickAndReserveNextFilename(
       // Someone else just claimed N+1; loop and bump.
     }
   }
-  throw new Error("could not reserve a unique workflow filename after 8 attempts");
+  throw new Error(
+    "could not reserve a unique workflow filename after 8 attempts",
+  );
 }
 
 export async function commit(
@@ -1097,7 +1307,9 @@ export async function commit(
     throw new BlockingIssuesError(blocking);
   }
   // Hard-stop on un-resolved `severity='block'` conflicts.
-  const unresolvedBlocking = result.conflicts.filter((c) => c.severity === "block");
+  const unresolvedBlocking = result.conflicts.filter(
+    (c) => c.severity === "block",
+  );
   if (unresolvedBlocking.length > 0) {
     throw new BlockingIssuesError(
       unresolvedBlocking.map((c) => ({
@@ -1120,24 +1332,77 @@ export async function commit(
   }
 
   const db = getDb();
-  // Find the pending lock row for the supplied deployment_id, if any. The
-  // wizard path always provides this (validate returned it); the legacy
-  // `POST /v1/agents` path runs cold (no deployment_id) and still commits.
-  const pendingLockRow = input.deployment_id
+  // A supplied session id is authoritative: never silently degrade a stale,
+  // foreign-workflow, or mistyped id into a cold commit. Cold commit remains
+  // available only when the caller intentionally omits deployment_id.
+  const pendingDetails = input.deployment_id
     ? db
-        .select()
+        .select({
+          deploymentId: deployments.id,
+          versionId: deployments.versionId,
+          expiresAt: deployments.expiresAt,
+          note: deployments.note,
+          workflowId: workflowVersions.workflowId,
+          workflowSlug: workflows.slug,
+        })
         .from(deployments)
+        .innerJoin(
+          workflowVersions,
+          eq(workflowVersions.id, deployments.versionId),
+        )
+        .innerJoin(workflows, eq(workflows.id, workflowVersions.workflowId))
         .where(
           and(
             eq(deployments.tenantId, ctx.tenantId),
             eq(deployments.id, input.deployment_id),
+            eq(deployments.target, "workflow"),
             eq(deployments.status, "pending"),
           ),
         )
         .all()[0]
     : undefined;
+  if (input.deployment_id && !pendingDetails) {
+    throw new InvalidPendingImportError("not_found", input.deployment_id);
+  }
+  if (
+    pendingDetails?.expiresAt &&
+    pendingDetails.expiresAt.getTime() < Date.now()
+  ) {
+    db.transaction(() => {
+      db.delete(deployments)
+        .where(eq(deployments.id, pendingDetails.deploymentId))
+        .run();
+      db.delete(workflowVersions)
+        .where(eq(workflowVersions.id, pendingDetails.versionId))
+        .run();
+    });
+    throw new InvalidPendingImportError("expired", pendingDetails.deploymentId);
+  }
+  if (
+    pendingDetails &&
+    pendingDetails.workflowSlug !== authoringWorkflowSlug(input, ctx)
+  ) {
+    throw new InvalidPendingImportError(
+      "workflow_mismatch",
+      pendingDetails.deploymentId,
+    );
+  }
+  const pendingLockRow = pendingDetails
+    ? {
+        id: pendingDetails.deploymentId,
+        versionId: pendingDetails.versionId,
+        note: pendingDetails.note,
+      }
+    : undefined;
   const deploymentId = pendingLockRow?.id ?? makeId("dpl");
-  const desiredVersion = `auto-${manifestHash(result.migrated)}`;
+  // Runtime bootstrap normalizes v2 envelopes through the canonical v2
+  // schema before hashing; that normalization also determines object key
+  // order. Match it exactly. Legacy bare arrays stay on the legacy parser and
+  // therefore hash the migrated array directly.
+  const runtimeHashInput = Array.isArray(result.persistedManifest)
+    ? result.migrated
+    : normalizeWorkflowManifest(result.persistedManifest).agents;
+  const desiredVersion = `auto-${manifestHash(runtimeHashInput)}`;
 
   // PHASE 2 — write tmp staging file + fsync
   // ─────────────────────────────────────────────────────────────────────
@@ -1153,7 +1418,7 @@ export async function commit(
     await mkdir(tmpDir, { recursive: true });
     await writeFile(
       tmpWorkflowPath,
-      JSON.stringify(result.migrated, null, 2) + "\n",
+      JSON.stringify(result.persistedManifest, null, 2) + "\n",
       "utf8",
     );
     fsyncBestEffort(tmpWorkflowPath);
@@ -1168,7 +1433,11 @@ export async function commit(
   } catch (err) {
     // Disk write failed BEFORE any DB change — return 500. Audit + clean up.
     auditCtx?.log?.error?.(
-      { err: (err as Error).message, deployment_id: deploymentId, phase: "tmp_write" },
+      {
+        err: (err as Error).message,
+        deployment_id: deploymentId,
+        phase: "tmp_write",
+      },
       "manifest-import: tmp file write failed",
     );
     writeAuditSafely(auditCtx, {
@@ -1205,11 +1474,16 @@ export async function commit(
     let isPromotion = false;
     db.transaction(() => {
       // (a) ensure tenant workflow row
-      const workflowSlug = `${ctx.tenantSlug}-default`;
+      const workflowSlug = authoringWorkflowSlug(input, ctx);
       let wf = db
         .select()
         .from(workflows)
-        .where(and(eq(workflows.tenantId, ctx.tenantId), eq(workflows.slug, workflowSlug)))
+        .where(
+          and(
+            eq(workflows.tenantId, ctx.tenantId),
+            eq(workflows.slug, workflowSlug),
+          ),
+        )
         .all()[0];
       if (!wf) {
         const wfId = makeId("wf");
@@ -1218,10 +1492,14 @@ export async function commit(
             id: wfId,
             tenantId: ctx.tenantId,
             slug: workflowSlug,
-            name: workflowSlug,
+            name: authoringWorkflowName(input, ctx),
           })
           .run();
-        wf = db.select().from(workflows).where(eq(workflows.id, wfId)).all()[0]!;
+        wf = db
+          .select()
+          .from(workflows)
+          .where(eq(workflows.id, wfId))
+          .all()[0]!;
       }
       workflowId = wf.id;
 
@@ -1267,12 +1545,15 @@ export async function commit(
             ),
           )
           .all()[0];
-        if (collidingExisting && collidingExisting.id !== pendingLockRow.versionId) {
+        if (
+          collidingExisting &&
+          collidingExisting.id !== pendingLockRow.versionId
+        ) {
           // Refresh the existing row's content (actionsJson can drift
           // even when the agent-array hash matches).
           db.update(workflowVersions)
             .set({
-              manifestJson: result.migrated as unknown as object,
+              manifestJson: result.persistedManifest as object,
               actionsJson: (result.actions ?? null) as unknown as object,
             })
             .where(eq(workflowVersions.id, collidingExisting.id))
@@ -1306,7 +1587,7 @@ export async function commit(
           db.update(workflowVersions)
             .set({
               version: desiredVersion,
-              manifestJson: result.migrated as unknown as object,
+              manifestJson: result.persistedManifest as object,
               actionsJson: (result.actions ?? null) as unknown as object,
             })
             .where(eq(workflowVersions.id, pendingLockRow.versionId))
@@ -1340,7 +1621,7 @@ export async function commit(
           workflowVersionId = existing.id;
           db.update(workflowVersions)
             .set({
-              manifestJson: result.migrated as unknown as object,
+              manifestJson: result.persistedManifest as object,
               actionsJson: (result.actions ?? null) as unknown as object,
             })
             .where(eq(workflowVersions.id, existing.id))
@@ -1352,7 +1633,7 @@ export async function commit(
               id: workflowVersionId,
               workflowId: wf.id,
               version: desiredVersion,
-              manifestJson: result.migrated as unknown as object,
+              manifestJson: result.persistedManifest as object,
               actionsJson: (result.actions ?? null) as unknown as object,
             })
             .run();
@@ -1393,7 +1674,11 @@ export async function commit(
               updatedAt: now,
             })
             .run();
-          agentRow = db.select().from(agents).where(eq(agents.id, aid)).all()[0]!;
+          agentRow = db
+            .select()
+            .from(agents)
+            .where(eq(agents.id, aid))
+            .all()[0]!;
         } else {
           db.update(agents)
             .set({
@@ -1426,7 +1711,9 @@ export async function commit(
             })
             .run();
         }
-        db.delete(eventListeners).where(eq(eventListeners.agentId, agentRow.id)).run();
+        db.delete(eventListeners)
+          .where(eq(eventListeners.agentId, agentRow.id))
+          .run();
         for (const trig of a.trigger) {
           db.insert(eventListeners)
             .values({ eventName: trig, agentId: agentRow.id })
@@ -1437,7 +1724,9 @@ export async function commit(
       for (const removedId of result.diff.removed) {
         db.update(agents)
           .set({ enabled: false })
-          .where(and(eq(agents.workflowId, wf.id), eq(agents.kebabId, removedId)))
+          .where(
+            and(eq(agents.workflowId, wf.id), eq(agents.kebabId, removedId)),
+          )
           .run();
       }
 
@@ -1584,7 +1873,7 @@ export async function commit(
       deploymentId: txOut.deploymentId,
       kind: "manifest",
       version: desiredVersion,
-      workflowSlug: ctx.tenantSlug,
+      workflowSlug: authoringWorkflowSlug(input, ctx),
     });
   } catch (err) {
     auditCtx?.log?.info?.(
@@ -1633,10 +1922,7 @@ export async function pruneExpiredImports(): Promise<{
     .select()
     .from(deployments)
     .where(
-      and(
-        eq(deployments.status, "pending"),
-        lt(deployments.expiresAt, cutoff),
-      ),
+      and(eq(deployments.status, "pending"), lt(deployments.expiresAt, cutoff)),
     )
     .all();
   if (expired.length === 0) return { pruned: 0, failures: 0 };

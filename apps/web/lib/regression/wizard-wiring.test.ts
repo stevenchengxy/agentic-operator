@@ -93,6 +93,23 @@ describe("regression: production wizard wiring", () => {
         ).toBe(false);
       }
     });
+
+    it("keeps validate failures on the Validate step and makes only supported source claims", () => {
+      expect(src).toContain("validationError && (step === 0 || step === 1)");
+      expect(src).not.toMatch(
+        /Stage \/ prod|git\+ssh|manifest\.zip|Egress allow-list|egress proxy|pre-allowed/,
+      );
+      expect(src).toContain('hint: "Production only"');
+    });
+
+    it("creates New Workflow imports as normalized drafts without calling production commit", () => {
+      expect(src).toContain("draftTarget");
+      expect(src).toContain("draft_only: true");
+      expect(src).toContain("normalized.normalized_workflow");
+      expect(src).toContain('fetch("/v1/workflows"');
+      expect(src).toContain("onDraftCreated?.(workflow)");
+      expect(src).toContain("if (draftTarget) void createImportedDraft()");
+    });
   });
 
   describe("DeployAgentModal — new event authoring", () => {
@@ -114,10 +131,9 @@ describe("regression: production wizard wiring", () => {
     const modal = read("app/portal/components/events/PublishEventModal.tsx");
     const hooks = read("lib/hooks/useEvents.ts");
 
-    it("opens the production publish modal with the agent trigger allow-list", () => {
-      expect(page).toContain("Send event");
-      expect(page).toContain("allowedNames={agent.triggers}");
-      expect(page).toContain("targetAgent={{ name: agent.name");
+    it("routes the selected agent into the production Studio", () => {
+      expect(page).toContain("<AgentStudio");
+      expect(page).toContain('agentId={params?.id ?? ""}');
     });
 
     it("publishes as the operator and waits for the exact event causality link", () => {
@@ -188,6 +204,37 @@ describe("regression: production wizard wiring", () => {
           "chrome.tsx uses TENANTS.map but no useTenants() — the sidebar is stuck on the static fixture",
         ).toBe(true);
       }
+    });
+  });
+
+  describe("workflow canvas — selection must survive workflow transitions", () => {
+    const src = read("app/portal/[tenant]/(views)/workflows/page.tsx");
+
+    it("never substitutes the first node when a selected node is temporarily absent", () => {
+      expect(src).toContain("selectedAgentRecord");
+      expect(src).toContain("selectedAgent && editing && selectedAgentRecord");
+      expect(src).not.toContain("?? agents[0]!");
+    });
+
+    it("serializes publish across validate, save, and publish and targets imports by identity", () => {
+      expect(src).toContain("publishInFlight.current");
+      expect(src).toContain("setPublishing(true)");
+      expect(src).toContain("draftTarget={importTarget ?? undefined}");
+      expect(src).toContain("onDraftCreated={selectCreatedWorkflow}");
+    });
+  });
+
+  describe("New Workflow import identity", () => {
+    const src = read("app/portal/components/workflows/NewWorkflowModal.tsx");
+
+    it("requires name and slug and passes both to the draft importer", () => {
+      expect(src).toContain(
+        'setError("Display name and workflow slug are required.")',
+      );
+      expect(src).toContain(
+        "onImport?.({ slug: slug.trim(), name: name.trim() })",
+      );
+      expect(src).toContain("create an editable server-backed draft");
     });
   });
 });

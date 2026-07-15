@@ -6,7 +6,8 @@
  *
  *   - Two agents share the same `kebabId`
  *   - An agent triggers on an event nothing emits
- *   - A `Human`-actor agent has no `tool_use` declaring `taskDefinition`
+ *   - A `Human`-actor agent has neither an inline manual-task contract nor
+ *     a legacy `tool_use` declaration for `taskDefinition`
  *   - A `model:` field names a provider the gateway can't reach
  *   - Concurrency caps exceed the runtime ceiling
  *   - Cycles in the trigger→emit graph
@@ -64,7 +65,9 @@ export interface LintConflict {
 
 export interface LiveWorkflowSnapshot {
   /** Manifest of agents currently live for the tenant. */
-  agents: ReadonlyArray<Pick<AgentSpec, "id" | "name" | "trigger" | "triggered_event">>;
+  agents: ReadonlyArray<
+    Pick<AgentSpec, "id" | "name" | "trigger" | "triggered_event">
+  >;
   /** Distinct event names emitted by live agents. */
   events: ReadonlyArray<string>;
 }
@@ -101,7 +104,9 @@ export interface LintResult {
 function isPlausibleCron(expr: string): boolean {
   const trimmed = expr.trim();
   if (!trimmed) return false;
-  if (/^@(yearly|annually|monthly|weekly|daily|midnight|hourly)$/i.test(trimmed)) {
+  if (
+    /^@(yearly|annually|monthly|weekly|daily|midnight|hourly)$/i.test(trimmed)
+  ) {
     return true;
   }
   // 5-field (no seconds) or 6-field (with seconds). Allow numbers, `*`, `,`,
@@ -109,7 +114,8 @@ function isPlausibleCron(expr: string): boolean {
   // operators get a hint, not a strict gate.
   const fields = trimmed.split(/\s+/);
   if (fields.length !== 5 && fields.length !== 6) return false;
-  const fieldRe = /^([\d\*\?/,\-]+|[A-Za-z]{3}(-[A-Za-z]{3})?|[A-Za-z]{3}(,[A-Za-z]{3})*)$/;
+  const fieldRe =
+    /^([\d\*\?/,\-]+|[A-Za-z]{3}(-[A-Za-z]{3})?|[A-Za-z]{3}(,[A-Za-z]{3})*)$/;
   return fields.every((f) => fieldRe.test(f));
 }
 
@@ -121,10 +127,35 @@ function rand4(): string {
   return Math.random().toString(36).slice(2, 6);
 }
 
-export function lint(
-  manifest: WorkflowManifest,
-  ctx: LintContext,
-): LintResult {
+/**
+ * V2 definitions carry the operator-task contract on the manual action
+ * itself. Legacy manifests put the same concern behind a `taskDefinition`
+ * tool. Keep both representations valid while refusing a bare Human actor:
+ * without all three inline fields the runtime cannot render, route, and type
+ * the task reliably.
+ */
+function hasInlineManualTaskDefinition(agent: AgentSpec): boolean {
+  return agent.actions.some((rawAction) => {
+    const action = rawAction as {
+      type?: unknown;
+      task_type?: unknown;
+      awaiting_role?: unknown;
+      form_schema?: unknown;
+    };
+    return (
+      action.type === "manual" &&
+      typeof action.task_type === "string" &&
+      action.task_type.trim().length > 0 &&
+      typeof action.awaiting_role === "string" &&
+      action.awaiting_role.trim().length > 0 &&
+      typeof action.form_schema === "object" &&
+      action.form_schema !== null &&
+      !Array.isArray(action.form_schema)
+    );
+  });
+}
+
+export function lint(manifest: WorkflowManifest, ctx: LintContext): LintResult {
   const issues: LintIssue[] = [];
   const conflicts: LintConflict[] = [];
 
@@ -303,20 +334,25 @@ export function lint(
     // adapters' route table). Anything outside the allow-list trips the
     // conflict.
     const mapsToProvider =
-      providerSet.has("mock") && lower.startsWith("mock") ||
-      providerSet.has("anthropic") && (lower.startsWith("claude") || lower.startsWith("anthropic/")) ||
-      providerSet.has("openai") && (lower.startsWith("gpt") || lower.startsWith("o") && /^o\d/.test(lower) || lower.startsWith("openai/")) ||
-      providerSet.has("openrouter") && lower.startsWith("openrouter/") ||
-      providerSet.has("gemini") && (lower.startsWith("gemini") || lower.startsWith("google/")) ||
-      providerSet.has("azure") && lower.startsWith("azure/") ||
-      providerSet.has("groq") && lower.startsWith("groq/") ||
-      providerSet.has("together") && lower.startsWith("together/") ||
-      providerSet.has("mistral") && lower.startsWith("mistral") ||
-      providerSet.has("deepseek") && lower.startsWith("deepseek") ||
-      providerSet.has("qwen") && lower.startsWith("qwen") ||
-      providerSet.has("bedrock") && lower.startsWith("bedrock/") ||
-      providerSet.has("vertex") && lower.startsWith("vertex/") ||
-      providerSet.has("custom") && lower.startsWith("custom/");
+      (providerSet.has("mock") && lower.startsWith("mock")) ||
+      (providerSet.has("anthropic") &&
+        (lower.startsWith("claude") || lower.startsWith("anthropic/"))) ||
+      (providerSet.has("openai") &&
+        (lower.startsWith("gpt") ||
+          (lower.startsWith("o") && /^o\d/.test(lower)) ||
+          lower.startsWith("openai/"))) ||
+      (providerSet.has("openrouter") && lower.startsWith("openrouter/")) ||
+      (providerSet.has("gemini") &&
+        (lower.startsWith("gemini") || lower.startsWith("google/"))) ||
+      (providerSet.has("azure") && lower.startsWith("azure/")) ||
+      (providerSet.has("groq") && lower.startsWith("groq/")) ||
+      (providerSet.has("together") && lower.startsWith("together/")) ||
+      (providerSet.has("mistral") && lower.startsWith("mistral")) ||
+      (providerSet.has("deepseek") && lower.startsWith("deepseek")) ||
+      (providerSet.has("qwen") && lower.startsWith("qwen")) ||
+      (providerSet.has("bedrock") && lower.startsWith("bedrock/")) ||
+      (providerSet.has("vertex") && lower.startsWith("vertex/")) ||
+      (providerSet.has("custom") && lower.startsWith("custom/"));
     if (mapsToProvider) continue;
     conflicts.push({
       path: `agents[${i}].model`,
@@ -354,7 +390,7 @@ export function lint(
     });
   }
 
-  // --- 7. actor='Human' agents need a `taskDefinition` tool_use -----------
+  // --- 7. Human agents need an inline or legacy task definition ----------
   for (let i = 0; i < manifest.length; i += 1) {
     const a = manifest[i]! as AgentSpec & {
       tool_use?: Array<{ name: string }>;
@@ -363,16 +399,20 @@ export function lint(
     const tools = a.tool_use ?? [];
     const hasTaskDef = tools.some((t: { name: string }) => {
       const name = t.name.toLowerCase();
-      return name === "taskdefinition" || name.endsWith(".taskdefinition") || name.includes("taskdefinition");
+      return (
+        name === "taskdefinition" ||
+        name.endsWith(".taskdefinition") ||
+        name.includes("taskdefinition")
+      );
     });
-    if (hasTaskDef) continue;
+    if (hasTaskDef || hasInlineManualTaskDefinition(a)) continue;
     conflicts.push({
       path: `agents[${i}].tool_use`,
       type: "orphan_actor",
       severity: "block",
-      detail: `agent "${a.name}" is actor='Human' but has no \`taskDefinition\` tool — the runtime can't surface a task for the operator without one`,
-      suggestion: `add { name: "taskDefinition", ... } to tool_use`,
-      // No auto_fix: the taskDefinition schema is workflow-specific.
+      detail: `agent "${a.name}" is actor='Human' but has neither a complete inline manual-task contract nor a \`taskDefinition\` tool — the runtime can't surface a typed task for the operator without one`,
+      suggestion: `add task_type, awaiting_role, and form_schema to a manual action, or add { name: "taskDefinition", ... } to tool_use`,
+      // No auto_fix: the task/form definition is workflow-specific.
     });
   }
 
@@ -523,7 +563,10 @@ export function lint(
       value: string;
       maxSize: number;
     }> = [];
-    if (typeof a.ontology_instructions === "string" && a.ontology_instructions.length > 0) {
+    if (
+      typeof a.ontology_instructions === "string" &&
+      a.ontology_instructions.length > 0
+    ) {
       checks.push({
         field: "ontology_instructions",
         value: a.ontology_instructions,
@@ -542,7 +585,8 @@ export function lint(
       if (value.length > maxSize) {
         reasons.push(`${field} is ${value.length} bytes (> ${maxSize} cap)`);
       }
-      if (/ignore previous/i.test(value)) reasons.push(`contains "ignore previous"`);
+      if (/ignore previous/i.test(value))
+        reasons.push(`contains "ignore previous"`);
       if (/system:/i.test(value)) reasons.push(`contains "system:" marker`);
       // High-entropy base64 sniff: any contiguous base64-ish run ≥ 200 chars
       // with Shannon entropy ≥ 4.5 is suspicious. Cheap one-pass scan.
@@ -550,7 +594,9 @@ export function lint(
       if (b64) {
         for (const blob of b64) {
           if (shannonEntropy(blob) >= 4.5) {
-            reasons.push(`contains a ${blob.length}-char high-entropy base64-ish blob`);
+            reasons.push(
+              `contains a ${blob.length}-char high-entropy base64-ish blob`,
+            );
             break;
           }
         }

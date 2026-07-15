@@ -5,7 +5,7 @@
  * actions.json manifest pair. Shared by Workflows ("Import manifest") and
  * Agents ("Import manifest"). P2-FE-17.
  *
- * Steps: source → validate → diff → resolve → preview → deploy
+ * Steps: source → validate → diff → resolve → preview → publish
  *
  * Ported from `agentic-operator_v1_1/views/import-manifest.jsx` (809 LOC).
  * Wired end-to-end against `POST /v1/tenants/:slug/manifest-import` (modes
@@ -17,9 +17,11 @@
 
 import { useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import type {
-  ManifestImportOverwriteRequired,
-  ManifestImportPreview,
+import {
+  WorkflowDetailSchema,
+  type WorkflowDetail,
+  type ManifestImportOverwriteRequired,
+  type ManifestImportPreview,
 } from "@agentic/contracts";
 import {
   Badge,
@@ -33,7 +35,6 @@ import {
   type IconName,
 } from "@/app/portal/components";
 import { fmtBytes } from "@/lib/format";
-import { useDag, type DagAgent } from "@/lib/hooks/useAgents";
 import { tenantHeader } from "@/lib/hooks/tenant-header";
 import { useTenant } from "@/app/portal/lib/use-tenant";
 import { toast } from "@/app/portal/components/toast";
@@ -65,12 +66,42 @@ interface ConflictResolution {
 }
 
 const IMPORT_STEPS = [
-  { id: "source", label: "Source", icon: "upload" as IconName, hint: "Where the manifest comes from" },
-  { id: "validate", label: "Validate", icon: "check" as IconName, hint: "Parse + schema lint" },
-  { id: "diff", label: "Diff", icon: "git" as IconName, hint: "vs live workflow" },
-  { id: "resolve", label: "Resolve", icon: "alert" as IconName, hint: "Conflicts & gaps" },
-  { id: "preview", label: "Preview", icon: "workflow" as IconName, hint: "Imported graph" },
-  { id: "deploy", label: "Deploy", icon: "deploy" as IconName, hint: "Stage / prod" },
+  {
+    id: "source",
+    label: "Source",
+    icon: "upload" as IconName,
+    hint: "Where the manifest comes from",
+  },
+  {
+    id: "validate",
+    label: "Validate",
+    icon: "check" as IconName,
+    hint: "Parse + schema lint",
+  },
+  {
+    id: "diff",
+    label: "Diff",
+    icon: "git" as IconName,
+    hint: "vs live workflow",
+  },
+  {
+    id: "resolve",
+    label: "Resolve",
+    icon: "alert" as IconName,
+    hint: "Conflicts & gaps",
+  },
+  {
+    id: "preview",
+    label: "Preview",
+    icon: "workflow" as IconName,
+    hint: "Imported graph",
+  },
+  {
+    id: "publish",
+    label: "Publish",
+    icon: "deploy" as IconName,
+    hint: "Production only",
+  },
 ];
 
 // Static workflow ontology labels — mirrors the dashboard funnel so the
@@ -106,14 +137,32 @@ export interface ParsedManifest {
   issues: Array<{ level: "err" | "warn" | "info"; msg: string }>;
   diff: {
     added: Array<{ id: string; name: string; reason: string }>;
-    modified: Array<{ id: string; name: string; was?: string; changes: string[] }>;
+    modified: Array<{
+      id: string;
+      name: string;
+      was?: string;
+      changes: string[];
+    }>;
     removed: Array<{ id: string; name: string }>;
   };
-  conflicts: Array<{ kind: string; name: string; agent: string; note: string; resolved: string }>;
+  conflicts: Array<{
+    kind: string;
+    name: string;
+    agent: string;
+    note: string;
+    resolved: string;
+  }>;
   /** Pending-deployment session id — required by `commit`. */
-  deployment_id: string;
+  deployment_id?: string;
   /** Raw preview from the api (used by the commit body + overwrite modal). */
   raw: ManifestImportPreview;
+  /** Nodes parsed from the candidate manifest; never substituted with live DAG data. */
+  preview_agents: Array<{
+    id: string;
+    name: string;
+    actor: "Agent" | "Human";
+    stage: number;
+  }>;
 }
 
 /**
@@ -124,11 +173,40 @@ export interface ParsedManifest {
  */
 function previewToParsed(
   preview: ManifestImportPreview,
+  workflow: unknown,
 ): ParsedManifest {
   const errs = preview.issues.filter((i) => i.severity === "error");
   // The preview returns id-only diff entries (strings). The wizard renders
   // {id, name, reason} — we use the id as both because the api doesn't
   // round-trip the display name in the preview shape (yet).
+  const rawAgents = Array.isArray(workflow)
+    ? workflow
+    : workflow &&
+        typeof workflow === "object" &&
+        Array.isArray((workflow as { agents?: unknown }).agents)
+      ? (workflow as { agents: unknown[] }).agents
+      : [];
+  const previewAgents = rawAgents.flatMap((raw, index) => {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return [];
+    const agent = raw as Record<string, unknown>;
+    const id = typeof agent.id === "string" ? agent.id : `agent-${index + 1}`;
+    const actors = Array.isArray(agent.actor) ? agent.actor : [];
+    const actor: "Agent" | "Human" = actors[0] === "Human" ? "Human" : "Agent";
+    const stageMatch = id.match(/^(\d+)/);
+    return [
+      {
+        id,
+        name: typeof agent.name === "string" ? agent.name : id,
+        actor,
+        stage:
+          typeof agent.stage === "number"
+            ? agent.stage
+            : stageMatch
+              ? Number(stageMatch[1])
+              : 0,
+      },
+    ];
+  });
   return {
     workflow: {
       id: preview.workflow_version_id ?? "imported",
@@ -176,6 +254,7 @@ function previewToParsed(
     })),
     deployment_id: preview.deployment_id,
     raw: preview,
+    preview_agents: previewAgents,
   };
 }
 
@@ -194,12 +273,16 @@ export interface ImportManifestModalProps {
    * before the URL has been switched to the freshly created tenant.
    */
   tenantSlug?: string;
+  draftTarget?: { slug: string; name: string };
+  onDraftCreated?: (workflow: WorkflowDetail) => void;
 }
 
 export function ImportManifestModal({
   onClose,
   mode = "workflow",
   tenantSlug,
+  draftTarget,
+  onDraftCreated,
 }: ImportManifestModalProps) {
   // Fallback to the tenant in the URL when the caller didn't override.
   const urlTenant = useTenant();
@@ -216,15 +299,15 @@ export function ImportManifestModal({
   };
 
   const [step, setStep] = useState(0);
-  const [source, setSource] = useState<"file" | "paste" | "url" | "git">("file");
+  const [source, setSource] = useState<"file" | "paste" | "url">("file");
   const [files, setFiles] = useState<FileEntry[]>([]);
   const [pasted, setPasted] = useState("");
   const [url, setUrl] = useState("");
   const [validating, setValidating] = useState(false);
   const [parsed, setParsed] = useState<ParsedManifest | null>(null);
-  const [resolution, setResolution] = useState<{ model: string }>({ model: "fallback" });
-  const [deployTarget, setDeployTarget] = useState({ staging: true, prod: false });
-  const [autoRollback, setAutoRollback] = useState(true);
+  const [resolution, setResolution] = useState<{ model: string }>({
+    model: "fallback",
+  });
   // Raw manifest pair held between source-step parsing and the commit body.
   const [workflowRaw, setWorkflowRaw] = useState<unknown>(null);
   const [actionsRaw, setActionsRaw] = useState<unknown[] | null>(null);
@@ -253,8 +336,7 @@ export function ImportManifestModal({
     if (step === 0) {
       if (source === "file") return files.length > 0;
       if (source === "paste") return pasted.trim().length > 0;
-      if (source === "url") return /^https?:\/\//.test(url) || /^git@/.test(url);
-      if (source === "git") return true;
+      if (source === "url") return /^https:\/\//.test(url);
     }
     if (step === 1) return !!parsed && parsed.cycles === 0;
     return true;
@@ -324,9 +406,7 @@ export function ImportManifestModal({
               ? (body as { error?: { code?: string; message?: string } })
               : {};
           const code =
-            errObj.error?.code ??
-            errObj.error?.message ??
-            `HTTP ${res.status}`;
+            errObj.error?.code ?? errObj.error?.message ?? `HTTP ${res.status}`;
           setValidationError(`URL fetch failed: ${code}`);
           return;
         }
@@ -358,11 +438,6 @@ export function ImportManifestModal({
         );
         return;
       }
-    } else if (source === "git") {
-      setValidationError(
-        "Repo source is coming soon — use upload, paste, or URL.",
-      );
-      return;
     }
 
     if (!nextWorkflow) {
@@ -374,6 +449,8 @@ export function ImportManifestModal({
     setActionsRaw(nextActions);
 
     setValidating(true);
+    // Move to Validate immediately so network/schema failures remain visible
+    // on the step where they occurred.
     setStep(1);
     try {
       const res = await fetch(
@@ -389,6 +466,9 @@ export function ImportManifestModal({
             mode: "validate",
             workflow: nextWorkflow,
             actions: nextActions ?? undefined,
+            draft_only: Boolean(draftTarget),
+            workflow_slug: draftTarget?.slug,
+            workflow_name: draftTarget?.name,
           }),
         },
       );
@@ -408,15 +488,13 @@ export function ImportManifestModal({
             ? (body as { error?: { code?: string; message?: string } })
             : {};
         const detail =
-          errObj.error?.message ??
-          errObj.error?.code ??
-          `HTTP ${res.status}`;
+          errObj.error?.message ?? errObj.error?.code ?? `HTTP ${res.status}`;
         setValidationError(detail);
         setValidating(false);
         return;
       }
       const preview = unwrapEnvelope<ManifestImportPreview>(body);
-      setParsed(previewToParsed(preview));
+      setParsed(previewToParsed(preview, nextWorkflow));
       setValidating(false);
     } catch (e) {
       setValidationError(
@@ -432,7 +510,11 @@ export function ImportManifestModal({
    * missing (shouldn't happen on the happy path, but the legacy SPA's
    * self-heal pattern stays useful). 409 → OverwriteConfirmModal.
    */
-  async function runCommit({ confirmOverwrite }: { confirmOverwrite: boolean }) {
+  async function runCommit({
+    confirmOverwrite,
+  }: {
+    confirmOverwrite: boolean;
+  }) {
     if (!parsed || !parsed.deployment_id) {
       setCommitError(
         "No deployment session — go back to Source and re-validate.",
@@ -476,7 +558,7 @@ export function ImportManifestModal({
             mode: "commit",
             workflow: workflowRaw,
             actions: actionsRaw ?? undefined,
-            target: deployTarget.prod ? "production" : "staging",
+            target: "production",
             deployment_id: parsed.deployment_id,
             conflict_resolutions: resolutions,
             confirm_overwrite: !!confirmOverwrite,
@@ -504,17 +586,16 @@ export function ImportManifestModal({
               })
             : {};
         const detail =
-          errObj.error?.message ??
-          errObj.error?.code ??
-          `HTTP ${res.status}`;
+          errObj.error?.message ?? errObj.error?.code ?? `HTTP ${res.status}`;
         setCommitError(detail);
-        setCommitIssues(
-          Array.isArray(errObj.issues) ? errObj.issues : [],
-        );
+        setCommitIssues(Array.isArray(errObj.issues) ? errObj.issues : []);
         setCommitting(false);
         return;
       }
-      const committed = unwrapEnvelope<{ version?: string; workflow_version_id?: string }>(body);
+      const committed = unwrapEnvelope<{
+        version?: string;
+        workflow_version_id?: string;
+      }>(body);
       const versionLabel = committed.version ?? committed.workflow_version_id;
       toast({
         tone: "green",
@@ -547,6 +628,108 @@ export function ImportManifestModal({
       setCommitError(
         e instanceof Error ? e.message : "Network error during deploy",
       );
+      setCommitting(false);
+    }
+  }
+
+  function selectedResolutions(): ConflictResolution[] {
+    return (parsed?.raw.conflicts ?? []).map((conflict) => {
+      if (resolution.model === "skip" || !conflict.auto_fix) {
+        return { path: conflict.path, action: "skip" };
+      }
+      return {
+        path: conflict.path,
+        action: conflict.auto_fix.action,
+        ...(Object.prototype.hasOwnProperty.call(
+          conflict.auto_fix,
+          "override_value",
+        )
+          ? { override_value: conflict.auto_fix.override_value }
+          : {}),
+      };
+    });
+  }
+
+  async function createImportedDraft() {
+    if (!draftTarget || !parsed) return;
+    setCommitError(null);
+    setCommitIssues([]);
+    setCommitting(true);
+    try {
+      const validateResponse = await fetch(
+        `/v1/tenants/${encodeURIComponent(slug)}/manifest-import`,
+        {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "content-type": "application/json", ...tenantHeader() },
+          body: JSON.stringify({
+            mode: "validate",
+            workflow: workflowRaw,
+            actions: actionsRaw ?? undefined,
+            draft_only: true,
+            workflow_slug: draftTarget.slug,
+            workflow_name: draftTarget.name,
+            conflict_resolutions: selectedResolutions(),
+          }),
+        },
+      );
+      const validateBody = (await validateResponse
+        .json()
+        .catch(() => ({}))) as unknown;
+      if (!validateResponse.ok)
+        throw new Error(`Validation failed (HTTP ${validateResponse.status}).`);
+      const normalized = unwrapEnvelope<ManifestImportPreview>(validateBody);
+      const blockingIssues = normalized.issues.filter(
+        (issue) => issue.severity === "error",
+      );
+      const blockingConflicts = normalized.conflicts.filter(
+        (conflict) => conflict.severity === "block",
+      );
+      if (blockingIssues.length || blockingConflicts.length) {
+        setCommitError(
+          "Resolve every blocking validation issue before creating the draft.",
+        );
+        setCommitIssues(blockingIssues);
+        return;
+      }
+      if (!normalized.normalized_workflow) {
+        throw new Error("Validation did not return a normalized workflow.");
+      }
+      const createResponse = await fetch("/v1/workflows", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json", ...tenantHeader() },
+        body: JSON.stringify({
+          slug: draftTarget.slug,
+          name: draftTarget.name,
+          description: "Created from an imported manifest.",
+          source: {
+            type: "manifest",
+            manifest: normalized.normalized_workflow,
+            actions: normalized.normalized_actions ?? undefined,
+          },
+        }),
+      });
+      const createBody = (await createResponse
+        .json()
+        .catch(() => ({}))) as unknown;
+      if (!createResponse.ok)
+        throw new Error(
+          `Draft creation failed (HTTP ${createResponse.status}).`,
+        );
+      const workflow = WorkflowDetailSchema.parse(unwrapEnvelope(createBody));
+      toast({
+        tone: "green",
+        title: "Workflow draft created",
+        description: `${workflow.name} is ready to edit.`,
+      });
+      onDraftCreated?.(workflow);
+      onClose();
+    } catch (error) {
+      setCommitError(
+        error instanceof Error ? error.message : "Draft creation failed.",
+      );
+    } finally {
       setCommitting(false);
     }
   }
@@ -621,10 +804,35 @@ export function ImportManifestModal({
     void handleFiles(e.dataTransfer.files);
   }
 
-  const title = mode === "agent" ? "Import agent manifest" : "Import workflow manifest";
+  async function closeAndRelease(): Promise<void> {
+    const deploymentId = parsed?.deployment_id;
+    if (deploymentId) {
+      try {
+        await fetch(
+          `/v1/tenants/${encodeURIComponent(slug)}/manifest-import/${encodeURIComponent(deploymentId)}`,
+          {
+            method: "DELETE",
+            credentials: "same-origin",
+            headers: tenantHeader(),
+          },
+        );
+      } catch {
+        // The pending lock expires server-side; closing must remain possible
+        // when the API is temporarily unreachable.
+      }
+    }
+    onClose();
+  }
+
+  function requestClose(): void {
+    void closeAndRelease();
+  }
+
+  const title =
+    mode === "agent" ? "Import agent manifest" : "Import workflow manifest";
 
   return (
-    <ModalOverlay onClose={onClose}>
+    <ModalOverlay onClose={requestClose}>
       <div
         style={{
           width: 980,
@@ -638,24 +846,65 @@ export function ImportManifestModal({
           flexDirection: "column",
         }}
       >
-        <header style={{ display: "flex", alignItems: "center", gap: 10, padding: "14px 18px", borderBottom: "1px solid var(--border)" }}>
+        <header
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            padding: "14px 18px",
+            borderBottom: "1px solid var(--border)",
+          }}
+        >
           <Icon name="upload" size={14} style={{ color: "var(--signal)" }} />
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 14, color: "var(--text)", fontWeight: 500 }}>{title}</div>
+            <div
+              style={{ fontSize: 14, color: "var(--text)", fontWeight: 500 }}
+            >
+              {title}
+            </div>
             <div style={{ fontSize: 11, color: "var(--text-3)" }}>
               Accepts a v1 or v2 manifest pair:{" "}
-              <span className="mono" style={{ color: "var(--text-2)" }}>workflow.json</span> +{" "}
-              <span className="mono" style={{ color: "var(--text-2)" }}>actions.json</span>. Validates, diffs against the live workflow, then deploys to staging.
+              <span className="mono" style={{ color: "var(--text-2)" }}>
+                workflow.json
+              </span>{" "}
+              +{" "}
+              <span className="mono" style={{ color: "var(--text-2)" }}>
+                actions.json
+              </span>
+              . Validates, diffs against the live workflow, then publishes only
+              after confirmation.
             </div>
           </div>
-          <button onClick={onClose} style={{ color: "var(--text-3)" }}>
+          <button
+            onClick={requestClose}
+            aria-label="Close import wizard"
+            style={{ color: "var(--text-3)" }}
+          >
             <Icon name="x" size={13} />
           </button>
         </header>
 
-        <div style={{ display: "flex", padding: "10px 18px", borderBottom: "1px solid var(--border)", background: "var(--bg-2)", gap: 4 }}>
+        <div
+          style={{
+            display: "flex",
+            padding: "10px 18px",
+            borderBottom: "1px solid var(--border)",
+            background: "var(--bg-2)",
+            gap: 4,
+          }}
+        >
           {IMPORT_STEPS.map((s, i) => (
-            <ImportStepDot key={s.id} step={s} idx={i} active={step === i} done={i < step} />
+            <ImportStepDot
+              key={s.id}
+              step={
+                draftTarget && i === IMPORT_STEPS.length - 1
+                  ? { ...s, label: "Create draft", hint: "Editable, not live" }
+                  : s
+              }
+              idx={i}
+              active={step === i}
+              done={i < step}
+            />
           ))}
         </div>
 
@@ -676,7 +925,12 @@ export function ImportManifestModal({
               onDrop={onDrop}
             />
           )}
-          {step === 1 && (validating ? <ValidatingState /> : <ValidateStep parsed={parsed} />)}
+          {step === 1 &&
+            (validating ? (
+              <ValidatingState />
+            ) : (
+              <ValidateStep parsed={parsed} />
+            ))}
           {step === 2 && parsed && <DiffStep parsed={parsed} />}
           {step === 3 && parsed && (
             <ResolveStep
@@ -688,18 +942,20 @@ export function ImportManifestModal({
           )}
           {step === 4 && parsed && <PreviewStep parsed={parsed} />}
           {step === 5 && parsed && (
-            <DeployStep
-              parsed={parsed}
-              target={deployTarget}
-              setTarget={setDeployTarget}
-              autoRollback={autoRollback}
-              setAutoRollback={setAutoRollback}
-              mode={mode}
-            />
+            <DeployStep parsed={parsed} mode={mode} draftTarget={draftTarget} />
           )}
         </div>
 
-        <footer style={{ display: "flex", alignItems: "center", gap: 8, padding: "12px 18px", borderTop: "1px solid var(--border)", background: "var(--panel-2)" }}>
+        <footer
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            padding: "12px 18px",
+            borderTop: "1px solid var(--border)",
+            background: "var(--panel-2)",
+          }}
+        >
           {step > 0 && (
             <Button tone="ghost" icon="chevron-left" onClick={back}>
               Back
@@ -709,18 +965,36 @@ export function ImportManifestModal({
             Step {step + 1} of {IMPORT_STEPS.length}
           </span>
           {step === 2 && parsed && (
-            <span style={{ marginLeft: 14, fontSize: 11, fontFamily: "var(--mono)", color: "var(--text-3)" }}>
-              <span style={{ color: "var(--green)" }}>+{parsed.diff.added.length}</span>{" "}
-              <span style={{ color: "var(--amber)" }}>~{parsed.diff.modified.length}</span>{" "}
-              <span style={{ color: "var(--red)" }}>−{parsed.diff.removed.length}</span>
+            <span
+              style={{
+                marginLeft: 14,
+                fontSize: 11,
+                fontFamily: "var(--mono)",
+                color: "var(--text-3)",
+              }}
+            >
+              <span style={{ color: "var(--green)" }}>
+                +{parsed.diff.added.length}
+              </span>{" "}
+              <span style={{ color: "var(--amber)" }}>
+                ~{parsed.diff.modified.length}
+              </span>{" "}
+              <span style={{ color: "var(--red)" }}>
+                −{parsed.diff.removed.length}
+              </span>
             </span>
           )}
           <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
-            <Button tone="ghost" onClick={onClose}>
+            <Button tone="ghost" onClick={requestClose}>
               Cancel
             </Button>
             {step < IMPORT_STEPS.length - 1 ? (
-              <Button tone="primary" icon="chevron-right" onClick={next} disabled={!canAdvance}>
+              <Button
+                tone="primary"
+                icon="chevron-right"
+                onClick={next}
+                disabled={!canAdvance}
+              >
                 {step === 0 ? "Validate" : "Continue"}
               </Button>
             ) : (
@@ -731,14 +1005,21 @@ export function ImportManifestModal({
                   committing
                     ? undefined
                     : () => {
-                        void runCommit({ confirmOverwrite: false });
+                        if (draftTarget) void createImportedDraft();
+                        else void runCommit({ confirmOverwrite: false });
                       }
                 }
-                disabled={committing || !parsed?.deployment_id}
+                disabled={
+                  committing || (!draftTarget && !parsed?.deployment_id)
+                }
               >
                 {committing
-                  ? "Deploying…"
-                  : `Deploy to ${deployTarget.prod ? "prod" : "staging"}`}
+                  ? draftTarget
+                    ? "Creating draft…"
+                    : "Publishing…"
+                  : draftTarget
+                    ? "Create editable draft"
+                    : "Publish live"}
               </Button>
             )}
           </div>
@@ -749,7 +1030,7 @@ export function ImportManifestModal({
         {/* Inline validation / commit error surfaces. The wizard's step
             bodies don't carry a global error chrome — these slips below
             the footer are the legacy SPA's pattern. */}
-        {validationError && step === 0 && (
+        {validationError && (step === 0 || step === 1) && (
           <div
             style={{
               padding: "10px 18px",
@@ -789,7 +1070,12 @@ export function ImportManifestModal({
               overflow: "auto",
             }}
           >
-            <div style={{ fontWeight: 500, marginBottom: commitIssues.length ? 6 : 0 }}>
+            <div
+              style={{
+                fontWeight: 500,
+                marginBottom: commitIssues.length ? 6 : 0,
+              }}
+            >
               {commitError}
             </div>
             {commitIssues.length > 0 && (
@@ -802,7 +1088,9 @@ export function ImportManifestModal({
                     >
                       {iss.path}
                     </span>
-                    <span style={{ color: "var(--text-2)" }}>{iss.message}</span>
+                    <span style={{ color: "var(--text-2)" }}>
+                      {iss.message}
+                    </span>
                     <span
                       className="mono"
                       style={{ color: "var(--text-3)", marginLeft: 6 }}
@@ -830,7 +1118,7 @@ export function ImportManifestModal({
         )}
       </div>
 
-      {overwriteRequired && (
+      {!draftTarget && overwriteRequired && (
         <OverwriteConfirmModal
           payload={{
             ...overwriteRequired,
@@ -927,7 +1215,7 @@ function SourceStep({
   onDrop,
 }: {
   source: "file" | "paste" | "url" | "git";
-  setSource: (s: "file" | "paste" | "url" | "git") => void;
+  setSource: (s: "file" | "paste" | "url") => void;
   files: FileEntry[];
   handleFiles: (list: FileList | null) => void | Promise<void>;
   pasted: string;
@@ -941,12 +1229,47 @@ function SourceStep({
 }) {
   return (
     <div>
-      <div style={{ fontSize: 11, fontFamily: "var(--mono)", textTransform: "uppercase", color: "var(--text-3)", letterSpacing: "0.08em", marginBottom: 10 }}>Source</div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, marginBottom: 18 }}>
-        <SourceCard active={source === "file"} onClick={() => setSource("file")} icon="upload" title="Upload files" sub="Drop workflow.json + actions.json" />
-        <SourceCard active={source === "paste"} onClick={() => setSource("paste")} icon="code" title="Paste JSON" sub="Paste a combined manifest" />
-        <SourceCard active={source === "url"} onClick={() => setSource("url")} icon="external" title="From URL" sub="HTTPS or git+ssh" />
-        <SourceCard active={source === "git"} onClick={() => setSource("git")} icon="git" title="From repo" sub="agentic/raas-workflows" />
+      <div
+        style={{
+          fontSize: 11,
+          fontFamily: "var(--mono)",
+          textTransform: "uppercase",
+          color: "var(--text-3)",
+          letterSpacing: "0.08em",
+          marginBottom: 10,
+        }}
+      >
+        Source
+      </div>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(3, 1fr)",
+          gap: 8,
+          marginBottom: 18,
+        }}
+      >
+        <SourceCard
+          active={source === "file"}
+          onClick={() => setSource("file")}
+          icon="upload"
+          title="Upload files"
+          sub="Drop workflow.json + actions.json"
+        />
+        <SourceCard
+          active={source === "paste"}
+          onClick={() => setSource("paste")}
+          icon="code"
+          title="Paste JSON"
+          sub="Paste a combined manifest"
+        />
+        <SourceCard
+          active={source === "url"}
+          onClick={() => setSource("url")}
+          icon="external"
+          title="From URL"
+          sub="HTTPS JSON"
+        />
       </div>
 
       {source === "file" && (
@@ -967,10 +1290,18 @@ function SourceStep({
           >
             <Icon name="upload" size={22} style={{ color: "var(--text-3)" }} />
             <div style={{ marginTop: 8, fontSize: 13, color: "var(--text-2)" }}>
-              Drop <span className="mono" style={{ color: "var(--text)" }}>workflow.json</span> and{" "}
-              <span className="mono" style={{ color: "var(--text)" }}>actions.json</span>
+              Drop{" "}
+              <span className="mono" style={{ color: "var(--text)" }}>
+                workflow.json
+              </span>{" "}
+              and{" "}
+              <span className="mono" style={{ color: "var(--text)" }}>
+                actions.json
+              </span>
             </div>
-            <div style={{ marginTop: 4, fontSize: 11.5, color: "var(--text-3)" }}>
+            <div
+              style={{ marginTop: 4, fontSize: 11.5, color: "var(--text-3)" }}
+            >
               or{" "}
               <label style={{ color: "var(--signal)", cursor: "pointer" }}>
                 browse files
@@ -987,7 +1318,14 @@ function SourceStep({
           </div>
 
           {files.length > 0 && (
-            <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 4 }}>
+            <div
+              style={{
+                marginTop: 12,
+                display: "flex",
+                flexDirection: "column",
+                gap: 4,
+              }}
+            >
               {files.map((f, i) => (
                 <div
                   key={i}
@@ -1001,10 +1339,32 @@ function SourceStep({
                     borderRadius: 4,
                   }}
                 >
-                  <Icon name="code" size={12} style={{ color: f.ok ? "var(--green)" : "var(--amber)" }} />
-                  <span className="mono" style={{ fontSize: 12, color: "var(--text)" }}>{f.name}</span>
-                  <span style={{ marginLeft: "auto", fontSize: 11, fontFamily: "var(--mono)", color: "var(--text-3)" }}>{fmtBytes(f.size)}</span>
-                  {f.ok ? <Badge tone="green">DETECTED</Badge> : <Badge tone="amber">UNKNOWN ROLE</Badge>}
+                  <Icon
+                    name="code"
+                    size={12}
+                    style={{ color: f.ok ? "var(--green)" : "var(--amber)" }}
+                  />
+                  <span
+                    className="mono"
+                    style={{ fontSize: 12, color: "var(--text)" }}
+                  >
+                    {f.name}
+                  </span>
+                  <span
+                    style={{
+                      marginLeft: "auto",
+                      fontSize: 11,
+                      fontFamily: "var(--mono)",
+                      color: "var(--text-3)",
+                    }}
+                  >
+                    {fmtBytes(f.size)}
+                  </span>
+                  {f.ok ? (
+                    <Badge tone="green">DETECTED</Badge>
+                  ) : (
+                    <Badge tone="amber">UNKNOWN ROLE</Badge>
+                  )}
                 </div>
               ))}
             </div>
@@ -1012,16 +1372,32 @@ function SourceStep({
         </div>
       )}
 
-      {source === "paste" && <MonacoEditor value={pasted} onChange={setPasted} language="json" height={320} />}
+      {source === "paste" && (
+        <MonacoEditor
+          value={pasted}
+          onChange={setPasted}
+          language="json"
+          height={320}
+        />
+      )}
 
       {source === "url" && (
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <div>
-            <label style={{ display: "block", fontSize: 11, color: "var(--text-2)", marginBottom: 4 }}>Manifest URL</label>
+            <label
+              style={{
+                display: "block",
+                fontSize: 11,
+                color: "var(--text-2)",
+                marginBottom: 4,
+              }}
+            >
+              Manifest URL
+            </label>
             <input
               value={url}
               onChange={(e) => setUrl(e.target.value)}
-              placeholder="https://raw.githubusercontent.com/your-org/raas-workflows/main/dist/manifest.zip"
+              placeholder="https://raw.githubusercontent.com/your-org/workflows/main/workflow.json"
               style={{
                 width: "100%",
                 padding: "8px 12px",
@@ -1035,34 +1411,13 @@ function SourceStep({
               }}
             />
             <div style={{ marginTop: 6, fontSize: 11, color: "var(--text-3)" }}>
-              We&apos;ll <span className="mono">GET</span> the URL and look for a{" "}
-              <span className="mono">manifest.zip</span> or a JSON bundle. SSH git URLs are also supported if a deploy key is provisioned.
+              We&apos;ll <span className="mono">GET</span> an HTTPS URL
+              containing a workflow manifest or JSON bundle.
             </div>
           </div>
-          <div style={{ padding: "10px 12px", background: "var(--panel-2)", border: "1px solid var(--border)", borderRadius: 4 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-              <Icon name="alert" size={11} style={{ color: "var(--amber)" }} />
-              <span style={{ fontSize: 12, color: "var(--text)" }}>Egress allow-list</span>
-            </div>
-            <div style={{ fontSize: 11.5, color: "var(--text-3)", lineHeight: 1.55 }}>
-              Outbound fetches go through the workspace egress proxy.{" "}
-              <span className="mono">github.com</span> and <span className="mono">*.amazonaws.com</span> are pre-allowed. Add more in Settings → Integrations.
-            </div>
-          </div>
-        </div>
-      )}
-
-      {source === "git" && (
-        <div>
-          <div style={{ marginBottom: 8, fontSize: 11, fontFamily: "var(--mono)", textTransform: "uppercase", color: "var(--text-3)", letterSpacing: "0.08em" }}>Connected repositories</div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            <RepoOption name="agentic/raas-workflows" branch="main" path="dist/manifest.zip" connected lastBuilt="3 minutes ago" />
-            <RepoOption name="agentic/raas-workflows" branch="v2-rewrite" path="dist/manifest.zip" connected lastBuilt="11 hours ago · ✓ green" recommended />
-            <RepoOption name="agentic/supportflow" branch="main" path="dist/manifest.zip" connected lastBuilt="2 days ago" />
-            <button style={{ padding: "8px 12px", textAlign: "left", background: "var(--panel-2)", border: "1px dashed var(--border-2)", borderRadius: 4, fontSize: 11.5, color: "var(--text-3)" }}>
-              <Icon name="plus" size={11} style={{ marginRight: 6 }} />
-              Connect another repo…
-            </button>
+          <div style={{ fontSize: 11, color: "var(--text-3)" }}>
+            The server validates the URL and returns a clear error when a source
+            cannot be fetched.
           </div>
         </div>
       )}
@@ -1096,55 +1451,27 @@ function SourceCard({
         transition: "background 0.12s, border-color 0.12s",
       }}
     >
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 5 }}>
-        <Icon name={icon} size={12} style={{ color: active ? "var(--signal)" : "var(--text-2)" }} />
-        <span style={{ fontSize: 12.5, color: "var(--text)", fontWeight: 500 }}>{title}</span>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          marginBottom: 5,
+        }}
+      >
+        <Icon
+          name={icon}
+          size={12}
+          style={{ color: active ? "var(--signal)" : "var(--text-2)" }}
+        />
+        <span style={{ fontSize: 12.5, color: "var(--text)", fontWeight: 500 }}>
+          {title}
+        </span>
       </div>
-      <div style={{ fontSize: 11, color: "var(--text-3)", lineHeight: 1.45 }}>{sub}</div>
+      <div style={{ fontSize: 11, color: "var(--text-3)", lineHeight: 1.45 }}>
+        {sub}
+      </div>
     </button>
-  );
-}
-
-function RepoOption({
-  name,
-  branch,
-  path,
-  connected,
-  lastBuilt,
-  recommended,
-}: {
-  name: string;
-  branch: string;
-  path: string;
-  connected?: boolean;
-  lastBuilt: string;
-  recommended?: boolean;
-}) {
-  return (
-    <label
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 10,
-        padding: "10px 12px",
-        background: recommended ? "rgba(208,255,0,0.04)" : "var(--panel-2)",
-        border: `1px solid ${recommended ? "rgba(208,255,0,0.30)" : "var(--border)"}`,
-        borderRadius: 4,
-        cursor: "pointer",
-      }}
-    >
-      <input type="radio" name="repo" defaultChecked={recommended} style={{ accentColor: "var(--signal)" }} />
-      <Icon name="git" size={12} style={{ color: "var(--text-3)" }} />
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <span className="mono" style={{ fontSize: 12, color: "var(--text)" }}>{name}</span>
-          <Badge tone="muted">{branch}</Badge>
-          {recommended && <Badge tone="signal">RECOMMENDED</Badge>}
-        </div>
-        <div style={{ fontSize: 10.5, color: "var(--text-3)", fontFamily: "var(--mono)", marginTop: 2 }}>{path} · {lastBuilt}</div>
-      </div>
-      {connected && <span style={{ fontSize: 10, color: "var(--green)", fontFamily: "var(--mono)" }}>● CONNECTED</span>}
-    </label>
   );
 }
 
@@ -1162,9 +1489,12 @@ function ValidatingState() {
           animation: "spin 0.8s linear infinite",
         }}
       />
-      <div style={{ marginTop: 16, fontSize: 13, color: "var(--text)" }}>Validating manifest…</div>
+      <div style={{ marginTop: 16, fontSize: 13, color: "var(--text)" }}>
+        Validating manifest…
+      </div>
       <div style={{ marginTop: 6, fontSize: 11.5, color: "var(--text-3)" }}>
-        Parsing JSON · resolving event references · checking for cycles · type-checking handlers
+        Parsing JSON · resolving event references · checking for cycles ·
+        type-checking handlers
       </div>
     </div>
   );
@@ -1186,7 +1516,12 @@ function ValidateStep({ parsed }: { parsed: ParsedManifest | null }) {
         }}
       >
         <ValidateCell label="Workflow" value={parsed.workflow.id} mono />
-        <ValidateCell label="Version" value={parsed.workflow.version} mono accent="var(--signal)" />
+        <ValidateCell
+          label="Version"
+          value={parsed.workflow.version}
+          mono
+          accent="var(--signal)"
+        />
         <ValidateCell label="Agents" value={parsed.workflow.agent_count} mono />
         <ValidateCell label="Events" value={parsed.workflow.event_count} mono />
         <ValidateCell
@@ -1206,16 +1541,44 @@ function ValidateStep({ parsed }: { parsed: ParsedManifest | null }) {
               alignItems: "center",
               gap: 10,
               padding: "8px 14px",
-              borderBottom: i < parsed.issues.length - 1 ? "1px solid var(--border)" : "none",
+              borderBottom:
+                i < parsed.issues.length - 1
+                  ? "1px solid var(--border)"
+                  : "none",
             }}
           >
             <Icon
-              name={iss.level === "err" ? "alert" : iss.level === "warn" ? "alert" : "check"}
+              name={
+                iss.level === "err"
+                  ? "alert"
+                  : iss.level === "warn"
+                    ? "alert"
+                    : "check"
+              }
               size={11}
-              style={{ color: iss.level === "err" ? "var(--red)" : iss.level === "warn" ? "var(--amber)" : "var(--green)" }}
+              style={{
+                color:
+                  iss.level === "err"
+                    ? "var(--red)"
+                    : iss.level === "warn"
+                      ? "var(--amber)"
+                      : "var(--green)",
+              }}
             />
-            <span style={{ fontSize: 12, color: "var(--text-2)" }}>{iss.msg}</span>
-            <span style={{ marginLeft: "auto", fontSize: 10, fontFamily: "var(--mono)", textTransform: "uppercase", color: "var(--text-3)" }}>{iss.level}</span>
+            <span style={{ fontSize: 12, color: "var(--text-2)" }}>
+              {iss.msg}
+            </span>
+            <span
+              style={{
+                marginLeft: "auto",
+                fontSize: 10,
+                fontFamily: "var(--mono)",
+                textTransform: "uppercase",
+                color: "var(--text-3)",
+              }}
+            >
+              {iss.level}
+            </span>
           </div>
         ))}
       </Panel>
@@ -1235,9 +1598,30 @@ function ValidateCell({
   accent?: string;
 }) {
   return (
-    <div style={{ padding: "10px 14px", borderRight: "1px solid var(--border)" }}>
-      <div style={{ fontSize: 10, fontFamily: "var(--mono)", textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--text-3)" }}>{label}</div>
-      <div style={{ marginTop: 4, fontSize: 16, fontFamily: mono ? "var(--mono)" : "var(--sans)", color: accent ?? "var(--text)" }}>{value}</div>
+    <div
+      style={{ padding: "10px 14px", borderRight: "1px solid var(--border)" }}
+    >
+      <div
+        style={{
+          fontSize: 10,
+          fontFamily: "var(--mono)",
+          textTransform: "uppercase",
+          letterSpacing: "0.08em",
+          color: "var(--text-3)",
+        }}
+      >
+        {label}
+      </div>
+      <div
+        style={{
+          marginTop: 4,
+          fontSize: 16,
+          fontFamily: mono ? "var(--mono)" : "var(--sans)",
+          color: accent ?? "var(--text)",
+        }}
+      >
+        {value}
+      </div>
     </div>
   );
 }
@@ -1247,13 +1631,17 @@ function DiffStep({ parsed }: { parsed: ParsedManifest }) {
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
       <Panel
         title="Agent diff vs live"
-        subtitle={`live: raas@2026.05.16-a → imported: ${parsed.workflow.version}`}
+        subtitle={`Live workflow → candidate ${parsed.workflow.version}`}
         padded={false}
       >
         <DiffGroup
           label="Added"
           tone="green"
-          items={parsed.diff.added.map((a) => ({ key: a.id, name: a.name, sub: a.reason }))}
+          items={parsed.diff.added.map((a) => ({
+            key: a.id,
+            name: a.name,
+            sub: a.reason,
+          }))}
         />
         <DiffGroup
           label="Modified"
@@ -1261,22 +1649,47 @@ function DiffStep({ parsed }: { parsed: ParsedManifest }) {
           items={parsed.diff.modified.map((a) => ({
             key: a.id,
             name: a.name,
-            sub: (a.was ? `id ${a.was} → ${a.id} · ` : "") + a.changes.join(", "),
+            sub:
+              (a.was ? `id ${a.was} → ${a.id} · ` : "") + a.changes.join(", "),
           }))}
         />
         <DiffGroup
           label="Removed"
           tone="red"
-          items={parsed.diff.removed.map((a) => ({ key: a.id, name: a.name, sub: "" }))}
+          items={parsed.diff.removed.map((a) => ({
+            key: a.id,
+            name: a.name,
+            sub: "",
+          }))}
         />
       </Panel>
 
       <Panel title="Schema diff · new properties on existing agents" padded>
-        <div style={{ fontSize: 12, color: "var(--text-2)", lineHeight: 1.6, marginBottom: 10 }}>
-          The v2 manifest adds four properties on every agent. Existing agents will be augmented in place; their event signatures and stages are unchanged.
+        <div
+          style={{
+            fontSize: 12,
+            color: "var(--text-2)",
+            lineHeight: 1.6,
+            marginBottom: 10,
+          }}
+        >
+          The v2 manifest adds four properties on every agent. Existing agents
+          will be augmented in place; their event signatures and stages are
+          unchanged.
         </div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 8 }}>
-          {["input_data", "ontology_instructions", "tool_use", "typescript_code"].map((p) => (
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(2, 1fr)",
+            gap: 8,
+          }}
+        >
+          {[
+            "input_data",
+            "ontology_instructions",
+            "tool_use",
+            "typescript_code",
+          ].map((p) => (
             <div
               key={p}
               style={{
@@ -1290,8 +1703,21 @@ function DiffStep({ parsed }: { parsed: ParsedManifest }) {
               }}
             >
               <Icon name="plus" size={11} style={{ color: "var(--signal)" }} />
-              <span className="mono" style={{ fontSize: 12, color: "var(--text)" }}>{p}</span>
-              <span style={{ marginLeft: "auto", fontSize: 10.5, color: "var(--text-3)" }}>+ on 22 agents</span>
+              <span
+                className="mono"
+                style={{ fontSize: 12, color: "var(--text)" }}
+              >
+                {p}
+              </span>
+              <span
+                style={{
+                  marginLeft: "auto",
+                  fontSize: 10.5,
+                  color: "var(--text-3)",
+                }}
+              >
+                + on 22 agents
+              </span>
             </div>
           ))}
         </div>
@@ -1310,20 +1736,65 @@ function DiffGroup({
   items: Array<{ key: string; name: string; sub: string }>;
 }) {
   const sigil = label === "Added" ? "+" : label === "Removed" ? "−" : "~";
-  const toneVar = tone === "green" ? "var(--green)" : tone === "amber" ? "var(--amber)" : "var(--red)";
+  const toneVar =
+    tone === "green"
+      ? "var(--green)"
+      : tone === "amber"
+        ? "var(--amber)"
+        : "var(--red)";
   if (items.length === 0) {
     return (
-      <div style={{ padding: "8px 14px", borderBottom: "1px solid var(--border)", fontSize: 11.5, color: "var(--text-3)" }}>
-        <span style={{ color: toneVar, fontFamily: "var(--mono)", marginRight: 8 }}>{sigil}</span>
+      <div
+        style={{
+          padding: "8px 14px",
+          borderBottom: "1px solid var(--border)",
+          fontSize: 11.5,
+          color: "var(--text-3)",
+        }}
+      >
+        <span
+          style={{ color: toneVar, fontFamily: "var(--mono)", marginRight: 8 }}
+        >
+          {sigil}
+        </span>
         {label}: none
       </div>
     );
   }
   return (
     <div style={{ borderBottom: "1px solid var(--border)" }}>
-      <div style={{ padding: "8px 14px", display: "flex", alignItems: "center", gap: 8, background: "var(--panel-2)" }}>
-        <span style={{ color: toneVar, fontFamily: "var(--mono)", fontSize: 13, fontWeight: 700, width: 12, textAlign: "center" }}>{sigil}</span>
-        <span style={{ fontSize: 11, fontFamily: "var(--mono)", textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--text-2)" }}>{label} · {items.length}</span>
+      <div
+        style={{
+          padding: "8px 14px",
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          background: "var(--panel-2)",
+        }}
+      >
+        <span
+          style={{
+            color: toneVar,
+            fontFamily: "var(--mono)",
+            fontSize: 13,
+            fontWeight: 700,
+            width: 12,
+            textAlign: "center",
+          }}
+        >
+          {sigil}
+        </span>
+        <span
+          style={{
+            fontSize: 11,
+            fontFamily: "var(--mono)",
+            textTransform: "uppercase",
+            letterSpacing: "0.08em",
+            color: "var(--text-2)",
+          }}
+        >
+          {label} · {items.length}
+        </span>
       </div>
       {items.map((it) => (
         <div
@@ -1337,7 +1808,9 @@ function DiffGroup({
           }}
         >
           <Badge tone="muted">{it.key}</Badge>
-          <span className="mono" style={{ fontSize: 12, color: "var(--text)" }}>{it.name}</span>
+          <span className="mono" style={{ fontSize: 12, color: "var(--text)" }}>
+            {it.name}
+          </span>
           <span
             style={{
               marginLeft: "auto",
@@ -1414,14 +1887,25 @@ function ResolveStep({
             color: "var(--text-2)",
           }}
         >
-          <Icon name="alert" size={11} style={{ color: "var(--amber)", marginTop: 2 }} />
+          <Icon
+            name="alert"
+            size={11}
+            style={{ color: "var(--amber)", marginTop: 2 }}
+          />
           <div>
-            <div style={{ color: "var(--text)", fontWeight: 500, marginBottom: 2 }}>
-              {dropNames.length}{" "}
-              {dropNames.length === 1 ? "agent" : "agents"} will be dropped from
-              this import
+            <div
+              style={{ color: "var(--text)", fontWeight: 500, marginBottom: 2 }}
+            >
+              {dropNames.length} {dropNames.length === 1 ? "agent" : "agents"}{" "}
+              will be dropped from this import
             </div>
-            <div style={{ color: "var(--text-3)", fontFamily: "var(--mono)", fontSize: 11 }}>
+            <div
+              style={{
+                color: "var(--text-3)",
+                fontFamily: "var(--mono)",
+                fontSize: 11,
+              }}
+            >
               {dropNames.slice(0, 8).join(", ")}
               {dropNames.length > 8 ? ` · +${dropNames.length - 8} more` : ""}
             </div>
@@ -1443,21 +1927,77 @@ function ResolveStep({
             key={i}
             style={{
               padding: "12px 14px",
-              borderBottom: i < parsed.conflicts.length - 1 ? "1px solid var(--border)" : "none",
+              borderBottom:
+                i < parsed.conflicts.length - 1
+                  ? "1px solid var(--border)"
+                  : "none",
             }}
           >
-            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                marginBottom: 8,
+              }}
+            >
               <Badge tone="amber">{c.kind}</Badge>
-              <span className="mono" style={{ fontSize: 12, color: "var(--text)" }}>{c.name}</span>
-              <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--text-3)" }}>
+              <span
+                className="mono"
+                style={{ fontSize: 12, color: "var(--text)" }}
+              >
+                {c.name}
+              </span>
+              <span
+                style={{
+                  marginLeft: "auto",
+                  fontSize: 11,
+                  color: "var(--text-3)",
+                }}
+              >
                 referenced by <span className="mono">{c.agent}</span>
               </span>
             </div>
-            <div style={{ fontSize: 11.5, color: "var(--text-2)", marginBottom: 10 }}>{c.note}</div>
-            <div style={{ display: "flex", gap: 0, border: "1px solid var(--border-2)", borderRadius: 4, overflow: "hidden", width: "fit-content" }}>
-              <ResolveOption value="fallback" current={resolution.model} setCurrent={(v) => setResolution({ ...resolution, model: v })} label="Use fallback" hint="claude-sonnet-4-5" />
-              <ResolveOption value="connect" current={resolution.model} setCurrent={(v) => setResolution({ ...resolution, model: v })} label="Connect OpenAI" hint="adds gpt-4.1" />
-              <ResolveOption value="skip" current={resolution.model} setCurrent={(v) => setResolution({ ...resolution, model: v })} label="Skip agent" hint="drops the agent" />
+            <div
+              style={{
+                fontSize: 11.5,
+                color: "var(--text-2)",
+                marginBottom: 10,
+              }}
+            >
+              {c.note}
+            </div>
+            <div
+              style={{
+                display: "flex",
+                gap: 0,
+                border: "1px solid var(--border-2)",
+                borderRadius: 4,
+                overflow: "hidden",
+                width: "fit-content",
+              }}
+            >
+              <ResolveOption
+                value="fallback"
+                current={resolution.model}
+                setCurrent={(v) => setResolution({ ...resolution, model: v })}
+                label="Use fallback"
+                hint="claude-sonnet-4-5"
+              />
+              <ResolveOption
+                value="connect"
+                current={resolution.model}
+                setCurrent={(v) => setResolution({ ...resolution, model: v })}
+                label="Connect OpenAI"
+                hint="adds gpt-4.1"
+              />
+              <ResolveOption
+                value="skip"
+                current={resolution.model}
+                setCurrent={(v) => setResolution({ ...resolution, model: v })}
+                label="Skip agent"
+                hint="drops the agent"
+              />
             </div>
           </div>
         ))}
@@ -1465,9 +2005,21 @@ function ResolveStep({
 
       <Panel title="ID conflicts" padded>
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          <ResolveLine ok label="matchResume" hint="id changes 10 → 10-2 · auto-rewires triggers/emits" />
-          <ResolveLine ok label="recallStockCandidates" hint="new id 10-1 · no conflict" />
-          <ResolveLine ok label="all event names match" hint="33 events checked against live registry" />
+          <ResolveLine
+            ok
+            label="matchResume"
+            hint="id changes 10 → 10-2 · auto-rewires triggers/emits"
+          />
+          <ResolveLine
+            ok
+            label="recallStockCandidates"
+            hint="new id 10-1 · no conflict"
+          />
+          <ResolveLine
+            ok
+            label="all event names match"
+            hint="33 events checked against live registry"
+          />
         </div>
       </Panel>
     </div>
@@ -1497,7 +2049,9 @@ function ResolveOption({
         color: active ? "var(--text)" : "var(--text-3)",
         fontSize: 11.5,
         borderRight: "1px solid var(--border-2)",
-        borderBottom: active ? "2px solid var(--signal)" : "2px solid transparent",
+        borderBottom: active
+          ? "2px solid var(--signal)"
+          : "2px solid transparent",
         display: "flex",
         flexDirection: "column",
         alignItems: "flex-start",
@@ -1505,76 +2059,165 @@ function ResolveOption({
       }}
     >
       <span>{label}</span>
-      <span style={{ fontSize: 10, fontFamily: "var(--mono)", color: "var(--text-3)" }}>{hint}</span>
+      <span
+        style={{
+          fontSize: 10,
+          fontFamily: "var(--mono)",
+          color: "var(--text-3)",
+        }}
+      >
+        {hint}
+      </span>
     </button>
   );
 }
 
-function ResolveLine({ ok, label, hint }: { ok: boolean; label: string; hint: string }) {
+function ResolveLine({
+  ok,
+  label,
+  hint,
+}: {
+  ok: boolean;
+  label: string;
+  hint: string;
+}) {
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0", fontSize: 12 }}>
-      <Icon name={ok ? "check" : "alert"} size={11} style={{ color: ok ? "var(--green)" : "var(--amber)" }} />
-      <span className="mono" style={{ color: "var(--text-2)" }}>{label}</span>
-      <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--text-3)" }}>{hint}</span>
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        padding: "4px 0",
+        fontSize: 12,
+      }}
+    >
+      <Icon
+        name={ok ? "check" : "alert"}
+        size={11}
+        style={{ color: ok ? "var(--green)" : "var(--amber)" }}
+      />
+      <span className="mono" style={{ color: "var(--text-2)" }}>
+        {label}
+      </span>
+      <span
+        style={{ marginLeft: "auto", fontSize: 11, color: "var(--text-3)" }}
+      >
+        {hint}
+      </span>
     </div>
   );
 }
 
 function PreviewStep({ parsed }: { parsed: ParsedManifest }) {
-  // Source of truth for the preview mini-graph: the live workflow DAG.
-  // Stages are derived from the indices actually used by tenant agents
-  // (mirrors the dashboard funnel logic) so non-RAAS tenants render too.
-  const { data: dag } = useDag();
-  const dagAgents: DagAgent[] = dag?.agents ?? [];
+  // Source of truth is the candidate manifest captured at validate time.
+  // Rendering the live DAG here made an import preview show the workflow it
+  // was about to replace instead of the definition the operator selected.
+  const agents = parsed.preview_agents;
   const stages = useMemo(() => {
     const used = new Set<number>();
-    for (const a of dagAgents) used.add(a.stage);
+    for (const a of agents) used.add(a.stage);
     return Array.from(used)
       .sort((x, y) => x - y)
       .map((id) => ({ id, label: STAGE_LABELS[id] ?? `Stage ${id}` }));
-  }, [dagAgents]);
-  // Mini-graph wants {id, name, actor, stage}; DagAgent already carries
-  // these fields (with the id from the kebabId form).
-  const agents = dagAgents.map((a) => ({
-    id: a.kebabId,
-    name: a.name,
-    actor: a.actor,
-    stage: a.stage,
-  }));
+  }, [agents]);
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-      <Panel title="Imported workflow" subtitle={parsed.workflow.version} padded>
+      <Panel
+        title="Imported workflow"
+        subtitle={parsed.workflow.version}
+        padded
+      >
         <PreviewMiniGraph stages={stages} agents={agents} />
-        <div style={{ display: "flex", gap: 14, marginTop: 14, fontSize: 11.5, color: "var(--text-3)" }}>
+        <div
+          style={{
+            display: "flex",
+            gap: 14,
+            marginTop: 14,
+            fontSize: 11.5,
+            color: "var(--text-3)",
+          }}
+        >
           <span>
-            <span style={{ display: "inline-block", width: 8, height: 8, background: "var(--signal)", marginRight: 5, borderRadius: 1 }} />
-            Existing agent
+            <span
+              style={{
+                display: "inline-block",
+                width: 8,
+                height: 8,
+                background: "var(--signal)",
+                marginRight: 5,
+                borderRadius: 1,
+              }}
+            />
+            Candidate agent
           </span>
           <span>
-            <span style={{ display: "inline-block", width: 8, height: 8, background: "var(--green)", marginRight: 5, borderRadius: 1 }} />
-            Added (1)
+            <span
+              style={{
+                display: "inline-block",
+                width: 8,
+                height: 8,
+                background: "var(--green)",
+                marginRight: 5,
+                borderRadius: 1,
+              }}
+            />
+            Added ({parsed.diff.added.length})
           </span>
           <span>
-            <span style={{ display: "inline-block", width: 8, height: 8, background: "var(--amber)", marginRight: 5, borderRadius: 1 }} />
-            Modified (22)
+            <span
+              style={{
+                display: "inline-block",
+                width: 8,
+                height: 8,
+                background: "var(--amber)",
+                marginRight: 5,
+                borderRadius: 1,
+              }}
+            />
+            Modified ({parsed.diff.modified.length})
           </span>
           <span>
-            <span style={{ display: "inline-block", width: 8, height: 8, background: "var(--violet)", marginRight: 5, borderRadius: 1 }} />
+            <span
+              style={{
+                display: "inline-block",
+                width: 8,
+                height: 8,
+                background: "var(--violet)",
+                marginRight: 5,
+                borderRadius: 1,
+              }}
+            />
             Human task
           </span>
         </div>
       </Panel>
 
       <Panel title="Summary" padded>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(4, 1fr)",
+            gap: 12,
+          }}
+        >
           <Stat
             label="Net agents"
             value={`+${parsed.diff.added.length - parsed.diff.removed.length}`}
             mono
             accent="var(--signal)"
           />
-          <Stat label="Modified" value={parsed.diff.modified.length} mono accent="var(--amber)" />
-          <Stat label="New properties" value="4" mono sub="× 23 agents = 92 fields" />
+          <Stat
+            label="Modified"
+            value={parsed.diff.modified.length}
+            mono
+            accent="var(--amber)"
+          />
+          <Stat
+            label="New properties"
+            value="4"
+            mono
+            sub="× 23 agents = 92 fields"
+          />
           <Stat label="Estimated rollout" value="~ 4 s" mono />
         </div>
       </Panel>
@@ -1587,7 +2230,12 @@ function PreviewMiniGraph({
   agents,
 }: {
   stages: Array<{ id: number; label: string }>;
-  agents: Array<{ id: string; name: string; actor: "Agent" | "Human"; stage: number }>;
+  agents: Array<{
+    id: string;
+    name: string;
+    actor: "Agent" | "Human";
+    stage: number;
+  }>;
 }) {
   const COL = 100;
   const NODE_H = 22;
@@ -1598,17 +2246,40 @@ function PreviewMiniGraph({
   agents.forEach((a) => {
     (byStage[a.stage] = byStage[a.stage] || []).push(a);
   });
-  const maxLanes = Math.max(1, ...stages.map((s) => (byStage[s.id] || []).length));
+  const maxLanes = Math.max(
+    1,
+    ...stages.map((s) => (byStage[s.id] || []).length),
+  );
   const W = PAD * 2 + stages.length * COL;
   const H = PAD * 2 + maxLanes * ROW_GAP;
 
   return (
-    <svg width={W} height={H} style={{ display: "block", width: "100%", maxWidth: "100%" }} viewBox={`0 0 ${W} ${H}`}>
+    <svg
+      width={W}
+      height={H}
+      style={{ display: "block", width: "100%", maxWidth: "100%" }}
+      viewBox={`0 0 ${W} ${H}`}
+    >
       {stages.map((s, i) => (
-        <line key={i} x1={PAD + i * COL} x2={PAD + i * COL} y1={4} y2={H - 4} stroke="var(--border)" opacity="0.6" />
+        <line
+          key={i}
+          x1={PAD + i * COL}
+          x2={PAD + i * COL}
+          y1={4}
+          y2={H - 4}
+          stroke="var(--border)"
+          opacity="0.6"
+        />
       ))}
       {stages.map((s, i) => (
-        <text key={"l" + i} x={PAD + i * COL + 4} y={12} fill="var(--text-3)" fontSize="8" fontFamily="var(--mono)">
+        <text
+          key={"l" + i}
+          x={PAD + i * COL + 4}
+          y={12}
+          fill="var(--text-3)"
+          fontSize="8"
+          fontFamily="var(--mono)"
+        >
           {String(i).padStart(2, "0")} {s.label.toUpperCase()}
         </text>
       ))}
@@ -1618,8 +2289,16 @@ function PreviewMiniGraph({
           const x = PAD + i * COL + 4;
           const y = PAD + lane * ROW_GAP;
           const isNew = a.id === "10-1";
-          const isModified = a.id === "10-2" || a.id === "2" || a.id === "12" || a.id === "14-1";
-          const color = a.actor === "Human" ? "var(--violet)" : isNew ? "var(--green)" : isModified ? "var(--amber)" : "var(--signal)";
+          const isModified =
+            a.id === "10-2" || a.id === "2" || a.id === "12" || a.id === "14-1";
+          const color =
+            a.actor === "Human"
+              ? "var(--violet)"
+              : isNew
+                ? "var(--green)"
+                : isModified
+                  ? "var(--amber)"
+                  : "var(--signal)";
           return (
             <g key={a.id}>
               <rect
@@ -1633,8 +2312,22 @@ function PreviewMiniGraph({
                 strokeWidth={isNew ? 1.5 : 1}
                 strokeDasharray={isModified && !isNew ? "3 2" : "0"}
               />
-              <text x={x + 5} y={y + 13} fill="var(--text)" fontSize="9" fontFamily="var(--mono)">{a.id}</text>
-              <text x={x + 5} y={y + 13 + 8} fill="var(--text-3)" fontSize="7.5" fontFamily="var(--mono)">
+              <text
+                x={x + 5}
+                y={y + 13}
+                fill="var(--text)"
+                fontSize="9"
+                fontFamily="var(--mono)"
+              >
+                {a.id}
+              </text>
+              <text
+                x={x + 5}
+                y={y + 13 + 8}
+                fill="var(--text-3)"
+                fontSize="7.5"
+                fontFamily="var(--mono)"
+              >
                 {a.name.length > 16 ? a.name.slice(0, 14) + "…" : a.name}
               </text>
             </g>
@@ -1647,77 +2340,55 @@ function PreviewMiniGraph({
 
 function DeployStep({
   parsed,
-  target,
-  setTarget,
-  autoRollback,
-  setAutoRollback,
+  draftTarget,
 }: {
   parsed: ParsedManifest;
-  target: { staging: boolean; prod: boolean };
-  setTarget: (v: { staging: boolean; prod: boolean }) => void;
-  autoRollback: boolean;
-  setAutoRollback: (v: boolean) => void;
   mode: "workflow" | "agent";
+  draftTarget?: { slug: string; name: string };
 }) {
   return (
     <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        <Panel title="Deploy target" padded>
-          <DeployTargetIM
-            on={target.staging}
-            onToggle={() => setTarget({ ...target, staging: !target.staging })}
-            label="Staging · raas-stage"
-            sub="Replays last 10 events through the new graph as a smoke test"
-            recommended
-          />
-          <DeployTargetIM
-            on={target.prod}
-            onToggle={() => setTarget({ ...target, prod: !target.prod })}
-            label="Production · raas"
-            sub="Live event stream. New runs use the new version immediately."
-            warn
-          />
+        <Panel title={draftTarget ? "Draft target" : "Publish target"} padded>
+          <div
+            style={{ fontSize: 12.5, color: "var(--text)", marginBottom: 6 }}
+          >
+            {draftTarget
+              ? `${draftTarget.name} (${draftTarget.slug})`
+              : "Live workflow"}
+          </div>
+          <div
+            style={{ fontSize: 11.5, color: "var(--text-3)", lineHeight: 1.55 }}
+          >
+            {draftTarget
+              ? "Creates a server-backed editable draft. Live runs and the current production workflow remain unchanged."
+              : "Publishing atomically replaces the tenant's live workflow for new runs. Active runs stay pinned to the version that started them."}
+          </div>
         </Panel>
 
-        <Panel title="Safety" padded>
-          <label style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "8px 0", cursor: "pointer" }}>
-            <input
-              type="checkbox"
-              checked={autoRollback}
-              onChange={(e) => setAutoRollback(e.target.checked)}
-              style={{ accentColor: "var(--signal)", marginTop: 3 }}
-            />
-            <div>
-              <div style={{ fontSize: 12.5, color: "var(--text)" }}>Auto-rollback on error spike</div>
-              <div style={{ fontSize: 11, color: "var(--text-3)" }}>
-                If error rate exceeds 5% over 5 minutes post-deploy, restore the previous version.
-              </div>
-            </div>
-          </label>
-          <label style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "8px 0", cursor: "pointer" }}>
-            <input type="checkbox" defaultChecked style={{ accentColor: "var(--signal)", marginTop: 3 }} />
-            <div>
-              <div style={{ fontSize: 12.5, color: "var(--text)" }}>Drain in-flight runs on rollback</div>
-              <div style={{ fontSize: 11, color: "var(--text-3)" }}>
-                Let active runs finish on the old version; only new triggers route to the new one.
-              </div>
-            </div>
-          </label>
-          <label style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "8px 0", cursor: "pointer" }}>
-            <input type="checkbox" style={{ accentColor: "var(--signal)", marginTop: 3 }} />
-            <div>
-              <div style={{ fontSize: 12.5, color: "var(--text)" }}>Require code review</div>
-              <div style={{ fontSize: 11, color: "var(--text-3)" }}>
-                Block deploy until another Admin approves on the Deployments page.
-              </div>
-            </div>
-          </label>
+        <Panel
+          title={draftTarget ? "Before creating" : "Before publishing"}
+          padded
+        >
+          <div
+            style={{ fontSize: 11.5, color: "var(--text-2)", lineHeight: 1.65 }}
+          >
+            Review all blocking issues, event contracts, human approvals, tools,
+            credentials, and model choices.{" "}
+            {draftTarget
+              ? "You can edit and validate the draft again on the canvas before publishing."
+              : "Rollback remains available from Deployments after publication."}
+          </div>
         </Panel>
       </div>
 
       <Panel
         title="Final manifest"
-        subtitle="Read-only · what will be written to /var/agentic/deploys/"
+        subtitle={
+          draftTarget
+            ? "Read-only · normalized draft candidate"
+            : "Read-only · normalized production candidate"
+        }
         padded={false}
       >
         <CodeBlock>
@@ -1725,15 +2396,18 @@ function DeployStep({
             {
               workflow: parsed.workflow,
               source: "imported",
-              deploy_target: target.prod ? "prod" : "staging",
+              deploy_target: draftTarget ? "draft" : "production",
               summary: {
                 added: parsed.diff.added.length,
                 modified: parsed.diff.modified.length,
                 removed: parsed.diff.removed.length,
-                new_properties: ["input_data", "ontology_instructions", "tool_use", "typescript_code"],
+                new_properties: [
+                  "input_data",
+                  "ontology_instructions",
+                  "tool_use",
+                  "typescript_code",
+                ],
               },
-              auto_rollback: autoRollback,
-              tenant: "raas",
               tag: "imported-via-ui",
             },
             null,
@@ -1742,47 +2416,5 @@ function DeployStep({
         </CodeBlock>
       </Panel>
     </div>
-  );
-}
-
-function DeployTargetIM({
-  on,
-  onToggle,
-  label,
-  sub,
-  recommended,
-  warn,
-}: {
-  on: boolean;
-  onToggle: () => void;
-  label: string;
-  sub: string;
-  recommended?: boolean;
-  warn?: boolean;
-}) {
-  return (
-    <label
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 10,
-        padding: "10px 12px",
-        background: on ? "var(--panel-2)" : "transparent",
-        border: `1px solid ${on ? "var(--signal)" : "var(--border)"}`,
-        borderRadius: 4,
-        cursor: "pointer",
-        marginBottom: 6,
-      }}
-    >
-      <input type="checkbox" checked={on} onChange={onToggle} style={{ accentColor: "var(--signal)" }} />
-      <div style={{ flex: 1 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <span style={{ fontSize: 12.5, color: "var(--text)" }}>{label}</span>
-          {recommended && <Badge tone="signal">RECOMMENDED</Badge>}
-        </div>
-        <div style={{ fontSize: 11, color: "var(--text-3)" }}>{sub}</div>
-      </div>
-      {warn && <Badge tone="amber">requires approval</Badge>}
-    </label>
   );
 }

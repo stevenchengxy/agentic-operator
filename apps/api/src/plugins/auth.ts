@@ -1,13 +1,19 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { createHash } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq, or } from "drizzle-orm";
 import { jwtVerify } from "jose";
-import { apiTokens, getDb, tenants } from "@agentic/db";
+import { apiTokens, getDb, memberships, tenants, users } from "@agentic/db";
 
 export interface AuthedContext {
   tenantId: string;
   tenantSlug: string;
   via: "token" | "dev" | "cookie";
+  /** Present for browser sessions; machine credentials intentionally have no user. */
+  userId?: string;
+  /** Workspace membership role. Dev mode is treated as an administrator. */
+  role?: "admin" | "operator" | "viewer";
+  /** Bearer-token capabilities. Browser/dev sessions do not use token scopes. */
+  scopes?: string[];
 }
 
 const COOKIE_NAME = "agentic_session";
@@ -51,9 +57,7 @@ function readCookie(header: string | undefined, name: string): string | null {
  * signature invalid, expired, or references a tenant slug that no longer
  * exists in `tenants`. Caller falls through to bearer in any null case.
  */
-async function authenticateCookie(
-  jwt: string,
-): Promise<AuthedContext | null> {
+async function authenticateCookie(jwt: string): Promise<AuthedContext | null> {
   const secret = getSessionSecret();
   if (!secret) return null;
   let payload: Record<string, unknown>;
@@ -63,16 +67,37 @@ async function authenticateCookie(
   } catch {
     return null;
   }
-  const tenantSlug =
-    typeof payload.tenant === "string" ? payload.tenant : null;
-  if (!tenantSlug) return null;
+  const tenantSlug = typeof payload.tenant === "string" ? payload.tenant : null;
+  const subject = typeof payload.sub === "string" ? payload.sub : null;
+  if (!tenantSlug || !subject) return null;
   const t = getDb()
     .select()
     .from(tenants)
     .where(eq(tenants.slug, tenantSlug))
     .all()[0];
   if (!t) return null;
-  return { tenantId: t.id, tenantSlug: t.slug, via: "cookie" };
+  // The current web login emits the user's email as `sub`; older/CLI-issued
+  // sessions may already use the canonical `usr-*` id. Resolve either form
+  // before checking workspace membership.
+  const user = getDb()
+    .select({ id: users.id })
+    .from(users)
+    .where(or(eq(users.id, subject), eq(users.email, subject)))
+    .all()[0];
+  if (!user) return null;
+  const membership = getDb()
+    .select({ role: memberships.role })
+    .from(memberships)
+    .where(and(eq(memberships.tenantId, t.id), eq(memberships.userId, user.id)))
+    .all()[0];
+  if (!membership) return null;
+  return {
+    tenantId: t.id,
+    tenantSlug: t.slug,
+    via: "cookie",
+    userId: user.id,
+    role: membership.role,
+  };
 }
 
 declare module "fastify" {
@@ -123,10 +148,22 @@ function devTenant(req: FastifyRequest | null = null): AuthedContext | null {
   const fallback = process.env.AGENTIC_DEV_TENANT ?? "raas";
   // Try the URL-bound tenant first; fall back to the env-pinned slug if it
   // doesn't resolve. The header is advisory in dev mode — never a 401.
-  const candidates = override && override !== fallback ? [override, fallback] : [fallback];
+  const candidates =
+    override && override !== fallback ? [override, fallback] : [fallback];
   for (const slug of candidates) {
-    const t = getDb().select().from(tenants).where(eq(tenants.slug, slug)).all()[0];
-    if (t) return { tenantId: t.id, tenantSlug: t.slug, via: "dev" };
+    const t = getDb()
+      .select()
+      .from(tenants)
+      .where(eq(tenants.slug, slug))
+      .all()[0];
+    if (t) {
+      return {
+        tenantId: t.id,
+        tenantSlug: t.slug,
+        via: "dev",
+        role: "admin",
+      };
+    }
   }
   return null;
 }
@@ -140,7 +177,9 @@ function devTenant(req: FastifyRequest | null = null): AuthedContext | null {
  * a staging build deployed with `NODE_ENV=staging` would silently bypass
  * bearer auth and resolve every request to the seeded admin tenant. P0-AUTH-01.
  */
-export async function authenticate(req: FastifyRequest): Promise<AuthedContext | null> {
+export async function authenticate(
+  req: FastifyRequest,
+): Promise<AuthedContext | null> {
   if (process.env.AUTH_MODE === "dev") {
     return devTenant(req);
   }
@@ -168,7 +207,11 @@ export async function authenticate(req: FastifyRequest): Promise<AuthedContext |
 
   const db = getDb();
   const row = db
-    .select({ id: apiTokens.id, tenantId: apiTokens.tenantId })
+    .select({
+      id: apiTokens.id,
+      tenantId: apiTokens.tenantId,
+      scopes: apiTokens.scopes,
+    })
     .from(apiTokens)
     .where(eq(apiTokens.hash, hash))
     .all()[0];
@@ -186,7 +229,12 @@ export async function authenticate(req: FastifyRequest): Promise<AuthedContext |
     .all()[0];
   if (!tenant) return null;
 
-  return { tenantId: row.tenantId, tenantSlug: tenant.slug, via: "token" };
+  return {
+    tenantId: row.tenantId,
+    tenantSlug: tenant.slug,
+    via: "token",
+    scopes: row.scopes,
+  };
 }
 
 /**
@@ -255,4 +303,48 @@ export function requireAuth(req: FastifyRequest): AuthedContext {
     throw err;
   }
   return req.auth;
+}
+
+/**
+ * Credential administration is deliberately browser-admin/dev only. An API
+ * token must never be able to mint, rotate, or revoke other workspace-wide
+ * credentials, even when it carries a broad runtime scope.
+ */
+export function requireTenantAdmin(req: FastifyRequest): AuthedContext {
+  const auth = requireAuth(req);
+  if (auth.via === "dev" || (auth.via === "cookie" && auth.role === "admin")) {
+    return auth;
+  }
+  const err: Error & { statusCode?: number; code?: string } = new Error(
+    "tenant administrator access required",
+  );
+  err.statusCode = 403;
+  err.code = "forbidden";
+  throw err;
+}
+
+const WORKSPACE_WRITE_SCOPES = new Set([
+  "*",
+  "workspace:all",
+  "tenant:write",
+  "workflow:write",
+  "workflows:write",
+]);
+
+/** Require an operator/admin session or an explicitly write-capable token. */
+export function requireWorkspaceWriter(req: FastifyRequest): AuthedContext {
+  const auth = requireAuth(req);
+  const permitted =
+    auth.via === "dev" ||
+    (auth.via === "cookie" &&
+      (auth.role === "admin" || auth.role === "operator")) ||
+    (auth.via === "token" &&
+      (auth.scopes ?? []).some((scope) => WORKSPACE_WRITE_SCOPES.has(scope)));
+  if (permitted) return auth;
+  const err: Error & { statusCode?: number; code?: string } = new Error(
+    "workspace write access required",
+  );
+  err.statusCode = 403;
+  err.code = "forbidden";
+  throw err;
 }

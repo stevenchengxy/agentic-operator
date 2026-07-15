@@ -26,7 +26,10 @@ async function loadFixture(name: string): Promise<unknown> {
   return JSON.parse(await readFile(path.join(FIXTURES, name), "utf8"));
 }
 
-function seedTenantWithToken(slug: string): { tenantId: string; token: string } {
+function seedTenantWithToken(slug: string): {
+  tenantId: string;
+  token: string;
+} {
   const db = getDb();
   let row = db.select().from(tenants).where(eq(tenants.slug, slug)).all()[0];
   if (!row) {
@@ -126,7 +129,9 @@ describe("manifest-import: concurrent stage guard", () => {
       body: JSON.stringify({ mode: "validate", workflow }),
     });
     expect(first.status).toBe(200);
-    const firstBody = (await first.json()) as { data: { deployment_id: string } };
+    const firstBody = (await first.json()) as {
+      data: { deployment_id: string };
+    };
     const deploymentId = firstBody.data.deployment_id;
 
     // … cancel it.
@@ -136,10 +141,10 @@ describe("manifest-import: concurrent stage guard", () => {
     );
     expect(cancel.status).toBe(200);
 
-    // The next validate (with a different supplied deployment_id) must NOT
-    // 423 because the lock was released. We pass a non-matching id to prove
-    // the cleanup happened.
-    const next = await env.fetch(`/v1/tenants/${slug}/manifest-import`, {
+    // A stale resume id is never silently converted into a fresh import. This
+    // prevents a cancelled or expired wizard from publishing against a new
+    // session that the caller did not explicitly create.
+    const staleResume = await env.fetch(`/v1/tenants/${slug}/manifest-import`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -148,10 +153,18 @@ describe("manifest-import: concurrent stage guard", () => {
         deployment_id: "dpl-fresh-attempt",
       }),
     });
+    expect(staleResume.status).toBe(404);
+
+    // Omitting the resume id explicitly starts a fresh import, proving that
+    // DELETE released the tenant lock.
+    const next = await env.fetch(`/v1/tenants/${slug}/manifest-import`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ mode: "validate", workflow }),
+    });
     expect(next.status).toBe(200);
     const nextBody = (await next.json()) as { data: { deployment_id: string } };
-    // The new validate mints a fresh dpl- id (the supplied id was just a
-    // signal that there's no existing wizard to resume).
+    // The new validate mints a fresh dpl- id.
     expect(nextBody.data.deployment_id).toMatch(/^dpl-/);
     expect(nextBody.data.deployment_id).not.toBe(deploymentId);
   });

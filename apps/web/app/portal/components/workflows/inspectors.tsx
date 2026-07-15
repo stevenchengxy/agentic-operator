@@ -1,6 +1,7 @@
 "use client";
 
 import type { ReactNode } from "react";
+import type { WorkflowValidationResponse } from "@agentic/contracts";
 import {
   ActorTag,
   Badge,
@@ -9,8 +10,9 @@ import {
   eventTone,
 } from "@/app/portal/components";
 import { fmtAgo } from "@/lib/format";
-import { useDag, useAgent, type DagAgent } from "@/lib/hooks/useAgents";
+import { useAgent, type DagAgent } from "@/lib/hooks/useAgents";
 import { useEvents, type EventRow } from "@/lib/hooks/useEvents";
+import type { WorkflowDraft } from "./draft";
 
 /**
  * Catalog row built from the live `/v1/events` stream so the inspectors can
@@ -223,24 +225,31 @@ export function AgentInspector({
   agent,
   onClose,
   onOpenFull,
+  canOpenFull,
+  workflowLabel,
 }: {
   agent: DagAgent | null | undefined;
   onClose: () => void;
   onOpenFull: () => void;
+  canOpenFull: boolean;
+  workflowLabel: string;
 }) {
   // Fetch the rich AgentDetail (actions, workflowSlug, workflowVersion,
   // recentRuns) when an agent is selected. Falls back gracefully when the
   // detail call is still loading — the inspector renders triggers/emits
   // from the canvas-side DagAgent immediately.
-  const detailQuery = useAgent(agent?.kebabId ?? null);
+  const detailQuery = useAgent(canOpenFull ? (agent?.kebabId ?? null) : null);
   const detail = detailQuery.data;
   if (!agent) return null;
 
-  // Prefer the live AgentDetail fields when available so we always show
-  // the canonical manifest values; fall back to the DAG snapshot otherwise.
-  const triggers = detail?.triggers ?? agent.triggers;
-  const emits = detail?.triggeredEvents ?? agent.emits;
-  const actionNames = (detail?.actions ?? []).map((a) => a.name);
+  // The selected DAG may be an unpublished version. Its complete definition
+  // is authoritative; tenant runtime detail can point at a different live
+  // version and is therefore only a fallback for old projections.
+  const triggers = agent.triggers;
+  const emits = agent.emits;
+  const actionNames = agent.definition?.actions
+    ? agent.definition.actions.map((action) => action.name)
+    : (detail?.actions ?? []).map((action) => action.name);
 
   return (
     <div
@@ -332,14 +341,11 @@ export function AgentInspector({
           ))}
         </div>
       </Section>
-      {detail?.workflowSlug && (
-        <Section title="Workflow">
-          <span className="mono" style={{ fontSize: 12, color: "var(--text)" }}>
-            {detail.workflowSlug}
-            {detail.workflowVersion ? ` · ${detail.workflowVersion}` : ""}
-          </span>
-        </Section>
-      )}
+      <Section title="Workflow">
+        <span className="mono" style={{ fontSize: 12, color: "var(--text)" }}>
+          {workflowLabel}
+        </span>
+      </Section>
       <div
         style={{
           padding: 14,
@@ -349,12 +355,15 @@ export function AgentInspector({
           borderTop: "1px solid var(--border)",
         }}
       >
-        <Button icon="external" onClick={onOpenFull} style={{ flex: 1 }}>
-          Open agent
-        </Button>
-        <Button icon="run" tone="primary">
-          Test run
-        </Button>
+        {canOpenFull ? (
+          <Button icon="external" onClick={onOpenFull} style={{ flex: 1 }}>
+            Open live agent
+          </Button>
+        ) : (
+          <span style={{ color: "var(--text-3)", fontSize: 11.5 }}>
+            Publish this workflow before opening or running its agent.
+          </span>
+        )}
       </div>
     </div>
   );
@@ -362,11 +371,13 @@ export function AgentInspector({
 
 export function EventInspector({
   eventName,
+  agents,
   onClose,
   onNavigateAgent,
   onNavigateEvents,
 }: {
   eventName: string;
+  agents: DagAgent[];
   onClose: () => void;
   onNavigateAgent: (id: string) => void;
   onNavigateEvents: (eventName: string) => void;
@@ -375,9 +386,6 @@ export function EventInspector({
   // the most useful entries even if the tenant's event history is large.
   const eventsQuery = useEvents({ name: eventName, limit: 8 });
   const catalogQuery = useEvents({ limit: 200 });
-  const dagQuery = useDag();
-
-  const agents = dagQuery.data?.agents ?? [];
   const recent = eventsQuery.data ?? [];
   const catalog = catalogQuery.data ?? [];
   const catalogRow = catalog.find((c) => c.name === eventName);
@@ -557,9 +565,13 @@ export function EditDraftBanner({
 export function EditToolbar({
   tool,
   setTool,
+  onAutoLayout,
+  onZoomToFit,
 }: {
   tool: string;
   setTool: (t: string) => void;
+  onAutoLayout: () => void;
+  onZoomToFit: () => void;
 }) {
   const tools = [
     { id: "select", icon: "filter" as const, label: "Select" },
@@ -568,6 +580,7 @@ export function EditToolbar({
   ];
   return (
     <div
+      onClick={(event) => event.stopPropagation()}
       style={{
         position: "absolute",
         top: 12,
@@ -607,8 +620,10 @@ export function EditToolbar({
         style={{ width: 1, background: "var(--border)", margin: "4px 4px" }}
       />
       <button
+        type="button"
         title="Auto-layout"
         aria-label="Auto-layout"
+        onClick={onAutoLayout}
         style={{
           width: 32,
           height: 32,
@@ -621,8 +636,10 @@ export function EditToolbar({
         <Icon name="dashboard" size={13} />
       </button>
       <button
+        type="button"
         title="Zoom to fit"
         aria-label="Zoom to fit"
+        onClick={onZoomToFit}
         style={{
           width: 32,
           height: 32,
@@ -638,27 +655,32 @@ export function EditToolbar({
   );
 }
 
-export function DraftPalette() {
-  const presets = [
-    {
-      kind: "Agent",
-      title: "New agent node",
-      sub: "Code-backed step",
-      color: "var(--signal)",
-    },
-    {
-      kind: "Human",
-      title: "Human task",
-      sub: "Pause for approval",
-      color: "var(--violet)",
-    },
-    {
-      kind: "Agent",
-      title: "From template…",
-      sub: "matchResume, etc.",
-      color: "var(--text-3)",
-    },
-  ];
+export function DraftPalette({
+  workflowName,
+  draft,
+  connectFrom,
+  validation,
+  onAddAutomated,
+  onAddHuman,
+}: {
+  workflowName: string;
+  draft: WorkflowDraft;
+  connectFrom: string | null;
+  validation: WorkflowValidationResponse | null;
+  onAddAutomated: () => void;
+  onAddHuman: () => void;
+}) {
+  const added = Array.from(draft.added).sort();
+  const modified = Object.keys(draft.agents)
+    .filter((id) => !draft.added.has(id) && !draft.removed.has(id))
+    .sort();
+  const removed = Array.from(draft.removed).sort();
+  const changeCount = added.length + modified.length + removed.length;
+  const errors =
+    validation?.issues.filter((issue) => issue.severity === "error") ?? [];
+  const warnings =
+    validation?.issues.filter((issue) => issue.severity === "warning") ?? [];
+
   return (
     <div
       style={{
@@ -687,7 +709,7 @@ export function DraftPalette() {
           Editing
         </div>
         <div style={{ fontSize: 14, color: "var(--text)" }}>
-          raas{" "}
+          {workflowName}{" "}
           <span
             style={{
               color: "var(--amber)",
@@ -695,7 +717,7 @@ export function DraftPalette() {
               fontSize: 11,
             }}
           >
-            · DRAFT
+            · LOCAL DRAFT
           </span>
         </div>
       </div>
@@ -716,30 +738,68 @@ export function DraftPalette() {
             marginBottom: 8,
           }}
         >
-          Drag onto canvas
+          Add a node
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          {presets.map((p, i) => (
-            <div
-              key={i}
-              draggable
-              style={{
-                padding: "8px 10px",
-                background: "var(--panel-2)",
-                border: "1px dashed var(--border-2)",
-                borderLeft: `3px solid ${p.color}`,
-                borderRadius: 4,
-                cursor: "grab",
-              }}
-            >
-              <div style={{ fontSize: 12, color: "var(--text)" }}>
-                {p.title}
-              </div>
-              <div style={{ fontSize: 10.5, color: "var(--text-3)" }}>
-                {p.sub}
-              </div>
+          <button
+            type="button"
+            onClick={onAddAutomated}
+            style={{
+              padding: "8px 10px",
+              background: "var(--panel-2)",
+              border: "1px dashed var(--border-2)",
+              borderLeft: "3px solid var(--signal)",
+              borderRadius: 4,
+              cursor: "pointer",
+              textAlign: "left",
+            }}
+          >
+            <div style={{ fontSize: 12, color: "var(--text)" }}>
+              Automated agent
             </div>
-          ))}
+            <div style={{ fontSize: 10.5, color: "var(--text-3)" }}>
+              Complete starter prompt, action, events, and runtime defaults
+            </div>
+          </button>
+          <button
+            type="button"
+            onClick={onAddHuman}
+            style={{
+              padding: "8px 10px",
+              background: "var(--panel-2)",
+              border: "1px dashed var(--border-2)",
+              borderLeft: "3px solid var(--violet)",
+              borderRadius: 4,
+              cursor: "pointer",
+              textAlign: "left",
+            }}
+          >
+            <div style={{ fontSize: 12, color: "var(--text)" }}>
+              Human review
+            </div>
+            <div style={{ fontSize: 10.5, color: "var(--text-3)" }}>
+              Auditable approval task with a decision form
+            </div>
+          </button>
+          <div
+            style={{
+              padding: "7px 9px",
+              border: "1px solid var(--border)",
+              borderRadius: 4,
+              color: connectFrom ? "var(--blue)" : "var(--text-3)",
+              fontSize: 10.5,
+              lineHeight: 1.45,
+            }}
+          >
+            {connectFrom ? (
+              <>
+                Connection source: <span className="mono">{connectFrom}</span>.
+                Click the target node to create a shared event.
+              </>
+            ) : (
+              "Choose Connect in the canvas toolbar, then click source and target nodes."
+            )}
+          </div>
         </div>
       </div>
 
@@ -759,7 +819,7 @@ export function DraftPalette() {
             marginBottom: 8,
           }}
         >
-          Pending changes
+          Unsaved browser changes
         </div>
         <div
           style={{
@@ -769,22 +829,20 @@ export function DraftPalette() {
             fontSize: 11.5,
           }}
         >
-          <DiffRow kind="mod" name="matchResume" hint="Bonus weights for WXG" />
-          <DiffRow
-            kind="mod"
-            name="analyzeRequirement"
-            hint="Added market.lookup tool"
-          />
-          <DiffRow
-            kind="add"
-            name="enrichCandidateLinkedIn"
-            hint="New agent · stage 4"
-          />
-          <DiffRow
-            kind="add"
-            name="generateRecommendationPackage"
-            hint="Wired to evaluateInterview"
-          />
+          {changeCount === 0 && (
+            <div style={{ color: "var(--text-3)", padding: "5px 0" }}>
+              No unsaved changes. Add, connect, move, or edit an agent.
+            </div>
+          )}
+          {added.map((id) => (
+            <DiffRow key={`add-${id}`} kind="add" name={id} hint="new node" />
+          ))}
+          {modified.map((id) => (
+            <DiffRow key={`mod-${id}`} kind="mod" name={id} hint="edited" />
+          ))}
+          {removed.map((id) => (
+            <DiffRow key={`del-${id}`} kind="del" name={id} hint="removed" />
+          ))}
         </div>
       </div>
 
@@ -794,12 +852,32 @@ export function DraftPalette() {
           marginTop: "auto",
           borderTop: "1px solid var(--border)",
           fontSize: 11.5,
-          color: "var(--text-3)",
+          color:
+            validation === null
+              ? "var(--text-3)"
+              : validation.valid
+                ? "var(--green)"
+                : "var(--amber)",
           lineHeight: 1.55,
         }}
       >
-        <Icon name="check" size={11} style={{ color: "var(--green)" }} /> Graph
-        valid · 0 cycles · 0 orphans
+        <Icon
+          name={validation?.valid ? "check" : "alert"}
+          size={11}
+          style={{
+            color:
+              validation === null
+                ? "var(--text-3)"
+                : validation.valid
+                  ? "var(--green)"
+                  : "var(--amber)",
+          }}
+        />{" "}
+        {validation === null
+          ? "Not validated since the last edit"
+          : validation.valid
+            ? `Validated · ${validation.promptScores.length} prompt checks passed`
+            : `${errors.length} error${errors.length === 1 ? "" : "s"} · ${warnings.length} warning${warnings.length === 1 ? "" : "s"}`}
       </div>
     </div>
   );

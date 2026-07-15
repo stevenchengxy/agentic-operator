@@ -22,7 +22,11 @@
  * (run.*, event.emitted) flow through useStream() at the layout root.
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type {
+  WorkflowDetail,
+  WorkflowValidationResponse,
+} from "@agentic/contracts";
 import { useRouter } from "next/navigation";
 import {
   ActorTag,
@@ -35,15 +39,17 @@ import {
 import { useTenant } from "@/app/portal/lib/use-tenant";
 import { useDirty } from "@/app/portal/lib/dirty-context";
 import {
-  CANVAS_H,
-  CANVAS_W,
   COL_W,
+  MAX_CANVAS_H,
+  MAX_CANVAS_W,
   NODE_H,
   NODE_W,
   PAD_X,
+  ROW_H,
   autoPackLayout,
+  clampCanvasPosition,
   colorVar,
-  getLayout,
+  dynamicCanvasSize,
   nodePos,
 } from "@/app/portal/components/workflows/layout";
 import {
@@ -61,18 +67,29 @@ import { AgentEditor } from "@/app/portal/components/workflows/AgentEditor";
 import { WorkflowHelp } from "@/app/portal/components/workflows/WorkflowHelp";
 import {
   applyDraft,
+  addAgentToDraft,
+  connectAgents,
   countDraftChanges,
+  createAutomatedAgentDefinition,
+  createHumanAgentDefinition,
   deserializeDraft,
   draftStorageKey,
   emptyDraft,
+  moveAgent,
   serializeDraft,
   toManifest,
   tryReadSerializedDraft,
   type WorkflowDraft,
 } from "@/app/portal/components/workflows/draft";
-import { useDeployManifest } from "@/lib/hooks/useManifest";
 import { useDag } from "@/lib/hooks/useAgents";
 import { useEvents } from "@/lib/hooks/useEvents";
+import {
+  useDeleteWorkflow,
+  usePublishWorkflow,
+  useSaveWorkflow,
+  useValidateWorkflow,
+  useWorkflowCatalog,
+} from "@/lib/hooks/useWorkflowAuthoring";
 
 /**
  * Stage label catalog — static workflow ontology. Mirrors the dashboard's
@@ -101,12 +118,38 @@ export default function WorkflowsPage() {
   const router = useRouter();
   const tenant = useTenant();
   const toast = useToast();
-  const deploy = useDeployManifest();
-  // Real DAG metadata (workflowVersion) — replaces the previously hardcoded
-  // "raas · v2026.05.16-a" badge so the header reflects the live tenant
-  // workflow. The DAG payload is also the source of truth for the agent
-  // list rendered on the canvas.
-  const dagQuery = useDag();
+  const catalogQuery = useWorkflowCatalog();
+  const workflows = useMemo(
+    () => catalogQuery.data?.workflows ?? [],
+    [catalogQuery.data?.workflows],
+  );
+  const [selectedWorkflow, setSelectedWorkflow] = useState<string | null>(null);
+  const editAfterSelectionRef = useRef<string | null>(null);
+
+  // Pick the live workflow first, then the most recently updated draft. A
+  // selection made by New Workflow is retained while the catalog refetches.
+  useEffect(() => {
+    if (catalogQuery.isLoading || workflows.length === 0) return;
+    if (
+      selectedWorkflow &&
+      workflows.some((row) => row.slug === selectedWorkflow)
+    ) {
+      return;
+    }
+    const preferred =
+      workflows.find((row) => row.liveVersionId !== null) ?? workflows[0];
+    setSelectedWorkflow(preferred?.slug ?? null);
+  }, [catalogQuery.isLoading, selectedWorkflow, workflows]);
+
+  const selectedSummary = useMemo(
+    () => workflows.find((row) => row.slug === selectedWorkflow) ?? null,
+    [selectedWorkflow, workflows],
+  );
+  const dagQuery = useDag(selectedWorkflow);
+  const saveWorkflow = useSaveWorkflow(selectedWorkflow);
+  const validateWorkflow = useValidateWorkflow(selectedWorkflow);
+  const publishWorkflow = usePublishWorkflow(selectedWorkflow);
+  const deleteWorkflow = useDeleteWorkflow();
   const workflowVersion = dagQuery.data?.workflowVersion ?? "";
   const baseAgents = useMemo(
     () => dagQuery.data?.agents ?? [],
@@ -145,26 +188,41 @@ export default function WorkflowsPage() {
     );
   }, [eventsQuery.data, baseAgents]);
 
-  // Derive the funnel's stage set from the live DAG: the set of stage
-  // indices actually used by this tenant's agents. Tenants without staged
-  // pipelines (every agent at stage 0 or 99) collapse to a single entry
-  // and the canvas hides the per-stage column dividers naturally.
-  const stages = useMemo(() => {
-    const used = new Set<number>();
-    for (const a of baseAgents) used.add(a.stage);
-    return Array.from(used)
-      .sort((a, b) => a - b)
-      .map((id) => ({ id, label: STAGE_LABELS[id] ?? `Stage ${id}` }));
-  }, [baseAgents]);
-
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
   const [selectedEvent, setSelectedEvent] = useState<string | null>(null);
   const [hoveredEdge, setHoveredEdge] = useState<number | null>(null);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<WorkflowDraft>(emptyDraft);
   const [tool, setTool] = useState<"select" | "connect" | "add">("select");
+  const [connectFrom, setConnectFrom] = useState<string | null>(null);
+  const [validation, setValidation] =
+    useState<WorkflowValidationResponse | null>(null);
+  const [editorErrors, setEditorErrors] = useState<Record<string, string[]>>(
+    {},
+  );
+  const hasEditorErrors = Object.values(editorErrors).some(
+    (errors) => errors.length > 0,
+  );
+  const reportEditorValidity = useCallback(
+    (agentId: string, errors: string[]) => {
+      setEditorErrors((current) => {
+        const next = { ...current };
+        if (errors.length) next[agentId] = errors;
+        else delete next[agentId];
+        return next;
+      });
+    },
+    [],
+  );
+  const [zoom, setZoom] = useState(1);
   const [showNewModal, setShowNewModal] = useState(false);
   const [showImport, setShowImport] = useState(false);
+  const [importTarget, setImportTarget] = useState<{
+    slug: string;
+    name: string;
+  } | null>(null);
+  const publishInFlight = useRef(false);
+  const [publishing, setPublishing] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   // Live stream — placeholder for tweaks-panel wiring (Phase 2).
   const liveStream = true;
@@ -180,6 +238,19 @@ export default function WorkflowsPage() {
     () => (editing ? applyDraft(baseAgents, draft) : baseAgents),
     [baseAgents, draft, editing],
   );
+  const selectedAgentRecord = useMemo(
+    () =>
+      selectedAgent
+        ? agents.find((agent) => agent.kebabId === selectedAgent)
+        : undefined,
+    [agents, selectedAgent],
+  );
+  useEffect(() => {
+    // A workflow switch can render once with the previous node selection
+    // while the new DAG is loading. Never pass an undefined agent to the
+    // inspector/editor during that transition.
+    if (selectedAgent && !selectedAgentRecord) setSelectedAgent(null);
+  }, [selectedAgent, selectedAgentRecord]);
   const draftCounts = countDraftChanges(draft);
   const dirty =
     draftCounts.added + draftCounts.modified + draftCounts.removed > 0;
@@ -188,7 +259,7 @@ export default function WorkflowsPage() {
   // useTenantNavigate() and other guards can prompt before navigating away.
   useEffect(() => {
     const label = dirty
-      ? `workflow draft · +${draftCounts.added} ~${draftCounts.modified} −${draftCounts.removed}`
+      ? `${selectedWorkflow ?? "workflow"} draft · +${draftCounts.added} ~${draftCounts.modified} −${draftCounts.removed}`
       : null;
     dirtyApi.setDirty("workflow-draft", label);
     return () => dirtyApi.setDirty("workflow-draft", null);
@@ -198,48 +269,89 @@ export default function WorkflowsPage() {
     draftCounts.modified,
     draftCounts.removed,
     dirtyApi,
+    selectedWorkflow,
   ]);
 
-  // UC-V11-13: persist edit-mode draft to localStorage so refreshing the
-  // page or closing the tab without deploying preserves work-in-progress.
-  // The key is namespaced by tenant; multiple workflows per tenant would
-  // need a deeper key — today there's one workflow per tenant.
-  const storageKey = useMemo(() => draftStorageKey(tenant, tenant), [tenant]);
+  // Persist each workflow's browser edits independently. Switching the
+  // catalog selector never leaks one manifest patch into another workflow.
+  const storageKey = useMemo(
+    () => draftStorageKey(tenant, selectedWorkflow ?? "__none__"),
+    [selectedWorkflow, tenant],
+  );
   // `restoredAt` non-null means we restored a saved draft on mount; show
   // a small banner with a Discard action so the operator can opt out.
   const [restoredAt, setRestoredAt] = useState<number | null>(null);
-  // First mount: restore any saved draft for this (tenant, workflow). Wrap
-  // in a Boolean ref-effect so a Next dev re-mount (StrictMode) doesn't
-  // double-trigger the restore.
-  const [hydrated, setHydrated] = useState(false);
+  const [draftBaseVersionId, setDraftBaseVersionId] = useState<string | null>(
+    null,
+  );
+  const [hydratedKey, setHydratedKey] = useState<string | null>(null);
   useEffect(() => {
-    if (hydrated) return;
-    setHydrated(true);
-    if (typeof window === "undefined") return;
+    const shouldOpenEditor = editAfterSelectionRef.current === selectedWorkflow;
+    setDraft(emptyDraft());
+    setEditing(false);
+    setSelectedAgent(null);
+    setSelectedEvent(null);
+    setConnectFrom(null);
+    setValidation(null);
+    setEditorErrors({});
+    setRestoredAt(null);
+    setDraftBaseVersionId(null);
+    if (typeof window === "undefined" || !selectedWorkflow) {
+      setHydratedKey(storageKey);
+      return;
+    }
     try {
       const raw = window.localStorage.getItem(storageKey);
-      if (!raw) return;
-      const parsed = tryReadSerializedDraft(raw);
-      if (!parsed) {
-        window.localStorage.removeItem(storageKey);
-        return;
+      if (raw) {
+        const parsed = tryReadSerializedDraft(raw);
+        if (!parsed) {
+          window.localStorage.removeItem(storageKey);
+        } else {
+          setDraft(deserializeDraft(parsed));
+          setDraftBaseVersionId(parsed.baseVersionId);
+          setEditing(true);
+          setRestoredAt(parsed.savedAt);
+        }
       }
-      // Restored — drop into edit mode so the user notices.
-      setDraft(deserializeDraft(parsed));
-      setEditing(true);
-      setRestoredAt(parsed.savedAt);
     } catch {
       // localStorage unavailable (private mode, quota) — silently skip.
+    } finally {
+      if (shouldOpenEditor) {
+        editAfterSelectionRef.current = null;
+        setEditing(true);
+      }
+      setHydratedKey(storageKey);
     }
-  }, [hydrated, storageKey]);
+  }, [selectedWorkflow, storageKey]);
+  useEffect(() => {
+    if (
+      editing &&
+      draftBaseVersionId === null &&
+      dagQuery.data?.workflowVersionId &&
+      hydratedKey === storageKey
+    ) {
+      setDraftBaseVersionId(dagQuery.data.workflowVersionId);
+    }
+  }, [
+    dagQuery.data?.workflowVersionId,
+    draftBaseVersionId,
+    editing,
+    hydratedKey,
+    storageKey,
+  ]);
   // Save on every change while dirty; clear on clean state.
   useEffect(() => {
-    if (!hydrated || typeof window === "undefined") return;
+    if (hydratedKey !== storageKey || typeof window === "undefined") return;
     try {
       if (dirty) {
         window.localStorage.setItem(
           storageKey,
-          JSON.stringify(serializeDraft(draft)),
+          JSON.stringify(
+            serializeDraft(
+              draft,
+              draftBaseVersionId ?? dagQuery.data?.workflowVersionId ?? null,
+            ),
+          ),
         );
       } else {
         window.localStorage.removeItem(storageKey);
@@ -247,11 +359,19 @@ export default function WorkflowsPage() {
     } catch {
       // Persistence failure is best-effort; don't break the UI.
     }
-  }, [hydrated, dirty, draft, storageKey]);
+  }, [
+    dagQuery.data?.workflowVersionId,
+    draftBaseVersionId,
+    hydratedKey,
+    dirty,
+    draft,
+    storageKey,
+  ]);
   function discardRestored() {
     setDraft(emptyDraft());
     setEditing(false);
     setRestoredAt(null);
+    setDraftBaseVersionId(null);
     if (typeof window !== "undefined") {
       try {
         window.localStorage.removeItem(storageKey);
@@ -280,6 +400,50 @@ export default function WorkflowsPage() {
     [agents],
   );
 
+  const positions = useMemo(() => {
+    const out = new Map<string, { x: number; y: number }>();
+    for (const agent of agents) {
+      out.set(
+        agent.kebabId,
+        clampCanvasPosition(
+          agent.position ?? nodePos(agent.kebabId, autoFallback),
+        ),
+      );
+    }
+    return out;
+  }, [agents, autoFallback]);
+
+  const canvasSize = useMemo(
+    () => dynamicCanvasSize(positions.values()),
+    [positions],
+  );
+
+  // Derive headers from rendered columns rather than only declared stages.
+  // This keeps topology-packed stage-99 workflows and local draft additions
+  // aligned with their actual nodes.
+  const stages = useMemo(() => {
+    const byColumn = new Map<number, Set<number>>();
+    for (const agent of agents) {
+      const position = positions.get(agent.kebabId);
+      if (!position) continue;
+      const column = Math.max(0, Math.round((position.x - PAD_X) / COL_W));
+      const declared = byColumn.get(column) ?? new Set<number>();
+      declared.add(agent.stage);
+      byColumn.set(column, declared);
+    }
+    return Array.from(byColumn.entries())
+      .sort(([left], [right]) => left - right)
+      .map(([column, declared]) => {
+        const usable = Array.from(declared).filter((stage) => stage !== 99);
+        const stage = usable.length === 1 ? (usable[0] ?? column) : column;
+        return {
+          id: column,
+          column,
+          label: STAGE_LABELS[stage] ?? `Stage ${stage}`,
+        };
+      });
+  }, [agents, positions]);
+
   // Build edges: for each agent's emitted event, find listeners.
   const edges = useMemo<EdgeMeta[]>(() => {
     const out: EdgeMeta[] = [];
@@ -287,21 +451,14 @@ export default function WorkflowsPage() {
       (src.emits || []).forEach((evName) => {
         const listeners = agents.filter((a) => a.triggers.includes(evName));
         listeners.forEach((dst) => {
-          // Edge only renders when BOTH endpoints have a known position —
-          // hand-tuned (LAYOUT) or auto-packed (autoFallback). For RAAS
-          // this never falls through to the auto path; for other tenants
-          // the auto path supplies both endpoints.
-          if (
-            getLayout(src.kebabId, autoFallback) &&
-            getLayout(dst.kebabId, autoFallback)
-          ) {
+          if (positions.has(src.kebabId) && positions.has(dst.kebabId)) {
             out.push({ src: src.kebabId, dst: dst.kebabId, event: evName });
           }
         });
       });
     });
     return out;
-  }, [agents, autoFallback]);
+  }, [agents, positions]);
 
   const evColor = useMemo(() => {
     const m: Record<string, string> = {};
@@ -348,17 +505,15 @@ export default function WorkflowsPage() {
   useEffect(() => {
     const el = canvasScrollRef.current;
     if (!el || el.scrollLeft !== 0) return;
-    const positioned = agents
-      .map((a) => getLayout(a.kebabId, autoFallback))
-      .filter((p): p is { stage: number; lane: number } => Boolean(p));
+    const positioned = Array.from(positions.values());
     if (positioned.length === 0) return;
-    const minStage = positioned.reduce(
-      (acc, p) => Math.min(acc, p.stage),
+    const minX = positioned.reduce(
+      (acc, position) => Math.min(acc, position.x),
       Number.POSITIVE_INFINITY,
     );
-    const targetX = Math.max(0, PAD_X + minStage * COL_W - 40);
+    const targetX = Math.max(0, minX * zoom - 40);
     if (targetX > 0) el.scrollLeft = targetX;
-  }, [agents, autoFallback]);
+  }, [positions, zoom]);
 
   function navAgent(id: string) {
     router.push(`/portal/${tenant}/agents/${id}` as never);
@@ -372,30 +527,376 @@ export default function WorkflowsPage() {
   function discardDraft() {
     setDraft(emptyDraft());
     setEditing(false);
+    setConnectFrom(null);
+    setValidation(null);
+    setRestoredAt(null);
+    setDraftBaseVersionId(null);
+    setEditorErrors({});
   }
 
-  async function saveDraft() {
-    const manifest = toManifest(agents);
+  function closeEditor() {
+    if (
+      dirty &&
+      !window.confirm(
+        "Close the editor and discard these unsaved browser changes? The last server-saved draft will be kept.",
+      )
+    ) {
+      return;
+    }
+    discardDraft();
+  }
+
+  function editableManifest() {
+    return toManifest(agents).map((definition) => {
+      const position = positions.get(definition.id);
+      if (!position) return definition;
+      const extensions =
+        definition.extensions && typeof definition.extensions === "object"
+          ? definition.extensions
+          : {};
+      const priorCanvas =
+        extensions.canvas &&
+        typeof extensions.canvas === "object" &&
+        !Array.isArray(extensions.canvas)
+          ? extensions.canvas
+          : {};
+      return {
+        ...definition,
+        extensions: {
+          ...extensions,
+          canvas: { ...priorCanvas, position },
+        },
+      };
+    });
+  }
+
+  async function saveDraft(): Promise<WorkflowDetail | null> {
+    if (hasEditorErrors) {
+      toast({
+        tone: "red",
+        title: "Fix editor errors before saving",
+        description:
+          Object.values(editorErrors).flat()[0] ?? "A field is invalid.",
+      });
+      return null;
+    }
+    const baseVersionId =
+      draftBaseVersionId ?? dagQuery.data?.workflowVersionId ?? null;
+    if (!selectedWorkflow || !baseVersionId) {
+      toast({
+        tone: "red",
+        title: "Draft cannot be saved",
+        description: "The selected workflow version has not finished loading.",
+      });
+      return null;
+    }
     try {
-      const data = await deploy.mutateAsync({
-        manifest,
-        workflowSlug: tenant,
-        note: `In-portal edit · ${draftCounts.added}+/${draftCounts.modified}~/${draftCounts.removed}-`,
+      const detail = await saveWorkflow.mutateAsync({
+        baseVersionId,
+        manifest: editableManifest(),
       });
       toast({
         tone: "signal",
-        title: "Manifest deployed",
-        description: `${data.version} · +${data.diff.added.length} / ~${data.diff.modified.length} / −${data.diff.removed.length}`,
+        title: "Draft saved",
+        description: `${detail.latestVersion} is stored on the server. Live runs are unchanged.`,
       });
       setDraft(emptyDraft());
-      setEditing(false);
+      setDraftBaseVersionId(detail.latestVersionId);
+      setRestoredAt(null);
+      setValidation(null);
+      return detail;
     } catch (err) {
       toast({
         tone: "red",
-        title: "Manifest deploy failed",
+        title: "Draft save failed",
+        description: err instanceof Error ? err.message : "Unknown error",
+      });
+      return null;
+    }
+  }
+
+  async function validateCurrent(): Promise<WorkflowValidationResponse | null> {
+    if (hasEditorErrors) {
+      toast({
+        tone: "red",
+        title: "Fix editor errors before validating",
+        description:
+          Object.values(editorErrors).flat()[0] ?? "A field is invalid.",
+      });
+      return null;
+    }
+    if (!selectedWorkflow) return null;
+    try {
+      const result = await validateWorkflow.mutateAsync({
+        manifest: editableManifest(),
+      });
+      setValidation(result);
+      toast({
+        tone: result.valid ? "green" : "amber",
+        title: result.valid ? "Workflow is valid" : "Workflow needs changes",
+        description: result.valid
+          ? `${result.promptScores.length} agent prompts checked.`
+          : `${result.issues.filter((issue) => issue.severity === "error").length} blocking issue(s).`,
+      });
+      return result;
+    } catch (err) {
+      toast({
+        tone: "red",
+        title: "Validation failed",
+        description: err instanceof Error ? err.message : "Unknown error",
+      });
+      return null;
+    }
+  }
+
+  async function publishCurrent() {
+    if (!selectedWorkflow || publishInFlight.current) return;
+    publishInFlight.current = true;
+    setPublishing(true);
+    try {
+      const checked = await validateCurrent();
+      if (!checked?.valid) return;
+      let versionId = dagQuery.data?.workflowVersionId ?? undefined;
+      if (dirty) {
+        const saved = await saveDraft();
+        if (!saved) return;
+        versionId = saved.latestVersionId;
+      }
+      if (!versionId) {
+        toast({
+          tone: "red",
+          title: "Workflow cannot be published",
+          description: "No immutable workflow version is available.",
+        });
+        return;
+      }
+      const result = await publishWorkflow.mutateAsync({
+        versionId,
+        note: `Published from the workflow canvas (${selectedWorkflow}).`,
+      });
+      toast({
+        tone: "green",
+        title: "Workflow is live",
+        description: `${result.version} was published to production.`,
+      });
+      setDraft(emptyDraft());
+      setEditing(false);
+      setConnectFrom(null);
+      setRestoredAt(null);
+    } catch (err) {
+      toast({
+        tone: "red",
+        title: "Publish failed",
+        description: err instanceof Error ? err.message : "Unknown error",
+      });
+    } finally {
+      publishInFlight.current = false;
+      setPublishing(false);
+    }
+  }
+
+  function nextAgentId(actor: "Agent" | "Human"): string {
+    const prefix = actor === "Human" ? "human-review" : "automated-step";
+    const taken = new Set(agents.map((agent) => agent.kebabId));
+    let index = 1;
+    while (taken.has(`${prefix}-${index}`)) index += 1;
+    return `${prefix}-${index}`;
+  }
+
+  function viewportPosition(): { x: number; y: number } {
+    const canvas = canvasScrollRef.current;
+    if (!canvas) return { x: PAD_X, y: 90 };
+    return {
+      x: Math.max(
+        0,
+        Math.min(
+          Math.min(MAX_CANVAS_W - NODE_W, canvasSize.width + COL_W - NODE_W),
+          (canvas.scrollLeft + canvas.clientWidth * 0.45) / zoom,
+        ),
+      ),
+      y: Math.max(
+        0,
+        Math.min(
+          Math.min(MAX_CANVAS_H - NODE_H, canvasSize.height + ROW_H - NODE_H),
+          (canvas.scrollTop + canvas.clientHeight * 0.4) / zoom,
+        ),
+      ),
+    };
+  }
+
+  function addAgent(
+    actor: "Agent" | "Human",
+    requestedPosition = viewportPosition(),
+  ) {
+    const id = nextAgentId(actor);
+    const position = clampCanvasPosition(requestedPosition);
+    const options = {
+      id,
+      position,
+      stage: Math.max(0, Math.round((position.x - PAD_X) / COL_W)),
+    };
+    const definition =
+      actor === "Human"
+        ? createHumanAgentDefinition(options)
+        : createAutomatedAgentDefinition(options);
+    setDraft((current) => addAgentToDraft(current, definition));
+    setSelectedAgent(id);
+    setSelectedEvent(null);
+    setTool("select");
+    setValidation(null);
+  }
+
+  function connectNode(targetId: string) {
+    if (!connectFrom) {
+      setConnectFrom(targetId);
+      setSelectedAgent(targetId);
+      return;
+    }
+    if (connectFrom === targetId) {
+      setConnectFrom(null);
+      return;
+    }
+    const eventPart = (value: string) =>
+      value
+        .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+        .replace(/[^A-Za-z0-9]+/g, "_")
+        .replace(/^_+|_+$/g, "")
+        .toUpperCase();
+    const eventName =
+      `${eventPart(connectFrom)}_TO_${eventPart(targetId)}`.slice(0, 160);
+    try {
+      setDraft((current) =>
+        connectAgents(current, agents, connectFrom, targetId, eventName),
+      );
+      setSelectedAgent(targetId);
+      setSelectedEvent(eventName);
+      setConnectFrom(null);
+      setTool("select");
+      setValidation(null);
+      toast({
+        tone: "signal",
+        title: "Agents connected",
+        description: `${eventName} is emitted by ${connectFrom} and consumed by ${targetId}.`,
+      });
+    } catch (err) {
+      toast({
+        tone: "red",
+        title: "Connection failed",
         description: err instanceof Error ? err.message : "Unknown error",
       });
     }
+  }
+
+  function moveNode(id: string, clientX: number, clientY: number) {
+    const canvas = canvasScrollRef.current;
+    if (!canvas || clientX === 0 || clientY === 0) return;
+    const rect = canvas.getBoundingClientRect();
+    const position = {
+      x: Math.max(
+        0,
+        Math.min(
+          Math.min(MAX_CANVAS_W - NODE_W, canvasSize.width + COL_W - NODE_W),
+          (canvas.scrollLeft + clientX - rect.left) / zoom - NODE_W / 2,
+        ),
+      ),
+      y: Math.max(
+        0,
+        Math.min(
+          Math.min(MAX_CANVAS_H - NODE_H, canvasSize.height + ROW_H - NODE_H),
+          (canvas.scrollTop + clientY - rect.top) / zoom - NODE_H / 2 - 30,
+        ),
+      ),
+    };
+    setDraft((current) => moveAgent(current, id, position));
+    setValidation(null);
+  }
+
+  function autoLayout() {
+    const byStage = new Map<number, typeof agents>();
+    for (const agent of agents) {
+      const bucket = byStage.get(agent.stage) ?? [];
+      bucket.push(agent);
+      byStage.set(agent.stage, bucket);
+    }
+    const orderedStages = Array.from(byStage.keys()).sort((a, b) => a - b);
+    setDraft((current) => {
+      let next = current;
+      orderedStages.forEach((stage, column) => {
+        const rows = [...(byStage.get(stage) ?? [])].sort((a, b) =>
+          a.kebabId.localeCompare(b.kebabId),
+        );
+        rows.forEach((agent, lane) => {
+          next = moveAgent(next, agent.kebabId, {
+            x: PAD_X + column * COL_W,
+            y: 30 + lane * 90,
+          });
+        });
+      });
+      return next;
+    });
+    setValidation(null);
+    toast({
+      tone: "signal",
+      title: "Canvas arranged",
+      description:
+        "Agent positions were packed by stage and saved in the draft.",
+    });
+  }
+
+  function zoomToFit() {
+    const canvas = canvasScrollRef.current;
+    const all = Array.from(positions.values());
+    if (!canvas || all.length === 0) return;
+    const minX = Math.min(...all.map((position) => position.x));
+    const minY = Math.min(...all.map((position) => position.y));
+    const maxX = Math.max(...all.map((position) => position.x + NODE_W));
+    const maxY = Math.max(...all.map((position) => position.y + NODE_H));
+    const nextZoom = Math.max(
+      0.35,
+      Math.min(
+        1,
+        (canvas.clientWidth - 48) / Math.max(1, maxX - minX),
+        (canvas.clientHeight - 72) / Math.max(1, maxY - minY),
+      ),
+    );
+    setZoom(nextZoom);
+    requestAnimationFrame(() => {
+      canvas.scrollTo({
+        left: Math.max(0, minX * nextZoom - 24),
+        top: Math.max(0, minY * nextZoom - 24),
+        behavior: "smooth",
+      });
+    });
+  }
+
+  async function deleteSelectedWorkflow() {
+    if (!selectedWorkflow || selectedSummary?.liveVersionId) return;
+    const confirmed = window.confirm(
+      `Delete the draft workflow "${selectedSummary?.name ?? selectedWorkflow}"? This cannot be undone.`,
+    );
+    if (!confirmed) return;
+    try {
+      await deleteWorkflow.mutateAsync(selectedWorkflow);
+      const next = workflows.find((row) => row.slug !== selectedWorkflow);
+      setSelectedWorkflow(next?.slug ?? null);
+      toast({ tone: "green", title: "Draft workflow deleted" });
+    } catch (err) {
+      toast({
+        tone: "red",
+        title: "Delete failed",
+        description: err instanceof Error ? err.message : "Unknown error",
+      });
+    }
+  }
+
+  function selectCreatedWorkflow(workflow: WorkflowDetail) {
+    editAfterSelectionRef.current = workflow.slug;
+    setSelectedWorkflow(workflow.slug);
+    setDraft(emptyDraft());
+    setRestoredAt(null);
+    setDraftBaseVersionId(workflow.latestVersionId);
+    setEditing(true);
+    setShowNewModal(false);
   }
 
   return (
@@ -405,26 +906,28 @@ export default function WorkflowsPage() {
         subtitle={
           editing ? (
             <>
-              Editing draft of{" "}
+              Editing an unpublished draft of{" "}
               <span className="mono" style={{ color: "var(--text)" }}>
-                {tenant}
+                {selectedWorkflow ?? "workflow"}
               </span>{" "}
-              · changes won&apos;t affect live runs until you deploy.
+              · Save creates an immutable draft version; Publish explicitly
+              promotes it to live.
             </>
           ) : (
-            "Agent graph — nodes are agents, edges are events. Click any node or event to trace its flow."
+            "Select a tenant workflow, inspect its immutable version, or open the full draft editor."
           )
         }
         badge={
           editing ? (
             <Badge tone="amber">
-              <Icon name="alert" size={9} /> DRAFT · {tenant}
+              <Icon name="alert" size={9} /> LOCAL DRAFT
+            </Badge>
+          ) : dagQuery.data?.workflowIsLive ? (
+            <Badge tone="green">
+              <Icon name="check" size={9} /> LIVE
             </Badge>
           ) : (
-            <Badge tone="muted">
-              {tenant}
-              {workflowVersion ? ` · ${workflowVersion}` : ""}
-            </Badge>
+            <Badge tone="amber">DRAFT</Badge>
           )
         }
         action={
@@ -438,23 +941,54 @@ export default function WorkflowsPage() {
                 >
                   Help
                 </Button>,
-                <Button key="discard" small tone="ghost" onClick={discardDraft}>
-                  Discard draft
-                </Button>,
-                <Button key="val" small icon="check" tone="ghost">
-                  Validate
+                <Button key="discard" small tone="ghost" onClick={closeEditor}>
+                  Close editor
                 </Button>,
                 <Button
-                  key="dep"
+                  key="val"
+                  small
+                  icon="check"
+                  tone="ghost"
+                  onClick={() => void validateCurrent()}
+                  disabled={
+                    validateWorkflow.isPending ||
+                    dagQuery.isLoading ||
+                    !dagQuery.data?.workflowVersionId ||
+                    !selectedWorkflow ||
+                    hasEditorErrors
+                  }
+                >
+                  {validateWorkflow.isPending ? "Validating…" : "Validate"}
+                </Button>,
+                <Button
+                  key="save"
+                  small
+                  icon="code"
+                  onClick={() => void saveDraft()}
+                  disabled={!dirty || saveWorkflow.isPending || hasEditorErrors}
+                >
+                  {saveWorkflow.isPending
+                    ? "Saving…"
+                    : `Save draft${dirty ? ` (${draftCounts.added + draftCounts.modified + draftCounts.removed})` : ""}`}
+                </Button>,
+                <Button
+                  key="publish"
                   small
                   icon="deploy"
                   tone="primary"
-                  onClick={saveDraft}
-                  disabled={!dirty || deploy.isPending}
+                  onClick={() => void publishCurrent()}
+                  disabled={
+                    publishing ||
+                    publishWorkflow.isPending ||
+                    saveWorkflow.isPending ||
+                    validateWorkflow.isPending ||
+                    dagQuery.isLoading ||
+                    !dagQuery.data?.workflowVersionId ||
+                    !selectedWorkflow ||
+                    hasEditorErrors
+                  }
                 >
-                  {deploy.isPending
-                    ? "Deploying…"
-                    : `Deploy draft${dirty ? ` (${draftCounts.added + draftCounts.modified + draftCounts.removed})` : ""}`}
+                  {publishing ? "Publishing…" : "Publish"}
                 </Button>,
               ]
             : [
@@ -470,10 +1004,51 @@ export default function WorkflowsPage() {
                   key="edit"
                   icon="code"
                   small
-                  onClick={() => setEditing(true)}
+                  onClick={() => {
+                    setDraftBaseVersionId(
+                      dagQuery.data?.workflowVersionId ?? null,
+                    );
+                    setEditing(true);
+                  }}
+                  disabled={!selectedWorkflow || dagQuery.isLoading}
                 >
                   Edit workflow
                 </Button>,
+                ...(selectedSummary?.hasUnpublishedChanges
+                  ? [
+                      <Button
+                        key="publish"
+                        icon="deploy"
+                        small
+                        tone="primary"
+                        onClick={() => void publishCurrent()}
+                        disabled={
+                          publishing ||
+                          publishWorkflow.isPending ||
+                          validateWorkflow.isPending ||
+                          saveWorkflow.isPending ||
+                          dagQuery.isLoading ||
+                          !dagQuery.data?.workflowVersionId
+                        }
+                      >
+                        {publishing ? "Publishing…" : "Publish draft"}
+                      </Button>,
+                    ]
+                  : []),
+                ...(selectedSummary?.status === "draft" && selectedWorkflow
+                  ? [
+                      <Button
+                        key="delete"
+                        icon="x"
+                        tone="danger"
+                        small
+                        onClick={() => void deleteSelectedWorkflow()}
+                        disabled={deleteWorkflow.isPending}
+                      >
+                        Delete draft
+                      </Button>,
+                    ]
+                  : []),
                 <Button
                   key="new"
                   icon="plus"
@@ -494,6 +1069,88 @@ export default function WorkflowsPage() {
               ]
         }
       />
+
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          padding: "9px 24px",
+          background: "var(--panel-2)",
+          borderBottom: "1px solid var(--border)",
+          minHeight: 42,
+        }}
+      >
+        <span
+          style={{
+            color: "var(--text-3)",
+            fontFamily: "var(--mono)",
+            fontSize: 10.5,
+            textTransform: "uppercase",
+            letterSpacing: "0.07em",
+          }}
+        >
+          Workflow
+        </span>
+        <select
+          aria-label="Selected workflow"
+          value={selectedWorkflow ?? ""}
+          onChange={(event) => setSelectedWorkflow(event.target.value || null)}
+          disabled={catalogQuery.isLoading || workflows.length === 0}
+          style={{
+            minWidth: 260,
+            maxWidth: 420,
+            background: "var(--panel)",
+            border: "1px solid var(--border-2)",
+            borderRadius: 4,
+            color: "var(--text)",
+            padding: "6px 8px",
+            fontSize: 12,
+          }}
+        >
+          {workflows.length === 0 && <option value="">No workflows yet</option>}
+          {workflows.map((workflow) => (
+            <option key={workflow.id} value={workflow.slug}>
+              {workflow.name} ·{" "}
+              {workflow.liveVersionId
+                ? workflow.hasUnpublishedChanges
+                  ? "LIVE + DRAFT"
+                  : "LIVE"
+                : "DRAFT"}{" "}
+              · {workflow.latestVersion}
+            </option>
+          ))}
+        </select>
+        {selectedSummary && (
+          <>
+            <Badge tone={dagQuery.data?.workflowIsLive ? "green" : "amber"}>
+              {dagQuery.data?.workflowIsLive ? "LIVE VERSION" : "DRAFT VERSION"}
+            </Badge>
+            {selectedSummary.hasUnpublishedChanges && (
+              <Badge tone="amber">UNPUBLISHED CHANGES</Badge>
+            )}
+            <span
+              className="mono"
+              style={{ color: "var(--text-3)", fontSize: 10.5 }}
+            >
+              {workflowVersion || selectedSummary.latestVersion} ·{" "}
+              {selectedSummary.agentCount} agents
+            </span>
+          </>
+        )}
+        {catalogQuery.isError && (
+          <span role="alert" style={{ color: "var(--red)", fontSize: 11.5 }}>
+            {catalogQuery.error instanceof Error
+              ? catalogQuery.error.message
+              : "Workflow catalog unavailable"}
+          </span>
+        )}
+        {!catalogQuery.isLoading && workflows.length === 0 && (
+          <span style={{ color: "var(--text-3)", fontSize: 11.5 }}>
+            Create a workflow to begin.
+          </span>
+        )}
+      </div>
 
       {editing && <EditDraftBanner counts={draftCounts} />}
 
@@ -540,6 +1197,23 @@ export default function WorkflowsPage() {
         {/* Canvas */}
         <div
           ref={canvasScrollRef}
+          onClick={(event) => {
+            if (!editing || tool !== "add") return;
+            const target = event.target as HTMLElement;
+            if (target.closest("button,[role='button']")) return;
+            const canvas = canvasScrollRef.current;
+            if (!canvas) return;
+            const rect = canvas.getBoundingClientRect();
+            addAgent("Agent", {
+              x:
+                (canvas.scrollLeft + event.clientX - rect.left) / zoom -
+                NODE_W / 2,
+              y:
+                (canvas.scrollTop + event.clientY - rect.top) / zoom -
+                NODE_H / 2 -
+                30,
+            });
+          }}
           style={{
             position: "relative",
             overflow: "auto",
@@ -553,7 +1227,12 @@ export default function WorkflowsPage() {
           {editing && (
             <EditToolbar
               tool={tool}
-              setTool={(t) => setTool(t as typeof tool)}
+              setTool={(t) => {
+                setTool(t as typeof tool);
+                if (t !== "connect") setConnectFrom(null);
+              }}
+              onAutoLayout={autoLayout}
+              onZoomToFit={zoomToFit}
             />
           )}
 
@@ -562,18 +1241,19 @@ export default function WorkflowsPage() {
             style={{
               position: "absolute",
               left: 0,
-              right: 0,
+              width: canvasSize.width,
               top: 0,
               height: 28,
-              display: "flex",
-              paddingLeft: PAD_X,
               pointerEvents: "none",
+              zoom,
             }}
           >
-            {stages.map((s, i) => (
+            {stages.map((s) => (
               <div
                 key={s.id}
                 style={{
+                  position: "absolute",
+                  left: PAD_X + s.column * COL_W,
                   width: COL_W,
                   padding: "8px 0 0 6px",
                   fontSize: 10,
@@ -584,17 +1264,18 @@ export default function WorkflowsPage() {
                   color: "var(--text-3)",
                 }}
               >
-                {String(i).padStart(2, "0")} · {s.label}
+                {String(s.column).padStart(2, "0")} · {s.label}
               </div>
             ))}
           </div>
 
           <div
             style={{
-              width: CANVAS_W,
-              height: CANVAS_H + 30,
+              width: canvasSize.width,
+              height: canvasSize.height + 30,
               position: "relative",
               paddingTop: 30,
+              zoom,
             }}
           >
             {/* Stage column dividers */}
@@ -605,15 +1286,15 @@ export default function WorkflowsPage() {
                 pointerEvents: "none",
               }}
             >
-              {stages.map((s, i) =>
-                i > 0 ? (
+              {stages.map((s) =>
+                s.column > 0 ? (
                   <div
                     key={s.id}
                     style={{
                       position: "absolute",
                       top: 0,
                       bottom: 0,
-                      left: PAD_X + i * COL_W - 8,
+                      left: PAD_X + s.column * COL_W - 8,
                       width: 1,
                       background: "var(--border)",
                       opacity: 0.5,
@@ -625,8 +1306,8 @@ export default function WorkflowsPage() {
 
             {/* SVG edges */}
             <svg
-              width={CANVAS_W}
-              height={CANVAS_H}
+              width={canvasSize.width}
+              height={canvasSize.height}
               role="img"
               aria-label={`Workflow DAG: ${agents.length} agents wired by ${edges.length} event edges`}
               style={{
@@ -653,8 +1334,8 @@ export default function WorkflowsPage() {
                 ))}
               </defs>
               {edges.map((e, i) => {
-                const s = nodePos(e.src, autoFallback);
-                const d = nodePos(e.dst, autoFallback);
+                const s = positions.get(e.src) ?? { x: 0, y: 0 };
+                const d = positions.get(e.dst) ?? { x: 0, y: 0 };
                 const sx = s.x + NODE_W;
                 const sy = s.y + NODE_H / 2;
                 const dx = d.x;
@@ -692,7 +1373,10 @@ export default function WorkflowsPage() {
                       }}
                       onMouseEnter={() => setHoveredEdge(i)}
                       onMouseLeave={() => setHoveredEdge(null)}
-                      onClick={() => setSelectedEvent(e.event)}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setSelectedEvent(e.event);
+                      }}
                     />
                     {liveStream &&
                       (isHi || (!dim && Math.abs((i * 37) % 7) === 0)) && (
@@ -721,13 +1405,14 @@ export default function WorkflowsPage() {
                 position: "absolute",
                 top: 30,
                 left: 0,
-                width: CANVAS_W,
-                height: CANVAS_H,
+                width: canvasSize.width,
+                height: canvasSize.height,
               }}
             >
               {agents.map((a) => {
-                const p = nodePos(a.kebabId, autoFallback);
+                const p = positions.get(a.kebabId) ?? { x: 0, y: 0 };
                 const isSel = selectedAgent === a.kebabId;
+                const isConnectSource = connectFrom === a.kebabId;
                 const isHi = highlighted.nodes.has(a.kebabId);
                 const showDim = dim && !isHi;
                 const isAdded = editing && draft.added.has(a.kebabId);
@@ -739,13 +1424,15 @@ export default function WorkflowsPage() {
                 );
                 const borderColor = isSel
                   ? "var(--signal)"
-                  : isAdded
-                    ? "var(--green)"
-                    : isModified
-                      ? "var(--amber)"
-                      : isHi
-                        ? "var(--border-3)"
-                        : "var(--border-2)";
+                  : isConnectSource
+                    ? "var(--blue)"
+                    : isAdded
+                      ? "var(--green)"
+                      : isModified
+                        ? "var(--amber)"
+                        : isHi
+                          ? "var(--border-3)"
+                          : "var(--border-2)";
                 const dashed = editing ? "dashed" : "solid";
                 const stateSuffix = isAdded
                   ? ", draft addition"
@@ -758,8 +1445,20 @@ export default function WorkflowsPage() {
                     key={a.kebabId}
                     aria-label={nodeLabel}
                     aria-pressed={isSel}
+                    draggable={editing && tool === "select"}
+                    onDragStart={(event) => {
+                      event.dataTransfer.effectAllowed = "move";
+                      event.dataTransfer.setData("text/plain", a.kebabId);
+                    }}
+                    onDragEnd={(event) =>
+                      moveNode(a.kebabId, event.clientX, event.clientY)
+                    }
                     onClick={(e) => {
                       e.stopPropagation();
+                      if (editing && tool === "connect") {
+                        connectNode(a.kebabId);
+                        return;
+                      }
                       setSelectedAgent(isSel ? null : a.kebabId);
                       setSelectedEvent(null);
                     }}
@@ -778,7 +1477,12 @@ export default function WorkflowsPage() {
                       borderRadius: 5,
                       padding: "8px 10px",
                       textAlign: "left",
-                      cursor: editing ? "move" : "pointer",
+                      cursor:
+                        editing && tool === "connect"
+                          ? "crosshair"
+                          : editing && tool === "select"
+                            ? "move"
+                            : "pointer",
                       opacity: showDim ? 0.3 : 1,
                       transition:
                         "opacity 0.15s, border-color 0.12s, box-shadow 0.12s",
@@ -872,19 +1576,19 @@ export default function WorkflowsPage() {
             minHeight: 0,
           }}
         >
-          {selectedAgent && editing ? (
+          {selectedAgent && editing && selectedAgentRecord ? (
             <AgentEditor
-              agent={
-                agents.find((a) => a.kebabId === selectedAgent) ?? agents[0]!
-              }
+              agent={selectedAgentRecord}
               events={events}
               draft={draft.agents[selectedAgent]}
-              onChange={(next) =>
+              onChange={(next) => {
                 setDraft((prev) => ({
                   ...prev,
                   agents: { ...prev.agents, [selectedAgent]: next },
-                }))
-              }
+                }));
+                setValidation(null);
+              }}
+              onValidityChange={reportEditorValidity}
               onRemove={() => {
                 setDraft((prev) => {
                   const isAdded = prev.added.has(selectedAgent);
@@ -904,25 +1608,49 @@ export default function WorkflowsPage() {
                       : new Set([...prev.removed, selectedAgent]),
                   };
                 });
+                setValidation(null);
+                setEditorErrors((current) => {
+                  const next = { ...current };
+                  delete next[selectedAgent];
+                  return next;
+                });
                 setSelectedAgent(null);
               }}
               onClose={() => setSelectedAgent(null)}
             />
-          ) : selectedAgent ? (
+          ) : selectedAgent && selectedAgentRecord ? (
             <AgentInspector
-              agent={agents.find((a) => a.kebabId === selectedAgent)}
+              agent={selectedAgentRecord}
               onClose={() => setSelectedAgent(null)}
               onOpenFull={() => navAgent(selectedAgent)}
+              canOpenFull={Boolean(
+                dagQuery.data?.workflowIsLive &&
+                selectedAgentRecord.id !== selectedAgent,
+              )}
+              workflowLabel={`${selectedWorkflow ?? "workflow"}${workflowVersion ? ` · ${workflowVersion}` : ""}`}
             />
           ) : selectedEvent ? (
             <EventInspector
               eventName={selectedEvent}
+              agents={agents}
               onClose={() => setSelectedEvent(null)}
-              onNavigateAgent={navAgent}
+              onNavigateAgent={(id) => {
+                setSelectedAgent(id);
+                setSelectedEvent(null);
+              }}
               onNavigateEvents={navEvents}
             />
           ) : editing ? (
-            <DraftPalette />
+            <DraftPalette
+              workflowName={
+                selectedSummary?.name ?? selectedWorkflow ?? "Workflow"
+              }
+              draft={draft}
+              connectFrom={connectFrom}
+              validation={validation}
+              onAddAutomated={() => addAgent("Agent")}
+              onAddHuman={() => addAgent("Human")}
+            />
           ) : (
             <DefaultInspector
               events={events}
@@ -933,12 +1661,26 @@ export default function WorkflowsPage() {
         </aside>
       </div>
       {showNewModal && (
-        <NewWorkflowModal onClose={() => setShowNewModal(false)} />
+        <NewWorkflowModal
+          onClose={() => setShowNewModal(false)}
+          onCreated={selectCreatedWorkflow}
+          onImport={(target) => {
+            setImportTarget(target);
+            setShowImport(true);
+          }}
+        />
       )}
       {showImport && (
         <ImportManifestModal
-          onClose={() => setShowImport(false)}
+          onClose={() => {
+            setShowImport(false);
+            setImportTarget(null);
+            void catalogQuery.refetch();
+            void dagQuery.refetch();
+          }}
           mode="workflow"
+          draftTarget={importTarget ?? undefined}
+          onDraftCreated={selectCreatedWorkflow}
         />
       )}
       <WorkflowHelp open={showHelp} onClose={() => setShowHelp(false)} />

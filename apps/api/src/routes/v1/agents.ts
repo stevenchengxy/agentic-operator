@@ -13,10 +13,15 @@ import {
 } from "@agentic/db";
 import { makeId } from "@agentic/shared";
 import { ManifestUploadBody } from "@agentic/contracts";
-import { requireAuth } from "../../plugins/auth";
+import { requireAuth, requireWorkspaceWriter } from "../../plugins/auth";
 import { writeAudit } from "../../plugins/audit";
-import { getAgentDetail, listAgentRuns, listAgents } from "../../queries/agents";
+import {
+  getAgentDetail,
+  listAgentRuns,
+  listAgents,
+} from "../../queries/agents";
 import { resolveTenantCodePath } from "../../services/tenant-code";
+import { findWorkflowSecretPolicyIssues } from "../../services/workflow-secret-policy";
 
 function hashManifest(m: unknown): string {
   return crypto
@@ -36,8 +41,10 @@ interface DiffSummary {
 function computeDiff(prior: unknown[], next: unknown[]): DiffSummary {
   const priorMap = new Map<string, string>();
   const nextMap = new Map<string, string>();
-  for (const a of prior as Array<{ id: string }>) priorMap.set(a.id, JSON.stringify(a));
-  for (const a of next as Array<{ id: string }>) nextMap.set(a.id, JSON.stringify(a));
+  for (const a of prior as Array<{ id: string }>)
+    priorMap.set(a.id, JSON.stringify(a));
+  for (const a of next as Array<{ id: string }>)
+    nextMap.set(a.id, JSON.stringify(a));
   const added: string[] = [];
   const removed: string[] = [];
   const modified: string[] = [];
@@ -66,24 +73,19 @@ export async function agentsRoutes(app: FastifyInstance) {
   // override entirely; the listed tenant is now exclusively driven by
   // `auth.tenantSlug`. Code agents still implicitly include the synthetic
   // `__system` tenant because that's where platform code agents live.
-  app.get<{ Querystring: { kind?: string } }>(
-    "/agents",
-    async (req, reply) => {
-      const auth = requireAuth(req);
-      const rawKind = (req.query as { kind?: string }).kind;
-      const kind: "code" | "manifest" | "all" =
-        rawKind === "code" || rawKind === "manifest" ? rawKind : "all";
-      const tenantSlug = auth.tenantSlug;
-      const tenantsToQuery =
-        kind === "code" ? ["__system", tenantSlug] : [tenantSlug];
-      const lists = await Promise.all(
-        Array.from(new Set(tenantsToQuery)).map((t) =>
-          listAgents(t, { kind }),
-        ),
-      );
-      return reply.ok(lists.flat());
-    },
-  );
+  app.get<{ Querystring: { kind?: string } }>("/agents", async (req, reply) => {
+    const auth = requireAuth(req);
+    const rawKind = (req.query as { kind?: string }).kind;
+    const kind: "code" | "manifest" | "all" =
+      rawKind === "code" || rawKind === "manifest" ? rawKind : "all";
+    const tenantSlug = auth.tenantSlug;
+    const tenantsToQuery =
+      kind === "code" ? ["__system", tenantSlug] : [tenantSlug];
+    const lists = await Promise.all(
+      Array.from(new Set(tenantsToQuery)).map((t) => listAgents(t, { kind })),
+    );
+    return reply.ok(lists.flat());
+  });
 
   // GET /v1/agents/:kebab — detail
   app.get<{ Params: { kebab: string } }>(
@@ -99,8 +101,25 @@ export async function agentsRoutes(app: FastifyInstance) {
 
   // POST /v1/agents — Mode 1 manifest upload
   app.post("/agents", async (req, reply) => {
-    const auth = requireAuth(req);
+    const auth = requireWorkspaceWriter(req);
     const parsed = ManifestUploadBody.parse(req.body);
+    // The legacy upload surface promotes directly to the live deployment.
+    // Apply the canonical persistence policy before any workflow/version row
+    // is created or an existing live deployment is demoted.
+    const policyIssues = findWorkflowSecretPolicyIssues(
+      parsed.manifest,
+      parsed.actions,
+      { tenantSlug: auth.tenantSlug },
+    );
+    if (policyIssues.length > 0) {
+      return reply.fail(
+        "invalid_workflow_manifest",
+        "workflow contains forbidden credentials, secret references, or endpoints",
+        400,
+        undefined,
+        { issues: policyIssues },
+      );
+    }
     const db = getDb();
     const tenant = db
       .select()
@@ -142,7 +161,11 @@ export async function agentsRoutes(app: FastifyInstance) {
       db.insert(workflows)
         .values({ id: wfId, tenantId: tenant.id, slug, name: slug })
         .run();
-      workflow = db.select().from(workflows).where(eq(workflows.id, wfId)).all()[0]!;
+      workflow = db
+        .select()
+        .from(workflows)
+        .where(eq(workflows.id, wfId))
+        .all()[0]!;
     }
 
     const versionStr = `upload-${hashManifest(parsed.manifest)}`;
@@ -163,7 +186,10 @@ export async function agentsRoutes(app: FastifyInstance) {
         manifestJson: workflowVersions.manifestJson,
       })
       .from(deployments)
-      .innerJoin(workflowVersions, eq(workflowVersions.id, deployments.versionId))
+      .innerJoin(
+        workflowVersions,
+        eq(workflowVersions.id, deployments.versionId),
+      )
       .where(
         and(
           eq(deployments.tenantId, tenant.id),
@@ -217,7 +243,11 @@ export async function agentsRoutes(app: FastifyInstance) {
               updatedAt: now,
             })
             .run();
-          agentRow = db.select().from(agents).where(eq(agents.id, aid)).all()[0]!;
+          agentRow = db
+            .select()
+            .from(agents)
+            .where(eq(agents.id, aid))
+            .all()[0]!;
         }
         const existing = db
           .select()

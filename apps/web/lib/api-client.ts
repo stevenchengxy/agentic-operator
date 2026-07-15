@@ -345,7 +345,7 @@ type ManifestImportBody =
       mode: "commit";
       workflow: unknown;
       actions?: unknown[];
-      target: "staging" | "production";
+      target: "production";
       deployment_id: string;
       conflict_resolutions: z.infer<typeof ManifestConflictResolution>[];
       confirm_overwrite: boolean;
