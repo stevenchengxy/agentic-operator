@@ -33,6 +33,7 @@ import { requireAuth } from "../../plugins/auth";
 import { writeAudit } from "../../plugins/audit";
 import {
   AgentStudioNotFoundError,
+  AgentStudioReadOnlyError,
   createAgentDraft,
   createNewAgentDraft,
   deleteAgentDraft,
@@ -97,6 +98,17 @@ function llmStatus(code: string): number {
 function studioFailure(reply: FastifyReply, error: unknown): FastifyReply {
   if (error instanceof AgentStudioNotFoundError) {
     return reply.fail("not_found", error.message, 404);
+  }
+  if (error instanceof AgentStudioReadOnlyError) {
+    return reply.fail(
+      "agent_not_editable",
+      error.message,
+      409,
+      error.reason === "code_agent"
+        ? "Code-defined behavior cannot be inferred safely. Create a new manifest agent or keep editing the source implementation."
+        : "Restore or clone the archived agent before editing it.",
+      { reason: error.reason },
+    );
   }
   if (error instanceof DraftRevisionConflictError) {
     return reply.fail(

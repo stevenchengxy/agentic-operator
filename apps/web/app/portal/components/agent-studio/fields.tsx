@@ -1,7 +1,19 @@
 "use client";
 
-import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import { Badge, Button, Icon, MonacoEditor, Panel } from "@/app/portal/components";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
+import {
+  Badge,
+  Button,
+  Icon,
+  MonacoEditor,
+  Panel,
+} from "@/app/portal/components";
 import { parseLooseJson, toPrettyJson } from "./model";
 
 export function StudioPanel({
@@ -18,7 +30,13 @@ export function StudioPanel({
   style?: CSSProperties;
 }) {
   return (
-    <Panel title={title} subtitle={subtitle} action={action} padded style={style}>
+    <Panel
+      title={title}
+      subtitle={subtitle}
+      action={action}
+      padded
+      style={style}
+    >
       {children}
     </Panel>
   );
@@ -27,12 +45,14 @@ export function StudioPanel({
 export function Field({
   label,
   hint,
+  example,
   required,
   children,
   style,
 }: {
   label: ReactNode;
   hint?: ReactNode;
+  example?: ReactNode;
   required?: boolean;
   children: ReactNode;
   style?: CSSProperties;
@@ -64,6 +84,23 @@ export function Field({
           }}
         >
           {hint}
+        </span>
+      )}
+      {example && (
+        <span
+          style={{
+            display: "block",
+            marginTop: hint ? -2 : 0,
+            marginBottom: 6,
+            fontSize: 10,
+            lineHeight: 1.45,
+            color: "var(--text-4)",
+          }}
+        >
+          <strong style={{ color: "var(--text-3)", fontWeight: 500 }}>
+            Example:
+          </strong>{" "}
+          {example}
         </span>
       )}
       {children}
@@ -179,7 +216,11 @@ export function SelectInput({
       }}
     >
       {options.map((option) => (
-        <option key={option.value} value={option.value} disabled={option.disabled}>
+        <option
+          key={option.value}
+          value={option.value}
+          disabled={option.disabled}
+        >
           {option.label}
         </option>
       ))}
@@ -242,9 +283,20 @@ export function Toggle({
         />
       </span>
       <span>
-        <span style={{ display: "block", fontSize: 11.5, color: "var(--text)" }}>{label}</span>
+        <span
+          style={{ display: "block", fontSize: 11.5, color: "var(--text)" }}
+        >
+          {label}
+        </span>
         {hint && (
-          <span style={{ display: "block", marginTop: 2, fontSize: 10.5, color: "var(--text-3)" }}>
+          <span
+            style={{
+              display: "block",
+              marginTop: 2,
+              fontSize: 10.5,
+              color: "var(--text-3)",
+            }}
+          >
             {hint}
           </span>
         )}
@@ -257,13 +309,17 @@ export function Segmented<T extends string>({
   value,
   onChange,
   options,
+  ariaLabel = "Choose an option",
 }: {
   value: T;
   onChange: (value: T) => void;
   options: Array<{ value: T; label: string }>;
+  ariaLabel?: string;
 }) {
   return (
     <div
+      role="group"
+      aria-label={ariaLabel}
       style={{
         display: "inline-flex",
         border: "1px solid var(--border-2)",
@@ -275,10 +331,12 @@ export function Segmented<T extends string>({
         <button
           key={option.value}
           type="button"
+          aria-pressed={value === option.value}
           onClick={() => onChange(option.value)}
           style={{
             padding: "5px 9px",
-            background: value === option.value ? "var(--panel-3)" : "var(--panel-2)",
+            background:
+              value === option.value ? "var(--panel-3)" : "var(--panel-2)",
             color: value === option.value ? "var(--text)" : "var(--text-3)",
             borderRight: "1px solid var(--border)",
             borderBottom: `2px solid ${value === option.value ? "var(--signal)" : "transparent"}`,
@@ -298,12 +356,16 @@ export function JsonValueEditor({
   onChange,
   height = 220,
   label = "JSON",
+  hint,
+  example,
   readOnly = false,
 }: {
   value: unknown;
   onChange: (value: unknown) => void;
   height?: number | string;
   label?: string;
+  hint?: ReactNode;
+  example?: ReactNode;
   readOnly?: boolean;
 }) {
   const serialized = toPrettyJson(value);
@@ -320,12 +382,53 @@ export function JsonValueEditor({
 
   return (
     <div>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-        <span className="mono" style={{ fontSize: 10.5, color: "var(--text-3)" }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          marginBottom: 6,
+        }}
+      >
+        <span
+          className="mono"
+          style={{ fontSize: 10.5, color: "var(--text-3)" }}
+        >
           {label}
         </span>
-        {error ? <Badge tone="red">JSON error</Badge> : <Badge tone="green">Valid JSON</Badge>}
+        {error ? (
+          <Badge tone="red">JSON error</Badge>
+        ) : (
+          <Badge tone="green">Valid JSON</Badge>
+        )}
       </div>
+      {hint && (
+        <div
+          style={{
+            margin: "-1px 0 6px",
+            color: "var(--text-3)",
+            fontSize: 10.5,
+            lineHeight: 1.45,
+          }}
+        >
+          {hint}
+        </div>
+      )}
+      {example && (
+        <div
+          style={{
+            margin: "-2px 0 7px",
+            color: "var(--text-4)",
+            fontSize: 10,
+            lineHeight: 1.45,
+          }}
+        >
+          <strong style={{ color: "var(--text-3)", fontWeight: 500 }}>
+            Example:
+          </strong>{" "}
+          {example}
+        </div>
+      )}
       <MonacoEditor
         value={text}
         language="json"
@@ -338,7 +441,14 @@ export function JsonValueEditor({
           if (!result.error) onChange(result.value);
         }}
       />
-      {error && <div className="mono" style={{ marginTop: 5, color: "var(--red)", fontSize: 10 }}>{error}</div>}
+      {error && (
+        <div
+          className="mono"
+          style={{ marginTop: 5, color: "var(--red)", fontSize: 10 }}
+        >
+          {error}
+        </div>
+      )}
     </div>
   );
 }
@@ -361,11 +471,11 @@ export function InlineNotice({
         ? "var(--green)"
         : tone === "blue"
           ? "var(--blue)"
-        : tone === "amber"
-          ? "var(--amber)"
-          : tone === "red"
-            ? "var(--red)"
-            : "var(--text-2)";
+          : tone === "amber"
+            ? "var(--amber)"
+            : tone === "red"
+              ? "var(--red)"
+              : "var(--text-2)";
   return (
     <div
       style={{
@@ -381,9 +491,15 @@ export function InlineNotice({
         lineHeight: 1.5,
       }}
     >
-      <Icon name={tone === "red" || tone === "amber" ? "alert" : "spark"} size={11} style={{ color, marginTop: 2 }} />
+      <Icon
+        name={tone === "red" || tone === "amber" ? "alert" : "spark"}
+        size={11}
+        style={{ color, marginTop: 2 }}
+      />
       <div style={{ flex: 1, minWidth: 0 }}>
-        {title && <div style={{ marginBottom: 2, color, fontWeight: 500 }}>{title}</div>}
+        {title && (
+          <div style={{ marginBottom: 2, color, fontWeight: 500 }}>{title}</div>
+        )}
         {children}
       </div>
       {action}
@@ -412,8 +528,12 @@ export function EmptySection({
         textAlign: "center",
       }}
     >
-      <div style={{ fontSize: 13, color: "var(--text)", marginBottom: 4 }}>{title}</div>
-      <div style={{ fontSize: 11.5, color: "var(--text-3)", marginBottom: 12 }}>{hint}</div>
+      <div style={{ fontSize: 13, color: "var(--text)", marginBottom: 4 }}>
+        {title}
+      </div>
+      <div style={{ fontSize: 11.5, color: "var(--text-3)", marginBottom: 12 }}>
+        {hint}
+      </div>
       <Button small icon="plus" onClick={onAction}>
         {actionLabel}
       </Button>

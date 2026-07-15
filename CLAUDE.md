@@ -96,7 +96,7 @@ Routing:
 
 **Architectural rule (locked 2026-05-26):** production mode = **ZERO** mock/seed/synthetic data. Demo mode = seed + loop. Two clean states only — no "looks like demo, actually mock fallback" ambiguity.
 
-Switch via the single env flag `AGENTIC_DEMO_MODE` (default `false`; truthy: `true`, `1`, `yes`):
+Switch via the single env flag `AGENTIC_DEMO_MODE` (default `false`; enabled only by the explicit value `true`):
 
 - `AGENTIC_DEMO_MODE=false` (production): bootstrap skips `seed:rich` and never starts the demo-runner. Dashboard reflects only real events fired through `POST /v1/events`. When `/v1/tenants` is unreachable the portal renders an inline "api unreachable" banner — it does NOT fall back to the deleted `SAMPLE_TENANTS` fixture.
 - `AGENTIC_DEMO_MODE=true` (demo): bootstrap runs `runSeedRich()` programmatically (idempotent — every helper skips rows that already exist by primary key) and starts `apps/api/src/services/demo-runner.ts`. The sidebar renders a lime "DEMO" pill near the logo. `/health` exposes `demoMode: true`.

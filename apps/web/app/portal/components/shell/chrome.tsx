@@ -29,10 +29,8 @@ import { TweaksPanel } from "../tweaks/panel";
 import { ToastRegion, toast } from "../toast";
 import { CommandPalette } from "../cmd-k";
 import type { TenantOption } from "./tenant-switcher";
-import {
-  SessionProvider,
-  type SessionUser,
-} from "../../lib/session-context";
+import { SessionProvider, type SessionUser } from "../../lib/session-context";
+import styles from "./sidebar.module.css";
 
 export function PortalChrome({
   children,
@@ -82,24 +80,14 @@ export function PortalChrome({
     : [];
 
   const apiUnreachable =
-    tenantsQuery.isError ||
-    (!tenantsQuery.isLoading && !tenantsQuery.data);
+    tenantsQuery.isError || (!tenantsQuery.isLoading && !tenantsQuery.data);
 
   return (
     <SessionProvider value={user}>
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "232px 1fr",
-          gridTemplateAreas: '"side main"',
-          height: "100vh",
-          background: "var(--bg)",
-          overflow: "hidden",
-        }}
-      >
+      <div className={styles.shell}>
         {/* P2-FE-24 — skip-link is the first focusable element so keyboard
-          * users can jump past the sidebar straight to the view body.
-          * Styled in tokens.css `.skip-link`. */}
+         * users can jump past the sidebar straight to the view body.
+         * Styled in tokens.css `.skip-link`. */}
         <a href="#portal-view-content" className="skip-link">
           Skip to content
         </a>
@@ -128,7 +116,9 @@ export function PortalChrome({
             {children}
           </div>
         </main>
-        <TweaksPanel tenants={tenants.map((t) => ({ id: t.id, name: t.name }))} />
+        <TweaksPanel
+          tenants={tenants.map((t) => ({ id: t.id, name: t.name }))}
+        />
         <ToastRegion />
         <CommandPalette />
       </div>
@@ -166,7 +156,8 @@ function ApiUnreachableBanner() {
         aria-hidden
       />
       <span>
-        Cannot reach api on <code style={{ fontFamily: "var(--mono)" }}>:3501</code>
+        Cannot reach api on{" "}
+        <code style={{ fontFamily: "var(--mono)" }}>:3501</code>
         {" — check that `pnpm dev` is running. The portal will keep retrying."}
       </span>
     </div>

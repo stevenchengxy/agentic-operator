@@ -29,7 +29,6 @@ import {
   Badge,
   Button,
   Icon,
-  Kbd,
   ViewHeader,
   useToast,
 } from "@/app/portal/components";
@@ -59,6 +58,7 @@ import {
 import { NewWorkflowModal } from "@/app/portal/components/workflows/NewWorkflowModal";
 import { ImportManifestModal } from "@/app/portal/components/import-manifest/ImportManifestModal";
 import { AgentEditor } from "@/app/portal/components/workflows/AgentEditor";
+import { WorkflowHelp } from "@/app/portal/components/workflows/WorkflowHelp";
 import {
   applyDraft,
   countDraftChanges,
@@ -165,6 +165,7 @@ export default function WorkflowsPage() {
   const [tool, setTool] = useState<"select" | "connect" | "add">("select");
   const [showNewModal, setShowNewModal] = useState(false);
   const [showImport, setShowImport] = useState(false);
+  const [showHelp, setShowHelp] = useState(false);
   // Live stream — placeholder for tweaks-panel wiring (Phase 2).
   const liveStream = true;
   // Scroll container for the canvas viewport. The canvas is wider than the
@@ -180,7 +181,8 @@ export default function WorkflowsPage() {
     [baseAgents, draft, editing],
   );
   const draftCounts = countDraftChanges(draft);
-  const dirty = draftCounts.added + draftCounts.modified + draftCounts.removed > 0;
+  const dirty =
+    draftCounts.added + draftCounts.modified + draftCounts.removed > 0;
   const dirtyApi = useDirty();
   // UC-V11-15: register the draft with the global Dirty context so
   // useTenantNavigate() and other guards can prompt before navigating away.
@@ -362,7 +364,9 @@ export default function WorkflowsPage() {
     router.push(`/portal/${tenant}/agents/${id}` as never);
   }
   function navEvents(eventName: string) {
-    router.push(`/portal/${tenant}/events?name=${encodeURIComponent(eventName)}` as never);
+    router.push(
+      `/portal/${tenant}/events?name=${encodeURIComponent(eventName)}` as never,
+    );
   }
 
   function discardDraft() {
@@ -401,7 +405,11 @@ export default function WorkflowsPage() {
         subtitle={
           editing ? (
             <>
-              Editing draft of <span className="mono" style={{ color: "var(--text)" }}>{tenant}</span> · changes won&apos;t affect live runs until you deploy.
+              Editing draft of{" "}
+              <span className="mono" style={{ color: "var(--text)" }}>
+                {tenant}
+              </span>{" "}
+              · changes won&apos;t affect live runs until you deploy.
             </>
           ) : (
             "Agent graph — nodes are agents, edges are events. Click any node or event to trace its flow."
@@ -413,12 +421,23 @@ export default function WorkflowsPage() {
               <Icon name="alert" size={9} /> DRAFT · {tenant}
             </Badge>
           ) : (
-            <Badge tone="muted">{tenant}{workflowVersion ? ` · ${workflowVersion}` : ""}</Badge>
+            <Badge tone="muted">
+              {tenant}
+              {workflowVersion ? ` · ${workflowVersion}` : ""}
+            </Badge>
           )
         }
         action={
           editing
             ? [
+                <Button
+                  key="help"
+                  small
+                  icon="task"
+                  onClick={() => setShowHelp(true)}
+                >
+                  Help
+                </Button>,
                 <Button key="discard" small tone="ghost" onClick={discardDraft}>
                   Discard draft
                 </Button>,
@@ -439,20 +458,44 @@ export default function WorkflowsPage() {
                 </Button>,
               ]
             : [
-                <Button key="edit" icon="code" small onClick={() => setEditing(true)}>
+                <Button
+                  key="help"
+                  small
+                  icon="task"
+                  onClick={() => setShowHelp(true)}
+                >
+                  Help
+                </Button>,
+                <Button
+                  key="edit"
+                  icon="code"
+                  small
+                  onClick={() => setEditing(true)}
+                >
                   Edit workflow
                 </Button>,
-                <Button key="new" icon="plus" tone="primary" small onClick={() => setShowNewModal(true)}>
+                <Button
+                  key="new"
+                  icon="plus"
+                  tone="primary"
+                  small
+                  onClick={() => setShowNewModal(true)}
+                >
                   New workflow
                 </Button>,
-                <Button key="upload" icon="upload" small onClick={() => setShowImport(true)}>
+                <Button
+                  key="upload"
+                  icon="upload"
+                  small
+                  onClick={() => setShowImport(true)}
+                >
                   Import manifest
                 </Button>,
               ]
         }
       />
 
-      {editing && <EditDraftBanner />}
+      {editing && <EditDraftBanner counts={draftCounts} />}
 
       {restoredAt && (
         <div
@@ -507,7 +550,12 @@ export default function WorkflowsPage() {
             backgroundPosition: "0 0",
           }}
         >
-          {editing && <EditToolbar tool={tool} setTool={(t) => setTool(t as typeof tool)} />}
+          {editing && (
+            <EditToolbar
+              tool={tool}
+              setTool={(t) => setTool(t as typeof tool)}
+            />
+          )}
 
           {/* Stage headers row */}
           <div
@@ -541,9 +589,22 @@ export default function WorkflowsPage() {
             ))}
           </div>
 
-          <div style={{ width: CANVAS_W, height: CANVAS_H + 30, position: "relative", paddingTop: 30 }}>
+          <div
+            style={{
+              width: CANVAS_W,
+              height: CANVAS_H + 30,
+              position: "relative",
+              paddingTop: 30,
+            }}
+          >
             {/* Stage column dividers */}
-            <div style={{ position: "absolute", inset: "30px 0 0 0", pointerEvents: "none" }}>
+            <div
+              style={{
+                position: "absolute",
+                inset: "30px 0 0 0",
+                pointerEvents: "none",
+              }}
+            >
               {stages.map((s, i) =>
                 i > 0 ? (
                   <div
@@ -568,7 +629,12 @@ export default function WorkflowsPage() {
               height={CANVAS_H}
               role="img"
               aria-label={`Workflow DAG: ${agents.length} agents wired by ${edges.length} event edges`}
-              style={{ position: "absolute", top: 30, left: 0, pointerEvents: "none" }}
+              style={{
+                position: "absolute",
+                top: 30,
+                left: 0,
+                pointerEvents: "none",
+              }}
             >
               <defs>
                 {["green", "blue", "amber", "red", "muted"].map((c) => (
@@ -628,30 +694,49 @@ export default function WorkflowsPage() {
                       onMouseLeave={() => setHoveredEdge(null)}
                       onClick={() => setSelectedEvent(e.event)}
                     />
-                    {liveStream && (isHi || (!dim && Math.abs((i * 37) % 7) === 0)) && (
-                      <circle r="3" fill={color} opacity={isHi ? 1 : 0.85} aria-hidden="true">
-                        <animateMotion
-                          dur={`${2.5 + (i % 5) * 0.4}s`}
-                          repeatCount="indefinite"
-                          begin={`${(i * 0.13) % 2}s`}
-                          path={path}
-                        />
-                      </circle>
-                    )}
+                    {liveStream &&
+                      (isHi || (!dim && Math.abs((i * 37) % 7) === 0)) && (
+                        <circle
+                          r="3"
+                          fill={color}
+                          opacity={isHi ? 1 : 0.85}
+                          aria-hidden="true"
+                        >
+                          <animateMotion
+                            dur={`${2.5 + (i % 5) * 0.4}s`}
+                            repeatCount="indefinite"
+                            begin={`${(i * 0.13) % 2}s`}
+                            path={path}
+                          />
+                        </circle>
+                      )}
                   </g>
                 );
               })}
             </svg>
 
             {/* Agent nodes */}
-            <div style={{ position: "absolute", top: 30, left: 0, width: CANVAS_W, height: CANVAS_H }}>
+            <div
+              style={{
+                position: "absolute",
+                top: 30,
+                left: 0,
+                width: CANVAS_W,
+                height: CANVAS_H,
+              }}
+            >
               {agents.map((a) => {
                 const p = nodePos(a.kebabId, autoFallback);
                 const isSel = selectedAgent === a.kebabId;
                 const isHi = highlighted.nodes.has(a.kebabId);
                 const showDim = dim && !isHi;
-                const isAdded = editing && (a.kebabId === "10-1" || a.kebabId === "14-1");
-                const isModified = editing && (a.kebabId === "2" || a.kebabId === "12");
+                const isAdded = editing && draft.added.has(a.kebabId);
+                const isModified = Boolean(
+                  editing &&
+                  draft.agents[a.kebabId] &&
+                  !draft.added.has(a.kebabId) &&
+                  !draft.removed.has(a.kebabId),
+                );
                 const borderColor = isSel
                   ? "var(--signal)"
                   : isAdded
@@ -684,7 +769,8 @@ export default function WorkflowsPage() {
                       top: p.y,
                       width: NODE_W,
                       height: NODE_H,
-                      background: a.actor === "Agent" ? "var(--panel)" : "var(--panel-2)",
+                      background:
+                        a.actor === "Agent" ? "var(--panel)" : "var(--panel-2)",
                       borderTop: `1px ${dashed} ${borderColor}`,
                       borderRight: `1px ${dashed} ${borderColor}`,
                       borderBottom: `1px ${dashed} ${borderColor}`,
@@ -694,11 +780,21 @@ export default function WorkflowsPage() {
                       textAlign: "left",
                       cursor: editing ? "move" : "pointer",
                       opacity: showDim ? 0.3 : 1,
-                      transition: "opacity 0.15s, border-color 0.12s, box-shadow 0.12s",
-                      boxShadow: isSel ? "0 0 0 3px rgba(208,255,0,0.12)" : "none",
+                      transition:
+                        "opacity 0.15s, border-color 0.12s, box-shadow 0.12s",
+                      boxShadow: isSel
+                        ? "0 0 0 3px rgba(208,255,0,0.12)"
+                        : "none",
                     }}
                   >
-                    <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                        marginBottom: 4,
+                      }}
+                    >
                       <ActorTag actor={a.actor} />
                       {isAdded && <Badge tone="green">NEW</Badge>}
                       {isModified && <Badge tone="amber">MOD</Badge>}
@@ -730,21 +826,33 @@ export default function WorkflowsPage() {
                     </div>
                     {editing && isSel && (
                       <>
-                        {(["top", "right", "bottom", "left"] as const).map((s) => (
-                          <span
-                            key={s}
-                            style={{
-                              position: "absolute",
-                              width: 8,
-                              height: 8,
-                              background: "var(--signal)",
-                              border: "1px solid var(--bg)",
-                              borderRadius: 1,
-                              top: s === "top" ? -4 : s === "bottom" ? "calc(100% - 4px)" : "calc(50% - 4px)",
-                              left: s === "left" ? -4 : s === "right" ? "calc(100% - 4px)" : "calc(50% - 4px)",
-                            }}
-                          />
-                        ))}
+                        {(["top", "right", "bottom", "left"] as const).map(
+                          (s) => (
+                            <span
+                              key={s}
+                              style={{
+                                position: "absolute",
+                                width: 8,
+                                height: 8,
+                                background: "var(--signal)",
+                                border: "1px solid var(--bg)",
+                                borderRadius: 1,
+                                top:
+                                  s === "top"
+                                    ? -4
+                                    : s === "bottom"
+                                      ? "calc(100% - 4px)"
+                                      : "calc(50% - 4px)",
+                                left:
+                                  s === "left"
+                                    ? -4
+                                    : s === "right"
+                                      ? "calc(100% - 4px)"
+                                      : "calc(50% - 4px)",
+                              }}
+                            />
+                          ),
+                        )}
                       </>
                     )}
                   </button>
@@ -816,16 +924,24 @@ export default function WorkflowsPage() {
           ) : editing ? (
             <DraftPalette />
           ) : (
-            <DefaultInspector events={events} agents={agents} onPick={setSelectedEvent} />
+            <DefaultInspector
+              events={events}
+              agents={agents}
+              onPick={setSelectedEvent}
+            />
           )}
         </aside>
       </div>
-      {showNewModal && <NewWorkflowModal onClose={() => setShowNewModal(false)} />}
-      {showImport && <ImportManifestModal onClose={() => setShowImport(false)} mode="workflow" />}
-
-      {/* Kbd is exposed so it bundles even when not displayed (used in EditDraftBanner via its own
-          import). Re-export so unused-import lint passes. */}
-      {false && <Kbd>⌘</Kbd>}
+      {showNewModal && (
+        <NewWorkflowModal onClose={() => setShowNewModal(false)} />
+      )}
+      {showImport && (
+        <ImportManifestModal
+          onClose={() => setShowImport(false)}
+          mode="workflow"
+        />
+      )}
+      <WorkflowHelp open={showHelp} onClose={() => setShowHelp(false)} />
     </div>
   );
 }

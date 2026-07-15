@@ -24,6 +24,7 @@ import {
   deactivateRuntimeDemoMode,
   describeDemoMode,
   isDemoMode,
+  isDemoModeConfigured,
   isRuntimeDemoActive,
 } from "../src/config/demo-mode.js";
 import { buildTestEnv, type TestEnv } from "./harness.js";
@@ -38,6 +39,8 @@ describe("TC-80: AGENTIC_DEMO_MODE", () => {
   // Snapshot env so per-it() mutation doesn't leak.
   const savedFlag = process.env.AGENTIC_DEMO_MODE;
   const savedNodeEnv = process.env.NODE_ENV;
+  const savedProvider = process.env.LLM_DEFAULT_PROVIDER;
+  const savedModel = process.env.LLM_DEFAULT_MODEL;
 
   afterEach(() => {
     if (savedFlag === undefined) delete process.env.AGENTIC_DEMO_MODE;
@@ -49,15 +52,34 @@ describe("TC-80: AGENTIC_DEMO_MODE", () => {
     const active = _getDemoRunnerForTests();
     if (active) active.stop();
     if (isRuntimeDemoActive()) deactivateRuntimeDemoMode();
+    if (savedProvider === undefined) delete process.env.LLM_DEFAULT_PROVIDER;
+    else process.env.LLM_DEFAULT_PROVIDER = savedProvider;
+    if (savedModel === undefined) delete process.env.LLM_DEFAULT_MODEL;
+    else process.env.LLM_DEFAULT_MODEL = savedModel;
   });
 
-  describe("runtime override (POST /v1/demo/start path)", () => {
-    it("activate forces isDemoMode true and stashes prior env", () => {
+  describe("runtime controls (POST /v1/demo/start path)", () => {
+    it("cannot activate unless AGENTIC_DEMO_MODE=true is explicit", () => {
       delete process.env.AGENTIC_DEMO_MODE;
       process.env.LLM_DEFAULT_PROVIDER = "openrouter";
       process.env.LLM_DEFAULT_MODEL = "google/gemini-3.1-flash-lite-preview";
 
       expect(isDemoMode()).toBe(false);
+      expect(() => activateRuntimeDemoMode()).toThrow(
+        "set AGENTIC_DEMO_MODE=true",
+      );
+      expect(isRuntimeDemoActive()).toBe(false);
+      expect(process.env.LLM_DEFAULT_PROVIDER).toBe("openrouter");
+      expect(process.env.LLM_DEFAULT_MODEL).toBe(
+        "google/gemini-3.1-flash-lite-preview",
+      );
+    });
+
+    it("activate stashes prior env after the explicit gate is enabled", () => {
+      process.env.AGENTIC_DEMO_MODE = "true";
+      process.env.LLM_DEFAULT_PROVIDER = "openrouter";
+      process.env.LLM_DEFAULT_MODEL = "google/gemini-3.1-flash-lite-preview";
+
       const applied = activateRuntimeDemoMode();
       expect(isRuntimeDemoActive()).toBe(true);
       expect(isDemoMode()).toBe(true);
@@ -69,7 +91,7 @@ describe("TC-80: AGENTIC_DEMO_MODE", () => {
     });
 
     it("deactivate restores prior env and clears the runtime flag", () => {
-      delete process.env.AGENTIC_DEMO_MODE;
+      process.env.AGENTIC_DEMO_MODE = "true";
       process.env.LLM_DEFAULT_PROVIDER = "openrouter";
       process.env.LLM_DEFAULT_MODEL = "google/gemini-3.1-flash-lite-preview";
 
@@ -78,7 +100,7 @@ describe("TC-80: AGENTIC_DEMO_MODE", () => {
 
       deactivateRuntimeDemoMode();
       expect(isRuntimeDemoActive()).toBe(false);
-      expect(isDemoMode()).toBe(false);
+      expect(isDemoMode()).toBe(true);
       expect(process.env.LLM_DEFAULT_PROVIDER).toBe("openrouter");
       expect(process.env.LLM_DEFAULT_MODEL).toBe(
         "google/gemini-3.1-flash-lite-preview",
@@ -86,7 +108,7 @@ describe("TC-80: AGENTIC_DEMO_MODE", () => {
     });
 
     it("second activate while already on is a no-op (idempotent)", () => {
-      delete process.env.AGENTIC_DEMO_MODE;
+      process.env.AGENTIC_DEMO_MODE = "true";
       process.env.LLM_DEFAULT_PROVIDER = "openrouter";
 
       const first = activateRuntimeDemoMode();
@@ -106,16 +128,18 @@ describe("TC-80: AGENTIC_DEMO_MODE", () => {
       expect(isDemoMode()).toBe(false);
     });
 
-    it("accepts true / 1 / yes (case-insensitive)", () => {
-      for (const v of ["true", "TRUE", "1", "yes", "  Yes ", "YES"]) {
+    it("accepts only an explicit true value (case-insensitive)", () => {
+      for (const v of ["true", "TRUE", "  True "]) {
         process.env.AGENTIC_DEMO_MODE = v;
+        expect(isDemoModeConfigured()).toBe(true);
         expect(isDemoMode()).toBe(true);
       }
     });
 
-    it("rejects false / 0 / no / arbitrary strings", () => {
-      for (const v of ["false", "0", "no", "off", "maybe", ""]) {
+    it("fails closed for aliases and all non-true values", () => {
+      for (const v of ["false", "1", "yes", "0", "no", "off", "maybe", ""]) {
         process.env.AGENTIC_DEMO_MODE = v;
+        expect(isDemoModeConfigured()).toBe(false);
         expect(isDemoMode()).toBe(false);
       }
     });
@@ -184,7 +208,7 @@ describe("TC-80: AGENTIC_DEMO_MODE", () => {
     });
   });
 
-  describe("GET /health exposes demoMode", () => {
+  describe("production HTTP surfaces", () => {
     let env: TestEnv;
     beforeAll(async () => {
       env = await buildTestEnv();
@@ -203,6 +227,50 @@ describe("TC-80: AGENTIC_DEMO_MODE", () => {
       // test robust if a future contributor flips the test-time default.
       expect(typeof body.demoMode).toBe("boolean");
       expect(body.demoMode).toBe(false);
+    });
+
+    it("reports demo status as off without starting anything", async () => {
+      delete process.env.AGENTIC_DEMO_MODE;
+
+      const res = await env.fetch("/v1/demo/status");
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        ok: boolean;
+        data?: {
+          demoMode: boolean;
+          running: boolean;
+          runtimeOverride: boolean;
+        };
+      };
+      expect(body.ok).toBe(true);
+      expect(body.data).toMatchObject({
+        demoMode: false,
+        running: false,
+        runtimeOverride: false,
+      });
+      expect(_getDemoRunnerForTests()).toBeNull();
+    });
+
+    it("rejects POST /demo/start when the explicit env gate is off", async () => {
+      delete process.env.AGENTIC_DEMO_MODE;
+      process.env.NODE_ENV = "development"; // exercise the production gate, not the test gate
+      process.env.LLM_DEFAULT_PROVIDER = "openrouter";
+      process.env.LLM_DEFAULT_MODEL = "production-model";
+
+      const res = await env.fetch("/v1/demo/start", { method: "POST" });
+      expect(res.status).toBe(409);
+      const body = (await res.json()) as {
+        ok: boolean;
+        error?: { code: string; message: string };
+      };
+      expect(body).toMatchObject({
+        ok: false,
+        error: { code: "demo_disabled" },
+      });
+      expect(process.env.LLM_DEFAULT_PROVIDER).toBe("openrouter");
+      expect(process.env.LLM_DEFAULT_MODEL).toBe("production-model");
+      expect(isRuntimeDemoActive()).toBe(false);
+      expect(_getDemoRunnerForTests()).toBeNull();
     });
   });
 });

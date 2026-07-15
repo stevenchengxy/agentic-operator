@@ -6,6 +6,7 @@ import {
   agents,
   agentVersions,
   deployments,
+  eventListeners,
   eventTypes,
   getDb,
   workflows,
@@ -44,6 +45,10 @@ import { isInngestFunctionRegistered } from "./inngest-registry";
 
 type DraftRow = typeof agentDrafts.$inferSelect;
 type AgentRow = typeof agents.$inferSelect;
+type AgentIdentity = Pick<
+  AgentRow,
+  "id" | "kebabId" | "name" | "title" | "actor" | "kind"
+>;
 
 export function definitionHash(definition: unknown): string {
   return `sha256:${createHash("sha256")
@@ -164,6 +169,26 @@ export class DraftIdentityError extends Error {
   }
 }
 
+export class AgentStudioReadOnlyError extends Error {
+  constructor(public readonly reason: "code_agent" | "archived_agent") {
+    super(
+      reason === "code_agent"
+        ? "code-defined agents cannot be converted or published as manifest agents in place"
+        : "archived agents cannot be edited or published",
+    );
+    this.name = "AgentStudioReadOnlyError";
+  }
+}
+
+function assertManifestAgentEditable(agent: AgentRow): void {
+  if (agent.lifecycle === "archived") {
+    throw new AgentStudioReadOnlyError("archived_agent");
+  }
+  if (agent.kind !== "manifest") {
+    throw new AgentStudioReadOnlyError("code_agent");
+  }
+}
+
 function assertDraftIdentity(
   definition: AgentDefinitionV2,
   agent: AgentRow,
@@ -171,6 +196,218 @@ function assertDraftIdentity(
   if (definition.id !== agent.kebabId) {
     throw new DraftIdentityError(agent.kebabId, definition.id);
   }
+}
+
+function compatibilityExtensions(
+  value: unknown,
+  mode: "v1" | "historical" | "generated" | "code",
+  source: string,
+): Record<string, unknown> {
+  const current =
+    value && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
+  return {
+    ...current,
+    compatibility_mode: current.compatibility_mode ?? mode,
+    compatibility_source: source,
+  };
+}
+
+/** Normalize legacy JSON while anchoring it to the immutable DB identity. */
+export function normalizeAgentDefinitionForIdentity(
+  input: unknown,
+  agent: AgentIdentity,
+  compatibility?: {
+    mode: "v1" | "historical" | "generated" | "code";
+    source: string;
+  },
+): AgentDefinitionV2 {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new TypeError("legacy agent definition must be a JSON object");
+  }
+  const raw = input as Record<string, unknown>;
+  const actor = Array.isArray(raw.actor)
+    ? raw.actor
+    : raw.actor === "Agent" || raw.actor === "Human"
+      ? [raw.actor]
+      : [agent.actor];
+  const definition = normalizeAgentDefinition({
+    ...raw,
+    id:
+      raw.id === undefined || raw.id === null || raw.id === ""
+        ? agent.kebabId
+        : raw.id,
+    name:
+      raw.name === undefined || raw.name === null || raw.name === ""
+        ? agent.name
+        : raw.name,
+    title:
+      raw.title === undefined || raw.title === null || raw.title === ""
+        ? (agent.title ?? agent.name)
+        : raw.title,
+    actor,
+    ...(compatibility
+      ? {
+          extensions: compatibilityExtensions(
+            raw.extensions,
+            compatibility.mode,
+            compatibility.source,
+          ),
+        }
+      : {}),
+  });
+  if (definition.id !== agent.kebabId) {
+    throw new DraftIdentityError(agent.kebabId, definition.id);
+  }
+  return definition;
+}
+
+/** Safe editable starting point when no historical definition can be found. */
+export function synthesizeAgentDefinition(
+  agent: AgentIdentity,
+  triggers: string[] = [],
+): AgentDefinitionV2 {
+  const human = agent.actor === "Human";
+  const title = agent.title ?? agent.name;
+  return AgentDefinitionV2Schema.parse({
+    id: agent.kebabId,
+    name: agent.name,
+    title,
+    description: human
+      ? `Collect a human response for ${title}.`
+      : `Complete requests handled by ${title}.`,
+    actor: [agent.actor],
+    template: human ? "human" : "blank",
+    trigger: [...new Set(triggers)],
+    inputs: [
+      {
+        id: "prompt",
+        label: human ? "Task request" : "Request",
+        description: human
+          ? "Describe the decision or work the operator must complete."
+          : "Describe what you want the agent to do.",
+        kind: "prompt",
+        required: true,
+        schema: { type: "string", minLength: 1 },
+        sensitivity: "none",
+      },
+      {
+        id: "payload",
+        label: "Additional information",
+        description: "Optional structured context from an event, API, or form.",
+        kind: "value",
+        required: false,
+        schema: { type: "object" },
+        default: {},
+        sensitivity: "none",
+      },
+    ],
+    ontology_instructions: human
+      ? undefined
+      : `You are ${title}. Complete the user's request using only the supplied information. If required information is missing, explain what is needed. Return a concise result that matches the declared output.`,
+    user_prompt_template: "Additional information:\n{{json inputs.payload}}",
+    tool_use: [],
+    actions: [
+      human
+        ? {
+            id: "complete-task",
+            order: "1",
+            name: "completeTask",
+            description: "Ask an operator to complete the requested work.",
+            type: "manual",
+            task_type: "review",
+            awaiting_role: "operator",
+          }
+        : {
+            id: "complete-request",
+            order: "1",
+            name: "completeRequest",
+            description: "Use the AI model to complete the request.",
+            type: "logic",
+          },
+    ],
+    outputs: [
+      {
+        id: "result",
+        label: "Result",
+        description: "The completed result returned by this agent.",
+        required: true,
+        schema: {},
+        sensitivity: "none",
+      },
+    ],
+    output_config: {
+      format: "json",
+      strict: false,
+      repair_attempts: 0,
+      unwrap_single_output: false,
+      artifact: {
+        filename: "output.json",
+        persist_individual_outputs: false,
+        persist_run_input: true,
+        persist_run_record: true,
+        persist_raw_response: false,
+      },
+    },
+    triggered_event: [],
+    generated: true,
+    prompt_provenance: { mode: "imported" },
+    extensions: compatibilityExtensions(
+      undefined,
+      "generated",
+      "agent-identity",
+    ),
+  });
+}
+
+function completeActionlessCompatibilityDefinition(
+  definition: AgentDefinitionV2,
+): AgentDefinitionV2 {
+  if (definition.actions.length > 0) return definition;
+  const human = definition.actor.includes("Human");
+  const generatedFields = Array.isArray(
+    definition.extensions?.compatibility_generated_fields,
+  )
+    ? definition.extensions.compatibility_generated_fields.filter(
+        (value): value is string => typeof value === "string",
+      )
+    : [];
+  return AgentDefinitionV2Schema.parse({
+    ...definition,
+    generated: true,
+    ontology_instructions:
+      human || definition.ontology_instructions?.trim()
+        ? definition.ontology_instructions
+        : `You are ${definition.title ?? definition.name}. Complete the user's request using only the supplied information. If required information is missing, explain what is needed. Return a result that matches the declared output.`,
+    actions: [
+      human
+        ? {
+            id: "complete-task",
+            order: "1",
+            name: "completeTask",
+            description: "Ask an operator to complete the requested work.",
+            type: "manual",
+            task_type: "review",
+            awaiting_role: "operator",
+          }
+        : {
+            id: "complete-request",
+            order: "1",
+            name: "completeRequest",
+            description: "Use the AI model to complete the request.",
+            action_prompt:
+              "Complete the requested work and return the declared outputs.",
+            type: "logic",
+          },
+    ],
+    extensions: {
+      ...definition.extensions,
+      compatibility_generated_fields: [
+        ...new Set([...generatedFields, "actions"]),
+      ],
+    },
+  });
 }
 
 function agentPredicate(ref: string) {
@@ -239,6 +476,38 @@ function getLiveWorkflowSnapshot(
   );
 }
 
+function getLatestWorkflowSnapshot(
+  ctx: Pick<AuthedContext, "tenantId">,
+  workflowId: string,
+): LiveWorkflowSnapshot | null {
+  return (
+    getDb()
+      .select({
+        workflowVersionId: workflowVersions.id,
+        version: workflowVersions.version,
+        manifest: workflowVersions.manifestJson,
+      })
+      .from(workflowVersions)
+      .innerJoin(workflows, eq(workflows.id, workflowVersions.workflowId))
+      .where(
+        and(eq(workflows.tenantId, ctx.tenantId), eq(workflows.id, workflowId)),
+      )
+      .orderBy(desc(workflowVersions.createdAt), desc(workflowVersions.id))
+      .limit(1)
+      .all()[0] ?? null
+  );
+}
+
+function getAuthoringWorkflowSnapshot(
+  ctx: Pick<AuthedContext, "tenantId">,
+  workflowId: string,
+): LiveWorkflowSnapshot | null {
+  return (
+    getLiveWorkflowSnapshot(ctx, workflowId) ??
+    getLatestWorkflowSnapshot(ctx, workflowId)
+  );
+}
+
 export function getLiveAgentSnapshot(
   ctx: Pick<AuthedContext, "tenantId">,
   agentId: string,
@@ -255,6 +524,9 @@ export function getLiveAgentSnapshot(
       manifest: workflowVersions.manifestJson,
       agentKebabId: agents.kebabId,
       agentName: agents.name,
+      agentTitle: agents.title,
+      agentActor: agents.actor,
+      agentKind: agents.kind,
     })
     .from(deployments)
     .innerJoin(workflowVersions, eq(workflowVersions.id, deployments.versionId))
@@ -271,33 +543,39 @@ export function getLiveAgentSnapshot(
         eq(deployments.status, "live"),
         eq(workflows.tenantId, ctx.tenantId),
         eq(agentVersions.agentId, agentId),
+        eq(agents.kind, "manifest"),
       ),
     )
     .orderBy(desc(deployments.deployedAt))
     .limit(1)
     .all()[0];
   if (row) {
-    let definition = normalizeAgentDefinition(row.definition);
-    if (definition.id !== row.agentKebabId) {
+    const identity: AgentIdentity = {
+      id: agentId,
+      kebabId: row.agentKebabId,
+      name: row.agentName,
+      title: row.agentTitle,
+      actor: row.agentActor,
+      kind: row.agentKind,
+    };
+    let definition: AgentDefinitionV2 | null = null;
+    try {
+      definition = normalizeAgentDefinitionForIdentity(
+        row.definition,
+        identity,
+      );
+    } catch {
       const exact = findRawAgent(row.manifest, {
         kebabId: row.agentKebabId,
         name: row.agentName,
       });
       if (!exact) return null;
-      definition = normalizeAgentDefinition(exact);
-      if (definition.id !== row.agentKebabId) return null;
-      const repairedHash = definitionHash(definition);
-      db.update(agentVersions)
-        .set({
-          manifestJson: exact,
-          definitionSchemaVersion: 2,
-          contentHash: repairedHash,
-          updatedAt: new Date(),
-        })
-        .where(eq(agentVersions.id, row.agentVersionId))
-        .run();
-      row.contentHash = repairedHash;
+      definition = normalizeAgentDefinitionForIdentity(exact, identity, {
+        mode: "v1",
+        source: "live-workflow-manifest",
+      });
     }
+    if (!definition) return null;
     return {
       agentVersionId: row.agentVersionId,
       workflowVersionId: row.workflowVersionId,
@@ -324,6 +602,9 @@ export function getLiveAgentSnapshot(
       deployedAt: deployments.deployedAt,
       agentKebabId: agents.kebabId,
       agentName: agents.name,
+      agentTitle: agents.title,
+      agentActor: agents.actor,
+      agentKind: agents.kind,
     })
     .from(deployments)
     .innerJoin(workflowVersions, eq(workflowVersions.id, deployments.versionId))
@@ -336,61 +617,314 @@ export function getLiveAgentSnapshot(
         eq(deployments.status, "live"),
         eq(workflows.tenantId, ctx.tenantId),
         eq(agents.id, agentId),
+        eq(agents.kind, "manifest"),
       ),
     )
     .orderBy(desc(deployments.deployedAt))
     .limit(1)
     .all()[0];
-  if (!legacy) return null;
+  if (legacy) {
+    const rawDefinition = findRawAgent(legacy.manifest, {
+      kebabId: legacy.agentKebabId,
+      name: legacy.agentName,
+    });
+    if (rawDefinition) {
+      const definition = normalizeAgentDefinitionForIdentity(
+        rawDefinition,
+        {
+          id: agentId,
+          kebabId: legacy.agentKebabId,
+          name: legacy.agentName,
+          title: legacy.agentTitle,
+          actor: legacy.agentActor,
+          kind: legacy.agentKind,
+        },
+        { mode: "v1", source: "live-workflow-manifest" },
+      );
+      const contentHash = definitionHash(definition);
+      const versionId = makeId("agv");
+      db.insert(agentVersions)
+        .values({
+          id: versionId,
+          agentId,
+          workflowVersionId: legacy.workflowVersionId,
+          manifestJson: definition as unknown as object,
+          definitionSchemaVersion: 2,
+          contentHash,
+          publishedAt: legacy.deployedAt,
+          changeNote: "Agent Studio compatibility snapshot",
+          createdAt: legacy.workflowCreatedAt,
+          updatedAt: legacy.deployedAt,
+        })
+        .onConflictDoNothing()
+        .run();
+      const repaired = db
+        .select({
+          id: agentVersions.id,
+          contentHash: agentVersions.contentHash,
+          publishedAt: agentVersions.publishedAt,
+        })
+        .from(agentVersions)
+        .where(
+          and(
+            eq(agentVersions.agentId, agentId),
+            eq(agentVersions.workflowVersionId, legacy.workflowVersionId),
+          ),
+        )
+        .limit(1)
+        .all()[0];
+      if (repaired) {
+        return {
+          agentVersionId: repaired.id,
+          workflowVersionId: legacy.workflowVersionId,
+          version: legacy.version,
+          definition,
+          definitionHash: repaired.contentHash ?? contentHash,
+          publishedAt: repaired.publishedAt,
+          manifest: legacy.manifest,
+        };
+      }
+    }
+  }
 
-  const rawDefinition = findRawAgent(legacy.manifest, {
-    kebabId: legacy.agentKebabId,
-    name: legacy.agentName,
-  });
-  if (!rawDefinition) return null;
-  const definition = normalizeAgentDefinition(rawDefinition);
-  const contentHash = definitionHash(definition);
-  const versionId = makeId("agv");
-  db.insert(agentVersions)
-    .values({
-      id: versionId,
-      agentId,
-      workflowVersionId: legacy.workflowVersionId,
-      manifestJson: rawDefinition,
-      definitionSchemaVersion: 2,
-      contentHash,
-      publishedAt: legacy.deployedAt,
-      changeNote: "Agent Studio compatibility snapshot",
-      createdAt: legacy.workflowCreatedAt,
-      updatedAt: legacy.deployedAt,
-    })
-    .onConflictDoNothing()
-    .run();
-  const repaired = db
+  // Code deployments point directly at agent_versions rather than at a
+  // workflow version. Expose a normalized, read-only compatibility view, but
+  // never publish it as a manifest because code behavior cannot be inferred.
+  const code = db
     .select({
-      id: agentVersions.id,
+      agentVersionId: agentVersions.id,
+      workflowVersionId: workflowVersions.id,
+      version: workflowVersions.version,
+      definition: agentVersions.manifestJson,
       contentHash: agentVersions.contentHash,
       publishedAt: agentVersions.publishedAt,
+      deployedAt: deployments.deployedAt,
+      manifest: workflowVersions.manifestJson,
+      agentKebabId: agents.kebabId,
+      agentName: agents.name,
+      agentTitle: agents.title,
+      agentActor: agents.actor,
+      agentKind: agents.kind,
     })
-    .from(agentVersions)
+    .from(deployments)
+    .innerJoin(agentVersions, eq(agentVersions.id, deployments.versionId))
+    .innerJoin(agents, eq(agents.id, agentVersions.agentId))
+    .innerJoin(
+      workflowVersions,
+      eq(workflowVersions.id, agentVersions.workflowVersionId),
+    )
+    .innerJoin(workflows, eq(workflows.id, workflowVersions.workflowId))
     .where(
       and(
+        eq(deployments.tenantId, ctx.tenantId),
+        eq(deployments.target, "code_agent"),
+        eq(deployments.status, "live"),
+        eq(workflows.tenantId, ctx.tenantId),
         eq(agentVersions.agentId, agentId),
-        eq(agentVersions.workflowVersionId, legacy.workflowVersionId),
+        eq(agents.kind, "code"),
       ),
     )
+    .orderBy(desc(deployments.deployedAt))
     .limit(1)
     .all()[0];
-  if (!repaired) return null;
+  const codeVersion =
+    code ??
+    db
+      .select({
+        agentVersionId: agentVersions.id,
+        workflowVersionId: workflowVersions.id,
+        version: workflowVersions.version,
+        definition: agentVersions.manifestJson,
+        contentHash: agentVersions.contentHash,
+        publishedAt: agentVersions.publishedAt,
+        deployedAt: agentVersions.publishedAt,
+        manifest: workflowVersions.manifestJson,
+        agentKebabId: agents.kebabId,
+        agentName: agents.name,
+        agentTitle: agents.title,
+        agentActor: agents.actor,
+        agentKind: agents.kind,
+      })
+      .from(agentVersions)
+      .innerJoin(agents, eq(agents.id, agentVersions.agentId))
+      .innerJoin(
+        workflowVersions,
+        eq(workflowVersions.id, agentVersions.workflowVersionId),
+      )
+      .innerJoin(workflows, eq(workflows.id, workflowVersions.workflowId))
+      .where(
+        and(
+          eq(workflows.tenantId, ctx.tenantId),
+          eq(agentVersions.agentId, agentId),
+          eq(agents.kind, "code"),
+        ),
+      )
+      .orderBy(desc(agentVersions.createdAt), desc(agentVersions.id))
+      .limit(1)
+      .all()[0];
+  if (!codeVersion) return null;
+  const definition = normalizeAgentDefinitionForIdentity(
+    codeVersion.definition,
+    {
+      id: agentId,
+      kebabId: codeVersion.agentKebabId,
+      name: codeVersion.agentName,
+      title: codeVersion.agentTitle,
+      actor: codeVersion.agentActor,
+      kind: codeVersion.agentKind,
+    },
+    { mode: "code", source: "code-agent-metadata" },
+  );
   return {
-    agentVersionId: repaired.id,
-    workflowVersionId: legacy.workflowVersionId,
-    version: legacy.version,
+    agentVersionId: codeVersion.agentVersionId,
+    workflowVersionId: codeVersion.workflowVersionId,
+    version: codeVersion.version,
     definition,
-    definitionHash: repaired.contentHash ?? contentHash,
-    publishedAt: repaired.publishedAt,
-    manifest: legacy.manifest,
+    definitionHash: codeVersion.contentHash ?? definitionHash(definition),
+    publishedAt: codeVersion.publishedAt ?? codeVersion.deployedAt,
+    manifest: codeVersion.manifest,
   };
+}
+
+interface LegacyDefinitionSource {
+  definition: AgentDefinitionV2;
+  agentVersionId: string | null;
+  workflowVersionId: string | null;
+}
+
+function getLatestLegacyDefinitionSource(
+  ctx: Pick<AuthedContext, "tenantId">,
+  agent: AgentRow,
+): LegacyDefinitionSource | null {
+  let partial: LegacyDefinitionSource | null = null;
+  const preferRunnable = (
+    candidate: LegacyDefinitionSource,
+  ): LegacyDefinitionSource | null => {
+    if (candidate.definition.actions.length > 0) return candidate;
+    partial ??= candidate;
+    return null;
+  };
+  const versionRows = getDb()
+    .select({
+      agentVersionId: agentVersions.id,
+      workflowVersionId: workflowVersions.id,
+      definition: agentVersions.manifestJson,
+      workflowManifest: workflowVersions.manifestJson,
+    })
+    .from(agentVersions)
+    .innerJoin(
+      workflowVersions,
+      eq(workflowVersions.id, agentVersions.workflowVersionId),
+    )
+    .innerJoin(workflows, eq(workflows.id, workflowVersions.workflowId))
+    .where(
+      and(
+        eq(workflows.tenantId, ctx.tenantId),
+        eq(workflows.id, agent.workflowId),
+        eq(agentVersions.agentId, agent.id),
+      ),
+    )
+    .orderBy(
+      desc(agentVersions.createdAt),
+      desc(workflowVersions.createdAt),
+      desc(agentVersions.id),
+    )
+    .all();
+
+  for (const row of versionRows) {
+    try {
+      const candidate = {
+        definition: normalizeAgentDefinitionForIdentity(row.definition, agent, {
+          mode: "historical",
+          source: "historical-agent-version",
+        }),
+        agentVersionId: row.agentVersionId,
+        workflowVersionId: row.workflowVersionId,
+      };
+      const runnable = preferRunnable(candidate);
+      if (runnable) return runnable;
+    } catch {
+      const exact = findRawAgent(row.workflowManifest, agent);
+      if (!exact) continue;
+      try {
+        const candidate = {
+          definition: normalizeAgentDefinitionForIdentity(exact, agent, {
+            mode: "historical",
+            source: "historical-workflow-manifest",
+          }),
+          agentVersionId: row.agentVersionId,
+          workflowVersionId: row.workflowVersionId,
+        };
+        const runnable = preferRunnable(candidate);
+        if (runnable) return runnable;
+      } catch {
+        // Continue to an older unambiguous snapshot.
+      }
+    }
+  }
+
+  const workflowRows = getDb()
+    .select({
+      workflowVersionId: workflowVersions.id,
+      manifest: workflowVersions.manifestJson,
+      actions: workflowVersions.actionsJson,
+    })
+    .from(workflowVersions)
+    .innerJoin(workflows, eq(workflows.id, workflowVersions.workflowId))
+    .where(
+      and(
+        eq(workflows.tenantId, ctx.tenantId),
+        eq(workflows.id, agent.workflowId),
+      ),
+    )
+    .orderBy(desc(workflowVersions.createdAt), desc(workflowVersions.id))
+    .all();
+
+  for (const row of workflowRows) {
+    const candidates: Array<{
+      value: Record<string, unknown> | null;
+      source: string;
+    }> = [
+      {
+        value: findRawAgent(row.manifest, agent),
+        source: "historical-workflow-manifest",
+      },
+      {
+        value: findRawAgent(row.actions, agent),
+        source: "legacy-action-catalog",
+      },
+    ];
+    for (const candidate of candidates) {
+      if (!candidate.value) continue;
+      try {
+        const source = {
+          definition: normalizeAgentDefinitionForIdentity(
+            candidate.value,
+            agent,
+            { mode: "historical", source: candidate.source },
+          ),
+          agentVersionId: null,
+          workflowVersionId: row.workflowVersionId,
+        };
+        const runnable = preferRunnable(source);
+        if (runnable) return runnable;
+      } catch {
+        // Try the next unambiguous compatibility source.
+      }
+    }
+  }
+
+  return partial;
+}
+
+function compatibilityTriggers(agentId: string): string[] {
+  return getDb()
+    .select({ name: eventListeners.eventName })
+    .from(eventListeners)
+    .where(eq(eventListeners.agentId, agentId))
+    .all()
+    .map((row) => row.name)
+    .sort();
 }
 
 function getLatestDraftRow(tenantId: string, agentId: string): DraftRow | null {
@@ -432,14 +966,14 @@ export function getDraft(
 }
 
 export function getAgentEditor(
-  ctx: Pick<AuthedContext, "tenantId">,
+  ctx: AuthedContext,
   agentRef: string,
   requestedDraftId?: string,
 ): AgentEditorResponse {
   const agent = findStudioAgent(ctx, agentRef);
   if (!agent) throw new AgentStudioNotFoundError("agent");
   const live = getLiveAgentSnapshot(ctx, agent.id);
-  const selectedDraft = requestedDraftId
+  let selectedDraft = requestedDraftId
     ? getDraft(ctx, requestedDraftId)
     : (() => {
         const row = getLatestDraftRow(ctx.tenantId, agent.id);
@@ -448,6 +982,22 @@ export function getAgentEditor(
   if (selectedDraft && selectedDraft.agentId !== agent.id) {
     throw new AgentStudioNotFoundError("draft");
   }
+  // Materialize a safe current-format draft only when an editable manifest
+  // agent has no live definition at all. The draft remains unvalidated and
+  // unpublished so an operator must review it before it can affect runtime.
+  if (
+    !requestedDraftId &&
+    !live &&
+    !selectedDraft &&
+    agent.kind === "manifest" &&
+    agent.lifecycle !== "archived"
+  ) {
+    selectedDraft = createAgentDraft(ctx, agent.id, {});
+  }
+  const studioRunnable =
+    agent.kind === "manifest" &&
+    agent.lifecycle !== "archived" &&
+    Boolean(live || selectedDraft);
   return {
     agent: {
       id: agent.id,
@@ -472,7 +1022,7 @@ export function getAgentEditor(
     draft: selectedDraft,
     capabilities: {
       canEdit: agent.kind === "manifest" && agent.lifecycle !== "archived",
-      canRun: agent.lifecycle !== "archived",
+      canRun: studioRunnable,
       canPublish: agent.kind === "manifest" && agent.lifecycle !== "archived",
     },
   };
@@ -489,6 +1039,7 @@ export function createAgentDraft(
 ): AgentDraftRecord {
   const agent = findStudioAgent(ctx, agentRef);
   if (!agent) throw new AgentStudioNotFoundError("agent");
+  assertManifestAgentEditable(agent);
 
   if (!input.definition) {
     const existing = getLatestDraftRow(ctx.tenantId, agent.id);
@@ -496,20 +1047,21 @@ export function createAgentDraft(
   }
 
   const live = getLiveAgentSnapshot(ctx, agent.id);
-  const liveWorkflow = getLiveWorkflowSnapshot(ctx, agent.workflowId);
-  const definition = AgentDefinitionV2Schema.parse(
+  const historical =
+    !input.definition && !live
+      ? getLatestLegacyDefinitionSource(ctx, agent)
+      : null;
+  const authoringWorkflow = getAuthoringWorkflowSnapshot(ctx, agent.workflowId);
+  const parsedDefinition = AgentDefinitionV2Schema.parse(
     input.definition ??
       live?.definition ??
-      normalizeAgentDefinition({
-        id: agent.kebabId,
-        name: agent.name,
-        title: agent.title ?? agent.name,
-        actor: [agent.actor],
-        trigger: [],
-        actions: [],
-        triggered_event: [],
-      }),
+      historical?.definition ??
+      synthesizeAgentDefinition(agent, compatibilityTriggers(agent.id)),
   );
+  const definition =
+    historical && !input.definition && !live
+      ? completeActionlessCompatibilityDefinition(parsedDefinition)
+      : parsedDefinition;
   assertDraftIdentity(definition, agent);
   const now = new Date();
   const id = makeId("agd");
@@ -521,11 +1073,15 @@ export function createAgentDraft(
       workflowId: agent.workflowId,
       agentId: agent.id,
       baseAgentVersionId:
-        input.baseAgentVersionId ?? live?.agentVersionId ?? null,
+        input.baseAgentVersionId ??
+        live?.agentVersionId ??
+        historical?.agentVersionId ??
+        null,
       baseWorkflowVersionId:
         input.baseWorkflowVersionId ??
+        authoringWorkflow?.workflowVersionId ??
         live?.workflowVersionId ??
-        liveWorkflow?.workflowVersionId ??
+        historical?.workflowVersionId ??
         null,
       definitionJson: definition as unknown as object,
       schemaVersion: 2,
@@ -1566,9 +2122,10 @@ export async function publishDraft(
   }
   const agent = findStudioAgent(ctx, draft.agentId);
   if (!agent) throw new AgentStudioNotFoundError("agent");
+  assertManifestAgentEditable(agent);
   assertDraftIdentity(draft.definition, agent);
   const currentLive = getLiveAgentSnapshot(ctx, agent.id);
-  const currentWorkflow = getLiveWorkflowSnapshot(ctx, agent.workflowId);
+  const currentWorkflow = getAuthoringWorkflowSnapshot(ctx, agent.workflowId);
 
   if (currentLive && !input.confirmImpact) {
     const impactSections: Array<[string, unknown, unknown]> = [
@@ -1857,6 +2414,7 @@ export function getAgentVersion(
       workflowVersionId: agentVersions.workflowVersionId,
       workflowVersion: workflowVersions.version,
       definition: agentVersions.manifestJson,
+      workflowManifest: workflowVersions.manifestJson,
       contentHash: agentVersions.contentHash,
       schemaVersion: agentVersions.definitionSchemaVersion,
       changeNote: agentVersions.changeNote,
@@ -1880,6 +2438,17 @@ export function getAgentVersion(
     .limit(1)
     .all()[0];
   if (!row) throw new AgentStudioNotFoundError("version");
+  let definition: AgentDefinitionV2;
+  try {
+    definition = normalizeAgentDefinitionForIdentity(row.definition, agent);
+  } catch {
+    const exact = findRawAgent(row.workflowManifest, agent);
+    if (!exact) throw new AgentStudioNotFoundError("version");
+    definition = normalizeAgentDefinitionForIdentity(exact, agent, {
+      mode: "historical",
+      source: "historical-workflow-manifest",
+    });
+  }
   return {
     id: row.id,
     agentId: row.agentId,
@@ -1892,7 +2461,7 @@ export function getAgentVersion(
     publishedAt: row.publishedAt,
     createdAt: row.createdAt,
     live: live?.agentVersionId === row.id,
-    definition: normalizeAgentDefinition(row.definition),
+    definition,
   };
 }
 
@@ -1968,32 +2537,10 @@ export function restoreAgentVersion(
   agentRef: string,
   versionId: string,
 ): AgentDraftRecord {
-  const agent = findStudioAgent(ctx, agentRef);
-  if (!agent) throw new AgentStudioNotFoundError("agent");
-  const row = getDb()
-    .select({
-      definition: agentVersions.manifestJson,
-      workflowVersionId: agentVersions.workflowVersionId,
-    })
-    .from(agentVersions)
-    .innerJoin(
-      workflowVersions,
-      eq(workflowVersions.id, agentVersions.workflowVersionId),
-    )
-    .innerJoin(workflows, eq(workflows.id, workflowVersions.workflowId))
-    .where(
-      and(
-        eq(workflows.tenantId, ctx.tenantId),
-        eq(agentVersions.agentId, agent.id),
-        eq(agentVersions.id, versionId),
-      ),
-    )
-    .limit(1)
-    .all()[0];
-  if (!row) throw new AgentStudioNotFoundError("version");
-  return createAgentDraft(ctx, agent.id, {
-    definition: normalizeAgentDefinition(row.definition),
+  const version = getAgentVersion(ctx, agentRef, versionId);
+  return createAgentDraft(ctx, version.agentId, {
+    definition: version.definition,
     baseAgentVersionId: versionId,
-    baseWorkflowVersionId: row.workflowVersionId,
+    baseWorkflowVersionId: version.workflowVersionId,
   });
 }

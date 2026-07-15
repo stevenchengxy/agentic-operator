@@ -40,6 +40,54 @@ describe("versioned workflow manifest loading", () => {
     assert.deepEqual(loaded.manifest[0]!.extension_key, { preserved: true });
   });
 
+  it("accepts Agent Studio's null sentinel for a disabled schedule in bare arrays", async () => {
+    const dir = await mkdtemp(
+      path.join(os.tmpdir(), "agentic-manifest-studio-"),
+    );
+    tempDirs.push(dir);
+    await writeFile(
+      path.join(dir, "workflow.json"),
+      JSON.stringify([
+        {
+          id: "studio-bare",
+          name: "studioBareAgent",
+          actor: ["Agent"],
+          trigger: ["RUN"],
+          inputs: [
+            {
+              id: "prompt",
+              kind: "prompt",
+              required: true,
+              schema: { type: "string" },
+            },
+          ],
+          actions: [
+            {
+              order: "1",
+              name: "work",
+              type: "logic",
+            },
+          ],
+          outputs: [
+            {
+              id: "result",
+              required: true,
+              schema: { type: "object" },
+            },
+          ],
+          triggered_event: ["DONE"],
+          cron: null,
+          cron_timezone: null,
+        },
+      ]),
+    );
+
+    const loaded = await loadManifestFromDisk(dir);
+    assert.equal(loaded.manifest.length, 1);
+    assert.equal(loaded.manifest[0]!.cron, undefined);
+    assert.equal(loaded.manifest[0]!.cron_timezone, undefined);
+  });
+
   it("returns canonical defaults for a v2 envelope", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "agentic-manifest-v2-"));
     tempDirs.push(dir);

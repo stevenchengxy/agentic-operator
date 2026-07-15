@@ -140,9 +140,9 @@ describe("Agent Studio terminal storage boundaries", () => {
         name: definition.name,
         title: definition.title,
         actor: "Agent",
-        // Avoid an irrelevant network cancel signal in this storage-focused
-        // route test; Studio's DB checkpoint is shared by both agent kinds.
-        kind: "code",
+        // This fixture exercises the manifest-only Studio runner. Code agents
+        // use their registered source runtime and cannot be run from metadata.
+        kind: "manifest",
         enabled: true,
         lifecycle: "active",
         createdAt: queuedAt,
@@ -396,10 +396,15 @@ describe("Agent Studio terminal storage boundaries", () => {
   });
 
   it("atomically cancels Studio runs and persists one retained terminal record", async () => {
-    const first = await env.fetch(`/v1/runs/${cancelRunId}/cancel`, {
-      method: "POST",
-      headers: { "x-agentic-tenant": TENANT },
-    });
+    const send = vi
+      .spyOn(inngest, "send")
+      .mockResolvedValue({ ids: [`cancel-${SUFFIX}`] } as never);
+    const first = await env
+      .fetch(`/v1/runs/${cancelRunId}/cancel`, {
+        method: "POST",
+        headers: { "x-agentic-tenant": TENANT },
+      })
+      .finally(() => send.mockRestore());
     expect(first.status).toBe(200);
     const firstBody = (await first.json()) as Envelope<unknown>;
     const cancellation = CancelRunResponse.parse(firstBody.data);

@@ -189,6 +189,15 @@ a {
   grid-template-columns: minmax(280px, 0.85fr) minmax(340px, 1.15fr) 250px;
 }
 
+/* Production two-agent system check — wide evidence area + compact history. */
+.operator-check-main-grid {
+  grid-template-columns: minmax(0, 1fr) 290px;
+}
+
+.operator-check-scenario-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 @media (max-width: 1280px) {
   .agent-studio-layout {
     grid-template-columns: 150px minmax(0, 1fr);
@@ -207,5 +216,31 @@ a {
     min-height: 220px;
     max-height: 260px;
     border-top: 1px solid var(--border);
+  }
+}
+
+@media (max-width: 900px) {
+  .operator-check-main-grid,
+  .operator-check-scenario-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .agent-studio-port-grid,
+  .agent-studio-tools-grid {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+
+  .agent-studio-port-grid > :first-child,
+  .agent-studio-tools-grid > :first-child {
+    padding-right: 0 !important;
+    padding-bottom: 14px;
+    border-right: 0 !important;
+    border-bottom: 1px solid var(--border);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .operator-check-progress-fill {
+    transition: none !important;
   }
 }

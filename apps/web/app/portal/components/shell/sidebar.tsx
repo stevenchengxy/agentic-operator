@@ -1,7 +1,8 @@
 "use client";
 
 /**
- * Sidebar — fixed-width left rail (232px). v1_1 app.jsx:108-164.
+ * Sidebar — compact 64px icon rail that expands to 232px without reflowing
+ * the active portal view.
  *
  * Top to bottom: Logo + version, TenantSwitcher, 3 nav groups (Run / Observe
  * / Manage), footer status dots (Inngest + SQLite).
@@ -14,21 +15,26 @@
  * The host layout passes in the resolved tenant list so we don't refetch.
  */
 
-import { useMemo } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FocusEvent,
+  type PointerEvent,
+} from "react";
+import { createPortal } from "react-dom";
 import { useTenant } from "../../lib/use-tenant";
 import { useAgents } from "@/lib/hooks/useAgents";
 import { useRuns } from "@/lib/hooks/useRuns";
 import { useTasks } from "@/lib/hooks/useTasks";
 import { useHealth, fmtBytes } from "@/lib/hooks/useHealth";
-import {
-  useDemoStatus,
-  useStartDemo,
-  useStopDemo,
-} from "@/lib/hooks/useDemoMode";
 import { StatusDot } from "../atoms";
+import { Icon } from "../Icon";
 import { Logo } from "./logo";
 import { NavGroup, NavItem } from "./nav";
 import { TenantSwitcher, type TenantOption } from "./tenant-switcher";
+import styles from "./sidebar.module.css";
 
 export interface SidebarProps {
   tenants: TenantOption[];
@@ -36,6 +42,16 @@ export interface SidebarProps {
 }
 
 export function Sidebar({ tenants, version = "v0.6.2" }: SidebarProps) {
+  const [hoverOpen, setHoverOpen] = useState(false);
+  const [focusOpen, setFocusOpen] = useState(false);
+  const [pinnedOpen, setPinnedOpen] = useState(false);
+  const [tooltip, setTooltip] = useState<{
+    text: string;
+    top: number;
+    left: number;
+  } | null>(null);
+  const openTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const tenantSlug = useTenant();
   const base = `/portal/${tenantSlug}`;
   const { data: agents = [] } = useAgents();
@@ -62,253 +78,287 @@ export function Sidebar({ tenants, version = "v0.6.2" }: SidebarProps) {
     return fmtBytes(health.sqlite.sizeBytes);
   }, [health?.sqlite]);
   const sqliteStatus: "ok" | "failed" = health?.sqlite?.ok ? "ok" : "failed";
+  const expanded = pinnedOpen || hoverOpen || focusOpen;
+
+  function clearTimer(timer: typeof openTimer) {
+    if (timer.current) {
+      clearTimeout(timer.current);
+      timer.current = null;
+    }
+  }
+
+  function handlePointerEnter(event: PointerEvent<HTMLElement>) {
+    if (event.pointerType === "touch" || pinnedOpen) return;
+    clearTimer(closeTimer);
+    clearTimer(openTimer);
+    // The brief tooltip gets a moment to orient users before the full rail
+    // opens. Moving through the app chrome therefore feels intentional,
+    // rather than making the navigation flash on every incidental pass.
+    openTimer.current = setTimeout(() => setHoverOpen(true), 420);
+  }
+
+  function handlePointerLeave(event: PointerEvent<HTMLElement>) {
+    if (event.pointerType === "touch") return;
+    clearTimer(openTimer);
+    clearTimer(closeTimer);
+    setTooltip(null);
+    closeTimer.current = setTimeout(() => setHoverOpen(false), 140);
+  }
+
+  function handleFocus(event: FocusEvent<HTMLElement>) {
+    clearTimer(closeTimer);
+    // Keep the pin control stationary until its activation completes. If
+    // focus expanded the rail first, the button would jump from the compact
+    // rail edge to the expanded edge between pointer-down and click, causing
+    // the first click to miss. Keyboard users can still press Enter/Space to
+    // pin the rail, after which all labels are visible.
+    if (
+      event.target instanceof Element &&
+      event.target.closest("[data-sidebar-pin]")
+    ) {
+      return;
+    }
+    setFocusOpen(true);
+    setTooltip(null);
+    // Focus is delegated at the aside, so every link expands the rail before
+    // its visible focus ring is drawn. This keeps keyboard navigation legible.
+  }
+
+  function handleBlur(event: FocusEvent<HTMLElement>) {
+    const next = event.relatedTarget;
+    if (!next || !event.currentTarget.contains(next as Node)) {
+      setFocusOpen(false);
+    }
+  }
+
+  function handlePointerOver(event: PointerEvent<HTMLElement>) {
+    if (expanded || !(event.target instanceof Element)) return;
+    const target = event.target.closest<HTMLElement>("[data-sidebar-tooltip]");
+    if (!target || !event.currentTarget.contains(target)) return;
+    const text = target.dataset.sidebarTooltip;
+    if (!text) return;
+    const rect = target.getBoundingClientRect();
+    setTooltip({
+      text,
+      top: rect.top + rect.height / 2,
+      left: rect.right + 8,
+    });
+  }
+
+  function handlePointerOut(event: PointerEvent<HTMLElement>) {
+    if (!(event.target instanceof Element)) return;
+    const target = event.target.closest<HTMLElement>("[data-sidebar-tooltip]");
+    if (!target) return;
+    if (
+      event.relatedTarget instanceof Node &&
+      target.contains(event.relatedTarget)
+    ) {
+      return;
+    }
+    setTooltip(null);
+  }
+
+  useEffect(
+    () => () => {
+      if (openTimer.current) clearTimeout(openTimer.current);
+      if (closeTimer.current) clearTimeout(closeTimer.current);
+    },
+    [],
+  );
 
   return (
-    <aside
-      style={{
-        background: "var(--bg-2)",
-        borderRight: "1px solid var(--border)",
-        display: "flex",
-        flexDirection: "column",
-        overflow: "hidden",
-        gridArea: "side",
-      }}
-    >
-      {/* Logo block */}
-      <div
-        style={{
-          padding: "16px 18px 14px 18px",
-          display: "flex",
-          alignItems: "center",
-          gap: 10,
-          borderBottom: "1px solid var(--border)",
-        }}
+    <>
+      <aside
+        className={styles.sidebar}
+        data-expanded={expanded}
+        aria-label="Primary navigation"
+        onPointerEnter={handlePointerEnter}
+        onPointerLeave={handlePointerLeave}
+        onPointerOver={handlePointerOver}
+        onPointerOut={handlePointerOut}
+        onFocusCapture={handleFocus}
+        onBlurCapture={handleBlur}
       >
-        <Logo />
-        <div
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            lineHeight: 1.15,
-            minWidth: 0,
-            flex: 1,
-          }}
-        >
-          <span
-            style={{
-              fontSize: 13,
-              color: "var(--text)",
-              fontWeight: 600,
-              letterSpacing: "-0.01em",
-              whiteSpace: "nowrap",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              display: "flex",
-              alignItems: "center",
-              gap: 6,
+        {/* Logo block */}
+        <div className={styles.header}>
+          <span className={styles.brandLogo} aria-hidden="true">
+            <Logo />
+          </span>
+          <div className={styles.brandText}>
+            <span className={styles.brandName}>
+              Agentic Operator
+              {/* Demo is an environment-controlled operating mode. Production
+               * never exposes a control that can start synthetic traffic; the
+               * badge is read-only and only appears when the API explicitly
+               * reports demoMode=true from /health. */}
+              {health?.demoMode === true ? <DemoBadge /> : null}
+            </span>
+            <span className={styles.brandVersion}>{version}</span>
+          </div>
+          <button
+            type="button"
+            className={styles.pinButton}
+            aria-label={
+              pinnedOpen
+                ? "Return navigation to automatic collapse"
+                : "Keep navigation open"
+            }
+            aria-pressed={pinnedOpen}
+            aria-expanded={expanded}
+            data-sidebar-pin
+            data-sidebar-tooltip={
+              pinnedOpen
+                ? "Use automatic collapse"
+                : expanded
+                  ? "Keep navigation open"
+                  : "Open navigation"
+            }
+            onClick={() => {
+              setTooltip(null);
+              setPinnedOpen((value) => !value);
+              if (pinnedOpen) setHoverOpen(false);
             }}
           >
-            Agentic Operator
-            {/* 2026-05-26 — clickable demo toggle. Reads runtime state from
-              * `/v1/demo/status` (NOT just the env flag in /health) so the
-              * pill reflects what's actually running in-process. Click flips
-              * via `/v1/demo/{start,stop}`. Production stays clean when
-              * demo is OFF: the muted "Demo" outline only appears on
-              * hover; the lime DEMO pill is only shown when actively
-              * running. */}
-            <DemoToggle />
-          </span>
-          <span
-            style={{
-              fontSize: 10,
-              color: "var(--text-3)",
-              fontFamily: "var(--mono)",
-              letterSpacing: "0.06em",
-              marginTop: 2,
-            }}
-          >
-            {version}
-          </span>
+            <Icon
+              name={pinnedOpen ? "chevron-left" : "chevron-right"}
+              size={13}
+            />
+          </button>
         </div>
-      </div>
 
-      <TenantSwitcher tenants={tenants} />
+        <TenantSwitcher
+          tenants={tenants}
+          expanded={expanded}
+          onRequestExpand={() => {
+            setTooltip(null);
+            setPinnedOpen(true);
+          }}
+        />
 
-      <nav style={{ padding: "10px 8px", flex: 1, overflow: "auto" }}>
-        <NavGroup label="Run">
-          <NavItem
-            href={`${base}/dashboard`}
-            icon="dashboard"
-            label="Dashboard"
-          />
-          <NavItem
-            href={`${base}/workflows`}
-            icon="workflow"
-            label="Workflows"
-          />
-          <NavItem
-            href={`${base}/agents`}
-            icon="agent"
-            label="Agents"
-            count={agents.length || null}
-            matchPrefix
-          />
-          <NavItem
-            href={`${base}/runs`}
-            icon="run"
-            label="Runs"
-            liveCount={runningCount}
-            matchPrefix
-          />
-        </NavGroup>
-        <NavGroup label="Observe">
-          <NavItem
-            href={`${base}/events`}
-            icon="event"
-            label="Events"
-            matchPrefix
-          />
-          <NavItem
-            href={`${base}/tasks`}
-            icon="task"
-            label="Human tasks"
-            count={tasks.length || null}
-            highlight={tasks.length > 0}
-            matchPrefix
-          />
-          <NavItem href={`${base}/logs`} icon="logs" label="Logs" />
-        </NavGroup>
-        <NavGroup label="Manage">
-          <NavItem
-            href={`${base}/deployments`}
-            icon="deploy"
-            label="Deployments"
-          />
-          <NavItem
-            href={`${base}/tools`}
-            icon="code"
-            label="Agentic Tools"
-            matchPrefix
-          />
-          <NavItem
-            href={`${base}/tenants`}
-            icon="agent"
-            label="Tenants"
-            matchPrefix
-          />
-          <NavItem
-            href={`${base}/settings`}
-            icon="settings"
-            label="Settings"
-            matchPrefix
-          />
-        </NavGroup>
-      </nav>
+        <nav className={styles.nav} aria-label="Portal sections">
+          <NavGroup label="Run">
+            <NavItem
+              href={`${base}/dashboard`}
+              icon="dashboard"
+              label="Dashboard"
+            />
+            <NavItem
+              href={`${base}/workflows`}
+              icon="workflow"
+              label="Workflows"
+            />
+            <NavItem
+              href={`${base}/agents`}
+              icon="agent"
+              label="Agents"
+              count={agents.length || null}
+              matchPrefix
+            />
+            <NavItem
+              href={`${base}/runs`}
+              icon="run"
+              label="Runs"
+              liveCount={runningCount}
+              matchPrefix
+            />
+          </NavGroup>
+          <NavGroup label="Observe">
+            <NavItem
+              href={`${base}/events`}
+              icon="event"
+              label="Events"
+              matchPrefix
+            />
+            <NavItem
+              href={`${base}/tasks`}
+              icon="task"
+              label="Human tasks"
+              count={tasks.length || null}
+              highlight={tasks.length > 0}
+              matchPrefix
+            />
+            <NavItem href={`${base}/logs`} icon="logs" label="Logs" />
+          </NavGroup>
+          <NavGroup label="Manage">
+            <NavItem
+              href={`${base}/deployments`}
+              icon="deploy"
+              label="Deployments"
+            />
+            <NavItem
+              href={`${base}/system-check`}
+              icon="check"
+              label="System check"
+              matchPrefix
+            />
+            <NavItem
+              href={`${base}/tools`}
+              icon="code"
+              label="Agentic Tools"
+              matchPrefix
+            />
+            <NavItem
+              href={`${base}/tenants`}
+              icon="agent"
+              label="Tenants"
+              matchPrefix
+            />
+            <NavItem
+              href={`${base}/settings`}
+              icon="settings"
+              label="Settings"
+              matchPrefix
+            />
+          </NavGroup>
+        </nav>
 
-      <footer
-        style={{
-          padding: "12px 16px",
-          borderTop: "1px solid var(--border)",
-          display: "flex",
-          flexDirection: "column",
-          gap: 6,
-        }}
-      >
-        <FooterRow status={inngestStatus} label="Inngest" meta={inngestMeta} />
-        <FooterRow status={sqliteStatus} label="SQLite" meta={sqliteMeta} />
-      </footer>
-    </aside>
+        <footer className={styles.footer} aria-label="System status">
+          <FooterRow
+            status={inngestStatus}
+            label="Inngest"
+            meta={inngestMeta}
+          />
+          <FooterRow status={sqliteStatus} label="SQLite" meta={sqliteMeta} />
+        </footer>
+      </aside>
+      {!expanded && tooltip && typeof document !== "undefined"
+        ? createPortal(
+            <div
+              role="tooltip"
+              className={styles.sidebarTooltip}
+              style={{ top: tooltip.top, left: tooltip.left }}
+            >
+              {tooltip.text}
+            </div>,
+            document.body,
+          )
+        : null}
+    </>
   );
 }
 
-/**
- * Demo toggle — clickable pill that starts or stops the synthetic-traffic
- * loop. Reads runtime state from `/v1/demo/status` (so it reflects what
- * actually IS running, not just the boot-time env flag).
- *
- *   - Idle    → small muted "Demo" outline. Click starts demo.
- *   - Running → lime DEMO pill. Click stops demo.
- *   - Pending → faded mid-action.
- *
- * Token-burn safety: the backend swaps `LLM_DEFAULT_PROVIDER` to `mock`
- * inside `POST /v1/demo/start` and restores it on stop — see
- * `apps/api/src/routes/v1/demo.ts`. So clicking Start NEVER burns real
- * tokens via the demo loop, regardless of how `.env` is configured.
- */
-function DemoToggle() {
-  const { data: status } = useDemoStatus();
-  const start = useStartDemo();
-  const stop = useStopDemo();
-  const running = status?.running ?? false;
-  const pending = start.isPending || stop.isPending;
-
-  const onClick = () => {
-    if (pending) return;
-    if (running) stop.mutate();
-    else start.mutate();
-  };
-
-  const stats = status?.stats;
-  const title = running
-    ? `Demo ON — provider=${status?.llmProvider ?? "?"}, events fired=${stats?.eventsFired ?? 0}. Click to stop.`
-    : `Demo OFF. Click to start the synthetic-traffic loop (LLM auto-swapped to mock; no real tokens spent).`;
-
-  if (running) {
-    return (
-      <button
-        type="button"
-        onClick={onClick}
-        disabled={pending}
-        title={title}
-        style={{
-          display: "inline-flex",
-          alignItems: "center",
-          background: "#d0ff00",
-          color: "#0b0b0c",
-          fontSize: 9,
-          fontWeight: 700,
-          letterSpacing: "0.08em",
-          padding: "2px 6px",
-          borderRadius: 4,
-          fontFamily: "var(--mono)",
-          textTransform: "uppercase",
-          lineHeight: 1,
-          border: "none",
-          cursor: pending ? "wait" : "pointer",
-          opacity: pending ? 0.6 : 1,
-        }}
-      >
-        {pending ? "…" : "DEMO ON"}
-      </button>
-    );
-  }
-
+/** Read-only signal for the boot-time AGENTIC_DEMO_MODE setting. */
+function DemoBadge() {
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={pending}
-      title={title}
+    <span
+      title="Demo mode is enabled by the server environment."
       style={{
         display: "inline-flex",
         alignItems: "center",
-        background: "transparent",
-        color: "var(--text-3)",
+        background: "#d0ff00",
+        color: "#0b0b0c",
         fontSize: 9,
-        fontWeight: 600,
+        fontWeight: 700,
         letterSpacing: "0.08em",
         padding: "2px 6px",
         borderRadius: 4,
         fontFamily: "var(--mono)",
         textTransform: "uppercase",
         lineHeight: 1,
-        border: "1px solid var(--border)",
-        cursor: pending ? "wait" : "pointer",
-        opacity: pending ? 0.6 : 1,
       }}
     >
-      {pending ? "…" : "DEMO"}
-    </button>
+      DEMO
+    </span>
   );
 }
 
@@ -323,37 +373,13 @@ function FooterRow({
 }) {
   return (
     <div
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 6,
-        fontSize: 11,
-        minWidth: 0,
-      }}
+      className={styles.footerRow}
+      aria-label={`${label}: ${meta}`}
+      data-sidebar-tooltip={`${label}: ${meta}`}
     >
       <StatusDot status={status} size={6} />
-      <span
-        style={{
-          color: "var(--text-2)",
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          whiteSpace: "nowrap",
-          minWidth: 0,
-          flex: 1,
-        }}
-      >
-        {label}
-      </span>
-      <span
-        style={{
-          color: "var(--text-3)",
-          fontFamily: "var(--mono)",
-          whiteSpace: "nowrap",
-          fontSize: 10,
-        }}
-      >
-        {meta}
-      </span>
+      <span className={styles.footerLabel}>{label}</span>
+      <span className={styles.footerMeta}>{meta}</span>
     </div>
   );
 }

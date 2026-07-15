@@ -524,6 +524,12 @@ export async function reserveStudioRun(
 ): Promise<CreateAgentRunResponse> {
   const agent = findStudioAgent(ctx, agentRef);
   if (!agent) throw new AgentStudioNotFoundError("agent");
+  if (agent.kind !== "manifest") {
+    throw new StudioRunInputError(
+      "agent_runtime_unsupported",
+      "Code-defined agents must run through their registered code runtime; Agent Studio cannot infer that behavior from metadata.",
+    );
+  }
   if (agent.lifecycle === "archived") {
     throw new StudioRunInputError(
       "agent_archived",

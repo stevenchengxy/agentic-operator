@@ -6,7 +6,7 @@
  * demo, actually mock fallback" ambiguity.
  *
  * - Default: `false` (production)
- * - Truthy:  `true`, `1`, `yes` (case-insensitive)
+ * - Enabled only by the explicit value `true` (case-insensitive)
  *
  * Boot logic that depends on this:
  *   - apps/api/src/bootstrap.ts    → runs seed:rich + starts demo-runner
@@ -19,27 +19,29 @@
  * (= zero mock) mode.
  */
 
-const TRUTHY = new Set(["true", "1", "yes"]);
-
 /**
- * Runtime override — set by `POST /v1/demo/start` so the user can flip demo
- * mode ON from the UI without an api restart. Layered on top of the env
- * flag: a `true` here forces demo mode ON regardless of env; a `false`
- * (default) falls through to `AGENTIC_DEMO_MODE`. This means the env flag
- * remains the boot-time default, and `AGENTIC_DEMO_MODE=false` is the
- * recommended setting since the toggle then becomes the only way demo
- * traffic ever starts — matches the user requirement that demo must NEVER
- * run unless explicitly started from the UI.
+ * Runtime state is retained only so an explicitly configured demo process
+ * can stop/restart its runner without restarting the API. It is never allowed
+ * to override production mode: `AGENTIC_DEMO_MODE=true` is the prerequisite
+ * for every demo-mode entry point.
  */
 let _runtimeOn = false;
 let _runtimeOverrides: DemoOverrideRecord[] = [];
 
-/** Read the current demo-mode state. Runtime toggle wins; falls through to env. */
+/**
+ * Return whether the operator explicitly enabled demo mode in the environment.
+ *
+ * Deliberately do not accept broad truthy aliases such as `1` or `yes`. Demo
+ * mode writes seed data and starts synthetic traffic, so ambiguous values must
+ * fail closed to production.
+ */
+export function isDemoModeConfigured(): boolean {
+  return process.env.AGENTIC_DEMO_MODE?.trim().toLowerCase() === "true";
+}
+
+/** Read the current mode. Runtime state can never override the env gate. */
 export function isDemoMode(): boolean {
-  if (_runtimeOn) return true;
-  const raw = process.env.AGENTIC_DEMO_MODE;
-  if (!raw) return false;
-  return TRUTHY.has(raw.toLowerCase().trim());
+  return isDemoModeConfigured();
 }
 
 /** Is the runtime override currently active (vs. env-driven)? */
@@ -95,18 +97,16 @@ export function applyDemoModeOverrides(): DemoOverrideRecord[] {
 }
 
 /**
- * Apply the same env swap as `applyDemoModeOverrides` but unconditional —
- * used by `POST /v1/demo/start` to flip overrides into place even though
- * `AGENTIC_DEMO_MODE` is `false` (production default). The route then
- * stashes the returned record so `POST /v1/demo/stop` can restore.
+ * Apply the same env swap as `applyDemoModeOverrides`. This low-level helper
+ * does not inspect the mode flag; callers must first pass the explicit env
+ * gate. It remains exported for the boot/runtime wiring and focused tests.
  */
-export function forceApplyDemoOverrides(): DemoOverrideRecord[] {
+function forceApplyDemoOverrides(): DemoOverrideRecord[] {
   const applied: DemoOverrideRecord[] = [];
 
   // LLM provider — swap to `mock` unless the operator explicitly opted
   // into a real provider under demo mode via AGENTIC_DEMO_LLM_PROVIDER.
-  const wantProvider =
-    process.env.AGENTIC_DEMO_LLM_PROVIDER?.trim() || "mock";
+  const wantProvider = process.env.AGENTIC_DEMO_LLM_PROVIDER?.trim() || "mock";
   const beforeProvider = process.env.LLM_DEFAULT_PROVIDER;
   if (beforeProvider !== wantProvider) {
     process.env.LLM_DEFAULT_PROVIDER = wantProvider;
@@ -133,13 +133,17 @@ export function forceApplyDemoOverrides(): DemoOverrideRecord[] {
 }
 
 /**
- * Activate the runtime demo-mode override. Sets the flag so `isDemoMode()`
- * returns true, applies the env overrides (mock LLM by default), and
- * stashes the prior env values so `deactivateRuntimeDemoMode()` can
- * restore them cleanly. Idempotent — a second call while already active
- * returns the already-stashed records.
+ * Activate runtime controls for an explicitly configured demo process and
+ * stash the prior LLM env values so `deactivateRuntimeDemoMode()` can restore
+ * them cleanly. This function fails closed when the explicit env gate is not
+ * enabled, preventing future callers from bypassing production mode.
  */
 export function activateRuntimeDemoMode(): DemoOverrideRecord[] {
+  if (!isDemoModeConfigured()) {
+    throw new Error(
+      "demo mode is disabled; set AGENTIC_DEMO_MODE=true and restart the API",
+    );
+  }
   if (_runtimeOn) return _runtimeOverrides;
   _runtimeOn = true;
   _runtimeOverrides = forceApplyDemoOverrides();

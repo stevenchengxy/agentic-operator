@@ -438,10 +438,81 @@ export type WorkflowManifestV2Input = z.input<typeof WorkflowManifestV2Schema>;
  * deterministic and side-effect free so API, runtime, import, and tests can
  * share one compatibility boundary.
  */
+function legacyJsonSchema(type: unknown): JsonSchema {
+  const value = String(type ?? "string")
+    .trim()
+    .toLowerCase();
+  const list = value.match(/^(?:list|array)\s*[<(]\s*(.+?)\s*[>)]$/);
+  if (list) return { type: "array", items: legacyJsonSchema(list[1]) };
+  if (value.startsWith("list") || value.startsWith("array")) {
+    return { type: "array", items: {} };
+  }
+  if (["integer", "int", "long"].includes(value)) return { type: "integer" };
+  if (["number", "float", "double", "decimal"].includes(value)) {
+    return { type: "number" };
+  }
+  if (["boolean", "bool"].includes(value)) return { type: "boolean" };
+  if (["json", "object", "map", "dictionary"].includes(value)) {
+    return { type: "object" };
+  }
+  if (["date", "localdate"].includes(value)) {
+    return { type: "string", format: "date" };
+  }
+  if (["datetime", "date-time", "timestamp"].includes(value)) {
+    return { type: "string", format: "date-time" };
+  }
+  return { type: "string" };
+}
+
+function legacyPortId(value: unknown, fallback: string): string {
+  const normalized = String(value ?? fallback)
+    .trim()
+    .replace(/[^A-Za-z0-9_-]+/g, "_")
+    .replace(/^[^A-Za-z]+/, "")
+    .slice(0, 120);
+  return normalized || fallback;
+}
+
+function uniquePortId(
+  desired: string,
+  fallback: string,
+  used: Set<string>,
+): string {
+  const base = legacyPortId(desired, fallback);
+  let candidate = base;
+  let suffix = 2;
+  while (used.has(candidate)) {
+    candidate = `${base.slice(0, 112)}_${suffix++}`;
+  }
+  used.add(candidate);
+  return candidate;
+}
+
+function legacySensitivity(
+  port: Record<string, unknown>,
+  id: string,
+): AgentSensitivity {
+  if (
+    port.sensitivity === "none" ||
+    port.sensitivity === "personal" ||
+    port.sensitivity === "confidential" ||
+    port.sensitivity === "secret"
+  ) {
+    return port.sensitivity;
+  }
+  return /password|passwd|credential|secret|token|api[_-]?key/i.test(id)
+    ? "secret"
+    : "none";
+}
+
 export function normalizeAgentDefinition(input: unknown): AgentDefinitionV2 {
   const raw = z.record(z.string(), z.unknown()).parse(input);
 
-  const actor = Array.isArray(raw.actor) ? raw.actor : ["Agent"];
+  const actor = Array.isArray(raw.actor)
+    ? raw.actor
+    : raw.actor === "Human" || raw.actor === "Agent"
+      ? [raw.actor]
+      : ["Agent"];
   const inputData =
     raw.input_data &&
     typeof raw.input_data === "object" &&
@@ -450,18 +521,61 @@ export function normalizeAgentDefinition(input: unknown): AgentDefinitionV2 {
       : {};
   const promptDefault =
     typeof inputData.prompt === "string" ? inputData.prompt : undefined;
+  const providerCandidate =
+    raw.provider === "" || raw.provider == null
+      ? raw.defaultProvider
+      : raw.provider;
+  const provider =
+    providerCandidate === "" || providerCandidate == null
+      ? undefined
+      : providerCandidate;
+  const modelCandidate =
+    raw.model === "" || raw.model == null ? raw.defaultModel : raw.model;
+  const model =
+    modelCandidate === "" || modelCandidate == null
+      ? undefined
+      : modelCandidate;
 
-  const rawActions = Array.isArray(raw.actions) ? raw.actions : [];
+  const rawActions = Array.isArray(raw.actions)
+    ? raw.actions
+    : Array.isArray(raw.action_steps)
+      ? raw.action_steps
+      : [];
   const actions = rawActions.map((value, index) => {
     const action = z.record(z.string(), z.unknown()).parse(value);
     const order = String(action.order ?? index + 1);
+    const legacyType = String(action.type ?? action.object_type ?? "logic");
+    const type =
+      legacyType === "action"
+        ? actor.includes("Human")
+          ? "manual"
+          : "logic"
+        : legacyType === "human"
+          ? "manual"
+          : [
+                "tool",
+                "logic",
+                "manual",
+                "condition",
+                "delay",
+                "subflow",
+              ].includes(legacyType)
+            ? legacyType
+            : "logic";
+    const name = String(action.name ?? action.id ?? `step${index + 1}`);
     return {
       ...action,
       order,
-      name: String(action.name ?? action.id ?? `step${index + 1}`),
+      name,
       description:
         typeof action.description === "string" ? action.description : "",
-      type: typeof action.type === "string" ? action.type : ("logic" as const),
+      type,
+      ...(type === "tool" && !action.tool ? { tool: name } : {}),
+      ...(type === "logic" &&
+      !action.action_prompt &&
+      typeof action.description === "string"
+        ? { action_prompt: action.description }
+        : {}),
     };
   });
 
@@ -469,18 +583,173 @@ export function normalizeAgentDefinition(input: unknown): AgentDefinitionV2 {
   const toolUse = rawTools.map((value) =>
     typeof value === "string" ? { name: value } : value,
   );
+  for (const action of actions) {
+    if (
+      action.type === "tool" &&
+      typeof action.tool === "string" &&
+      !toolUse.some(
+        (tool) =>
+          tool &&
+          typeof tool === "object" &&
+          "name" in tool &&
+          tool.name === action.tool,
+      )
+    ) {
+      toolUse.push({ name: action.tool });
+    }
+  }
 
-  // Hybrid and already-authored v2 definitions still normalize the legacy
-  // action/tool placeholders, then flow through the same defaults/invariants.
-  if (Array.isArray(raw.inputs) && Array.isArray(raw.outputs)) {
-    return AgentDefinitionV2Schema.parse({
-      ...raw,
-      actions,
-      tool_use: toolUse,
-      cron: raw.cron === "" ? null : raw.cron,
-      cron_timezone: raw.cron_timezone === "" ? null : raw.cron_timezone,
+  const direct = AgentDefinitionV2Schema.safeParse({
+    ...raw,
+    actor,
+    actions,
+    tool_use: toolUse,
+    provider,
+    model,
+    cron: raw.cron === "" ? null : raw.cron,
+    cron_timezone: raw.cron_timezone === "" ? null : raw.cron_timezone,
+  });
+  if (direct.success) return direct.data;
+
+  const usedInputIds = new Set<string>();
+  const rawInputs = Array.isArray(raw.inputs) ? raw.inputs : null;
+  const inputs: AgentInputPortV2[] = (rawInputs ?? []).map((value, index) => {
+    const port = z.record(z.string(), z.unknown()).parse(value);
+    const requestedId = legacyPortId(
+      port.id ?? port.name,
+      `input_${index + 1}`,
+    );
+    const id = uniquePortId(
+      port.kind === "prompt" ? "prompt" : requestedId,
+      `input_${index + 1}`,
+      usedInputIds,
+    );
+    const kind =
+      id === "prompt" || port.kind === "prompt"
+        ? "prompt"
+        : port.kind === "file" || /file|upload/i.test(String(port.type ?? ""))
+          ? "file"
+          : "value";
+    const schema =
+      port.schema &&
+      typeof port.schema === "object" &&
+      !Array.isArray(port.schema)
+        ? (port.schema as JsonSchema)
+        : port.input_schema &&
+            typeof port.input_schema === "object" &&
+            !Array.isArray(port.input_schema)
+          ? (port.input_schema as JsonSchema)
+          : legacyJsonSchema(port.type);
+    return {
+      ...port,
+      id: kind === "prompt" ? "prompt" : id,
+      label: String(port.label ?? port.name ?? id),
+      description:
+        typeof port.description === "string" ? port.description : undefined,
+      kind,
+      required: Boolean(port.required),
+      schema,
+      sensitivity: legacySensitivity(port, id),
+    };
+  });
+
+  if (
+    actor.includes("Agent") &&
+    !inputs.some((port) => port.kind === "prompt")
+  ) {
+    usedInputIds.add("prompt");
+    inputs.unshift({
+      id: "prompt",
+      label: "Request",
+      kind: "prompt",
+      required: rawInputs !== null,
+      schema: { type: "string" },
+      ...(rawInputs === null
+        ? {
+            default:
+              promptDefault ??
+              "Process the incoming workflow event according to the agent instructions.",
+          }
+        : {}),
+      sensitivity: "none",
     });
   }
+  if (inputs.length === 0) {
+    inputs.push({
+      id: "prompt",
+      label: "Request",
+      kind: "prompt",
+      required: false,
+      schema: { type: "string" },
+      default:
+        promptDefault ??
+        "Process the incoming workflow event according to the agent instructions.",
+      sensitivity: "none",
+    });
+  }
+  if (rawInputs === null) {
+    inputs.push({
+      id: "payload",
+      label: "Payload",
+      kind: "value",
+      required: false,
+      schema: { type: "object" },
+      default: inputData,
+      sensitivity: "none",
+    });
+  }
+
+  const usedOutputIds = new Set<string>();
+  const rawOutputs = Array.isArray(raw.outputs) ? raw.outputs : null;
+  const outputs: AgentOutputPortV2[] = (rawOutputs ?? []).map(
+    (value, index) => {
+      const port = z.record(z.string(), z.unknown()).parse(value);
+      const id = uniquePortId(
+        String(port.id ?? port.name ?? ""),
+        `output_${index + 1}`,
+        usedOutputIds,
+      );
+      const schema =
+        port.schema &&
+        typeof port.schema === "object" &&
+        !Array.isArray(port.schema)
+          ? (port.schema as JsonSchema)
+          : port.output_schema &&
+              typeof port.output_schema === "object" &&
+              !Array.isArray(port.output_schema)
+            ? (port.output_schema as JsonSchema)
+            : legacyJsonSchema(port.type);
+      return {
+        ...port,
+        id,
+        label: String(port.label ?? port.name ?? id),
+        description:
+          typeof port.description === "string" ? port.description : undefined,
+        required: port.required !== false,
+        schema,
+        sensitivity: legacySensitivity(port, id),
+      };
+    },
+  );
+  if (outputs.length === 0) {
+    outputs.push({
+      id: "result",
+      label: "Result",
+      required: true,
+      schema: {},
+      sensitivity: "none",
+    });
+  }
+
+  const supplementalInputIds = inputs
+    .filter((port) => port.id !== "prompt")
+    .map((port) => port.id);
+  const extensions =
+    raw.extensions &&
+    typeof raw.extensions === "object" &&
+    !Array.isArray(raw.extensions)
+      ? (raw.extensions as Record<string, unknown>)
+      : {};
 
   const normalized = {
     ...raw,
@@ -489,65 +758,52 @@ export function normalizeAgentDefinition(input: unknown): AgentDefinitionV2 {
     description: typeof raw.description === "string" ? raw.description : "",
     actor,
     trigger: Array.isArray(raw.trigger) ? raw.trigger : [],
-    inputs: [
-      {
-        id: "prompt",
-        label: "Request",
-        kind: "prompt",
-        required: false,
-        schema: { type: "string" },
-        default:
-          promptDefault ??
-          "Process the incoming workflow event according to the agent instructions.",
-      },
-      {
-        id: "payload",
-        label: "Payload",
-        kind: "value",
-        required: false,
-        schema: { type: "object" },
-        default: inputData,
-      },
-    ],
+    inputs,
+    ontology_instructions:
+      typeof raw.ontology_instructions === "string"
+        ? raw.ontology_instructions
+        : typeof raw.system_prompt === "string" && raw.system_prompt.trim()
+          ? raw.system_prompt
+          : undefined,
     actions,
     tool_use: toolUse,
-    outputs: [
-      {
-        id: "result",
-        label: "Result",
-        required: true,
-        schema: {},
-      },
-    ],
-    output_config: {
-      format: "json",
-      strict: false,
-      repair_attempts: 0,
-      unwrap_single_output: false,
-      artifact: {
-        filename: "output.json",
-        persist_individual_outputs: false,
-        persist_run_input: true,
-        persist_run_record: true,
-        persist_raw_response: false,
-      },
-    },
+    outputs,
+    provider,
+    model,
+    output_config:
+      raw.output_config ??
+      ({
+        format: "json",
+        strict: false,
+        repair_attempts: 0,
+        unwrap_single_output: false,
+        artifact: {
+          filename: "output.json",
+          persist_individual_outputs: false,
+          persist_run_input: true,
+          persist_run_record: true,
+          persist_raw_response: false,
+        },
+      } as const),
     triggered_event: Array.isArray(raw.triggered_event)
       ? raw.triggered_event
       : [],
     user_prompt_template:
       typeof raw.user_prompt_template === "string"
         ? raw.user_prompt_template
-        : "{{json inputs.payload}}",
+        : supplementalInputIds.length
+          ? supplementalInputIds
+              .map((id) => `${id}: {{json inputs.${id}}}`)
+              .join("\n")
+          : "",
     cron: raw.cron === "" ? null : raw.cron,
     cron_timezone: raw.cron_timezone === "" ? null : raw.cron_timezone,
     extensions: {
-      ...(raw.extensions &&
-      typeof raw.extensions === "object" &&
-      !Array.isArray(raw.extensions)
-        ? (raw.extensions as Record<string, unknown>)
-        : {}),
-      compatibility_mode: "v1",
+      ...extensions,
+      compatibility_mode:
+        typeof extensions.compatibility_mode === "string"
+          ? extensions.compatibility_mode
+          : "v1",
     },
   };
 

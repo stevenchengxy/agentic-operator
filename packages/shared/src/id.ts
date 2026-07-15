@@ -26,6 +26,7 @@ export type IdPrefix =
   | "ree"
   | "aud"
   | "cor"
+  | "chk"
   | "inv"
   | "mdl"
   | "imp"

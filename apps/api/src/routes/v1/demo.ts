@@ -1,16 +1,15 @@
 /**
  * Demo-mode toggle — `/v1/demo/{status,start,stop}`.
  *
- * Background: the legacy contract was env-var driven (`AGENTIC_DEMO_MODE`)
- * and required an api restart to flip. This route exposes a runtime
- * toggle so the operator can start/stop the synthetic-traffic loop from
- * the UI without touching `.env.local`.
+ * Demo is an environment-controlled operating mode. These endpoints expose
+ * status and allow an explicitly configured demo process to stop/restart its
+ * synthetic-traffic loop. They cannot promote a production process into demo
+ * mode.
  *
- * Safety model (user requirement, 2026-05-26): demo must NEVER run unless
- * explicitly started — recommended `.env.local` setting is
- * `AGENTIC_DEMO_MODE=false`, leaving this endpoint as the only way demo
- * traffic ever spins up. The boot-time env path is preserved for
- * backwards-compat (true => auto-start at boot, exactly as before).
+ * Safety model: demo must NEVER run unless `AGENTIC_DEMO_MODE=true` was
+ * explicitly supplied to the API process. `POST /start` fails closed with a
+ * 409 while the flag is absent/false, so an accidental request cannot seed
+ * data, switch the LLM to mock, or start synthetic traffic in production.
  *
  * Token-burn protection. `POST /v1/demo/start` swaps
  * `LLM_DEFAULT_PROVIDER` to `mock` (unless the operator opted into a real
@@ -32,6 +31,7 @@ import {
   activateRuntimeDemoMode,
   deactivateRuntimeDemoMode,
   isDemoMode,
+  isDemoModeConfigured,
   isRuntimeDemoActive,
   type DemoOverrideRecord,
 } from "../../config/demo-mode.js";
@@ -41,10 +41,7 @@ import {
   startDemoRunner,
   stopDemoRunner,
 } from "../../services/demo-runner.js";
-import {
-  getLLMGateway,
-  resetLLMGateway,
-} from "../../services/llm";
+import { getLLMGateway, resetLLMGateway } from "../../services/llm";
 import { setGateway as setAgentGateway } from "@agentic/agents";
 import { setRuntimeGateway } from "@agentic/runtime";
 
@@ -69,7 +66,8 @@ function snapshot(): DemoStatusBody {
     running: isDemoRunnerActive(),
     demoMode: isDemoMode(),
     runtimeOverride: isRuntimeDemoActive(),
-    llmProvider: g?.defaultProvider ?? process.env.LLM_DEFAULT_PROVIDER ?? "unknown",
+    llmProvider:
+      g?.defaultProvider ?? process.env.LLM_DEFAULT_PROVIDER ?? "unknown",
     llmModel: g?.defaultModel ?? process.env.LLM_DEFAULT_MODEL ?? undefined,
     stats: getDemoRunnerStats(),
   };
@@ -101,6 +99,13 @@ export async function demoRoutes(app: FastifyInstance) {
       return reply.fail(
         "test_blocked",
         "demo cannot be toggled under NODE_ENV=test",
+        409,
+      );
+    }
+    if (!isDemoModeConfigured()) {
+      return reply.fail(
+        "demo_disabled",
+        "demo mode is disabled; set AGENTIC_DEMO_MODE=true and restart the API before starting synthetic traffic",
         409,
       );
     }

@@ -14,8 +14,9 @@
  * No bootstrap snapshot — every panel reflects the live tenant.
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   ActorTag,
   Badge,
@@ -31,12 +32,7 @@ import {
   useToast,
   type StatusName,
 } from "@/app/portal/components";
-import {
-  fmtAgo,
-  fmtDur,
-  fmtNum,
-  fmtTime,
-} from "@/app/portal/lib/format";
+import { fmtAgo, fmtDur, fmtNum, fmtTime } from "@/app/portal/lib/format";
 import { useTenant } from "@/app/portal/lib/use-tenant";
 import {
   useAgents,
@@ -46,12 +42,9 @@ import {
 } from "@/lib/hooks/useAgents";
 import { useEvents, type EventRow } from "@/lib/hooks/useEvents";
 import { useTasks, type TaskRow } from "@/lib/hooks/useTasks";
-import {
-  useRuns,
-  useCancelRun,
-  type RunListRow,
-} from "@/lib/hooks/useRuns";
+import { useRuns, useCancelRun, type RunListRow } from "@/lib/hooks/useRuns";
 import { useHealth, fmtBytes } from "@/lib/hooks/useHealth";
+import { useStartOperatorCheck } from "@/lib/hooks/useOperatorChecks";
 
 /**
  * Stage label catalog — static workflow ontology. The /v1/workflows/dag
@@ -219,6 +212,10 @@ function DashboardView({
   error,
 }: DashboardViewProps) {
   const tenant = useTenant();
+  const router = useRouter();
+  const startOperatorCheck = useStartOperatorCheck();
+  const operatorCheckStartGuard = useRef(false);
+  const [operatorCheckLaunching, setOperatorCheckLaunching] = useState(false);
 
   // Hydration gate. The dashboard is heavily time-dependent (Date.now() in
   // sparkline bucketing, fmtAgo/fmtTime in the ticker, the 1.5s `tickerIdx`
@@ -325,6 +322,25 @@ function DashboardView({
   // list + counts on settle, so panels repaint without manual refetch.
   const cancelRun = useCancelRun();
   const toast = useToast();
+
+  async function handleStartOperatorCheck() {
+    if (operatorCheckStartGuard.current || startOperatorCheck.isPending) return;
+    operatorCheckStartGuard.current = true;
+    setOperatorCheckLaunching(true);
+    try {
+      const result = await startOperatorCheck.mutateAsync();
+      router.push(result.detailUrl as never);
+    } catch (error) {
+      operatorCheckStartGuard.current = false;
+      setOperatorCheckLaunching(false);
+      toast({
+        tone: "red",
+        title: "System check could not start",
+        description:
+          error instanceof Error ? error.message : "Unknown startup error",
+      });
+    }
+  }
 
   const handleCancel = useCallback(
     (runId: string) => {
@@ -516,7 +532,9 @@ function DashboardView({
                 rows={active}
                 tenant={tenant}
                 onCancel={handleCancel}
-                cancelPendingIds={cancelRun.isPending ? cancelRun.variables : undefined}
+                cancelPendingIds={
+                  cancelRun.isPending ? cancelRun.variables : undefined
+                }
               />
             </Panel>
 
@@ -581,7 +599,27 @@ function DashboardView({
               <PendingTasksList tasks={tasks.slice(0, 5)} tenant={tenant} />
             </Panel>
 
-            <Panel title="Runtime" padded>
+            <Panel
+              title="Runtime"
+              action={
+                <Button
+                  small
+                  icon="play"
+                  onClick={() => void handleStartOperatorCheck()}
+                  disabled={
+                    startOperatorCheck.isPending || operatorCheckLaunching
+                  }
+                  ariaLabel="Run two-agent system check"
+                >
+                  {startOperatorCheck.isPending
+                    ? "Starting…"
+                    : operatorCheckLaunching
+                      ? "Opening check…"
+                      : "Run full check"}
+                </Button>
+              }
+              padded
+            >
               <SystemHealth />
             </Panel>
           </div>
@@ -901,8 +939,7 @@ function AgentActivityGrid({
   items: AgentActivity[];
   tenant: string;
 }) {
-  if (items.length === 0)
-    return <Empty title="No agent activity" hint="—" />;
+  if (items.length === 0) return <Empty title="No agent activity" hint="—" />;
   return (
     <div
       style={{
@@ -1149,7 +1186,9 @@ function PendingTasksList({
       {tasks.map((t) => (
         <Link
           key={t.id}
-          href={`/portal/${tenant}/tasks?id=${encodeURIComponent(t.id)}` as never}
+          href={
+            `/portal/${tenant}/tasks?id=${encodeURIComponent(t.id)}` as never
+          }
           style={{
             display: "block",
             width: "100%",
@@ -1265,7 +1304,11 @@ function SystemHealth() {
       note: "api unreachable",
     });
     items.push({ label: "SQLite", status: "fail", note: "api unreachable" });
-    items.push({ label: "Log volume", status: "fail", note: "api unreachable" });
+    items.push({
+      label: "Log volume",
+      status: "fail",
+      note: "api unreachable",
+    });
   } else {
     items.push({ label: "Inngest worker", status: "ok", note: "checking…" });
     items.push({ label: "SQLite", status: "ok", note: "checking…" });

@@ -71,6 +71,22 @@ export class AgentStudioApiError extends Error {
   }
 }
 
+/**
+ * Turn an API failure into a useful operator-facing message.
+ *
+ * The backend deliberately separates the stable error code, plain-language
+ * message, and recovery hint. Keeping all three in the toast makes publish
+ * failures actionable without asking an operator to inspect DevTools.
+ */
+export function formatAgentStudioError(error: unknown): string {
+  if (error instanceof AgentStudioApiError) {
+    const parts = [error.message, `Error code: ${error.code}`];
+    if (error.hint) parts.push(`What to do: ${error.hint}`);
+    return parts.join(" · ");
+  }
+  return error instanceof Error ? error.message : String(error);
+}
+
 async function callV1<T>(path: string, init: RequestInit = {}): Promise<T> {
   const { headers: initHeaders, ...rest } = init;
   const headers: Record<string, string> = {

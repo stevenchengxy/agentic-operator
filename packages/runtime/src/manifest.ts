@@ -101,6 +101,17 @@ const emptyStringToUndef = z
   .optional();
 
 /**
+ * Agent Studio's v2 contract uses `null` as the explicit "disabled" value
+ * for schedule fields. Bare-array manifests still pass through the legacy
+ * runtime parser during import, so accept that v2 sentinel here as well as
+ * the legacy empty string. Both normalize to an omitted schedule.
+ */
+const disabledScheduleToUndef = z
+  .union([z.string(), z.null(), z.undefined()])
+  .transform((v) => (v === "" || v === null ? undefined : v))
+  .optional();
+
+/**
  * Tolerant `tool_use` schema: accepts either an array of canonical entries
  * OR a legacy empty string (coerced to undefined). Any other shape is
  * rejected so we catch authoring mistakes. The inner `.transform(() => undefined)`
@@ -148,9 +159,9 @@ const LegacyAgentSchema = z
     // `.passthrough()` would let the raw empty string flow through and the
     // scheduler would try (and fail) to parse it as a cron expression.
     // Real cron strings like "0 9 * * *" pass through unchanged because
-    // `emptyStringToUndef` only intercepts the empty string.
-    cron: emptyStringToUndef,
-    cron_timezone: emptyStringToUndef,
+    // `disabledScheduleToUndef` only intercepts empty-string/null sentinels.
+    cron: disabledScheduleToUndef,
+    cron_timezone: disabledScheduleToUndef,
   })
   .passthrough();
 

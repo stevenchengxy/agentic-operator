@@ -73,7 +73,15 @@ export function useHealth(): UseQueryResult<HealthReport> {
     queryKey: HEALTH_KEYS.current,
     queryFn: fetchHealth,
     staleTime: 15_000,
-    refetchInterval: 15_000,
+    // A failed proxy/API request is already visible in the system-health UI.
+    // Do not retry it several times and then keep polling every 15 seconds:
+    // browsers report every non-2xx fetch in DevTools, which otherwise turns
+    // one outage into an endless wall of console errors. Refetching on focus
+    // gives the operator a lightweight recovery path after the API returns.
+    retry: false,
+    refetchInterval: (query) =>
+      query.state.status === "error" ? false : 15_000,
+    refetchOnWindowFocus: true,
   });
 }
 
