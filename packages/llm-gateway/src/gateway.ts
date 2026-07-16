@@ -21,7 +21,12 @@ import type {
 import { LLMError, isLLMError } from "./errors";
 import { assertBudgetAvailable, recordActualSpend } from "./budget";
 import { calculateCost, normalizeUsage } from "./pricing";
-import { assertModelControls } from "./capabilities";
+import {
+  assertModelControls,
+  isUnsupportedTemperatureError,
+  normalizeModelRequest,
+  omitTemperature,
+} from "./capabilities";
 import {
   failAttempt,
   finishAttempt,
@@ -31,6 +36,7 @@ import {
 
 export class LLMGateway {
   private readonly providers = new Map<ProviderId, ProviderAdapter>();
+  private readonly learnedTemperatureUnsupported = new Set<string>();
 
   constructor(private readonly config: GatewayConfig) {}
 
@@ -97,26 +103,43 @@ export class LLMGateway {
       // A gateway-global default belongs only to its configured provider.
       // Fallback providers use their own catalog default unless the caller
       // explicitly supplied a model.
-      const resolvedModel = req.model
-        ?? (id === this.config.defaultProvider ? this.config.defaultModel : null)
-        ?? adapter.defaultModel
-        ?? undefined;
+      const resolvedModel =
+        req.model ??
+        (id === this.config.defaultProvider
+          ? this.config.defaultModel
+          : null) ??
+        adapter.defaultModel ??
+        undefined;
 
+      const temperatureCapabilityKey = resolvedModel
+        ? `${id}:${resolvedModel.replace(/^~/, "")}`
+        : null;
+      let effectiveReq = resolvedModel
+        ? normalizeModelRequest(id, resolvedModel, req)
+        : req;
+      if (
+        temperatureCapabilityKey &&
+        this.learnedTemperatureUnsupported.has(temperatureCapabilityKey)
+      ) {
+        effectiveReq = omitTemperature(effectiveReq);
+      }
       if (resolvedModel) {
-        assertModelControls(id, resolvedModel, req);
+        assertModelControls(id, resolvedModel, effectiveReq);
       }
       assertBudgetAvailable(req.tenantId, id);
 
       const signal = combineSignals(req.signal, timeoutMs);
       const subReq: ChatRequest = {
-        ...req,
+        ...effectiveReq,
         model: resolvedModel,
         signal,
         providers: undefined,
         provider: id,
       };
 
-      const executeAttempt = async (attemptReq: ChatRequest): Promise<ChatResponse> => {
+      const executeAttempt = async (
+        attemptReq: ChatRequest,
+      ): Promise<ChatResponse> => {
         attemptNumber += 1;
         let ledgerAttempt;
         try {
@@ -193,13 +216,28 @@ export class LLMGateway {
       try {
         return await executeAttempt(subReq);
       } catch (err1) {
-        const e1 = toLLMError(err1, id);
+        let e1 = toLLMError(err1, id);
+        let retryReq = subReq;
+        if (
+          retryReq.temperature !== undefined &&
+          isUnsupportedTemperatureError(e1)
+        ) {
+          if (temperatureCapabilityKey) {
+            this.learnedTemperatureUnsupported.add(temperatureCapabilityKey);
+          }
+          retryReq = omitTemperature(retryReq);
+          try {
+            return await executeAttempt(retryReq);
+          } catch (compatibilityErr) {
+            e1 = toLLMError(compatibilityErr, id);
+          }
+        }
         if (!e1.transient) throw e1;
         // One retry with backoff
         await delay(250);
         try {
           const signal2 = combineSignals(req.signal, timeoutMs);
-          return await executeAttempt({ ...subReq, signal: signal2 });
+          return await executeAttempt({ ...retryReq, signal: signal2 });
         } catch (err2) {
           const e2 = toLLMError(err2, id);
           lastError = e2;
@@ -240,10 +278,15 @@ function delay(ms: number): Promise<void> {
  * signal aborted when EITHER fires. Uses native AbortSignal.any when
  * available (Node ≥20), with a polyfill for older runtimes.
  */
-function combineSignals(caller: AbortSignal | undefined, timeoutMs: number): AbortSignal {
+function combineSignals(
+  caller: AbortSignal | undefined,
+  timeoutMs: number,
+): AbortSignal {
   const timeout = AbortSignal.timeout(timeoutMs);
   if (!caller) return timeout;
-  const anyFn = (AbortSignal as unknown as { any?: (s: AbortSignal[]) => AbortSignal }).any;
+  const anyFn = (
+    AbortSignal as unknown as { any?: (s: AbortSignal[]) => AbortSignal }
+  ).any;
   if (typeof anyFn === "function") return anyFn([caller, timeout]);
   // Polyfill
   const ac = new AbortController();

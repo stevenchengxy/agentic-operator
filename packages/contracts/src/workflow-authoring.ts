@@ -1,5 +1,12 @@
 import { z } from "zod";
 import {
+  AgentDefinitionV2Schema,
+  AgentFilePolicySchema,
+  AgentInputKindSchema,
+  AgentPortUiSchema,
+  AgentPromptProvenanceV2Schema,
+  AgentSensitivitySchema,
+  JsonSchemaSchema,
   WorkflowManifestV2Schema,
   type AgentDefinitionV2Input,
 } from "./agent-definition";
@@ -381,4 +388,281 @@ export const GenerateWorkflowResponseSchema = z.object({
 });
 export type GenerateWorkflowResponse = z.infer<
   typeof GenerateWorkflowResponseSchema
+>;
+
+// ─── Enterprise workflow run console ──────────────────────────────────────
+
+export const WorkflowRunProfileTargetSchema = z.enum(["latest", "live"]);
+export type WorkflowRunProfileTarget = z.infer<
+  typeof WorkflowRunProfileTargetSchema
+>;
+
+export const WorkflowRunToolPolicySchema = z.enum(["safe", "simulate", "live"]);
+export type WorkflowRunToolPolicy = z.infer<typeof WorkflowRunToolPolicySchema>;
+
+export const WorkflowRunFailurePolicySchema = z.enum(["continue", "fail_fast"]);
+export type WorkflowRunFailurePolicy = z.infer<
+  typeof WorkflowRunFailurePolicySchema
+>;
+
+export const WorkflowRunInputBindingSchema = z.object({
+  agentId: z.string(),
+  mode: z.enum(["direct", "path", "template", "constant"]),
+  expression: z.string().optional(),
+});
+export type WorkflowRunInputBinding = z.infer<
+  typeof WorkflowRunInputBindingSchema
+>;
+
+export const WorkflowRunInputDescriptorSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  description: z.string().nullable(),
+  kind: AgentInputKindSchema,
+  required: z.boolean(),
+  schema: JsonSchemaSchema,
+  default: z.unknown().optional(),
+  example: z.unknown().optional(),
+  sensitivity: AgentSensitivitySchema,
+  ui: AgentPortUiSchema.optional(),
+  file: AgentFilePolicySchema.optional(),
+  consumers: z.array(z.string()),
+  bindings: z.array(WorkflowRunInputBindingSchema),
+  conflict: z.boolean(),
+});
+export type WorkflowRunInputDescriptor = z.infer<
+  typeof WorkflowRunInputDescriptorSchema
+>;
+
+export const WorkflowRunEntrypointSchema = z.object({
+  event: z.string(),
+  source: z.enum(["external", "internal"]),
+  recommended: z.boolean(),
+  listenerAgentIds: z.array(z.string()),
+  listenerTitles: z.array(z.string()),
+  inputs: z.array(WorkflowRunInputDescriptorSchema),
+  requiresRawPayload: z.boolean(),
+});
+export type WorkflowRunEntrypoint = z.infer<typeof WorkflowRunEntrypointSchema>;
+
+export const WorkflowRunProfileSchema = z.object({
+  workflowSlug: WorkflowSlugSchema,
+  target: WorkflowRunProfileTargetSchema,
+  versionId: z.string(),
+  version: z.string(),
+  isLive: z.boolean(),
+  manifestHash: z.string().length(64),
+  entrypoints: z.array(WorkflowRunEntrypointSchema),
+  warnings: z.array(z.string()),
+});
+export type WorkflowRunProfile = z.infer<typeof WorkflowRunProfileSchema>;
+
+export const WorkflowTestRunLimitsSchema = z
+  .object({
+    maxAgentRuns: z.number().int().min(1).max(100).default(25),
+    maxEvents: z.number().int().min(1).max(250).default(75),
+    maxDepth: z.number().int().min(1).max(50).default(12),
+  })
+  .default({
+    maxAgentRuns: 25,
+    maxEvents: 75,
+    maxDepth: 12,
+  });
+export type WorkflowTestRunLimits = z.infer<typeof WorkflowTestRunLimitsSchema>;
+
+export const WorkflowTestRunBodySchema = z
+  .object({
+    manifest: z.unknown(),
+    triggerEvent: z.string().trim().min(1).max(160),
+    subject: z.string().trim().min(1).max(500).optional(),
+    inputs: z.record(z.string(), z.unknown()).default({}),
+    payload: z.record(z.string(), z.unknown()).default({}),
+    toolPolicy: WorkflowRunToolPolicySchema.default("safe"),
+    confirmLiveEffects: z.boolean().default(false),
+    failurePolicy: WorkflowRunFailurePolicySchema.default("continue"),
+    humanDecision: WorkflowManualTaskDecisionSchema.default("approve"),
+    humanPayload: z.unknown().optional(),
+    limits: WorkflowTestRunLimitsSchema,
+  })
+  .superRefine((value, ctx) => {
+    if (value.toolPolicy === "live" && value.confirmLiveEffects !== true) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["confirmLiveEffects"],
+        message: "live tool effects require explicit confirmation",
+      });
+    }
+  });
+export type WorkflowTestRunBody = z.infer<typeof WorkflowTestRunBodySchema>;
+
+export const WorkflowTestStepResultSchema = z.object({
+  id: z.string(),
+  order: z.string(),
+  name: z.string(),
+  type: z.string(),
+  status: z.enum(["ok", "failed", "skipped", "blocked"]),
+  startedAt: z.number().int().nonnegative(),
+  endedAt: z.number().int().nonnegative(),
+  durationMs: z.number().int().nonnegative(),
+  input: z.unknown(),
+  output: z.unknown(),
+  provider: z.string().nullable(),
+  model: z.string().nullable(),
+  tokensIn: z.number().int().nonnegative(),
+  tokensOut: z.number().int().nonnegative(),
+  attempts: z.number().int().positive(),
+  branchTarget: z.string().nullable(),
+  simulation: z.string().nullable(),
+  error: z
+    .object({
+      code: z.string(),
+      message: z.string(),
+      details: z.unknown().optional(),
+    })
+    .nullable(),
+});
+export type WorkflowTestStepResult = z.infer<
+  typeof WorkflowTestStepResultSchema
+>;
+
+export const WorkflowTestEmissionSchema = z.object({
+  eventId: z.string(),
+  name: z.string(),
+  outputPortIds: z.array(z.string()),
+});
+export type WorkflowTestEmission = z.infer<typeof WorkflowTestEmissionSchema>;
+
+export const WorkflowTestAgentRunSchema = z.object({
+  id: z.string(),
+  agentId: z.string(),
+  agentName: z.string(),
+  agentTitle: z.string(),
+  actor: z.enum(["Agent", "Human"]),
+  status: z.enum(["ok", "failed", "blocked"]),
+  depth: z.number().int().nonnegative(),
+  triggerEventId: z.string(),
+  triggerEvent: z.string(),
+  subject: z.string().nullable(),
+  startedAt: z.number().int().nonnegative(),
+  endedAt: z.number().int().nonnegative(),
+  durationMs: z.number().int().nonnegative(),
+  inputs: z.record(z.string(), z.unknown()),
+  output: z.unknown(),
+  outputValid: z.boolean(),
+  provider: z.string().nullable(),
+  model: z.string().nullable(),
+  tokensIn: z.number().int().nonnegative(),
+  tokensOut: z.number().int().nonnegative(),
+  steps: z.array(WorkflowTestStepResultSchema),
+  emissions: z.array(WorkflowTestEmissionSchema),
+  error: z
+    .object({
+      code: z.string(),
+      message: z.string(),
+      details: z.unknown().optional(),
+    })
+    .nullable(),
+});
+export type WorkflowTestAgentRun = z.infer<typeof WorkflowTestAgentRunSchema>;
+
+export const WorkflowTestEventRecordSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  depth: z.number().int().nonnegative(),
+  subject: z.string().nullable(),
+  sourceAgentRunId: z.string().nullable(),
+  parentEventId: z.string().nullable(),
+  payload: z.record(z.string(), z.unknown()),
+  consumerAgentIds: z.array(z.string()),
+  terminal: z.boolean(),
+});
+export type WorkflowTestEventRecord = z.infer<
+  typeof WorkflowTestEventRecordSchema
+>;
+
+export const WorkflowTestTerminalOutputSchema = z.object({
+  agentRunId: z.string(),
+  agentId: z.string(),
+  agentTitle: z.string(),
+  output: z.unknown(),
+  emittedEvents: z.array(z.string()),
+});
+export type WorkflowTestTerminalOutput = z.infer<
+  typeof WorkflowTestTerminalOutputSchema
+>;
+
+export const WorkflowTestRunResponseSchema = z.object({
+  runId: z.string(),
+  workflowSlug: WorkflowSlugSchema,
+  mode: z.literal("draft_test"),
+  status: z.enum(["ok", "failed", "partial"]),
+  manifestHash: z.string().length(64),
+  startedAt: z.number().int().nonnegative(),
+  endedAt: z.number().int().nonnegative(),
+  durationMs: z.number().int().nonnegative(),
+  trigger: z.object({
+    event: z.string(),
+    subject: z.string().nullable(),
+    inputs: z.record(z.string(), z.unknown()),
+    payload: z.record(z.string(), z.unknown()),
+  }),
+  policy: z.object({
+    toolPolicy: WorkflowRunToolPolicySchema,
+    failurePolicy: WorkflowRunFailurePolicySchema,
+    humanDecision: WorkflowManualTaskDecisionSchema,
+    limits: WorkflowTestRunLimitsSchema,
+  }),
+  summary: z.object({
+    agentRuns: z.number().int().nonnegative(),
+    passed: z.number().int().nonnegative(),
+    failed: z.number().int().nonnegative(),
+    blocked: z.number().int().nonnegative(),
+    steps: z.number().int().nonnegative(),
+    events: z.number().int().nonnegative(),
+    terminalEvents: z.number().int().nonnegative(),
+    tokensIn: z.number().int().nonnegative(),
+    tokensOut: z.number().int().nonnegative(),
+  }),
+  agentRuns: z.array(WorkflowTestAgentRunSchema),
+  events: z.array(WorkflowTestEventRecordSchema),
+  terminalOutputs: z.array(WorkflowTestTerminalOutputSchema),
+  warnings: z.array(z.string()),
+});
+export type WorkflowTestRunResponse = z.infer<
+  typeof WorkflowTestRunResponseSchema
+>;
+
+// ─── Proposal-based prompt generation from the workflow editor ────────────
+
+export const WorkflowAgentPromptBodySchema = z.object({
+  definition: AgentDefinitionV2Schema,
+  mode: z.enum(["generate", "improve", "shorten", "add_guardrails"]),
+  instructions: z
+    .string()
+    .max(128 * 1024)
+    .optional(),
+  selectedText: z
+    .string()
+    .max(128 * 1024)
+    .optional(),
+  provider: ProviderIdSchema.optional(),
+  model: z.string().trim().min(1).max(240).optional(),
+});
+export type WorkflowAgentPromptBody = z.infer<
+  typeof WorkflowAgentPromptBodySchema
+>;
+
+export const WorkflowAgentPromptResponseSchema = z.object({
+  proposedInstructions: z
+    .string()
+    .min(1)
+    .max(128 * 1024),
+  explanation: z
+    .string()
+    .max(16 * 1024)
+    .optional(),
+  provenance: AgentPromptProvenanceV2Schema,
+});
+export type WorkflowAgentPromptResponse = z.infer<
+  typeof WorkflowAgentPromptResponseSchema
 >;

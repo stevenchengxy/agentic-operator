@@ -4,7 +4,7 @@ set -Eeuo pipefail
 
 readonly REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly DEV_PORTS=(3599 3501 8288 8289 50052 50053)
-readonly GRACE_SECONDS="${AGENTIC_RESTART_GRACE_SECONDS:-5}"
+readonly GRACE_SECONDS="${AGENTIC_RESTART_GRACE_SECONDS:-12}"
 
 log() {
   printf '[restart] %s\n' "$*"
@@ -30,7 +30,14 @@ Options:
   --help   Show this help text.
 
 Environment:
-  AGENTIC_RESTART_GRACE_SECONDS  Seconds to wait after SIGTERM (default: 5).
+  AGENTIC_RESTART_GRACE_SECONDS  Seconds to wait after SIGTERM (default: 12).
+  AGENTIC_DEV_READY_TIMEOUT_MS   Maximum wait for the API listener before the
+                                dependent services stop (default: 90000).
+  AGENTIC_DEV_OUTAGE_TIMEOUT_MS  Maximum continuous API outage before the
+                                development stack stops (default: 15000).
+  AGENTIC_DEV_SHUTDOWN_TIMEOUT_MS
+                                Maximum child drain before force-kill (default:
+                                AGENTIC_SHUTDOWN_TIMEOUT_MS + 2000).
   Other variables, including AGENTIC_DEMO_MODE, are passed through to pnpm dev.
 EOF
 }
@@ -190,6 +197,7 @@ if [[ "$mode" == "check" ]]; then
 fi
 
 stop_existing_stack
-log "starting web, api, and Inngest in the foreground"
+log "starting API, then web and Inngest in the foreground"
+log "the stack will stop if the API remains unavailable after startup"
 log "press Ctrl-C to stop the stack"
 exec pnpm dev

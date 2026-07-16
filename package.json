@@ -12,7 +12,8 @@
     "ensure:native": "pnpm run ensure:node && node scripts/ensure-native-modules.mjs",
     "preinstall": "node scripts/ensure-node-version.mjs",
     "predev": "pnpm run ensure:native && (lsof -ti:3599,3501,8288,8289,50052,50053 | xargs kill -9 2>/dev/null; exit 0)",
-    "dev": "concurrently -n web,api,inngest -c blue,green,magenta \"pnpm --filter @agentic/web run dev\" \"pnpm --filter @agentic/api run dev\" \"npx -y inngest-cli@latest dev -u http://localhost:3501/inngest\"",
+    "dev": "node scripts/dev-stack.mjs",
+    "test:startup": "node --test scripts/wait-for-http.test.mjs scripts/dev-stack.test.mjs",
     "restart": "./restart.sh",
     "prebuild": "pnpm run ensure:native",
     "build": "turbo run build",
@@ -21,7 +22,7 @@
     "pretypecheck": "pnpm run ensure:node",
     "typecheck": "turbo run typecheck",
     "pretest": "pnpm run ensure:native",
-    "test": "turbo run test",
+    "test": "pnpm run test:startup && turbo run test",
     "preclean": "pnpm run ensure:node",
     "clean": "turbo run clean && rm -rf node_modules .turbo",
     "preformat": "pnpm run ensure:node",
@@ -45,6 +46,7 @@
   "devDependencies": {
     "@types/node": "^26.1.1",
     "concurrently": "^9.2.1",
+    "inngest-cli": "1.37.0",
     "prettier": "^3.8.3",
     "turbo": "^2.9.14",
     "typescript": "^6.0.3"

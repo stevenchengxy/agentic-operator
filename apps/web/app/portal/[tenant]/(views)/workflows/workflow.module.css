@@ -1,0 +1,392 @@
+.page {
+  container-name: workflow-page;
+  container-type: inline-size;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.selectorBar {
+  display: flex;
+  min-height: 42px;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+  padding: 9px 24px;
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--border);
+}
+
+.selectorLabel {
+  color: var(--text-3);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.workflowSelect {
+  width: min(420px, 100%);
+  min-width: 0;
+  flex: 0 1 420px;
+  padding: 6px 8px;
+  color: var(--text);
+  font-size: 12px;
+  background: var(--panel);
+  border: 1px solid var(--border-2);
+  border-radius: 4px;
+}
+
+.workspace {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  grid-template-columns:
+    minmax(0, 1fr)
+    var(--workflow-inspector-splitter-width, 14px)
+    var(--workflow-inspector-width, 520px);
+  overflow: hidden;
+}
+
+.canvasShell {
+  position: relative;
+  min-width: 0;
+  min-height: 360px;
+  overflow: hidden;
+}
+
+.canvas {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 360px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  touch-action: pan-x pan-y;
+  -webkit-overflow-scrolling: touch;
+  background: var(--bg);
+  background-image: radial-gradient(circle, var(--border) 1px, transparent 1px);
+  background-position: 0 0;
+  background-size: 22px 22px;
+}
+
+.canvas[data-drop-active="true"] {
+  box-shadow:
+    inset 0 0 0 2px var(--signal),
+    inset 0 0 44px color-mix(in srgb, var(--signal) 9%, transparent);
+}
+
+.canvasCoach {
+  position: absolute;
+  z-index: var(--z-overlay);
+  top: 12px;
+  right: 12px;
+  display: flex;
+  width: max-content;
+  max-width: calc(100% - 150px);
+  align-items: center;
+  gap: 7px;
+  padding: 7px 9px;
+  color: var(--text-2);
+  font-size: 11px;
+  line-height: 1.3;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--panel) 94%, transparent);
+  border: 1px solid var(--border-2);
+  border-radius: 6px;
+  box-shadow: 0 4px 18px rgb(0 0 0 / 30%);
+}
+
+.canvasCoach svg {
+  color: var(--signal);
+}
+
+.canvasCoach kbd {
+  padding: 1px 5px;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 9.5px;
+  background: var(--panel-3);
+  border: 1px solid var(--border-2);
+  border-radius: 3px;
+}
+
+.dropHint {
+  position: absolute;
+  z-index: var(--z-overlay);
+  top: 50%;
+  left: 50%;
+  display: flex;
+  width: max-content;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  color: var(--bg);
+  font-size: 12px;
+  font-weight: 700;
+  pointer-events: none;
+  background: var(--signal);
+  border-radius: 7px;
+  box-shadow: 0 12px 32px rgb(0 0 0 / 45%);
+  transform: translate(-50%, -50%);
+}
+
+.nodeFrame {
+  position: absolute;
+  z-index: var(--z-base);
+  transition:
+    left 90ms ease-out,
+    top 90ms ease-out,
+    opacity 150ms ease;
+}
+
+.nodeFrameDragging {
+  z-index: var(--z-overlay);
+  transition: none;
+}
+
+.nodeButton {
+  width: 100%;
+  height: 100%;
+  padding: 8px 10px;
+  overflow: hidden;
+  text-align: left;
+  touch-action: none;
+  border-radius: 5px;
+  transition:
+    border-color 120ms ease,
+    box-shadow 120ms ease,
+    transform 120ms ease;
+}
+
+.nodeButton:hover {
+  transform: translateY(-1px);
+}
+
+.nodeFrameDragging .nodeButton {
+  transform: none;
+  box-shadow: 0 12px 28px rgb(0 0 0 / 45%) !important;
+}
+
+.nodeButton:focus-visible,
+.nodePort:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: 3px;
+}
+
+.nodePort {
+  position: absolute;
+  z-index: var(--z-overlay);
+  top: 50%;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  touch-action: none;
+  background: transparent;
+  border: 0;
+  border-radius: 50%;
+  transform: translateY(-50%);
+}
+
+.nodePort::before {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 11px;
+  height: 11px;
+  content: "";
+  background: var(--panel);
+  border: 2px solid var(--text-2);
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px var(--bg);
+  transform: translate(-50%, -50%);
+  transition:
+    width 120ms ease,
+    height 120ms ease,
+    background 120ms ease,
+    border-color 120ms ease,
+    box-shadow 120ms ease;
+}
+
+.nodePort:hover::before,
+.nodePort:focus-visible::before,
+.nodePortActive::before {
+  width: 15px;
+  height: 15px;
+  background: var(--signal);
+  border-color: var(--signal);
+  box-shadow:
+    0 0 0 3px var(--bg),
+    0 0 0 5px color-mix(in srgb, var(--signal) 38%, transparent);
+}
+
+.nodePortInput {
+  left: -22px;
+}
+
+.nodePortOutput {
+  right: -22px;
+}
+
+.connectionPreview {
+  fill: none;
+  stroke: var(--blue);
+  stroke-width: 2.5;
+  stroke-dasharray: 7 5;
+  opacity: 0.95;
+  pointer-events: none;
+  filter: drop-shadow(0 0 5px color-mix(in srgb, var(--blue) 45%, transparent));
+}
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  white-space: nowrap;
+  border: 0;
+  clip: rect(0, 0, 0, 0);
+  clip-path: inset(50%);
+}
+
+.inspectorSplitter {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  align-items: stretch;
+  justify-content: center;
+  overflow: visible;
+  background: var(--panel);
+}
+
+.inspectorSplitter [role="separator"]:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: -2px;
+}
+
+.inspector {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--panel);
+}
+
+@container workflow-page (max-width: 860px) {
+  .selectorBar {
+    align-items: stretch;
+    padding-inline: 16px;
+  }
+
+  .selectorLabel {
+    width: 100%;
+    align-self: center;
+  }
+
+  .workflowSelect {
+    width: 100%;
+    max-width: none;
+    flex-basis: 100%;
+  }
+
+  .workspace {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(380px, 56vh) minmax(320px, auto);
+    overflow-y: auto;
+  }
+
+  .inspectorSplitter {
+    display: none;
+  }
+
+  .canvasShell,
+  .canvas {
+    min-height: 380px;
+  }
+
+  .inspector {
+    min-height: 320px;
+    max-height: 70vh;
+    border-top: 1px solid var(--border);
+    border-left: 0;
+  }
+}
+
+@container workflow-page (max-width: 560px) {
+  .selectorBar {
+    padding: 8px 12px;
+  }
+
+  .workspace {
+    grid-template-rows: minmax(340px, 52vh) minmax(360px, auto);
+  }
+
+  .canvasShell,
+  .canvas {
+    min-height: 340px;
+  }
+
+  .inspector {
+    min-height: 360px;
+    max-height: 76vh;
+  }
+
+  .canvasCoach {
+    max-width: calc(100% - 24px);
+    top: 60px;
+  }
+}
+
+/* Fallback for browsers without size-container queries. */
+@media (max-width: 760px) {
+  .selectorBar {
+    align-items: stretch;
+    padding: 8px 12px;
+  }
+
+  .selectorLabel {
+    width: 100%;
+  }
+
+  .workflowSelect {
+    width: 100%;
+    max-width: none;
+    flex-basis: 100%;
+  }
+
+  .workspace {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(340px, 52vh) minmax(360px, auto);
+    overflow-y: auto;
+  }
+
+  .inspectorSplitter {
+    display: none;
+  }
+
+  .inspector {
+    min-height: 360px;
+    max-height: 76vh;
+    border-top: 1px solid var(--border);
+    border-left: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nodeFrame,
+  .nodeButton,
+  .nodePort::before {
+    transition: none;
+  }
+
+  .animatedEdgeDot {
+    display: none;
+  }
+}

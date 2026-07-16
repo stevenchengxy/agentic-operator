@@ -533,6 +533,53 @@ export function dedupeEvents(events: string[]): string[] {
   return out;
 }
 
+export interface WorkflowEventEdge {
+  src: string;
+  dst: string;
+  event: string;
+}
+
+/**
+ * Derive the visual workflow topology from the same event contract the
+ * runtime uses: an edge exists when one agent emits the exact event another
+ * agent listens for.
+ *
+ * Event names are trimmed and duplicate declarations are collapsed, but
+ * casing remains significant. Runtime dispatch is case-sensitive, so making
+ * the canvas more permissive than execution would display connections that
+ * cannot actually run.
+ */
+export function deriveEventEdges(
+  effectiveAgents: Array<Pick<DagAgent, "kebabId" | "triggers" | "emits">>,
+): WorkflowEventEdge[] {
+  const listenersByEvent = new Map<string, Array<Pick<DagAgent, "kebabId">>>();
+  for (const agent of effectiveAgents) {
+    for (const event of dedupeEvents(agent.triggers)) {
+      const listeners = listenersByEvent.get(event) ?? [];
+      listeners.push(agent);
+      listenersByEvent.set(event, listeners);
+    }
+  }
+
+  const edges: WorkflowEventEdge[] = [];
+  const seen = new Set<string>();
+  for (const source of effectiveAgents) {
+    for (const event of dedupeEvents(source.emits)) {
+      for (const target of listenersByEvent.get(event) ?? []) {
+        const key = JSON.stringify([source.kebabId, target.kebabId, event]);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        edges.push({
+          src: source.kebabId,
+          dst: target.kebabId,
+          event,
+        });
+      }
+    }
+  }
+  return edges;
+}
+
 /** Add one complete definition to a draft without mutating the caller. */
 export function addAgentToDraft(
   draft: WorkflowDraft,
@@ -567,6 +614,26 @@ export function addAgentToDraft(
     added: new Set([...draft.added, id]),
     removed: nextRemoved,
   };
+}
+
+/**
+ * Apply an Agent Studio definition to an existing workflow node.
+ *
+ * The workflow remains the publishing boundary, so a definition saved in
+ * Agent Studio returns here as a normal workflow modification. A node that
+ * was already a local addition stays an addition instead of being counted
+ * twice as a modification.
+ */
+export function mergeAgentDefinitionIntoDraft(
+  draft: WorkflowDraft,
+  definition: CompleteAgentDefinition,
+): WorkflowDraft {
+  const wasAdded = draft.added.has(definition.id);
+  const next = addAgentToDraft(draft, definition);
+  if (wasAdded) return next;
+  const added = new Set(next.added);
+  added.delete(definition.id);
+  return { ...next, added };
 }
 
 /**

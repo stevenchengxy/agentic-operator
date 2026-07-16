@@ -115,7 +115,42 @@ describe("Test Lab chat wiring", () => {
       /\.agent-studio-chat-composer\s*\{[\s\S]{0,100}position: sticky/,
     );
     expect(css).toMatch(
-      /@media \(max-width: 900px\)[\s\S]{0,140}\.agent-studio-test-grid[\s\S]{0,100}grid-template-columns: minmax\(0, 1fr\)/,
+      /@container agent-studio-test \(max-width: 720px\)[\s\S]{0,180}\.agent-studio-test-grid[\s\S]{0,100}grid-template-columns: minmax\(0, 1fr\)/,
+    );
+  });
+
+  it("responds to the available Test Lab panel width without horizontal form overflow", () => {
+    expect(source).toContain('className="agent-studio-test-lab"');
+    expect(source).toContain("testHistoryFitsInline(nextWidth)");
+    expect(source).not.toContain("setHistoryInline(window.innerWidth > 1_280)");
+    expect(source).toContain(
+      "agent-studio-test-runtime-grid agent-studio-test-runtime-grid--pair",
+    );
+    expect(source).toContain(
+      "agent-studio-test-runtime-grid agent-studio-test-runtime-grid--numeric",
+    );
+    expect(source).toContain('className="agent-studio-test-advanced"');
+    expect(source).toContain('className="agent-studio-test-advanced-body"');
+    expect(css).toContain("container: agent-studio-test / inline-size");
+    expect(css).toContain("container: agent-studio-test-setup / inline-size");
+    expect(css).toMatch(
+      /@container agent-studio-test \(max-width: 1100px\)[\s\S]*?\.agent-studio-test-history[\s\S]*?grid-column: 1 \/ -1/,
+    );
+    expect(css).toMatch(
+      /@container agent-studio-test \(max-width: 720px\)[\s\S]*?\.agent-studio-test-grid[\s\S]*?grid-template-columns: minmax\(0, 1fr\)/,
+    );
+    expect(css).toMatch(
+      /\.agent-studio-test-runtime-grid\s*\{[\s\S]*?repeat\([\s\S]*?auto-fit[\s\S]*?minmax\(min\(220px, 100%\), 1fr\)/,
+    );
+    expect(css).toMatch(
+      /@container agent-studio-test-setup \(max-width: 520px\)[\s\S]*?\.agent-studio-test-runtime-grid[\s\S]*?grid-template-columns: minmax\(0, 1fr\)/,
+    );
+    expect(css).toMatch(
+      /\.agent-studio-test-setup-body\s*\{[\s\S]*?grid-template-columns: minmax\(0, 1fr\)[\s\S]*?overflow-x: auto !important/,
+    );
+    expect(css).toContain(".agent-studio-test-setup-body > *");
+    expect(css).toMatch(
+      /\.agent-studio-control\s*\{[\s\S]*?min-width: 0[\s\S]*?max-width: 100%/,
     );
   });
 
@@ -143,7 +178,7 @@ describe("Test Lab chat wiring", () => {
     expect(css).toContain(".agent-studio-output-details textarea");
   });
 
-  it("adds accessible splitters on both chat edges and hides them on mobile", () => {
+  it("adds accessible splitters and keeps history vertically resizable on mobile", () => {
     expect(source).toContain(
       'ariaLabel="Resize Test setup and Conversation panels"',
     );
@@ -157,7 +192,10 @@ describe("Test Lab chat wiring", () => {
     expect(css).toContain("--agent-studio-test-setup-width");
     expect(css).toContain("--agent-studio-test-history-width");
     expect(css).toMatch(
-      /@media \(max-width: 900px\)[\s\S]*?\.agent-studio-test-splitter\s*\{[\s\S]*?display: none/,
+      /@container agent-studio-test \(max-width: 720px\)[\s\S]*?\.agent-studio-test-splitter--setup\s*\{[\s\S]*?display: none/,
+    );
+    expect(css).not.toMatch(
+      /@container agent-studio-test \(max-width: 720px\)[\s\S]*?\.agent-studio-test-splitter--history\s*\{[\s\S]*?display: none/,
     );
     expect(css).toContain(
       '.agent-studio-test-splitter [role="separator"]:focus-visible',
@@ -173,7 +211,7 @@ describe("Test Lab chat wiring", () => {
     expect(source).toContain("setHistoryPanelHeight");
     expect(source).toContain('"--agent-studio-test-history-height"');
     expect(css).toMatch(
-      /@media \(max-width: 1280px\)[\s\S]*?\.agent-studio-test-splitter--history\s*\{[\s\S]*?grid-column: 1 \/ -1/,
+      /@container agent-studio-test \(max-width: 1100px\)[\s\S]*?\.agent-studio-test-splitter--history\s*\{[\s\S]*?grid-column: 1 \/ -1/,
     );
   });
 
@@ -202,6 +240,7 @@ describe("Test Lab chat wiring", () => {
     expect(source).toContain("Configured outgoing events.");
     expect(source).toContain("title={name}");
     expect(source).toContain("No emitted events configured");
+    expect(source).toContain('role="status"');
     expect(css).toContain(".agent-studio-test-event-list");
     expect(css).toContain(".agent-studio-test-event-chip");
   });
@@ -225,5 +264,19 @@ describe("Test Lab chat wiring", () => {
     expect(source).not.toContain(
       'label="Temporary AI model"\\n                    hint="Only changes this test run.',
     );
+  });
+
+  it("omits unsupported temperature defaults and clears stale model overrides", () => {
+    expect(source).toContain("temperatureRange:");
+    expect(source).toContain(
+      "const temperatureUnsupported = modelCapabilities.temperatureRange === null",
+    );
+    expect(source).toContain('setTemperature("")');
+    expect(source).toContain("!temperatureUnsupported &&");
+    expect(source).toContain(
+      "The saved agent setting is omitted for this test.",
+    );
+    expect(source).toContain("disabled={temperatureUnsupported}");
+    expect(source).toContain('"Not supported — omitted"');
   });
 });

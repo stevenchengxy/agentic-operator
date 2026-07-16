@@ -3,8 +3,10 @@ import {
   clampPanelWidth,
   maxTestHistoryWidth,
   maxTestSetupWidth,
+  testHistoryFitsInline,
   TEST_HISTORY_MAX_WIDTH,
   TEST_HISTORY_MAX_HEIGHT,
+  TEST_HISTORY_INLINE_MIN_WIDTH,
   TEST_HISTORY_MIN_HEIGHT,
   TEST_HISTORY_MIN_WIDTH,
   TEST_SETUP_MAX_WIDTH,
@@ -12,6 +14,13 @@ import {
 } from "./test-layout";
 
 describe("Test Lab resizable layout", () => {
+  it("moves history based on the Test Lab container rather than the viewport", () => {
+    expect(testHistoryFitsInline(TEST_HISTORY_INLINE_MIN_WIDTH + 1)).toBe(true);
+    expect(testHistoryFitsInline(TEST_HISTORY_INLINE_MIN_WIDTH)).toBe(false);
+    expect(testHistoryFitsInline(720)).toBe(false);
+    expect(testHistoryFitsInline(Number.NaN)).toBe(false);
+  });
+
   it("clamps invalid and out-of-range panel widths", () => {
     expect(clampPanelWidth(Number.NaN, 280, 720)).toBe(280);
     expect(clampPanelWidth(100, 280, 720)).toBe(280);

@@ -14,19 +14,19 @@ Event-driven agentic workflow runtime + admin console.
 
 ## Stack
 
-| | Version | Notes |
-|---|---|---|
-| Node | 26.5.0 | Exact version pinned in `.nvmrc`, CI, and Docker |
-| TypeScript | 5.7+ | strict |
-| Next.js | 16.2.10 | App Router and Turbopack |
-| React | 19 | RSC + inline CSS-in-JS (no Tailwind / shadcn — design fidelity) |
-| Fastify | 5 | api server |
-| Inngest | 3.x | durable event bus, step engine |
-| better-sqlite3 | 11.x | native module — Node runtime only |
-| Drizzle ORM | 0.36 | + drizzle-kit migrations |
-| Zod | 3.23+ | request/response validation |
-| Turborepo | 2.x | pipeline |
-| pnpm | 10.x | workspaces |
+|                | Version | Notes                                                           |
+| -------------- | ------- | --------------------------------------------------------------- |
+| Node           | 26.5.0  | Exact version pinned in `.nvmrc`, CI, and Docker                |
+| TypeScript     | 5.7+    | strict                                                          |
+| Next.js        | 16.2.10 | App Router and Turbopack                                        |
+| React          | 19      | RSC + inline CSS-in-JS (no Tailwind / shadcn — design fidelity) |
+| Fastify        | 5       | api server                                                      |
+| Inngest        | 3.x     | durable event bus, step engine                                  |
+| better-sqlite3 | 11.x    | native module — Node runtime only                               |
+| Drizzle ORM    | 0.36    | + drizzle-kit migrations                                        |
+| Zod            | 3.23+   | request/response validation                                     |
+| Turborepo      | 2.x     | pipeline                                                        |
+| pnpm           | 10.x    | workspaces                                                      |
 
 ## Quick start
 
@@ -37,12 +37,15 @@ pnpm install                  # ~10s, builds native modules
 pnpm db:migrate               # creates data/agentic.db (18 tables)
 pnpm db:seed                  # 3 tenants + 1 admin user
 pnpm seed:rich                # (RF-1.7) loads RAAS historical fixtures + ontology
-pnpm dev                      # boots web + api + inngest concurrently
+pnpm dev                      # boots api, then web + pinned inngest after api readiness
 ```
 
 To stop any existing local stack and restart all three services with the
 pinned Node runtime, run `./restart.sh` (or `pnpm restart`). Use
-`./restart.sh --check` for a non-destructive environment check.
+`./restart.sh --check` for a non-destructive environment check. Web and
+Inngest wait for the API listener, preventing transient proxy failures while
+the API loads manifests and tenant integrations. A watchdog tolerates brief
+hot-reload outages, then stops the full stack if the API stays unavailable.
 
 Open <http://localhost:3599>.
 
@@ -96,11 +99,11 @@ curl http://localhost:3501/health
 
 1. Drop a model folder at `/Users/kenny/CSI-AICOE/agentic-operator/models/<slug>-v1/`
    with five JSON files:
-     - `workflow.json` (or `workflow_v1.json`) — array of `AgentSpec` per DESIGN.md §4
-     - `actions.json` — per-agent I/O contracts
-     - `events.json` — event catalog (feeds the Events view)
-     - `objects.json` — entity definitions (populates `entity_types` table)
-     - `rules.json` — business rules
+   - `workflow.json` (or `workflow_v1.json`) — array of `AgentSpec` per DESIGN.md §4
+   - `actions.json` — per-agent I/O contracts
+   - `events.json` — event catalog (feeds the Events view)
+   - `objects.json` — entity definitions (populates `entity_types` table)
+   - `rules.json` — business rules
 2. Add the tenant row in `packages/db/src/seed.ts`, run `pnpm db:seed`.
 3. Restart `apps/api`. Bootstrap auto-discovers the folder, registers
    Inngest functions, upserts ontology tables, and the new tenant shows
@@ -180,6 +183,7 @@ portal/                              ← monorepo root
 Each app has its own `.env.local`:
 
 **apps/api/.env.local** (backend)
+
 ```sh
 PORT=3501
 HOST=0.0.0.0
@@ -195,6 +199,7 @@ WEBHOOK_HMAC_SECRET_DEFAULT=local-dev-hmac
 ```
 
 **apps/web/.env.local** (frontend)
+
 ```sh
 AGENTIC_API_URL=http://localhost:3501   # server-component fetches
 AGENTIC_API_TOKEN=                      # empty in dev
@@ -207,7 +212,7 @@ AGENTIC_API_TOKEN=                      # empty in dev
   for the API contract is `@agentic/contracts` Zod schemas, imported by both
   sides.
 - **Inline CSS-in-JS, not Tailwind.** Matches the prototype 1:1. Pseudo-selectors
-  + media queries + @keyframes live in `global.css`; everything else inline.
+  - media queries + @keyframes live in `global.css`; everything else inline.
 - **Models dir is the source of truth for workflows.** Bootstrap auto-discovers
   every `models/<slug>-v<n>/` folder.
 - **Idempotent runtime.** Inngest replays handlers per step; all DB writes are

@@ -13,13 +13,13 @@ This file provides guidance to Codex (Codex.ai/code) when working with code in t
 ## Common commands
 
 ```bash
-pnpm dev                  # web :3599 + api :3501 + inngest dev :8288 (predev runs ensure:native, then frees those ports + 8289/50052/50053)
+pnpm dev                  # api :3501 first; web :3599 + pinned inngest :8288 follow; watchdog tears down the stack after a sustained api outage
 ./restart.sh              # gracefully stop the current local stack, then run pnpm dev under the pinned Node version
 ./restart.sh --check      # validate the restart harness without changing running processes
 pnpm build                # turbo run build across all workspaces
 pnpm lint                 # turbo run lint (Next.js ESLint on web only)
 pnpm typecheck            # turbo run typecheck (every package has its own tsc --noEmit)
-pnpm test                 # turbo run test → vitest in apps/api
+pnpm test                 # startup-gate unit tests, then turbo run test across workspaces
 pnpm db:migrate           # apply drizzle migrations to data/agentic.db
 pnpm db:seed              # 3 tenants + 1 admin
 pnpm db:wipe-runtime      # truncate runtime traffic only (runs/steps/events/tasks/audit/artifacts); keeps tenants/users/workflows/agents/deployments/event_types/etc.
@@ -39,6 +39,7 @@ A single workspace's dev server: `pnpm --filter @agentic/api run dev` (or `@agen
 **Two-process split with a shared Zod contract package.** `apps/web` (Next.js 16, React 19) is UI-only — it has zero database access. Every read goes through `/v1/*` to `apps/api` (Fastify 5). `next.config.mjs` rewrites `/v1/*` and `/health` to `http://localhost:3501`. `@agentic/contracts` Zod schemas are the single source of truth: api validates requests with them; web parses responses with them via `apps/web/lib/api-client.ts`.
 
 **Two parallel agent execution paths share the same `runs`/`steps` schema and SSE log tail.**
+
 1. **Declarative manifest agents** (`packages/runtime`). `models/<slug>-v<n>/workflow*.json` is loaded at boot; each `AgentSpec` becomes one Inngest function with `id = "${tenantSlug}.${agentName}"`, concurrency keyed on `event.data.subject`, retries=3. Events are namespaced `${tenantSlug}/${name}`. See `packages/runtime/src/register.ts` for the durability contract; the LLM tool-use loop + tool dispatch live in `packages/runtime/src/step-engine.ts`.
 2. **Code-defined agents** (`packages/agents`). Subclass `BaseAgent`, register at import time via `agentRegistry.register(...)`. `BaseAgent.run()` is sealed; subclasses override `buildMessages()` and optionally `parseOutput()`. The run engine handles run-row + step-row + file-log + gateway dispatch. Invoked synchronously at `POST /v1/agents/:name/invoke`; async via Inngest is reserved for v2.
 
@@ -55,14 +56,17 @@ A single workspace's dev server: `pnpm --filter @agentic/api run dev` (or `@agen
 **The canonical, configuration-driven way agents get tools.** Any tool exported into `globalToolRegistry` (`packages/tools/src/registry.ts`) is callable by **any agent in any tenant** — the workflow manifest just lists the tool name in an agent's `tool_use[]`. No per-tenant TypeScript required. Treat `packages/tools/` as the home for any new tool that more than one tenant could plausibly want.
 
 **Resolution order** (in `step-engine.ts`, both the LLM tool-use loop and `type:"tool"` action dispatch):
+
 ```
 tenantRegistry.tools[name]         // tenant-specific override wins
   ?? globalToolRegistry.get(name)  // global core registry
   ?? MCP server tools              // folded into tenantRegistry under "<server>.<tool>"
 ```
+
 A tenant can ship a custom impl that shadows a global tool; everyone else gets the global default. The manifest's `tool_use[]` allow-list is the trust boundary — a tool isn't callable just because it's registered.
 
 **Per-tenant configuration (no code).** A `tool_use[].config` object in the manifest is lifted into `ctx.config` (`ToolContext.config`, see `packages/agent-kit/src/types.ts`) on every handler call — how the same global tool gets per-tenant credentials/paths:
+
 ```json
 "tool_use": [
   { "name": "parseResumeApi", "config": { "api_key_env": "TENANT_X_RH_KEY" } },
@@ -70,6 +74,7 @@ A tenant can ship a custom impl that shadows a global tool; everyone else gets t
   { "name": "writeJdToDisk",    "config": { "subdir": "jd-archive", "id_prefix": "jd" } }
 ]
 ```
+
 Each tool reads `ctx.config?.<key> ?? <env default>`. The runtime never inspects this blob — each tool documents the keys it honours.
 
 **Tool authoring.** `defineTool({ name, description, output?, handler })` from `@agentic/agent-kit` returns a plain descriptor (no DI, no decorators). Handlers read LLM-supplied args from `ctx.event.data` (the runtime overrides `event` with the tool-call `input` at dispatch — single read site whether invoked by the LLM or a `type:"tool"` manifest action). `throw` to fail — the runtime converts it to `tool_result: is_error` so the LLM can self-correct. `ctx.lastResult` carries the previous tool's output forward server-side; this is how `fs.readFromInbox` → `parseResumeApi` passes a multi-KB base64 PDF without the LLM re-quoting (and corrupting) it. To add a global tool: create it under `packages/tools/src/<category>/`, export from that category's `index.ts`, and add a `REGISTRATIONS` entry in `registry.ts` (name + category + summary + optional argsSchema/configSchema/returnsSchema/examples/aliases).
@@ -85,11 +90,12 @@ Each tool reads `ctx.config?.<key> ?? <env default>`. The runtime never inspects
 **Two UIs coexist.** Since P5-TEN-01b (2026-05-21) the production UI is the Next.js App Router portal at `apps/web/app/portal/[tenant]/(views)/*` — TypeScript, react-query, the canonical implementation. The Babel/React SPA prototype now lives at **`/demo`** (files under `apps/web/public/demo/`) and serves as a design reference only — never edit it expecting production behavior.
 
 Routing:
-- `/`                  → App Router redirect (`apps/web/app/page.tsx`) → `/portal`.
-- `/portal`            → `apps/web/app/portal/page.tsx` redirects to `/portal/<tenant>/dashboard`.
+
+- `/` → App Router redirect (`apps/web/app/page.tsx`) → `/portal`.
+- `/portal` → `apps/web/app/portal/page.tsx` redirects to `/portal/<tenant>/dashboard`.
 - `/portal/<tenant>/*` → real production UI.
-- `/demo`              → SPA prototype (`/public/demo/index.html` via `next.config.mjs` rewrite).
-- `/v1/*`, `/health`   → proxied to apps/api on :3501.
+- `/demo` → SPA prototype (`/public/demo/index.html` via `next.config.mjs` rewrite).
+- `/v1/*`, `/health` → proxied to apps/api on :3501.
 
 **CSS tokens.** `apps/web` uses inline CSS-in-JS with CSS custom properties from `apps/web/styles/tokens.css` (+ `apps/web/app/global.css` for pseudo-selectors / media queries / `@keyframes`). The real token names are `--bg`, `--panel`, `--panel-2`, `--panel-3`, `--border`, `--border-2`, `--text`, `--text-2`, `--text-3`, `--signal`, `--red`, etc. There is **no** `--surface-1`/`--border-1`/`--text-1`/`--danger` — referencing an undefined `var()` makes the browser fall back to `transparent`/inherited, which surfaces as a "see-through modal" bug. Match an existing component's tokens when styling new UI.
 
@@ -106,12 +112,12 @@ Switch via the single env flag `AGENTIC_DEMO_MODE` (default `false`; enabled onl
 
 **Demo-runner cadence** (all env-overridable):
 
-| Env var | Default | Behavior |
-|---|---|---|
-| `AGENTIC_DEMO_TICK_MS` | 30 000 | Publish one random event on a random tenant w/ a live workflow + declared event types. |
-| `AGENTIC_DEMO_TASK_RESOLVE_MS` | 90 000 | Resolve one open HITL task with a random approve/reject + emit `task.resolved`. |
-| `AGENTIC_DEMO_HEARTBEAT_MS` | 300 000 | Log `[demo-runner] tick — N events fired, K tasks resolved`. |
-| `AGENTIC_DEMO_RUN_BACKPRESSURE` | 25 | Skip a tick when the picked tenant already has ≥ N runs in flight. |
+| Env var                         | Default | Behavior                                                                               |
+| ------------------------------- | ------- | -------------------------------------------------------------------------------------- |
+| `AGENTIC_DEMO_TICK_MS`          | 30 000  | Publish one random event on a random tenant w/ a live workflow + declared event types. |
+| `AGENTIC_DEMO_TASK_RESOLVE_MS`  | 90 000  | Resolve one open HITL task with a random approve/reject + emit `task.resolved`.        |
+| `AGENTIC_DEMO_HEARTBEAT_MS`     | 300 000 | Log `[demo-runner] tick — N events fired, K tasks resolved`.                           |
+| `AGENTIC_DEMO_RUN_BACKPRESSURE` | 25      | Skip a tick when the picked tenant already has ≥ N runs in flight.                     |
 
 **Auto-applied demo env overrides** (in-process only — the on-disk `.env` is never touched). When `AGENTIC_DEMO_MODE=true`, `apps/api/src/config/demo-mode.ts → applyDemoModeOverrides()` runs BEFORE the LLM gateway is constructed and swaps `LLM_DEFAULT_PROVIDER`→`mock` + `LLM_DEFAULT_MODEL`→`mock-model-v1` (so the 30s event loop doesn't bleed real $ through your normal provider — mock returns canned deterministic responses so workflows still complete + the dashboard animates). Escape hatches keep a real provider under demo mode: `AGENTIC_DEMO_LLM_PROVIDER` / `AGENTIC_DEMO_LLM_MODEL`. Restore is automatic — flip the flag off + restart (the override only mutated `process.env` in-process). Boot log surfaces the swap exactly: `[bootstrap] demo overrides — LLM_DEFAULT_PROVIDER=mock (was openrouter), …`.
 

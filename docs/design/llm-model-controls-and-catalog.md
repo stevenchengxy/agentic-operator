@@ -14,6 +14,7 @@ the concrete Sol ID so evaluation results remain reproducible.
 
 ```ts
 interface ChatRequest {
+  temperature?: number;
   reasoning?: {
     mode?: "standard" | "pro";
     effort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
@@ -30,14 +31,33 @@ latency/service tier. The checked-in catalog advertises the exact normalized
 subset supported by each provider/model pair, and the gateway rejects an
 invalid catalog-known combination before dispatching a paid request.
 
-| Provider | Gateway mapping |
-|---|---|
-| OpenAI | Responses API `reasoning: {mode, effort, summary, context}`. GPT-5.6 Standard and Pro use the same direct model ID. |
-| Anthropic | Messages API `thinking: {type:"adaptive"}` plus `output_config.effort`. No Pro mode. `none` disables/omits thinking only on models that permit it; Fable/Mythos always think. |
-| OpenRouter | Effort-only requests may use Chat Completions. Richer controls use OpenResponses. GPT-5.6 mode is normalized to OpenRouter's paired base/`-pro` model IDs. |
-| Moonshot | Kimi K2.7 thinking is mandatory and has no effort selector. K2.6 thinking defaults on; normalized `none` maps to `thinking.type="disabled"`. Other effort values are rejected. |
-| Z.AI | GLM thinking defaults on; normalized `none` maps to `thinking.type="disabled"`. Z.AI does not publish native effort levels, so other values are rejected. |
-| DeepSeek | `none` disables thinking; `low`/`medium`/`high` map to native `high`; `xhigh`/`max` map to native `max`. |
+Temperature is a capability, not a universal request default. Catalog entries
+use `temperatureRange: {min,max}` when supported, `null` when the field must be
+omitted, and no value when support is unknown. The gateway removes inherited
+agent temperatures for known-unsupported models. For a newer/custom model, it
+retries once without temperature only when the provider explicitly returns an
+unsupported-temperature 400, then remembers that result for the gateway
+process lifetime. Other bad requests are never retried.
+
+| Provider   | Gateway mapping                                                                                                                                                                |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| OpenAI     | Responses API `reasoning: {mode, effort, summary, context}`. GPT-5.6 Standard and Pro use the same direct model ID.                                                            |
+| Anthropic  | Messages API `thinking: {type:"adaptive"}` plus `output_config.effort`. No Pro mode. `none` disables/omits thinking only on models that permit it; Fable/Mythos always think.  |
+| OpenRouter | Effort-only requests may use Chat Completions. Richer controls use OpenResponses. GPT-5.6 mode is normalized to OpenRouter's paired base/`-pro` model IDs.                     |
+| Moonshot   | Kimi K2.7 thinking is mandatory and has no effort selector. K2.6 thinking defaults on; normalized `none` maps to `thinking.type="disabled"`. Other effort values are rejected. |
+| Z.AI       | GLM thinking defaults on; normalized `none` maps to `thinking.type="disabled"`. Z.AI does not publish native effort levels, so other values are rejected.                      |
+| DeepSeek   | `none` disables thinking; `low`/`medium`/`high` map to native `high`; `xhigh`/`max` map to native `max`.                                                                       |
+
+Current temperature constraints:
+
+| Provider/model family                           | Gateway behavior                                                                                    |
+| ----------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| OpenAI GPT-5.6 Sol/Terra/Luna                   | Omit temperature.                                                                                   |
+| Anthropic Fable 5, Mythos 5, Opus 4.8, Sonnet 5 | Omit temperature.                                                                                   |
+| Direct Moonshot Kimi K2.7/K2.6                  | Omit temperature; sampling is fixed.                                                                |
+| Direct Z.AI GLM-5.x                             | Accept `0..1`.                                                                                      |
+| Direct DeepSeek V4                              | Accept `0..2`.                                                                                      |
+| OpenRouter                                      | Overlay the dated catalog with live `supported_parameters`; absence of `temperature` means omit it. |
 
 DeepSeek, Kimi, and GLM return opaque `reasoning_content` during tool calls.
 The gateway carries it only as transport state and replays it verbatim on the
@@ -49,25 +69,25 @@ the usage ledger.
 Input columns are cache-miss input / cache-hit input. Cache-write rates are
 stored separately in the catalog where providers publish them.
 
-| Provider | Model ID | Context / max output | Input / cached | Output |
-|---|---|---:|---:|---:|
-| OpenAI | `gpt-5.6-sol` | 1,050k / 128k | $5 / $0.50 | $30 |
-| OpenAI | `gpt-5.6-terra` | 1,050k / 128k | $2.50 / $0.25 | $15 |
-| OpenAI | `gpt-5.6-luna` | 1,050k / 128k | $1 / $0.10 | $6 |
-| Anthropic | `claude-fable-5` | 1,000k / 128k | $10 / $1 | $50 |
-| Anthropic | `claude-mythos-5` (limited availability) | 1,000k / 128k | $10 / $1 | $50 |
-| Anthropic | `claude-opus-4-8` | 1,000k / 128k | $5 / $0.50 | $25 |
-| Anthropic | `claude-sonnet-5` | 1,000k / 128k | $2 / $0.20 | $10 |
-| Anthropic | `claude-haiku-4-5` | 200k / 64k | $1 / $0.10 | $5 |
-| Moonshot | `kimi-k2.7-code` | 262k / not published | $0.95 / $0.19 | $4 |
-| Moonshot | `kimi-k2.7-code-highspeed` | 262k / not published | $1.90 / $0.38 | $8 |
-| Moonshot | `kimi-k2.6` | 262k / not published | $0.95 / $0.16 | $4 |
-| Z.AI | `glm-5.2` | 1,049k / 131k | $1.40 / $0.26 | $4.40 |
-| Z.AI | `glm-5.1` | 205k / 131k | $1.40 / $0.26 | $4.40 |
-| Z.AI | `glm-5-turbo` | 205k / 131k | $1.20 / $0.24 | $4 |
-| Z.AI | `glm-5` | 205k / 131k | $1 / $0.20 | $3.20 |
-| DeepSeek | `deepseek-v4-pro` | 1,049k / 393k | $0.435 / $0.003625 | $0.87 |
-| DeepSeek | `deepseek-v4-flash` | 1,049k / 393k | $0.14 / $0.0028 | $0.28 |
+| Provider  | Model ID                                 | Context / max output |     Input / cached | Output |
+| --------- | ---------------------------------------- | -------------------: | -----------------: | -----: |
+| OpenAI    | `gpt-5.6-sol`                            |        1,050k / 128k |         $5 / $0.50 |    $30 |
+| OpenAI    | `gpt-5.6-terra`                          |        1,050k / 128k |      $2.50 / $0.25 |    $15 |
+| OpenAI    | `gpt-5.6-luna`                           |        1,050k / 128k |         $1 / $0.10 |     $6 |
+| Anthropic | `claude-fable-5`                         |        1,000k / 128k |           $10 / $1 |    $50 |
+| Anthropic | `claude-mythos-5` (limited availability) |        1,000k / 128k |           $10 / $1 |    $50 |
+| Anthropic | `claude-opus-4-8`                        |        1,000k / 128k |         $5 / $0.50 |    $25 |
+| Anthropic | `claude-sonnet-5`                        |        1,000k / 128k |         $2 / $0.20 |    $10 |
+| Anthropic | `claude-haiku-4-5`                       |           200k / 64k |         $1 / $0.10 |     $5 |
+| Moonshot  | `kimi-k2.7-code`                         | 262k / not published |      $0.95 / $0.19 |     $4 |
+| Moonshot  | `kimi-k2.7-code-highspeed`               | 262k / not published |      $1.90 / $0.38 |     $8 |
+| Moonshot  | `kimi-k2.6`                              | 262k / not published |      $0.95 / $0.16 |     $4 |
+| Z.AI      | `glm-5.2`                                |        1,049k / 131k |      $1.40 / $0.26 |  $4.40 |
+| Z.AI      | `glm-5.1`                                |          205k / 131k |      $1.40 / $0.26 |  $4.40 |
+| Z.AI      | `glm-5-turbo`                            |          205k / 131k |      $1.20 / $0.24 |     $4 |
+| Z.AI      | `glm-5`                                  |          205k / 131k |         $1 / $0.20 |  $3.20 |
+| DeepSeek  | `deepseek-v4-pro`                        |        1,049k / 393k | $0.435 / $0.003625 |  $0.87 |
+| DeepSeek  | `deepseek-v4-flash`                      |        1,049k / 393k |    $0.14 / $0.0028 |  $0.28 |
 
 Claude Sonnet 5's listed direct price is promotional through 2026-08-31.
 The catalog already schedules the 2026-09-01 price of $3 input, $0.30 cache
@@ -80,24 +100,24 @@ the catalog.
 OpenRouter prices are a dated snapshot of the lowest current route returned by
 its live catalog and can differ from direct-provider prices.
 
-| OpenRouter model ID | Input / cached | Output |
-|---|---:|---:|
-| `openai/gpt-5.6-sol[-pro]` | $5 / $0.50 | $30 |
-| `openai/gpt-5.6-terra[-pro]` | $2.50 / $0.25 | $15 |
-| `openai/gpt-5.6-luna[-pro]` | $1 / $0.10 | $6 |
-| `anthropic/claude-fable-5` | $10 / $1 | $50 |
-| `anthropic/claude-opus-4.8` | $5 / $0.50 | $25 |
-| `anthropic/claude-opus-4.8-fast` | $10 / $1 | $50 |
-| `anthropic/claude-sonnet-5` | $2 / $0.20 | $10 |
-| `moonshotai/kimi-k2.7-code` | $0.719 / $0.149 | $3.49 |
-| `moonshotai/kimi-k2.6` | $0.66 / $0.144 | $3.41 |
-| `z-ai/glm-5.2` | $0.8694 / $0.16146 | $2.7324 |
-| `deepseek/deepseek-v4-pro` | $0.435 / $0.003625 | $0.87 |
-| `deepseek/deepseek-v4-flash` | $0.098 / $0.02 | $0.196 |
+| OpenRouter model ID              |     Input / cached |  Output |
+| -------------------------------- | -----------------: | ------: |
+| `openai/gpt-5.6-sol[-pro]`       |         $5 / $0.50 |     $30 |
+| `openai/gpt-5.6-terra[-pro]`     |      $2.50 / $0.25 |     $15 |
+| `openai/gpt-5.6-luna[-pro]`      |         $1 / $0.10 |      $6 |
+| `anthropic/claude-fable-5`       |           $10 / $1 |     $50 |
+| `anthropic/claude-opus-4.8`      |         $5 / $0.50 |     $25 |
+| `anthropic/claude-opus-4.8-fast` |           $10 / $1 |     $50 |
+| `anthropic/claude-sonnet-5`      |         $2 / $0.20 |     $10 |
+| `moonshotai/kimi-k2.7-code`      |    $0.719 / $0.149 |   $3.49 |
+| `moonshotai/kimi-k2.6`           |     $0.66 / $0.144 |   $3.41 |
+| `z-ai/glm-5.2`                   | $0.8694 / $0.16146 | $2.7324 |
+| `deepseek/deepseek-v4-pro`       | $0.435 / $0.003625 |   $0.87 |
+| `deepseek/deepseek-v4-flash`     |     $0.098 / $0.02 |  $0.196 |
 
-The live discovery parser also imports OpenRouter's reasoning capability
-metadata. Dynamic price sentinel `"-1"` is treated as unknown, never as a
-negative or zero price.
+The live discovery parser also imports OpenRouter's reasoning and temperature
+capability metadata. Dynamic price sentinel `"-1"` is treated as unknown,
+never as a negative or zero price.
 
 ## Evaluation and accounting
 
@@ -134,6 +154,6 @@ An agent or one-off Studio override uses the same shape:
 - OpenAI: [latest models](https://developers.openai.com/api/docs/guides/latest-model), [reasoning mode](https://developers.openai.com/api/docs/guides/reasoning#reasoning-mode), [pricing](https://developers.openai.com/api/docs/pricing)
 - Anthropic: [model overview](https://platform.claude.com/docs/en/about-claude/models/overview), [effort](https://platform.claude.com/docs/en/build-with-claude/effort), [pricing](https://platform.claude.com/docs/en/about-claude/pricing)
 - OpenRouter: [live model catalog](https://openrouter.ai/api/v1/models), [reasoning controls](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens), [parameters](https://openrouter.ai/docs/api/reference/parameters)
-- Moonshot: [models](https://platform.kimi.ai/docs/models), [K2.7 pricing](https://platform.kimi.ai/docs/pricing/chat-k27-code), [K2.6 pricing](https://platform.kimi.ai/docs/pricing/chat-k26), [thinking mode](https://platform.kimi.ai/docs/guide/use-kimi-k2-thinking-model)
+- Moonshot: [models](https://platform.kimi.ai/docs/models), [model parameter overview](https://platform.kimi.ai/docs/api/models-overview), [K2.7 pricing](https://platform.kimi.ai/docs/pricing/chat-k27-code), [K2.6 pricing](https://platform.kimi.ai/docs/pricing/chat-k26), [thinking mode](https://platform.kimi.ai/docs/guide/use-kimi-k2-thinking-model)
 - Z.AI: [GLM-5.2](https://docs.z.ai/guides/llm/glm-5.2), [thinking mode](https://docs.z.ai/guides/capabilities/thinking-mode), [pricing](https://docs.z.ai/guides/overview/pricing)
 - DeepSeek: [models and pricing](https://api-docs.deepseek.com/quick_start/pricing), [thinking mode](https://api-docs.deepseek.com/guides/thinking_mode), [chat schema](https://api-docs.deepseek.com/api/create-chat-completion)

@@ -10,12 +10,26 @@
  */
 
 export { LLMGateway } from "./gateway";
-export { LLMError, isLLMError, classifyHttpError, type LLMErrorCode } from "./errors";
-export { resolveConfig, type ResolvedConfig, type AdapterEnvSlice } from "./config";
+export {
+  LLMError,
+  isLLMError,
+  classifyHttpError,
+  type LLMErrorCode,
+} from "./errors";
+export {
+  resolveConfig,
+  type ResolvedConfig,
+  type AdapterEnvSlice,
+} from "./config";
 export { registerAllProviders } from "./providers/index";
 export { redact, redactObject } from "./redact";
 export { calculateCost, normalizeUsage, USD_NANOS_PER_CENT } from "./pricing";
-export { assertModelControls } from "./capabilities";
+export {
+  assertModelControls,
+  isUnsupportedTemperatureError,
+  normalizeModelRequest,
+  omitTemperature,
+} from "./capabilities";
 // P1-LLM-04 — mock adapter + the test-only id sequencer the adapter exposes.
 // Surfaced from the barrel so test code can `import { MockAdapter, _resetMockIdSeq }
 // from "@agentic/llm-gateway"` without reaching into adapter paths.

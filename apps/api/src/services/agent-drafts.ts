@@ -27,6 +27,8 @@ import {
   type AgentVersionDiffResponse,
   type GenerateDraftInstructionsBody,
   type GenerateDraftInstructionsResponse,
+  type WorkflowAgentPromptBody,
+  type WorkflowAgentPromptResponse,
   type ListAgentVersionsResponse,
   type PublishAgentDraftBody,
   type PublishAgentDraftResponse,
@@ -123,6 +125,28 @@ export class AgentStudioNotFoundError extends Error {
   constructor(public readonly resource: "agent" | "draft" | "version") {
     super(`${resource} not found`);
     this.name = "AgentStudioNotFoundError";
+  }
+}
+
+export class AgentStudioWorkflowNotFoundError extends Error {
+  constructor(public readonly workflowSlug: string) {
+    super(`workflow not found: ${workflowSlug}`);
+    this.name = "AgentStudioWorkflowNotFoundError";
+  }
+}
+
+export class DraftBaseWorkflowVersionError extends Error {
+  constructor(
+    public readonly versionId: string,
+    public readonly reason:
+      | "not_found"
+      | "workflow_mismatch"
+      | "agent_mismatch",
+  ) {
+    super(
+      "base workflow version is not valid for the selected workflow and agent",
+    );
+    this.name = "DraftBaseWorkflowVersionError";
   }
 }
 
@@ -426,6 +450,99 @@ export function findStudioAgent(
     .limit(1)
     .all()[0];
   return row?.agent ?? null;
+}
+
+function findStudioAgentById(
+  ctx: Pick<AuthedContext, "tenantId">,
+  agentId: string,
+): AgentRow | null {
+  const row = getDb()
+    .select({ agent: agents })
+    .from(agents)
+    .innerJoin(workflows, eq(workflows.id, agents.workflowId))
+    .where(and(eq(workflows.tenantId, ctx.tenantId), eq(agents.id, agentId)))
+    .limit(1)
+    .all()[0];
+  return row?.agent ?? null;
+}
+
+function findStudioWorkflow(
+  ctx: Pick<AuthedContext, "tenantId">,
+  slug: string,
+): typeof workflows.$inferSelect | null {
+  return (
+    getDb()
+      .select()
+      .from(workflows)
+      .where(
+        and(eq(workflows.tenantId, ctx.tenantId), eq(workflows.slug, slug)),
+      )
+      .limit(1)
+      .all()[0] ?? null
+  );
+}
+
+function findStudioAgentInWorkflow(
+  ctx: Pick<AuthedContext, "tenantId">,
+  ref: string,
+  workflowId: string,
+): AgentRow | null {
+  const row = getDb()
+    .select({ agent: agents })
+    .from(agents)
+    .innerJoin(workflows, eq(workflows.id, agents.workflowId))
+    .where(
+      and(
+        eq(workflows.tenantId, ctx.tenantId),
+        eq(workflows.id, workflowId),
+        agentPredicate(ref),
+      ),
+    )
+    .limit(1)
+    .all()[0];
+  return row?.agent ?? null;
+}
+
+function resolveStudioAgent(
+  ctx: Pick<AuthedContext, "tenantId">,
+  ref: string,
+  workflowSlug?: string,
+): AgentRow | null {
+  if (!workflowSlug) return findStudioAgent(ctx, ref);
+  const workflow = findStudioWorkflow(ctx, workflowSlug);
+  if (!workflow) throw new AgentStudioWorkflowNotFoundError(workflowSlug);
+  return findStudioAgentInWorkflow(ctx, ref, workflow.id);
+}
+
+function assertBaseWorkflowVersionContext(
+  ctx: Pick<AuthedContext, "tenantId">,
+  versionId: string,
+  agent: Pick<AgentRow, "workflowId" | "kebabId" | "name">,
+): void {
+  const version = getDb()
+    .select({
+      workflowId: workflowVersions.workflowId,
+      manifest: workflowVersions.manifestJson,
+    })
+    .from(workflowVersions)
+    .innerJoin(workflows, eq(workflows.id, workflowVersions.workflowId))
+    .where(
+      and(
+        eq(workflowVersions.id, versionId),
+        eq(workflows.tenantId, ctx.tenantId),
+      ),
+    )
+    .limit(1)
+    .all()[0];
+  if (!version) {
+    throw new DraftBaseWorkflowVersionError(versionId, "not_found");
+  }
+  if (version.workflowId !== agent.workflowId) {
+    throw new DraftBaseWorkflowVersionError(versionId, "workflow_mismatch");
+  }
+  if (!findRawAgent(version.manifest, agent)) {
+    throw new DraftBaseWorkflowVersionError(versionId, "agent_mismatch");
+  }
 }
 
 interface LiveAgentSnapshot {
@@ -970,11 +1087,29 @@ export function getAgentEditor(
   agentRef: string,
   requestedDraftId?: string,
 ): AgentEditorResponse {
-  const agent = findStudioAgent(ctx, agentRef);
-  if (!agent) throw new AgentStudioNotFoundError("agent");
-  const live = getLiveAgentSnapshot(ctx, agent.id);
-  let selectedDraft = requestedDraftId
+  // A handoff URL carries both the human-readable agent ref and an immutable
+  // draft id. Resolve the tenant-owned draft first so duplicate kebab ids in
+  // different workflows cannot make an arbitrary tenant-wide lookup select
+  // the wrong agent.
+  const requestedDraft = requestedDraftId
     ? getDraft(ctx, requestedDraftId)
+    : null;
+  const agent = requestedDraft
+    ? findStudioAgentById(ctx, requestedDraft.agentId)
+    : findStudioAgent(ctx, agentRef);
+  if (!agent) throw new AgentStudioNotFoundError("agent");
+  if (
+    requestedDraft &&
+    (requestedDraft.workflowId !== agent.workflowId ||
+      (agentRef !== agent.id &&
+        agentRef !== agent.kebabId &&
+        agentRef !== agent.name))
+  ) {
+    throw new AgentStudioNotFoundError("draft");
+  }
+  const live = getLiveAgentSnapshot(ctx, agent.id);
+  let selectedDraft = requestedDraft
+    ? requestedDraft
     : (() => {
         const row = getLatestDraftRow(ctx.tenantId, agent.id);
         return row ? draftRecord(row) : null;
@@ -1033,15 +1168,24 @@ export function createAgentDraft(
   agentRef: string,
   input: {
     definition?: AgentDefinitionV2;
+    workflowSlug?: string;
     baseAgentVersionId?: string;
     baseWorkflowVersionId?: string;
   },
 ): AgentDraftRecord {
-  const agent = findStudioAgent(ctx, agentRef);
+  const agent = resolveStudioAgent(ctx, agentRef, input.workflowSlug);
   if (!agent) throw new AgentStudioNotFoundError("agent");
   assertManifestAgentEditable(agent);
 
-  if (!input.definition) {
+  if (input.baseWorkflowVersionId) {
+    assertBaseWorkflowVersionContext(ctx, input.baseWorkflowVersionId, agent);
+  }
+
+  if (
+    !input.definition &&
+    !input.baseAgentVersionId &&
+    !input.baseWorkflowVersionId
+  ) {
     const existing = getLatestDraftRow(ctx.tenantId, agent.id);
     if (existing) return draftRecord(existing);
   }
@@ -1102,28 +1246,26 @@ export function createAgentDraft(
 export function createNewAgentDraft(
   ctx: AuthedContext,
   definitionInput: AgentDefinitionV2,
+  requestedWorkflowSlug?: string,
+  baseWorkflowVersionId?: string,
 ): AgentDraftRecord {
   const definition = AgentDefinitionV2Schema.parse(definitionInput);
   const db = getDb();
-  const duplicate =
-    findStudioAgent(ctx, definition.id) ??
-    findStudioAgent(ctx, definition.name);
+  const workflowSlug = requestedWorkflowSlug ?? `${ctx.tenantSlug}-default`;
+  let workflow = findStudioWorkflow(ctx, workflowSlug);
+  if (!workflow && requestedWorkflowSlug) {
+    throw new AgentStudioWorkflowNotFoundError(requestedWorkflowSlug);
+  }
+
+  const duplicate = requestedWorkflowSlug
+    ? (findStudioAgentInWorkflow(ctx, definition.id, workflow!.id) ??
+      findStudioAgentInWorkflow(ctx, definition.name, workflow!.id))
+    : (findStudioAgent(ctx, definition.id) ??
+      findStudioAgent(ctx, definition.name));
   if (duplicate) {
     throw new Error(`agent_conflict:${duplicate.kebabId}`);
   }
 
-  const workflowSlug = `${ctx.tenantSlug}-default`;
-  let workflow = db
-    .select()
-    .from(workflows)
-    .where(
-      and(
-        eq(workflows.tenantId, ctx.tenantId),
-        eq(workflows.slug, workflowSlug),
-      ),
-    )
-    .limit(1)
-    .all()[0];
   if (!workflow) {
     const id = makeId("wf");
     db.insert(workflows)
@@ -1139,6 +1281,14 @@ export function createNewAgentDraft(
       .from(workflows)
       .where(eq(workflows.id, id))
       .all()[0]!;
+  }
+
+  if (baseWorkflowVersionId) {
+    assertBaseWorkflowVersionContext(ctx, baseWorkflowVersionId, {
+      workflowId: workflow.id,
+      kebabId: definition.id,
+      name: definition.name,
+    });
   }
 
   const agentId = makeId("agt");
@@ -1159,7 +1309,11 @@ export function createNewAgentDraft(
       updatedAt: now,
     })
     .run();
-  return createAgentDraft(ctx, agentId, { definition });
+  return createAgentDraft(ctx, agentId, {
+    definition,
+    workflowSlug: requestedWorkflowSlug,
+    baseWorkflowVersionId,
+  });
 }
 
 export function patchAgentDraft(
@@ -1907,8 +2061,26 @@ export async function generateDraftInstructions(
   input: GenerateDraftInstructionsBody,
 ): Promise<GenerateDraftInstructionsResponse> {
   const draft = getDraft(ctx, draftId);
+  return generateInstructionsForDefinition(ctx, draft.definition, input);
+}
+
+type InstructionGenerationInput = Pick<
+  WorkflowAgentPromptBody,
+  "mode" | "instructions" | "selectedText" | "provider" | "model"
+>;
+
+/**
+ * Shared proposal generator for Agent Studio and the inline workflow editor.
+ * The caller owns persistence/apply semantics; this function only returns a
+ * redacted, provenance-stamped proposal.
+ */
+export async function generateInstructionsForDefinition(
+  ctx: AuthedContext,
+  definition: AgentDefinitionV2,
+  input: InstructionGenerationInput,
+): Promise<WorkflowAgentPromptResponse> {
   const gateway = getLLMGateway();
-  const safeDefinition = promptGenerationContext(draft.definition);
+  const safeDefinition = promptGenerationContext(definition);
   const response = await gateway.chat({
     tenantId: ctx.tenantId,
     tenantSlug: ctx.tenantSlug,
@@ -1929,9 +2101,7 @@ export async function generateDraftInstructions(
           {
             task: input.mode,
             current_instructions: redactLikelySecrets(
-              input.instructions ??
-                draft.definition.ontology_instructions ??
-                "",
+              input.instructions ?? definition.ontology_instructions ?? "",
             ),
             selected_text: input.selectedText
               ? redactLikelySecrets(input.selectedText)
@@ -1954,7 +2124,7 @@ export async function generateDraftInstructions(
     proposedInstructions,
     provenance: {
       mode: "ai-assisted",
-      source_hash: draft.definitionHash,
+      source_hash: definitionHash(definition),
       provider: response.provider,
       model: response.model,
       generated_at: new Date().toISOString(),

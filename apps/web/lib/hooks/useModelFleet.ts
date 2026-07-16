@@ -17,6 +17,7 @@ import type { UseQueryResult } from "@tanstack/react-query";
 import type {
   ReasoningEffort,
   ReasoningMode,
+  TemperatureRange,
   TextVerbosity,
 } from "@agentic/contracts";
 import { tenantHeader } from "./tenant-header";
@@ -41,7 +42,11 @@ async function callV1<T>(path: string, init: RequestInit = {}): Promise<T> {
     ...tenantHeader(),
     ...(initHeaders as Record<string, string> | undefined),
   };
-  if (rest.body !== undefined && rest.body !== null && !headers["Content-Type"]) {
+  if (
+    rest.body !== undefined &&
+    rest.body !== null &&
+    !headers["Content-Type"]
+  ) {
     headers["Content-Type"] = "application/json";
   }
   const res = await fetch(path, {
@@ -87,6 +92,8 @@ export interface AvailableModel {
   reasoningMandatory: boolean;
   reasoningDefaultEnabled: boolean;
   textVerbosities: TextVerbosity[];
+  /** null=unsupported, object=supported range, absent=unknown */
+  temperatureRange?: TemperatureRange | null;
   inFleet: boolean;
   origin: "live" | "catalog";
 }
@@ -100,7 +107,8 @@ export interface AvailableModelsPayload {
 
 export const FLEET_KEYS = {
   list: ["llm", "fleet"] as const,
-  available: (provider: string) => ["llm", "available-models", provider] as const,
+  available: (provider: string) =>
+    ["llm", "available-models", provider] as const,
 };
 
 export function useFleet(): UseQueryResult<FleetEntry[]> {

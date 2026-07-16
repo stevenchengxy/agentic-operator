@@ -7,7 +7,7 @@
  * are server-backed; the prompt remains fully editable before deployment.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type {
   AgentModelSelection,
@@ -49,6 +49,10 @@ import {
   type DeepSearchMode,
 } from "./agent-builder";
 import { catalogToolToToolUse } from "./tool-schema";
+import {
+  isCurrentPromptRequest,
+  promptRequestFingerprint,
+} from "./prompt-generation-guard";
 
 const AUTO_MODEL = "auto";
 const INHERIT_MODEL = "inherit";
@@ -106,12 +110,17 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
   const [tsCode, setTsCode] = useState("");
   const [toolUse, setToolUse] = useState<ToolUseSchema[]>([]);
   const [systemPrompt, setSystemPrompt] = useState("");
+  const [generatedPromptFingerprint, setGeneratedPromptFingerprint] = useState<
+    string | null
+  >(null);
   const [promptError, setPromptError] = useState<string | null>(null);
   const [deployError, setDeployError] = useState<string | null>(null);
   const [autoModelSelection, setAutoModelSelection] =
     useState<AgentModelSelection | null>(null);
   const [published, setPublished] =
     useState<DeployAuthoredAgentResponse | null>(null);
+  const promptRequestSequenceRef = useRef(0);
+  const currentPromptFingerprintRef = useRef("");
 
   const wizardSteps = [
     "Template",
@@ -153,7 +162,18 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
     title.trim().length > 0 &&
     desc.trim().length >= 10;
   const eventsValid = triggers.length > 0 && emits.length > 0;
-  const implementationValid = systemPrompt.trim().length >= 40;
+  const promptSourceFingerprint = template
+    ? promptRequestFingerprint(promptBody())
+    : "";
+  useLayoutEffect(() => {
+    currentPromptFingerprintRef.current = promptSourceFingerprint;
+  }, [promptSourceFingerprint]);
+  const promptIsStale =
+    systemPrompt.trim().length > 0 &&
+    generatedPromptFingerprint !== null &&
+    generatedPromptFingerprint !== promptSourceFingerprint;
+  const implementationValid =
+    systemPrompt.trim().length >= 40 && !promptIsStale;
   const behaviorValid =
     retries >= 0 &&
     retries <= 10 &&
@@ -189,6 +209,7 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
     setModelChoice(AUTO_MODEL);
     setAutoModelSelection(null);
     setSystemPrompt("");
+    setGeneratedPromptFingerprint(null);
     setDeepSearchMode("investigate");
     setExecutionSteps(defaultStepModels(t));
     setStep(1);
@@ -255,15 +276,40 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
     overrides: Partial<GenerateAgentPromptBody> = {},
   ) {
     if (!identityValid || !eventsValid || !template) return;
+    const requestBody = {
+      ...promptBody(),
+      ...overrides,
+    };
+    const requestFingerprint = promptRequestFingerprint(requestBody);
+    const requestId = ++promptRequestSequenceRef.current;
+    currentPromptFingerprintRef.current = requestFingerprint;
     setPromptError(null);
     try {
-      const result = await generatePrompt.mutateAsync({
-        ...promptBody(),
-        ...overrides,
-      });
+      const result = await generatePrompt.mutateAsync(requestBody);
+      if (
+        !isCurrentPromptRequest({
+          requestId,
+          latestRequestId: promptRequestSequenceRef.current,
+          requestFingerprint,
+          currentFingerprint: currentPromptFingerprintRef.current,
+        })
+      ) {
+        return;
+      }
       setSystemPrompt(result.systemPrompt);
+      setGeneratedPromptFingerprint(requestFingerprint);
       setAutoModelSelection(result.modelSelection);
     } catch (error) {
+      if (
+        !isCurrentPromptRequest({
+          requestId,
+          latestRequestId: promptRequestSequenceRef.current,
+          requestFingerprint,
+          currentFingerprint: currentPromptFingerprintRef.current,
+        })
+      ) {
+        return;
+      }
       setPromptError(
         error instanceof Error
           ? error.message
@@ -275,7 +321,12 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
   function next() {
     if (step === 2) {
       setStep(3);
-      if (!systemPrompt.trim()) void requestSystemPrompt();
+      if (
+        (!systemPrompt.trim() || promptIsStale) &&
+        !generatePrompt.isPending
+      ) {
+        void requestSystemPrompt();
+      }
       return;
     }
     setStep((s) => Math.min(wizardSteps.length - 1, s + 1));
@@ -338,6 +389,7 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
       const nextSteps = deepSearchStepsForMode(template, mode);
       setExecutionSteps(nextSteps);
       setSystemPrompt("");
+      setGeneratedPromptFingerprint(null);
       setAutoModelSelection(null);
       if (step >= 3) {
         void requestSystemPrompt({
@@ -630,10 +682,17 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
                 <TemplateBrief template={template} />
               </div>
               <EditField
+                className="new-agent-paired-field"
+                htmlFor="new-agent-name"
                 label="Name (id)"
                 hint="lowercase camelCase, used in events & logs"
               >
-                <EditText value={name} onChange={setName} mono />
+                <EditText
+                  id="new-agent-name"
+                  value={name}
+                  onChange={setName}
+                  mono
+                />
                 {name.length > 0 && !nameValid && (
                   <InlineMessage tone="red">
                     Start with a lowercase letter and use letters or numbers
@@ -685,15 +744,26 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
                   </div>
                 )}
               </EditField>
-              <EditField label="Title" hint="Shown in the operator UI">
-                <EditText value={title} onChange={setTitle} />
+              <EditField
+                className="new-agent-paired-field"
+                htmlFor="new-agent-title"
+                label="Title"
+                hint="Shown in the operator UI"
+              >
+                <EditText
+                  id="new-agent-title"
+                  value={title}
+                  onChange={setTitle}
+                />
               </EditField>
               <div style={{ gridColumn: "1 / -1" }}>
                 <EditField
+                  htmlFor="new-agent-purpose"
                   label="Purpose and success criteria"
                   hint="Explain what the agent should accomplish, the context it can trust, and what a successful result contains. Auto model selection uses this brief."
                 >
                   <EditTextarea
+                    id="new-agent-purpose"
                     value={desc}
                     onChange={(value) => {
                       setDesc(value);
@@ -709,6 +779,7 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
                 </EditField>
               </div>
               <EditField
+                className="new-agent-paired-field"
                 label="Execution"
                 hint="Agents are placed by their event contract, not a workflow stage."
               >
@@ -722,6 +793,7 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
                 </div>
               </EditField>
               <EditField
+                className="new-agent-paired-field"
                 label="Architecture"
                 hint="Every agent is independent and event-driven."
               >
@@ -781,18 +853,15 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
                   </span>
                 </button>
               )}
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "1fr 1fr",
-                  gap: 14,
-                }}
-              >
+              <div className="new-agent-events-grid">
                 <EditField
+                  className="new-agent-paired-field new-agent-events-field"
+                  htmlFor="new-agent-trigger-event"
                   label="Trigger events"
                   hint="The agent starts whenever any selected event arrives. Pick an existing event or create a new type."
                 >
                   <EventPicker
+                    inputId="new-agent-trigger-event"
                     selected={triggers}
                     onAdd={(v) => addEvent(setTriggers, v)}
                     onRemove={(v) => removeEvent(setTriggers, v)}
@@ -808,10 +877,13 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
                   )}
                 </EditField>
                 <EditField
+                  className="new-agent-paired-field new-agent-events-field"
+                  htmlFor="new-agent-emit-event"
                   label="Emit events"
                   hint="Publish one or more result events so downstream agents can continue the work."
                 >
                   <EventPicker
+                    inputId="new-agent-emit-event"
                     selected={emits}
                     onAdd={addEmit}
                     onRemove={(v) => removeEvent(setEmits, v)}
@@ -986,10 +1058,7 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
                     onModelChange={updateStepModel}
                   />
                   {generatePrompt.isPending && (
-                    <InlineMessage tone="signal">
-                      Generating the production system prompt and resolving the
-                      model recommendation…
-                    </InlineMessage>
+                    <PromptGenerationProgress compact />
                   )}
                   {promptError && (
                     <InlineMessage tone="red">
@@ -1000,47 +1069,84 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
               )}
 
               {implTab === "prompt" && (
-                <div>
-                  <div style={{ display: "flex", alignItems: "end", gap: 10 }}>
-                    <div style={{ flex: 1 }}>
-                      <EditField
-                        label="System prompt"
-                        hint="Generated from the purpose, event contract, execution pattern, model policy, ontology, and tools. Review it before publishing."
+                <div
+                  className="new-agent-prompt-editor"
+                  aria-busy={generatePrompt.isPending}
+                >
+                  <div className="new-agent-prompt-header">
+                    <div className="new-agent-prompt-heading">
+                      <label
+                        className="new-agent-edit-field-label"
+                        htmlFor="new-agent-system-prompt"
                       >
-                        <EditTextarea
-                          value={systemPrompt}
-                          onChange={setSystemPrompt}
-                          rows={18}
-                          mono
-                        />
-                      </EditField>
+                        System prompt
+                      </label>
+                      <div className="new-agent-edit-field-hint">
+                        Generated from the purpose, event contract, execution
+                        pattern, model policy, ontology, and tools. Review it
+                        before publishing.
+                      </div>
                     </div>
                     <Button
-                      tone="default"
-                      icon="spark"
+                      tone={generatePrompt.isPending ? "primary" : "default"}
                       onClick={() => void requestSystemPrompt()}
                       disabled={
                         generatePrompt.isPending ||
                         !identityValid ||
                         !eventsValid
                       }
-                      style={{ marginBottom: 11 }}
+                      style={
+                        generatePrompt.isPending
+                          ? {
+                              opacity: 1,
+                              cursor: "progress",
+                              boxShadow:
+                                "0 0 0 1px rgba(203,255,0,0.25), 0 0 22px rgba(203,255,0,0.18)",
+                            }
+                          : undefined
+                      }
                     >
+                      <span
+                        className={
+                          generatePrompt.isPending
+                            ? "new-agent-generate-icon new-agent-generate-icon--active"
+                            : "new-agent-generate-icon"
+                        }
+                        aria-hidden="true"
+                      >
+                        <Icon name="spark" size={12} />
+                      </span>
                       {generatePrompt.isPending
-                        ? "Generating…"
+                        ? "Generating prompt…"
                         : systemPrompt
                           ? "Regenerate"
                           : "Generate"}
                     </Button>
                   </div>
-                  {generatePrompt.isPending && (
-                    <InlineMessage tone="signal">
-                      Building a comprehensive prompt from the agent
-                      description…
-                    </InlineMessage>
-                  )}
+                  {generatePrompt.isPending && <PromptGenerationProgress />}
+                  <EditTextarea
+                    id="new-agent-system-prompt"
+                    className="new-agent-system-prompt-input"
+                    ariaLabel="Generated system prompt"
+                    value={systemPrompt}
+                    onChange={(value) => {
+                      setSystemPrompt(value);
+                      setGeneratedPromptFingerprint(promptSourceFingerprint);
+                      setPromptError(null);
+                    }}
+                    rows={18}
+                    mono
+                    readOnly={generatePrompt.isPending}
+                  />
                   {promptError && (
                     <InlineMessage tone="red">{promptError}</InlineMessage>
+                  )}
+                  {promptIsStale && (
+                    <InlineMessage tone="signal">
+                      Agent details changed after this prompt was generated.
+                      Regenerate it, or edit the prompt to confirm your custom
+                      version.
+                    </InlineMessage>
                   )}
                   {!generatePrompt.isPending &&
                     !promptError &&
@@ -1055,10 +1161,12 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
 
               {implTab === "code" && (
                 <EditField
+                  htmlFor="new-agent-typescript"
                   label="TypeScript source (optional)"
                   hint="Stored with the manifest as implementation metadata. Generated manifest agents execute through the system prompt and runtime tool loop."
                 >
                   <EditTextarea
+                    id="new-agent-typescript"
                     value={tsCode}
                     onChange={setTsCode}
                     rows={18}
@@ -1239,10 +1347,13 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
                 </Panel>
               </div>
               <EditField
+                className="new-agent-paired-field"
+                htmlFor="new-agent-retries"
                 label="Retries"
                 hint="Maximum immediate retry attempts for a failed model action."
               >
                 <EditText
+                  id="new-agent-retries"
                   value={String(retries)}
                   onChange={(v) => setRetries(parseInt(v, 10) || 0)}
                   mono
@@ -1250,18 +1361,26 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
                 />
               </EditField>
               <EditField
+                className="new-agent-paired-field"
+                htmlFor="new-agent-timeout"
                 label="Per-call timeout"
                 hint="Maximum duration of each model gateway call; a multi-step run may take longer."
               >
                 <EditText
+                  id="new-agent-timeout"
                   value={String(timeout)}
                   onChange={(v) => setTimeoutVal(parseInt(v, 10) || 0)}
                   mono
                   suffix="seconds"
                 />
               </EditField>
-              <EditField label="Concurrency" hint="Max simultaneous runs.">
+              <EditField
+                htmlFor="new-agent-concurrency"
+                label="Concurrency"
+                hint="Max simultaneous runs."
+              >
                 <EditText
+                  id="new-agent-concurrency"
                   value={String(concurrency)}
                   onChange={(v) => setConcurrency(parseInt(v, 10) || 0)}
                   mono
@@ -1540,8 +1659,8 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
                     onClick={next}
                     disabled={!canContinue()}
                   >
-                    {step === 2 && generatePrompt.isPending
-                      ? "Generating…"
+                    {step >= 2 && generatePrompt.isPending
+                      ? "Generating prompt…"
                       : "Continue"}
                   </Button>
                 ) : (
@@ -2064,29 +2183,79 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
   );
 }
 
+function PromptGenerationProgress({ compact = false }: { compact?: boolean }) {
+  return (
+    <div
+      className={`new-agent-prompt-progress${compact ? " new-agent-prompt-progress--compact" : ""}`}
+      role="status"
+      aria-live="polite"
+    >
+      <span className="new-agent-prompt-progress__orb" aria-hidden="true">
+        <Icon name="spark" size={compact ? 12 : 14} />
+      </span>
+      <span className="new-agent-prompt-progress__copy">
+        <strong>Generating system prompt</strong>
+        <span>
+          Analyzing purpose, event contract, execution plan, tools, and model
+          policy…
+        </span>
+      </span>
+      <span className="new-agent-prompt-progress__dots" aria-hidden="true">
+        <i />
+        <i />
+        <i />
+      </span>
+    </div>
+  );
+}
+
 function EditField({
+  className,
+  htmlFor,
   label,
   hint,
   children,
 }: {
+  className?: string;
+  htmlFor?: string;
   label: string;
   hint?: string;
   children: React.ReactNode;
 }) {
   return (
-    <div style={{ padding: "10px 0", borderBottom: "1px solid var(--border)" }}>
-      <div
-        style={{
-          fontSize: 11,
-          color: "var(--text)",
-          marginBottom: 3,
-          fontWeight: 500,
-        }}
-      >
-        {label}
-      </div>
+    <div
+      className={`new-agent-edit-field${className ? ` ${className}` : ""}`}
+      style={{ padding: "10px 0", borderBottom: "1px solid var(--border)" }}
+    >
+      {htmlFor ? (
+        <label
+          className="new-agent-edit-field-label"
+          htmlFor={htmlFor}
+          style={{
+            fontSize: 11,
+            color: "var(--text)",
+            marginBottom: 3,
+            fontWeight: 500,
+          }}
+        >
+          {label}
+        </label>
+      ) : (
+        <div
+          className="new-agent-edit-field-label"
+          style={{
+            fontSize: 11,
+            color: "var(--text)",
+            marginBottom: 3,
+            fontWeight: 500,
+          }}
+        >
+          {label}
+        </div>
+      )}
       {hint && (
         <div
+          className="new-agent-edit-field-hint"
           style={{
             fontSize: 11,
             color: "var(--text-3)",
@@ -2103,11 +2272,13 @@ function EditField({
 }
 
 function EditText({
+  id,
   value,
   onChange,
   mono,
   suffix,
 }: {
+  id?: string;
   value: string;
   onChange: (v: string) => void;
   mono?: boolean;
@@ -2115,6 +2286,7 @@ function EditText({
 }) {
   return (
     <div
+      className="new-agent-edit-control new-agent-edit-text"
       style={{
         display: "flex",
         alignItems: "center",
@@ -2126,6 +2298,7 @@ function EditText({
       }}
     >
       <input
+        id={id}
         value={value}
         onChange={(e) => onChange(e.target.value)}
         style={{
@@ -2154,21 +2327,33 @@ function EditText({
 }
 
 function EditTextarea({
+  id,
+  className,
+  ariaLabel,
   value,
   onChange,
   rows = 3,
   mono,
+  readOnly,
 }: {
+  id?: string;
+  className?: string;
+  ariaLabel?: string;
   value: string;
   onChange: (v: string) => void;
   rows?: number;
   mono?: boolean;
+  readOnly?: boolean;
 }) {
   return (
     <textarea
+      id={id}
+      className={`new-agent-edit-control new-agent-edit-textarea${className ? ` ${className}` : ""}`}
+      aria-label={ariaLabel}
       value={value}
       onChange={(e) => onChange(e.target.value)}
       rows={rows}
+      readOnly={readOnly}
       style={{
         width: "100%",
         background: "var(--panel-2)",
@@ -2187,6 +2372,7 @@ function EditTextarea({
 }
 
 function EventPicker({
+  inputId,
   selected,
   onAdd,
   onRemove,
@@ -2194,6 +2380,7 @@ function EventPicker({
   all,
   newEvents,
 }: {
+  inputId?: string;
   selected: string[];
   onAdd: (v: string) => void;
   onRemove: (v: string) => void;
@@ -2237,14 +2424,14 @@ function EventPicker({
   }
 
   return (
-    <div>
+    <div className="new-agent-event-picker">
       <div
+        className="new-agent-event-picker__tokens"
         style={{
           display: "flex",
           flexWrap: "wrap",
           gap: 4,
           marginBottom: 6,
-          minHeight: 22,
         }}
       >
         {selected.length === 0 && (
@@ -2294,6 +2481,8 @@ function EventPicker({
       </div>
       <div style={{ position: "relative" }}>
         <input
+          id={inputId}
+          className="new-agent-edit-control new-agent-event-picker__input"
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => {

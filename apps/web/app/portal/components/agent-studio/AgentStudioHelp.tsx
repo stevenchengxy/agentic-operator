@@ -971,7 +971,7 @@ export function AgentStudioHelp({
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <h1
                 id={titleId}
-                style={{ margin: 0, fontSize: 15, fontWeight: 600 }}
+                style={{ margin: 0, fontSize: 17, fontWeight: 650 }}
               >
                 Agent Studio guide
               </h1>
@@ -981,8 +981,9 @@ export function AgentStudioHelp({
               id={descriptionId}
               style={{
                 margin: "3px 0 0",
-                color: "var(--text-3)",
-                fontSize: 10.5,
+                color: "var(--text-2)",
+                fontSize: 12,
+                lineHeight: 1.5,
               }}
             >
               Create, edit, test, publish, and operate an agent safely—no coding
@@ -1033,8 +1034,9 @@ export function AgentStudioHelp({
               className="mono"
               style={{
                 padding: "4px 8px 9px",
-                color: "var(--text-4)",
-                fontSize: 9.5,
+                color: "var(--text-2)",
+                fontSize: 10.5,
+                fontWeight: 600,
                 letterSpacing: ".08em",
               }}
             >
@@ -1064,8 +1066,9 @@ export function AgentStudioHelp({
                   <span
                     className="mono"
                     style={{
-                      color: active ? "var(--signal)" : "var(--text-4)",
-                      fontSize: 9.5,
+                      color: active ? "var(--signal)" : "var(--text-2)",
+                      fontSize: 10.5,
+                      fontWeight: 600,
                     }}
                   >
                     {String(index + 1).padStart(2, "0")}
@@ -1074,8 +1077,8 @@ export function AgentStudioHelp({
                     <span
                       style={{
                         display: "block",
-                        fontSize: 11.5,
-                        fontWeight: active ? 600 : 500,
+                        fontSize: 12.5,
+                        fontWeight: 600,
                       }}
                     >
                       {item.label}
@@ -1084,8 +1087,9 @@ export function AgentStudioHelp({
                       style={{
                         display: "block",
                         marginTop: 2,
-                        color: "var(--text-4)",
-                        fontSize: 9.5,
+                        color: "var(--text-2)",
+                        fontSize: 10.5,
+                        lineHeight: 1.4,
                       }}
                     >
                       {item.eyebrow}
@@ -1100,13 +1104,15 @@ export function AgentStudioHelp({
                 padding: 10,
                 border: "1px solid var(--border)",
                 borderRadius: 5,
-                color: "var(--text-3)",
+                color: "var(--text-2)",
                 background: "var(--panel-2)",
-                fontSize: 10.5,
-                lineHeight: 1.5,
+                fontSize: 12,
+                lineHeight: 1.55,
               }}
             >
-              <strong style={{ color: "var(--text-2)" }}>Safe default</strong>
+              <strong style={{ color: "var(--text)", fontWeight: 650 }}>
+                Safe default
+              </strong>
               <br />
               Create a draft, test with Safe test tool effects, check the setup,
               then publish.
@@ -1187,7 +1193,8 @@ function PageHeading({
         className="mono"
         style={{
           color: "var(--signal)",
-          fontSize: 9.5,
+          fontSize: 10.5,
+          fontWeight: 600,
           letterSpacing: ".1em",
           textTransform: "uppercase",
         }}
@@ -1199,7 +1206,7 @@ function PageHeading({
           margin: "6px 0 7px",
           fontSize: 24,
           lineHeight: 1.2,
-          fontWeight: 550,
+          fontWeight: 650,
         }}
       >
         {title}
@@ -1278,16 +1285,18 @@ function StartHere({
               {index + 1}
             </div>
             <div>
-              <strong style={{ display: "block", fontSize: 12 }}>
+              <strong
+                style={{ display: "block", fontSize: 13, fontWeight: 650 }}
+              >
                 {title}
               </strong>
               <span
                 style={{
                   display: "block",
                   marginTop: 3,
-                  color: "var(--text-3)",
-                  fontSize: 11.5,
-                  lineHeight: 1.5,
+                  color: "var(--text-2)",
+                  fontSize: 12.5,
+                  lineHeight: 1.55,
                 }}
               >
                 {body}
@@ -1471,8 +1480,8 @@ function FieldReference({
             display: "block",
             marginBottom: 6,
             color: "var(--text-2)",
-            fontSize: 11.5,
-            fontWeight: 600,
+            fontSize: 12.5,
+            fontWeight: 650,
           }}
         >
           Find a field
@@ -1488,7 +1497,7 @@ function FieldReference({
             background: "var(--bg-2)",
           }}
         >
-          <Icon name="search" size={12} color="var(--text-3)" />
+          <Icon name="search" size={12} color="var(--text-2)" />
           <input
             value={search}
             onChange={(event) => onSearch(event.target.value)}
@@ -1501,14 +1510,18 @@ function FieldReference({
               border: 0,
               outline: 0,
               fontFamily: "var(--sans)",
-              fontSize: 12,
+              fontSize: 12.5,
             }}
           />
           {search && (
             <button
               type="button"
               onClick={() => onSearch("")}
-              style={{ color: "var(--text-3)", fontSize: 10.5 }}
+              style={{
+                color: "var(--text-2)",
+                fontSize: 11.5,
+                fontWeight: 600,
+              }}
             >
               Clear
             </button>
@@ -1518,7 +1531,12 @@ function FieldReference({
       <div
         className="mono"
         aria-live="polite"
-        style={{ marginBottom: 9, color: "var(--text-4)", fontSize: 9.5 }}
+        style={{
+          marginBottom: 9,
+          color: "var(--text-2)",
+          fontSize: 10.5,
+          fontWeight: 600,
+        }}
       >
         {total} FIELD{total === 1 ? "" : "S"} SHOWN
       </div>
@@ -1535,12 +1553,14 @@ function FieldReference({
               }}
             >
               <summary style={{ padding: "11px 13px", cursor: "pointer" }}>
-                <strong style={{ fontSize: 12 }}>{group.title}</strong>
+                <strong style={{ fontSize: 13, fontWeight: 650 }}>
+                  {group.title}
+                </strong>
                 <span
                   style={{
                     marginLeft: 8,
-                    color: "var(--text-4)",
-                    fontSize: 10.5,
+                    color: "var(--text-2)",
+                    fontSize: 11,
                   }}
                 >
                   {group.fields.length} fields
@@ -1549,9 +1569,9 @@ function FieldReference({
                   style={{
                     display: "block",
                     marginTop: 3,
-                    color: "var(--text-3)",
-                    fontSize: 10.5,
-                    lineHeight: 1.45,
+                    color: "var(--text-2)",
+                    fontSize: 12,
+                    lineHeight: 1.55,
                   }}
                 >
                   {group.summary}
@@ -1571,14 +1591,14 @@ function FieldReference({
                       borderBottom: "1px solid var(--border)",
                     }}
                   >
-                    <dt style={{ fontSize: 11.5, fontWeight: 600 }}>
+                    <dt style={{ fontSize: 12.5, fontWeight: 650 }}>
                       {field.name}
                     </dt>
                     <dd
                       style={{
                         margin: 0,
                         color: "var(--text-2)",
-                        fontSize: 11,
+                        fontSize: 12.5,
                         lineHeight: 1.55,
                       }}
                     >
@@ -1629,9 +1649,11 @@ function FieldReference({
           style={{
             padding: 36,
             textAlign: "center",
-            color: "var(--text-3)",
+            color: "var(--text-2)",
             border: "1px dashed var(--border-2)",
             borderRadius: 6,
+            fontSize: 12.5,
+            lineHeight: 1.55,
           }}
         >
           No field matches “{search}”. Try a shorter label.
@@ -1725,14 +1747,14 @@ function TestingGuide() {
                 background: "var(--panel-2)",
               }}
             >
-              <strong style={{ fontSize: 11.5 }}>{title}</strong>
+              <strong style={{ fontSize: 13, fontWeight: 650 }}>{title}</strong>
               <span
                 style={{
                   display: "block",
                   marginTop: 3,
-                  color: "var(--text-3)",
-                  fontSize: 11,
-                  lineHeight: 1.5,
+                  color: "var(--text-2)",
+                  fontSize: 12.5,
+                  lineHeight: 1.55,
                 }}
               >
                 {body}
@@ -1868,7 +1890,7 @@ function GlossaryGuide() {
           >
             <dt
               className="mono"
-              style={{ color: "var(--blue)", fontSize: 10.5 }}
+              style={{ color: "var(--blue)", fontSize: 11, fontWeight: 600 }}
             >
               {term}
             </dt>
@@ -1876,8 +1898,8 @@ function GlossaryGuide() {
               style={{
                 margin: 0,
                 color: "var(--text-2)",
-                fontSize: 11.5,
-                lineHeight: 1.5,
+                fontSize: 12.5,
+                lineHeight: 1.55,
               }}
             >
               {definition}
@@ -1910,11 +1932,15 @@ function GuideSection({
       >
         <span
           className="mono"
-          style={{ color: "var(--signal)", fontSize: 9.5 }}
+          style={{
+            color: "var(--signal)",
+            fontSize: 10.5,
+            fontWeight: 600,
+          }}
         >
           {number}
         </span>
-        <h3 style={{ margin: 0, fontSize: 14, fontWeight: 600 }}>{title}</h3>
+        <h3 style={{ margin: 0, fontSize: 15, fontWeight: 650 }}>{title}</h3>
       </div>
       {children}
     </section>
@@ -1946,11 +1972,19 @@ function Callout({
         borderLeft: `3px solid ${colors[0]}`,
         borderRadius: 5,
         background: colors[1],
-        fontSize: 11.5,
+        fontSize: 12.5,
         lineHeight: 1.55,
       }}
     >
-      <strong style={{ display: "block", marginBottom: 3, color: colors[0] }}>
+      <strong
+        style={{
+          display: "block",
+          marginBottom: 3,
+          color: colors[0],
+          fontSize: 13,
+          fontWeight: 650,
+        }}
+      >
         {title}
       </strong>
       {children}
@@ -1982,15 +2016,15 @@ function JumpCard({
         background: "var(--panel-2)",
       }}
     >
-      <strong style={{ fontSize: 11.5 }}>{title}</strong>
+      <strong style={{ fontSize: 13, fontWeight: 650 }}>{title}</strong>
       <span
         style={{
           display: "block",
           minHeight: 34,
           marginTop: 5,
-          color: "var(--text-3)",
-          fontSize: 10.5,
-          lineHeight: 1.45,
+          color: "var(--text-2)",
+          fontSize: 12,
+          lineHeight: 1.55,
         }}
       >
         {body}
@@ -2000,7 +2034,8 @@ function JumpCard({
           display: "block",
           marginTop: 9,
           color: "var(--blue)",
-          fontSize: 10.5,
+          fontSize: 11.5,
+          fontWeight: 600,
         }}
       >
         {action} →
@@ -2027,18 +2062,32 @@ function MiniCard({
         background: "var(--panel-2)",
       }}
     >
-      <div className="mono" style={{ color: "var(--signal)", fontSize: 9.5 }}>
+      <div
+        className="mono"
+        style={{
+          color: "var(--signal)",
+          fontSize: 10.5,
+          fontWeight: 600,
+        }}
+      >
         {label}
       </div>
-      <strong style={{ display: "block", marginTop: 7, fontSize: 11.5 }}>
+      <strong
+        style={{
+          display: "block",
+          marginTop: 7,
+          fontSize: 13,
+          fontWeight: 650,
+        }}
+      >
         {title}
       </strong>
       <div
         style={{
           marginTop: 4,
-          color: "var(--text-3)",
-          fontSize: 10.5,
-          lineHeight: 1.5,
+          color: "var(--text-2)",
+          fontSize: 12,
+          lineHeight: 1.55,
         }}
       >
         {children}
@@ -2076,13 +2125,13 @@ function Example({
     >
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
         <Badge tone="signal">Example {number}</Badge>
-        <h3 style={{ margin: 0, fontSize: 15 }}>{title}</h3>
+        <h3 style={{ margin: 0, fontSize: 16, fontWeight: 650 }}>{title}</h3>
       </div>
       <p
         style={{
           margin: "8px 0 14px",
           color: "var(--text-2)",
-          fontSize: 11.5,
+          fontSize: 12.5,
           lineHeight: 1.55,
         }}
       >
@@ -2096,10 +2145,11 @@ function Example({
               display: "grid",
               gridTemplateColumns: "90px minmax(0, 1fr)",
               gap: 8,
-              fontSize: 10.5,
+              fontSize: 11.5,
+              lineHeight: 1.5,
             }}
           >
-            <span className="mono" style={{ color: "var(--text-4)" }}>
+            <span className="mono" style={{ color: "var(--text-2)" }}>
               {label}
             </span>
             <span style={{ color: "var(--text-2)" }}>{value}</span>
@@ -2124,7 +2174,8 @@ function Example({
           padding: 10,
           borderLeft: "2px solid var(--blue)",
           background: "var(--bg-2)",
-          fontSize: 11,
+          fontSize: 12.5,
+          lineHeight: 1.55,
         }}
       >
         <span
@@ -2132,8 +2183,9 @@ function Example({
           style={{
             display: "block",
             marginBottom: 4,
-            color: "var(--text-4)",
-            fontSize: 9.5,
+            color: "var(--text-2)",
+            fontSize: 10.5,
+            fontWeight: 600,
           }}
         >
           TEST PROMPT
@@ -2149,7 +2201,12 @@ function CodeSample({ label, value }: { label: string; value: string }) {
     <div style={{ minWidth: 0 }}>
       <div
         className="mono"
-        style={{ marginBottom: 5, color: "var(--text-4)", fontSize: 9.5 }}
+        style={{
+          marginBottom: 5,
+          color: "var(--text-2)",
+          fontSize: 10.5,
+          fontWeight: 600,
+        }}
       >
         {label}
       </div>
@@ -2165,8 +2222,8 @@ function CodeSample({ label, value }: { label: string; value: string }) {
           border: "1px solid var(--border)",
           borderRadius: 4,
           fontFamily: "var(--mono)",
-          fontSize: 10,
-          lineHeight: 1.5,
+          fontSize: 11,
+          lineHeight: 1.55,
         }}
       >
         {value}
@@ -2179,6 +2236,6 @@ const listStyle = {
   margin: 0,
   paddingLeft: 21,
   color: "var(--text-2)",
-  fontSize: 11.5,
+  fontSize: 12.5,
   lineHeight: 1.7,
 } as const;

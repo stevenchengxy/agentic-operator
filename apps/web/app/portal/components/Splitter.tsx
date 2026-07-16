@@ -25,6 +25,11 @@ export interface SplitterProps {
   max: number;
   invert?: boolean;
   /**
+   * Pointer hit-area thickness. The visual divider remains one pixel, while
+   * dense enterprise layouts can opt into a more forgiving drag target.
+   */
+  hitSize?: number;
+  /**
    * P2-FE-24 — accessible label for screen readers. Falls back to a
    * generic "panel splitter" when omitted. Provide context for what's
    * being resized (e.g. "Agent list and detail").
@@ -41,6 +46,7 @@ export function Splitter({
   min,
   max,
   invert,
+  hitSize = 6,
   ariaLabel,
   ariaControls,
 }: SplitterProps) {
@@ -119,8 +125,8 @@ export function Splitter({
       style={{
         flexShrink: 0,
         cursor: isX ? "col-resize" : "row-resize",
-        width: isX ? 6 : "100%",
-        height: isX ? "100%" : 6,
+        width: isX ? hitSize : "100%",
+        height: isX ? "100%" : hitSize,
         display: "flex",
         alignItems: "center",
         justifyContent: "center",

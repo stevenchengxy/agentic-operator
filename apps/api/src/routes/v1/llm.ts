@@ -21,6 +21,7 @@ import {
   type ProviderId,
   type ReasoningEffort,
   type ReasoningMode,
+  type TemperatureRange,
   type TextVerbosity,
 } from "@agentic/contracts";
 import { getLLMGateway, resetLLMGateway } from "../../services/llm";
@@ -49,6 +50,21 @@ function isProviderId(s: string): s is ProviderId {
 
 function isKeyScope(s: unknown): s is KeyScope {
   return s === "workspace" || s === "tenant";
+}
+
+const DEFAULT_TEMPERATURE_RANGE: TemperatureRange = { min: 0, max: 2 };
+
+function mergedTemperatureRange(
+  liveSupported: boolean | undefined,
+  catalogRange: TemperatureRange | null | undefined,
+): TemperatureRange | null | undefined {
+  if (liveSupported === false) return null;
+  if (liveSupported === true) {
+    return catalogRange && catalogRange !== null
+      ? catalogRange
+      : DEFAULT_TEMPERATURE_RANGE;
+  }
+  return catalogRange;
 }
 
 export async function llmRoutes(app: FastifyInstance): Promise<void> {
@@ -90,12 +106,19 @@ export async function llmRoutes(app: FastifyInstance): Promise<void> {
     return reply.ok(listProviderKeyMeta());
   });
 
-  app.get<{ Params: { id: string } }>("/llm/providers/:id/key", async (req, reply) => {
-    if (!isProviderId(req.params.id)) {
-      return reply.fail("bad_request", `Unknown provider: ${req.params.id}`, 400);
-    }
-    return reply.ok(getProviderKeyMeta(req.params.id));
-  });
+  app.get<{ Params: { id: string } }>(
+    "/llm/providers/:id/key",
+    async (req, reply) => {
+      if (!isProviderId(req.params.id)) {
+        return reply.fail(
+          "bad_request",
+          `Unknown provider: ${req.params.id}`,
+          400,
+        );
+      }
+      return reply.ok(getProviderKeyMeta(req.params.id));
+    },
+  );
 
   app.post<{
     Params: { id: string };
@@ -111,7 +134,11 @@ export async function llmRoutes(app: FastifyInstance): Promise<void> {
       return reply.fail("bad_request", "apiKey is required (min 8 chars)", 400);
     }
     if (!isKeyScope(scope)) {
-      return reply.fail("bad_request", `scope must be "workspace" or "tenant"`, 400);
+      return reply.fail(
+        "bad_request",
+        `scope must be "workspace" or "tenant"`,
+        400,
+      );
     }
     try {
       const meta = setProviderKey(id, {
@@ -147,9 +174,10 @@ export async function llmRoutes(app: FastifyInstance): Promise<void> {
     // for the caller's tenant. The vault is tenant-scoped (P5-TEN-01) so we
     // pass the auth's tenantId to honor tenant-specific keys.
     const candidate = req.body?.apiKey?.trim();
-    const key = candidate && candidate.length > 0
-      ? candidate
-      : (getProviderKey(id, auth.tenantId) ?? "");
+    const key =
+      candidate && candidate.length > 0
+        ? candidate
+        : (getProviderKey(id, auth.tenantId) ?? "");
     if (!key) {
       return reply.ok({
         ok: false,
@@ -205,6 +233,11 @@ export async function llmRoutes(app: FastifyInstance): Promise<void> {
         reasoningMandatory: boolean;
         reasoningDefaultEnabled: boolean;
         textVerbosities: TextVerbosity[];
+        /**
+         * `null` means unsupported, an object is the accepted range, and an
+         * omitted property means the provider/catalog does not say.
+         */
+        temperatureRange?: TemperatureRange | null;
         inFleet: boolean;
         /** Where this row came from. */
         origin: "live" | "catalog";
@@ -228,8 +261,7 @@ export async function llmRoutes(app: FastifyInstance): Promise<void> {
           vision: m.vision ?? cat?.vision ?? false,
           tools: m.tools ?? cat?.tools ?? false,
           reasoning: m.reasoning ?? cat?.reasoning ?? false,
-          reasoningEfforts:
-            m.reasoningEfforts ?? cat?.reasoningEfforts ?? [],
+          reasoningEfforts: m.reasoningEfforts ?? cat?.reasoningEfforts ?? [],
           reasoningModes: cat?.reasoningModes ?? [],
           defaultReasoningEffort:
             m.defaultReasoningEffort ?? cat?.defaultReasoningEffort ?? null,
@@ -237,10 +269,12 @@ export async function llmRoutes(app: FastifyInstance): Promise<void> {
           reasoningMandatory:
             m.reasoningMandatory ?? cat?.reasoningMandatory ?? false,
           reasoningDefaultEnabled:
-            m.reasoningDefaultEnabled ??
-            cat?.reasoningDefaultEnabled ??
-            false,
+            m.reasoningDefaultEnabled ?? cat?.reasoningDefaultEnabled ?? false,
           textVerbosities: cat?.textVerbosities ?? [],
+          temperatureRange: mergedTemperatureRange(
+            m.temperatureSupported,
+            cat?.temperatureRange,
+          ),
           inFleet: fleetSet.has(m.id),
           origin: "live",
         });
@@ -266,6 +300,7 @@ export async function llmRoutes(app: FastifyInstance): Promise<void> {
           reasoningMandatory: cat.reasoningMandatory ?? false,
           reasoningDefaultEnabled: cat.reasoningDefaultEnabled ?? false,
           textVerbosities: cat.textVerbosities ?? [],
+          temperatureRange: cat.temperatureRange,
           inFleet: fleetSet.has(cat.name),
           origin: "catalog",
         });
@@ -345,7 +380,11 @@ export async function llmRoutes(app: FastifyInstance): Promise<void> {
   }>("/llm/fleet/:id", async (req, reply) => {
     const auth = requireAuth(req);
     try {
-      const entry = updateFleetEntry(auth.tenantSlug, req.params.id, req.body ?? {});
+      const entry = updateFleetEntry(
+        auth.tenantSlug,
+        req.params.id,
+        req.body ?? {},
+      );
       if (!entry) return reply.fail("not_found", "fleet entry not found", 404);
       writeAudit({
         tenantId: auth.tenantId,
@@ -363,16 +402,19 @@ export async function llmRoutes(app: FastifyInstance): Promise<void> {
     }
   });
 
-  app.delete<{ Params: { id: string } }>("/llm/fleet/:id", async (req, reply) => {
-    const auth = requireAuth(req);
-    const ok = deleteFleetEntry(auth.tenantSlug, req.params.id);
-    if (!ok) return reply.fail("not_found", "fleet entry not found", 404);
-    writeAudit({
-      tenantId: auth.tenantId,
-      action: "llm.fleet.remove",
-      targetType: "model",
-      targetId: req.params.id,
-    });
-    return reply.ok({ id: req.params.id, deleted: true });
-  });
+  app.delete<{ Params: { id: string } }>(
+    "/llm/fleet/:id",
+    async (req, reply) => {
+      const auth = requireAuth(req);
+      const ok = deleteFleetEntry(auth.tenantSlug, req.params.id);
+      if (!ok) return reply.fail("not_found", "fleet entry not found", 404);
+      writeAudit({
+        tenantId: auth.tenantId,
+        action: "llm.fleet.remove",
+        targetType: "model",
+        targetId: req.params.id,
+      });
+      return reply.ok({ id: req.params.id, deleted: true });
+    },
+  );
 }

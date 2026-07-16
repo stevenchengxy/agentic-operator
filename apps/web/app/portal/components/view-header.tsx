@@ -26,13 +26,14 @@ export function ViewHeader({
         display: "flex",
         alignItems: "center",
         justifyContent: "space-between",
+        flexWrap: "wrap",
         padding: "18px 24px 16px 24px",
         borderBottom: "1px solid var(--border)",
         flexShrink: 0,
         gap: 16,
       }}
     >
-      <div style={{ minWidth: 0, flex: 1 }}>
+      <div style={{ minWidth: 0, flex: "1 1 280px" }}>
         <div
           style={{
             display: "flex",
@@ -50,7 +51,7 @@ export function ViewHeader({
               letterSpacing: "-0.015em",
               color: "var(--text)",
               lineHeight: 1.1,
-              whiteSpace: "nowrap",
+              overflowWrap: "anywhere",
             }}
           >
             {title}
@@ -75,7 +76,18 @@ export function ViewHeader({
         )}
       </div>
       {action && (
-        <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>{action}</div>
+        <div
+          style={{
+            display: "flex",
+            minWidth: 0,
+            flex: "0 1 auto",
+            flexWrap: "wrap",
+            justifyContent: "flex-end",
+            gap: 8,
+          }}
+        >
+          {action}
+        </div>
       )}
     </header>
   );

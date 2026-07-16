@@ -31,8 +31,12 @@ export function StudioPanel({
 }) {
   return (
     <Panel
-      title={title}
-      subtitle={subtitle}
+      title={<span className="agent-studio-panel-title">{title}</span>}
+      subtitle={
+        subtitle ? (
+          <span className="agent-studio-panel-subtitle">{subtitle}</span>
+        ) : undefined
+      }
       action={action}
       padded
       style={style}
@@ -58,16 +62,17 @@ export function Field({
   style?: CSSProperties;
 }) {
   return (
-    <label style={{ display: "block", ...style }}>
+    <label
+      className="agent-studio-field"
+      style={{ display: "block", ...style }}
+    >
       <span
+        className="agent-studio-field-label"
         style={{
           display: "flex",
           alignItems: "center",
           gap: 5,
           marginBottom: 4,
-          fontSize: 11,
-          fontWeight: 500,
-          color: "var(--text)",
         }}
       >
         {label}
@@ -75,12 +80,10 @@ export function Field({
       </span>
       {hint && (
         <span
+          className="agent-studio-field-hint"
           style={{
             display: "block",
             marginBottom: 6,
-            fontSize: 10.5,
-            lineHeight: 1.45,
-            color: "var(--text-3)",
           }}
         >
           {hint}
@@ -88,19 +91,14 @@ export function Field({
       )}
       {example && (
         <span
+          className="agent-studio-field-example"
           style={{
             display: "block",
             marginTop: hint ? -2 : 0,
             marginBottom: 6,
-            fontSize: 10,
-            lineHeight: 1.45,
-            color: "var(--text-4)",
           }}
         >
-          <strong style={{ color: "var(--text-3)", fontWeight: 500 }}>
-            Example:
-          </strong>{" "}
-          {example}
+          <strong>Example:</strong> {example}
         </span>
       )}
       {children}
@@ -129,6 +127,7 @@ export function TextInput({
 }) {
   return (
     <input
+      className="agent-studio-control"
       value={value}
       onChange={(event) => onChange(event.target.value)}
       placeholder={placeholder}
@@ -139,12 +138,9 @@ export function TextInput({
       style={{
         width: "100%",
         padding: "7px 9px",
-        background: disabled ? "var(--bg-2)" : "var(--panel-2)",
-        color: disabled ? "var(--text-3)" : "var(--text)",
         border: "1px solid var(--border-2)",
         borderRadius: 4,
         fontFamily: mono ? "var(--mono)" : "var(--sans)",
-        fontSize: 12,
       }}
     />
   );
@@ -167,6 +163,7 @@ export function TextArea({
 }) {
   return (
     <textarea
+      className="agent-studio-control agent-studio-textarea"
       value={value}
       onChange={(event) => onChange(event.target.value)}
       placeholder={placeholder}
@@ -175,14 +172,10 @@ export function TextArea({
       style={{
         width: "100%",
         padding: "8px 10px",
-        background: disabled ? "var(--bg-2)" : "var(--panel-2)",
-        color: disabled ? "var(--text-3)" : "var(--text)",
         border: "1px solid var(--border-2)",
         borderRadius: 4,
         resize: "vertical",
         fontFamily: mono ? "var(--mono)" : "var(--sans)",
-        fontSize: 12,
-        lineHeight: 1.55,
       }}
     />
   );
@@ -201,18 +194,16 @@ export function SelectInput({
 }) {
   return (
     <select
+      className="agent-studio-control agent-studio-select"
       value={value}
       onChange={(event) => onChange(event.target.value)}
       disabled={disabled}
       style={{
         width: "100%",
         padding: "7px 9px",
-        background: "var(--panel-2)",
-        color: disabled ? "var(--text-3)" : "var(--text)",
         border: "1px solid var(--border-2)",
         borderRadius: 4,
         fontFamily: "var(--mono)",
-        fontSize: 11.5,
       }}
     >
       {options.map((option) => (
@@ -243,6 +234,7 @@ export function Toggle({
 }) {
   return (
     <button
+      className="agent-studio-toggle"
       type="button"
       role="switch"
       aria-checked={checked}
@@ -256,7 +248,6 @@ export function Toggle({
         width: "100%",
         padding: "6px 0",
         textAlign: "left",
-        opacity: disabled ? 0.5 : 1,
       }}
     >
       <span
@@ -284,17 +275,17 @@ export function Toggle({
       </span>
       <span>
         <span
-          style={{ display: "block", fontSize: 11.5, color: "var(--text)" }}
+          className="agent-studio-toggle-label"
+          style={{ display: "block" }}
         >
           {label}
         </span>
         {hint && (
           <span
+            className="agent-studio-toggle-hint"
             style={{
               display: "block",
               marginTop: 2,
-              fontSize: 10.5,
-              color: "var(--text-3)",
             }}
           >
             {hint}
@@ -318,6 +309,7 @@ export function Segmented<T extends string>({
 }) {
   return (
     <div
+      className="agent-studio-segmented"
       role="group"
       aria-label={ariaLabel}
       style={{
@@ -329,6 +321,11 @@ export function Segmented<T extends string>({
     >
       {options.map((option) => (
         <button
+          className={`agent-studio-segmented-option${
+            value === option.value
+              ? " agent-studio-segmented-option--active"
+              : ""
+          }`}
           key={option.value}
           type="button"
           aria-pressed={value === option.value}
@@ -337,11 +334,9 @@ export function Segmented<T extends string>({
             padding: "5px 9px",
             background:
               value === option.value ? "var(--panel-3)" : "var(--panel-2)",
-            color: value === option.value ? "var(--text)" : "var(--text-3)",
             borderRight: "1px solid var(--border)",
             borderBottom: `2px solid ${value === option.value ? "var(--signal)" : "transparent"}`,
             fontFamily: "var(--mono)",
-            fontSize: 10.5,
           }}
         >
           {option.label}
@@ -381,7 +376,7 @@ export function JsonValueEditor({
   }, [serialized]);
 
   return (
-    <div>
+    <div className="agent-studio-json-editor">
       <div
         style={{
           display: "flex",
@@ -390,12 +385,7 @@ export function JsonValueEditor({
           marginBottom: 6,
         }}
       >
-        <span
-          className="mono"
-          style={{ fontSize: 10.5, color: "var(--text-3)" }}
-        >
-          {label}
-        </span>
+        <span className="mono agent-studio-json-label">{label}</span>
         {error ? (
           <Badge tone="red">JSON error</Badge>
         ) : (
@@ -404,11 +394,9 @@ export function JsonValueEditor({
       </div>
       {hint && (
         <div
+          className="agent-studio-json-hint"
           style={{
             margin: "-1px 0 6px",
-            color: "var(--text-3)",
-            fontSize: 10.5,
-            lineHeight: 1.45,
           }}
         >
           {hint}
@@ -416,17 +404,12 @@ export function JsonValueEditor({
       )}
       {example && (
         <div
+          className="agent-studio-json-example"
           style={{
             margin: "-2px 0 7px",
-            color: "var(--text-4)",
-            fontSize: 10,
-            lineHeight: 1.45,
           }}
         >
-          <strong style={{ color: "var(--text-3)", fontWeight: 500 }}>
-            Example:
-          </strong>{" "}
-          {example}
+          <strong>Example:</strong> {example}
         </div>
       )}
       <MonacoEditor
@@ -443,8 +426,8 @@ export function JsonValueEditor({
       />
       {error && (
         <div
-          className="mono"
-          style={{ marginTop: 5, color: "var(--red)", fontSize: 10 }}
+          className="mono agent-studio-json-error"
+          style={{ marginTop: 5, color: "var(--red)" }}
         >
           {error}
         </div>
@@ -478,6 +461,7 @@ export function InlineNotice({
               : "var(--text-2)";
   return (
     <div
+      className="agent-studio-inline-notice"
       style={{
         display: "flex",
         gap: 9,
@@ -486,9 +470,6 @@ export function InlineNotice({
         background: "var(--panel-2)",
         border: `1px solid color-mix(in srgb, ${color} 30%, var(--border))`,
         borderRadius: 5,
-        color: "var(--text-2)",
-        fontSize: 11.5,
-        lineHeight: 1.5,
       }}
     >
       <Icon
@@ -498,7 +479,12 @@ export function InlineNotice({
       />
       <div style={{ flex: 1, minWidth: 0 }}>
         {title && (
-          <div style={{ marginBottom: 2, color, fontWeight: 500 }}>{title}</div>
+          <div
+            className="agent-studio-inline-notice-title"
+            style={{ marginBottom: 2, color }}
+          >
+            {title}
+          </div>
         )}
         {children}
       </div>
@@ -520,6 +506,7 @@ export function EmptySection({
 }) {
   return (
     <div
+      className="agent-studio-empty-section"
       style={{
         padding: 24,
         border: "1px dashed var(--border-2)",
@@ -528,10 +515,16 @@ export function EmptySection({
         textAlign: "center",
       }}
     >
-      <div style={{ fontSize: 13, color: "var(--text)", marginBottom: 4 }}>
+      <div
+        className="agent-studio-empty-section-title"
+        style={{ marginBottom: 4 }}
+      >
         {title}
       </div>
-      <div style={{ fontSize: 11.5, color: "var(--text-3)", marginBottom: 12 }}>
+      <div
+        className="agent-studio-empty-section-hint"
+        style={{ marginBottom: 12 }}
+      >
         {hint}
       </div>
       <Button small icon="plus" onClick={onAction}>

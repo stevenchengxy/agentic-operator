@@ -11,6 +11,7 @@ import {
   TextVerbositySchema,
 } from "./llm";
 import { RunStatus } from "./runs";
+import { WorkflowSlugSchema } from "./workflow-authoring";
 
 export const AgentLifecycleSchema = z.enum(["draft", "active", "archived"]);
 export type AgentLifecycle = z.infer<typeof AgentLifecycleSchema>;
@@ -93,6 +94,8 @@ export type AgentDraftRevision = z.infer<typeof AgentDraftRevisionSchema>;
 
 export const CreateAgentDraftBodySchema = z.object({
   definition: AgentDefinitionV2Schema.optional(),
+  /** Resolve or place the agent inside this tenant-owned workflow. */
+  workflowSlug: WorkflowSlugSchema.optional(),
   baseAgentVersionId: z.string().optional(),
   baseWorkflowVersionId: z.string().optional(),
 });

@@ -34,9 +34,11 @@ import { writeAudit } from "../../plugins/audit";
 import {
   AgentStudioNotFoundError,
   AgentStudioReadOnlyError,
+  AgentStudioWorkflowNotFoundError,
   createAgentDraft,
   createNewAgentDraft,
   deleteAgentDraft,
+  DraftBaseWorkflowVersionError,
   DraftPublishConflictError,
   DraftImpactConfirmationError,
   DraftIdentityError,
@@ -96,8 +98,26 @@ function llmStatus(code: string): number {
 }
 
 function studioFailure(reply: FastifyReply, error: unknown): FastifyReply {
+  if (error instanceof AgentStudioWorkflowNotFoundError) {
+    return reply.fail(
+      "workflow_not_found",
+      error.message,
+      404,
+      "Choose a workflow available in the current workspace and try again.",
+      { workflowSlug: error.workflowSlug },
+    );
+  }
   if (error instanceof AgentStudioNotFoundError) {
     return reply.fail("not_found", error.message, 404);
+  }
+  if (error instanceof DraftBaseWorkflowVersionError) {
+    return reply.fail(
+      "invalid_base_workflow_version",
+      error.message,
+      400,
+      "Refresh the workflow canvas and create the Agent Studio draft from its current saved version.",
+      { versionId: error.versionId, reason: error.reason },
+    );
   }
   if (error instanceof AgentStudioReadOnlyError) {
     return reply.fail(
@@ -255,7 +275,12 @@ export async function agentStudioRoutes(app: FastifyInstance): Promise<void> {
       );
     }
     try {
-      const draft = createNewAgentDraft(auth, body.definition);
+      const draft = createNewAgentDraft(
+        auth,
+        body.definition,
+        body.workflowSlug,
+        body.baseWorkflowVersionId,
+      );
       setDraftEtag(reply, draft.revision);
       writeAudit({
         tenantId: auth.tenantId,
@@ -265,6 +290,7 @@ export async function agentStudioRoutes(app: FastifyInstance): Promise<void> {
         meta: {
           agent_id: draft.agentId,
           definition_hash: draft.definitionHash,
+          workflow_slug: body.workflowSlug ?? `${auth.tenantSlug}-default`,
         },
       });
       return reply.ok(
@@ -292,6 +318,9 @@ export async function agentStudioRoutes(app: FastifyInstance): Promise<void> {
           meta: {
             agent_id: draft.agentId,
             definition_hash: draft.definitionHash,
+            workflow_slug: body.workflowSlug ?? null,
+            base_workflow_version_id:
+              body.baseWorkflowVersionId ?? draft.baseWorkflowVersionId,
           },
         });
         return reply.ok(

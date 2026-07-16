@@ -9,10 +9,16 @@ import {
   ValidateWorkflowBodySchema,
   WorkflowDetailSchema,
   WorkflowDocumentFoldersResponseSchema,
+  WorkflowAgentPromptBodySchema,
+  WorkflowAgentPromptResponseSchema,
   WorkflowListResponseSchema,
+  WorkflowRunProfileSchema,
+  WorkflowRunProfileTargetSchema,
   WorkflowSlugSchema,
   WorkflowTemplateCatalogResponseSchema,
   WorkflowTemplateDetailSchema,
+  WorkflowTestRunBodySchema,
+  WorkflowTestRunResponseSchema,
   WorkflowValidationResponseSchema,
 } from "@agentic/contracts";
 import { isLLMError } from "@agentic/llm-gateway";
@@ -36,6 +42,12 @@ import {
   validateWorkflowDraft,
   validateWorkflowManifest,
 } from "../../services/workflow-authoring";
+import {
+  WorkflowTestInputError,
+  getWorkflowRunProfile,
+  runWorkflowDraftTest,
+} from "../../services/workflow-test-runner";
+import { generateInstructionsForDefinition } from "../../services/agent-drafts";
 import {
   BlockingIssuesError,
   OverwriteRequiredError,
@@ -241,6 +253,136 @@ export async function workflowAuthoringRoutes(
       throw error;
     }
   });
+
+  app.get("/workflows/:slug/run-profile", async (req, reply) => {
+    const auth = requireAuth(req);
+    const slug = WorkflowSlugSchema.parse(
+      (req.params as { slug: string }).slug,
+    );
+    const target = WorkflowRunProfileTargetSchema.parse(
+      (req.query as { target?: string }).target ?? "latest",
+    );
+    try {
+      return reply.ok(
+        WorkflowRunProfileSchema.parse(
+          getWorkflowRunProfile(slug, target, auth),
+        ),
+      );
+    } catch (error) {
+      if (error instanceof WorkflowNotFoundError) {
+        return reply.fail("workflow_not_found", error.message, 404);
+      }
+      if (error instanceof WorkflowVersionNotFoundError) {
+        return reply.fail(
+          target === "live"
+            ? "workflow_live_version_not_found"
+            : "workflow_version_not_found",
+          error.message,
+          404,
+        );
+      }
+      throw error;
+    }
+  });
+
+  app.post("/workflows/:slug/test-runs", async (req, reply) => {
+    const auth = requireWorkspaceWriter(req);
+    const slug = WorkflowSlugSchema.parse(
+      (req.params as { slug: string }).slug,
+    );
+    const body = WorkflowTestRunBodySchema.parse(req.body);
+    try {
+      const result = WorkflowTestRunResponseSchema.parse(
+        await runWorkflowDraftTest(slug, body, auth),
+      );
+      writeAudit({
+        tenantId: auth.tenantId,
+        actorUserId: auth.userId,
+        action: "workflow.test_run",
+        targetType: "workflow",
+        targetId: slug,
+        meta: {
+          runId: result.runId,
+          manifestHash: result.manifestHash,
+          triggerEvent: result.trigger.event,
+          toolPolicy: result.policy.toolPolicy,
+          failurePolicy: result.policy.failurePolicy,
+          status: result.status,
+          agentRuns: result.summary.agentRuns,
+          failed: result.summary.failed,
+          blocked: result.summary.blocked,
+          tokensIn: result.summary.tokensIn,
+          tokensOut: result.summary.tokensOut,
+          durationMs: result.durationMs,
+        },
+      });
+      return reply.ok(result);
+    } catch (error) {
+      if (error instanceof WorkflowNotFoundError) {
+        return reply.fail("workflow_not_found", error.message, 404);
+      }
+      if (error instanceof WorkflowTestInputError) {
+        return reply.fail(
+          error.code,
+          error.message,
+          400,
+          undefined,
+          error.details,
+        );
+      }
+      if (isLLMError(error)) {
+        return reply.fail(error.code, error.message, llmStatus(error.code));
+      }
+      throw error;
+    }
+  });
+
+  app.post(
+    "/workflows/:slug/agents/:agentId/generate-instructions",
+    async (req, reply) => {
+      const auth = requireWorkspaceWriter(req);
+      const params = req.params as { slug: string; agentId: string };
+      const slug = WorkflowSlugSchema.parse(params.slug);
+      const body = WorkflowAgentPromptBodySchema.parse(req.body);
+      if (body.definition.id !== params.agentId) {
+        return reply.fail(
+          "agent_identity_mismatch",
+          `Definition id '${body.definition.id}' does not match route agent '${params.agentId}'.`,
+          400,
+        );
+      }
+      try {
+        // Establish tenant/workflow ownership even when the definition is a
+        // new unsaved canvas node.
+        getWorkflowDraft(slug, auth);
+        const generated = WorkflowAgentPromptResponseSchema.parse(
+          await generateInstructionsForDefinition(auth, body.definition, body),
+        );
+        writeAudit({
+          tenantId: auth.tenantId,
+          actorUserId: auth.userId,
+          action: "workflow.agent_prompt.generate",
+          targetType: "workflow_agent",
+          targetId: `${slug}/${params.agentId}`,
+          meta: {
+            mode: body.mode,
+            provider: generated.provenance.provider,
+            model: generated.provenance.model,
+            sourceHash: generated.provenance.source_hash,
+          },
+        });
+        return reply.ok(generated);
+      } catch (error) {
+        if (error instanceof WorkflowNotFoundError) {
+          return reply.fail("workflow_not_found", error.message, 404);
+        }
+        if (isLLMError(error)) {
+          return reply.fail(error.code, error.message, llmStatus(error.code));
+        }
+        throw error;
+      }
+    },
+  );
 
   app.put("/workflows/:slug", async (req, reply) => {
     const auth = requireWorkspaceWriter(req);

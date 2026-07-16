@@ -12,11 +12,19 @@ import {
   AgentDraftResponseSchema,
   AgentDefinitionV2Schema,
   AgentEditorResponseSchema,
+  CreateAgentDraftBodySchema,
   ValidateAgentDraftResponseSchema,
   type AgentDefinitionV2,
   type AgentDefinitionV2Input,
 } from "@agentic/contracts";
-import { getDb, tenants } from "@agentic/db";
+import {
+  agentDrafts,
+  agents,
+  getDb,
+  tenants,
+  workflows,
+  workflowVersions,
+} from "@agentic/db";
 import { makeId } from "@agentic/shared";
 import {
   definitionHash,
@@ -29,8 +37,23 @@ const TENANT_A = `studio-${SUFFIX}-a`.slice(0, 32);
 const TENANT_B = `studio-${SUFFIX}-b`.slice(0, 32);
 const tenantAId = makeId("ten");
 const tenantBId = makeId("ten");
+const selectedWorkflowId = makeId("wf");
+const secondaryWorkflowId = makeId("wf");
+const foreignWorkflowId = makeId("wf");
+const SELECTED_WORKFLOW = `selected-${SUFFIX}`;
+const SECONDARY_WORKFLOW = `secondary-${SUFFIX}`;
+const FOREIGN_WORKFLOW = `foreign-${SUFFIX}`;
+const selectedBaseVersionId = makeId("wfv");
+const selectedMissingAgentVersionId = makeId("wfv");
+const secondaryBaseVersionId = makeId("wfv");
+const foreignBaseVersionId = makeId("wfv");
+const SCOPED_AGENT_ID = `shared-agent-${SUFFIX}`;
+const SELECTED_SCOPED_AGENT_NAME = `selectedSharedAgent${SUFFIX}`;
+const SECONDARY_SCOPED_AGENT_NAME = `secondarySharedAgent${SUFFIX}`;
 
-function definition(): AgentDefinitionV2Input {
+function definition(
+  overrides: Partial<AgentDefinitionV2Input> = {},
+): AgentDefinitionV2Input {
   return {
     id: `draft-agent-${SUFFIX}`,
     name: `draftAgent${SUFFIX}`,
@@ -79,6 +102,7 @@ function definition(): AgentDefinitionV2Input {
       },
     ],
     triggered_event: ["DRAFT_TEST_COMPLETED"],
+    ...overrides,
   };
 }
 
@@ -148,11 +172,30 @@ describe("Agent Studio definition identity", () => {
   });
 });
 
+describe("Agent Studio draft creation contract", () => {
+  it("accepts a workflow slug and rejects malformed workflow identifiers", () => {
+    expect(
+      CreateAgentDraftBodySchema.parse({
+        definition: definition(),
+        workflowSlug: SELECTED_WORKFLOW,
+      }).workflowSlug,
+    ).toBe(SELECTED_WORKFLOW);
+    expect(
+      CreateAgentDraftBodySchema.safeParse({
+        definition: definition(),
+        workflowSlug: "Not a workflow slug",
+      }).success,
+    ).toBe(false);
+  });
+});
+
 describe("Agent Studio draft routes", () => {
   let env: TestEnv;
   let draftId: string;
   let agentId: string;
   let currentDefinition: AgentDefinitionV2;
+  let selectedScopedAgentId: string;
+  let secondaryScopedAgentId: string;
 
   beforeAll(async () => {
     const db = getDb();
@@ -160,6 +203,77 @@ describe("Agent Studio draft routes", () => {
       .values([
         { id: tenantAId, slug: TENANT_A, name: "Studio test A" },
         { id: tenantBId, slug: TENANT_B, name: "Studio test B" },
+      ])
+      .run();
+    db.insert(workflows)
+      .values([
+        {
+          id: selectedWorkflowId,
+          tenantId: tenantAId,
+          slug: SELECTED_WORKFLOW,
+          name: "Selected Studio workflow",
+        },
+        {
+          id: secondaryWorkflowId,
+          tenantId: tenantAId,
+          slug: SECONDARY_WORKFLOW,
+          name: "Secondary Studio workflow",
+        },
+        {
+          id: foreignWorkflowId,
+          tenantId: tenantBId,
+          slug: FOREIGN_WORKFLOW,
+          name: "Foreign Studio workflow",
+        },
+      ])
+      .run();
+    db.insert(workflowVersions)
+      .values([
+        {
+          id: selectedBaseVersionId,
+          workflowId: selectedWorkflowId,
+          version: "scoped-base-1",
+          manifestJson: {
+            agents: [
+              definition({
+                id: SCOPED_AGENT_ID,
+                name: SELECTED_SCOPED_AGENT_NAME,
+              }),
+            ],
+          },
+        },
+        {
+          id: selectedMissingAgentVersionId,
+          workflowId: selectedWorkflowId,
+          version: "scoped-base-without-agent",
+          manifestJson: { agents: [] },
+        },
+        {
+          id: secondaryBaseVersionId,
+          workflowId: secondaryWorkflowId,
+          version: "scoped-base-1",
+          manifestJson: {
+            agents: [
+              definition({
+                id: SCOPED_AGENT_ID,
+                name: SECONDARY_SCOPED_AGENT_NAME,
+              }),
+            ],
+          },
+        },
+        {
+          id: foreignBaseVersionId,
+          workflowId: foreignWorkflowId,
+          version: "scoped-base-1",
+          manifestJson: {
+            agents: [
+              definition({
+                id: SCOPED_AGENT_ID,
+                name: SELECTED_SCOPED_AGENT_NAME,
+              }),
+            ],
+          },
+        },
       ])
       .run();
     env = await buildTestEnv();
@@ -198,6 +312,303 @@ describe("Agent Studio draft routes", () => {
       "prompt",
       "profile",
     ]);
+    const defaultWorkflow = getDb()
+      .select({ slug: workflows.slug })
+      .from(workflows)
+      .where(eq(workflows.id, parsed.draft.workflowId))
+      .all()[0];
+    expect(defaultWorkflow?.slug).toBe(`${TENANT_A}-default`);
+  });
+
+  it("creates a new Agent Studio draft inside the requested workflow", async () => {
+    const id = `selected-agent-${SUFFIX}`;
+    const res = await env.fetch("/v1/agents/drafts", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-agentic-tenant": TENANT_A,
+      },
+      body: JSON.stringify({
+        definition: definition({
+          id,
+          name: `selectedAgent${SUFFIX}`,
+          title: "Selected workflow agent",
+        }),
+        workflowSlug: SELECTED_WORKFLOW,
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as Envelope<unknown>;
+    const parsed = AgentDraftResponseSchema.parse(body.data);
+    expect(parsed.draft.workflowId).toBe(selectedWorkflowId);
+    expect(
+      getDb()
+        .select({ workflowId: agents.workflowId })
+        .from(agents)
+        .where(eq(agents.id, parsed.draft.agentId))
+        .all()[0]?.workflowId,
+    ).toBe(selectedWorkflowId);
+
+    const editor = await env.fetch(`/v1/agents/${id}/editor`, {
+      headers: { "x-agentic-tenant": TENANT_A },
+    });
+    expect(editor.status).toBe(200);
+    const editorBody = (await editor.json()) as Envelope<unknown>;
+    expect(AgentEditorResponseSchema.parse(editorBody.data).draft?.id).toBe(
+      parsed.draft.id,
+    );
+  });
+
+  it("creates and resolves duplicate kebab ids within the requested workflow", async () => {
+    const selectedDefinition = definition({
+      id: SCOPED_AGENT_ID,
+      name: SELECTED_SCOPED_AGENT_NAME,
+      title: "Selected shared agent",
+    });
+    const secondaryDefinition = definition({
+      id: SCOPED_AGENT_ID,
+      name: SECONDARY_SCOPED_AGENT_NAME,
+      title: "Secondary shared agent",
+    });
+
+    const selectedCreate = await env.fetch("/v1/agents/drafts", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-agentic-tenant": TENANT_A,
+      },
+      body: JSON.stringify({
+        definition: selectedDefinition,
+        workflowSlug: SELECTED_WORKFLOW,
+        baseWorkflowVersionId: selectedBaseVersionId,
+      }),
+    });
+    expect(selectedCreate.status).toBe(201);
+    const selectedCreated = AgentDraftResponseSchema.parse(
+      ((await selectedCreate.json()) as Envelope<unknown>).data,
+    ).draft;
+    selectedScopedAgentId = selectedCreated.agentId;
+    expect(selectedCreated.workflowId).toBe(selectedWorkflowId);
+    expect(selectedCreated.baseWorkflowVersionId).toBe(selectedBaseVersionId);
+
+    const secondaryCreate = await env.fetch("/v1/agents/drafts", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-agentic-tenant": TENANT_A,
+      },
+      body: JSON.stringify({
+        definition: secondaryDefinition,
+        workflowSlug: SECONDARY_WORKFLOW,
+        baseWorkflowVersionId: secondaryBaseVersionId,
+      }),
+    });
+    expect(secondaryCreate.status).toBe(201);
+    const secondaryCreated = AgentDraftResponseSchema.parse(
+      ((await secondaryCreate.json()) as Envelope<unknown>).data,
+    ).draft;
+    secondaryScopedAgentId = secondaryCreated.agentId;
+    expect(secondaryCreated.workflowId).toBe(secondaryWorkflowId);
+    expect(secondaryCreated.baseWorkflowVersionId).toBe(secondaryBaseVersionId);
+    expect(secondaryScopedAgentId).not.toBe(selectedScopedAgentId);
+
+    const selectedHandoff = await env.fetch(
+      `/v1/agents/${SCOPED_AGENT_ID}/drafts`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-agentic-tenant": TENANT_A,
+        },
+        body: JSON.stringify({
+          definition: {
+            ...selectedDefinition,
+            title: "Selected shared agent handoff",
+          },
+          workflowSlug: SELECTED_WORKFLOW,
+          baseWorkflowVersionId: selectedBaseVersionId,
+        }),
+      },
+    );
+    expect(selectedHandoff.status).toBe(201);
+    expect(
+      AgentDraftResponseSchema.parse(
+        ((await selectedHandoff.json()) as Envelope<unknown>).data,
+      ).draft.agentId,
+    ).toBe(selectedScopedAgentId);
+
+    const secondaryHandoff = await env.fetch(
+      `/v1/agents/${SCOPED_AGENT_ID}/drafts`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-agentic-tenant": TENANT_A,
+        },
+        body: JSON.stringify({
+          definition: {
+            ...secondaryDefinition,
+            title: "Secondary shared agent handoff",
+          },
+          workflowSlug: SECONDARY_WORKFLOW,
+          baseWorkflowVersionId: secondaryBaseVersionId,
+        }),
+      },
+    );
+    expect(secondaryHandoff.status).toBe(201);
+    const secondaryHandoffDraft = AgentDraftResponseSchema.parse(
+      ((await secondaryHandoff.json()) as Envelope<unknown>).data,
+    ).draft;
+    expect(secondaryHandoffDraft.agentId).toBe(secondaryScopedAgentId);
+
+    const editor = await env.fetch(
+      `/v1/agents/${SCOPED_AGENT_ID}/editor?draftId=${secondaryHandoffDraft.id}`,
+      { headers: { "x-agentic-tenant": TENANT_A } },
+    );
+    expect(editor.status).toBe(200);
+    const editorResponse = AgentEditorResponseSchema.parse(
+      ((await editor.json()) as Envelope<unknown>).data,
+    );
+    expect(editorResponse.agent.id).toBe(secondaryScopedAgentId);
+    expect(editorResponse.draft?.id).toBe(secondaryHandoffDraft.id);
+
+    const mismatchedRef = await env.fetch(
+      `/v1/agents/${SELECTED_SCOPED_AGENT_NAME}/editor?draftId=${secondaryHandoffDraft.id}`,
+      { headers: { "x-agentic-tenant": TENANT_A } },
+    );
+    expect(mismatchedRef.status).toBe(404);
+  });
+
+  it.each([
+    ["an unknown version", `missing-wfv-${SUFFIX}`, "not_found"],
+    ["another workflow's version", secondaryBaseVersionId, "workflow_mismatch"],
+    ["another tenant's version", foreignBaseVersionId, "not_found"],
+    [
+      "a version without the selected agent",
+      selectedMissingAgentVersionId,
+      "agent_mismatch",
+    ],
+  ])(
+    "rejects %s before storing a workflow handoff draft",
+    async (_label, baseWorkflowVersionId, reason) => {
+      const before = getDb()
+        .select({ id: agentDrafts.id })
+        .from(agentDrafts)
+        .where(eq(agentDrafts.agentId, selectedScopedAgentId))
+        .all();
+      const res = await env.fetch(`/v1/agents/${SCOPED_AGENT_ID}/drafts`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-agentic-tenant": TENANT_A,
+        },
+        body: JSON.stringify({
+          definition: definition({
+            id: SCOPED_AGENT_ID,
+            name: SELECTED_SCOPED_AGENT_NAME,
+          }),
+          workflowSlug: SELECTED_WORKFLOW,
+          baseWorkflowVersionId,
+        }),
+      });
+
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as Envelope<unknown>;
+      expect(body.error?.code).toBe("invalid_base_workflow_version");
+      expect(body.error?.details).toEqual({
+        versionId: baseWorkflowVersionId,
+        reason,
+      });
+      expect(
+        getDb()
+          .select({ id: agentDrafts.id })
+          .from(agentDrafts)
+          .where(eq(agentDrafts.agentId, selectedScopedAgentId))
+          .all(),
+      ).toHaveLength(before.length);
+    },
+  );
+
+  it("rejects an invalid base version before creating a new agent identity", async () => {
+    const id = `invalid-base-agent-${SUFFIX}`;
+    const res = await env.fetch("/v1/agents/drafts", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-agentic-tenant": TENANT_A,
+      },
+      body: JSON.stringify({
+        definition: definition({
+          id,
+          name: `invalidBaseAgent${SUFFIX}`,
+        }),
+        workflowSlug: SELECTED_WORKFLOW,
+        baseWorkflowVersionId: secondaryBaseVersionId,
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as Envelope<unknown>).error?.code).toBe(
+      "invalid_base_workflow_version",
+    );
+    expect(
+      getDb()
+        .select({ id: agents.id })
+        .from(agents)
+        .where(eq(agents.kebabId, id))
+        .all(),
+    ).toHaveLength(0);
+  });
+
+  it.each([
+    ["a missing workflow", `missing-${SUFFIX}`],
+    ["another tenant's workflow", FOREIGN_WORKFLOW],
+  ])("does not create an agent for %s", async (_label, workflowSlug) => {
+    const id = `${workflowSlug}-agent`;
+    const res = await env.fetch("/v1/agents/drafts", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-agentic-tenant": TENANT_A,
+      },
+      body: JSON.stringify({
+        definition: definition({
+          id,
+          name: `unavailableWorkflowAgent${workflowSlug.replaceAll("-", "")}`,
+        }),
+        workflowSlug,
+      }),
+    });
+
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as Envelope<unknown>;
+    expect(body.error?.code).toBe("workflow_not_found");
+    expect(body.error?.details).toEqual({ workflowSlug });
+    expect(
+      getDb()
+        .select({ id: agents.id })
+        .from(agents)
+        .where(eq(agents.kebabId, id))
+        .all(),
+    ).toHaveLength(0);
+  });
+
+  it("keeps the legacy no-workflow draft lookup behavior", async () => {
+    const res = await env.fetch(`/v1/agents/${agentId}/drafts`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-agentic-tenant": TENANT_A,
+      },
+      body: "{}",
+    });
+    expect(res.status).toBe(201);
+    expect(
+      AgentDraftResponseSchema.parse(
+        ((await res.json()) as Envelope<unknown>).data,
+      ).draft.id,
+    ).toBe(draftId);
   });
 
   it("returns the draft from the editor while keeping it tenant-scoped", async () => {

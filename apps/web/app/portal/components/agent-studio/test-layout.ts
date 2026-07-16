@@ -8,6 +8,13 @@ export const TEST_HISTORY_MIN_HEIGHT = 180;
 export const TEST_HISTORY_MAX_HEIGHT = 520;
 export const TEST_HISTORY_DEFAULT_HEIGHT = 250;
 export const TEST_SPLITTER_WIDTH = 6;
+export const TEST_HISTORY_INLINE_MIN_WIDTH = 1_100;
+
+export function testHistoryFitsInline(gridWidth: number): boolean {
+  return (
+    Number.isFinite(gridWidth) && gridWidth > TEST_HISTORY_INLINE_MIN_WIDTH
+  );
+}
 
 export function clampPanelWidth(
   value: number,

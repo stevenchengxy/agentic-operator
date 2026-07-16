@@ -249,6 +249,73 @@ export function useCreateAgentDraft(agentId: string) {
   });
 }
 
+/**
+ * Create an exact Agent Studio handoff draft from a workflow version.
+ *
+ * The agent id is supplied per mutation because a canvas can open any node.
+ * Passing the workflow's complete definition avoids accidentally reopening an
+ * older Agent Studio draft whose base version no longer matches the canvas.
+ */
+export function useCreateWorkflowAgentDraft() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: {
+      agentId: string;
+      definition: StudioDefinition;
+      baseWorkflowVersionId: string;
+      workflowSlug: string;
+    }) => {
+      const payload = CreateAgentDraftBodySchema.parse({
+        definition: prepareDefinition(input.definition),
+        baseWorkflowVersionId: input.baseWorkflowVersionId,
+        workflowSlug: input.workflowSlug,
+      });
+      return AgentDraftResponseSchema.parse(
+        await callV1<unknown>(
+          `/v1/agents/${encodeURIComponent(input.agentId)}/drafts`,
+          {
+            method: "POST",
+            body: JSON.stringify(payload),
+          },
+        ),
+      );
+    },
+    onSuccess: async (_result, input) => {
+      await client.invalidateQueries({
+        queryKey: ["agent-studio", "editor", input.agentId],
+      });
+    },
+  });
+}
+
+export function useCreateNewAgentDraft() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: async (body: {
+      definition: StudioDefinition;
+      workflowSlug?: string;
+    }) => {
+      const payload = CreateAgentDraftBodySchema.parse({
+        definition: prepareDefinition(body.definition),
+        workflowSlug: body.workflowSlug,
+      });
+      return AgentDraftResponseSchema.parse(
+        await callV1<unknown>("/v1/agents/drafts", {
+          method: "POST",
+          body: JSON.stringify(payload),
+        }),
+      );
+    },
+    onSuccess: async () => {
+      await Promise.all([
+        client.invalidateQueries({ queryKey: AGENT_STUDIO_KEYS.all }),
+        client.invalidateQueries({ queryKey: ["agents"] }),
+        client.invalidateQueries({ queryKey: ["workflows"] }),
+      ]);
+    },
+  });
+}
+
 export function useSaveAgentDraft(draftId: string | null | undefined) {
   return useMutation({
     mutationFn: async (vars: {

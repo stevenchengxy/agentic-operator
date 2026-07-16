@@ -62,6 +62,7 @@ const STEP_TYPE_GUIDANCE: Record<
 function StepTypeGuide() {
   return (
     <details
+      className="agent-studio-step-type-guide"
       style={{
         border: "1px solid var(--border)",
         borderRadius: 6,
@@ -73,16 +74,18 @@ function StepTypeGuide() {
           padding: "9px 11px",
           cursor: "pointer",
           color: "var(--text-2)",
-          fontSize: 11.5,
-          fontWeight: 500,
+          fontSize: 12,
+          fontWeight: 600,
         }}
       >
         Which step type should I choose?
       </summary>
       <div
+        className="agent-studio-step-type-guide-grid"
         style={{
           display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))",
+          gridTemplateColumns:
+            "repeat(auto-fit, minmax(min(230px, 100%), 1fr))",
           gap: 8,
           padding: "2px 11px 11px",
         }}
@@ -104,17 +107,17 @@ function StepTypeGuide() {
                   style={{
                     marginBottom: 3,
                     color: "var(--text)",
-                    fontSize: 11,
-                    fontWeight: 500,
+                    fontSize: 12,
+                    fontWeight: 600,
                   }}
                 >
                   {guidance.label}
                 </div>
                 <div
                   style={{
-                    color: "var(--text-3)",
-                    fontSize: 10.5,
-                    lineHeight: 1.45,
+                    color: "var(--text-2)",
+                    fontSize: 11.5,
+                    lineHeight: 1.5,
                   }}
                 >
                   {guidance.summary}
@@ -139,11 +142,23 @@ function CurrentStepHelp({ type }: { type: StudioAction["type"] }) {
       <div>{guidance.summary}</div>
       <details style={{ marginTop: 4 }}>
         <summary
-          style={{ cursor: "pointer", color: "var(--text-2)", fontSize: 10.5 }}
+          style={{
+            cursor: "pointer",
+            color: "var(--text-2)",
+            fontSize: 11.5,
+            fontWeight: 600,
+          }}
         >
           Show an example
         </summary>
-        <div style={{ marginTop: 3, color: "var(--text-3)", fontSize: 10.5 }}>
+        <div
+          style={{
+            marginTop: 3,
+            color: "var(--text-2)",
+            fontSize: 11.5,
+            lineHeight: 1.5,
+          }}
+        >
           {guidance.example}
         </div>
       </details>
@@ -156,9 +171,9 @@ function JsonFieldHelp({ children }: { children: ReactNode }) {
     <div
       style={{
         marginBottom: 6,
-        color: "var(--text-3)",
-        fontSize: 10.5,
-        lineHeight: 1.45,
+        color: "var(--text-2)",
+        fontSize: 11.5,
+        lineHeight: 1.5,
       }}
     >
       {children}
@@ -188,7 +203,10 @@ export function StepsEditor({
 
   if (actions.length === 0) {
     return (
-      <div style={{ display: "grid", gap: 10 }}>
+      <div
+        className="agent-studio-steps-editor"
+        style={{ display: "grid", gap: 10, minWidth: 0 }}
+      >
         <StepTypeGuide />
         <EmptySection
           title="No steps"
@@ -201,7 +219,10 @@ export function StepsEditor({
   }
 
   return (
-    <div style={{ display: "grid", gap: 10 }}>
+    <div
+      className="agent-studio-steps-editor"
+      style={{ display: "grid", gap: 10, minWidth: 0 }}
+    >
       <StepTypeGuide />
       {actions.map((action, index) => {
         const update = (patch: Partial<StudioAction>) =>
@@ -242,16 +263,20 @@ export function StepsEditor({
           <details
             key={`${action.order}-${index}`}
             open={index === 0}
+            className="agent-studio-step-card"
             style={{
               border: "1px solid var(--border)",
               borderRadius: 6,
               background: "var(--panel-2)",
+              minWidth: 0,
             }}
           >
             <summary
+              className="agent-studio-step-card-summary"
               style={{
                 display: "flex",
                 alignItems: "center",
+                flexWrap: "wrap",
                 gap: 9,
                 padding: "10px 12px",
                 cursor: "pointer",
@@ -259,17 +284,24 @@ export function StepsEditor({
               }}
             >
               <span
-                className="mono"
-                style={{ width: 24, color: "var(--signal)", fontSize: 10.5 }}
+                className="agent-studio-step-card-order mono"
+                style={{
+                  flex: "0 0 24px",
+                  color: "var(--signal)",
+                  fontSize: 11.5,
+                  fontWeight: 600,
+                }}
               >
                 {action.order}
               </span>
               <span
+                className="agent-studio-step-card-title"
                 style={{
-                  flex: 1,
+                  flex: "1 1 180px",
+                  minWidth: 0,
                   fontSize: 12,
                   color: "var(--text)",
-                  fontWeight: 500,
+                  fontWeight: 600,
                 }}
               >
                 {action.name}
@@ -287,20 +319,25 @@ export function StepsEditor({
               </Badge>
             </summary>
             <div
+              className="agent-studio-step-card-body"
               style={{
                 padding: "4px 12px 14px 45px",
                 borderTop: "1px solid var(--border)",
                 display: "grid",
                 gap: 12,
+                minWidth: 0,
               }}
             >
               <CurrentStepHelp type={action.type} />
               <div
+                className="agent-studio-step-identity-grid"
                 style={{
                   display: "grid",
-                  gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+                  gridTemplateColumns:
+                    "repeat(auto-fit, minmax(min(220px, 100%), 1fr))",
                   gap: 10,
                   marginTop: 12,
+                  minWidth: 0,
                 }}
               >
                 <Field
@@ -428,11 +465,13 @@ export function StepsEditor({
                     />
                   </Field>
                   <div
+                    className="agent-studio-step-fields-grid"
                     style={{
                       display: "grid",
                       gridTemplateColumns:
-                        "repeat(auto-fit, minmax(220px, 1fr))",
+                        "repeat(auto-fit, minmax(min(220px, 100%), 1fr))",
                       gap: 10,
+                      minWidth: 0,
                     }}
                   >
                     <Field
@@ -471,11 +510,13 @@ export function StepsEditor({
               {action.type === "manual" && (
                 <div style={{ display: "grid", gap: 10 }}>
                   <div
+                    className="agent-studio-step-fields-grid"
                     style={{
                       display: "grid",
                       gridTemplateColumns:
-                        "repeat(auto-fit, minmax(220px, 1fr))",
+                        "repeat(auto-fit, minmax(min(220px, 100%), 1fr))",
                       gap: 10,
+                      minWidth: 0,
                     }}
                   >
                     <Field
@@ -538,11 +579,13 @@ export function StepsEditor({
               {action.type === "subflow" && (
                 <div style={{ display: "grid", gap: 10 }}>
                   <div
+                    className="agent-studio-step-fields-grid"
                     style={{
                       display: "grid",
                       gridTemplateColumns:
-                        "repeat(auto-fit, minmax(220px, 1fr))",
+                        "repeat(auto-fit, minmax(min(220px, 100%), 1fr))",
                       gap: 10,
+                      minWidth: 0,
                     }}
                   >
                     <Field
@@ -588,8 +631,8 @@ export function StepsEditor({
                   <div
                     style={{
                       color: "var(--amber)",
-                      fontSize: 10.5,
-                      lineHeight: 1.45,
+                      fontSize: 11.5,
+                      lineHeight: 1.5,
                     }}
                   >
                     Preview only: the target and input are validated and traced,
@@ -601,8 +644,9 @@ export function StepsEditor({
                 <summary
                   className="mono"
                   style={{
-                    color: "var(--text-3)",
-                    fontSize: 10.5,
+                    color: "var(--text-2)",
+                    fontSize: 11.5,
+                    fontWeight: 600,
                     cursor: "pointer",
                   }}
                 >
@@ -611,9 +655,9 @@ export function StepsEditor({
                 <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
                   <div
                     style={{
-                      color: "var(--text-3)",
-                      fontSize: 10.5,
-                      lineHeight: 1.45,
+                      color: "var(--text-2)",
+                      fontSize: 11.5,
+                      lineHeight: 1.5,
                     }}
                   >
                     These settings are optional. Leave both mappings as {"{}"}{" "}
@@ -621,11 +665,13 @@ export function StepsEditor({
                   </div>
                   {action.type === "logic" && (
                     <div
+                      className="agent-studio-step-fields-grid"
                       style={{
                         display: "grid",
                         gridTemplateColumns:
-                          "repeat(auto-fit, minmax(220px, 1fr))",
+                          "repeat(auto-fit, minmax(min(220px, 100%), 1fr))",
                         gap: 10,
+                        minWidth: 0,
                       }}
                     >
                       <Field
@@ -660,11 +706,13 @@ export function StepsEditor({
                     </div>
                   )}
                   <div
+                    className="agent-studio-step-mapping-grid"
                     style={{
                       display: "grid",
                       gridTemplateColumns:
-                        "repeat(auto-fit, minmax(280px, 1fr))",
+                        "repeat(auto-fit, minmax(min(280px, 100%), 1fr))",
                       gap: 10,
+                      minWidth: 0,
                     }}
                   >
                     <div>
@@ -698,8 +746,19 @@ export function StepsEditor({
                   </div>
                 </div>
               </details>
-              <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <div style={{ display: "flex", gap: 6 }}>
+              <div
+                className="agent-studio-step-actions"
+                style={{
+                  display: "flex",
+                  flexWrap: "wrap",
+                  justifyContent: "space-between",
+                  gap: 8,
+                }}
+              >
+                <div
+                  className="agent-studio-step-order-actions"
+                  style={{ display: "flex", flexWrap: "wrap", gap: 6 }}
+                >
                   <Button
                     small
                     disabled={disabled || index === 0}
@@ -744,6 +803,7 @@ export function StepsEditor({
                   tone="danger"
                   icon="x"
                   disabled={disabled}
+                  style={{ marginLeft: "auto" }}
                   onClick={() =>
                     onChange(actions.filter((_, i) => i !== index))
                   }

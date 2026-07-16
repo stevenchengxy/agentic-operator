@@ -1,6 +1,12 @@
 import { createHash } from "node:crypto";
 import { and, desc, eq } from "drizzle-orm";
-import { deployments, getDb, workflowVersions, workflows } from "@agentic/db";
+import {
+  agents,
+  deployments,
+  getDb,
+  workflowVersions,
+  workflows,
+} from "@agentic/db";
 import { makeId } from "@agentic/shared";
 import {
   WorkflowManifestV2Schema,
@@ -467,6 +473,52 @@ export function getWorkflowPublishSnapshot(
   };
 }
 
+export interface WorkflowRunVersionSnapshot {
+  workflowId: string;
+  workflowName: string;
+  workflowSlug: string;
+  versionId: string;
+  version: string;
+  isLive: boolean;
+  manifest: WorkflowManifestV2;
+}
+
+/**
+ * Load the immutable version used to describe the Run Console.
+ *
+ * `latest` is the newest server-saved draft. `live` is resolved through the
+ * deployment lane instead of assuming the latest revision is published.
+ */
+export function getWorkflowRunVersionSnapshot(
+  slug: string,
+  target: "latest" | "live",
+  ctx: WorkflowTenantContext,
+): WorkflowRunVersionSnapshot {
+  const workflow = workflowRow(slug, ctx);
+  if (!workflow) throw new WorkflowNotFoundError(slug);
+  const versions = allVersionsForWorkflow(workflow.id);
+  const liveIds = liveVersionIds(ctx);
+  const version =
+    target === "live"
+      ? versions.find((candidate) => liveIds.has(candidate.id))
+      : versions[0];
+  if (!version) {
+    throw new WorkflowVersionNotFoundError(
+      slug,
+      target === "live" ? "live" : "latest",
+    );
+  }
+  return {
+    workflowId: workflow.id,
+    workflowName: workflow.name,
+    workflowSlug: workflow.slug,
+    versionId: version.id,
+    version: version.version,
+    isLive: liveIds.has(version.id),
+    manifest: normalizeStoredManifest(version.manifestJson),
+  };
+}
+
 interface SourceSnapshot {
   manifest: WorkflowManifestV2;
   actions: unknown[] | null;
@@ -695,6 +747,41 @@ export function saveWorkflowDraft(
         createdAt: now,
       })
       .run();
+
+    // The workflow manifest is the authoring source of truth, while Agent
+    // Studio resolves editable identities from the agents table. Materialize
+    // only missing identities here so a canvas-added agent is addressable as
+    // soon as its workflow draft is saved. Existing rows retain their
+    // lifecycle, enabled state, and historical identity metadata.
+    const materialized = new Set(
+      tx
+        .select({ kebabId: agents.kebabId })
+        .from(agents)
+        .where(eq(agents.workflowId, workflow.id))
+        .all()
+        .map((row) => row.kebabId),
+    );
+    for (const definition of manifest.agents) {
+      if (materialized.has(definition.id)) continue;
+      tx.insert(agents)
+        .values({
+          id: makeId("agt"),
+          tenantId: ctx.tenantId,
+          workflowId: workflow.id,
+          kebabId: definition.id,
+          name: definition.name,
+          title: definition.title ?? definition.name,
+          actor: definition.actor.includes("Human") ? "Human" : "Agent",
+          kind: "manifest",
+          enabled: false,
+          lifecycle: "draft",
+          createdAt: now,
+          updatedAt: now,
+        })
+        .onConflictDoNothing({ target: [agents.workflowId, agents.kebabId] })
+        .run();
+      materialized.add(definition.id);
+    }
   });
   return getWorkflowDraft(slug, ctx);
 }

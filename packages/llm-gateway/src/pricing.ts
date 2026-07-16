@@ -1,6 +1,5 @@
 import {
-  PROVIDER_MODEL_CATALOG,
-  type CatalogModel,
+  findCatalogModel,
   type CatalogPricing,
   type ProviderId,
 } from "@agentic/contracts";
@@ -50,19 +49,15 @@ export function normalizeUsage(response: ChatResponse): TokenUsage {
   };
 }
 
-function findCatalogModel(provider: ProviderId, modelName: string): CatalogModel | undefined {
-  const normalized = provider === "openrouter"
-    ? modelName
-    : modelName.replace(new RegExp(`^${provider}/`), "");
-  const models = PROVIDER_MODEL_CATALOG[provider] ?? [];
-  return models.find((model) => model.name === normalized)
-    ?? models.find((model) => normalized.startsWith(`${model.name}-20`));
-}
-
-function activePrice(prices: CatalogPricing[], at: Date): CatalogPricing | undefined {
+function activePrice(
+  prices: CatalogPricing[],
+  at: Date,
+): CatalogPricing | undefined {
   const timestamp = at.getTime();
   return prices.find((price) => {
-    const from = price.effectiveFrom ? Date.parse(price.effectiveFrom) : -Infinity;
+    const from = price.effectiveFrom
+      ? Date.parse(price.effectiveFrom)
+      : -Infinity;
     const to = price.effectiveTo ? Date.parse(price.effectiveTo) : Infinity;
     return timestamp >= from && timestamp <= to;
   });
@@ -81,9 +76,9 @@ export function calculateCost(args: {
   at?: Date;
 }): CostBreakdown {
   if (
-    args.providerReportedCostUsd !== undefined
-    && Number.isFinite(args.providerReportedCostUsd)
-    && args.providerReportedCostUsd >= 0
+    args.providerReportedCostUsd !== undefined &&
+    Number.isFinite(args.providerReportedCostUsd) &&
+    args.providerReportedCostUsd >= 0
   ) {
     return {
       totalUsdNanos: Math.round(args.providerReportedCostUsd * USD_NANOS),
@@ -107,7 +102,9 @@ export function calculateCost(args: {
   }
 
   const model = findCatalogModel(args.provider, args.model);
-  const price = model?.pricing ? activePrice(model.pricing, args.at ?? new Date()) : undefined;
+  const price = model?.pricing
+    ? activePrice(model.pricing, args.at ?? new Date())
+    : undefined;
   if (!model || !price) {
     return {
       totalUsdNanos: null,
@@ -120,9 +117,10 @@ export function calculateCost(args: {
   }
 
   const usage = args.usage;
-  const selected = price.longContext && usage.inputTokens > price.longContext.inputTokensAbove
-    ? { ...price, ...price.longContext }
-    : price;
+  const selected =
+    price.longContext && usage.inputTokens > price.longContext.inputTokensAbove
+      ? { ...price, ...price.longContext }
+      : price;
   const cached = Math.min(usage.inputTokens, usage.cachedInputTokens);
   const write5m = Math.min(
     Math.max(usage.inputTokens - cached, 0),
@@ -142,11 +140,20 @@ export function calculateCost(args: {
   );
 
   const inputUsdNanos = nanos(uncached, selected.input);
-  const cachedInputUsdNanos = nanos(cached, selected.cachedInput ?? selected.input);
+  const cachedInputUsdNanos = nanos(
+    cached,
+    selected.cachedInput ?? selected.input,
+  );
   const cacheWriteUsdNanos =
-    nanos(genericWrite, selected.cacheWrite ?? selected.input)
-    + nanos(write5m, selected.cacheWrite5m ?? selected.cacheWrite ?? selected.input)
-    + nanos(write1h, selected.cacheWrite1h ?? selected.cacheWrite ?? selected.input);
+    nanos(genericWrite, selected.cacheWrite ?? selected.input) +
+    nanos(
+      write5m,
+      selected.cacheWrite5m ?? selected.cacheWrite ?? selected.input,
+    ) +
+    nanos(
+      write1h,
+      selected.cacheWrite1h ?? selected.cacheWrite ?? selected.input,
+    );
   const outputUsdNanos = nanos(usage.outputTokens, selected.output);
 
   return {

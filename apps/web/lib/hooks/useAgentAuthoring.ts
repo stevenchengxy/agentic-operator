@@ -16,34 +16,28 @@ import {
   EVENT_KEYS,
 } from "./useStream";
 import { tenantHeader } from "./tenant-header";
-
-interface ApiOk<T> {
-  ok: true;
-  data: T;
-}
-
-interface ApiErr {
-  ok: false;
-  error: { code: string; message: string };
-}
+import { readAgentAuthoringResponse } from "./agent-authoring-response";
 
 async function callV1<T>(path: string, init: RequestInit): Promise<T> {
   const { headers: initHeaders, ...rest } = init;
-  const response = await fetch(path, {
-    credentials: "same-origin",
-    ...rest,
-    headers: {
-      Accept: "application/json",
-      "Content-Type": "application/json",
-      ...tenantHeader(),
-      ...(initHeaders as Record<string, string> | undefined),
-    },
-  });
-  const body = (await response.json()) as ApiOk<T> | ApiErr;
-  if (!body.ok) {
-    throw new Error(body.error.message || `${path} failed`);
+  let response: Response;
+  try {
+    response = await fetch(path, {
+      credentials: "same-origin",
+      ...rest,
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        ...tenantHeader(),
+        ...(initHeaders as Record<string, string> | undefined),
+      },
+    });
+  } catch {
+    throw new Error(
+      "Could not reach the agent authoring service. Check the connection and retry.",
+    );
   }
-  return body.data;
+  return readAgentAuthoringResponse<T>(response, path);
 }
 
 export const AGENT_NAME_AVAILABILITY_DEBOUNCE_MS = 400;

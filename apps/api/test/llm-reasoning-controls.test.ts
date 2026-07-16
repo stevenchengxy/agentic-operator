@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { PROVIDER_MODEL_CATALOG } from "@agentic/contracts";
-import { LLMGateway, type ProviderAdapter } from "@agentic/llm-gateway";
+import { findCatalogModel, PROVIDER_MODEL_CATALOG } from "@agentic/contracts";
+import {
+  LLMError,
+  LLMGateway,
+  type ChatRequest,
+  type ProviderAdapter,
+  type ProviderId,
+} from "@agentic/llm-gateway";
 import { assertModelControls } from "../../../packages/llm-gateway/src/capabilities";
 import { buildOpenAIResponsesRequest } from "../../../packages/llm-gateway/src/adapters/openai-responses";
 import { mapGeminiThinking } from "../../../packages/llm-gateway/src/adapters/gemini";
@@ -16,7 +22,15 @@ describe("frontier reasoning controls", () => {
       defaultReasoningMode: "standard",
       defaultReasoningEffort: "medium",
       textVerbosities: ["low", "medium", "high"],
+      temperatureRange: null,
     });
+  });
+
+  it("resolves the GPT-5.6 alias and dated snapshots to catalog capabilities", () => {
+    expect(findCatalogModel("openai", "gpt-5.6")?.name).toBe("gpt-5.6-sol");
+    expect(
+      findCatalogModel("openai", "gpt-5.6-luna-2026-06-01")?.temperatureRange,
+    ).toBeNull();
   });
 
   it("builds a Responses request without dropping advanced OpenAI controls", () => {
@@ -91,4 +105,152 @@ describe("frontier reasoning controls", () => {
       }),
     ).not.toThrow();
   });
+
+  it("omits inherited temperature for catalog-known unsupported models", async () => {
+    const requests: ChatRequest[] = [];
+    const adapter = capturingAdapter("openai", "gpt-5.6-luna", requests);
+    const gateway = new LLMGateway({
+      defaultProvider: "openai",
+      defaultModel: "gpt-5.6-luna",
+      timeoutMs: 1_000,
+    });
+    gateway.registerProvider(adapter);
+
+    await gateway.chat({
+      messages: [{ role: "user", content: "test inherited defaults" }],
+      temperature: 0.2,
+      reasoning: { mode: "standard", effort: "medium" },
+    });
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.temperature).toBeUndefined();
+  });
+
+  it("preserves supported temperatures and validates model-specific ranges", async () => {
+    const requests: ChatRequest[] = [];
+    const adapter = capturingAdapter("zai", "glm-5.2", requests);
+    const gateway = new LLMGateway({
+      defaultProvider: "zai",
+      defaultModel: "glm-5.2",
+      timeoutMs: 1_000,
+    });
+    gateway.registerProvider(adapter);
+
+    await gateway.chat({
+      messages: [{ role: "user", content: "supported temperature" }],
+      temperature: 0.8,
+    });
+    expect(requests[0]?.temperature).toBe(0.8);
+
+    await expect(
+      gateway.chat({
+        messages: [{ role: "user", content: "out of range" }],
+        temperature: 1.2,
+      }),
+    ).rejects.toThrow(/Supported values: 0\.\.1/);
+    expect(requests).toHaveLength(1);
+  });
+
+  it("retries an unknown model once without temperature on an explicit provider 400", async () => {
+    const requests: ChatRequest[] = [];
+    const adapter: ProviderAdapter = {
+      id: "custom",
+      name: "temperature compatibility probe",
+      hasKey: true,
+      defaultModel: "future-model",
+      async chat(request) {
+        requests.push(request);
+        if (requests.length === 1) {
+          throw new LLMError(
+            "400 Unsupported parameter: 'temperature' is not supported with this model.",
+            "bad_request",
+            "custom",
+          );
+        }
+        return successfulResponse("custom", "future-model");
+      },
+    };
+    const gateway = new LLMGateway({
+      defaultProvider: "custom",
+      defaultModel: "future-model",
+      timeoutMs: 1_000,
+    });
+    gateway.registerProvider(adapter);
+
+    await gateway.chat({
+      messages: [{ role: "user", content: "future model" }],
+      temperature: 0.2,
+    });
+    await gateway.chat({
+      messages: [{ role: "user", content: "future model again" }],
+      temperature: 0.2,
+    });
+
+    expect(requests.map((request) => request.temperature)).toEqual([
+      0.2,
+      undefined,
+      undefined,
+    ]);
+  });
+
+  it("does not retry unrelated bad requests without temperature", async () => {
+    let calls = 0;
+    const adapter: ProviderAdapter = {
+      id: "custom",
+      name: "unrelated bad request",
+      hasKey: true,
+      defaultModel: "future-model",
+      async chat() {
+        calls += 1;
+        throw new LLMError(
+          "400 Invalid structured output schema.",
+          "bad_request",
+          "custom",
+        );
+      },
+    };
+    const gateway = new LLMGateway({
+      defaultProvider: "custom",
+      defaultModel: "future-model",
+      timeoutMs: 1_000,
+    });
+    gateway.registerProvider(adapter);
+
+    await expect(
+      gateway.chat({
+        messages: [{ role: "user", content: "bad schema" }],
+        temperature: 0.2,
+      }),
+    ).rejects.toThrow(/Invalid structured output schema/);
+    expect(calls).toBe(1);
+  });
 });
+
+function successfulResponse(provider: ProviderId, model: string) {
+  return {
+    text: "ok",
+    provider,
+    model,
+    tokensIn: 1,
+    tokensOut: 1,
+    finishReason: "stop" as const,
+    latencyMs: 1,
+  };
+}
+
+function capturingAdapter(
+  id: ProviderId,
+  model: string,
+  requests: ChatRequest[],
+): ProviderAdapter {
+  return {
+    id,
+    name: `${id} capture`,
+    hasKey: true,
+    defaultModel: model,
+    async chat(request) {
+      requests.push(request);
+      return successfulResponse(id, model);
+    },
+  };
+}

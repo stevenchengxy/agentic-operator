@@ -12,7 +12,15 @@
  *   - Empty-catalog provider (custom) returns source="unsupported" + zero
  *     models so the UI shows the free-text input
  */
-import { describe, it, expect, beforeAll, afterAll, vi, beforeEach } from "vitest";
+import {
+  describe,
+  it,
+  expect,
+  beforeAll,
+  afterAll,
+  vi,
+  beforeEach,
+} from "vitest";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -54,7 +62,8 @@ describe("TC-75: /v1/llm/providers/:id/available-models", () => {
     if (ENV_BEFORE.AGENTIC_MODEL_FLEET_PATH === undefined) {
       delete process.env.AGENTIC_MODEL_FLEET_PATH;
     } else {
-      process.env.AGENTIC_MODEL_FLEET_PATH = ENV_BEFORE.AGENTIC_MODEL_FLEET_PATH;
+      process.env.AGENTIC_MODEL_FLEET_PATH =
+        ENV_BEFORE.AGENTIC_MODEL_FLEET_PATH;
     }
     if (ENV_BEFORE.AGENTIC_KEY_VAULT_PATH === undefined) {
       delete process.env.AGENTIC_KEY_VAULT_PATH;
@@ -95,6 +104,7 @@ describe("TC-75: /v1/llm/providers/:id/available-models", () => {
       id: "openai/gpt-5.6-sol",
       outputPricePerMTok: 30,
       tools: true,
+      temperatureSupported: false,
       reasoning: true,
       reasoningEfforts: ["none", "low", "medium", "max"],
       defaultReasoningEffort: "medium",
@@ -102,6 +112,30 @@ describe("TC-75: /v1/llm/providers/:id/available-models", () => {
       reasoningDefaultEnabled: true,
     });
     expect(model?.inputPricePerMTok).toBeUndefined();
+  });
+
+  it("derives live OpenRouter temperature support from supported_parameters", () => {
+    const models = parseOpenAICompatBody({
+      data: [
+        {
+          id: "supports-temperature",
+          supported_parameters: ["temperature", "tools"],
+        },
+        {
+          id: "omits-temperature",
+          supported_parameters: ["tools"],
+        },
+      ],
+    });
+
+    expect(
+      models.find((model) => model.id === "supports-temperature")
+        ?.temperatureSupported,
+    ).toBe(true);
+    expect(
+      models.find((model) => model.id === "omits-temperature")
+        ?.temperatureSupported,
+    ).toBe(false);
   });
 
   it("rejects unknown provider with 400", async () => {
@@ -126,7 +160,9 @@ describe("TC-75: /v1/llm/providers/:id/available-models", () => {
     expect(body.data.provider).toBe("mock");
     expect(body.data.source).toBe("live");
     expect(body.data.models.some((m) => m.id === "mock-model-v1")).toBe(true);
-    expect(body.data.models.find((m) => m.id === "mock-model-v1")?.origin).toBe("live");
+    expect(body.data.models.find((m) => m.id === "mock-model-v1")?.origin).toBe(
+      "live",
+    );
   });
 
   it("mistral with no key returns source=unsupported but catalog models", async () => {
@@ -144,7 +180,9 @@ describe("TC-75: /v1/llm/providers/:id/available-models", () => {
     // Catalog fallback ensures the picker still has options
     expect(body.data.models.length).toBeGreaterThan(0);
     expect(body.data.models.every((m) => m.origin === "catalog")).toBe(true);
-    expect(body.data.models.some((m) => m.id === "mistral-large-latest")).toBe(true);
+    expect(body.data.models.some((m) => m.id === "mistral-large-latest")).toBe(
+      true,
+    );
   });
 
   it("custom provider (empty catalog, no live support) returns zero models", async () => {
@@ -162,8 +200,16 @@ describe("TC-75: /v1/llm/providers/:id/available-models", () => {
     // shape Anthropic's /v1/models actually uses: { data: [{ id, ... }, ...] }.
     const fakeBody = {
       data: [
-        { type: "model", id: "claude-3-5-sonnet-20241022", display_name: "Claude 3.5 Sonnet" },
-        { type: "model", id: "claude-haiku-4-5", display_name: "Claude Haiku 4.5" },
+        {
+          type: "model",
+          id: "claude-3-5-sonnet-20241022",
+          display_name: "Claude 3.5 Sonnet",
+        },
+        {
+          type: "model",
+          id: "claude-haiku-4-5",
+          display_name: "Claude Haiku 4.5",
+        },
       ],
     };
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
@@ -178,12 +224,18 @@ describe("TC-75: /v1/llm/providers/:id/available-models", () => {
     const body = (await res.json()) as {
       data: {
         source: string;
-        models: Array<{ id: string; origin: string; contextLength: number | null }>;
+        models: Array<{
+          id: string;
+          origin: string;
+          contextLength: number | null;
+        }>;
       };
     };
     expect(body.data.source).toBe("live");
     // Both mocked models present
-    expect(body.data.models.some((m) => m.id === "claude-3-5-sonnet-20241022")).toBe(true);
+    expect(
+      body.data.models.some((m) => m.id === "claude-3-5-sonnet-20241022"),
+    ).toBe(true);
     // Live entry whose id matches catalog inherits the catalog ctx (200_000)
     const haiku = body.data.models.find((m) => m.id === "claude-haiku-4-5");
     expect(haiku?.origin).toBe("live");

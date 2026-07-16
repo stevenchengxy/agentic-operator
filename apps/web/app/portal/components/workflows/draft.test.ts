@@ -9,8 +9,10 @@ import {
   countDraftChanges,
   createAutomatedAgentDefinition,
   createHumanAgentDefinition,
+  deriveEventEdges,
   deserializeDraft,
   emptyDraft,
+  mergeAgentDefinitionIntoDraft,
   moveAgent,
   patchAgentDefinition,
   serializeDraft,
@@ -292,6 +294,30 @@ describe("new-agent factories", () => {
 
     expect(saved).toEqual(created);
   });
+
+  it("merges a returned Agent Studio definition as a workflow modification", () => {
+    const returned = definition("authored", {
+      title: "Edited in Agent Studio",
+    });
+    const merged = mergeAgentDefinitionIntoDraft(emptyDraft(), returned);
+
+    expect(merged.agents.authored?.definition).toEqual(returned);
+    expect(merged.added).toEqual(new Set());
+    expect(countDraftChanges(merged)).toEqual({
+      added: 0,
+      modified: 1,
+      removed: 0,
+    });
+  });
+
+  it("keeps a local new agent classified as an addition after Studio edits", () => {
+    const local = addAgentToDraft(emptyDraft(), definition("new-agent"));
+    const returned = definition("new-agent", { title: "Studio title" });
+    const merged = mergeAgentDefinitionIntoDraft(local, returned);
+
+    expect(merged.added).toEqual(new Set(["new-agent"]));
+    expect(merged.agents["new-agent"]?.title).toBe("Studio title");
+  });
 });
 
 describe("canvas draft operations", () => {
@@ -356,6 +382,67 @@ describe("canvas draft operations", () => {
       emits: ["EXISTING", "FLOW_READY"],
     });
     expect(twice.agents.target?.triggers).toEqual(["FLOW_READY"]);
+  });
+
+  it("derives a live edge from trigger and emitted-event draft edits", () => {
+    const base = [fullAgent("source"), fullAgent("target")];
+    const draft: WorkflowDraft = {
+      agents: {
+        source: { id: "source", emits: ["FLOW_READY"] },
+        target: { id: "target", triggers: ["FLOW_READY"] },
+      },
+      added: new Set(),
+      removed: new Set(),
+    };
+
+    expect(deriveEventEdges(applyDraft(base, draft))).toEqual([
+      { src: "source", dst: "target", event: "FLOW_READY" },
+    ]);
+  });
+
+  it("trims event names and collapses duplicate edge declarations", () => {
+    expect(
+      deriveEventEdges([
+        agent("source", { emits: [" FLOW_READY ", "FLOW_READY", ""] }),
+        agent("target", {
+          triggers: ["FLOW_READY", " FLOW_READY ", "FLOW_READY"],
+        }),
+      ]),
+    ).toEqual([{ src: "source", dst: "target", event: "FLOW_READY" }]);
+  });
+
+  it("supports deterministic fan-in and fan-out for shared events", () => {
+    expect(
+      deriveEventEdges([
+        agent("source-a", { emits: ["SHARED"] }),
+        agent("source-b", { emits: ["SHARED"] }),
+        agent("target-a", { triggers: ["SHARED"] }),
+        agent("target-b", { triggers: ["SHARED"] }),
+      ]),
+    ).toEqual([
+      { src: "source-a", dst: "target-a", event: "SHARED" },
+      { src: "source-a", dst: "target-b", event: "SHARED" },
+      { src: "source-b", dst: "target-a", event: "SHARED" },
+      { src: "source-b", dst: "target-b", event: "SHARED" },
+    ]);
+  });
+
+  it("does not fabricate edges for external triggers", () => {
+    expect(
+      deriveEventEdges([
+        agent("entry", { triggers: ["EXTERNAL_REQUEST"] }),
+        agent("worker", { emits: ["WORK_COMPLETED"] }),
+      ]),
+    ).toEqual([]);
+  });
+
+  it("keeps event matching case-sensitive like runtime dispatch", () => {
+    expect(
+      deriveEventEdges([
+        agent("source", { emits: ["FLOW_READY"] }),
+        agent("target", { triggers: ["flow_ready"] }),
+      ]),
+    ).toEqual([]);
   });
 
   it("persists finite canvas coordinates and stage through manifest output", () => {

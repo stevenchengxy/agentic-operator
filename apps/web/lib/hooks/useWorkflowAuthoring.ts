@@ -4,16 +4,22 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   GenerateWorkflowResponseSchema,
   ManifestImportCommit,
+  WorkflowAgentPromptResponseSchema,
   WorkflowDetailSchema,
   WorkflowDocumentFoldersResponseSchema,
   WorkflowListResponseSchema,
+  WorkflowRunProfileSchema,
   WorkflowTemplateCatalogResponseSchema,
+  WorkflowTestRunResponseSchema,
   WorkflowValidationResponseSchema,
   type CreateWorkflowBody,
   type GenerateWorkflowBody,
   type SaveWorkflowBody,
   type ValidateWorkflowBody,
+  type WorkflowAgentPromptBody,
   type WorkflowDetail,
+  type WorkflowRunProfileTarget,
+  type WorkflowTestRunBody,
 } from "@agentic/contracts";
 import { z, type ZodType } from "zod";
 import { tenantHeader } from "./tenant-header";
@@ -25,7 +31,18 @@ interface ApiOk {
 
 interface ApiErr {
   ok: false;
-  error: { code: string; message: string; hint?: string };
+  error: { code: string; message: string; hint?: string; details?: unknown };
+}
+
+export class WorkflowAuthoringApiError extends Error {
+  constructor(
+    public readonly code: string,
+    message: string,
+    public readonly details?: unknown,
+  ) {
+    super(message);
+    this.name = "WorkflowAuthoringApiError";
+  }
 }
 
 async function callV1<T>(
@@ -53,8 +70,11 @@ async function callV1<T>(
     | null;
   if (!response.ok || !body || body.ok !== true) {
     const error = body && body.ok === false ? body.error : null;
-    throw new Error(
-      `${error?.code ?? `HTTP ${response.status}`}: ${error?.message ?? "Request failed"}${error?.hint ? ` — ${error.hint}` : ""}`,
+    const code = error?.code ?? `HTTP ${response.status}`;
+    throw new WorkflowAuthoringApiError(
+      code,
+      `${code}: ${error?.message ?? "Request failed"}${error?.hint ? ` — ${error.hint}` : ""}`,
+      error?.details,
     );
   }
   return schema.parse(body.data);
@@ -65,6 +85,8 @@ export const WORKFLOW_AUTHORING_KEYS = {
   list: ["workflow-authoring", "list"] as const,
   templates: ["workflow-authoring", "templates"] as const,
   detail: (slug: string) => ["workflow-authoring", "detail", slug] as const,
+  runProfile: (slug: string, target: WorkflowRunProfileTarget) =>
+    ["workflow-authoring", "run-profile", slug, target] as const,
   folders: ["workflow-authoring", "document-folders"] as const,
 };
 
@@ -121,6 +143,23 @@ export function useWorkflowDocumentFolders() {
   });
 }
 
+export function useWorkflowRunProfile(
+  slug: string | null | undefined,
+  target: WorkflowRunProfileTarget,
+  enabled = true,
+) {
+  return useQuery({
+    queryKey: WORKFLOW_AUTHORING_KEYS.runProfile(slug ?? "__none__", target),
+    queryFn: () =>
+      callV1(
+        `/v1/workflows/${encodeURIComponent(slug!)}/run-profile?target=${encodeURIComponent(target)}`,
+        WorkflowRunProfileSchema,
+      ),
+    enabled: Boolean(slug) && enabled,
+    staleTime: target === "live" ? 5_000 : 2_000,
+  });
+}
+
 export function useGenerateWorkflow() {
   return useMutation({
     mutationFn: (body: GenerateWorkflowBody) =>
@@ -128,6 +167,42 @@ export function useGenerateWorkflow() {
         method: "POST",
         body: JSON.stringify(body),
       }),
+  });
+}
+
+export function useRunWorkflowTest(slug?: string | null) {
+  return useMutation({
+    mutationFn: (body: WorkflowTestRunBody) => {
+      if (!slug) throw new Error("workflow slug is required");
+      return callV1(
+        `/v1/workflows/${encodeURIComponent(slug)}/test-runs`,
+        WorkflowTestRunResponseSchema,
+        {
+          method: "POST",
+          body: JSON.stringify(body),
+        },
+      );
+    },
+  });
+}
+
+export function useGenerateWorkflowAgentPrompt(
+  slug?: string | null,
+  agentId?: string | null,
+) {
+  return useMutation({
+    mutationFn: (body: WorkflowAgentPromptBody) => {
+      if (!slug) throw new Error("workflow slug is required");
+      if (!agentId) throw new Error("agent id is required");
+      return callV1(
+        `/v1/workflows/${encodeURIComponent(slug)}/agents/${encodeURIComponent(agentId)}/generate-instructions`,
+        WorkflowAgentPromptResponseSchema,
+        {
+          method: "POST",
+          body: JSON.stringify(body),
+        },
+      );
+    },
   });
 }
 

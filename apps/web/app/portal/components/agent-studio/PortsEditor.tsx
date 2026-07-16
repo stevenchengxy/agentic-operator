@@ -98,7 +98,10 @@ export function PortsEditor({
         minHeight: 430,
       }}
     >
-      <div style={{ borderRight: "1px solid var(--border)", paddingRight: 12 }}>
+      <div
+        className="agent-studio-port-list"
+        style={{ borderRight: "1px solid var(--border)", paddingRight: 12 }}
+      >
         <div
           style={{
             display: "flex",
@@ -109,7 +112,11 @@ export function PortsEditor({
         >
           <span
             className="mono"
-            style={{ color: "var(--text-3)", fontSize: 10.5 }}
+            style={{
+              color: "var(--text-2)",
+              fontSize: 11.5,
+              fontWeight: 600,
+            }}
           >
             {ports.length} {ports.length === 1 ? kind : `${kind}s`}
           </span>
@@ -142,7 +149,8 @@ export function PortsEditor({
                 <span
                   className="mono"
                   style={{
-                    fontSize: 11,
+                    fontSize: 12,
+                    fontWeight: 600,
                     overflow: "hidden",
                     textOverflow: "ellipsis",
                   }}
@@ -151,7 +159,12 @@ export function PortsEditor({
                 </span>
               </div>
               <div
-                style={{ marginTop: 4, fontSize: 10.5, color: "var(--text-3)" }}
+                style={{
+                  marginTop: 4,
+                  fontSize: 11.5,
+                  color: "var(--text-2)",
+                  lineHeight: 1.4,
+                }}
               >
                 {port.label} · {String(port.schema.type ?? "any")}
               </div>
@@ -162,6 +175,7 @@ export function PortsEditor({
 
       {selected && (
         <div
+          className="agent-studio-port-detail"
           style={{
             paddingLeft: 16,
             display: "grid",
@@ -170,6 +184,7 @@ export function PortsEditor({
           }}
         >
           <div
+            className="agent-studio-port-detail-header"
             style={{
               display: "flex",
               justifyContent: "space-between",
@@ -202,6 +217,7 @@ export function PortsEditor({
             </Button>
           </div>
           <div
+            className="agent-studio-port-fields-grid"
             style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}
           >
             <Field
@@ -373,8 +389,8 @@ export function PortsEditor({
               style={{
                 cursor: "pointer",
                 color: "var(--text-2)",
-                fontSize: 11.5,
-                fontWeight: 500,
+                fontSize: 12,
+                fontWeight: 600,
               }}
             >
               Advanced validation rules
@@ -434,7 +450,11 @@ export function PortsEditor({
               >
                 <div
                   className="mono"
-                  style={{ color: "var(--text-3)", fontSize: 10 }}
+                  style={{
+                    color: "var(--text-2)",
+                    fontSize: 11.5,
+                    fontWeight: 600,
+                  }}
                 >
                   FILE POLICY
                 </div>

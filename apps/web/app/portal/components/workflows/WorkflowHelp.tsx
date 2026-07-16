@@ -25,7 +25,7 @@ const TOPICS: Array<{
 }> = [
   { id: "start", label: "Start here", eyebrow: "A five-minute tour" },
   { id: "read", label: "Read a workflow", eyebrow: "Nodes, lines, and events" },
-  { id: "edit", label: "Edit safely", eyebrow: "Draft to deployment" },
+  { id: "edit", label: "Edit safely", eyebrow: "Draft to publication" },
   {
     id: "fields",
     label: "Fields & buttons",
@@ -465,8 +465,9 @@ function ReadGuide() {
             success.
           </li>
           <li>
-            Choose <strong>Open agent</strong> when you need its instructions,
-            inputs, outputs, tools, or run history.
+            Double-click the box to widen the right panel. Drag the divider when
+            you want more room for instructions, inputs, outputs, tools, runtime
+            settings, or the complete definition.
           </li>
         </ol>
       </GuideSection>
@@ -493,7 +494,27 @@ function ReadGuide() {
         The graph shows configured hand-offs. Use the event stream and Runs
         pages to confirm that a particular event was emitted and processed.
       </Callout>
-      <GuideSection number="03" title="Questions this view can answer">
+      <GuideSection number="03" title="Run with evidence">
+        <ol style={listStyle}>
+          <li>
+            Choose <strong>Run workflow</strong> to open the Run Console.
+          </li>
+          <li>
+            Use <strong>Current draft test</strong> for bounded execution of the
+            exact canvas definition, or <strong>Published live</strong> for the
+            durable runtime.
+          </li>
+          <li>
+            Enter the generated variables, choose the tool and failure policy,
+            and keep the agent, event, and depth budgets bounded.
+          </li>
+          <li>
+            Inspect summary, agent trace, events, terminal outputs, tokens, and
+            raw JSON before accepting the result.
+          </li>
+        </ol>
+      </GuideSection>
+      <GuideSection number="04" title="Questions this view can answer">
         <ul style={listStyle}>
           <li>What starts this agent, and what happens after it finishes?</li>
           <li>Which agents depend on this event?</li>
@@ -518,7 +539,8 @@ function EditGuide() {
       </PageHeading>
       <Callout tone="green" title="Recommended sequence">
         Understand the current path → enter Edit workflow → change one idea at a
-        time → review the change count and event names → deploy deliberately.
+        time → save → validate → run representative tests → publish
+        deliberately.
       </Callout>
       <GuideSection number="01" title="Start a draft">
         <ol style={listStyle}>
@@ -546,17 +568,32 @@ function EditGuide() {
             succeeds.
           </li>
           <li>
+            <strong>Instructions:</strong> generate or regenerate a reviewable
+            system-prompt proposal from the current role, ontology, inputs,
+            outputs, tools, and actions. Applying it is always explicit.
+          </li>
+          <li>
+            <strong>Model and runtime:</strong> set provider, model, reasoning,
+            temperature, tokens, retries, timeout, concurrency, schedule,
+            observability, tool-loop, output, and artifact controls.
+          </li>
+          <li>
+            <strong>Complete definition · all settings:</strong> inspect or edit
+            the entire lossless agent JSON contract.
+          </li>
+          <li>
             <strong>Remove node:</strong> removes the box from this draft. It
             does not delete past versions or run history.
           </li>
         </ul>
         <Callout tone="amber" title="Event names connect the workflow">
           An emitted event must exactly match the event a downstream box listens
-          for. Changing spelling, spaces, or capitalization can disconnect the
-          hand-off.
+          for. As soon as the names match, the canvas draws the link
+          automatically. Changing spelling, spaces, or capitalization removes
+          that hand-off.
         </Callout>
       </GuideSection>
-      <GuideSection number="03" title="Review and deploy">
+      <GuideSection number="03" title="Review, test, and publish">
         <ol style={listStyle}>
           <li>
             Review the header count for added, changed, and removed boxes.
@@ -566,16 +603,22 @@ function EditGuide() {
             approval steps.
           </li>
           <li>
-            Choose <strong>Deploy draft</strong>. Deployment creates a new
-            version and makes that version live. The server rejects an invalid
-            definition without replacing the live version.
+            Choose <strong>Save draft</strong>, then <strong>Validate</strong>.
+            Resolve every blocking server finding.
+          </li>
+          <li>
+            Choose <strong>Run</strong> and test representative entry events,
+            values, failure paths, and human decisions.
+          </li>
+          <li>
+            Choose <strong>Publish</strong> only after the exact saved revision
+            and its evidence are acceptable.
           </li>
         </ol>
         <Callout tone="blue" title="About the Validate button">
-          The separate Validate control is visible but does not run a dedicated
-          check in this release. Deploy draft performs the authoritative server
-          validation. Review the graph and event names first; an invalid
-          definition is rejected without replacing the live version.
+          Validate runs authoritative server checks against the saved immutable
+          draft. It reports blocking graph, manifest, model, tool, and prompt
+          findings without publishing or replacing the live version.
         </Callout>
       </GuideSection>
       <GuideSection number="04" title="Stop or continue later">
@@ -588,8 +631,8 @@ function EditGuide() {
             If it is restored later, a banner shows when it was saved.
           </li>
           <li>
-            A browser draft is not a team hand-off. Deploy it or coordinate with
-            another editor before switching devices.
+            A browser draft is not a team hand-off. Save and publish it, or
+            coordinate with another editor before switching devices.
           </li>
         </ul>
       </GuideSection>
@@ -634,9 +677,9 @@ function FieldReference() {
           "Use these to follow the process forward.",
         ],
         [
-          "Open agent",
-          "Opens the full Agent Studio definition.",
-          "Use it for instructions, input/output contracts, tools, runtime, tests, and versions.",
+          "Resizable agent details",
+          "Keeps the selected agent and its complete definition beside the canvas.",
+          "Drag the divider or double-click a box to make room for instructions, input/output contracts, tools, runtime, and advanced JSON.",
         ],
         [
           "View in event stream",
@@ -655,9 +698,14 @@ function FieldReference() {
           "Use it when changing box titles or event connections.",
         ],
         [
+          "Run workflow",
+          "Opens typed draft testing and published-live execution in one operational console.",
+          "Use draft mode for bounded multi-agent evidence; use live mode only when you intend to dispatch the published workflow.",
+        ],
+        [
           "New workflow",
-          "Opens a planning preview for a blank canvas, template, or import.",
-          "The preview form does not persist a workflow in this release. Use Import manifest for an approved workflow definition.",
+          "Creates a tenant-scoped server draft from a blank canvas, template, clone, or manifest.",
+          "Complete, validate, and test the resulting draft before publishing it.",
         ],
         [
           "Import manifest",
@@ -691,19 +739,39 @@ function FieldReference() {
           "Enter the exact names expected by downstream listeners.",
         ],
         [
+          "Generate prompt",
+          "Creates a non-destructive system/ontology prompt proposal from the complete current agent definition.",
+          "Review the proposal and provenance, then explicitly apply or discard it.",
+        ],
+        [
+          "Model & runtime",
+          "Controls provider/model, reasoning, sampling, tokens, retries, timeout, concurrency, schedule, observability, tool loop, and persistence.",
+          "Use inherited defaults unless the workflow needs an intentional, reviewed override.",
+        ],
+        [
+          "Complete definition · all settings",
+          "The lossless JSON contract for every agent setting.",
+          "Use it for expert review or fields not convenient in the guided controls.",
+        ],
+        [
           "Remove node",
           "Excludes the box from the new draft version.",
           "Use only after checking every incoming and outgoing event dependency.",
         ],
         [
           "Validate",
-          "Reserved for a future dedicated pre-deployment check.",
-          "It is not active in this release. Deploy draft performs the authoritative server validation and rejects invalid definitions.",
+          "Runs authoritative server checks against the saved draft revision.",
+          "Resolve blocking findings and save a new revision before publishing.",
         ],
         [
-          "Deploy draft",
-          "Creates a new workflow version and makes it live.",
-          "Review the change count and affected downstream owners first.",
+          "Run",
+          "Executes the exact current canvas in the bounded draft harness.",
+          "Supply representative inputs and review agent, event, output, token, and warning evidence.",
+        ],
+        [
+          "Publish",
+          "Promotes one immutable workflow version to live.",
+          "Publish only after save, validation, testing, and affected-owner review.",
         ],
         [
           "Discard draft",
@@ -754,7 +822,7 @@ function FieldReference() {
         [
           "Template",
           "A prepared multi-step pattern.",
-          "Choose the closest business process, then review every box and event before deployment.",
+          "Choose the closest business process, then review every box and event before publication.",
         ],
       ],
     },
@@ -912,11 +980,15 @@ function TroubleshootingGuide() {
       "Check that the first box completed successfully in Runs, emitted the expected event, and that the next box listens for that exact event. A configured line alone does not prove the event was processed.",
     ],
     [
-      "Deploy draft is disabled",
-      "Make at least one real draft change. If there is already a change, wait for the draft state to update. The button also stays disabled while another deployment is in progress.",
+      "Publish is disabled",
+      "Save the current edit, resolve blocking editor findings, and wait for any save or validation in progress. Validate and test the saved revision before publishing.",
     ],
     [
-      "Deployment failed",
+      "Draft test failed",
+      "Open Agent trace and start at the first blocked or failed action. Check validated inputs, tool policy, provider/model evidence, output-schema findings, and the event budgets before rerunning.",
+    ],
+    [
+      "Publication failed",
       "Read the error message, keep the draft, and fix the reported field. Common causes are invalid event names, incomplete agent definitions, or a newer version published by someone else. Refresh and compare before retrying a conflict.",
     ],
     [
@@ -925,7 +997,7 @@ function TroubleshootingGuide() {
     ],
     [
       "I changed the wrong thing",
-      "Before deployment, choose Discard draft. After deployment, do not recreate history manually—review the Deployments page and restore or republish the last known-good definition using your team's release process.",
+      "Before publication, choose Discard draft. After publication, do not recreate history manually—review the Deployments page and restore or republish the last known-good definition using your team's release process.",
     ],
   ];
 
@@ -969,7 +1041,7 @@ function TroubleshootingGuide() {
           </details>
         ))}
       </div>
-      <Callout tone="red" title="Stop before deploying when">
+      <Callout tone="red" title="Stop before publishing when">
         You cannot explain an event change, a human approval disappears, the
         validation result is unclear, or another person may be editing the same
         workflow. Ask the workflow owner or an engineer to review the draft.

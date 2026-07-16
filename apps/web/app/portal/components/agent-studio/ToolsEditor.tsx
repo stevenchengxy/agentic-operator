@@ -49,6 +49,7 @@ export function ToolsEditor({
         }}
       >
         <div
+          className="agent-studio-tool-catalog"
           style={{ borderRight: "1px solid var(--border)", paddingRight: 16 }}
         >
           <div style={{ marginBottom: 5 }}>
@@ -61,9 +62,9 @@ export function ToolsEditor({
           <div
             style={{
               marginBottom: 10,
-              color: "var(--text-3)",
-              fontSize: 10,
-              lineHeight: 1.4,
+              color: "var(--text-2)",
+              fontSize: 11.5,
+              lineHeight: 1.5,
             }}
           >
             The catalog description tells you what each tool can do. “Allowed”
@@ -98,6 +99,7 @@ export function ToolsEditor({
                     }}
                   >
                     <div
+                      className="agent-studio-tool-catalog-row"
                       style={{ display: "flex", gap: 8, alignItems: "center" }}
                     >
                       <button
@@ -108,16 +110,20 @@ export function ToolsEditor({
                       >
                         <div
                           className="mono"
-                          style={{ color: "var(--text)", fontSize: 11 }}
+                          style={{
+                            color: "var(--text)",
+                            fontSize: 12,
+                            fontWeight: 600,
+                          }}
                         >
                           {tool.name}
                         </div>
                         <div
                           style={{
-                            color: "var(--text-3)",
-                            fontSize: 10.5,
+                            color: "var(--text-2)",
+                            fontSize: 11.5,
                             marginTop: 3,
-                            lineHeight: 1.35,
+                            lineHeight: 1.5,
                           }}
                         >
                           {tool.summary}
@@ -163,10 +169,18 @@ export function ToolsEditor({
           ) : (
             <div style={{ display: "grid", gap: 14 }}>
               <div>
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <div
+                  className="agent-studio-tool-binding-header"
+                  style={{ display: "flex", alignItems: "center", gap: 8 }}
+                >
                   <h3
                     className="mono"
-                    style={{ margin: 0, color: "var(--text)", fontSize: 13 }}
+                    style={{
+                      margin: 0,
+                      color: "var(--text)",
+                      fontSize: 13,
+                      fontWeight: 600,
+                    }}
                   >
                     {binding.name}
                   </h3>
@@ -175,8 +189,8 @@ export function ToolsEditor({
                 </div>
                 <p
                   style={{
-                    color: "var(--text-3)",
-                    fontSize: 11.5,
+                    color: "var(--text-2)",
+                    fontSize: 12,
                     lineHeight: 1.55,
                   }}
                 >
@@ -212,8 +226,9 @@ export function ToolsEditor({
                   <div
                     className="mono"
                     style={{
-                      color: "var(--text-3)",
-                      fontSize: 10,
+                      color: "var(--text-2)",
+                      fontSize: 11.5,
+                      fontWeight: 600,
                       marginBottom: 7,
                     }}
                   >
@@ -221,6 +236,7 @@ export function ToolsEditor({
                   </div>
                   {Object.entries(meta.configSchema).map(([name, field]) => (
                     <div
+                      className="agent-studio-tool-config-row"
                       key={name}
                       style={{
                         display: "grid",
@@ -228,11 +244,17 @@ export function ToolsEditor({
                         gap: 8,
                         padding: "5px 0",
                         borderTop: "1px solid var(--border)",
-                        fontSize: 10.5,
+                        fontSize: 11.5,
+                        lineHeight: 1.45,
                       }}
                     >
-                      <code style={{ color: "var(--blue)" }}>{name}</code>
-                      <span style={{ color: "var(--text-3)" }}>
+                      <code
+                        className="mono"
+                        style={{ color: "var(--blue)", fontWeight: 600 }}
+                      >
+                        {name}
+                      </code>
+                      <span className="mono" style={{ color: "var(--text-2)" }}>
                         {field.type}
                       </span>
                       <span style={{ color: "var(--text-2)" }}>

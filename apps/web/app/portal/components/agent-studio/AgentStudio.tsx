@@ -3,11 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  PROVIDER_MODEL_CATALOG,
-  type CatalogModel,
-  type ProviderId,
-} from "@agentic/contracts";
+import { findCatalogModel, type ProviderId } from "@agentic/contracts";
 import {
   Badge,
   Button,
@@ -58,6 +54,7 @@ import { StepsEditor } from "./StepsEditor";
 import { TestLab } from "./TestLab";
 import { ToolsEditor } from "./ToolsEditor";
 import { AgentStudioHelp, type AgentStudioHelpTopic } from "./AgentStudioHelp";
+import { workflowCanvasHref } from "../workflows/workflow-navigation";
 
 type SectionId =
   | "overview"
@@ -120,16 +117,6 @@ const PROVIDERS = [
   "vertex",
   "custom",
 ];
-
-function selectedCatalogModel(
-  provider: string,
-  model: string,
-): CatalogModel | undefined {
-  if (!(provider in PROVIDER_MODEL_CATALOG) || !model) return undefined;
-  return PROVIDER_MODEL_CATALOG[provider as ProviderId].find(
-    (candidate) => candidate.name === model.replace(/^~/, ""),
-  );
-}
 
 function withReasoningControl(
   definition: StudioDefinition,
@@ -294,13 +281,18 @@ function RawDefinitionEditor({
         <Badge tone={error ? "red" : "green"}>
           {error ? "Invalid JSON" : "Valid definition"}
         </Badge>
-        <span style={{ color: "var(--text-3)", fontSize: 10.5 }}>
+        <span
+          style={{
+            color: "var(--text-2)",
+            fontSize: 11.5,
+            lineHeight: 1.5,
+          }}
+        >
           Unknown extension fields are preserved on round-trip.
         </span>
       </div>
       <div
         style={{
-          opacity: disabled ? 0.65 : 1,
           pointerEvents: disabled ? "none" : "auto",
         }}
       >
@@ -308,6 +300,7 @@ function RawDefinitionEditor({
           value={text}
           language="json"
           height={620}
+          readOnly={disabled}
           onChange={(next) => {
             setText(next);
             const parsed = parseLooseJson(next);
@@ -327,7 +320,7 @@ function RawDefinitionEditor({
       {error && (
         <div
           className="mono"
-          style={{ marginTop: 7, color: "var(--red)", fontSize: 10.5 }}
+          style={{ marginTop: 7, color: "var(--red)", fontSize: 11 }}
         >
           {error}
         </div>
@@ -336,18 +329,28 @@ function RawDefinitionEditor({
   );
 }
 
+export interface AgentStudioProps {
+  agentId: string;
+  initialSection?: "overview" | "test";
+  initialDraftId?: string;
+  initialEditing?: boolean;
+  workflowSlug?: string;
+  resumeToken?: string;
+}
+
 export function AgentStudio({
   agentId,
   initialSection,
-}: {
-  agentId: string;
-  initialSection?: "overview" | "test";
-}) {
+  initialDraftId,
+  initialEditing = false,
+  workflowSlug,
+  resumeToken,
+}: AgentStudioProps) {
   const tenant = useTenant();
   const router = useRouter();
   const toast = useToast();
   const dirtyStore = useDirty();
-  const editor = useAgentEditor(agentId);
+  const editor = useAgentEditor(agentId, initialDraftId);
   const agents = useAgents();
   const [section, setSection] = useState<SectionId>(
     initialSection ?? "overview",
@@ -370,6 +373,8 @@ export function AgentStudio({
   const saveInFlight = useRef(false);
   const definitionRef = useRef<StudioDefinition | null>(null);
   const editSessionStart = useRef<StudioDefinition | null>(null);
+  const initialEditHandled = useRef("");
+  const [navigationPending, setNavigationPending] = useState(false);
   const createDraft = useCreateAgentDraft(agentId);
   const saveDraft = useSaveAgentDraft(editor.data?.draft?.id);
   const validateDraft = useValidateAgentDraft(agentId, editor.data?.draft?.id);
@@ -422,8 +427,10 @@ export function AgentStudio({
     (issue) => issue.severity === "error",
   ).length;
   const runtimeModelCapabilities = definition
-    ? selectedCatalogModel(definition.provider, definition.model)
+    ? findCatalogModel(definition.provider as ProviderId, definition.model)
     : undefined;
+  const runtimeTemperatureRange = runtimeModelCapabilities?.temperatureRange;
+  const runtimeTemperatureUnsupported = runtimeTemperatureRange === null;
 
   useEffect(() => {
     definitionRef.current = definition;
@@ -550,6 +557,91 @@ export function AgentStudio({
     editSessionStart.current = cloneDefinition(definition);
     setEditing(true);
     setSaveState("idle");
+  }
+
+  useEffect(() => {
+    const initialEditKey = `${agentId}:${initialDraftId ?? "current"}`;
+    if (
+      !initialEditing ||
+      initialEditHandled.current === initialEditKey ||
+      !definition ||
+      !editor.data ||
+      editor.data.agent.kebabId !== agentId
+    )
+      return;
+
+    initialEditHandled.current = initialEditKey;
+    void startEditing();
+  }, [
+    agentId,
+    definition,
+    editor.data,
+    initialDraftId,
+    initialEditing,
+    startEditing,
+  ]);
+
+  async function openAnotherAgent(nextAgentId: string) {
+    if (nextAgentId === agentId || navigationPending || saveInFlight.current)
+      return;
+    if (workflowSlug) {
+      toast({
+        tone: "amber",
+        title: "This workflow agent is pinned",
+        description:
+          "Return to the workflow canvas before choosing another agent. This keeps the saved workflow version and agent draft paired correctly.",
+      });
+      return;
+    }
+    setNavigationPending(true);
+    if (dirty && !(await persist(true))) {
+      setNavigationPending(false);
+      toast({
+        tone: "red",
+        title: "Could not switch agents",
+        description:
+          "Your unsaved changes are still open. Save them before opening another agent.",
+      });
+      return;
+    }
+
+    const href = `/portal/${encodeURIComponent(
+      tenant,
+    )}/agents/${encodeURIComponent(nextAgentId)}${
+      initialEditing ? "?edit=1" : ""
+    }`;
+    router.push(href as never);
+  }
+
+  async function returnToWorkflow() {
+    if (!workflowSlug || navigationPending || saveInFlight.current) return;
+    setNavigationPending(true);
+
+    let agentDraftId = editor.data?.draft?.id ?? initialDraftId ?? null;
+    if (dirty) {
+      const saved = await persist(true);
+      if (!saved) {
+        setNavigationPending(false);
+        toast({
+          tone: "red",
+          title: "Could not return to workflow",
+          description:
+            "Your changes are still open in Agent Studio. Retry Save, then return to the workflow.",
+        });
+        return;
+      }
+      agentDraftId = saved.id;
+    }
+
+    router.push(
+      workflowCanvasHref({
+        tenant,
+        workflowSlug,
+        agentId,
+        resumeToken,
+        agentDraftId,
+      }) as never,
+    );
   }
 
   async function finishEditing() {
@@ -762,6 +854,7 @@ export function AgentStudio({
         >
           <div style={{ display: "grid", gap: 14 }}>
             <div
+              className="agent-studio-form-grid agent-studio-form-grid--2"
               style={{
                 display: "grid",
                 gridTemplateColumns: "1fr 1fr",
@@ -808,6 +901,7 @@ export function AgentStudio({
               />
             </Field>
             <div
+              className="agent-studio-overview-settings-grid"
               style={{
                 display: "grid",
                 gridTemplateColumns: "1fr 1fr 1fr",
@@ -942,8 +1036,9 @@ export function AgentStudio({
               style={{
                 display: "flex",
                 justifyContent: "space-between",
-                color: "var(--text-3)",
-                fontSize: 10.5,
+                color: "var(--text-2)",
+                fontSize: 11.5,
+                lineHeight: 1.5,
                 marginTop: 6,
               }}
             >
@@ -1025,6 +1120,7 @@ export function AgentStudio({
             subtitle="The aggregate output is always persisted as a JSON artifact."
           >
             <div
+              className="agent-studio-form-grid agent-studio-form-grid--2"
               style={{
                 display: "grid",
                 gridTemplateColumns: "1fr 1fr",
@@ -1214,6 +1310,7 @@ export function AgentStudio({
             subtitle="Leave provider and model inherited to use workspace defaults."
           >
             <div
+              className="agent-studio-form-grid agent-studio-form-grid--2"
               style={{
                 display: "grid",
                 gridTemplateColumns: "1fr 1fr",
@@ -1400,15 +1497,26 @@ export function AgentStudio({
               ) : null}
               <Field
                 label="Creativity"
-                hint="Controls variation. Use 0–0.3 for consistent extraction/classification and 0.7–1 for creative writing."
-                example="0.2"
+                hint={
+                  runtimeTemperatureUnsupported
+                    ? `${definition.provider}/${definition.model.replace(/^~/, "")} does not support temperature. This saved compatibility value is omitted by the gateway.`
+                    : `Controls variation. Use 0–0.3 for consistent extraction/classification and 0.7–1 for creative writing.${runtimeTemperatureRange ? ` Accepted range: ${runtimeTemperatureRange.min}–${runtimeTemperatureRange.max}.` : ""}`
+                }
+                example={runtimeTemperatureUnsupported ? undefined : "0.2"}
               >
                 <TextInput
-                  value={definition.temperature}
+                  value={
+                    runtimeTemperatureUnsupported ? "" : definition.temperature
+                  }
                   type="number"
-                  min={0}
-                  max={2}
-                  disabled={!editable}
+                  min={runtimeTemperatureRange?.min ?? 0}
+                  max={runtimeTemperatureRange?.max ?? 2}
+                  placeholder={
+                    runtimeTemperatureUnsupported
+                      ? "Not supported — omitted"
+                      : undefined
+                  }
+                  disabled={!editable || runtimeTemperatureUnsupported}
                   onChange={(temperature) =>
                     update({ ...definition, temperature: Number(temperature) })
                   }
@@ -1433,6 +1541,7 @@ export function AgentStudio({
           </StudioPanel>
           <StudioPanel title="Reliability and capacity">
             <div
+              className="agent-studio-form-grid agent-studio-form-grid--3"
               style={{
                 display: "grid",
                 gridTemplateColumns: "repeat(3, 1fr)",
@@ -1633,6 +1742,7 @@ export function AgentStudio({
             subtitle="Optional cron execution; event and manual triggers continue to work independently."
           >
             <div
+              className="agent-studio-form-grid agent-studio-form-grid--2"
               style={{
                 display: "grid",
                 gridTemplateColumns: "1fr 1fr",
@@ -1786,6 +1896,7 @@ export function AgentStudio({
             <div style={{ display: "grid", gap: 7 }}>
               {versions.data.items.map((version) => (
                 <div
+                  className="agent-studio-version-row"
                   key={version.id}
                   style={{
                     display: "grid",
@@ -1805,14 +1916,19 @@ export function AgentStudio({
                   <div>
                     <div
                       className="mono"
-                      style={{ color: "var(--text)", fontSize: 11 }}
+                      style={{
+                        color: "var(--text)",
+                        fontSize: 12,
+                        fontWeight: 600,
+                      }}
                     >
                       {version.definitionHash?.slice(0, 16) ?? "no hash"}
                     </div>
                     <div
                       style={{
-                        color: "var(--text-3)",
-                        fontSize: 10.5,
+                        color: "var(--text-2)",
+                        fontSize: 11.5,
+                        lineHeight: 1.5,
                         marginTop: 4,
                       }}
                     >
@@ -1821,7 +1937,11 @@ export function AgentStudio({
                   </div>
                   <div
                     className="mono"
-                    style={{ color: "var(--text-3)", fontSize: 10 }}
+                    style={{
+                      color: "var(--text-2)",
+                      fontSize: 11,
+                      lineHeight: 1.5,
+                    }}
                   >
                     {(
                       version.publishedAt ?? version.createdAt
@@ -1871,6 +1991,7 @@ export function AgentStudio({
   const activeSection = mode === "advanced" ? "advanced" : section;
   return (
     <div
+      className="agent-studio-shell"
       style={{
         height: "100%",
         minHeight: 0,
@@ -1880,6 +2001,7 @@ export function AgentStudio({
       }}
     >
       <header
+        className="agent-studio-header"
         style={{
           flexShrink: 0,
           borderBottom: "1px solid var(--border)",
@@ -1888,6 +2010,7 @@ export function AgentStudio({
         }}
       >
         <div
+          className="agent-studio-header-row"
           style={{
             display: "flex",
             alignItems: "center",
@@ -1895,21 +2018,34 @@ export function AgentStudio({
             gap: 12,
           }}
         >
-          <Link
-            href={`/portal/${tenant}/agents`}
-            style={{ display: "inline-flex", color: "var(--text-3)" }}
-            aria-label="Back to agents"
-          >
-            <Icon name="chevron-left" size={14} />
-          </Link>
+          {workflowSlug ? (
+            <Button
+              small
+              icon="chevron-left"
+              disabled={navigationPending || saveState === "saving"}
+              title="Save this agent draft and return to the workflow canvas"
+              onClick={() => void returnToWorkflow()}
+            >
+              {navigationPending ? "Returning…" : "Back to workflow"}
+            </Button>
+          ) : (
+            <Link
+              href={`/portal/${tenant}/agents`}
+              style={{ display: "inline-flex", color: "var(--text-2)" }}
+              aria-label="Back to agents"
+            >
+              <Icon name="chevron-left" size={14} />
+            </Link>
+          )}
           <div style={{ minWidth: 0, flex: 1 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <div
+              className="agent-studio-header-identity"
+              style={{ display: "flex", alignItems: "center", gap: 8 }}
+            >
               <h1
+                className="agent-studio-title"
                 style={{
                   margin: 0,
-                  color: "var(--text)",
-                  fontSize: 16,
-                  fontWeight: 600,
                 }}
               >
                 {definition.title}
@@ -1919,15 +2055,24 @@ export function AgentStudio({
               >
                 {draft ? "Draft" : codeCompatibility ? "Compatibility" : "Live"}
               </Badge>
-              <Badge tone={editing ? "solid" : "muted"}>
+              <Badge
+                tone={editing ? "solid" : "muted"}
+                style={editing ? undefined : { color: "var(--text-2)" }}
+              >
                 {codeCompatibility
                   ? "Read only"
                   : editing
                     ? "Editing"
                     : "View mode"}
               </Badge>
-              <Badge tone="muted">{editor.data.agent.actor}</Badge>
-              {codeCompatibility && <Badge tone="muted">Code-defined</Badge>}
+              <Badge tone="muted" style={{ color: "var(--text-2)" }}>
+                {editor.data.agent.actor}
+              </Badge>
+              {codeCompatibility && (
+                <Badge tone="muted" style={{ color: "var(--text-2)" }}>
+                  Code-defined
+                </Badge>
+              )}
               {generatedCompatibility && (
                 <Badge tone="amber">Generated manifest</Badge>
               )}
@@ -1941,39 +2086,69 @@ export function AgentStudio({
               )}
             </div>
             <div
-              className="mono"
-              style={{ marginTop: 3, color: "var(--text-3)", fontSize: 10 }}
+              className="mono agent-studio-header-meta"
+              style={{ marginTop: 3 }}
             >
               {definition.name} · {editor.data.live?.version ?? "unpublished"} ·{" "}
               {definition.inputs.length} inputs · {definition.outputs.length}{" "}
               outputs · {definition.tool_use.length} tools
             </div>
           </div>
-          <select
-            value={agentId}
-            aria-label="Open another agent"
-            onChange={(event) =>
-              router.push(
-                `/portal/${tenant}/agents/${event.target.value}` as never,
-              )
-            }
-            style={{
-              maxWidth: 190,
-              padding: "5px 8px",
-              color: "var(--text-2)",
-              background: "var(--panel-2)",
-              border: "1px solid var(--border-2)",
-              borderRadius: 4,
-              fontFamily: "var(--mono)",
-              fontSize: 10.5,
-            }}
-          >
-            {(agents.data ?? []).map((agent) => (
-              <option key={agent.kebabId} value={agent.kebabId}>
-                {agent.title} · {agent.kebabId}
-              </option>
-            ))}
-          </select>
+          {workflowSlug ? (
+            <div
+              className="agent-studio-agent-select"
+              role="status"
+              aria-label={`Workflow handoff for ${workflowSlug}. ${definition.title} is pinned until you return to the workflow canvas.`}
+              title="Return to the workflow canvas to choose another agent. This agent and its exact workflow version are pinned together."
+              style={{
+                minWidth: 0,
+                maxWidth: 260,
+                padding: "5px 8px",
+                border: "1px solid rgba(132,169,255,0.32)",
+                borderRadius: 4,
+                display: "flex",
+                alignItems: "center",
+                gap: 7,
+                fontFamily: "var(--mono)",
+              }}
+            >
+              <Icon name="workflow" size={14} />
+              <span
+                style={{
+                  minWidth: 0,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {workflowSlug} · {definition.title}
+              </span>
+              <Badge tone="blue" style={{ marginLeft: "auto" }}>
+                Pinned
+              </Badge>
+            </div>
+          ) : (
+            <select
+              className="agent-studio-agent-select"
+              value={agentId}
+              aria-label="Open another agent"
+              disabled={navigationPending || saveState === "saving"}
+              onChange={(event) => void openAnotherAgent(event.target.value)}
+              style={{
+                maxWidth: 190,
+                padding: "5px 8px",
+                border: "1px solid var(--border-2)",
+                borderRadius: 4,
+                fontFamily: "var(--mono)",
+              }}
+            >
+              {(agents.data ?? []).map((agent) => (
+                <option key={agent.kebabId} value={agent.kebabId}>
+                  {agent.title} · {agent.kebabId}
+                </option>
+              ))}
+            </select>
+          )}
           <Segmented
             ariaLabel="Editor view"
             value={mode}
@@ -2035,7 +2210,7 @@ export function AgentStudio({
           ) : editing ? (
             <>
               <span
-                className="mono"
+                className="mono agent-studio-revision-status"
                 role="status"
                 style={{
                   color:
@@ -2043,8 +2218,7 @@ export function AgentStudio({
                       ? "var(--red)"
                       : dirty
                         ? "var(--amber)"
-                        : "var(--text-3)",
-                  fontSize: 10,
+                        : "var(--text-2)",
                 }}
               >
                 {saveState === "saving"
@@ -2119,10 +2293,7 @@ export function AgentStudio({
             </>
           ) : (
             <>
-              <span
-                className="mono"
-                style={{ color: "var(--text-3)", fontSize: 10 }}
-              >
+              <span className="mono agent-studio-revision-status">
                 rev {revision} · protected
               </span>
               <Button
@@ -2227,63 +2398,50 @@ export function AgentStudio({
         </div>
       )}
 
-      {draft && (
-        <div
-          className={`agent-studio-notice-grid${
-            generatedCompatibility || upgradedCompatibility
-              ? " agent-studio-notice-grid--split"
-              : ""
-          }`}
-          style={{
-            background: editing
-              ? "rgba(208,255,0,0.035)"
-              : "rgba(132,169,255,0.035)",
-          }}
-        >
-          <InlineNotice
-            tone={editing ? "signal" : "blue"}
-            title={
-              editing ? "Edit mode is on" : "Draft is protected in view mode"
-            }
-            action={
-              !editing ? (
-                <Button
-                  small
-                  tone="primary"
-                  disabled={!editor.data.capabilities.canEdit}
-                  onClick={() => void startEditing()}
-                >
-                  Edit
-                </Button>
-              ) : undefined
-            }
+      {draft &&
+        (editing || generatedCompatibility || upgradedCompatibility) && (
+          <div
+            className={`agent-studio-notice-grid${
+              editing && (generatedCompatibility || upgradedCompatibility)
+                ? " agent-studio-notice-grid--split"
+                : ""
+            }`}
+            style={{
+              background: editing
+                ? "rgba(208,255,0,0.035)"
+                : "rgba(132,169,255,0.035)",
+            }}
           >
-            {editing
-              ? "Make changes across any section. Autosave creates checkpoints; Save stores one immediately, Done saves and exits, and Cancel restores the draft to the start of this edit session."
-              : "You can inspect, validate, test, or publish this saved draft. Click Edit before changing fields."}
-          </InlineNotice>
-          {(generatedCompatibility || upgradedCompatibility) && (
-            <InlineNotice
-              tone={generatedCompatibility ? "amber" : "blue"}
-              title={
-                generatedCompatibility
-                  ? "Starter manifest created for this older agent"
-                  : "Older definition converted to the current format"
-              }
-            >
-              {generatedCompatibility
-                ? "No usable manifest was saved, so Agent Studio created a safe starting draft from the agent's identity and known event triggers. Review the instructions, inputs, steps, and outputs; then test before publishing."
-                : `Agent Studio recovered this draft from ${compatibilitySource.includes("action-catalog") ? "the older action catalog" : "an earlier saved version"}. The original version remains unchanged for historical runs. Review and test this draft before publishing.`}
-            </InlineNotice>
-          )}
-        </div>
-      )}
+            {editing && (
+              <InlineNotice tone="signal" title="Edit mode is on">
+                Make changes across any section. Autosave creates checkpoints;
+                Save stores one immediately, Done saves and exits, and Cancel
+                restores the draft to the start of this edit session.
+              </InlineNotice>
+            )}
+            {(generatedCompatibility || upgradedCompatibility) && (
+              <InlineNotice
+                tone={generatedCompatibility ? "amber" : "blue"}
+                title={
+                  generatedCompatibility
+                    ? "Starter manifest created for this older agent"
+                    : "Older definition converted to the current format"
+                }
+              >
+                {generatedCompatibility
+                  ? "No usable manifest was saved, so Agent Studio created a safe starting draft from the agent's identity and known event triggers. Review the instructions, inputs, steps, and outputs; then test before publishing."
+                  : `Agent Studio recovered this draft from ${compatibilitySource.includes("action-catalog") ? "the older action catalog" : "an earlier saved version"}. The original version remains unchanged for historical runs. Review and test this draft before publishing.`}
+              </InlineNotice>
+            )}
+          </div>
+        )}
 
       <div
         className={`agent-studio-layout${activeSection === "test" ? " agent-studio-layout--test" : ""}`}
         style={{ flex: 1, minHeight: 0, display: "grid" }}
       >
         <nav
+          className="agent-studio-section-nav"
           aria-label="Agent editor sections"
           style={{
             overflow: "auto",
@@ -2293,12 +2451,9 @@ export function AgentStudio({
           }}
         >
           <div
-            className="mono"
+            className="mono agent-studio-section-nav-label"
             style={{
               padding: "0 8px 8px",
-              color: "var(--text-4)",
-              fontSize: 9.5,
-              letterSpacing: ".08em",
             }}
           >
             BUILD
@@ -2307,6 +2462,9 @@ export function AgentStudio({
             const active = activeSection === item.id;
             return (
               <button
+                className={`agent-studio-section-nav-item${
+                  active ? " agent-studio-section-nav-item--active" : ""
+                }`}
                 type="button"
                 key={item.id}
                 aria-current={active ? "page" : undefined}
@@ -2322,27 +2480,25 @@ export function AgentStudio({
                   padding: "8px 9px",
                   marginBottom: 2,
                   borderRadius: 4,
-                  color: active ? "var(--text)" : "var(--text-3)",
                   background: active ? "var(--panel-3)" : "transparent",
                   borderLeft: `2px solid ${active ? "var(--signal)" : "transparent"}`,
                   textAlign: "left",
-                  fontSize: 11.5,
                 }}
               >
                 <Icon name={item.icon} size={11} />
                 <span style={{ flex: 1 }}>{item.label}</span>
                 {item.id === "inputs" && (
-                  <span className="mono" style={{ fontSize: 9 }}>
+                  <span className="mono agent-studio-section-nav-count">
                     {definition.inputs.length}
                   </span>
                 )}
                 {item.id === "outputs" && (
-                  <span className="mono" style={{ fontSize: 9 }}>
+                  <span className="mono agent-studio-section-nav-count">
                     {definition.outputs.length}
                   </span>
                 )}
                 {item.id === "tools" && (
-                  <span className="mono" style={{ fontSize: 9 }}>
+                  <span className="mono agent-studio-section-nav-count">
                     {definition.tool_use.length}
                   </span>
                 )}
@@ -2373,46 +2529,31 @@ export function AgentStudio({
         </nav>
 
         <main
+          className="agent-studio-main"
           style={{ minWidth: 0, overflow: "auto", padding: "18px 20px 40px" }}
         >
           <div
+            className="agent-studio-main-inner"
             style={{
               maxWidth: activeSection === "test" ? 1500 : 1040,
               margin: "0 auto",
             }}
           >
             <div style={{ marginBottom: 14 }}>
-              <div
-                className="mono"
-                style={{
-                  color: "var(--signal)",
-                  fontSize: 9.5,
-                  letterSpacing: ".08em",
-                  textTransform: "uppercase",
-                }}
-              >
+              <div className="mono agent-studio-section-eyebrow" style={{}}>
                 Agent Studio /{" "}
                 {SECTIONS.find((item) => item.id === activeSection)?.label}
               </div>
               <h2
+                className="agent-studio-section-title"
                 style={{
                   margin: "4px 0 0",
-                  fontSize: 19,
-                  color: "var(--text)",
-                  fontWeight: 500,
                 }}
               >
                 {SECTIONS.find((item) => item.id === activeSection)?.label}
               </h2>
             </div>
-            <div
-              style={{
-                opacity:
-                  !editable && !["test", "versions"].includes(activeSection)
-                    ? 0.78
-                    : 1,
-              }}
-            >
+            <div className="agent-studio-section-content">
               {renderGuidedSection()}
             </div>
           </div>
@@ -2436,9 +2577,7 @@ export function AgentStudio({
               marginBottom: 9,
             }}
           >
-            <span
-              style={{ color: "var(--text)", fontSize: 11.5, fontWeight: 600 }}
-            >
+            <span className="agent-studio-context-title">
               Definition health
             </span>
             <Badge tone={errorCount ? "red" : "green"}>
@@ -2475,9 +2614,8 @@ export function AgentStudio({
                       {issue.severity}
                     </Badge>
                     <span
+                      className="agent-studio-issue-path"
                       style={{
-                        color: "var(--text-3)",
-                        fontSize: 9.5,
                         overflowWrap: "anywhere",
                       }}
                     >
@@ -2485,22 +2623,18 @@ export function AgentStudio({
                     </span>
                   </div>
                   <div
+                    className="agent-studio-issue-message"
                     style={{
                       marginTop: 6,
-                      color: "var(--text-2)",
-                      fontSize: 10.5,
-                      lineHeight: 1.45,
                     }}
                   >
                     {issue.message}
                   </div>
                   {issue.suggestion && (
                     <div
+                      className="agent-studio-issue-suggestion"
                       style={{
                         marginTop: 5,
-                        color: "var(--blue)",
-                        fontSize: 10.5,
-                        lineHeight: 1.45,
                       }}
                     >
                       Try this: {issue.suggestion}
@@ -2522,8 +2656,8 @@ export function AgentStudio({
             }}
           >
             <div
-              className="mono"
-              style={{ color: "var(--text-4)", fontSize: 9.5, marginBottom: 8 }}
+              className="mono agent-studio-quick-facts-title"
+              style={{ marginBottom: 8 }}
             >
               QUICK FACTS
             </div>
@@ -2554,6 +2688,7 @@ export function AgentStudio({
               ],
             ].map(([label, value]) => (
               <div
+                className="agent-studio-quick-fact"
                 key={label}
                 style={{
                   display: "grid",
@@ -2561,14 +2696,12 @@ export function AgentStudio({
                   gap: 6,
                   padding: "5px 0",
                   borderBottom: "1px solid var(--border)",
-                  fontSize: 10.5,
                 }}
               >
-                <span style={{ color: "var(--text-3)" }}>{label}</span>
+                <span className="agent-studio-quick-fact-label">{label}</span>
                 <span
-                  className="mono"
+                  className="mono agent-studio-quick-fact-value"
                   style={{
-                    color: "var(--text-2)",
                     overflow: "hidden",
                     textOverflow: "ellipsis",
                   }}

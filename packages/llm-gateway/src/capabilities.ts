@@ -1,17 +1,6 @@
-import {
-  PROVIDER_MODEL_CATALOG,
-  type CatalogModel,
-  type ProviderId,
-} from "@agentic/contracts";
+import { findCatalogModel, type ProviderId } from "@agentic/contracts";
 import { LLMError } from "./errors";
 import type { ChatRequest } from "./types";
-
-function catalogModel(provider: ProviderId, model: string): CatalogModel | undefined {
-  const normalized = model.startsWith("~") ? model.slice(1) : model;
-  return PROVIDER_MODEL_CATALOG[provider]?.find(
-    (candidate) => candidate.name === normalized,
-  );
-}
 
 function unsupported(
   provider: ProviderId,
@@ -20,13 +9,54 @@ function unsupported(
   value: string,
   supported: readonly string[] = [],
 ): never {
-  const suffix = supported.length > 0
-    ? ` Supported values: ${supported.join(", ")}.`
-    : " This model does not advertise that control.";
+  const suffix =
+    supported.length > 0
+      ? ` Supported values: ${supported.join(", ")}.`
+      : " This model does not advertise that control.";
   throw new LLMError(
     `${provider}/${model} does not support ${control}=${value}.${suffix}`,
     "bad_request",
     provider,
+  );
+}
+
+export function omitTemperature(req: ChatRequest): ChatRequest {
+  if (req.temperature === undefined) return req;
+  const normalized = { ...req };
+  delete normalized.temperature;
+  return normalized;
+}
+
+/**
+ * Agent definitions historically carry a temperature default even when a
+ * one-off provider/model override is selected. Catalog-known models that
+ * reject the field must receive no `temperature` key at all.
+ */
+export function normalizeModelRequest(
+  provider: ProviderId,
+  model: string,
+  req: ChatRequest,
+): ChatRequest {
+  const catalog = findCatalogModel(provider, model);
+  return catalog?.temperatureRange === null ? omitTemperature(req) : req;
+}
+
+/**
+ * Narrow compatibility fallback for live/custom model ids that are newer
+ * than the catalog. Only an explicit 400-style unsupported-temperature error
+ * qualifies; value/range errors and unrelated bad requests are not retried.
+ */
+export function isUnsupportedTemperatureError(error: LLMError): boolean {
+  if (error.code !== "bad_request") return false;
+  const message = error.message.toLowerCase();
+  if (!message.includes("temperature")) return false;
+  return (
+    message.includes("unsupported") ||
+    message.includes("not supported") ||
+    message.includes("not allowed") ||
+    message.includes("cannot be modified") ||
+    message.includes("unknown parameter") ||
+    message.includes("unrecognized parameter")
   );
 }
 
@@ -38,16 +68,34 @@ function unsupported(
 export function assertModelControls(
   provider: ProviderId,
   model: string,
-  req: Pick<ChatRequest, "reasoning" | "verbosity" | "store">,
+  req: Pick<ChatRequest, "reasoning" | "verbosity" | "store" | "temperature">,
 ): void {
-  const catalog = catalogModel(provider, model);
+  const catalog = findCatalogModel(provider, model);
   if (!catalog) return;
+
+  if (req.temperature !== undefined) {
+    const range = catalog.temperatureRange;
+    if (range === null) {
+      unsupported(provider, model, "temperature", String(req.temperature));
+    }
+    if (range && (req.temperature < range.min || req.temperature > range.max)) {
+      unsupported(provider, model, "temperature", String(req.temperature), [
+        `${range.min}..${range.max}`,
+      ]);
+    }
+  }
 
   const reasoning = req.reasoning;
   if (reasoning?.effort !== undefined) {
     const supported = catalog.reasoningEfforts ?? [];
     if (!supported.includes(reasoning.effort)) {
-      unsupported(provider, model, "reasoning.effort", reasoning.effort, supported);
+      unsupported(
+        provider,
+        model,
+        "reasoning.effort",
+        reasoning.effort,
+        supported,
+      );
     }
   }
   if (reasoning?.mode !== undefined) {
@@ -87,7 +135,11 @@ export function assertModelControls(
     }
   }
 
-  if (req.store !== undefined && provider !== "openai" && provider !== "openrouter") {
+  if (
+    req.store !== undefined &&
+    provider !== "openai" &&
+    provider !== "openrouter"
+  ) {
     unsupported(provider, model, "store", String(req.store));
   }
   if (provider === "openrouter" && req.store === true) {

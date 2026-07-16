@@ -1,6 +1,6 @@
 "use client";
 
-import type { ReactNode } from "react";
+import type { DragEvent, ReactNode } from "react";
 import type { WorkflowValidationResponse } from "@agentic/contracts";
 import {
   ActorTag,
@@ -12,6 +12,7 @@ import {
 import { fmtAgo } from "@/lib/format";
 import { useAgent, type DagAgent } from "@/lib/hooks/useAgents";
 import { useEvents, type EventRow } from "@/lib/hooks/useEvents";
+import { WORKFLOW_AGENT_DRAG_TYPE } from "./canvas-interactions";
 import type { WorkflowDraft } from "./draft";
 
 /**
@@ -224,21 +225,24 @@ export function DefaultInspector({
 export function AgentInspector({
   agent,
   onClose,
-  onOpenFull,
-  canOpenFull,
+  onToggleWidth,
+  isWide,
+  canResize,
   workflowLabel,
 }: {
   agent: DagAgent | null | undefined;
   onClose: () => void;
-  onOpenFull: () => void;
-  canOpenFull: boolean;
+  onToggleWidth: () => void;
+  isWide: boolean;
+  canResize: boolean;
   workflowLabel: string;
 }) {
-  // Fetch the rich AgentDetail (actions, workflowSlug, workflowVersion,
-  // recentRuns) when an agent is selected. Falls back gracefully when the
-  // detail call is still loading — the inspector renders triggers/emits
-  // from the canvas-side DagAgent immediately.
-  const detailQuery = useAgent(canOpenFull ? (agent?.kebabId ?? null) : null);
+  // Complete workflow definitions are authoritative. Only fetch the live
+  // AgentDetail as a compatibility fallback for an older DAG projection that
+  // does not yet carry its source definition.
+  const detailQuery = useAgent(
+    agent && !agent.definition ? agent.kebabId : null,
+  );
   const detail = detailQuery.data;
   if (!agent) return null;
 
@@ -346,6 +350,55 @@ export function AgentInspector({
           {workflowLabel}
         </span>
       </Section>
+      <Section title="Complete agent settings">
+        {agent.definition ? (
+          <details
+            key={isWide ? "wide" : "standard"}
+            open={isWide || undefined}
+            style={{
+              border: "1px solid var(--border)",
+              borderRadius: 5,
+              background: "var(--bg-2)",
+              overflow: "hidden",
+            }}
+          >
+            <summary
+              style={{
+                padding: "9px 10px",
+                color: "var(--text-2)",
+                fontSize: 11.5,
+                fontWeight: 600,
+                cursor: "pointer",
+              }}
+            >
+              View complete manifest JSON
+            </summary>
+            <pre
+              aria-label={`Complete settings for ${agent.title}`}
+              style={{
+                margin: 0,
+                padding: 12,
+                maxHeight: isWide ? "calc(100vh - 410px)" : 360,
+                overflow: "auto",
+                color: "var(--text)",
+                background: "#0f0f11",
+                borderTop: "1px solid var(--border)",
+                fontFamily: "var(--mono)",
+                fontSize: 11,
+                lineHeight: 1.55,
+                whiteSpace: "pre",
+              }}
+            >
+              {JSON.stringify(agent.definition, null, 2)}
+            </pre>
+          </details>
+        ) : (
+          <span style={{ color: "var(--text-3)", fontSize: 11.5 }}>
+            The complete definition is unavailable in this older workflow
+            projection. Edit the workflow to load or regenerate it.
+          </span>
+        )}
+      </Section>
       <div
         style={{
           padding: 14,
@@ -355,13 +408,30 @@ export function AgentInspector({
           borderTop: "1px solid var(--border)",
         }}
       >
-        {canOpenFull ? (
-          <Button icon="external" onClick={onOpenFull} style={{ flex: 1 }}>
-            Open live agent
+        {canResize ? (
+          <Button
+            icon={isWide ? "chevron-right" : "chevron-left"}
+            tone="primary"
+            onClick={onToggleWidth}
+            ariaLabel={
+              isWide
+                ? "Restore standard agent details width"
+                : "Expand agent details panel"
+            }
+            style={{ flex: 1, justifyContent: "center" }}
+          >
+            {isWide ? "Restore panel" : "Expand details"}
           </Button>
         ) : (
-          <span style={{ color: "var(--text-3)", fontSize: 11.5 }}>
-            Publish this workflow before opening or running its agent.
+          <span
+            style={{
+              width: "100%",
+              color: "var(--text-3)",
+              fontSize: 11,
+              textAlign: "center",
+            }}
+          >
+            Full width on this screen
           </span>
         )}
       </div>
@@ -527,12 +597,23 @@ export function EditDraftBanner({
         borderBottom: "1px solid rgba(255,181,71,0.25)",
         display: "flex",
         alignItems: "center",
+        flexWrap: "wrap",
         gap: 14,
         flexShrink: 0,
       }}
     >
       <Icon name="alert" size={12} style={{ color: "var(--amber)" }} />
-      <div style={{ fontSize: 12, color: "var(--text)" }}>
+      <div
+        style={{
+          display: "flex",
+          minWidth: 0,
+          alignItems: "baseline",
+          flexWrap: "wrap",
+          gap: "4px 12px",
+          fontSize: 12,
+          color: "var(--text)",
+        }}
+      >
         <span
           style={{
             color: "var(--amber)",
@@ -544,13 +625,12 @@ export function EditDraftBanner({
         >
           EDITING DRAFT
         </span>
-        <span style={{ marginLeft: 12, color: "var(--text-2)" }}>
+        <span style={{ color: "var(--text-2)" }}>
           {counts.added} added · {counts.modified} modified · {counts.removed}{" "}
           removed
         </span>
         <span
           style={{
-            marginLeft: 12,
             color: "var(--text-3)",
             fontFamily: "var(--mono)",
           }}
@@ -565,18 +645,24 @@ export function EditDraftBanner({
 export function EditToolbar({
   tool,
   setTool,
+  onAddAgent,
   onAutoLayout,
   onZoomToFit,
 }: {
   tool: string;
   setTool: (t: string) => void;
+  onAddAgent: () => void;
   onAutoLayout: () => void;
   onZoomToFit: () => void;
 }) {
   const tools = [
     { id: "select", icon: "filter" as const, label: "Select" },
     { id: "connect", icon: "git" as const, label: "Connect" },
-    { id: "add", icon: "plus" as const, label: "Add" },
+    {
+      id: "add",
+      icon: "plus" as const,
+      label: "Place agent on canvas",
+    },
   ];
   return (
     <div
@@ -587,6 +673,8 @@ export function EditToolbar({
         left: 12,
         zIndex: "var(--z-overlay)" as unknown as number,
         display: "flex",
+        maxWidth: "calc(100% - 24px)",
+        flexWrap: "wrap",
         gap: 1,
         background: "var(--panel)",
         border: "1px solid var(--border-2)",
@@ -616,6 +704,32 @@ export function EditToolbar({
           <Icon name={t.icon} size={13} />
         </button>
       ))}
+      <div
+        style={{ width: 1, background: "var(--border)", margin: "4px 4px" }}
+      />
+      <button
+        type="button"
+        title="Add a new automated agent at the center of this canvas view"
+        aria-label="Add agent"
+        onClick={onAddAgent}
+        style={{
+          height: 32,
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: 6,
+          padding: "0 10px",
+          color: "#050505",
+          fontSize: 11.5,
+          fontWeight: 650,
+          whiteSpace: "nowrap",
+          background: "var(--signal)",
+          borderRadius: 4,
+        }}
+      >
+        <Icon name="plus" size={12} />
+        <span>Add agent</span>
+      </button>
       <div
         style={{ width: 1, background: "var(--border)", margin: "4px 4px" }}
       />
@@ -681,6 +795,15 @@ export function DraftPalette({
   const warnings =
     validation?.issues.filter((issue) => issue.severity === "warning") ?? [];
 
+  function startAgentDrag(
+    event: DragEvent<HTMLButtonElement>,
+    actor: "Agent" | "Human",
+  ) {
+    event.dataTransfer.effectAllowed = "copy";
+    event.dataTransfer.setData(WORKFLOW_AGENT_DRAG_TYPE, actor);
+    event.dataTransfer.setData("text/plain", actor);
+  }
+
   return (
     <div
       style={{
@@ -740,17 +863,32 @@ export function DraftPalette({
         >
           Add a node
         </div>
+        <div
+          style={{
+            color: "var(--text-2)",
+            fontSize: 11.5,
+            lineHeight: 1.5,
+            marginBottom: 9,
+          }}
+        >
+          Drag a node onto the canvas to place it precisely, or click to add it
+          at the center.
+        </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           <button
             type="button"
+            draggable
+            onDragStart={(event) => startAgentDrag(event, "Agent")}
             onClick={onAddAutomated}
+            aria-label="Drag or click to add an automated agent"
+            title="Drag to the canvas or click to add at the center"
             style={{
               padding: "8px 10px",
               background: "var(--panel-2)",
               border: "1px dashed var(--border-2)",
               borderLeft: "3px solid var(--signal)",
               borderRadius: 4,
-              cursor: "pointer",
+              cursor: "grab",
               textAlign: "left",
             }}
           >
@@ -763,14 +901,18 @@ export function DraftPalette({
           </button>
           <button
             type="button"
+            draggable
+            onDragStart={(event) => startAgentDrag(event, "Human")}
             onClick={onAddHuman}
+            aria-label="Drag or click to add a human review"
+            title="Drag to the canvas or click to add at the center"
             style={{
               padding: "8px 10px",
               background: "var(--panel-2)",
               border: "1px dashed var(--border-2)",
               borderLeft: "3px solid var(--violet)",
               borderRadius: 4,
-              cursor: "pointer",
+              cursor: "grab",
               textAlign: "left",
             }}
           >

@@ -32,6 +32,11 @@ export interface DiscoveredModel {
   tools?: boolean;
   /** Supports a reasoning/thinking control. */
   reasoning?: boolean;
+  /**
+   * Live provider declaration for the temperature parameter. `undefined`
+   * means the upstream model list did not publish parameter capabilities.
+   */
+  temperatureSupported?: boolean;
   /** Exact normalized effort values advertised by a live catalog. */
   reasoningEfforts?: ReasoningEffort[];
   defaultReasoningEffort?: ReasoningEffort;
@@ -144,6 +149,9 @@ export function parseOpenAICompatBody(body: unknown): DiscoveredModel[] {
       entry.tools = supported.some(
         (s) => typeof s === "string" && (s === "tools" || s === "tool_choice"),
       );
+      entry.temperatureSupported = supported.some(
+        (s) => typeof s === "string" && s === "temperature",
+      );
       entry.reasoning = supported.some(
         (s) =>
           typeof s === "string" &&
@@ -205,7 +213,9 @@ async function listOpenAICompat(
   const headers: Record<string, string> = { Accept: "application/json" };
   if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
   try {
-    const { status, body } = await fetchJson(`${cfg.baseURL}${path}`, { headers });
+    const { status, body } = await fetchJson(`${cfg.baseURL}${path}`, {
+      headers,
+    });
     if (status < 200 || status >= 300) {
       return {
         source: "unsupported",
@@ -213,7 +223,11 @@ async function listOpenAICompat(
         message: `Upstream returned ${status} when listing models`,
       };
     }
-    return { source: "live", models: parseOpenAICompatBody(body), message: null };
+    return {
+      source: "live",
+      models: parseOpenAICompatBody(body),
+      message: null,
+    };
   } catch (err) {
     return {
       source: "unsupported",
@@ -244,13 +258,16 @@ function parseAnthropicBody(body: unknown): DiscoveredModel[] {
 
 async function listAnthropic(apiKey: string): Promise<DiscoveryResult> {
   try {
-    const { status, body } = await fetchJson("https://api.anthropic.com/v1/models", {
-      headers: {
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-        Accept: "application/json",
+    const { status, body } = await fetchJson(
+      "https://api.anthropic.com/v1/models",
+      {
+        headers: {
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01",
+          Accept: "application/json",
+        },
       },
-    });
+    );
     if (status < 200 || status >= 300) {
       return {
         source: "unsupported",
@@ -283,10 +300,14 @@ function parseGeminiBody(body: unknown): DiscoveredModel[] {
     const obj = item as Record<string, unknown>;
     const rawName = obj.name;
     if (typeof rawName !== "string") continue;
-    const id = rawName.startsWith("models/") ? rawName.slice("models/".length) : rawName;
+    const id = rawName.startsWith("models/")
+      ? rawName.slice("models/".length)
+      : rawName;
     const ctxRaw = obj.inputTokenLimit;
     const contextLength =
-      typeof ctxRaw === "number" && Number.isFinite(ctxRaw) ? ctxRaw : undefined;
+      typeof ctxRaw === "number" && Number.isFinite(ctxRaw)
+        ? ctxRaw
+        : undefined;
     out.push(contextLength !== undefined ? { id, contextLength } : { id });
   }
   out.sort((a, b) => a.id.localeCompare(b.id));
@@ -296,7 +317,9 @@ function parseGeminiBody(body: unknown): DiscoveredModel[] {
 async function listGemini(apiKey: string): Promise<DiscoveryResult> {
   try {
     const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`;
-    const { status, body } = await fetchJson(url, { headers: { Accept: "application/json" } });
+    const { status, body } = await fetchJson(url, {
+      headers: { Accept: "application/json" },
+    });
     if (status < 200 || status >= 300) {
       return {
         source: "unsupported",

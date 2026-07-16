@@ -9,9 +9,8 @@ import {
   useState,
 } from "react";
 import {
-  PROVIDER_MODEL_CATALOG,
   PROVIDER_IDS,
-  type CatalogModel,
+  findCatalogModel,
   type ProviderId,
   type ReasoningConfig,
   type ReasoningContext,
@@ -66,6 +65,7 @@ import {
   clampPanelWidth,
   maxTestHistoryWidth,
   maxTestSetupWidth,
+  testHistoryFitsInline,
   TEST_HISTORY_DEFAULT_WIDTH,
   TEST_HISTORY_DEFAULT_HEIGHT,
   TEST_HISTORY_MAX_HEIGHT,
@@ -84,16 +84,6 @@ import {
 type ResultTab = "chat" | "trace" | "output" | "logs" | "artifacts";
 const RUN_PROVIDERS = ["", ...PROVIDER_IDS];
 const DEFAULT_FILE_MAX_BYTES = 10_000_000;
-
-function selectedCatalogModel(
-  provider: string,
-  model: string,
-): CatalogModel | undefined {
-  if (!(provider in PROVIDER_MODEL_CATALOG) || !model) return undefined;
-  return PROVIDER_MODEL_CATALOG[provider as ProviderId].find(
-    (candidate) => candidate.name === model.replace(/^~/, ""),
-  );
-}
 
 interface StudioFilePolicy {
   mediaTypes: string[];
@@ -692,10 +682,12 @@ export function TestLab({
     if (!element) return;
 
     const updateBounds = () => {
-      setTestGridWidth(
-        Math.max(0, Math.round(element.getBoundingClientRect().width)),
+      const nextWidth = Math.max(
+        0,
+        Math.round(element.getBoundingClientRect().width),
       );
-      setHistoryInline(window.innerWidth > 1_280);
+      setTestGridWidth(nextWidth);
+      setHistoryInline(testHistoryFitsInline(nextWidth));
     };
 
     updateBounds();
@@ -787,10 +779,10 @@ export function TestLab({
   const parsedTimeoutSeconds = Number(timeoutSeconds);
   const modelOverride = model.trim();
   const effectiveModel = modelOverride || definition.model;
-  const catalogModelCapabilities = selectedCatalogModel(
-    effectiveProvider,
-    effectiveModel,
-  );
+  const catalogModelCapabilities =
+    effectiveProvider && effectiveModel
+      ? findCatalogModel(effectiveProvider as ProviderId, effectiveModel)
+      : undefined;
   const discoveredModelCapabilities = availableModels.data?.models.find(
     (candidate) => candidate.id === effectiveModel.replace(/^~/, ""),
   );
@@ -806,7 +798,14 @@ export function TestLab({
     textVerbosities: discoveredModelCapabilities?.textVerbosities.length
       ? discoveredModelCapabilities.textVerbosities
       : catalogModelCapabilities?.textVerbosities,
+    temperatureRange:
+      discoveredModelCapabilities?.temperatureRange !== undefined
+        ? discoveredModelCapabilities.temperatureRange
+        : catalogModelCapabilities?.temperatureRange,
   };
+  const temperatureUnsupported = modelCapabilities.temperatureRange === null;
+  const temperatureMin = modelCapabilities.temperatureRange?.min ?? 0;
+  const temperatureMax = modelCapabilities.temperatureRange?.max ?? 2;
   const modelIds = providerModelIds(
     effectiveProvider,
     availableModels.data?.models,
@@ -837,10 +836,11 @@ export function TestLab({
   };
   const hasReasoningOverride = Object.keys(reasoningOverride).length > 0;
   const numericRuntimeOverridesInvalid = Boolean(
-    (temperature.trim() &&
+    (!temperatureUnsupported &&
+      temperature.trim() &&
       (!Number.isFinite(parsedTemperature) ||
-        parsedTemperature < 0 ||
-        parsedTemperature > 2)) ||
+        parsedTemperature < temperatureMin ||
+        parsedTemperature > temperatureMax)) ||
     (maxTokens.trim() &&
       (!Number.isInteger(parsedMaxTokens) || parsedMaxTokens <= 0)) ||
     (timeoutSeconds.trim() &&
@@ -942,7 +942,9 @@ export function TestLab({
             ...(hasReasoningOverride ? { reasoning: reasoningOverride } : {}),
             ...(verbosity ? { verbosity: verbosity as TextVerbosity } : {}),
             ...(storeResponse ? { store: storeResponse === "true" } : {}),
-            ...(temperature.trim() && Number.isFinite(parsedTemperature)
+            ...(!temperatureUnsupported &&
+            temperature.trim() &&
+            Number.isFinite(parsedTemperature)
               ? { temperature: parsedTemperature }
               : {}),
             ...(maxTokens.trim() &&
@@ -992,6 +994,7 @@ export function TestLab({
     setReasoningContext("");
     setVerbosity("");
     setStoreResponse("");
+    setTemperature("");
   }
 
   function changeProvider(nextProvider: string) {
@@ -1032,7 +1035,7 @@ export function TestLab({
   }
 
   return (
-    <div style={{ display: "grid", gap: 14 }}>
+    <div className="agent-studio-test-lab" style={{ display: "grid", gap: 14 }}>
       <InlineNotice tone="signal" title="Test Lab uses the real runtime">
         Send publishes a runtime event that triggers this agent. Your chat
         message is copied exactly into the event as the agent&apos;s prompt
@@ -1076,6 +1079,7 @@ export function TestLab({
           }}
         >
           <div
+            className="agent-studio-test-panel-header"
             style={{
               padding: 12,
               borderBottom: "1px solid var(--border)",
@@ -1116,6 +1120,7 @@ export function TestLab({
             )}
           </div>
           <div
+            className="agent-studio-test-target-note"
             style={{
               padding: "7px 12px",
               borderBottom: "1px solid var(--border)",
@@ -1131,6 +1136,7 @@ export function TestLab({
                 : "Live runs use the currently published version—the same version production callers use."}
           </div>
           <div
+            className="agent-studio-test-setup-body"
             style={{
               flex: 1,
               overflow: "auto",
@@ -1143,6 +1149,7 @@ export function TestLab({
             {variableInputs.length > 0 && (
               <div>
                 <div
+                  className="agent-studio-test-section-toolbar"
                   style={{
                     display: "flex",
                     alignItems: "center",
@@ -1259,13 +1266,13 @@ export function TestLab({
                 Configured outgoing events. Successful runs can publish them to
                 continue downstream workflow steps.
               </div>
-              <div
-                className="agent-studio-test-event-list"
-                role="list"
-                aria-label="Emitted events"
-              >
-                {emittedEvents.length > 0 ? (
-                  emittedEvents.map((name) => (
+              {emittedEvents.length > 0 ? (
+                <div
+                  className="agent-studio-test-event-list"
+                  role="list"
+                  aria-label="Emitted events"
+                >
+                  {emittedEvents.map((name) => (
                     <span
                       key={name}
                       className="agent-studio-test-event-chip"
@@ -1274,13 +1281,16 @@ export function TestLab({
                     >
                       {name}
                     </span>
-                  ))
-                ) : (
-                  <span className="agent-studio-test-event-empty">
-                    No emitted events configured
-                  </span>
-                )}
-              </div>
+                  ))}
+                </div>
+              ) : (
+                <div
+                  className="agent-studio-test-event-list agent-studio-test-event-empty"
+                  role="status"
+                >
+                  No emitted events configured
+                </div>
+              )}
             </div>
             <details className="agent-studio-output-details">
               <summary>
@@ -1309,6 +1319,7 @@ export function TestLab({
               </div>
             </details>
             <details
+              className="agent-studio-test-advanced"
               open={runtimeOpen}
               onToggle={(event) => setRuntimeOpen(event.currentTarget.open)}
               style={{ borderTop: "1px solid var(--border)", paddingTop: 9 }}
@@ -1323,7 +1334,10 @@ export function TestLab({
               >
                 ADVANCED TEST SETTINGS
               </summary>
-              <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
+              <div
+                className="agent-studio-test-advanced-body"
+                style={{ display: "grid", gap: 10, marginTop: 10 }}
+              >
                 <Field
                   label="What tools may change"
                   hint="Safe is recommended and runs only tools explicitly approved for tests. Read-only permits approved reads but blocks writes. Live can change connected systems."
@@ -1359,13 +1373,7 @@ export function TestLab({
                     tools.
                   </InlineNotice>
                 )}
-                <div
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "1fr 1fr",
-                    gap: 9,
-                  }}
-                >
+                <div className="agent-studio-test-runtime-grid agent-studio-test-runtime-grid--pair">
                   <Field
                     label="Temporary AI provider"
                     hint="Only changes this test run. Leave inherited to test the agent exactly as configured."
@@ -1435,13 +1443,7 @@ export function TestLab({
                   modelCapabilities?.textVerbosities?.length ||
                   effectiveProvider === "openai" ||
                   effectiveProvider === "openrouter") && (
-                  <div
-                    style={{
-                      display: "grid",
-                      gridTemplateColumns: "1fr 1fr",
-                      gap: 9,
-                    }}
-                  >
+                  <div className="agent-studio-test-runtime-grid agent-studio-test-runtime-grid--pair">
                     {modelCapabilities?.reasoningModes?.length ? (
                       <Field
                         label="Temporary reasoning mode"
@@ -1572,24 +1574,27 @@ export function TestLab({
                     ) : null}
                   </div>
                 )}
-                <div
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "repeat(3, 1fr)",
-                    gap: 9,
-                  }}
-                >
+                <div className="agent-studio-test-runtime-grid agent-studio-test-runtime-grid--numeric">
                   <Field
                     label="Temporary creativity"
-                    hint="0 is consistent; higher values are more varied. Leave blank to use the agent setting."
-                    example="0.2"
+                    hint={
+                      temperatureUnsupported
+                        ? `${effectiveProvider}/${effectiveModel.replace(/^~/, "")} does not support temperature. The saved agent setting is omitted for this test.`
+                        : `0 is consistent; higher values are more varied. Leave blank to use the agent setting.${modelCapabilities.temperatureRange ? ` Accepted range: ${temperatureMin}–${temperatureMax}.` : ""}`
+                    }
+                    example={temperatureUnsupported ? undefined : "0.2"}
                   >
                     <TextInput
                       value={temperature}
                       type="number"
-                      min={0}
-                      max={2}
-                      placeholder={`Agent: ${definition.temperature}`}
+                      min={temperatureMin}
+                      max={temperatureMax}
+                      disabled={temperatureUnsupported}
+                      placeholder={
+                        temperatureUnsupported
+                          ? "Not supported — omitted"
+                          : `Agent: ${definition.temperature}`
+                      }
                       onChange={setTemperature}
                     />
                   </Field>
@@ -1622,8 +1627,9 @@ export function TestLab({
                 </div>
                 {numericRuntimeOverridesInvalid && (
                   <div style={{ color: "var(--red)", fontSize: 10.5 }}>
-                    Temperature must be between 0 and 2; max tokens and timeout
-                    must be positive whole numbers.
+                    Temperature must be between {temperatureMin} and{" "}
+                    {temperatureMax}; max tokens and timeout must be positive
+                    whole numbers.
                   </div>
                 )}
               </div>
@@ -1683,6 +1689,7 @@ export function TestLab({
           }}
         >
           <div
+            className="agent-studio-test-panel-header agent-studio-test-conversation-header"
             style={{
               minHeight: 54,
               padding: "10px 12px",
@@ -1786,6 +1793,7 @@ export function TestLab({
           <div
             role="tablist"
             aria-label="Run details"
+            className="agent-studio-test-result-tabs"
             style={{
               padding: "8px 12px",
               display: "flex",

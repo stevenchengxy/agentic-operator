@@ -22,17 +22,27 @@
  * (run.*, event.emitted) flow through useStream() at the layout root.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import type {
   WorkflowDetail,
   WorkflowValidationResponse,
 } from "@agentic/contracts";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   ActorTag,
   Badge,
   Button,
   Icon,
+  Splitter,
   ViewHeader,
   useToast,
 } from "@/app/portal/components";
@@ -51,6 +61,7 @@ import {
   colorVar,
   dynamicCanvasSize,
   nodePos,
+  type CanvasPoint,
 } from "@/app/portal/components/workflows/layout";
 import {
   AgentInspector,
@@ -65,6 +76,7 @@ import { NewWorkflowModal } from "@/app/portal/components/workflows/NewWorkflowM
 import { ImportManifestModal } from "@/app/portal/components/import-manifest/ImportManifestModal";
 import { AgentEditor } from "@/app/portal/components/workflows/AgentEditor";
 import { WorkflowHelp } from "@/app/portal/components/workflows/WorkflowHelp";
+import { WorkflowRunConsole } from "@/app/portal/components/workflows/WorkflowRunConsole";
 import {
   applyDraft,
   addAgentToDraft,
@@ -72,16 +84,40 @@ import {
   countDraftChanges,
   createAutomatedAgentDefinition,
   createHumanAgentDefinition,
+  deriveEventEdges,
   deserializeDraft,
   draftStorageKey,
   emptyDraft,
+  mergeAgentDefinitionIntoDraft,
   moveAgent,
   serializeDraft,
   toManifest,
   tryReadSerializedDraft,
+  type CompleteAgentDefinition,
   type WorkflowDraft,
 } from "@/app/portal/components/workflows/draft";
+import {
+  WORKFLOW_INSPECTOR_DEFAULT_WIDTH,
+  WORKFLOW_INSPECTOR_MIN_WIDTH,
+  WORKFLOW_INSPECTOR_SPLITTER_WIDTH,
+  clampWorkflowInspectorWidth,
+  workflowInspectorMaxWidth,
+  workflowInspectorStorageKey,
+  workflowInspectorWideWidth,
+} from "@/app/portal/components/workflows/inspector-layout";
+import {
+  WORKFLOW_AGENT_DRAG_TYPE,
+  clientPointToCanvas,
+  connectionEventName,
+  nodePositionFromPointer,
+  workflowEdgePath,
+} from "@/app/portal/components/workflows/canvas-interactions";
+import {
+  readWorkflowReturnState,
+  workflowCanvasHref,
+} from "@/app/portal/components/workflows/workflow-navigation";
 import { useDag } from "@/lib/hooks/useAgents";
+import { useAgentEditor } from "@/lib/hooks/useAgentStudio";
 import { useEvents } from "@/lib/hooks/useEvents";
 import {
   useDeleteWorkflow,
@@ -90,6 +126,7 @@ import {
   useValidateWorkflow,
   useWorkflowCatalog,
 } from "@/lib/hooks/useWorkflowAuthoring";
+import styles from "./workflow.module.css";
 
 /**
  * Stage label catalog — static workflow ontology. Mirrors the dashboard's
@@ -108,28 +145,61 @@ const STAGE_LABELS: Record<number, string> = {
   7: "Submit",
 };
 
-interface EdgeMeta {
-  src: string;
-  dst: string;
-  event: string;
+interface NodeDragState {
+  id: string;
+  pointerId: number;
+  origin: CanvasPoint;
+  start: { clientX: number; clientY: number };
+  position: CanvasPoint;
+  moved: boolean;
+}
+
+interface LinkDragState {
+  sourceId: string;
+  pointerId: number;
+  point: CanvasPoint;
+  targetId: string | null;
 }
 
 export default function WorkflowsPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const tenant = useTenant();
   const toast = useToast();
+  const requestedWorkflow = searchParams.get("workflow");
+  const requestedMode = searchParams.get("mode");
+  const requestedAgent = searchParams.get("agent");
+  const resumeToken = searchParams.get("resume");
+  const returnedAgentDraftId = searchParams.get("agentDraft");
   const catalogQuery = useWorkflowCatalog();
   const workflows = useMemo(
     () => catalogQuery.data?.workflows ?? [],
     [catalogQuery.data?.workflows],
   );
-  const [selectedWorkflow, setSelectedWorkflow] = useState<string | null>(null);
+  const [selectedWorkflow, setSelectedWorkflow] = useState<string | null>(
+    requestedWorkflow,
+  );
   const editAfterSelectionRef = useRef<string | null>(null);
+  const requestedWorkflowAppliedRef = useRef<string | null>(null);
+  const requestedAgentAppliedRef = useRef<string | null>(null);
 
   // Pick the live workflow first, then the most recently updated draft. A
   // selection made by New Workflow is retained while the catalog refetches.
   useEffect(() => {
     if (catalogQuery.isLoading || workflows.length === 0) return;
+    const requested = requestedWorkflow
+      ? workflows.find((row) => row.slug === requestedWorkflow)
+      : null;
+    if (
+      requested &&
+      requestedWorkflowAppliedRef.current !== requestedWorkflow
+    ) {
+      requestedWorkflowAppliedRef.current = requestedWorkflow;
+      if (selectedWorkflow !== requested.slug) {
+        setSelectedWorkflow(requested.slug);
+        return;
+      }
+    }
     if (
       selectedWorkflow &&
       workflows.some((row) => row.slug === selectedWorkflow)
@@ -139,13 +209,17 @@ export default function WorkflowsPage() {
     const preferred =
       workflows.find((row) => row.liveVersionId !== null) ?? workflows[0];
     setSelectedWorkflow(preferred?.slug ?? null);
-  }, [catalogQuery.isLoading, selectedWorkflow, workflows]);
+  }, [catalogQuery.isLoading, requestedWorkflow, selectedWorkflow, workflows]);
 
   const selectedSummary = useMemo(
     () => workflows.find((row) => row.slug === selectedWorkflow) ?? null,
     [selectedWorkflow, workflows],
   );
   const dagQuery = useDag(selectedWorkflow);
+  const returnedAgentEditor = useAgentEditor(
+    returnedAgentDraftId ? requestedAgent : null,
+    returnedAgentDraftId,
+  );
   const saveWorkflow = useSaveWorkflow(selectedWorkflow);
   const validateWorkflow = useValidateWorkflow(selectedWorkflow);
   const publishWorkflow = usePublishWorkflow(selectedWorkflow);
@@ -162,32 +236,6 @@ export default function WorkflowsPage() {
   // surface their emit/trigger names through the DAG payload regardless of
   // whether the event has ever fired).
   const eventsQuery = useEvents({ limit: 200 });
-  const events = useMemo<EventCatalogItem[]>(() => {
-    const map = new Map<string, EventCatalogItem>();
-    // Seed from the event ledger so colors/categories that the api has seen
-    // win over a derived fallback.
-    for (const row of eventsQuery.data ?? []) {
-      if (map.has(row.name)) continue;
-      map.set(row.name, {
-        name: row.name,
-        color: row.color ?? "muted",
-        category: row.category ?? "agent",
-      });
-    }
-    // Also include every event referenced by an agent's triggers/emits —
-    // tenants whose workflow hasn't fired any events yet still need their
-    // event names available to the inspector legend.
-    for (const a of baseAgents) {
-      for (const n of [...a.triggers, ...a.emits]) {
-        if (map.has(n)) continue;
-        map.set(n, { name: n, color: "muted", category: "agent" });
-      }
-    }
-    return Array.from(map.values()).sort((a, b) =>
-      a.name.localeCompare(b.name),
-    );
-  }, [eventsQuery.data, baseAgents]);
-
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
   const [selectedEvent, setSelectedEvent] = useState<string | null>(null);
   const [hoveredEdge, setHoveredEdge] = useState<number | null>(null);
@@ -195,6 +243,10 @@ export default function WorkflowsPage() {
   const [draft, setDraft] = useState<WorkflowDraft>(emptyDraft);
   const [tool, setTool] = useState<"select" | "connect" | "add">("select");
   const [connectFrom, setConnectFrom] = useState<string | null>(null);
+  const [nodeDrag, setNodeDrag] = useState<NodeDragState | null>(null);
+  const [linkDrag, setLinkDrag] = useState<LinkDragState | null>(null);
+  const [canvasDropActive, setCanvasDropActive] = useState(false);
+  const [canvasAnnouncement, setCanvasAnnouncement] = useState("");
   const [validation, setValidation] =
     useState<WorkflowValidationResponse | null>(null);
   const [editorErrors, setEditorErrors] = useState<Record<string, string[]>>(
@@ -224,6 +276,11 @@ export default function WorkflowsPage() {
   const publishInFlight = useRef(false);
   const [publishing, setPublishing] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
+  const [showRunConsole, setShowRunConsole] = useState(false);
+  const restoredReturnRef = useRef<string | null>(null);
+  const appliedReturnedDraftRef = useRef<string | null>(null);
+  const suppressedNodeClickRef = useRef<string | null>(null);
+  const suppressedPortClickRef = useRef(false);
   // Live stream — placeholder for tweaks-panel wiring (Phase 2).
   const liveStream = true;
   // Scroll container for the canvas viewport. The canvas is wider than the
@@ -231,6 +288,76 @@ export default function WorkflowsPage() {
   // lets us scroll the leftmost node into view after data loads so the
   // user actually sees their imported workflow.
   const canvasScrollRef = useRef<HTMLDivElement | null>(null);
+  const workspaceRef = useRef<HTMLDivElement | null>(null);
+  const inspectorRestoreWidthRef = useRef(WORKFLOW_INSPECTOR_DEFAULT_WIDTH);
+  const [workspaceWidth, setWorkspaceWidth] = useState(0);
+  const [inspectorWidth, setInspectorWidth] = useState(
+    WORKFLOW_INSPECTOR_DEFAULT_WIDTH,
+  );
+  const inspectorStorageKey = useMemo(
+    () => workflowInspectorStorageKey(tenant),
+    [tenant],
+  );
+  const [hydratedInspectorKey, setHydratedInspectorKey] = useState<
+    string | null
+  >(null);
+
+  useEffect(() => {
+    const workspace = workspaceRef.current;
+    if (!workspace) return;
+    const measure = () => {
+      setWorkspaceWidth(Math.round(workspace.getBoundingClientRect().width));
+    };
+    measure();
+    if (typeof ResizeObserver !== "undefined") {
+      const observer = new ResizeObserver(measure);
+      observer.observe(workspace);
+      return () => observer.disconnect();
+    }
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, []);
+
+  useEffect(() => {
+    let next = WORKFLOW_INSPECTOR_DEFAULT_WIDTH;
+    try {
+      const stored = window.localStorage.getItem(inspectorStorageKey);
+      const parsed = stored == null ? Number.NaN : Number(stored);
+      if (Number.isFinite(parsed)) next = parsed;
+    } catch {
+      // Storage can be unavailable in locked-down enterprise browsers.
+    }
+    next = clampWorkflowInspectorWidth(next, 0);
+    inspectorRestoreWidthRef.current = Math.min(
+      next,
+      WORKFLOW_INSPECTOR_DEFAULT_WIDTH,
+    );
+    setInspectorWidth(next);
+    setHydratedInspectorKey(inspectorStorageKey);
+  }, [inspectorStorageKey]);
+
+  useEffect(() => {
+    if (hydratedInspectorKey !== inspectorStorageKey) return;
+    try {
+      window.localStorage.setItem(
+        inspectorStorageKey,
+        String(clampWorkflowInspectorWidth(inspectorWidth, 0)),
+      );
+    } catch {
+      // Resizing still works for the current session when storage is blocked.
+    }
+  }, [hydratedInspectorKey, inspectorStorageKey, inspectorWidth]);
+  const inspectorMaxWidth = workflowInspectorMaxWidth(workspaceWidth);
+  const renderedInspectorWidth = clampWorkflowInspectorWidth(
+    inspectorWidth,
+    workspaceWidth,
+  );
+  const preferredWideInspectorWidth =
+    workflowInspectorWideWidth(workspaceWidth);
+  const inspectorCanResize = workspaceWidth === 0 || workspaceWidth > 860;
+  const inspectorIsWide =
+    !inspectorCanResize ||
+    renderedInspectorWidth >= preferredWideInspectorWidth - 1;
 
   // While editing, the canvas reads the *applied* draft so the operator
   // sees their changes immediately. Outside edit mode it's the bootstrap.
@@ -238,6 +365,36 @@ export default function WorkflowsPage() {
     () => (editing ? applyDraft(baseAgents, draft) : baseAgents),
     [baseAgents, draft, editing],
   );
+  const events = useMemo<EventCatalogItem[]>(() => {
+    const map = new Map<string, EventCatalogItem>();
+    // Seed from the event ledger so colors/categories that the api has seen
+    // win over a derived fallback.
+    for (const row of eventsQuery.data ?? []) {
+      if (map.has(row.name)) continue;
+      map.set(row.name, {
+        name: row.name,
+        color: row.color ?? "muted",
+        category: row.category ?? "agent",
+      });
+    }
+    // Use the effective agents, not only the last server snapshot. Trigger
+    // and emitted-event edits therefore appear in hints and edge colors on
+    // the same render that adds or removes their visual connection.
+    for (const agent of agents) {
+      for (const name of [...agent.triggers, ...agent.emits]) {
+        const normalized = name.trim();
+        if (!normalized || map.has(normalized)) continue;
+        map.set(normalized, {
+          name: normalized,
+          color: "muted",
+          category: "agent",
+        });
+      }
+    }
+    return Array.from(map.values()).sort((a, b) =>
+      a.name.localeCompare(b.name),
+    );
+  }, [agents, eventsQuery.data]);
   const selectedAgentRecord = useMemo(
     () =>
       selectedAgent
@@ -249,8 +406,15 @@ export default function WorkflowsPage() {
     // A workflow switch can render once with the previous node selection
     // while the new DAG is loading. Never pass an undefined agent to the
     // inspector/editor during that transition.
-    if (selectedAgent && !selectedAgentRecord) setSelectedAgent(null);
-  }, [selectedAgent, selectedAgentRecord]);
+    if (
+      selectedAgent &&
+      dagQuery.data &&
+      !dagQuery.isLoading &&
+      !selectedAgentRecord
+    ) {
+      setSelectedAgent(null);
+    }
+  }, [dagQuery.data, dagQuery.isLoading, selectedAgent, selectedAgentRecord]);
   const draftCounts = countDraftChanges(draft);
   const dirty =
     draftCounts.added + draftCounts.modified + draftCounts.removed > 0;
@@ -286,7 +450,10 @@ export default function WorkflowsPage() {
   );
   const [hydratedKey, setHydratedKey] = useState<string | null>(null);
   useEffect(() => {
-    const shouldOpenEditor = editAfterSelectionRef.current === selectedWorkflow;
+    const shouldOpenEditor =
+      editAfterSelectionRef.current === selectedWorkflow ||
+      (requestedMode === "edit" &&
+        (!requestedWorkflow || requestedWorkflow === selectedWorkflow));
     setDraft(emptyDraft());
     setEditing(false);
     setSelectedAgent(null);
@@ -322,7 +489,7 @@ export default function WorkflowsPage() {
       }
       setHydratedKey(storageKey);
     }
-  }, [selectedWorkflow, storageKey]);
+  }, [requestedMode, requestedWorkflow, selectedWorkflow, storageKey]);
   useEffect(() => {
     if (
       editing &&
@@ -413,9 +580,16 @@ export default function WorkflowsPage() {
     return out;
   }, [agents, autoFallback]);
 
+  const renderedPositions = useMemo(() => {
+    if (!nodeDrag) return positions;
+    const out = new Map(positions);
+    out.set(nodeDrag.id, nodeDrag.position);
+    return out;
+  }, [nodeDrag, positions]);
+
   const canvasSize = useMemo(
-    () => dynamicCanvasSize(positions.values()),
-    [positions],
+    () => dynamicCanvasSize(renderedPositions.values()),
+    [renderedPositions],
   );
 
   // Derive headers from rendered columns rather than only declared stages.
@@ -424,7 +598,7 @@ export default function WorkflowsPage() {
   const stages = useMemo(() => {
     const byColumn = new Map<number, Set<number>>();
     for (const agent of agents) {
-      const position = positions.get(agent.kebabId);
+      const position = renderedPositions.get(agent.kebabId);
       if (!position) continue;
       const column = Math.max(0, Math.round((position.x - PAD_X) / COL_W));
       const declared = byColumn.get(column) ?? new Set<number>();
@@ -442,23 +616,56 @@ export default function WorkflowsPage() {
           label: STAGE_LABELS[stage] ?? `Stage ${stage}`,
         };
       });
-  }, [agents, positions]);
+  }, [agents, renderedPositions]);
 
   // Build edges: for each agent's emitted event, find listeners.
-  const edges = useMemo<EdgeMeta[]>(() => {
-    const out: EdgeMeta[] = [];
-    agents.forEach((src) => {
-      (src.emits || []).forEach((evName) => {
-        const listeners = agents.filter((a) => a.triggers.includes(evName));
-        listeners.forEach((dst) => {
-          if (positions.has(src.kebabId) && positions.has(dst.kebabId)) {
-            out.push({ src: src.kebabId, dst: dst.kebabId, event: evName });
-          }
-        });
-      });
-    });
-    return out;
-  }, [agents, positions]);
+  const edges = useMemo(
+    () =>
+      deriveEventEdges(agents).filter(
+        (edge) =>
+          renderedPositions.has(edge.src) && renderedPositions.has(edge.dst),
+      ),
+    [agents, renderedPositions],
+  );
+  const previousDerivedEdgesRef = useRef<{
+    context: string;
+    edges: Map<string, (typeof edges)[number]>;
+  }>({ context: "", edges: new Map() });
+
+  useEffect(() => {
+    const context = `${selectedWorkflow ?? ""}:${editing ? "edit" : "view"}`;
+    const next = new Map(
+      edges.map((edge) => [
+        JSON.stringify([edge.src, edge.dst, edge.event]),
+        edge,
+      ]),
+    );
+    const previous = previousDerivedEdgesRef.current;
+    previousDerivedEdgesRef.current = { context, edges: next };
+    if (!editing || previous.context !== context) return;
+
+    const added = Array.from(next.entries())
+      .filter(([key]) => !previous.edges.has(key))
+      .map(([, edge]) => edge);
+    const removed = Array.from(previous.edges.entries())
+      .filter(([key]) => !next.has(key))
+      .map(([, edge]) => edge);
+    if (added.length > 0) {
+      const first = added[0]!;
+      setCanvasAnnouncement(
+        `Automatically linked ${first.src} to ${first.dst} with ${first.event}${
+          added.length > 1 ? ` and ${added.length - 1} more link(s)` : ""
+        }.`,
+      );
+    } else if (removed.length > 0) {
+      const first = removed[0]!;
+      setCanvasAnnouncement(
+        `Removed the automatic ${first.event} link from ${first.src} to ${first.dst}${
+          removed.length > 1 ? ` and ${removed.length - 1} more link(s)` : ""
+        }.`,
+      );
+    }
+  }, [edges, editing, selectedWorkflow]);
 
   const evColor = useMemo(() => {
     const m: Record<string, string> = {};
@@ -505,7 +712,7 @@ export default function WorkflowsPage() {
   useEffect(() => {
     const el = canvasScrollRef.current;
     if (!el || el.scrollLeft !== 0) return;
-    const positioned = Array.from(positions.values());
+    const positioned = Array.from(renderedPositions.values());
     if (positioned.length === 0) return;
     const minX = positioned.reduce(
       (acc, position) => Math.min(acc, position.x),
@@ -513,11 +720,171 @@ export default function WorkflowsPage() {
     );
     const targetX = Math.max(0, minX * zoom - 40);
     if (targetX > 0) el.scrollLeft = targetX;
-  }, [positions, zoom]);
+  }, [renderedPositions, zoom]);
 
-  function navAgent(id: string) {
-    router.push(`/portal/${tenant}/agents/${id}` as never);
+  useEffect(() => {
+    const requestKey = `${requestedWorkflow ?? selectedWorkflow ?? ""}:${requestedAgent ?? ""}:${resumeToken ?? ""}`;
+    if (
+      !requestedAgent ||
+      !editing ||
+      requestedAgentAppliedRef.current === requestKey ||
+      !agents.some((agent) => agent.kebabId === requestedAgent)
+    ) {
+      return;
+    }
+    requestedAgentAppliedRef.current = requestKey;
+    setSelectedAgent(requestedAgent);
+    setSelectedEvent(null);
+  }, [
+    agents,
+    editing,
+    requestedAgent,
+    requestedWorkflow,
+    resumeToken,
+    selectedWorkflow,
+  ]);
+
+  useEffect(() => {
+    if (
+      !resumeToken ||
+      restoredReturnRef.current === resumeToken ||
+      !selectedWorkflow
+    ) {
+      return;
+    }
+    const state = readWorkflowReturnState(resumeToken, tenant);
+    if (!state) {
+      restoredReturnRef.current = resumeToken;
+      return;
+    }
+    if (state.workflowSlug !== selectedWorkflow) {
+      setSelectedWorkflow(state.workflowSlug);
+      return;
+    }
+    restoredReturnRef.current = resumeToken;
+    setEditing(state.editing);
+    setTool(state.tool);
+    setZoom(state.zoom);
+    setSelectedAgent(state.selectedAgent);
+    setSelectedEvent(null);
+    requestAnimationFrame(() => {
+      canvasScrollRef.current?.scrollTo({
+        left: state.scrollLeft,
+        top: state.scrollTop,
+      });
+    });
+  }, [resumeToken, selectedWorkflow, tenant]);
+
+  useEffect(() => {
+    const returned = returnedAgentEditor.data?.draft;
+    const currentVersionId = dagQuery.data?.workflowVersionId;
+    if (
+      !returnedAgentDraftId ||
+      !returned ||
+      !requestedAgent ||
+      !selectedWorkflow ||
+      !currentVersionId ||
+      appliedReturnedDraftRef.current === returnedAgentDraftId
+    ) {
+      return;
+    }
+    appliedReturnedDraftRef.current = returnedAgentDraftId;
+    if (
+      returned.baseWorkflowVersionId &&
+      returned.baseWorkflowVersionId !== currentVersionId
+    ) {
+      toast({
+        tone: "red",
+        title: "Agent draft belongs to another workflow version",
+        description:
+          "Reload the workflow and reopen Agent Studio so changes are applied to the correct draft.",
+      });
+    } else {
+      setEditing(true);
+      setDraftBaseVersionId(currentVersionId);
+      setDraft((current) =>
+        mergeAgentDefinitionIntoDraft(
+          current,
+          returned.definition as CompleteAgentDefinition,
+        ),
+      );
+      setSelectedAgent(requestedAgent);
+      setSelectedEvent(null);
+      setValidation(null);
+      setCanvasAnnouncement(
+        `${returned.definition.title ?? requestedAgent} returned from Agent Studio and is ready to save in this workflow.`,
+      );
+      toast({
+        tone: "green",
+        title: "Agent changes returned to workflow",
+        description:
+          "Review the node and save the workflow draft when you are ready.",
+      });
+    }
+    router.replace(
+      workflowCanvasHref({
+        tenant,
+        workflowSlug: selectedWorkflow,
+        agentId: requestedAgent,
+        resumeToken,
+      }) as never,
+    );
+  }, [
+    dagQuery.data?.workflowVersionId,
+    requestedAgent,
+    resumeToken,
+    returnedAgentDraftId,
+    returnedAgentEditor.data?.draft,
+    router,
+    selectedWorkflow,
+    tenant,
+    toast,
+  ]);
+
+  useEffect(() => {
+    if (!returnedAgentDraftId || !returnedAgentEditor.isError) return;
+    if (appliedReturnedDraftRef.current === returnedAgentDraftId) return;
+    appliedReturnedDraftRef.current = returnedAgentDraftId;
+    toast({
+      tone: "red",
+      title: "Agent changes could not be restored",
+      description:
+        returnedAgentEditor.error instanceof Error
+          ? returnedAgentEditor.error.message
+          : "The returned Agent Studio draft is unavailable.",
+    });
+  }, [
+    returnedAgentDraftId,
+    returnedAgentEditor.error,
+    returnedAgentEditor.isError,
+    toast,
+  ]);
+
+  function expandAgentPanel(id: string) {
+    setSelectedAgent(id);
+    setSelectedEvent(null);
+    setInspectorWidth((current) => {
+      const rendered = clampWorkflowInspectorWidth(current, workspaceWidth);
+      if (rendered >= preferredWideInspectorWidth - 1) return current;
+      inspectorRestoreWidthRef.current = rendered;
+      return preferredWideInspectorWidth;
+    });
   }
+
+  function toggleAgentPanelWidth() {
+    setInspectorWidth((current) => {
+      const rendered = clampWorkflowInspectorWidth(current, workspaceWidth);
+      if (rendered >= preferredWideInspectorWidth - 1) {
+        return clampWorkflowInspectorWidth(
+          inspectorRestoreWidthRef.current,
+          workspaceWidth,
+        );
+      }
+      inspectorRestoreWidthRef.current = rendered;
+      return preferredWideInspectorWidth;
+    });
+  }
+
   function navEvents(eventName: string) {
     router.push(
       `/portal/${tenant}/events?name=${encodeURIComponent(eventName)}` as never,
@@ -744,41 +1111,38 @@ export default function WorkflowsPage() {
     setSelectedEvent(null);
     setTool("select");
     setValidation(null);
+    setCanvasAnnouncement(
+      `${definition.title ?? definition.name} added. Drag the node to position it, then use its output port to create a connection.`,
+    );
   }
 
-  function connectNode(targetId: string) {
-    if (!connectFrom) {
-      setConnectFrom(targetId);
-      setSelectedAgent(targetId);
-      return;
-    }
-    if (connectFrom === targetId) {
+  function connectPair(sourceId: string, targetId: string) {
+    if (sourceId === targetId) {
       setConnectFrom(null);
+      setLinkDrag(null);
       return;
     }
-    const eventPart = (value: string) =>
-      value
-        .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
-        .replace(/[^A-Za-z0-9]+/g, "_")
-        .replace(/^_+|_+$/g, "")
-        .toUpperCase();
-    const eventName =
-      `${eventPart(connectFrom)}_TO_${eventPart(targetId)}`.slice(0, 160);
+    const eventName = connectionEventName(sourceId, targetId);
     try {
       setDraft((current) =>
-        connectAgents(current, agents, connectFrom, targetId, eventName),
+        connectAgents(current, agents, sourceId, targetId, eventName),
       );
       setSelectedAgent(targetId);
       setSelectedEvent(eventName);
       setConnectFrom(null);
+      setLinkDrag(null);
       setTool("select");
       setValidation(null);
+      setCanvasAnnouncement(
+        `${sourceId} connected to ${targetId} with event ${eventName}.`,
+      );
       toast({
         tone: "signal",
         title: "Agents connected",
-        description: `${eventName} is emitted by ${connectFrom} and consumed by ${targetId}.`,
+        description: `${eventName} is emitted by ${sourceId} and consumed by ${targetId}.`,
       });
     } catch (err) {
+      setLinkDrag(null);
       toast({
         tone: "red",
         title: "Connection failed",
@@ -787,29 +1151,198 @@ export default function WorkflowsPage() {
     }
   }
 
-  function moveNode(id: string, clientX: number, clientY: number) {
-    const canvas = canvasScrollRef.current;
-    if (!canvas || clientX === 0 || clientY === 0) return;
-    const rect = canvas.getBoundingClientRect();
-    const position = {
-      x: Math.max(
-        0,
-        Math.min(
-          Math.min(MAX_CANVAS_W - NODE_W, canvasSize.width + COL_W - NODE_W),
-          (canvas.scrollLeft + clientX - rect.left) / zoom - NODE_W / 2,
-        ),
-      ),
-      y: Math.max(
-        0,
-        Math.min(
-          Math.min(MAX_CANVAS_H - NODE_H, canvasSize.height + ROW_H - NODE_H),
-          (canvas.scrollTop + clientY - rect.top) / zoom - NODE_H / 2 - 30,
-        ),
-      ),
-    };
-    setDraft((current) => moveAgent(current, id, position));
-    setValidation(null);
+  function connectNode(targetId: string) {
+    if (!connectFrom) {
+      setConnectFrom(targetId);
+      setSelectedAgent(targetId);
+      setCanvasAnnouncement(
+        `${targetId} selected as the connection source. Choose a target node.`,
+      );
+      return;
+    }
+    connectPair(connectFrom, targetId);
   }
+
+  function canvasPoint(clientX: number, clientY: number): CanvasPoint | null {
+    const canvas = canvasScrollRef.current;
+    if (!canvas) return null;
+    const rect = canvas.getBoundingClientRect();
+    return clientPointToCanvas(
+      { clientX, clientY },
+      {
+        rectLeft: rect.left,
+        rectTop: rect.top,
+        scrollLeft: canvas.scrollLeft,
+        scrollTop: canvas.scrollTop,
+        zoom,
+      },
+    );
+  }
+
+  function findInputTarget(clientX: number, clientY: number): string | null {
+    if (typeof document === "undefined") return null;
+    const target = document
+      .elementFromPoint(clientX, clientY)
+      ?.closest<HTMLElement>("[data-workflow-input]");
+    const id = target?.dataset.workflowInput;
+    return id && agents.some((agent) => agent.kebabId === id) ? id : null;
+  }
+
+  function beginNodeDrag(
+    event: ReactPointerEvent<HTMLButtonElement>,
+    id: string,
+  ) {
+    if (!editing || tool !== "select" || event.button !== 0) return;
+    const origin = renderedPositions.get(id);
+    if (!origin) return;
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setNodeDrag({
+      id,
+      pointerId: event.pointerId,
+      origin,
+      start: { clientX: event.clientX, clientY: event.clientY },
+      position: origin,
+      moved: false,
+    });
+  }
+
+  function updateNodeDrag(event: ReactPointerEvent<HTMLButtonElement>) {
+    setNodeDrag((current) => {
+      if (!current || current.pointerId !== event.pointerId) return current;
+      const position = nodePositionFromPointer(
+        current.origin,
+        current.start,
+        { clientX: event.clientX, clientY: event.clientY },
+        zoom,
+      );
+      const distance = Math.hypot(
+        event.clientX - current.start.clientX,
+        event.clientY - current.start.clientY,
+      );
+      return {
+        ...current,
+        position,
+        moved: current.moved || distance >= 5,
+      };
+    });
+  }
+
+  function finishNodeDrag(event: ReactPointerEvent<HTMLButtonElement>) {
+    if (!nodeDrag || nodeDrag.pointerId !== event.pointerId) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    const completed = nodeDrag;
+    setNodeDrag(null);
+    if (!completed.moved) return;
+    suppressedNodeClickRef.current = completed.id;
+    setSelectedAgent(completed.id);
+    setSelectedEvent(null);
+    setDraft((current) => moveAgent(current, completed.id, completed.position));
+    setValidation(null);
+    setCanvasAnnouncement(
+      `${completed.id} moved to x ${Math.round(completed.position.x)}, y ${Math.round(completed.position.y)}.`,
+    );
+  }
+
+  function nudgeNode(event: ReactKeyboardEvent<HTMLButtonElement>, id: string) {
+    if (!editing || tool !== "select") return;
+    const direction: Record<string, CanvasPoint> = {
+      ArrowLeft: { x: -1, y: 0 },
+      ArrowRight: { x: 1, y: 0 },
+      ArrowUp: { x: 0, y: -1 },
+      ArrowDown: { x: 0, y: 1 },
+    };
+    const vector = direction[event.key];
+    if (!vector) return;
+    event.preventDefault();
+    const current = renderedPositions.get(id);
+    if (!current) return;
+    const step = event.shiftKey ? 24 : 8;
+    const position = clampCanvasPosition({
+      x: current.x + vector.x * step,
+      y: current.y + vector.y * step,
+    });
+    setDraft((value) => moveAgent(value, id, position));
+    setValidation(null);
+    setCanvasAnnouncement(
+      `${id} moved to x ${Math.round(position.x)}, y ${Math.round(position.y)}.`,
+    );
+  }
+
+  function beginLinkDrag(
+    event: ReactPointerEvent<HTMLButtonElement>,
+    sourceId: string,
+  ) {
+    if (!editing || event.button !== 0) return;
+    const point = canvasPoint(event.clientX, event.clientY);
+    if (!point) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setSelectedAgent(sourceId);
+    setSelectedEvent(null);
+    setLinkDrag({
+      sourceId,
+      pointerId: event.pointerId,
+      point,
+      targetId: null,
+    });
+    setCanvasAnnouncement(
+      `Creating a connection from ${sourceId}. Drag to another agent's input port.`,
+    );
+  }
+
+  function updateLinkDrag(event: ReactPointerEvent<HTMLButtonElement>) {
+    if (!linkDrag || linkDrag.pointerId !== event.pointerId) return;
+    const point = canvasPoint(event.clientX, event.clientY);
+    if (!point) return;
+    const targetId = findInputTarget(event.clientX, event.clientY);
+    setLinkDrag((current) =>
+      current && current.pointerId === event.pointerId
+        ? { ...current, point, targetId }
+        : current,
+    );
+  }
+
+  function finishLinkDrag(event: ReactPointerEvent<HTMLButtonElement>) {
+    if (!linkDrag || linkDrag.pointerId !== event.pointerId) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    const targetId =
+      findInputTarget(event.clientX, event.clientY) ?? linkDrag.targetId;
+    const sourceId = linkDrag.sourceId;
+    setLinkDrag(null);
+    suppressedPortClickRef.current = true;
+    requestAnimationFrame(() => {
+      suppressedPortClickRef.current = false;
+    });
+    if (targetId && targetId !== sourceId) {
+      connectPair(sourceId, targetId);
+      return;
+    }
+    setTool("connect");
+    setConnectFrom(sourceId);
+    setSelectedAgent(sourceId);
+    setCanvasAnnouncement(
+      `${sourceId} selected as the connection source. Choose a target input port or node.`,
+    );
+  }
+
+  useEffect(() => {
+    function cancelActiveInteraction(event: KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      if (!nodeDrag && !linkDrag && !connectFrom) return;
+      setNodeDrag(null);
+      setLinkDrag(null);
+      setConnectFrom(null);
+      setCanvasAnnouncement("Canvas interaction cancelled.");
+    }
+    window.addEventListener("keydown", cancelActiveInteraction);
+    return () => window.removeEventListener("keydown", cancelActiveInteraction);
+  }, [connectFrom, linkDrag, nodeDrag]);
 
   function autoLayout() {
     const byStage = new Map<number, typeof agents>();
@@ -900,7 +1433,10 @@ export default function WorkflowsPage() {
   }
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+    <div className={styles.page}>
+      <div className={styles.srOnly} aria-live="polite" aria-atomic="true">
+        {canvasAnnouncement}
+      </div>
       <ViewHeader
         title="Workflows"
         subtitle={
@@ -933,6 +1469,19 @@ export default function WorkflowsPage() {
         action={
           editing
             ? [
+                <Button
+                  key="run"
+                  small
+                  icon="run"
+                  onClick={() => setShowRunConsole(true)}
+                  disabled={
+                    !selectedWorkflow ||
+                    dagQuery.isLoading ||
+                    agents.length === 0
+                  }
+                >
+                  Run
+                </Button>,
                 <Button
                   key="help"
                   small
@@ -993,6 +1542,20 @@ export default function WorkflowsPage() {
               ]
             : [
                 <Button
+                  key="run"
+                  icon="run"
+                  tone="primary"
+                  small
+                  onClick={() => setShowRunConsole(true)}
+                  disabled={
+                    !selectedWorkflow ||
+                    dagQuery.isLoading ||
+                    agents.length === 0
+                  }
+                >
+                  Run workflow
+                </Button>,
+                <Button
                   key="help"
                   small
                   icon="task"
@@ -1052,7 +1615,6 @@ export default function WorkflowsPage() {
                 <Button
                   key="new"
                   icon="plus"
-                  tone="primary"
                   small
                   onClick={() => setShowNewModal(true)}
                 >
@@ -1070,43 +1632,14 @@ export default function WorkflowsPage() {
         }
       />
 
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 10,
-          padding: "9px 24px",
-          background: "var(--panel-2)",
-          borderBottom: "1px solid var(--border)",
-          minHeight: 42,
-        }}
-      >
-        <span
-          style={{
-            color: "var(--text-3)",
-            fontFamily: "var(--mono)",
-            fontSize: 10.5,
-            textTransform: "uppercase",
-            letterSpacing: "0.07em",
-          }}
-        >
-          Workflow
-        </span>
+      <div className={styles.selectorBar}>
+        <span className={styles.selectorLabel}>Workflow</span>
         <select
+          className={styles.workflowSelect}
           aria-label="Selected workflow"
           value={selectedWorkflow ?? ""}
           onChange={(event) => setSelectedWorkflow(event.target.value || null)}
           disabled={catalogQuery.isLoading || workflows.length === 0}
-          style={{
-            minWidth: 260,
-            maxWidth: 420,
-            background: "var(--panel)",
-            border: "1px solid var(--border-2)",
-            borderRadius: 4,
-            color: "var(--text)",
-            padding: "6px 8px",
-            fontSize: 12,
-          }}
         >
           {workflows.length === 0 && <option value="">No workflows yet</option>}
           {workflows.map((workflow) => (
@@ -1187,398 +1720,524 @@ export default function WorkflowsPage() {
       )}
 
       <div
-        style={{
-          flex: 1,
-          display: "grid",
-          gridTemplateColumns: "1fr 280px",
-          minHeight: 0,
-        }}
+        className={styles.workspace}
+        ref={workspaceRef}
+        style={
+          {
+            "--workflow-inspector-width": `${renderedInspectorWidth}px`,
+            "--workflow-inspector-splitter-width": `${WORKFLOW_INSPECTOR_SPLITTER_WIDTH}px`,
+          } as CSSProperties
+        }
       >
         {/* Canvas */}
-        <div
-          ref={canvasScrollRef}
-          onClick={(event) => {
-            if (!editing || tool !== "add") return;
-            const target = event.target as HTMLElement;
-            if (target.closest("button,[role='button']")) return;
-            const canvas = canvasScrollRef.current;
-            if (!canvas) return;
-            const rect = canvas.getBoundingClientRect();
-            addAgent("Agent", {
-              x:
-                (canvas.scrollLeft + event.clientX - rect.left) / zoom -
-                NODE_W / 2,
-              y:
-                (canvas.scrollTop + event.clientY - rect.top) / zoom -
-                NODE_H / 2 -
-                30,
-            });
-          }}
-          style={{
-            position: "relative",
-            overflow: "auto",
-            background: "var(--bg)",
-            backgroundImage:
-              "radial-gradient(circle, var(--border) 1px, transparent 1px)",
-            backgroundSize: "22px 22px",
-            backgroundPosition: "0 0",
-          }}
-        >
+        <div className={styles.canvasShell} id="workflow-canvas-region">
           {editing && (
-            <EditToolbar
-              tool={tool}
-              setTool={(t) => {
-                setTool(t as typeof tool);
-                if (t !== "connect") setConnectFrom(null);
-              }}
-              onAutoLayout={autoLayout}
-              onZoomToFit={zoomToFit}
-            />
-          )}
-
-          {/* Stage headers row */}
-          <div
-            style={{
-              position: "absolute",
-              left: 0,
-              width: canvasSize.width,
-              top: 0,
-              height: 28,
-              pointerEvents: "none",
-              zoom,
-            }}
-          >
-            {stages.map((s) => (
-              <div
-                key={s.id}
-                style={{
-                  position: "absolute",
-                  left: PAD_X + s.column * COL_W,
-                  width: COL_W,
-                  padding: "8px 0 0 6px",
-                  fontSize: 10,
-                  fontFamily: "var(--mono)",
-                  fontWeight: 500,
-                  textTransform: "uppercase",
-                  letterSpacing: "0.12em",
-                  color: "var(--text-3)",
-                }}
-              >
-                {String(s.column).padStart(2, "0")} · {s.label}
-              </div>
-            ))}
-          </div>
-
-          <div
-            style={{
-              width: canvasSize.width,
-              height: canvasSize.height + 30,
-              position: "relative",
-              paddingTop: 30,
-              zoom,
-            }}
-          >
-            {/* Stage column dividers */}
-            <div
-              style={{
-                position: "absolute",
-                inset: "30px 0 0 0",
-                pointerEvents: "none",
-              }}
-            >
-              {stages.map((s) =>
-                s.column > 0 ? (
-                  <div
-                    key={s.id}
-                    style={{
-                      position: "absolute",
-                      top: 0,
-                      bottom: 0,
-                      left: PAD_X + s.column * COL_W - 8,
-                      width: 1,
-                      background: "var(--border)",
-                      opacity: 0.5,
-                    }}
-                  />
-                ) : null,
-              )}
+            <div className={styles.canvasCoach}>
+              <Icon name="workflow" size={12} />
+              <span>Drag nodes to move · drag output to input to connect</span>
+              <kbd>Esc</kbd>
             </div>
+          )}
+          {canvasDropActive && (
+            <div className={styles.dropHint} aria-hidden="true">
+              <Icon name="plus" size={15} />
+              Release to add this agent
+            </div>
+          )}
+          <div
+            className={styles.canvas}
+            ref={canvasScrollRef}
+            data-drop-active={canvasDropActive ? "true" : undefined}
+            onDragOver={(event) => {
+              if (
+                !editing ||
+                !Array.from(event.dataTransfer.types).includes(
+                  WORKFLOW_AGENT_DRAG_TYPE,
+                )
+              ) {
+                return;
+              }
+              event.preventDefault();
+              event.dataTransfer.dropEffect = "copy";
+              setCanvasDropActive(true);
+            }}
+            onDragLeave={(event) => {
+              if (
+                event.relatedTarget instanceof Node &&
+                event.currentTarget.contains(event.relatedTarget)
+              ) {
+                return;
+              }
+              setCanvasDropActive(false);
+            }}
+            onDrop={(event) => {
+              const actor = event.dataTransfer.getData(
+                WORKFLOW_AGENT_DRAG_TYPE,
+              );
+              setCanvasDropActive(false);
+              if (!editing || (actor !== "Agent" && actor !== "Human")) return;
+              event.preventDefault();
+              const point = canvasPoint(event.clientX, event.clientY);
+              if (!point) return;
+              addAgent(actor, {
+                x: point.x - NODE_W / 2,
+                y: point.y - NODE_H / 2,
+              });
+            }}
+            onClick={(event) => {
+              if (!editing || tool !== "add") return;
+              const target = event.target as HTMLElement;
+              if (target.closest("button,[role='button']")) return;
+              const point = canvasPoint(event.clientX, event.clientY);
+              if (!point) return;
+              addAgent("Agent", {
+                x: point.x - NODE_W / 2,
+                y: point.y - NODE_H / 2,
+              });
+            }}
+          >
+            {editing && (
+              <EditToolbar
+                tool={tool}
+                setTool={(t) => {
+                  setTool(t as typeof tool);
+                  if (t !== "connect") setConnectFrom(null);
+                }}
+                onAddAgent={() => addAgent("Agent")}
+                onAutoLayout={autoLayout}
+                onZoomToFit={zoomToFit}
+              />
+            )}
 
-            {/* SVG edges */}
-            <svg
-              width={canvasSize.width}
-              height={canvasSize.height}
-              role="img"
-              aria-label={`Workflow DAG: ${agents.length} agents wired by ${edges.length} event edges`}
-              style={{
-                position: "absolute",
-                top: 30,
-                left: 0,
-                pointerEvents: "none",
-              }}
-            >
-              <defs>
-                {["green", "blue", "amber", "red", "muted"].map((c) => (
-                  <marker
-                    key={c}
-                    id={`arrow-${c}`}
-                    viewBox="0 0 10 10"
-                    refX="8"
-                    refY="5"
-                    markerWidth="6"
-                    markerHeight="6"
-                    orient="auto"
-                  >
-                    <path d="M0,0 L10,5 L0,10 z" fill={colorVar(c)} />
-                  </marker>
-                ))}
-              </defs>
-              {edges.map((e, i) => {
-                const s = positions.get(e.src) ?? { x: 0, y: 0 };
-                const d = positions.get(e.dst) ?? { x: 0, y: 0 };
-                const sx = s.x + NODE_W;
-                const sy = s.y + NODE_H / 2;
-                const dx = d.x;
-                const dy = d.y + NODE_H / 2;
-                const c1x = sx + Math.max(40, (dx - sx) * 0.5);
-                const c2x = dx - Math.max(40, (dx - sx) * 0.5);
-                const path = `M ${sx} ${sy} C ${c1x} ${sy}, ${c2x} ${dy}, ${dx} ${dy}`;
-                const color = colorVar(evColor[e.event] ?? "muted");
-                const isHi = highlighted.edges.has(i) || hoveredEdge === i;
-                const opacity = dim ? (isHi ? 1 : 0.1) : isHi ? 1 : 0.55;
-                return (
-                  <g
-                    key={i}
-                    role="button"
-                    tabIndex={0}
-                    aria-label={`Event edge: ${e.event} from ${e.src} to ${e.dst}`}
-                    style={{ pointerEvents: "auto" }}
-                    onKeyDown={(ev) => {
-                      if (ev.key === "Enter" || ev.key === " ") {
-                        ev.preventDefault();
-                        setSelectedEvent(e.event);
-                      }
-                    }}
-                  >
-                    <path
-                      d={path}
-                      stroke={color}
-                      strokeWidth={isHi ? 2 : 1.25}
-                      fill="none"
-                      opacity={opacity}
-                      markerEnd={`url(#arrow-${evColor[e.event] ?? "muted"})`}
-                      style={{
-                        cursor: "pointer",
-                        transition: "opacity 0.15s, stroke-width 0.15s",
-                      }}
-                      onMouseEnter={() => setHoveredEdge(i)}
-                      onMouseLeave={() => setHoveredEdge(null)}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        setSelectedEvent(e.event);
-                      }}
-                    />
-                    {liveStream &&
-                      (isHi || (!dim && Math.abs((i * 37) % 7) === 0)) && (
-                        <circle
-                          r="3"
-                          fill={color}
-                          opacity={isHi ? 1 : 0.85}
-                          aria-hidden="true"
-                        >
-                          <animateMotion
-                            dur={`${2.5 + (i % 5) * 0.4}s`}
-                            repeatCount="indefinite"
-                            begin={`${(i * 0.13) % 2}s`}
-                            path={path}
-                          />
-                        </circle>
-                      )}
-                  </g>
-                );
-              })}
-            </svg>
-
-            {/* Agent nodes */}
+            {/* Stage headers row */}
             <div
               style={{
                 position: "absolute",
-                top: 30,
                 left: 0,
                 width: canvasSize.width,
-                height: canvasSize.height,
+                top: 0,
+                height: 28,
+                pointerEvents: "none",
+                zoom,
               }}
             >
-              {agents.map((a) => {
-                const p = positions.get(a.kebabId) ?? { x: 0, y: 0 };
-                const isSel = selectedAgent === a.kebabId;
-                const isConnectSource = connectFrom === a.kebabId;
-                const isHi = highlighted.nodes.has(a.kebabId);
-                const showDim = dim && !isHi;
-                const isAdded = editing && draft.added.has(a.kebabId);
-                const isModified = Boolean(
-                  editing &&
-                  draft.agents[a.kebabId] &&
-                  !draft.added.has(a.kebabId) &&
-                  !draft.removed.has(a.kebabId),
-                );
-                const borderColor = isSel
-                  ? "var(--signal)"
-                  : isConnectSource
-                    ? "var(--blue)"
-                    : isAdded
-                      ? "var(--green)"
-                      : isModified
-                        ? "var(--amber)"
-                        : isHi
-                          ? "var(--border-3)"
-                          : "var(--border-2)";
-                const dashed = editing ? "dashed" : "solid";
-                const stateSuffix = isAdded
-                  ? ", draft addition"
-                  : isModified
-                    ? ", draft modification"
-                    : "";
-                const nodeLabel = `${a.actor} node: ${a.title}, id ${a.kebabId}${stateSuffix}`;
-                return (
-                  <button
-                    key={a.kebabId}
-                    aria-label={nodeLabel}
-                    aria-pressed={isSel}
-                    draggable={editing && tool === "select"}
-                    onDragStart={(event) => {
-                      event.dataTransfer.effectAllowed = "move";
-                      event.dataTransfer.setData("text/plain", a.kebabId);
-                    }}
-                    onDragEnd={(event) =>
-                      moveNode(a.kebabId, event.clientX, event.clientY)
-                    }
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (editing && tool === "connect") {
-                        connectNode(a.kebabId);
-                        return;
-                      }
-                      setSelectedAgent(isSel ? null : a.kebabId);
-                      setSelectedEvent(null);
-                    }}
-                    style={{
-                      position: "absolute",
-                      left: p.x,
-                      top: p.y,
-                      width: NODE_W,
-                      height: NODE_H,
-                      background:
-                        a.actor === "Agent" ? "var(--panel)" : "var(--panel-2)",
-                      borderTop: `1px ${dashed} ${borderColor}`,
-                      borderRight: `1px ${dashed} ${borderColor}`,
-                      borderBottom: `1px ${dashed} ${borderColor}`,
-                      borderLeft: `3px solid ${a.actor === "Agent" ? "var(--signal)" : "var(--violet)"}`,
-                      borderRadius: 5,
-                      padding: "8px 10px",
-                      textAlign: "left",
-                      cursor:
-                        editing && tool === "connect"
-                          ? "crosshair"
-                          : editing && tool === "select"
-                            ? "move"
-                            : "pointer",
-                      opacity: showDim ? 0.3 : 1,
-                      transition:
-                        "opacity 0.15s, border-color 0.12s, box-shadow 0.12s",
-                      boxShadow: isSel
-                        ? "0 0 0 3px rgba(208,255,0,0.12)"
-                        : "none",
-                    }}
-                  >
+              {stages.map((s) => (
+                <div
+                  key={s.id}
+                  style={{
+                    position: "absolute",
+                    left: PAD_X + s.column * COL_W,
+                    width: COL_W,
+                    padding: "8px 0 0 6px",
+                    fontSize: 10,
+                    fontFamily: "var(--mono)",
+                    fontWeight: 500,
+                    textTransform: "uppercase",
+                    letterSpacing: "0.12em",
+                    color: "var(--text-3)",
+                  }}
+                >
+                  {String(s.column).padStart(2, "0")} · {s.label}
+                </div>
+              ))}
+            </div>
+
+            <div
+              style={{
+                width: canvasSize.width,
+                height: canvasSize.height + 30,
+                position: "relative",
+                paddingTop: 30,
+                zoom,
+              }}
+            >
+              {/* Stage column dividers */}
+              <div
+                style={{
+                  position: "absolute",
+                  inset: "30px 0 0 0",
+                  pointerEvents: "none",
+                }}
+              >
+                {stages.map((s) =>
+                  s.column > 0 ? (
                     <div
+                      key={s.id}
                       style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 6,
-                        marginBottom: 4,
+                        position: "absolute",
+                        top: 0,
+                        bottom: 0,
+                        left: PAD_X + s.column * COL_W - 8,
+                        width: 1,
+                        background: "var(--border)",
+                        opacity: 0.5,
+                      }}
+                    />
+                  ) : null,
+                )}
+              </div>
+
+              {/* SVG edges */}
+              <svg
+                width={canvasSize.width}
+                height={canvasSize.height}
+                role="img"
+                aria-label={`Workflow DAG: ${agents.length} agents wired by ${edges.length} event edges`}
+                style={{
+                  position: "absolute",
+                  top: 30,
+                  left: 0,
+                  pointerEvents: "none",
+                }}
+              >
+                <defs>
+                  {["green", "blue", "amber", "red", "muted"].map((c) => (
+                    <marker
+                      key={c}
+                      id={`arrow-${c}`}
+                      viewBox="0 0 10 10"
+                      refX="8"
+                      refY="5"
+                      markerWidth="6"
+                      markerHeight="6"
+                      orient="auto"
+                    >
+                      <path d="M0,0 L10,5 L0,10 z" fill={colorVar(c)} />
+                    </marker>
+                  ))}
+                </defs>
+                {edges.map((e, i) => {
+                  const s = renderedPositions.get(e.src) ?? { x: 0, y: 0 };
+                  const d = renderedPositions.get(e.dst) ?? { x: 0, y: 0 };
+                  const sx = s.x + NODE_W;
+                  const sy = s.y + NODE_H / 2;
+                  const dx = d.x;
+                  const dy = d.y + NODE_H / 2;
+                  const path = workflowEdgePath(
+                    { x: sx, y: sy },
+                    { x: dx, y: dy },
+                  );
+                  const color = colorVar(evColor[e.event] ?? "muted");
+                  const isHi = highlighted.edges.has(i) || hoveredEdge === i;
+                  const opacity = dim ? (isHi ? 1 : 0.1) : isHi ? 1 : 0.55;
+                  return (
+                    <g
+                      key={JSON.stringify([e.src, e.dst, e.event])}
+                      role="button"
+                      tabIndex={0}
+                      aria-label={`Event edge: ${e.event} from ${e.src} to ${e.dst}`}
+                      style={{ pointerEvents: "auto" }}
+                      onKeyDown={(ev) => {
+                        if (ev.key === "Enter" || ev.key === " ") {
+                          ev.preventDefault();
+                          setSelectedEvent(e.event);
+                        }
                       }}
                     >
-                      <ActorTag actor={a.actor} />
-                      {isAdded && <Badge tone="green">NEW</Badge>}
-                      {isModified && <Badge tone="amber">MOD</Badge>}
-                      <span
+                      <path
+                        d={path}
+                        stroke={color}
+                        strokeWidth={isHi ? 2 : 1.25}
+                        fill="none"
+                        opacity={opacity}
+                        markerEnd={`url(#arrow-${evColor[e.event] ?? "muted"})`}
                         style={{
-                          marginLeft: "auto",
-                          fontSize: 10,
-                          fontFamily: "var(--mono)",
-                          color: "var(--text-3)",
+                          cursor: "pointer",
+                          transition: "opacity 0.15s, stroke-width 0.15s",
+                        }}
+                        onMouseEnter={() => setHoveredEdge(i)}
+                        onMouseLeave={() => setHoveredEdge(null)}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setSelectedEvent(e.event);
+                        }}
+                      />
+                      {liveStream &&
+                        (isHi || (!dim && Math.abs((i * 37) % 7) === 0)) && (
+                          <circle
+                            className={styles.animatedEdgeDot}
+                            r="3"
+                            fill={color}
+                            opacity={isHi ? 1 : 0.85}
+                            aria-hidden="true"
+                          >
+                            <animateMotion
+                              dur={`${2.5 + (i % 5) * 0.4}s`}
+                              repeatCount="indefinite"
+                              begin={`${(i * 0.13) % 2}s`}
+                              path={path}
+                            />
+                          </circle>
+                        )}
+                    </g>
+                  );
+                })}
+                {linkDrag &&
+                  (() => {
+                    const source = renderedPositions.get(linkDrag.sourceId);
+                    if (!source) return null;
+                    const target = linkDrag.targetId
+                      ? renderedPositions.get(linkDrag.targetId)
+                      : null;
+                    const endpoint = target
+                      ? { x: target.x, y: target.y + NODE_H / 2 }
+                      : linkDrag.point;
+                    return (
+                      <path
+                        className={styles.connectionPreview}
+                        d={workflowEdgePath(
+                          {
+                            x: source.x + NODE_W,
+                            y: source.y + NODE_H / 2,
+                          },
+                          endpoint,
+                        )}
+                        markerEnd="url(#arrow-blue)"
+                      />
+                    );
+                  })()}
+              </svg>
+
+              {/* Agent nodes */}
+              <div
+                style={{
+                  position: "absolute",
+                  top: 30,
+                  left: 0,
+                  width: canvasSize.width,
+                  height: canvasSize.height,
+                }}
+              >
+                {agents.map((a) => {
+                  const p = renderedPositions.get(a.kebabId) ?? { x: 0, y: 0 };
+                  const isSel = selectedAgent === a.kebabId;
+                  const isConnectSource = connectFrom === a.kebabId;
+                  const isDropTarget = linkDrag?.targetId === a.kebabId;
+                  const isDragging = nodeDrag?.id === a.kebabId;
+                  const isHi = highlighted.nodes.has(a.kebabId);
+                  const showDim = dim && !isHi;
+                  const isAdded = editing && draft.added.has(a.kebabId);
+                  const isModified = Boolean(
+                    editing &&
+                    draft.agents[a.kebabId] &&
+                    !draft.added.has(a.kebabId) &&
+                    !draft.removed.has(a.kebabId),
+                  );
+                  const borderColor = isSel
+                    ? "var(--signal)"
+                    : isConnectSource
+                      ? "var(--blue)"
+                      : isAdded
+                        ? "var(--green)"
+                        : isModified
+                          ? "var(--amber)"
+                          : isHi
+                            ? "var(--border-3)"
+                            : "var(--border-2)";
+                  const dashed = editing ? "dashed" : "solid";
+                  const stateSuffix = isAdded
+                    ? ", draft addition"
+                    : isModified
+                      ? ", draft modification"
+                      : "";
+                  const nodeLabel = `${a.actor} node: ${a.title}, id ${a.kebabId}${stateSuffix}`;
+                  return (
+                    <div
+                      key={a.kebabId}
+                      className={`${styles.nodeFrame} ${
+                        isDragging ? styles.nodeFrameDragging : ""
+                      }`}
+                      style={{
+                        left: p.x,
+                        top: p.y,
+                        width: NODE_W,
+                        height: NODE_H,
+                        opacity: showDim ? 0.3 : 1,
+                      }}
+                    >
+                      <button
+                        type="button"
+                        className={styles.nodeButton}
+                        aria-label={nodeLabel}
+                        aria-pressed={isSel}
+                        onPointerDown={(event) =>
+                          beginNodeDrag(event, a.kebabId)
+                        }
+                        onPointerMove={updateNodeDrag}
+                        onPointerUp={finishNodeDrag}
+                        onPointerCancel={() => setNodeDrag(null)}
+                        onKeyDown={(event) => nudgeNode(event, a.kebabId)}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          if (suppressedNodeClickRef.current === a.kebabId) {
+                            suppressedNodeClickRef.current = null;
+                            return;
+                          }
+                          if (editing && tool === "connect") {
+                            connectNode(a.kebabId);
+                            return;
+                          }
+                          setSelectedAgent(isSel ? null : a.kebabId);
+                          setSelectedEvent(null);
+                        }}
+                        onDoubleClick={(event) => {
+                          event.stopPropagation();
+                          expandAgentPanel(a.kebabId);
+                        }}
+                        title={
+                          editing
+                            ? `Drag to move ${a.title}. Double-click to expand all agent settings.`
+                            : `Open ${a.title} details. Double-click to expand the detail panel.`
+                        }
+                        style={{
+                          background:
+                            a.actor === "Agent"
+                              ? "var(--panel)"
+                              : "var(--panel-2)",
+                          borderTop: `1px ${dashed} ${borderColor}`,
+                          borderRight: `1px ${dashed} ${borderColor}`,
+                          borderBottom: `1px ${dashed} ${borderColor}`,
+                          borderLeft: `3px solid ${
+                            a.actor === "Agent"
+                              ? "var(--signal)"
+                              : "var(--violet)"
+                          }`,
+                          cursor:
+                            editing && tool === "connect"
+                              ? "crosshair"
+                              : editing && tool === "select"
+                                ? isDragging
+                                  ? "grabbing"
+                                  : "grab"
+                                : "pointer",
+                          boxShadow: isSel
+                            ? "0 0 0 3px rgba(208,255,0,0.12)"
+                            : "none",
                         }}
                       >
-                        {a.kebabId}
-                      </span>
+                        <div
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 6,
+                            marginBottom: 4,
+                          }}
+                        >
+                          <ActorTag actor={a.actor} />
+                          {isAdded && <Badge tone="green">NEW</Badge>}
+                          {isModified && <Badge tone="amber">MOD</Badge>}
+                          <span
+                            style={{
+                              marginLeft: "auto",
+                              fontSize: 10,
+                              fontFamily: "var(--mono)",
+                              color: "var(--text-3)",
+                            }}
+                          >
+                            {a.kebabId}
+                          </span>
+                        </div>
+                        <div
+                          style={{
+                            fontSize: 12.5,
+                            color: "var(--text)",
+                            fontWeight: 600,
+                            lineHeight: 1.2,
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            display: "-webkit-box",
+                            WebkitLineClamp: 2,
+                            WebkitBoxOrient: "vertical",
+                          }}
+                        >
+                          {a.title}
+                        </div>
+                      </button>
+                      {editing && (
+                        <>
+                          <button
+                            type="button"
+                            className={`${styles.nodePort} ${styles.nodePortInput} ${
+                              isDropTarget ? styles.nodePortActive : ""
+                            }`}
+                            data-workflow-input={a.kebabId}
+                            aria-label={`Connect into ${a.title}`}
+                            title={`Input port for ${a.title}`}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              if (connectFrom) {
+                                connectPair(connectFrom, a.kebabId);
+                                return;
+                              }
+                              setSelectedAgent(a.kebabId);
+                            }}
+                          />
+                          <button
+                            type="button"
+                            className={`${styles.nodePort} ${styles.nodePortOutput} ${
+                              linkDrag?.sourceId === a.kebabId
+                                ? styles.nodePortActive
+                                : ""
+                            }`}
+                            aria-label={`Start a connection from ${a.title}`}
+                            title={`Drag to connect from ${a.title}`}
+                            onPointerDown={(event) =>
+                              beginLinkDrag(event, a.kebabId)
+                            }
+                            onPointerMove={updateLinkDrag}
+                            onPointerUp={finishLinkDrag}
+                            onPointerCancel={() => setLinkDrag(null)}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              if (suppressedPortClickRef.current) return;
+                              setTool("connect");
+                              setConnectFrom(a.kebabId);
+                              setSelectedAgent(a.kebabId);
+                              setSelectedEvent(null);
+                              setCanvasAnnouncement(
+                                `${a.kebabId} selected as the connection source. Choose a target input port or node.`,
+                              );
+                            }}
+                          />
+                        </>
+                      )}
                     </div>
-                    <div
-                      style={{
-                        fontSize: 12.5,
-                        color: "var(--text)",
-                        fontWeight: 500,
-                        lineHeight: 1.2,
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        display: "-webkit-box",
-                        WebkitLineClamp: 2,
-                        WebkitBoxOrient: "vertical",
-                      }}
-                    >
-                      {a.title}
-                    </div>
-                    {editing && isSel && (
-                      <>
-                        {(["top", "right", "bottom", "left"] as const).map(
-                          (s) => (
-                            <span
-                              key={s}
-                              style={{
-                                position: "absolute",
-                                width: 8,
-                                height: 8,
-                                background: "var(--signal)",
-                                border: "1px solid var(--bg)",
-                                borderRadius: 1,
-                                top:
-                                  s === "top"
-                                    ? -4
-                                    : s === "bottom"
-                                      ? "calc(100% - 4px)"
-                                      : "calc(50% - 4px)",
-                                left:
-                                  s === "left"
-                                    ? -4
-                                    : s === "right"
-                                      ? "calc(100% - 4px)"
-                                      : "calc(50% - 4px)",
-                              }}
-                            />
-                          ),
-                        )}
-                      </>
-                    )}
-                  </button>
-                );
-              })}
+                  );
+                })}
+              </div>
             </div>
           </div>
         </div>
 
-        {/* Right inspector aside */}
-        <aside
-          style={{
-            borderLeft: "1px solid var(--border)",
-            background: "var(--panel)",
-            display: "flex",
-            flexDirection: "column",
-            minHeight: 0,
-          }}
+        <div
+          className={styles.inspectorSplitter}
+          title="Drag to resize agent details. Double-click to expand or restore."
+          onDoubleClick={toggleAgentPanelWidth}
         >
+          <Splitter
+            axis="x"
+            invert
+            hitSize={WORKFLOW_INSPECTOR_SPLITTER_WIDTH}
+            getValue={() => renderedInspectorWidth}
+            setValue={(next) =>
+              setInspectorWidth(
+                clampWorkflowInspectorWidth(next, workspaceWidth),
+              )
+            }
+            min={WORKFLOW_INSPECTOR_MIN_WIDTH}
+            max={inspectorMaxWidth}
+            ariaLabel="Resize workflow canvas and agent details"
+            ariaControls="workflow-canvas-region workflow-agent-inspector"
+          />
+        </div>
+
+        {/* Right inspector aside */}
+        <aside className={styles.inspector} id="workflow-agent-inspector">
           {selectedAgent && editing && selectedAgentRecord ? (
             <AgentEditor
               agent={selectedAgentRecord}
+              workflowSlug={selectedWorkflow ?? undefined}
+              workflowAgents={agents}
               events={events}
               draft={draft.agents[selectedAgent]}
               onChange={(next) => {
@@ -1589,6 +2248,9 @@ export default function WorkflowsPage() {
                 setValidation(null);
               }}
               onValidityChange={reportEditorValidity}
+              onToggleWidth={toggleAgentPanelWidth}
+              canResize={inspectorCanResize}
+              isWide={inspectorIsWide}
               onRemove={() => {
                 setDraft((prev) => {
                   const isAdded = prev.added.has(selectedAgent);
@@ -1622,11 +2284,9 @@ export default function WorkflowsPage() {
             <AgentInspector
               agent={selectedAgentRecord}
               onClose={() => setSelectedAgent(null)}
-              onOpenFull={() => navAgent(selectedAgent)}
-              canOpenFull={Boolean(
-                dagQuery.data?.workflowIsLive &&
-                selectedAgentRecord.id !== selectedAgent,
-              )}
+              onToggleWidth={toggleAgentPanelWidth}
+              canResize={inspectorCanResize}
+              isWide={inspectorIsWide}
               workflowLabel={`${selectedWorkflow ?? "workflow"}${workflowVersion ? ` · ${workflowVersion}` : ""}`}
             />
           ) : selectedEvent ? (
@@ -1681,6 +2341,18 @@ export default function WorkflowsPage() {
           mode="workflow"
           draftTarget={importTarget ?? undefined}
           onDraftCreated={selectCreatedWorkflow}
+        />
+      )}
+      {showRunConsole && selectedWorkflow && agents.length > 0 && (
+        <WorkflowRunConsole
+          workflowSlug={selectedWorkflow}
+          workflowName={selectedSummary?.name ?? selectedWorkflow}
+          manifest={editableManifest()}
+          currentVersion={
+            workflowVersion || selectedSummary?.latestVersion || "draft"
+          }
+          liveVersionId={selectedSummary?.liveVersionId ?? null}
+          onClose={() => setShowRunConsole(false)}
         />
       )}
       <WorkflowHelp open={showHelp} onClose={() => setShowHelp(false)} />
