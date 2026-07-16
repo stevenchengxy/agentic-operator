@@ -1,5 +1,12 @@
 import { and, desc, eq, inArray, isNull, lt, or } from "drizzle-orm";
-import { agentRunSessions, getDb, runMessages, runs } from "@agentic/db";
+import {
+  agentDraftRevisions,
+  agentRunSessions,
+  events,
+  getDb,
+  runMessages,
+  runs,
+} from "@agentic/db";
 import { makeId } from "@agentic/shared";
 import {
   ProviderIdSchema,
@@ -9,6 +16,7 @@ import {
   type ListAgentRunsQuery,
   type ListAgentRunsResponse,
   type RunMessage,
+  type StudioRunContinuation,
 } from "@agentic/contracts";
 import type { AuthedContext } from "../plugins/auth";
 import { AgentStudioNotFoundError, findStudioAgent } from "./agent-drafts";
@@ -21,6 +29,71 @@ function promptPreview(value: unknown): string | null {
   if (typeof prompt !== "string") return null;
   const compact = prompt.replace(/\s+/g, " ").trim();
   return compact ? compact.slice(0, 400) : null;
+}
+
+function recordValue(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function continuationForSession(
+  tenantId: string,
+  sessionId: string,
+  messages: RunMessage[],
+): StudioRunContinuation | null {
+  const latest = getDb()
+    .select({
+      runId: runs.id,
+      agentVersionId: runs.agentVersionId,
+      sideEffectMode: runs.sideEffectMode,
+      eventName: events.name,
+      draftId: agentDraftRevisions.draftId,
+      draftRevision: agentDraftRevisions.revision,
+    })
+    .from(runs)
+    .leftJoin(events, eq(events.id, runs.triggerEventId))
+    .leftJoin(
+      agentDraftRevisions,
+      eq(agentDraftRevisions.id, runs.draftRevisionId),
+    )
+    .where(and(eq(runs.tenantId, tenantId), eq(runs.sessionId, sessionId)))
+    .orderBy(desc(runs.queuedAt), desc(runs.id))
+    .limit(1)
+    .all()[0];
+  if (!latest?.eventName) return null;
+
+  const target: StudioRunContinuation["target"] | null =
+    latest.draftId && latest.draftRevision !== null
+      ? {
+          kind: "draft",
+          draftId: latest.draftId,
+          revision: latest.draftRevision,
+        }
+      : latest.agentVersionId
+        ? { kind: "live", agentVersionId: latest.agentVersionId }
+        : null;
+  if (!target) return null;
+
+  const userMessage = [...messages]
+    .reverse()
+    .find(
+      (message) => message.runId === latest.runId && message.role === "user",
+    );
+  const content = recordValue(userMessage?.content);
+  const inputs = recordValue(content.inputs);
+  return {
+    runId: latest.runId,
+    target,
+    triggerEvent: latest.eventName,
+    inputs,
+    toolPolicy:
+      latest.sideEffectMode === "live"
+        ? "live"
+        : latest.sideEffectMode === "suppressed"
+          ? "simulate"
+          : "safe",
+  };
 }
 
 function toHistoryRow(run: RunRow, message?: unknown): AgentRunHistoryRow {
@@ -214,5 +287,10 @@ export function getStudioRunSession(
     limit: 100,
     sessionId,
   });
-  return { session, messages, runs: history.runs };
+  return {
+    session,
+    messages,
+    runs: history.runs,
+    continuation: continuationForSession(ctx.tenantId, sessionId, messages),
+  };
 }

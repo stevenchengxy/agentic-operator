@@ -185,6 +185,19 @@ a {
   display: none;
 }
 
+.agent-studio-notice-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: stretch;
+  gap: 8px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.agent-studio-notice-grid--split {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .agent-studio-test-grid {
   grid-template-columns: minmax(280px, 0.85fr) minmax(340px, 1.15fr) 250px;
 }
@@ -219,6 +232,12 @@ a {
   }
 }
 
+@media (max-width: 1100px) {
+  .agent-studio-notice-grid--split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 @media (max-width: 900px) {
   .operator-check-main-grid,
   .operator-check-scenario-grid {
@@ -242,5 +261,293 @@ a {
 @media (prefers-reduced-motion: reduce) {
   .operator-check-progress-fill {
     transition: none !important;
+  }
+}
+
+/* Agent Studio Test Lab conversation — result-first, inspectable chat UX. */
+.agent-studio-test-conversation {
+  min-height: 680px;
+  overflow: hidden;
+}
+
+.agent-studio-chat-scroll {
+  background: var(--bg-2);
+  scroll-behavior: smooth;
+}
+
+.agent-studio-chat-log {
+  display: flex;
+  min-height: 100%;
+  flex-direction: column;
+  justify-content: flex-start;
+}
+
+.agent-studio-chat-message {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  gap: 12px;
+  width: 100%;
+  padding: 18px clamp(16px, 4vw, 42px);
+  border-bottom: 1px solid var(--border);
+}
+
+.agent-studio-chat-message--assistant {
+  background: var(--panel);
+}
+
+.agent-studio-chat-message--user {
+  background: var(--panel-2);
+}
+
+.agent-studio-chat-message--selected {
+  box-shadow: inset 3px 0 0 var(--signal);
+}
+
+.agent-studio-chat-avatar {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border: 1px solid var(--border-2);
+  border-radius: 7px;
+  background: var(--panel-3);
+  color: var(--text-2);
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 600;
+}
+
+.agent-studio-chat-message--assistant .agent-studio-chat-avatar {
+  border-color: var(--signal);
+  color: var(--signal);
+}
+
+.agent-studio-chat-body {
+  min-width: 0;
+}
+
+.agent-studio-chat-byline {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 8px;
+  color: var(--text);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.agent-studio-chat-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--text-3);
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 400;
+}
+
+.agent-studio-chat-state .live-dot {
+  width: 6px;
+  height: 6px;
+}
+
+.agent-studio-chat-state--failed,
+.agent-studio-chat-state--cancelled {
+  color: var(--red);
+}
+
+.agent-studio-chat-text {
+  color: var(--text);
+  font-size: 12.5px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.agent-studio-chat-json {
+  max-width: 100%;
+  margin: 0;
+  padding: 12px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text-2);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+
+.agent-studio-chat-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 20px;
+  margin-top: 8px;
+  color: var(--text-3);
+  font-family: var(--mono);
+  font-size: 9px;
+}
+
+.agent-studio-chat-run-link {
+  color: var(--blue);
+  font-size: 9.5px;
+}
+
+.agent-studio-chat-run-link:hover,
+.agent-studio-chat-run-link[aria-pressed="true"] {
+  color: var(--signal);
+}
+
+.agent-studio-chat-welcome {
+  display: grid;
+  max-width: 460px;
+  min-height: 380px;
+  margin: auto;
+  padding: 48px 24px;
+  place-content: center;
+  justify-items: center;
+  text-align: center;
+}
+
+.agent-studio-chat-welcome-mark {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  margin-bottom: 16px;
+  place-items: center;
+  border: 1px solid var(--signal);
+  border-radius: 12px;
+  color: var(--signal);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.agent-studio-chat-welcome h3 {
+  margin: 0;
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.agent-studio-chat-welcome p {
+  margin: 9px 0 0;
+  color: var(--text-3);
+  font-size: 11.5px;
+  line-height: 1.65;
+}
+
+.agent-studio-chat-composer {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  padding: 12px 14px 10px;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.agent-studio-chat-composer-box {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 9px;
+  padding: 8px;
+  border: 1px solid var(--border-2);
+  border-radius: 9px;
+  background: var(--panel-2);
+}
+
+.agent-studio-chat-composer-box:focus-within {
+  border-color: var(--signal);
+}
+
+.agent-studio-chat-composer textarea {
+  width: 100%;
+  min-height: 58px;
+  max-height: 180px;
+  padding: 3px 4px;
+  resize: none;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  font: 12.5px/1.55 var(--sans);
+}
+
+.agent-studio-chat-composer textarea::placeholder {
+  color: var(--text-3);
+}
+
+.agent-studio-chat-composer textarea:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.agent-studio-chat-composer-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 6px;
+  color: var(--text-3);
+  font-family: var(--mono);
+  font-size: 9px;
+}
+
+.agent-studio-chat-composer-error {
+  margin-top: 6px;
+  color: var(--amber);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+@media (max-width: 900px) {
+  .agent-studio-test-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .agent-studio-test-setup {
+    max-height: 520px;
+    border-right: 0 !important;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .agent-studio-test-conversation {
+    min-height: 680px;
+    border-right: 0 !important;
+  }
+
+  .agent-studio-test-history {
+    grid-column: auto;
+  }
+}
+
+@media (max-width: 600px) {
+  .agent-studio-chat-message {
+    grid-template-columns: 25px minmax(0, 1fr);
+    gap: 9px;
+    padding: 14px 12px;
+  }
+
+  .agent-studio-chat-avatar {
+    width: 25px;
+    height: 25px;
+    border-radius: 6px;
+    font-size: 8px;
+  }
+
+  .agent-studio-chat-composer {
+    padding: 9px;
+  }
+
+  .agent-studio-chat-composer-meta {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 3px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-studio-chat-scroll {
+    scroll-behavior: auto;
   }
 }

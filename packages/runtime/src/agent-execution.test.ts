@@ -186,6 +186,37 @@ describe("Agent Definition v2 execution helpers", () => {
     );
   });
 
+  it("maps the exact Studio prompt envelope into the reserved prompt input", () => {
+    const studioDefinition = definition({
+      trigger_bindings: undefined,
+      inputs: [
+        {
+          id: "prompt",
+          kind: "prompt",
+          required: true,
+          schema: { type: "string", minLength: 1 },
+        },
+        {
+          id: "candidate",
+          kind: "value",
+          required: true,
+          schema: { type: "object" },
+        },
+      ],
+    });
+    const exactPrompt = "  Keep this spacing.\n\nAnd this line.  ";
+    const bound = bindTriggerInputs(studioDefinition, {
+      name: "CANDIDATE_READY",
+      data: {
+        prompt: exactPrompt,
+        inputs: { candidate: { id: "cand-custom" } },
+      },
+    });
+
+    assert.equal(bound.prompt, exactPrompt);
+    assert.deepEqual(bound.candidate, { id: "cand-custom" });
+  });
+
   it("compiles deterministic system/user roles with exact prompt first", () => {
     const inputs = {
       prompt: "Assess this candidate exactly as requested.",
@@ -217,6 +248,80 @@ describe("Agent Definition v2 execution helpers", () => {
     assert.match(first.system, /Use only supplied evidence/);
     assert.match(first.system, /matchResumeApi/);
     assert.match(first.system, /"assessment"/);
+  });
+
+  it("reserves the terminal output contract for the final action", () => {
+    const compiled = compileAgentPrompts(
+      definition(),
+      {
+        prompt: "Build an evidence dossier for the next action.",
+        candidate: { name: "Ada", id: "cand-1" },
+      },
+      {
+        actionObjective: "Gather source-supported working evidence.",
+        includeOutputContract: false,
+      },
+    );
+
+    assert.match(compiled.system, /Gather source-supported working evidence/);
+    assert.doesNotMatch(compiled.system, /Return only one JSON value/);
+    assert.doesNotMatch(compiled.system, /"assessment"/);
+  });
+
+  it("keeps the system and current user fixed around the newest 20 prior turns", () => {
+    const conversationHistory = Array.from({ length: 22 }, (_, index) => ({
+      role: index % 2 === 0 ? ("user" as const) : ("assistant" as const),
+      content: `prior-turn-${index}`,
+    }));
+    const originalHistory = structuredClone(conversationHistory);
+    const compiled = compileAgentPrompts(
+      definition(),
+      {
+        prompt: "This is the exact current request.",
+        candidate: { name: "Ada", id: "cand-1" },
+      },
+      { conversationHistory },
+    );
+
+    assert.deepEqual(conversationHistory, originalHistory);
+    assert.equal(compiled.messages.length, 22);
+    assert.equal(compiled.messages[0]?.role, "system");
+    assert.deepEqual(
+      compiled.messages.slice(1, -1),
+      conversationHistory.slice(-20),
+    );
+    assert.equal(compiled.messages[1]?.content, "prior-turn-2");
+    assert.deepEqual(compiled.messages.at(-1), {
+      role: "user",
+      content: compiled.user,
+    });
+    assert.ok(compiled.user.startsWith("This is the exact current request."));
+  });
+
+  it("does not impose the terminal output schema on intermediate actions", () => {
+    const intermediate = compileAgentPrompts(
+      definition(),
+      {
+        prompt: "Research the request.",
+        candidate: { name: "Ada", id: "cand-1" },
+      },
+      {
+        actionObjective: "Return an evidence-gathering plan for the next step.",
+        includeOutputContract: false,
+      },
+    );
+    const terminal = compileAgentPrompts(
+      definition(),
+      {
+        prompt: "Research the request.",
+        candidate: { name: "Ada", id: "cand-1" },
+      },
+      { actionObjective: "Return the final recommendation." },
+    );
+
+    assert.doesNotMatch(intermediate.system, /"assessment"/);
+    assert.match(intermediate.system, /evidence-gathering plan/);
+    assert.match(terminal.system, /"assessment"/);
   });
 
   it("strictly validates output and honors the bounded repair count", async () => {

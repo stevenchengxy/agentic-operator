@@ -45,6 +45,8 @@ const ENV_VAR_BY_PROVIDER: Partial<Record<ProviderId, string>> = {
   together: "TOGETHER_API_KEY",
   mistral: "MISTRAL_API_KEY",
   deepseek: "DEEPSEEK_API_KEY",
+  moonshot: "MOONSHOT_API_KEY",
+  zai: "ZAI_API_KEY",
   qwen: "QWEN_API_KEY",
   azure: "AZURE_OPENAI_API_KEY",
   custom: "CUSTOM_LLM_API_KEY",

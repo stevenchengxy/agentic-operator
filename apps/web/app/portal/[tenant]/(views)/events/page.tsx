@@ -80,20 +80,27 @@ export default function EventsPage() {
   const eventTypes = useMemo(() => {
     const names = new Map<string, { name: string; color: string }>();
     for (const e of stream) {
-      if (!names.has(e.name)) names.set(e.name, { name: e.name, color: e.color });
+      if (!names.has(e.name))
+        names.set(e.name, { name: e.name, color: e.color });
     }
     for (const a of agents) {
       for (const n of [...a.triggers, ...a.emits]) {
         if (!names.has(n)) names.set(n, { name: n, color: "muted" });
       }
     }
-    return Array.from(names.values()).sort((a, b) => a.name.localeCompare(b.name));
+    return Array.from(names.values()).sort((a, b) =>
+      a.name.localeCompare(b.name),
+    );
   }, [stream, agents]);
 
   const [typeFilter, setTypeFilter] = useState<string>("all");
   const [catFilter, setCatFilter] = useState<string>("all");
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  useEffect(() => {
+    setSelectedId(new URLSearchParams(window.location.search).get("eventId"));
+  }, []);
 
   // Live toggle proxy.
   const [liveStream] = useState(true);
@@ -313,7 +320,11 @@ export default function EventsPage() {
           ) : filtered.length === 0 ? (
             <Empty
               title={stream.length === 0 ? "No events yet" : "No events"}
-              hint={stream.length === 0 ? "Events appear here as agents fire them." : "Try a broader filter"}
+              hint={
+                stream.length === 0
+                  ? "Events appear here as agents fire them."
+                  : "Try a broader filter"
+              }
             />
           ) : (
             <table
@@ -365,9 +376,7 @@ export default function EventsPage() {
                       <Badge tone={eventTone(e.color)}>{e.name}</Badge>
                     </Td>
                     <Td>
-                      <span
-                        style={{ fontSize: 11.5, color: "var(--text-2)" }}
-                      >
+                      <span style={{ fontSize: 11.5, color: "var(--text-2)" }}>
                         {e.sourceTitle}
                       </span>
                     </Td>
@@ -618,10 +627,7 @@ function EventDetail({
             {event.category}
           </span>
         </div>
-        <div
-          className="mono"
-          style={{ fontSize: 13, color: "var(--text)" }}
-        >
+        <div className="mono" style={{ fontSize: 13, color: "var(--text)" }}>
           {event.id}
         </div>
         <div
@@ -736,13 +742,7 @@ function EventDetail({
   );
 }
 
-function AgentLinkRow({
-  agent,
-  tenant,
-}: {
-  agent: DagAgent;
-  tenant: string;
-}) {
+function AgentLinkRow({ agent, tenant }: { agent: DagAgent; tenant: string }) {
   return (
     <Link
       href={`/portal/${tenant}/agents/${agent.kebabId}` as never}
@@ -771,11 +771,7 @@ function AgentLinkRow({
       >
         {agent.title}
       </span>
-      <Icon
-        name="chevron-right"
-        size={11}
-        style={{ color: "var(--text-3)" }}
-      />
+      <Icon name="chevron-right" size={11} style={{ color: "var(--text-3)" }} />
     </Link>
   );
 }

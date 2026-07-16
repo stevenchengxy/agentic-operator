@@ -27,6 +27,8 @@ export interface AdapterEnvSlice {
   TOGETHER_API_KEY?: string;
   MISTRAL_API_KEY?: string;
   DEEPSEEK_API_KEY?: string;
+  MOONSHOT_API_KEY?: string;
+  ZAI_API_KEY?: string;
   QWEN_API_KEY?: string;
   AZURE_OPENAI_API_KEY?: string;
   AZURE_OPENAI_ENDPOINT?: string;
@@ -87,6 +89,8 @@ export function resolveConfig(
       TOGETHER_API_KEY: env.TOGETHER_API_KEY,
       MISTRAL_API_KEY: env.MISTRAL_API_KEY,
       DEEPSEEK_API_KEY: env.DEEPSEEK_API_KEY,
+      MOONSHOT_API_KEY: env.MOONSHOT_API_KEY,
+      ZAI_API_KEY: env.ZAI_API_KEY,
       QWEN_API_KEY: env.QWEN_API_KEY,
       AZURE_OPENAI_API_KEY: env.AZURE_OPENAI_API_KEY,
       AZURE_OPENAI_ENDPOINT: env.AZURE_OPENAI_ENDPOINT,

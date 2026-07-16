@@ -507,7 +507,7 @@ are added by:
 
 | Dep | Version |
 |---|---|
-| Node | 22.x LTS |
+| Node | 26.5.0 Current |
 | TypeScript | 5.6+ |
 | Next.js | 15.x |
 | React | 19.x |

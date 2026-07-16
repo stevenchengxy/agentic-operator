@@ -8,6 +8,11 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+import type {
+  AgentModelSelection,
+  DeployAuthoredAgentResponse,
+} from "@agentic/contracts";
 import {
   ActorTag,
   Badge,
@@ -21,45 +26,35 @@ import { useDag } from "@/lib/hooks/useAgents";
 import { useEventCatalog, useEvents } from "@/lib/hooks/useEvents";
 import { type ToolUseSchema } from "@/app/portal/components/agent-code/samples";
 import { AgentToolUseEditPanel } from "@/app/portal/components/agent-code/EditPanels";
-import { useFleet } from "@/lib/hooks/useModelFleet";
+import { useFleet, type FleetEntry } from "@/lib/hooks/useModelFleet";
 import { useTools, type ToolCatalogEntry } from "@/lib/hooks/useTools";
 import {
   useDeployAuthoredAgent,
   useGenerateAgentPrompt,
+  useAgentNameAvailability,
   type GenerateAgentPromptBody,
 } from "@/lib/hooks/useAgentAuthoring";
 import { useTenant } from "@/app/portal/lib/use-tenant";
 import { useToast } from "@/app/portal/components/toast";
 import { normalizeAuthoredEventName } from "./event-name";
+import {
+  AGENT_BUILDER_TEMPLATES,
+  deepSearchStepsForMode,
+  defaultStepModels,
+  modelLabel,
+  modelSelectionReason,
+  recommendFleetModel,
+  type AgentBuilderStep,
+  type AgentBuilderTemplate,
+  type DeepSearchMode,
+} from "./agent-builder";
+import { catalogToolToToolUse } from "./tool-schema";
 
-// Static workflow ontology labels — mirrors the dashboard funnel.
-const STAGE_LABELS: Record<number, string> = {
-  0: "Intake",
-  1: "Analyze",
-  2: "JD",
-  3: "Publish",
-  4: "Resume",
-  5: "Match & Interview",
-  6: "Package",
-  7: "Submit",
-};
+const AUTO_MODEL = "auto";
+const INHERIT_MODEL = "inherit";
 
-const AGENT_TEMPLATES = [
-  { id: "blank", actor: "Agent" as const, name: "Blank agent", desc: "Empty handler. Bring your own steps + prompt.", color: "var(--text-3)" },
-  { id: "classify", actor: "Agent" as const, name: "Classifier", desc: "Single LLM call, returns one of N labels. Cheap and fast.", color: "var(--blue)" },
-  { id: "extract", actor: "Agent" as const, name: "Extractor", desc: "Pulls structured JSON from unstructured input. JSON schema enforced.", color: "var(--blue)" },
-  { id: "rag", actor: "Agent" as const, name: "RAG retriever", desc: "Embeds question, fetches top-k chunks, answers with citations.", color: "var(--violet)" },
-  { id: "loop", actor: "Agent" as const, name: "Tool-loop agent", desc: "Iterates tool calls until done. Use for research, browsing, data lookups.", color: "var(--signal)" },
-  { id: "human", actor: "Human" as const, name: "Human approval", desc: "Pauses the workflow for an operator to approve, reject, or supplement.", color: "var(--violet)" },
-] as const;
-
-type Template = (typeof AGENT_TEMPLATES)[number];
-
-export function DeployAgentModal({
-  onClose,
-}: {
-  onClose: () => void;
-}) {
+export function DeployAgentModal({ onClose }: { onClose: () => void }) {
+  const router = useRouter();
   const tenant = useTenant();
   const toast = useToast();
   const { data: dag } = useDag();
@@ -69,15 +64,6 @@ export function DeployAgentModal({
   const { data: toolCatalog, isLoading: toolsLoading } = useTools();
   const generatePrompt = useGenerateAgentPrompt();
   const deployAgent = useDeployAuthoredAgent();
-  // Derive stages from the live DAG (set of stage indices in use).
-  const stages = useMemo(() => {
-    const used = new Set<number>();
-    for (const a of dag?.agents ?? []) used.add(a.stage);
-    for (const id of Object.keys(STAGE_LABELS)) used.add(Number(id));
-    return Array.from(used)
-      .sort((a, b) => a - b)
-      .map((id) => ({ id, label: STAGE_LABELS[id] ?? `Stage ${id}` }));
-  }, [dag]);
   const [createdEvents, setCreatedEvents] = useState<string[]>([]);
   // Event-name catalog combines persisted ontology rows, names seen on the
   // live stream, and every name declared by an agent in the DAG.
@@ -100,59 +86,136 @@ export function DeployAgentModal({
     [createdEvents, existingEvents],
   );
   const [step, setStep] = useState(0);
-  const [template, setTemplate] = useState<Template | null>(null);
+  const [template, setTemplate] = useState<AgentBuilderTemplate | null>(null);
   const [name, setName] = useState("");
   const [title, setTitle] = useState("");
   const [desc, setDesc] = useState("");
-  const [stage, setStage] = useState(5);
-  const [fleetId, setFleetId] = useState("");
+  const [modelChoice, setModelChoice] = useState(AUTO_MODEL);
+  const [executionSteps, setExecutionSteps] = useState<AgentBuilderStep[]>([]);
+  const [deepSearchMode, setDeepSearchMode] =
+    useState<DeepSearchMode>("investigate");
   const [tools, setTools] = useState<string[]>([]);
   const [triggers, setTriggers] = useState<string[]>([]);
   const [emits, setEmits] = useState<string[]>([]);
   const [retries, setRetries] = useState(3);
   const [timeout, setTimeoutVal] = useState(120);
   const [concurrency, setConcurrency] = useState(8);
-  const [implTab, setImplTab] = useState<"prompt" | "code" | "tools" | "bind">("prompt");
+  const [implTab, setImplTab] = useState<
+    "plan" | "prompt" | "code" | "tools" | "bind"
+  >("plan");
   const [tsCode, setTsCode] = useState("");
   const [toolUse, setToolUse] = useState<ToolUseSchema[]>([]);
   const [systemPrompt, setSystemPrompt] = useState("");
   const [promptError, setPromptError] = useState<string | null>(null);
   const [deployError, setDeployError] = useState<string | null>(null);
+  const [autoModelSelection, setAutoModelSelection] =
+    useState<AgentModelSelection | null>(null);
+  const [published, setPublished] =
+    useState<DeployAuthoredAgentResponse | null>(null);
 
-  const steps = ["Template", "Identity", "Events", "Implementation", "Behavior", "Review"];
+  const wizardSteps = [
+    "Template",
+    "Identity",
+    "Events",
+    "Build",
+    "Runtime",
+    "Review",
+  ];
 
-  const selectedModel = fleet.find((entry) => entry.id === fleetId);
   const availableTools = toolCatalog?.tools ?? [];
+  const ontologyTools = useMemo(
+    () =>
+      availableTools.filter((tool) => {
+        const search = `${tool.category} ${tool.name}`.toLowerCase();
+        return search.includes("ontology") || search.includes("neo4j");
+      }),
+    [availableTools],
+  );
+  const recommendedModel = recommendFleetModel(fleet, template, desc);
+  const selectedModel =
+    modelChoice === AUTO_MODEL
+      ? recommendedModel
+      : fleet.find((entry) => entry.id === modelChoice);
+  const displayModel =
+    modelChoice === AUTO_MODEL && autoModelSelection
+      ? `${autoModelSelection.model} · ${autoModelSelection.provider}`
+      : modelLabel(selectedModel);
+  const displayModelReason =
+    modelChoice === AUTO_MODEL && autoModelSelection
+      ? autoModelSelection.reason
+      : modelSelectionReason(template, desc);
   const nameValid = /^[a-z][A-Za-z0-9]*$/.test(name);
-  const identityValid = nameValid && title.trim().length > 0 && desc.trim().length >= 10;
-  const eventsValid = triggers.length > 0;
+  const nameAvailability = useAgentNameAvailability(name, nameValid);
+  const nameAvailable = nameAvailability.data?.available === true;
+  const identityValid =
+    nameValid &&
+    nameAvailable &&
+    title.trim().length > 0 &&
+    desc.trim().length >= 10;
+  const eventsValid = triggers.length > 0 && emits.length > 0;
   const implementationValid = systemPrompt.trim().length >= 40;
-  const behaviorValid = retries >= 0 && retries <= 10 && timeout >= 1 && timeout <= 3600 && concurrency >= 1 && concurrency <= 100;
-  const allValid = Boolean(template) && identityValid && eventsValid && implementationValid && behaviorValid;
+  const behaviorValid =
+    retries >= 0 &&
+    retries <= 10 &&
+    timeout >= 1 &&
+    timeout <= 3600 &&
+    concurrency >= 1 &&
+    concurrency <= 100;
+  const allValid =
+    Boolean(template) &&
+    identityValid &&
+    eventsValid &&
+    implementationValid &&
+    behaviorValid;
 
   useEffect(() => {
-    if (fleetId || fleet.length === 0) return;
-    setFleetId((fleet.find((entry) => entry.role === "primary") ?? fleet[0])!.id);
-  }, [fleet, fleetId]);
+    if (ontologyTools.length === 0) return;
+    setTools((current) =>
+      Array.from(
+        new Set([...current, ...ontologyTools.map((tool) => tool.name)]),
+      ),
+    );
+    setToolUse((current) => {
+      const existing = new Set(current.map((tool) => tool.name));
+      const additions = ontologyTools
+        .filter((tool) => !existing.has(tool.name))
+        .map(catalogToolToToolUse);
+      return additions.length > 0 ? [...current, ...additions] : current;
+    });
+  }, [ontologyTools]);
 
-  function pickTemplate(t: Template) {
+  function pickTemplate(t: AgentBuilderTemplate) {
     setTemplate(t);
+    setModelChoice(AUTO_MODEL);
+    setAutoModelSelection(null);
+    setSystemPrompt("");
+    setDeepSearchMode("investigate");
+    setExecutionSteps(defaultStepModels(t));
     setStep(1);
   }
 
   function promptBody(): GenerateAgentPromptBody {
+    const explicitlySelectedModel =
+      modelChoice === AUTO_MODEL
+        ? undefined
+        : fleet.find((entry) => entry.id === modelChoice);
     return {
       name,
       title: title.trim(),
       description: desc.trim(),
       actor: template?.actor ?? "Agent",
       template: template?.id ?? "blank",
-      stage,
       triggers,
       emits,
       tools: authoredTools(),
-      ...(selectedModel
-        ? { provider: selectedModel.provider as GenerateAgentPromptBody["provider"], model: selectedModel.modelName }
+      steps: authoredSteps(),
+      ...(template?.id === "rag" ? { searchMode: deepSearchMode } : {}),
+      ...(explicitlySelectedModel
+        ? {
+            provider:
+              explicitlySelectedModel.provider as GenerateAgentPromptBody["provider"],
+            model: explicitlySelectedModel.modelName,
+          }
         : {}),
     };
   }
@@ -165,14 +228,47 @@ export function DeployAgentModal({
     }));
   }
 
-  async function requestSystemPrompt() {
+  function authoredSteps(
+    source = executionSteps,
+  ): NonNullable<GenerateAgentPromptBody["steps"]> {
+    return source.map((item) => {
+      const model =
+        item.modelOverride && item.modelOverride !== INHERIT_MODEL
+          ? fleet.find((entry) => entry.id === item.modelOverride)
+          : undefined;
+      return {
+        id: item.id,
+        name: item.title,
+        description: item.description,
+        type: item.execution === "human" ? "manual" : "logic",
+        ...(model
+          ? {
+              provider: model.provider as GenerateAgentPromptBody["provider"],
+              model: model.modelName,
+            }
+          : {}),
+      };
+    });
+  }
+
+  async function requestSystemPrompt(
+    overrides: Partial<GenerateAgentPromptBody> = {},
+  ) {
     if (!identityValid || !eventsValid || !template) return;
     setPromptError(null);
     try {
-      const result = await generatePrompt.mutateAsync(promptBody());
+      const result = await generatePrompt.mutateAsync({
+        ...promptBody(),
+        ...overrides,
+      });
       setSystemPrompt(result.systemPrompt);
+      setAutoModelSelection(result.modelSelection);
     } catch (error) {
-      setPromptError(error instanceof Error ? error.message : "Could not generate the system prompt");
+      setPromptError(
+        error instanceof Error
+          ? error.message
+          : "Could not generate the system prompt",
+      );
     }
   }
 
@@ -182,54 +278,74 @@ export function DeployAgentModal({
       if (!systemPrompt.trim()) void requestSystemPrompt();
       return;
     }
-    setStep((s) => Math.min(steps.length - 1, s + 1));
+    setStep((s) => Math.min(wizardSteps.length - 1, s + 1));
   }
   function back() {
     setStep((s) => Math.max(0, s - 1));
   }
-  function toToolUse(tool: ToolCatalogEntry): ToolUseSchema {
-    const fields = tool.argsSchema ?? {};
-    return {
-      name: tool.name,
-      description: tool.description ?? tool.summary,
-      input_schema: {
-        type: "object",
-        properties: Object.fromEntries(
-          Object.entries(fields).map(([key, field]) => [
-            key,
-            { type: field.type || "string", ...(field.description ? { description: field.description } : {}) },
-          ]),
-        ),
-        required: Object.entries(fields).filter(([, field]) => field.required).map(([key]) => key),
-      },
-    };
-  }
-
   function toggleTool(tool: ToolCatalogEntry) {
     const isSelected = tools.includes(tool.name);
-    setTools((current) => isSelected ? current.filter((name) => name !== tool.name) : [...current, tool.name]);
-    setToolUse((current) => isSelected
-      ? current.filter((entry) => entry.name !== tool.name)
-      : current.some((entry) => entry.name === tool.name) ? current : [...current, toToolUse(tool)]);
+    setTools((current) =>
+      isSelected
+        ? current.filter((name) => name !== tool.name)
+        : [...current, tool.name],
+    );
+    setToolUse((current) =>
+      isSelected
+        ? current.filter((entry) => entry.name !== tool.name)
+        : current.some((entry) => entry.name === tool.name)
+          ? current
+          : [...current, catalogToolToToolUse(tool)],
+    );
   }
-  function addEvent(set: React.Dispatch<React.SetStateAction<string[]>>, val: string) {
+  function addEvent(
+    set: React.Dispatch<React.SetStateAction<string[]>>,
+    val: string,
+  ) {
     const v = normalizeAuthoredEventName(val);
     if (!v) return;
     if (!existingEvents.includes(v)) {
-      setCreatedEvents((current) => current.includes(v) ? current : [...current, v]);
+      setCreatedEvents((current) =>
+        current.includes(v) ? current : [...current, v],
+      );
     }
     set((arr) => (arr.includes(v) ? arr : [...arr, v]));
   }
-  function removeEvent(set: React.Dispatch<React.SetStateAction<string[]>>, v: string) {
+  function removeEvent(
+    set: React.Dispatch<React.SetStateAction<string[]>>,
+    v: string,
+  ) {
     set((arr) => arr.filter((x) => x !== v));
   }
-  function addSingleEmit(val: string) {
-    const v = normalizeAuthoredEventName(val);
-    if (!v) return;
-    if (!existingEvents.includes(v)) {
-      setCreatedEvents((current) => current.includes(v) ? current : [...current, v]);
+  function addEmit(val: string) {
+    addEvent(setEmits, val);
+  }
+  function applySuggestedContract() {
+    if (!template) return;
+    addEvent(setTriggers, template.suggestedTrigger);
+    addEvent(setEmits, template.suggestedEmit);
+  }
+  function updateStepModel(stepId: string, modelOverride: string) {
+    setExecutionSteps((current) =>
+      current.map((item) =>
+        item.id === stepId ? { ...item, modelOverride } : item,
+      ),
+    );
+  }
+  function changeDeepSearchMode(mode: DeepSearchMode) {
+    setDeepSearchMode(mode);
+    if (template?.id === "rag") {
+      const nextSteps = deepSearchStepsForMode(template, mode);
+      setExecutionSteps(nextSteps);
+      setSystemPrompt("");
+      setAutoModelSelection(null);
+      if (step >= 3) {
+        void requestSystemPrompt({
+          searchMode: mode,
+          steps: authoredSteps(nextSteps),
+        });
+      }
     }
-    setEmits([v]);
   }
 
   function canContinue(): boolean {
@@ -252,9 +368,10 @@ export function DeployAgentModal({
         description: context.description,
         actor: context.actor,
         template: context.template,
-        stage: context.stage,
         triggers: context.triggers,
         emits: context.emits,
+        steps: context.steps,
+        ...(context.searchMode ? { searchMode: context.searchMode } : {}),
         ...(context.provider ? { provider: context.provider } : {}),
         ...(context.model ? { model: context.model } : {}),
         systemPrompt,
@@ -266,14 +383,15 @@ export function DeployAgentModal({
       });
       toast({
         tone: "green",
-        title: `${result.agent.title} deployed`,
-        description: `${result.runtime.functionId} is loaded in the live runtime.${result.events.created.length > 0 ? ` ${result.events.created.length} new event type${result.events.created.length === 1 ? "" : "s"} created.` : ""}`,
+        title: `${result.agent.title} is live`,
+        description: `${result.runtime.functionId} is published and ready to run.${result.events.created.length > 0 ? ` ${result.events.created.length} new event type${result.events.created.length === 1 ? "" : "s"} created.` : ""}`,
       });
-      onClose();
+      setPublished(result);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Agent deployment failed";
+      const message =
+        error instanceof Error ? error.message : "Agent publishing failed";
       setDeployError(message);
-      toast({ tone: "red", title: "Deploy failed", description: message });
+      toast({ tone: "red", title: "Publish failed", description: message });
     }
   }
 
@@ -292,83 +410,140 @@ export function DeployAgentModal({
           flexDirection: "column",
         }}
       >
-        <header style={{ display: "flex", alignItems: "center", gap: 10, padding: "14px 18px", borderBottom: "1px solid var(--border)" }}>
+        <header
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            padding: "14px 18px",
+            borderBottom: "1px solid var(--border)",
+          }}
+        >
           <Icon name="agent" size={14} style={{ color: "var(--signal)" }} />
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 14, color: "var(--text)", fontWeight: 500 }}>Deploy new agent</div>
+            <div
+              style={{ fontSize: 14, color: "var(--text)", fontWeight: 500 }}
+            >
+              {published ? "Agent is live" : "New Agent"}
+            </div>
             <div style={{ fontSize: 11, color: "var(--text-3)" }}>
-              Saves a new manifest version for <span className="mono">{tenant}</span> and loads the agent into the live runtime.
+              {published ? (
+                <>
+                  Published to <span className="mono">{tenant}</span> and ready
+                  for events.
+                </>
+              ) : (
+                <>
+                  Design an event-driven agent, publish it, and run it in{" "}
+                  <span className="mono">{tenant}</span>.
+                </>
+              )}
             </div>
           </div>
           <button
             onClick={onClose}
-            aria-label="Close deploy agent modal"
+            aria-label="Close New Agent builder"
             style={{ color: "var(--text-3)" }}
           >
             <Icon name="x" size={13} />
           </button>
         </header>
 
-        <div
-          style={{
-            display: "flex",
-            gap: 6,
-            padding: "10px 18px",
-            borderBottom: "1px solid var(--border)",
-            background: "var(--bg-2)",
-          }}
-        >
-          {steps.map((s, i) => (
-            <div
-              key={s}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 6,
-                opacity: i === step ? 1 : i < step ? 0.85 : 0.45,
-              }}
-            >
-              <span
+        {!published && (
+          <div
+            style={{
+              display: "flex",
+              gap: 6,
+              padding: "10px 18px",
+              borderBottom: "1px solid var(--border)",
+              background: "var(--bg-2)",
+            }}
+          >
+            {wizardSteps.map((s, i) => (
+              <div
+                key={s}
                 style={{
-                  width: 18,
-                  height: 18,
-                  borderRadius: "50%",
-                  background: i < step ? "var(--signal)" : "transparent",
-                  border: `1px solid ${i <= step ? "var(--signal)" : "var(--border-2)"}`,
-                  color: i < step ? "#000" : i === step ? "var(--signal)" : "var(--text-3)",
-                  fontSize: 10,
-                  fontFamily: "var(--mono)",
                   display: "flex",
                   alignItems: "center",
-                  justifyContent: "center",
+                  gap: 6,
+                  opacity: i === step ? 1 : i < step ? 0.85 : 0.45,
                 }}
               >
-                {i < step ? "✓" : i + 1}
-              </span>
-              <span
-                style={{
-                  fontSize: 11,
-                  fontFamily: "var(--mono)",
-                  textTransform: "uppercase",
-                  letterSpacing: "0.06em",
-                  color: i === step ? "var(--text)" : "var(--text-3)",
-                }}
-              >
-                {s}
-              </span>
-              {i < steps.length - 1 && (
-                <span style={{ width: 14, height: 1, background: "var(--border)", marginLeft: 4 }} />
-              )}
-            </div>
-          ))}
-        </div>
+                <span
+                  style={{
+                    width: 18,
+                    height: 18,
+                    borderRadius: "50%",
+                    background: i < step ? "var(--signal)" : "transparent",
+                    border: `1px solid ${i <= step ? "var(--signal)" : "var(--border-2)"}`,
+                    color:
+                      i < step
+                        ? "#000"
+                        : i === step
+                          ? "var(--signal)"
+                          : "var(--text-3)",
+                    fontSize: 10,
+                    fontFamily: "var(--mono)",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}
+                >
+                  {i < step ? "✓" : i + 1}
+                </span>
+                <span
+                  style={{
+                    fontSize: 11,
+                    fontFamily: "var(--mono)",
+                    textTransform: "uppercase",
+                    letterSpacing: "0.06em",
+                    color: i === step ? "var(--text)" : "var(--text-3)",
+                  }}
+                >
+                  {s}
+                </span>
+                {i < wizardSteps.length - 1 && (
+                  <span
+                    style={{
+                      width: 14,
+                      height: 1,
+                      background: "var(--border)",
+                      marginLeft: 4,
+                    }}
+                  />
+                )}
+              </div>
+            ))}
+          </div>
+        )}
 
         <div style={{ padding: 20, overflow: "auto", flex: 1, minHeight: 0 }}>
-          {step === 0 && (
+          {published && (
+            <PublishedAgentSummary result={published} tenant={tenant} />
+          )}
+          {!published && step === 0 && (
             <div>
-              <SectionLabel>Pick a template</SectionLabel>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10 }}>
-                {AGENT_TEMPLATES.map((t) => (
+              <SectionLabel>Choose how this agent works</SectionLabel>
+              <div
+                style={{
+                  fontSize: 12,
+                  color: "var(--text-2)",
+                  lineHeight: 1.6,
+                  margin: "-2px 0 12px",
+                }}
+              >
+                Each pattern includes a production execution plan, safeguards,
+                and an automatic model recommendation. Everything stays
+                editable.
+              </div>
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(3, 1fr)",
+                  gap: 10,
+                }}
+              >
+                {AGENT_BUILDER_TEMPLATES.map((t) => (
                   <button
                     key={t.id}
                     onClick={() => pickTemplate(t)}
@@ -383,91 +558,283 @@ export function DeployAgentModal({
                       transition: "background 0.12s, border-color 0.12s",
                     }}
                   >
-                    <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                        marginBottom: 6,
+                      }}
+                    >
                       <ActorTag actor={t.actor} />
                     </div>
-                    <div style={{ fontSize: 13, color: "var(--text)", fontWeight: 500, marginBottom: 3 }}>{t.name}</div>
-                    <div style={{ fontSize: 11.5, color: "var(--text-2)", lineHeight: 1.5 }}>{t.desc}</div>
+                    <div
+                      style={{
+                        fontSize: 13,
+                        color: "var(--text)",
+                        fontWeight: 500,
+                        marginBottom: 3,
+                      }}
+                    >
+                      {t.name}
+                    </div>
+                    <div
+                      style={{
+                        fontSize: 11.5,
+                        color: "var(--text-2)",
+                        lineHeight: 1.5,
+                      }}
+                    >
+                      {t.description}
+                    </div>
+                    <div
+                      style={{
+                        display: "flex",
+                        flexWrap: "wrap",
+                        gap: 4,
+                        marginTop: 9,
+                      }}
+                    >
+                      {t.bestFor.slice(0, 2).map((useCase) => (
+                        <span
+                          key={useCase}
+                          style={{
+                            padding: "2px 5px",
+                            border: "1px solid var(--border)",
+                            borderRadius: 3,
+                            color: "var(--text-3)",
+                            fontFamily: "var(--mono)",
+                            fontSize: 9.5,
+                          }}
+                        >
+                          {useCase}
+                        </span>
+                      ))}
+                    </div>
                   </button>
                 ))}
               </div>
             </div>
           )}
 
-          {step === 1 && template && (
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, maxWidth: 760 }}>
-              <EditField label="Name (id)" hint="lowercase camelCase, used in events & logs">
+          {!published && step === 1 && template && (
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr",
+                gap: 14,
+                maxWidth: 900,
+              }}
+            >
+              <div style={{ gridColumn: "1 / -1" }}>
+                <TemplateBrief template={template} />
+              </div>
+              <EditField
+                label="Name (id)"
+                hint="lowercase camelCase, used in events & logs"
+              >
                 <EditText value={name} onChange={setName} mono />
                 {name.length > 0 && !nameValid && (
-                  <InlineMessage tone="red">Start with a lowercase letter and use letters or numbers only.</InlineMessage>
+                  <InlineMessage tone="red">
+                    Start with a lowercase letter and use letters or numbers
+                    only.
+                  </InlineMessage>
+                )}
+                {nameValid && (
+                  <div aria-live="polite">
+                    {nameAvailability.isChecking && (
+                      <InlineMessage tone="signal">
+                        Checking whether this agent ID is available…
+                      </InlineMessage>
+                    )}
+                    {!nameAvailability.isChecking &&
+                      nameAvailability.data?.available && (
+                        <InlineMessage tone="green">
+                          Agent ID {nameAvailability.data.id} is available.
+                        </InlineMessage>
+                      )}
+                    {!nameAvailability.isChecking &&
+                      nameAvailability.data &&
+                      !nameAvailability.data.available && (
+                        <InlineMessage tone="red">
+                          An agent with this{" "}
+                          {nameAvailability.data.conflict?.field ?? "name"}{" "}
+                          already exists:{" "}
+                          {nameAvailability.data.conflict?.value ?? name}.
+                          Choose a different name.
+                        </InlineMessage>
+                      )}
+                    {!nameAvailability.isChecking &&
+                      nameAvailability.isError && (
+                        <InlineMessage tone="red">
+                          Could not verify this agent ID. Continue is disabled
+                          until the check succeeds.{" "}
+                          <button
+                            type="button"
+                            onClick={() => void nameAvailability.refetch()}
+                            style={{
+                              color: "inherit",
+                              textDecoration: "underline",
+                              font: "inherit",
+                            }}
+                          >
+                            Try again
+                          </button>
+                        </InlineMessage>
+                      )}
+                  </div>
                 )}
               </EditField>
               <EditField label="Title" hint="Shown in the operator UI">
                 <EditText value={title} onChange={setTitle} />
               </EditField>
               <div style={{ gridColumn: "1 / -1" }}>
-                <EditField label="Description" hint="One paragraph. Shown in the workflow graph inspector.">
-                  <EditTextarea value={desc} onChange={setDesc} rows={3} />
+                <EditField
+                  label="Purpose and success criteria"
+                  hint="Explain what the agent should accomplish, the context it can trust, and what a successful result contains. Auto model selection uses this brief."
+                >
+                  <EditTextarea
+                    value={desc}
+                    onChange={(value) => {
+                      setDesc(value);
+                      setAutoModelSelection(null);
+                    }}
+                    rows={3}
+                  />
                   {desc.length > 0 && desc.trim().length < 10 && (
-                    <InlineMessage tone="red">Describe the agent in at least 10 characters.</InlineMessage>
+                    <InlineMessage tone="red">
+                      Describe the agent in at least 10 characters.
+                    </InlineMessage>
                   )}
                 </EditField>
               </div>
-              <EditField label="Workflow stage" hint="Column on the workflow canvas.">
-                <select
-                  value={stage}
-                  onChange={(e) => setStage(parseInt(e.target.value, 10))}
-                  style={editSelectStyle}
+              <EditField
+                label="Execution"
+                hint="Agents are placed by their event contract, not a workflow stage."
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <ActorTag actor={template.actor} />
+                  <span style={{ color: "var(--text-3)", fontSize: 11 }}>
+                    {template.actor === "Human"
+                      ? "Prepares context and pauses for operator authority"
+                      : "Runs automatically when a trigger event arrives"}
+                  </span>
+                </div>
+              </EditField>
+              <EditField
+                label="Architecture"
+                hint="Every agent is independent and event-driven."
+              >
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 7,
+                    color: "var(--green)",
+                    fontSize: 11.5,
+                  }}
                 >
-                  {stages.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {String(s.id).padStart(2, "0")} · {s.label}
-                    </option>
-                  ))}
-                </select>
-              </EditField>
-              <EditField label="Actor" hint={template.actor === "Human" ? "Pauses for operator input" : "Runs automatically"}>
-                <Seg
-                  value={template.actor}
-                  onChange={() => {}}
-                  options={[
-                    { value: "Agent", label: "Agent" },
-                    { value: "Human", label: "Human task" },
-                  ]}
-                />
+                  <Icon name="check" size={11} />
+                  No workflow stage required
+                </div>
               </EditField>
             </div>
           )}
 
-          {step === 2 && (
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, maxWidth: 760 }}>
-              <EditField label="Listens to (triggers)" hint="Pick an existing event or create a new event type. New types are saved when the agent is deployed.">
-                <EventPicker
-                  selected={triggers}
-                  onAdd={(v) => addEvent(setTriggers, v)}
-                  onRemove={(v) => removeEvent(setTriggers, v)}
-                  tone="blue"
-                  all={events}
-                  newEvents={draftNewEvents}
-                />
-                {triggers.length === 0 && (
-                  <InlineMessage tone="amber">At least one trigger is required so the runtime can start this agent.</InlineMessage>
-                )}
-              </EditField>
-              <EditField label="Emits (outbound)" hint="Pick or create the event this agent publishes. Downstream agents can listen to it.">
-                <EventPicker
-                  selected={emits}
-                  onAdd={addSingleEmit}
-                  onRemove={(v) => removeEvent(setEmits, v)}
-                  tone="green"
-                  all={events}
-                  newEvents={draftNewEvents}
-                />
-              </EditField>
+          {!published && step === 2 && (
+            <div style={{ maxWidth: 900 }}>
+              {template && (
+                <button
+                  type="button"
+                  onClick={applySuggestedContract}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                    width: "100%",
+                    padding: "9px 10px",
+                    marginBottom: 10,
+                    background: "rgba(203,255,0,0.04)",
+                    border:
+                      "1px solid color-mix(in srgb, var(--signal) 32%, var(--border))",
+                    borderRadius: 5,
+                    color: "var(--text-2)",
+                    textAlign: "left",
+                    fontSize: 11.5,
+                  }}
+                >
+                  <Icon
+                    name="spark"
+                    size={11}
+                    style={{ color: "var(--signal)" }}
+                  />
+                  <span>Use suggested contract</span>
+                  <span
+                    className="mono"
+                    style={{ marginLeft: "auto", color: "var(--blue)" }}
+                  >
+                    {template.suggestedTrigger}
+                  </span>
+                  <Icon name="chevron-right" size={10} />
+                  <span className="mono" style={{ color: "var(--green)" }}>
+                    {template.suggestedEmit}
+                  </span>
+                </button>
+              )}
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "1fr 1fr",
+                  gap: 14,
+                }}
+              >
+                <EditField
+                  label="Trigger events"
+                  hint="The agent starts whenever any selected event arrives. Pick an existing event or create a new type."
+                >
+                  <EventPicker
+                    selected={triggers}
+                    onAdd={(v) => addEvent(setTriggers, v)}
+                    onRemove={(v) => removeEvent(setTriggers, v)}
+                    tone="blue"
+                    all={events}
+                    newEvents={draftNewEvents}
+                  />
+                  {triggers.length === 0 && (
+                    <InlineMessage tone="amber">
+                      At least one trigger is required so the runtime can start
+                      this agent.
+                    </InlineMessage>
+                  )}
+                </EditField>
+                <EditField
+                  label="Emit events"
+                  hint="Publish one or more result events so downstream agents can continue the work."
+                >
+                  <EventPicker
+                    selected={emits}
+                    onAdd={addEmit}
+                    onRemove={(v) => removeEvent(setEmits, v)}
+                    tone="green"
+                    all={events}
+                    newEvents={draftNewEvents}
+                  />
+                  {emits.length === 0 && (
+                    <InlineMessage tone="amber">
+                      At least one emitted event is required to complete the
+                      event contract.
+                    </InlineMessage>
+                  )}
+                </EditField>
+              </div>
+              <InlineMessage tone="signal">
+                Event names are the agent&apos;s API. New event types are
+                created only when you publish.
+              </InlineMessage>
             </div>
           )}
 
-          {step === 3 && (
+          {!published && step === 3 && (
             <div>
               <div
                 style={{
@@ -477,12 +844,31 @@ export function DeployAgentModal({
                   marginBottom: 14,
                 }}
               >
-                {([
-                  { id: "prompt", label: "System prompt", icon: "logs" as const },
-                  { id: "code", label: "TypeScript code", icon: "code" as const },
-                  { id: "tools", label: "tool_use", icon: "spark" as const },
-                  { id: "bind", label: "Tool bindings", icon: "git" as const },
-                ] as const).map((t) => (
+                {(
+                  [
+                    {
+                      id: "plan",
+                      label: "Execution plan",
+                      icon: "git" as const,
+                    },
+                    {
+                      id: "prompt",
+                      label: "System prompt",
+                      icon: "logs" as const,
+                    },
+                    {
+                      id: "code",
+                      label: "TypeScript code",
+                      icon: "code" as const,
+                    },
+                    { id: "tools", label: "tool_use", icon: "spark" as const },
+                    {
+                      id: "bind",
+                      label: "Capabilities",
+                      icon: "deploy" as const,
+                    },
+                  ] as const
+                ).map((t) => (
                   <button
                     key={t.id}
                     onClick={() => setImplTab(t.id)}
@@ -534,11 +920,24 @@ export function DeployAgentModal({
                     )}
                   </button>
                 ))}
-                <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8, padding: "4px 0" }}>
-                  <span style={{ fontSize: 11, color: "var(--text-3)" }}>Model</span>
+                <div
+                  style={{
+                    marginLeft: "auto",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                    padding: "4px 0",
+                  }}
+                >
+                  <span style={{ fontSize: 11, color: "var(--text-3)" }}>
+                    Model
+                  </span>
                   <select
-                    value={fleetId}
-                    onChange={(e) => setFleetId(e.target.value)}
+                    value={modelChoice}
+                    onChange={(e) => {
+                      setModelChoice(e.target.value);
+                      setAutoModelSelection(null);
+                    }}
                     style={{
                       background: "var(--panel-2)",
                       border: "1px solid var(--border-2)",
@@ -550,20 +949,55 @@ export function DeployAgentModal({
                       outline: "none",
                     }}
                   >
-                    {fleetLoading ? (
-                      <option value="">Loading models…</option>
-                    ) : fleet.length === 0 ? (
-                      <option value="">Workspace default</option>
-                    ) : (
+                    <option value={AUTO_MODEL}>
+                      {fleetLoading
+                        ? "Auto · loading fleet…"
+                        : `Auto · ${
+                            autoModelSelection
+                              ? `${autoModelSelection.model} · ${autoModelSelection.provider}`
+                              : modelLabel(recommendedModel)
+                          }`}
+                    </option>
+                    {!fleetLoading &&
                       fleet.map((entry) => (
                         <option key={entry.id} value={entry.id}>
                           {entry.alias || entry.modelName} · {entry.provider}
                         </option>
-                      ))
-                    )}
+                      ))}
                   </select>
                 </div>
               </div>
+
+              {implTab === "plan" && template && (
+                <>
+                  {template.id === "rag" && (
+                    <DeepSearchModePicker
+                      value={deepSearchMode}
+                      onChange={changeDeepSearchMode}
+                    />
+                  )}
+                  <ExecutionPlanEditor
+                    template={template}
+                    steps={executionSteps}
+                    fleet={fleet}
+                    selectedModel={displayModel}
+                    modelChoice={modelChoice}
+                    modelReason={displayModelReason}
+                    onModelChange={updateStepModel}
+                  />
+                  {generatePrompt.isPending && (
+                    <InlineMessage tone="signal">
+                      Generating the production system prompt and resolving the
+                      model recommendation…
+                    </InlineMessage>
+                  )}
+                  {promptError && (
+                    <InlineMessage tone="red">
+                      {promptError} Open System prompt to retry.
+                    </InlineMessage>
+                  )}
+                </>
+              )}
 
               {implTab === "prompt" && (
                 <div>
@@ -571,7 +1005,7 @@ export function DeployAgentModal({
                     <div style={{ flex: 1 }}>
                       <EditField
                         label="System prompt"
-                        hint="Generated from the description, events, and tools. Review and edit it before deployment."
+                        hint="Generated from the purpose, event contract, execution pattern, model policy, ontology, and tools. Review it before publishing."
                       >
                         <EditTextarea
                           value={systemPrompt}
@@ -585,19 +1019,37 @@ export function DeployAgentModal({
                       tone="default"
                       icon="spark"
                       onClick={() => void requestSystemPrompt()}
-                      disabled={generatePrompt.isPending || !identityValid || !eventsValid}
+                      disabled={
+                        generatePrompt.isPending ||
+                        !identityValid ||
+                        !eventsValid
+                      }
                       style={{ marginBottom: 11 }}
                     >
-                      {generatePrompt.isPending ? "Generating…" : systemPrompt ? "Regenerate" : "Generate"}
+                      {generatePrompt.isPending
+                        ? "Generating…"
+                        : systemPrompt
+                          ? "Regenerate"
+                          : "Generate"}
                     </Button>
                   </div>
                   {generatePrompt.isPending && (
-                    <InlineMessage tone="signal">Building a comprehensive prompt from the agent description…</InlineMessage>
+                    <InlineMessage tone="signal">
+                      Building a comprehensive prompt from the agent
+                      description…
+                    </InlineMessage>
                   )}
-                  {promptError && <InlineMessage tone="red">{promptError}</InlineMessage>}
-                  {!generatePrompt.isPending && !promptError && systemPrompt.trim().length > 0 && systemPrompt.trim().length < 40 && (
-                    <InlineMessage tone="red">The system prompt must contain at least 40 characters.</InlineMessage>
+                  {promptError && (
+                    <InlineMessage tone="red">{promptError}</InlineMessage>
                   )}
+                  {!generatePrompt.isPending &&
+                    !promptError &&
+                    systemPrompt.trim().length > 0 &&
+                    systemPrompt.trim().length < 40 && (
+                      <InlineMessage tone="red">
+                        The system prompt must contain at least 40 characters.
+                      </InlineMessage>
+                    )}
                 </div>
               )}
 
@@ -606,12 +1058,20 @@ export function DeployAgentModal({
                   label="TypeScript source (optional)"
                   hint="Stored with the manifest as implementation metadata. Generated manifest agents execute through the system prompt and runtime tool loop."
                 >
-                  <EditTextarea value={tsCode} onChange={setTsCode} rows={18} mono />
+                  <EditTextarea
+                    value={tsCode}
+                    onChange={setTsCode}
+                    rows={18}
+                    mono
+                  />
                 </EditField>
               )}
-              {implTab === "tools" && (
-                toolUse.length > 0 ? (
-                  <AgentToolUseEditPanel tools={toolUse} onChange={setToolUse} />
+              {implTab === "tools" &&
+                (toolUse.length > 0 ? (
+                  <AgentToolUseEditPanel
+                    tools={toolUse}
+                    onChange={setToolUse}
+                  />
                 ) : (
                   <div
                     style={{
@@ -624,78 +1084,164 @@ export function DeployAgentModal({
                       lineHeight: 1.6,
                     }}
                   >
-                    No tools selected. Choose workspace tools under <span className="mono" style={{ color: "var(--text-2)" }}>Tool bindings</span>; their live schemas will appear here for editing.
+                    No tools selected. Choose workspace tools under{" "}
+                    <span className="mono" style={{ color: "var(--text-2)" }}>
+                      Tool bindings
+                    </span>
+                    ; their live schemas will appear here for editing.
                   </div>
-                )
-              )}
+                ))}
 
               {implTab === "bind" && (
-                <EditField
-                  label={`Tool bindings · ${tools.length} selected`}
-                  hint="Workspace tools this agent's code may invoke at runtime."
-                >
-                  <div
-                    style={{
-                      display: "grid",
-                      gridTemplateColumns: "1fr 1fr",
-                      gap: 4,
-                      maxHeight: 420,
-                      overflow: "auto",
-                      padding: 2,
-                    }}
+                <div>
+                  <OntologyCapability
+                    isLoading={toolsLoading}
+                    tools={ontologyTools}
+                  />
+                  <EditField
+                    label={`Additional capabilities · ${Math.max(0, tools.length - ontologyTools.length)} selected`}
+                    hint="Choose only the workspace tools this agent may invoke. Ontology access is included for every agent."
                   >
-                    {toolsLoading && (
-                      <div style={{ color: "var(--text-3)", fontSize: 11.5 }}>Loading workspace tools…</div>
-                    )}
-                    {!toolsLoading && availableTools.length === 0 && (
-                      <div style={{ color: "var(--text-3)", fontSize: 11.5 }}>No workspace tools are registered.</div>
-                    )}
-                    {availableTools.map((tool) => {
-                      const on = tools.includes(tool.name);
-                      return (
-                        <button
-                          key={tool.name}
-                          onClick={() => toggleTool(tool)}
-                          title={tool.description ?? tool.summary}
-                          style={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 8,
-                            padding: "7px 9px",
-                            background: on ? "rgba(208,255,0,0.06)" : "var(--panel-2)",
-                            border: `1px solid ${on ? "var(--signal)" : "var(--border)"}`,
-                            borderRadius: 4,
-                            textAlign: "left",
-                          }}
-                        >
-                          <span
+                    <div
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "1fr 1fr",
+                        gap: 4,
+                        maxHeight: 420,
+                        overflow: "auto",
+                        padding: 2,
+                      }}
+                    >
+                      {toolsLoading && (
+                        <div style={{ color: "var(--text-3)", fontSize: 11.5 }}>
+                          Loading workspace tools…
+                        </div>
+                      )}
+                      {!toolsLoading && availableTools.length === 0 && (
+                        <div style={{ color: "var(--text-3)", fontSize: 11.5 }}>
+                          No workspace tools are registered.
+                        </div>
+                      )}
+                      {availableTools.map((tool) => {
+                        const on = tools.includes(tool.name);
+                        const ontologyTool = ontologyTools.some(
+                          (entry) => entry.name === tool.name,
+                        );
+                        return (
+                          <button
+                            key={tool.name}
+                            onClick={() => {
+                              if (!ontologyTool) toggleTool(tool);
+                            }}
+                            title={
+                              ontologyTool
+                                ? "Included with Ontology API"
+                                : (tool.description ?? tool.summary)
+                            }
+                            aria-disabled={ontologyTool}
                             style={{
-                              width: 12,
-                              height: 12,
-                              borderRadius: 2,
-                              background: on ? "var(--signal)" : "transparent",
-                              border: `1px solid ${on ? "var(--signal)" : "var(--border-3)"}`,
                               display: "flex",
                               alignItems: "center",
-                              justifyContent: "center",
+                              gap: 8,
+                              padding: "7px 9px",
+                              background: on
+                                ? "rgba(208,255,0,0.06)"
+                                : "var(--panel-2)",
+                              border: `1px solid ${on ? (ontologyTool ? "var(--violet)" : "var(--signal)") : "var(--border)"}`,
+                              borderRadius: 4,
+                              textAlign: "left",
+                              cursor: ontologyTool ? "default" : "pointer",
                             }}
                           >
-                            {on && <Icon name="check" size={9} style={{ color: "#000" }} />}
-                          </span>
-                          <span className="mono" style={{ fontSize: 11.5, color: "var(--text)" }}>{tool.name}</span>
-                          <Badge tone="muted" style={{ marginLeft: "auto" }}>{tool.category}</Badge>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </EditField>
+                            <span
+                              style={{
+                                width: 12,
+                                height: 12,
+                                borderRadius: 2,
+                                background: on
+                                  ? "var(--signal)"
+                                  : "transparent",
+                                border: `1px solid ${on ? "var(--signal)" : "var(--border-3)"}`,
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "center",
+                              }}
+                            >
+                              {on && (
+                                <Icon
+                                  name="check"
+                                  size={9}
+                                  style={{ color: "#000" }}
+                                />
+                              )}
+                            </span>
+                            <span
+                              className="mono"
+                              style={{ fontSize: 11.5, color: "var(--text)" }}
+                            >
+                              {tool.name}
+                            </span>
+                            {ontologyTool && (
+                              <Badge tone="violet">included</Badge>
+                            )}
+                            <Badge tone="muted" style={{ marginLeft: "auto" }}>
+                              {tool.category}
+                            </Badge>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </EditField>
+                </div>
               )}
             </div>
           )}
 
-          {step === 4 && (
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, maxWidth: 760 }}>
-              <EditField label="Retries" hint="On tool/model errors. Exponential backoff.">
+          {!published && step === 4 && (
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr",
+                gap: 14,
+                maxWidth: 900,
+              }}
+            >
+              <div style={{ gridColumn: "1 / -1" }}>
+                <Panel title="Model policy" padded>
+                  <div
+                    style={{ display: "flex", alignItems: "center", gap: 8 }}
+                  >
+                    <Badge
+                      tone={modelChoice === AUTO_MODEL ? "signal" : "blue"}
+                    >
+                      {modelChoice === AUTO_MODEL
+                        ? "Auto selected"
+                        : "User selected"}
+                    </Badge>
+                    <span
+                      className="mono"
+                      style={{ color: "var(--text)", fontSize: 11.5 }}
+                    >
+                      {displayModel}
+                    </span>
+                  </div>
+                  <div
+                    style={{
+                      marginTop: 7,
+                      color: "var(--text-3)",
+                      fontSize: 11,
+                      lineHeight: 1.55,
+                    }}
+                  >
+                    {displayModelReason} Per-step overrides are configured in
+                    the execution plan.
+                  </div>
+                </Panel>
+              </div>
+              <EditField
+                label="Retries"
+                hint="Maximum immediate retry attempts for a failed model action."
+              >
                 <EditText
                   value={String(retries)}
                   onChange={(v) => setRetries(parseInt(v, 10) || 0)}
@@ -703,7 +1249,10 @@ export function DeployAgentModal({
                   suffix="attempts"
                 />
               </EditField>
-              <EditField label="Per-run timeout">
+              <EditField
+                label="Per-call timeout"
+                hint="Maximum duration of each model gateway call; a multi-step run may take longer."
+              >
                 <EditText
                   value={String(timeout)}
                   onChange={(v) => setTimeoutVal(parseInt(v, 10) || 0)}
@@ -721,41 +1270,88 @@ export function DeployAgentModal({
               </EditField>
               <div style={{ gridColumn: "1 / -1" }}>
                 <InlineMessage tone="signal">
-                  Concurrency is partitioned by the runtime event subject. Exhausted retries are recorded in the run and audit logs.
+                  Concurrency is partitioned by the runtime event subject.
+                  Exhausted retries are recorded in the run and audit logs.
                 </InlineMessage>
               </div>
             </div>
           )}
 
-          {step === 5 && (
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+          {!published && step === 5 && (
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr",
+                gap: 14,
+              }}
+            >
               <Panel title="Manifest" padded={false}>
                 <CodeBlock>
                   {JSON.stringify(
                     {
-                      id: `${stage}-${name.replace(/([a-z0-9])([A-Z])/g, "$1-$2").toLowerCase() || "new-agent"}`,
+                      id:
+                        name
+                          .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
+                          .toLowerCase() || "new-agent",
                       name: name || "newAgent",
                       title: title || "New agent",
                       description: desc,
                       actor: [template?.actor || "Agent"],
+                      template: template?.id,
+                      ...(template?.id === "rag"
+                        ? { search_mode: deepSearchMode }
+                        : {}),
                       trigger: triggers,
-                      actions: [
-                        {
-                          order: "1",
-                          name: name || "newAgent",
-                          description: desc,
-                          type: template?.actor === "Human" ? "manual" : "logic",
-                        },
-                      ],
+                      actions: executionSteps.map((item, index) => ({
+                        order: String(index + 1),
+                        name: item.id,
+                        description: item.description,
+                        type: item.execution === "human" ? "manual" : "logic",
+                        ...(item.modelOverride &&
+                        item.modelOverride !== INHERIT_MODEL
+                          ? {
+                              provider: fleet.find(
+                                (entry) => entry.id === item.modelOverride,
+                              )?.provider,
+                              model: fleet.find(
+                                (entry) => entry.id === item.modelOverride,
+                              )?.modelName,
+                            }
+                          : {}),
+                      })),
                       triggered_event: emits,
                       generated: template?.actor !== "Human",
                       ontology_instructions: systemPrompt,
                       tool_use: toolUse,
-                      model: selectedModel?.modelName,
+                      model_policy: {
+                        mode: modelChoice === AUTO_MODEL ? "auto" : "fixed",
+                        provider:
+                          modelChoice === AUTO_MODEL
+                            ? autoModelSelection?.provider
+                            : selectedModel?.provider,
+                        model:
+                          modelChoice === AUTO_MODEL
+                            ? autoModelSelection?.model
+                            : selectedModel?.modelName,
+                      },
+                      ontology: {
+                        enabled: true,
+                        tools:
+                          ontologyTools.length > 0
+                            ? ontologyTools.map((tool) => tool.name)
+                            : ["ontology.query"],
+                      },
                       retries,
-                      concurrency: { enabled: true, max_concurrent_executions: concurrency },
+                      concurrency: {
+                        enabled: true,
+                        max_concurrent_executions: concurrency,
+                      },
                       timeout_s: timeout,
-                      ...(tsCode.trim() ? { typescript_code: `<inline · ${tsCode.split("\n").length} lines>` } : {}),
+                      ...(tsCode.trim()
+                        ? {
+                            typescript_code: `<inline · ${tsCode.split("\n").length} lines>`,
+                          }
+                        : {}),
                     },
                     null,
                     2,
@@ -764,26 +1360,83 @@ export function DeployAgentModal({
               </Panel>
               <div>
                 <Panel title="Pre-flight" padded>
-                  <ValidationLine ok={identityValid} label="Identity valid" hint={identityValid ? "ready" : "name, title, description required"} />
-                  <ValidationLine ok={triggers.length > 0} label={`${triggers.length} trigger event(s)`} />
-                  <ValidationLine ok={emits.length > 0} warn={emits.length === 0} label={`${emits.length} emit event(s)`} />
-                  <ValidationLine ok={implementationValid} label="System prompt ready" hint={`${systemPrompt.trim().length} chars`} />
-                  <ValidationLine ok label={`${tools.length} live tool binding(s)`} />
+                  <ValidationLine
+                    ok={identityValid}
+                    label="Identity valid"
+                    hint={
+                      identityValid
+                        ? "ready"
+                        : "available name, title, description required"
+                    }
+                  />
+                  <ValidationLine
+                    ok={nameAvailable}
+                    label="Agent ID available"
+                    hint={nameAvailability.data?.id}
+                  />
+                  <ValidationLine
+                    ok={triggers.length > 0}
+                    label={`${triggers.length} trigger event(s)`}
+                  />
+                  <ValidationLine
+                    ok={emits.length > 0}
+                    warn={emits.length === 0}
+                    label={`${emits.length} emit event(s)`}
+                  />
+                  <ValidationLine
+                    ok={implementationValid}
+                    label="System prompt ready"
+                    hint={`${systemPrompt.trim().length} chars`}
+                  />
+                  <ValidationLine
+                    ok
+                    label="Ontology API"
+                    hint={
+                      ontologyTools.length > 0
+                        ? `${ontologyTools.length} graph tool(s)`
+                        : "ontology.query · server managed"
+                    }
+                  />
+                  <ValidationLine
+                    ok
+                    label={`${executionSteps.length} execution step(s)`}
+                    hint={`${executionSteps.filter((item) => item.modelOverride !== INHERIT_MODEL).length} model override(s)`}
+                  />
+                  <ValidationLine
+                    ok
+                    label={`${tools.length} live tool binding(s)`}
+                  />
                   {template?.actor !== "Human" && (
-                    <ValidationLine ok label={tsCode.trim() ? `typescript_code metadata · ${tsCode.split("\n").length} lines` : "No TypeScript metadata"} />
+                    <ValidationLine
+                      ok
+                      label={
+                        tsCode.trim()
+                          ? `typescript_code metadata · ${tsCode.split("\n").length} lines`
+                          : "No TypeScript metadata"
+                      }
+                    />
                   )}
                   {template?.actor !== "Human" && (
                     <ValidationLine
                       ok
                       warn={toolUse.length === 0}
                       label={`tool_use · ${toolUse.length} defined`}
-                      hint={toolUse.length ? "live catalog schemas" : "optional"}
+                      hint={
+                        toolUse.length ? "live catalog schemas" : "optional"
+                      }
                     />
                   )}
-                  <ValidationLine ok label="Model selection" hint={selectedModel ? `${selectedModel.provider}/${selectedModel.modelName}` : "workspace default"} />
-                  <ValidationLine ok={behaviorValid} label="Runtime limits valid" />
+                  <ValidationLine
+                    ok
+                    label="Model selection"
+                    hint={`${modelChoice === AUTO_MODEL ? "auto · " : ""}${displayModel}`}
+                  />
+                  <ValidationLine
+                    ok={behaviorValid}
+                    label="Runtime limits valid"
+                  />
                 </Panel>
-                <Panel title="Deploy target" padded style={{ marginTop: 12 }}>
+                <Panel title="Publish target" padded style={{ marginTop: 12 }}>
                   <div
                     style={{
                       display: "flex",
@@ -795,10 +1448,19 @@ export function DeployAgentModal({
                       borderRadius: 4,
                     }}
                   >
-                    <Icon name="deploy" size={12} style={{ color: "var(--signal)" }} />
+                    <Icon
+                      name="deploy"
+                      size={12}
+                      style={{ color: "var(--signal)" }}
+                    />
                     <div>
-                      <div style={{ fontSize: 12, color: "var(--text)" }}>Live runtime · <span className="mono">{tenant}</span></div>
-                      <div style={{ fontSize: 10.5, color: "var(--text-3)" }}>Persist manifest, create a workflow version, and hot-load the runtime function</div>
+                      <div style={{ fontSize: 12, color: "var(--text)" }}>
+                        Live runtime · <span className="mono">{tenant}</span>
+                      </div>
+                      <div style={{ fontSize: 10.5, color: "var(--text-3)" }}>
+                        Persist manifest, create a workflow version, and
+                        hot-load the runtime function
+                      </div>
                     </div>
                   </div>
                   <div
@@ -813,10 +1475,16 @@ export function DeployAgentModal({
                       lineHeight: 1.55,
                     }}
                   >
-                    Deployment succeeds only after the API confirms <span className="mono" style={{ color: "var(--text-2)" }}>{tenant}.{name || "agentName"}</span> is registered and running.
+                    Publishing succeeds only after the API confirms{" "}
+                    <span className="mono" style={{ color: "var(--text-2)" }}>
+                      {tenant}.{name || "agentName"}
+                    </span>{" "}
+                    is registered, live, and ready for its trigger events.
                   </div>
                 </Panel>
-                {deployError && <InlineMessage tone="red">{deployError}</InlineMessage>}
+                {deployError && (
+                  <InlineMessage tone="red">{deployError}</InlineMessage>
+                )}
               </div>
             </div>
           )}
@@ -832,24 +1500,61 @@ export function DeployAgentModal({
             background: "var(--panel-2)",
           }}
         >
-          {step > 0 && (
+          {!published && step > 0 && (
             <Button tone="ghost" icon="chevron-left" onClick={back}>
               Back
             </Button>
           )}
-          <span style={{ fontSize: 11, color: "var(--text-3)" }}>
-            Step {step + 1} of {steps.length}
-          </span>
+          {!published && (
+            <span style={{ fontSize: 11, color: "var(--text-3)" }}>
+              Step {step + 1} of {wizardSteps.length}
+            </span>
+          )}
           <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
-            <Button tone="ghost" onClick={onClose}>Cancel</Button>
-            {step < steps.length - 1 ? (
-              <Button tone="primary" onClick={next} disabled={!canContinue()}>
-                {step === 2 && generatePrompt.isPending ? "Generating…" : "Continue"}
-              </Button>
+            {published ? (
+              <>
+                <Button tone="ghost" onClick={onClose}>
+                  Done
+                </Button>
+                <Button
+                  tone="primary"
+                  icon="play"
+                  onClick={() => {
+                    router.push(
+                      `/portal/${tenant}/agents/${encodeURIComponent(published.agent.id)}?section=test` as never,
+                    );
+                    onClose();
+                  }}
+                >
+                  Open &amp; run
+                </Button>
+              </>
             ) : (
-              <Button tone="primary" icon="deploy" onClick={() => void deploy()} disabled={!allValid || deployAgent.isPending}>
-                {deployAgent.isPending ? "Deploying…" : "Deploy agent"}
-              </Button>
+              <>
+                <Button tone="ghost" onClick={onClose}>
+                  Cancel
+                </Button>
+                {step < wizardSteps.length - 1 ? (
+                  <Button
+                    tone="primary"
+                    onClick={next}
+                    disabled={!canContinue()}
+                  >
+                    {step === 2 && generatePrompt.isPending
+                      ? "Generating…"
+                      : "Continue"}
+                  </Button>
+                ) : (
+                  <Button
+                    tone="primary"
+                    icon="deploy"
+                    onClick={() => void deploy()}
+                    disabled={!allValid || deployAgent.isPending}
+                  >
+                    {deployAgent.isPending ? "Publishing…" : "Create & publish"}
+                  </Button>
+                )}
+              </>
             )}
           </div>
         </footer>
@@ -859,6 +1564,488 @@ export function DeployAgentModal({
 }
 
 // ---- small atoms (settings-local pattern) ----
+
+function TemplateBrief({ template }: { template: AgentBuilderTemplate }) {
+  return (
+    <div
+      style={{
+        display: "grid",
+        gridTemplateColumns: "1.2fr 1fr 1fr",
+        gap: 12,
+        padding: 12,
+        background: "var(--panel-2)",
+        border: `1px solid color-mix(in srgb, ${template.color} 35%, var(--border))`,
+        borderLeft: `3px solid ${template.color}`,
+        borderRadius: 5,
+      }}
+    >
+      <div>
+        <div style={{ color: "var(--text)", fontSize: 12.5, fontWeight: 500 }}>
+          {template.name}
+        </div>
+        <div
+          style={{
+            color: "var(--text-2)",
+            fontSize: 11,
+            lineHeight: 1.55,
+            marginTop: 4,
+          }}
+        >
+          {template.outcome}
+        </div>
+      </div>
+      <div>
+        <div
+          className="mono"
+          style={{
+            color: "var(--text-3)",
+            fontSize: 9.5,
+            textTransform: "uppercase",
+            marginBottom: 5,
+          }}
+        >
+          Best for
+        </div>
+        {template.bestFor.map((item) => (
+          <div
+            key={item}
+            style={{ color: "var(--text-2)", fontSize: 10.5, lineHeight: 1.55 }}
+          >
+            • {item}
+          </div>
+        ))}
+      </div>
+      <div>
+        <div
+          className="mono"
+          style={{
+            color: "var(--text-3)",
+            fontSize: 9.5,
+            textTransform: "uppercase",
+            marginBottom: 5,
+          }}
+        >
+          Built-in safeguards
+        </div>
+        {template.safeguards.map((item) => (
+          <div
+            key={item}
+            style={{ color: "var(--text-2)", fontSize: 10.5, lineHeight: 1.55 }}
+          >
+            • {item}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function DeepSearchModePicker({
+  value,
+  onChange,
+}: {
+  value: DeepSearchMode;
+  onChange: (value: DeepSearchMode) => void;
+}) {
+  const modes: Array<{
+    id: DeepSearchMode;
+    title: string;
+    time: string;
+    description: string;
+  }> = [
+    {
+      id: "answer",
+      title: "Answer",
+      time: "seconds",
+      description: "Focused retrieval and a concise cited response.",
+    },
+    {
+      id: "investigate",
+      title: "Investigate",
+      time: "minutes",
+      description: "Iterative search, gap analysis, and evidence synthesis.",
+    },
+    {
+      id: "deep_research",
+      title: "Deep Research",
+      time: "background",
+      description:
+        "Reviewable plan, parallel workstreams, evidence ledger, and citation verification.",
+    },
+  ];
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <SectionLabel>Research depth</SectionLabel>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(3, 1fr)",
+          gap: 7,
+        }}
+      >
+        {modes.map((mode) => {
+          const selected = mode.id === value;
+          return (
+            <button
+              type="button"
+              key={mode.id}
+              onClick={() => onChange(mode.id)}
+              style={{
+                padding: "9px 10px",
+                background: selected
+                  ? "rgba(181,148,255,0.08)"
+                  : "var(--panel-2)",
+                border: `1px solid ${selected ? "var(--violet)" : "var(--border)"}`,
+                borderRadius: 5,
+                textAlign: "left",
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <span
+                  style={{
+                    color: "var(--text)",
+                    fontSize: 11.5,
+                    fontWeight: 500,
+                  }}
+                >
+                  {mode.title}
+                </span>
+                <span
+                  className="mono"
+                  style={{
+                    color: selected ? "var(--violet)" : "var(--text-3)",
+                    fontSize: 9,
+                    marginLeft: "auto",
+                  }}
+                >
+                  {mode.time}
+                </span>
+              </div>
+              <div
+                style={{
+                  color: "var(--text-3)",
+                  fontSize: 10.25,
+                  lineHeight: 1.45,
+                  marginTop: 4,
+                }}
+              >
+                {mode.description}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function ExecutionPlanEditor({
+  template,
+  steps,
+  fleet,
+  selectedModel,
+  modelChoice,
+  modelReason,
+  onModelChange,
+}: {
+  template: AgentBuilderTemplate;
+  steps: AgentBuilderStep[];
+  fleet: FleetEntry[];
+  selectedModel: string;
+  modelChoice: string;
+  modelReason: string;
+  onModelChange: (stepId: string, value: string) => void;
+}) {
+  return (
+    <div>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "flex-start",
+          gap: 10,
+          padding: 10,
+          marginBottom: 10,
+          background: "var(--panel-2)",
+          border: "1px solid var(--border)",
+          borderRadius: 5,
+        }}
+      >
+        <Icon
+          name="spark"
+          size={12}
+          style={{ color: "var(--signal)", marginTop: 2 }}
+        />
+        <div style={{ minWidth: 0 }}>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              flexWrap: "wrap",
+            }}
+          >
+            <Badge tone={modelChoice === AUTO_MODEL ? "signal" : "blue"}>
+              {modelChoice === AUTO_MODEL ? "Auto model" : "Fixed model"}
+            </Badge>
+            <span
+              className="mono"
+              style={{ color: "var(--text)", fontSize: 11.5 }}
+            >
+              {selectedModel}
+            </span>
+          </div>
+          <div
+            style={{
+              color: "var(--text-3)",
+              fontSize: 10.5,
+              lineHeight: 1.5,
+              marginTop: 5,
+            }}
+          >
+            {modelReason}
+          </div>
+        </div>
+      </div>
+      <SectionLabel>
+        {template.name} plan · {steps.length} steps
+      </SectionLabel>
+      <div style={{ display: "grid", gap: 7 }}>
+        {steps.map((item, index) => {
+          const usesModel = item.execution === "llm";
+          return (
+            <div
+              key={item.id}
+              style={{
+                display: "grid",
+                gridTemplateColumns: "32px minmax(0, 1fr) 260px",
+                gap: 10,
+                alignItems: "center",
+                padding: "9px 10px",
+                background: "var(--panel-2)",
+                border: "1px solid var(--border)",
+                borderRadius: 5,
+              }}
+            >
+              <span
+                className="mono"
+                style={{
+                  width: 24,
+                  height: 24,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  borderRadius: "50%",
+                  border: "1px solid var(--border-2)",
+                  color: "var(--text-3)",
+                  fontSize: 10,
+                }}
+              >
+                {index + 1}
+              </span>
+              <div style={{ minWidth: 0 }}>
+                <div
+                  style={{
+                    color: "var(--text)",
+                    fontSize: 11.5,
+                    fontWeight: 500,
+                  }}
+                >
+                  {item.title}
+                </div>
+                <div
+                  style={{
+                    color: "var(--text-3)",
+                    fontSize: 10.5,
+                    lineHeight: 1.45,
+                    marginTop: 2,
+                  }}
+                >
+                  {item.description}
+                </div>
+              </div>
+              {!usesModel ? (
+                <div
+                  style={{
+                    color: "var(--violet)",
+                    fontSize: 11,
+                    textAlign: "right",
+                  }}
+                >
+                  Human checkpoint · no LLM
+                </div>
+              ) : (
+                <select
+                  aria-label={`Model for ${item.title}`}
+                  value={item.modelOverride ?? INHERIT_MODEL}
+                  onChange={(event) =>
+                    onModelChange(item.id, event.target.value)
+                  }
+                  style={editSelectStyle}
+                >
+                  <option value={INHERIT_MODEL}>
+                    Inherit agent model · {selectedModel}
+                  </option>
+                  {fleet.map((entry) => (
+                    <option key={entry.id} value={entry.id}>
+                      {entry.alias || entry.modelName} · {entry.provider}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <InlineMessage tone="signal">
+        Override only the steps that need a different cost, latency, context, or
+        reasoning profile. Other steps inherit the agent model.
+      </InlineMessage>
+    </div>
+  );
+}
+
+function OntologyCapability({
+  isLoading,
+  tools,
+}: {
+  isLoading: boolean;
+  tools: ToolCatalogEntry[];
+}) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "flex-start",
+        gap: 10,
+        padding: 11,
+        marginBottom: 8,
+        background: "rgba(181,148,255,0.06)",
+        border: "1px solid rgba(181,148,255,0.30)",
+        borderRadius: 5,
+      }}
+    >
+      <Icon
+        name="workflow"
+        size={13}
+        style={{ color: "var(--violet)", marginTop: 2 }}
+      />
+      <div style={{ minWidth: 0, flex: 1 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+          <span style={{ color: "var(--text)", fontSize: 12, fontWeight: 500 }}>
+            Ontology API
+          </span>
+          <Badge tone="violet">Included</Badge>
+        </div>
+        <div
+          style={{
+            color: "var(--text-2)",
+            fontSize: 10.75,
+            lineHeight: 1.55,
+            marginTop: 4,
+          }}
+        >
+          Every agent can discover the graph schema, resolve entities, and run
+          tenant-scoped Neo4j reads through approved tools. The runtime supplies
+          credentials; prompts never see them.
+        </div>
+        <div
+          className="mono"
+          style={{ color: "var(--text-3)", fontSize: 9.75, marginTop: 6 }}
+        >
+          {isLoading
+            ? "Loading graph capabilities…"
+            : tools.length > 0
+              ? tools.map((tool) => tool.name).join(" · ")
+              : "Ontology binding will be resolved when the agent is published."}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PublishedAgentSummary({
+  result,
+  tenant,
+}: {
+  result: DeployAuthoredAgentResponse;
+  tenant: string;
+}) {
+  return (
+    <div style={{ maxWidth: 680, margin: "20px auto" }}>
+      <div
+        style={{
+          width: 42,
+          height: 42,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          marginBottom: 14,
+          borderRadius: "50%",
+          background: "rgba(101,224,163,0.10)",
+          border: "1px solid rgba(101,224,163,0.35)",
+          color: "var(--green)",
+        }}
+      >
+        <Icon name="check" size={20} />
+      </div>
+      <div style={{ color: "var(--text)", fontSize: 21, fontWeight: 500 }}>
+        {result.agent.title} is live
+      </div>
+      <div
+        style={{
+          color: "var(--text-2)",
+          fontSize: 12,
+          lineHeight: 1.65,
+          marginTop: 6,
+        }}
+      >
+        The agent is published in <span className="mono">{tenant}</span>,
+        registered with the runtime, and ready to run whenever one of its
+        trigger events arrives.
+      </div>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "1fr 1fr",
+          gap: 8,
+          marginTop: 18,
+        }}
+      >
+        <Panel title="Runtime" padded>
+          <ValidationLine
+            ok
+            label="Function registered"
+            hint={result.runtime.functionId}
+          />
+          <ValidationLine ok label="Workflow version" hint={result.version} />
+          <ValidationLine
+            ok
+            label="Live deployment"
+            hint={result.deploymentId}
+          />
+        </Panel>
+        <Panel title="Next step" padded>
+          <div
+            style={{ color: "var(--text-2)", fontSize: 11, lineHeight: 1.6 }}
+          >
+            Open the agent to test it with a message or send one of its trigger
+            events. Live runs, steps, logs, and emitted events will appear in
+            Agent Studio.
+          </div>
+          {result.events.created.length > 0 && (
+            <div
+              className="mono"
+              style={{ color: "var(--green)", fontSize: 10, marginTop: 8 }}
+            >
+              {result.events.created.length} event type
+              {result.events.created.length === 1 ? "" : "s"} created
+            </div>
+          )}
+        </Panel>
+      </div>
+    </div>
+  );
+}
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
@@ -888,8 +2075,28 @@ function EditField({
 }) {
   return (
     <div style={{ padding: "10px 0", borderBottom: "1px solid var(--border)" }}>
-      <div style={{ fontSize: 11, color: "var(--text)", marginBottom: 3, fontWeight: 500 }}>{label}</div>
-      {hint && <div style={{ fontSize: 11, color: "var(--text-3)", marginBottom: 6, lineHeight: 1.5 }}>{hint}</div>}
+      <div
+        style={{
+          fontSize: 11,
+          color: "var(--text)",
+          marginBottom: 3,
+          fontWeight: 500,
+        }}
+      >
+        {label}
+      </div>
+      {hint && (
+        <div
+          style={{
+            fontSize: 11,
+            color: "var(--text-3)",
+            marginBottom: 6,
+            lineHeight: 1.5,
+          }}
+        >
+          {hint}
+        </div>
+      )}
       {children}
     </div>
   );
@@ -932,7 +2139,15 @@ function EditText({
         }}
       />
       {suffix && (
-        <span style={{ fontSize: 10.5, color: "var(--text-3)", fontFamily: "var(--mono)" }}>{suffix}</span>
+        <span
+          style={{
+            fontSize: 10.5,
+            color: "var(--text-3)",
+            fontFamily: "var(--mono)",
+          }}
+        >
+          {suffix}
+        </span>
       )}
     </div>
   );
@@ -971,44 +2186,6 @@ function EditTextarea({
   );
 }
 
-function Seg({
-  value,
-  onChange,
-  options,
-}: {
-  value: string;
-  onChange: (v: string) => void;
-  options: Array<{ value: string; label: string }>;
-}) {
-  return (
-    <div
-      style={{
-        display: "inline-flex",
-        border: "1px solid var(--border-2)",
-        borderRadius: 4,
-        overflow: "hidden",
-      }}
-    >
-      {options.map((o) => (
-        <button
-          key={o.value}
-          onClick={() => onChange(o.value)}
-          style={{
-            padding: "5px 12px",
-            fontSize: 11.5,
-            background: value === o.value ? "var(--panel-3)" : "var(--panel-2)",
-            color: value === o.value ? "var(--text)" : "var(--text-3)",
-            borderRight: "1px solid var(--border-2)",
-            borderBottom: value === o.value ? "2px solid var(--signal)" : "2px solid transparent",
-          }}
-        >
-          {o.label}
-        </button>
-      ))}
-    </div>
-  );
-}
-
 function EventPicker({
   selected,
   onAdd,
@@ -1026,15 +2203,31 @@ function EventPicker({
 }) {
   const [input, setInput] = useState("");
   const colorMap = {
-    blue: { fg: "var(--blue)", bg: "rgba(132,169,255,0.10)", bd: "rgba(132,169,255,0.32)" },
-    green: { fg: "var(--green)", bg: "rgba(101,224,163,0.08)", bd: "rgba(101,224,163,0.30)" },
+    blue: {
+      fg: "var(--blue)",
+      bg: "rgba(132,169,255,0.10)",
+      bd: "rgba(132,169,255,0.32)",
+    },
+    green: {
+      fg: "var(--green)",
+      bg: "rgba(101,224,163,0.08)",
+      bd: "rgba(101,224,163,0.30)",
+    },
   } as const;
   const c = colorMap[tone] ?? colorMap.blue;
   const normalizedInput = normalizeAuthoredEventName(input);
   const suggestions = input
-    ? all.filter((e) => e.toLowerCase().includes(input.toLowerCase()) && e !== normalizedInput && !selected.includes(e)).slice(0, 6)
+    ? all
+        .filter(
+          (e) =>
+            e.toLowerCase().includes(input.toLowerCase()) &&
+            e !== normalizedInput &&
+            !selected.includes(e),
+        )
+        .slice(0, 6)
     : [];
-  const canAddInput = Boolean(normalizedInput) && !selected.includes(normalizedInput);
+  const canAddInput =
+    Boolean(normalizedInput) && !selected.includes(normalizedInput);
   const isNewInput = canAddInput && !all.includes(normalizedInput);
 
   function commitInput(value = input) {
@@ -1045,9 +2238,19 @@ function EventPicker({
 
   return (
     <div>
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 6, minHeight: 22 }}>
+      <div
+        style={{
+          display: "flex",
+          flexWrap: "wrap",
+          gap: 4,
+          marginBottom: 6,
+          minHeight: 22,
+        }}
+      >
         {selected.length === 0 && (
-          <span style={{ fontSize: 11, color: "var(--text-3)" }}>None yet — type a name below to add.</span>
+          <span style={{ fontSize: 11, color: "var(--text-3)" }}>
+            None yet — type a name below to add.
+          </span>
         )}
         {selected.map((t) => (
           <span
@@ -1068,7 +2271,16 @@ function EventPicker({
           >
             {t}
             {newEvents.includes(t) && (
-              <span style={{ fontSize: 8, fontWeight: 700, letterSpacing: "0.06em", opacity: 0.75 }}>NEW</span>
+              <span
+                style={{
+                  fontSize: 8,
+                  fontWeight: 700,
+                  letterSpacing: "0.06em",
+                  opacity: 0.75,
+                }}
+              >
+                NEW
+              </span>
             )}
             <button
               onClick={() => onRemove(t)}
@@ -1133,13 +2345,21 @@ function EventPicker({
                   fontSize: 11.5,
                   color: isNewInput ? "var(--signal)" : "var(--text-2)",
                   textAlign: "left",
-                  borderBottom: suggestions.length > 0 ? "1px solid var(--border)" : "none",
-                  background: isNewInput ? "rgba(203,255,0,0.05)" : "transparent",
+                  borderBottom:
+                    suggestions.length > 0 ? "1px solid var(--border)" : "none",
+                  background: isNewInput
+                    ? "rgba(203,255,0,0.05)"
+                    : "transparent",
                 }}
               >
                 <Icon name="plus" size={10} />
                 <span>{isNewInput ? "Create new event" : "Use event"}</span>
-                <span className="mono" style={{ marginLeft: "auto", color: "var(--text)" }}>{normalizedInput}</span>
+                <span
+                  className="mono"
+                  style={{ marginLeft: "auto", color: "var(--text)" }}
+                >
+                  {normalizedInput}
+                </span>
               </button>
             )}
             {suggestions.map((s) => (
@@ -1181,11 +2401,21 @@ function ValidationLine({
   hint?: string;
 }) {
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", fontSize: 11.5 }}>
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        padding: "5px 0",
+        fontSize: 11.5,
+      }}
+    >
       <Icon
         name={ok ? "check" : warn ? "alert" : "x"}
         size={11}
-        style={{ color: ok ? "var(--green)" : warn ? "var(--amber)" : "var(--red)" }}
+        style={{
+          color: ok ? "var(--green)" : warn ? "var(--amber)" : "var(--red)",
+        }}
       />
       <span style={{ color: "var(--text-2)" }}>{label}</span>
       {hint && (
@@ -1209,9 +2439,16 @@ function InlineMessage({
   tone,
 }: {
   children: React.ReactNode;
-  tone: "signal" | "amber" | "red";
+  tone: "signal" | "green" | "amber" | "red";
 }) {
-  const color = tone === "signal" ? "var(--signal)" : tone === "amber" ? "var(--amber)" : "var(--red)";
+  const color =
+    tone === "signal"
+      ? "var(--signal)"
+      : tone === "green"
+        ? "var(--green)"
+        : tone === "amber"
+          ? "var(--amber)"
+          : "var(--red)";
   return (
     <div
       style={{

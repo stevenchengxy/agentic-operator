@@ -2,15 +2,28 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ProviderId } from "@agentic/contracts";
+import {
+  PROVIDER_MODEL_CATALOG,
+  type CatalogModel,
+  type ProviderId,
+  type ReasoningConfig,
+  type ReasoningContext,
+  type ReasoningEffort,
+  type ReasoningMode,
+  type ReasoningSummary,
+  type TextVerbosity,
+} from "@agentic/contracts";
 import { Badge, Button, Empty } from "@/app/portal/components";
 import { useTenant } from "@/app/portal/lib/use-tenant";
 import {
   useAgentRunHistory,
   useCreateAgentRun,
   useRunOutput,
+  useRunSession,
   useRunTrace,
+  formatAgentStudioError,
   type AgentStudioRunRow,
+  type CreateAgentRunRequest,
   type RunTraceEvent,
 } from "@/lib/hooks/useAgentStudio";
 import { useCancelRun, useRunArtifacts } from "@/lib/hooks/useRuns";
@@ -21,7 +34,6 @@ import {
   JsonValueEditor,
   Segmented,
   SelectInput,
-  TextArea,
   TextInput,
 } from "./fields";
 import {
@@ -32,8 +44,15 @@ import {
   type StudioDefinition,
   type StudioInputPort,
 } from "./model";
+import {
+  buildChatTranscript,
+  isStructuredChatValue,
+  prettyChatValue,
+  type ChatMessageView,
+} from "./chat-model";
+import { buildStudioChatRunRequest } from "./chat-request";
 
-type ResultTab = "trace" | "output" | "logs" | "artifacts";
+type ResultTab = "chat" | "trace" | "output" | "logs" | "artifacts";
 const RUN_PROVIDERS = [
   "",
   "mock",
@@ -46,12 +65,24 @@ const RUN_PROVIDERS = [
   "together",
   "mistral",
   "deepseek",
+  "moonshot",
+  "zai",
   "qwen",
   "bedrock",
   "vertex",
   "custom",
 ];
 const DEFAULT_FILE_MAX_BYTES = 10_000_000;
+
+function selectedCatalogModel(
+  provider: string,
+  model: string,
+): CatalogModel | undefined {
+  if (!(provider in PROVIDER_MODEL_CATALOG) || !model) return undefined;
+  return PROVIDER_MODEL_CATALOG[provider as ProviderId].find(
+    (candidate) => candidate.name === model.replace(/^~/, ""),
+  );
+}
 
 interface StudioFilePolicy {
   mediaTypes: string[];
@@ -69,6 +100,20 @@ interface StudioFileValue {
 interface StudioDraftTarget {
   id: string;
   revision: number;
+}
+
+interface PendingChatTurn {
+  prompt: string;
+  state: "publishing" | "queued";
+  runId: string | null;
+  eventId: string | null;
+  eventName: string | null;
+}
+
+interface ChatDispatchReceipt {
+  runId: string;
+  eventId: string;
+  eventName: string;
 }
 
 function filePolicyFor(input: StudioInputPort): StudioFilePolicy {
@@ -363,6 +408,75 @@ function VariableControl({
   );
 }
 
+function ChatBubble({
+  message,
+  selected,
+  onInspectRun,
+}: {
+  message: ChatMessageView;
+  selected: boolean;
+  onInspectRun: (runId: string) => void;
+}) {
+  const structured = isStructuredChatValue(message.content);
+  const stateLabel =
+    message.state === "working"
+      ? "Working"
+      : message.state === "failed"
+        ? "Failed"
+        : message.state === "cancelled"
+          ? "Cancelled"
+          : message.state === "empty"
+            ? "No result"
+            : null;
+  return (
+    <article
+      className={`agent-studio-chat-message agent-studio-chat-message--${message.role}${selected ? " agent-studio-chat-message--selected" : ""}`}
+      aria-label={`${message.role === "user" ? "You" : "Agent"} message`}
+    >
+      <div className="agent-studio-chat-avatar" aria-hidden="true">
+        {message.role === "user" ? "YOU" : "AI"}
+      </div>
+      <div className="agent-studio-chat-body">
+        <div className="agent-studio-chat-byline">
+          <span>{message.role === "user" ? "You" : "Agent"}</span>
+          {stateLabel && (
+            <span
+              className={`agent-studio-chat-state agent-studio-chat-state--${message.state}`}
+            >
+              {message.state === "working" && (
+                <span className="live-dot" aria-hidden="true" />
+              )}
+              {stateLabel}
+            </span>
+          )}
+        </div>
+        {structured ? (
+          <pre className="agent-studio-chat-json">
+            {prettyChatValue(message.content)}
+          </pre>
+        ) : (
+          <div className="agent-studio-chat-text">
+            {prettyChatValue(message.content)}
+          </div>
+        )}
+        <div className="agent-studio-chat-meta">
+          {message.createdAt && <span>{displayTime(message.createdAt)}</span>}
+          {message.runId && (
+            <button
+              type="button"
+              className="agent-studio-chat-run-link"
+              aria-pressed={selected}
+              onClick={() => onInspectRun(message.runId!)}
+            >
+              {selected ? "Inspecting this run" : "Inspect run"}
+            </button>
+          )}
+        </div>
+      </div>
+    </article>
+  );
+}
+
 export function TestLab({
   agentId,
   definition,
@@ -385,9 +499,13 @@ export function TestLab({
   const variableInputs = definition.inputs.filter(
     (input) => input.kind !== "prompt",
   );
-  const [prompt, setPrompt] = useState(
-    String(promptInput?.default ?? promptInput?.example ?? ""),
-  );
+  // A chat turn must always be authored by the operator. Legacy manifest
+  // agents receive a synthetic prompt default ("Process the incoming workflow
+  // event…") during normalization; pre-filling it here makes Send look ready
+  // even though no user message has been entered. Keep defaults/examples in
+  // the definition for non-chat runtimes, but start the conversation composer
+  // empty and let its placeholder explain what belongs here.
+  const [prompt, setPrompt] = useState("");
   const [inputs, setInputs] = useState<Record<string, unknown>>(() =>
     Object.fromEntries(
       variableInputs.map((input) => [input.id, valueForInput(input)]),
@@ -400,20 +518,38 @@ export function TestLab({
   const [toolPolicy, setToolPolicy] = useState<"safe" | "simulate" | "live">(
     "safe",
   );
-  const [resultTab, setResultTab] = useState<ResultTab>("trace");
+  const [resultTab, setResultTab] = useState<ResultTab>("chat");
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [sessionId, setSessionId] = useState<string | undefined>();
+  const [conversationTarget, setConversationTarget] = useState<
+    CreateAgentRunRequest["target"] | null
+  >(null);
+  const [triggerEvent, setTriggerEvent] = useState(definition.trigger[0] ?? "");
+  const [conversationTriggerEvent, setConversationTriggerEvent] = useState<
+    string | undefined
+  >();
+  const [pendingTurn, setPendingTurn] = useState<PendingChatTurn | null>(null);
+  const [lastDispatch, setLastDispatch] = useState<ChatDispatchReceipt | null>(
+    null,
+  );
   const [runtimeOpen, setRuntimeOpen] = useState(false);
   const [provider, setProvider] = useState("");
   const [model, setModel] = useState("");
+  const [reasoningMode, setReasoningMode] = useState("");
+  const [reasoningEffort, setReasoningEffort] = useState("");
+  const [reasoningSummary, setReasoningSummary] = useState("");
+  const [reasoningContext, setReasoningContext] = useState("");
+  const [verbosity, setVerbosity] = useState("");
+  const [storeResponse, setStoreResponse] = useState("");
   const [temperature, setTemperature] = useState("");
   const [maxTokens, setMaxTokens] = useState("");
   const [timeoutSeconds, setTimeoutSeconds] = useState("");
   const createRun = useCreateAgentRun(agentId);
   const history = useAgentRunHistory(agentId, { limit: 100 });
-  const selectedHistory = history.data?.items.find(
-    (row) => row.id === selectedRunId,
-  );
+  const session = useRunSession(sessionId);
+  const selectedHistory =
+    session.data?.runs.find((row) => row.id === selectedRunId) ??
+    history.data?.items.find((row) => row.id === selectedRunId);
   const runIsLive = Boolean(
     selectedRunId && !isTerminalStatus(selectedHistory?.status),
   );
@@ -426,19 +562,60 @@ export function TestLab({
   });
   const cancelRun = useCancelRun();
   const hadDraft = useRef(Boolean(draft));
+  const dispatchInFlightRef = useRef(false);
+  const hydratedSessionRef = useRef<string | null>(null);
+  const chatEndRef = useRef<HTMLDivElement>(null);
   const artifactFilename = String(
     asRecord(definition.output_config.artifact).filename ?? "output.json",
   );
   const hasPreviewSteps = definition.actions.some(
     (action) => action.type === "delay" || action.type === "subflow",
   );
+  const triggerEvents = useMemo(
+    () =>
+      conversationTriggerEvent &&
+      !definition.trigger.includes(conversationTriggerEvent)
+        ? [conversationTriggerEvent, ...definition.trigger]
+        : definition.trigger,
+    [conversationTriggerEvent, definition.trigger],
+  );
 
   useEffect(() => {
+    if (sessionId) return;
     if (draft && !hadDraft.current) setTarget("draft");
     hadDraft.current = Boolean(draft);
     if (!draft && target === "draft") setTarget("live");
     if (!liveVersionId && target === "live" && draft) setTarget("draft");
-  }, [draft, liveVersionId, target]);
+  }, [draft, liveVersionId, sessionId, target]);
+
+  useEffect(() => {
+    if (sessionId) return;
+    setTriggerEvent((current) =>
+      definition.trigger.includes(current)
+        ? current
+        : (definition.trigger[0] ?? ""),
+    );
+  }, [definition.trigger, sessionId]);
+
+  useEffect(() => {
+    const continuation = session.data?.continuation;
+    if (
+      !sessionId ||
+      !continuation ||
+      hydratedSessionRef.current === sessionId
+    ) {
+      return;
+    }
+    // A saved chat owns its execution target, trigger and structured inputs.
+    // Hydrate from the server instead of guessing from the current editor,
+    // which may now point at another draft revision or trigger.
+    hydratedSessionRef.current = sessionId;
+    setConversationTarget(continuation.target);
+    setConversationTriggerEvent(continuation.triggerEvent);
+    setTarget(continuation.target.kind);
+    setInputs(continuation.inputs);
+    setToolPolicy(continuation.toolPolicy);
+  }, [session.data?.continuation, sessionId]);
 
   const activeStatus = isTerminalStatus(selectedHistory?.status)
     ? selectedHistory!.status
@@ -448,10 +625,23 @@ export function TestLab({
   const reasoningSummaries = useMemo(
     () =>
       (trace.data?.events ?? []).filter(
-        (event) =>
-          (event.kind === "llm" || event.kind === "prompt") && event.summary,
+        (event) => event.name === "llm.reasoning_summary" && event.summary,
       ),
     [trace.data],
+  );
+  const chatTranscript = useMemo(() => {
+    const fallbackOutputs = new Map<string, unknown>();
+    if (selectedRunId && output.data?.status === "ok") {
+      fallbackOutputs.set(selectedRunId, output.data.output);
+    }
+    return buildChatTranscript(session.data, fallbackOutputs);
+  }, [output.data, selectedRunId, session.data]);
+  const pendingTurnIsPersisted = Boolean(
+    pendingTurn?.runId &&
+    session.data?.messages.some(
+      (message) =>
+        message.role === "user" && message.runId === pendingTurn.runId,
+    ),
   );
   const missingRequired = variableInputs.filter((input) => {
     if (!input.required) return false;
@@ -471,6 +661,23 @@ export function TestLab({
   const parsedMaxTokens = Number(maxTokens);
   const parsedTimeoutSeconds = Number(timeoutSeconds);
   const modelOverride = model.trim();
+  const effectiveProvider = provider || definition.provider;
+  const effectiveModel = modelOverride || definition.model;
+  const modelCapabilities = selectedCatalogModel(
+    effectiveProvider,
+    effectiveModel,
+  );
+  const reasoningOverride: ReasoningConfig = {
+    ...(reasoningMode ? { mode: reasoningMode as ReasoningMode } : {}),
+    ...(reasoningEffort ? { effort: reasoningEffort as ReasoningEffort } : {}),
+    ...(reasoningSummary
+      ? { summary: reasoningSummary as ReasoningSummary }
+      : {}),
+    ...(reasoningContext
+      ? { context: reasoningContext as ReasoningContext }
+      : {}),
+  };
+  const hasReasoningOverride = Object.keys(reasoningOverride).length > 0;
   const runtimeOverridesInvalid = Boolean(
     (temperature.trim() &&
       (!Number.isFinite(parsedTemperature) ||
@@ -481,7 +688,45 @@ export function TestLab({
     (timeoutSeconds.trim() &&
       (!Number.isInteger(parsedTimeoutSeconds) || parsedTimeoutSeconds <= 0)),
   );
-  const draftNotReady = target === "draft" && draftHasUnsavedChanges;
+  const draftNotReady =
+    !sessionId && target === "draft" && draftHasUnsavedChanges;
+  const sessionHasActiveRun = Boolean(
+    session.data?.runs.some((run) => !isTerminalStatus(run.status)),
+  );
+  const conversationBusy =
+    createRun.isPending ||
+    sessionHasActiveRun ||
+    Boolean(selectedRunId && activeStatus && !isTerminalStatus(activeStatus));
+  const targetUnavailable = sessionId
+    ? !conversationTarget
+    : target === "draft"
+      ? !draft
+      : !liveVersionId;
+  const submitDisabled =
+    !canRun ||
+    !prompt.trim() ||
+    missingRequired.length > 0 ||
+    runtimeOverridesInvalid ||
+    draftNotReady ||
+    targetUnavailable ||
+    conversationBusy;
+
+  useEffect(() => {
+    if (resultTab !== "chat") return;
+    chatEndRef.current?.scrollIntoView({
+      block: "end",
+    });
+  }, [
+    activeStatus,
+    chatTranscript.length,
+    pendingTurn?.runId,
+    pendingTurn?.state,
+    resultTab,
+  ]);
+
+  useEffect(() => {
+    if (pendingTurnIsPersisted) setPendingTurn(null);
+  }, [pendingTurnIsPersisted]);
 
   useEffect(() => {
     if (!isTerminalStatus(selectedHistory?.status)) return;
@@ -496,50 +741,109 @@ export function TestLab({
   ]);
 
   async function run() {
+    if (submitDisabled || dispatchInFlightRef.current) return;
+    dispatchInFlightRef.current = true;
+    const submittedPrompt = prompt;
+    const requestedTarget: CreateAgentRunRequest["target"] | null = sessionId
+      ? conversationTarget
+      : target === "draft" && draft
+        ? { kind: "draft", draftId: draft.id, revision: draft.revision }
+        : target === "live" && liveVersionId
+          ? { kind: "live", agentVersionId: liveVersionId }
+          : null;
+    if (!requestedTarget) {
+      dispatchInFlightRef.current = false;
+      return;
+    }
+    const requestedTriggerEvent = sessionId
+      ? conversationTriggerEvent
+      : triggerEvent || undefined;
+    setPendingTurn({
+      prompt: submittedPrompt,
+      state: "publishing",
+      runId: null,
+      eventId: null,
+      eventName: requestedTriggerEvent ?? null,
+    });
     try {
-      const response = await createRun.mutateAsync({
-        ...(sessionId ? { sessionId } : {}),
-        target:
-          target === "draft" && draft
-            ? { kind: "draft", draftId: draft.id, revision: draft.revision }
-            : {
-                kind: "live",
-                ...(liveVersionId ? { agentVersionId: liveVersionId } : {}),
-              },
-        prompt,
-        inputs,
-        toolPolicy,
-        runtimeOverrides: {
-          ...(provider ? { provider: provider as ProviderId } : {}),
-          ...(modelOverride ? { model: modelOverride } : {}),
-          ...(temperature.trim() && Number.isFinite(parsedTemperature)
-            ? { temperature: parsedTemperature }
+      const response = await createRun.mutateAsync(
+        buildStudioChatRunRequest({
+          ...(sessionId ? { sessionId } : {}),
+          target: requestedTarget,
+          ...(requestedTriggerEvent
+            ? { triggerEvent: requestedTriggerEvent }
             : {}),
-          ...(maxTokens.trim() &&
-          Number.isInteger(parsedMaxTokens) &&
-          parsedMaxTokens > 0
-            ? { maxTokens: parsedMaxTokens }
-            : {}),
-          ...(timeoutSeconds.trim() &&
-          Number.isInteger(parsedTimeoutSeconds) &&
-          parsedTimeoutSeconds > 0
-            ? { timeoutS: parsedTimeoutSeconds }
-            : {}),
-        },
-      });
+          prompt: submittedPrompt,
+          inputs,
+          toolPolicy,
+          runtimeOverrides: {
+            ...(provider ? { provider: provider as ProviderId } : {}),
+            ...(modelOverride ? { model: modelOverride } : {}),
+            ...(hasReasoningOverride ? { reasoning: reasoningOverride } : {}),
+            ...(verbosity ? { verbosity: verbosity as TextVerbosity } : {}),
+            ...(storeResponse ? { store: storeResponse === "true" } : {}),
+            ...(temperature.trim() && Number.isFinite(parsedTemperature)
+              ? { temperature: parsedTemperature }
+              : {}),
+            ...(maxTokens.trim() &&
+            Number.isInteger(parsedMaxTokens) &&
+            parsedMaxTokens > 0
+              ? { maxTokens: parsedMaxTokens }
+              : {}),
+            ...(timeoutSeconds.trim() &&
+            Number.isInteger(parsedTimeoutSeconds) &&
+            parsedTimeoutSeconds > 0
+              ? { timeoutS: parsedTimeoutSeconds }
+              : {}),
+          },
+        }),
+      );
       setSelectedRunId(response.runId);
       setSessionId(response.sessionId);
-      setResultTab("trace");
+      setConversationTarget(requestedTarget);
+      setConversationTriggerEvent(response.eventName);
+      setLastDispatch({
+        runId: response.runId,
+        eventId: response.eventId,
+        eventName: response.eventName,
+      });
+      setPendingTurn({
+        prompt: submittedPrompt,
+        state: "queued",
+        runId: response.runId,
+        eventId: response.eventId,
+        eventName: response.eventName,
+      });
+      setPrompt("");
+      setResultTab("chat");
     } catch {
+      setPendingTurn(null);
       // The mutation exposes its typed error below the controls. Absorb the
       // rejected mutateAsync promise so a failed dispatch is never unhandled.
+    } finally {
+      dispatchInFlightRef.current = false;
     }
+  }
+
+  function newChat() {
+    hydratedSessionRef.current = null;
+    setSessionId(undefined);
+    setSelectedRunId(null);
+    setConversationTarget(null);
+    setConversationTriggerEvent(undefined);
+    setTriggerEvent(definition.trigger[0] ?? "");
+    setPendingTurn(null);
+    setLastDispatch(null);
+    setPrompt("");
+    setResultTab("chat");
+    createRun.reset();
   }
 
   return (
     <div style={{ display: "grid", gap: 14 }}>
       <InlineNotice tone="signal" title="Test Lab uses the real runtime">
-        Your chat message is inserted automatically as the agent&apos;s prompt
+        Send publishes a runtime event that triggers this agent. Your chat
+        message is copied exactly into the event as the agent&apos;s prompt
         input. Structured variables stay separate, and every run, trace event,
         log, and JSON artifact is retained in history.
       </InlineNotice>
@@ -561,6 +865,7 @@ export function TestLab({
         }}
       >
         <section
+          className="agent-studio-test-setup"
           style={{
             display: "flex",
             flexDirection: "column",
@@ -578,34 +883,21 @@ export function TestLab({
               alignItems: "center",
             }}
           >
-            <div>
+            <div style={{ minWidth: 0 }}>
               <div
                 style={{ color: "var(--text)", fontSize: 12, fontWeight: 600 }}
               >
-                Conversation
+                Test setup
               </div>
               <div
                 style={{ color: "var(--text-3)", fontSize: 10.5, marginTop: 2 }}
               >
-                {sessionId
-                  ? `Session ${sessionId.slice(0, 12)}…`
-                  : "New test session"}
+                Structured inputs and runtime settings
               </div>
             </div>
-            <div style={{ display: "flex", gap: 7, alignItems: "center" }}>
-              {sessionId && (
-                <Button
-                  small
-                  onClick={() => {
-                    setSessionId(undefined);
-                    setSelectedRunId(null);
-                    setPrompt("");
-                    createRun.reset();
-                  }}
-                >
-                  New chat
-                </Button>
-              )}
+            {sessionId ? (
+              <Badge tone="blue">{target} · locked</Badge>
+            ) : (
               <Segmented
                 ariaLabel="Version to test"
                 value={target}
@@ -619,7 +911,7 @@ export function TestLab({
                     : []),
                 ]}
               />
-            </div>
+            )}
           </div>
           <div
             style={{
@@ -630,9 +922,11 @@ export function TestLab({
               lineHeight: 1.4,
             }}
           >
-            {target === "draft"
-              ? "Draft runs test your saved changes without changing the live agent."
-              : "Live runs use the currently published version—the same version production callers use."}
+            {sessionId
+              ? `${target === "draft" ? "Draft" : "Live"} is pinned for this conversation. Start a new chat to change it.`
+              : target === "draft"
+                ? "Draft runs test your saved changes without changing the live agent."
+                : "Live runs use the currently published version—the same version production callers use."}
           </div>
           <div
             style={{
@@ -644,32 +938,6 @@ export function TestLab({
               alignContent: "start",
             }}
           >
-            <div
-              style={{
-                padding: 10,
-                border: "1px solid var(--border)",
-                borderRadius: 6,
-                background: "var(--panel-2)",
-              }}
-            >
-              <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
-                <Badge tone="blue">Chat request</Badge>
-                <Badge tone="muted">{promptInput?.id ?? "prompt"}</Badge>
-              </div>
-              <Field
-                label="What should the agent do?"
-                required
-                hint="Write the request exactly as an end user would. Agent Studio automatically sends it as the model's user message."
-                example="Read this support message, choose a category, and draft a helpful reply."
-              >
-                <TextArea
-                  value={prompt}
-                  onChange={setPrompt}
-                  rows={7}
-                  placeholder="Tell the agent what you want it to do…"
-                />
-              </Field>
-            </div>
             {variableInputs.length > 0 && (
               <div>
                 <div
@@ -742,6 +1010,30 @@ export function TestLab({
                   </div>
                 )}
               </div>
+            )}
+            {triggerEvents.length > 0 && (
+              <Field
+                label="Trigger event"
+                hint={
+                  sessionId
+                    ? "Pinned for every message in this conversation."
+                    : "Pressing Send publishes this event to start the agent."
+                }
+              >
+                <SelectInput
+                  value={
+                    sessionId
+                      ? (conversationTriggerEvent ?? triggerEvent)
+                      : triggerEvent
+                  }
+                  onChange={setTriggerEvent}
+                  disabled={Boolean(sessionId)}
+                  options={triggerEvents.map((name) => ({
+                    value: name,
+                    label: name,
+                  }))}
+                />
+              </Field>
             )}
             <details
               open={runtimeOpen}
@@ -829,6 +1121,150 @@ export function TestLab({
                     />
                   </Field>
                 </div>
+                {(modelCapabilities?.reasoningModes?.length ||
+                  modelCapabilities?.reasoningEfforts?.length ||
+                  modelCapabilities?.reasoningSummaries?.length ||
+                  modelCapabilities?.reasoningContexts?.length ||
+                  modelCapabilities?.textVerbosities?.length ||
+                  effectiveProvider === "openai" ||
+                  effectiveProvider === "openrouter") && (
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "1fr 1fr",
+                      gap: 9,
+                    }}
+                  >
+                    {modelCapabilities?.reasoningModes?.length ? (
+                      <Field
+                        label="Temporary reasoning mode"
+                        hint="Standard balances quality and latency; Pro uses the model's highest-compute execution path."
+                      >
+                        <SelectInput
+                          value={reasoningMode}
+                          onChange={setReasoningMode}
+                          options={[
+                            {
+                              value: "",
+                              label: `Use agent / model${asRecord(definition.reasoning).mode ? ` (${String(asRecord(definition.reasoning).mode)})` : " default"}`,
+                            },
+                            ...modelCapabilities.reasoningModes.map(
+                              (value) => ({
+                                value,
+                                label: value,
+                              }),
+                            ),
+                          ]}
+                        />
+                      </Field>
+                    ) : null}
+                    {modelCapabilities?.reasoningEfforts?.length ? (
+                      <Field
+                        label="Temporary reasoning effort"
+                        hint="Higher effort may improve difficult reasoning while increasing latency and reasoning-token cost."
+                      >
+                        <SelectInput
+                          value={reasoningEffort}
+                          onChange={setReasoningEffort}
+                          options={[
+                            {
+                              value: "",
+                              label: `Use agent / model${asRecord(definition.reasoning).effort ? ` (${String(asRecord(definition.reasoning).effort)})` : " default"}`,
+                            },
+                            ...modelCapabilities.reasoningEfforts.map(
+                              (value) => ({
+                                value,
+                                label: value,
+                              }),
+                            ),
+                          ]}
+                        />
+                      </Field>
+                    ) : null}
+                    {modelCapabilities?.reasoningSummaries?.length ? (
+                      <Field
+                        label="Temporary reasoning summary"
+                        hint="Requests a safe provider-generated summary; raw chain-of-thought is never recorded."
+                      >
+                        <SelectInput
+                          value={reasoningSummary}
+                          onChange={setReasoningSummary}
+                          options={[
+                            { value: "", label: "Use agent / model default" },
+                            ...modelCapabilities.reasoningSummaries.map(
+                              (value) => ({
+                                value,
+                                label: value,
+                              }),
+                            ),
+                          ]}
+                        />
+                      </Field>
+                    ) : null}
+                    {modelCapabilities?.reasoningContexts?.length ? (
+                      <Field
+                        label="Temporary reasoning context"
+                        hint="Controls which persisted reasoning items may be reused on later conversation turns."
+                      >
+                        <SelectInput
+                          value={reasoningContext}
+                          onChange={setReasoningContext}
+                          options={[
+                            { value: "", label: "Use agent / model default" },
+                            ...modelCapabilities.reasoningContexts.map(
+                              (value) => ({
+                                value,
+                                label: value.replaceAll("_", " "),
+                              }),
+                            ),
+                          ]}
+                        />
+                      </Field>
+                    ) : null}
+                    {modelCapabilities?.textVerbosities?.length ? (
+                      <Field
+                        label="Temporary answer verbosity"
+                        hint="Controls how concise or detailed the model's visible answer should be."
+                      >
+                        <SelectInput
+                          value={verbosity}
+                          onChange={setVerbosity}
+                          options={[
+                            {
+                              value: "",
+                              label: `Use agent / model${definition.verbosity ? ` (${definition.verbosity})` : " default"}`,
+                            },
+                            ...modelCapabilities.textVerbosities.map(
+                              (value) => ({
+                                value,
+                                label: value,
+                              }),
+                            ),
+                          ]}
+                        />
+                      </Field>
+                    ) : null}
+                    {effectiveProvider === "openai" ||
+                    effectiveProvider === "openrouter" ? (
+                      <Field
+                        label="Temporary provider storage"
+                        hint="Controls upstream response retention for this test. Local run logs and usage accounting are separate."
+                      >
+                        <SelectInput
+                          value={storeResponse}
+                          onChange={setStoreResponse}
+                          options={[
+                            { value: "", label: "Use agent / service default" },
+                            { value: "false", label: "Do not store upstream" },
+                            ...(effectiveProvider === "openai"
+                              ? [{ value: "true", label: "Store upstream" }]
+                              : []),
+                          ]}
+                        />
+                      </Field>
+                    ) : null}
+                  </div>
+                )}
                 <div
                   style={{
                     display: "grid",
@@ -886,42 +1322,6 @@ export function TestLab({
               </div>
             </details>
           </div>
-          <div
-            style={{
-              padding: 12,
-              borderTop: "1px solid var(--border)",
-              display: "flex",
-              gap: 8,
-            }}
-          >
-            <Button
-              tone="primary"
-              icon="play"
-              disabled={
-                !canRun ||
-                !prompt.trim() ||
-                missingRequired.length > 0 ||
-                runtimeOverridesInvalid ||
-                draftNotReady ||
-                createRun.isPending ||
-                (target === "draft" ? !draft : !liveVersionId)
-              }
-              onClick={() => void run()}
-              style={{ flex: 1, justifyContent: "center" }}
-            >
-              {createRun.isPending ? "Starting…" : `Run ${target}`}
-            </Button>
-            {activeStatus && !isTerminalStatus(activeStatus) && (
-              <Button
-                tone="danger"
-                icon="x"
-                disabled={!selectedRunId || cancelRun.isPending}
-                onClick={() => selectedRunId && cancelRun.mutate(selectedRunId)}
-              >
-                Stop
-              </Button>
-            )}
-          </div>
           {draftNotReady && (
             <div
               style={{
@@ -946,31 +1346,10 @@ export function TestLab({
               {missingRequired.map((input) => input.label).join(", ")}
             </div>
           )}
-          {createRun.isError && (
-            <div
-              style={{
-                padding: "0 12px 12px",
-                color: "var(--red)",
-                fontSize: 11,
-              }}
-            >
-              {createRun.error.message}
-            </div>
-          )}
-          {cancelRun.isError && (
-            <div
-              style={{
-                padding: "0 12px 12px",
-                color: "var(--red)",
-                fontSize: 11,
-              }}
-            >
-              Could not stop the run: {cancelRun.error.message}
-            </div>
-          )}
         </section>
 
         <section
+          className="agent-studio-test-conversation"
           style={{
             minWidth: 0,
             display: "flex",
@@ -988,29 +1367,82 @@ export function TestLab({
               alignItems: "center",
             }}
           >
-            <div style={{ display: "flex", gap: 7, alignItems: "center" }}>
-              <span
-                style={{ color: "var(--text)", fontSize: 12, fontWeight: 600 }}
+            <div style={{ minWidth: 0 }}>
+              <div style={{ display: "flex", gap: 7, alignItems: "center" }}>
+                <span
+                  style={{
+                    color: "var(--text)",
+                    fontSize: 12,
+                    fontWeight: 600,
+                  }}
+                >
+                  Conversation
+                </span>
+                {activeStatus && (
+                  <Badge tone={statusTone(activeStatus)}>{activeStatus}</Badge>
+                )}
+                {output.data?.outputValid != null && (
+                  <Badge tone={output.data.outputValid ? "green" : "red"}>
+                    {output.data.outputValid
+                      ? "Schema valid"
+                      : "Invalid output"}
+                  </Badge>
+                )}
+                {lastDispatch?.runId === selectedRunId && (
+                  <Link
+                    href={`/portal/${tenant}/events?eventId=${encodeURIComponent(lastDispatch.eventId)}`}
+                    title={`Trigger event ${lastDispatch.eventId}`}
+                    style={{ display: "inline-flex" }}
+                  >
+                    <Badge tone="muted">event · {lastDispatch.eventName}</Badge>
+                  </Link>
+                )}
+              </div>
+              <div
+                style={{ color: "var(--text-3)", fontSize: 10, marginTop: 3 }}
               >
-                Run inspector
-              </span>
-              {activeStatus && (
-                <Badge tone={statusTone(activeStatus)}>{activeStatus}</Badge>
+                {sessionId
+                  ? session.data?.session.title ||
+                    `Session ${sessionId.slice(0, 12)}…`
+                  : "Start a chat to test the agent"}
+              </div>
+            </div>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "flex-end",
+                flexWrap: "wrap",
+                gap: 7,
+              }}
+            >
+              {sessionId && (
+                <Button small disabled={conversationBusy} onClick={newChat}>
+                  New chat
+                </Button>
               )}
-              {output.data?.outputValid != null && (
-                <Badge tone={output.data.outputValid ? "green" : "red"}>
-                  {output.data.outputValid ? "Schema valid" : "Invalid output"}
-                </Badge>
+              {activeStatus && !isTerminalStatus(activeStatus) && (
+                <Button
+                  small
+                  tone="danger"
+                  icon="x"
+                  disabled={!selectedRunId || cancelRun.isPending}
+                  onClick={() =>
+                    selectedRunId && cancelRun.mutate(selectedRunId)
+                  }
+                >
+                  Stop
+                </Button>
+              )}
+              {selectedRunId && (
+                <Link
+                  href={`/portal/${tenant}/runs/${selectedRunId}`}
+                  style={{ color: "var(--blue)", fontSize: 10.5 }}
+                >
+                  Open full run ↗
+                </Link>
               )}
             </div>
-            {selectedRunId && (
-              <Link
-                href={`/portal/${tenant}/runs/${selectedRunId}`}
-                style={{ color: "var(--blue)", fontSize: 10.5 }}
-              >
-                Open full run ↗
-              </Link>
-            )}
           </div>
           <div
             role="tablist"
@@ -1022,27 +1454,116 @@ export function TestLab({
               borderBottom: "1px solid var(--border)",
             }}
           >
-            {(["trace", "output", "logs", "artifacts"] as const).map((tab) => (
-              <button
-                type="button"
-                role="tab"
-                aria-selected={resultTab === tab}
-                key={tab}
-                onClick={() => setResultTab(tab)}
-                style={{
-                  padding: "5px 8px",
-                  color: resultTab === tab ? "var(--signal)" : "var(--text-3)",
-                  borderBottom: `2px solid ${resultTab === tab ? "var(--signal)" : "transparent"}`,
-                  fontFamily: "var(--mono)",
-                  fontSize: 10.5,
-                }}
-              >
-                {tab}
-              </button>
-            ))}
+            {(["chat", "trace", "output", "logs", "artifacts"] as const).map(
+              (tab) => (
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={resultTab === tab}
+                  key={tab}
+                  onClick={() => setResultTab(tab)}
+                  style={{
+                    padding: "5px 8px",
+                    color:
+                      resultTab === tab ? "var(--signal)" : "var(--text-3)",
+                    borderBottom: `2px solid ${resultTab === tab ? "var(--signal)" : "transparent"}`,
+                    fontFamily: "var(--mono)",
+                    fontSize: 10.5,
+                  }}
+                >
+                  {tab}
+                </button>
+              ),
+            )}
           </div>
-          <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: 12 }}>
-            {!selectedRunId ? (
+          <div
+            role="tabpanel"
+            className={
+              resultTab === "chat" ? "agent-studio-chat-scroll" : undefined
+            }
+            style={{
+              flex: 1,
+              minHeight: 0,
+              overflow: "auto",
+              padding: resultTab === "chat" ? 0 : 12,
+            }}
+          >
+            {resultTab === "chat" ? (
+              <div
+                className="agent-studio-chat-log"
+                role="log"
+                aria-label="Test Lab conversation"
+                aria-live="polite"
+                aria-relevant="additions text"
+                aria-busy={conversationBusy}
+              >
+                {session.isLoading ? (
+                  <Empty title="Loading conversation…" />
+                ) : session.isError ? (
+                  <Empty
+                    title="Conversation unavailable"
+                    hint={session.error.message}
+                  />
+                ) : chatTranscript.length ? (
+                  chatTranscript.map((message) => (
+                    <ChatBubble
+                      key={message.id}
+                      message={message}
+                      selected={message.runId === selectedRunId}
+                      onInspectRun={setSelectedRunId}
+                    />
+                  ))
+                ) : !pendingTurn ? (
+                  <div className="agent-studio-chat-welcome">
+                    <div className="agent-studio-chat-welcome-mark">AI</div>
+                    <h3>Test your agent in a conversation</h3>
+                    <p>
+                      Send an end-user prompt below. The result appears here,
+                      and follow-up messages continue with the same session
+                      context.
+                    </p>
+                  </div>
+                ) : null}
+                {pendingTurn && !pendingTurnIsPersisted && (
+                  <>
+                    <ChatBubble
+                      message={{
+                        id: "pending-user-message",
+                        role: "user",
+                        runId: pendingTurn.runId,
+                        content: pendingTurn.prompt,
+                        state: "complete",
+                        createdAt: null,
+                      }}
+                      selected={Boolean(
+                        pendingTurn.runId &&
+                        pendingTurn.runId === selectedRunId,
+                      )}
+                      onInspectRun={setSelectedRunId}
+                    />
+                    <ChatBubble
+                      message={{
+                        id: "pending-agent-message",
+                        role: "assistant",
+                        runId: pendingTurn.runId,
+                        content:
+                          pendingTurn.state === "publishing"
+                            ? "Publishing the trigger event to the agent runtime…"
+                            : `${pendingTurn.eventName ?? "The trigger event"}${pendingTurn.eventId ? ` (${pendingTurn.eventId})` : ""} was accepted. The agent is working on this request…`,
+                        state: "working",
+                        createdAt: null,
+                      }}
+                      selected={Boolean(
+                        pendingTurn.runId &&
+                        pendingTurn.runId === selectedRunId,
+                      )}
+                      onInspectRun={setSelectedRunId}
+                    />
+                  </>
+                )}
+                <div ref={chatEndRef} aria-hidden="true" />
+              </div>
+            ) : !selectedRunId ? (
               <Empty
                 title="Run the agent to inspect it"
                 hint="The live sequence, reasoning summaries, logs, and output appear here."
@@ -1253,6 +1774,93 @@ export function TestLab({
               />
             )}
           </div>
+          {resultTab === "chat" && (
+            <form
+              className="agent-studio-chat-composer"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void run();
+              }}
+            >
+              <div className="agent-studio-chat-composer-box">
+                <textarea
+                  value={prompt}
+                  aria-label={`Message for the agent (${promptInput?.id ?? "prompt"})`}
+                  placeholder={
+                    sessionId
+                      ? "Ask a follow-up…"
+                      : "Message the agent to start a test…"
+                  }
+                  rows={3}
+                  disabled={createRun.isPending || targetUnavailable}
+                  onChange={(event) => setPrompt(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (
+                      event.key === "Enter" &&
+                      !event.shiftKey &&
+                      !event.nativeEvent.isComposing
+                    ) {
+                      event.preventDefault();
+                      void run();
+                    }
+                  }}
+                />
+                <Button
+                  type="submit"
+                  tone="primary"
+                  disabled={submitDisabled}
+                  style={{ alignSelf: "flex-end" }}
+                >
+                  {createRun.isPending
+                    ? "Sending event…"
+                    : conversationBusy
+                      ? "Agent running…"
+                      : "Send"}
+                </Button>
+              </div>
+              <div className="agent-studio-chat-composer-meta">
+                <span>
+                  {createRun.isPending
+                    ? "Publishing the agent trigger event…"
+                    : sessionHasActiveRun
+                      ? "Wait for this response before sending a follow-up"
+                      : "Enter to send · Shift+Enter for a new line"}
+                </span>
+                <span>
+                  {sessionId
+                    ? `${target} target · session context`
+                    : `${target} target · new conversation`}
+                </span>
+              </div>
+              {draftNotReady && (
+                <div className="agent-studio-chat-composer-error">
+                  Save the draft before starting this conversation.
+                </div>
+              )}
+              {missingRequired.length > 0 && (
+                <div className="agent-studio-chat-composer-error">
+                  Complete required inputs in Test setup:{" "}
+                  {missingRequired.map((input) => input.label).join(", ")}
+                </div>
+              )}
+              {sessionId && targetUnavailable && (
+                <div className="agent-studio-chat-composer-error">
+                  This saved conversation cannot safely reuse its pinned target.
+                  Start a new chat to continue.
+                </div>
+              )}
+              {createRun.isError && (
+                <div className="agent-studio-chat-composer-error">
+                  {formatAgentStudioError(createRun.error)}
+                </div>
+              )}
+              {cancelRun.isError && (
+                <div className="agent-studio-chat-composer-error">
+                  Could not stop the run: {cancelRun.error.message}
+                </div>
+              )}
+            </form>
+          )}
         </section>
 
         <aside
@@ -1282,8 +1890,24 @@ export function TestLab({
                   type="button"
                   key={row.id}
                   onClick={() => {
+                    const sameConversation =
+                      Boolean(row.sessionId) && row.sessionId === sessionId;
                     setSelectedRunId(row.id);
+                    setTarget(row.target.kind);
+                    if (!sameConversation) {
+                      setConversationTriggerEvent(undefined);
+                      setLastDispatch(null);
+                      setConversationTarget(
+                        row.target.kind === "live" && row.target.agentVersionId
+                          ? {
+                              kind: "live",
+                              agentVersionId: row.target.agentVersionId,
+                            }
+                          : null,
+                      );
+                    }
                     setSessionId(row.sessionId ?? undefined);
+                    setResultTab("chat");
                   }}
                   style={{
                     width: "100%",

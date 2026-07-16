@@ -1,34 +1,10 @@
-/**
- * GET /v1/usage — aggregated token + cost usage per agent / model / day
- * (P3-FE-03). Powers the operator cost dashboard.
- *
- * Query params:
- *
- *   groupBy=agent|model|day   one or more; defaults to "day"
- *   since=<unix-ms>           inclusive lower bound on runs.started_at
- *   until=<unix-ms>           exclusive upper bound on runs.started_at
- *   limit=<number>            max series rows (default 60, max 500)
- *
- * Response shape (success envelope):
- *
- *   {
- *     totals: { runs, tokensIn, tokensOut, usdCents },
- *     byAgent:  Array<{ key, runs, tokensIn, tokensOut, usdCents }>,
- *     byModel:  Array<{ key, runs, tokensIn, tokensOut, usdCents }>,
- *     byDay:    Array<{ key, runs, tokensIn, tokensOut, usdCents }>,
- *     budget:   { monthlyTokenCap, monthlyUsdCap, usedTokensMonth, usedUsdMonth, periodStart }
- *   }
- *
- * Pricing: when a `MODEL_PRICING` table isn't configured the route returns
- * `usdCents = 0` and the UI falls back to displaying token totals. The
- * stub pricing table here matches the canonical Anthropic + OpenAI prices
- * as of 2026-05; refresh periodically.
- */
-
+/** GET /v1/usage — exact provider-attempt usage and cost aggregation. */
 import type { FastifyInstance } from "fastify";
-import { and, eq, gte, lt, sql } from "drizzle-orm";
-import { agents, getDb, runs, tenantBudgets } from "@agentic/db";
+import { and, desc, eq, gte, lt } from "drizzle-orm";
+import { agents, getDb, llmCalls, runs, tenantBudgets } from "@agentic/db";
 import { requireAuth } from "../../plugins/auth";
+
+const USD_NANOS_PER_CENT = 10_000_000;
 
 interface QueryString {
   groupBy?: string;
@@ -37,100 +13,119 @@ interface QueryString {
   limit?: string;
 }
 
+interface CallsQueryString {
+  runId?: string;
+  status?: "started" | "ok" | "failed";
+  since?: string;
+  until?: string;
+  limit?: string;
+}
+
+interface RawUsageRow {
+  logicalCallId: string;
+  runId: string | null;
+  agentName: string | null;
+  agentTitle: string | null;
+  provider: string;
+  requestedModel: string;
+  responseModel: string | null;
+  reasoningMode: string | null;
+  reasoningEffort: string | null;
+  reasoningSummary: string | null;
+  reasoningContext: string | null;
+  textVerbosity: string | null;
+  storeResponse: boolean | null;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  cachedInputTokens: number | null;
+  reasoningTokens: number | null;
+  costUsdNanos: number | null;
+  startedAt: Date;
+}
+
 interface UsageRow {
   key: string;
   runs: number;
+  calls: number;
   tokensIn: number;
   tokensOut: number;
+  cachedInputTokens: number;
+  reasoningTokens: number;
+  usdNanos: number;
   usdCents: number;
+  unpricedCalls: number;
 }
 
-/**
- * Stub model→price table. cents per 1M tokens. Real implementation should
- * lift this from `@agentic/contracts/providers` or a config file.
- */
-const MODEL_PRICING: Record<string, { inCents: number; outCents: number }> = {
-  "claude-sonnet-4-5": { inCents: 300, outCents: 1500 },
-  "claude-haiku-4-5": { inCents: 80, outCents: 400 },
-  "claude-opus-4": { inCents: 1500, outCents: 7500 },
-  "gpt-4.1-mini": { inCents: 15, outCents: 60 },
-  "gpt-4.1": { inCents: 250, outCents: 1000 },
-  "gpt-4o": { inCents: 250, outCents: 1000 },
-  "gpt-4o-mini": { inCents: 15, outCents: 60 },
-  "gemini-2.5-pro": { inCents: 125, outCents: 500 },
-  "gemini-2.5-flash": { inCents: 7, outCents: 30 },
-  default: { inCents: 100, outCents: 400 },
-};
-
-function priceCents(model: string | null, tIn: number, tOut: number): number {
-  const p = MODEL_PRICING[model ?? "default"] ?? MODEL_PRICING.default!;
-  // tokens * (cents per 1M) / 1M → cents (round half-up).
-  return Math.round((tIn * p.inCents + tOut * p.outCents) / 1_000_000);
-}
-
-interface RawRunRow {
-  agentName: string;
-  agentTitle: string | null;
-  model: string | null;
-  tokensIn: number | null;
-  tokensOut: number | null;
-  startedAt: Date | null;
+interface MutableUsageRow extends Omit<UsageRow, "runs" | "usdCents"> {
+  runIds: Set<string>;
 }
 
 export async function usageRoutes(app: FastifyInstance): Promise<void> {
   app.get<{ Querystring: QueryString }>("/usage", async (req, reply) => {
     const auth = requireAuth(req);
     const q = req.query;
-
     const limit = clampLimit(q.limit);
-    const conds = [eq(runs.tenantId, auth.tenantId)];
+    const conditions = [
+      eq(llmCalls.tenantId, auth.tenantId),
+      eq(llmCalls.status, "ok"),
+    ];
     if (q.since != null) {
       const ms = Number(q.since);
-      if (Number.isFinite(ms)) conds.push(gte(runs.startedAt, new Date(ms)));
+      if (Number.isFinite(ms)) conditions.push(gte(llmCalls.startedAt, new Date(ms)));
     }
     if (q.until != null) {
       const ms = Number(q.until);
-      if (Number.isFinite(ms)) conds.push(lt(runs.startedAt, new Date(ms)));
+      if (Number.isFinite(ms)) conditions.push(lt(llmCalls.startedAt, new Date(ms)));
     }
 
     const db = getDb();
-    const rows: RawRunRow[] = db
+    const rows = db
       .select({
+        logicalCallId: llmCalls.logicalCallId,
+        runId: llmCalls.runId,
         agentName: agents.name,
         agentTitle: agents.title,
-        model: runs.model,
-        tokensIn: runs.tokensIn,
-        tokensOut: runs.tokensOut,
-        startedAt: runs.startedAt,
+        provider: llmCalls.provider,
+        requestedModel: llmCalls.requestedModel,
+        responseModel: llmCalls.responseModel,
+        reasoningMode: llmCalls.reasoningMode,
+        reasoningEffort: llmCalls.reasoningEffort,
+        reasoningSummary: llmCalls.reasoningSummary,
+        reasoningContext: llmCalls.reasoningContext,
+        textVerbosity: llmCalls.textVerbosity,
+        storeResponse: llmCalls.storeResponse,
+        inputTokens: llmCalls.inputTokens,
+        outputTokens: llmCalls.outputTokens,
+        cachedInputTokens: llmCalls.cachedInputTokens,
+        reasoningTokens: llmCalls.reasoningTokens,
+        costUsdNanos: llmCalls.costUsdNanos,
+        startedAt: llmCalls.startedAt,
       })
-      .from(runs)
-      .innerJoin(agents, eq(agents.id, runs.agentId))
-      .where(and(...conds))
-      .all() as RawRunRow[];
+      .from(llmCalls)
+      .leftJoin(runs, eq(runs.id, llmCalls.runId))
+      .leftJoin(agents, eq(agents.id, runs.agentId))
+      .where(and(...conditions))
+      .all() as RawUsageRow[];
 
-    const byAgent = aggregate(rows, (r) => r.agentTitle ?? r.agentName);
-    const byModel = aggregate(rows, (r) => r.model ?? "unknown");
-    const byDay = aggregate(rows, (r) =>
-      r.startedAt ? toDayKey(r.startedAt) : "unknown",
+    const byAgent = aggregate(rows, (row) => row.agentTitle ?? row.agentName ?? "unattributed");
+    const byModel = aggregate(rows, (row) => row.responseModel ?? row.requestedModel);
+    const byProvider = aggregate(rows, (row) => row.provider);
+    const byReasoning = aggregate(rows, (row) =>
+      [
+        `mode=${row.reasoningMode ?? "default"}`,
+        `effort=${row.reasoningEffort ?? "default"}`,
+        `summary=${row.reasoningSummary ?? "default"}`,
+        `context=${row.reasoningContext ?? "default"}`,
+        `verbosity=${row.textVerbosity ?? "default"}`,
+        `store=${row.storeResponse == null ? "default" : String(row.storeResponse)}`,
+      ].join(" · "),
     );
+    const byDay = aggregate(rows, (row) => toDayKey(row.startedAt));
+    const totals = aggregate(rows, () => "total")[0] ?? emptyUsageRow("total");
 
-    // Stable, capped lists.
     const sortDesc = (a: UsageRow, b: UsageRow) =>
       b.tokensIn + b.tokensOut - (a.tokensIn + a.tokensOut);
     const sortDayAsc = (a: UsageRow, b: UsageRow) => a.key.localeCompare(b.key);
-
-    const totals = byAgent.reduce(
-      (acc, r) => ({
-        runs: acc.runs + r.runs,
-        tokensIn: acc.tokensIn + r.tokensIn,
-        tokensOut: acc.tokensOut + r.tokensOut,
-        usdCents: acc.usdCents + r.usdCents,
-      }),
-      { runs: 0, tokensIn: 0, tokensOut: 0, usdCents: 0 },
-    );
-
-    // Pull current budget row (lazily creating one to mirror the budgets
-    // route's behaviour).
     const budgetRow = db
       .select()
       .from(tenantBudgets)
@@ -138,9 +133,11 @@ export async function usageRoutes(app: FastifyInstance): Promise<void> {
       .all()[0];
 
     return reply.ok({
-      totals,
+      totals: { ...totals, key: undefined },
       byAgent: byAgent.sort(sortDesc).slice(0, limit),
       byModel: byModel.sort(sortDesc).slice(0, limit),
+      byProvider: byProvider.sort(sortDesc).slice(0, limit),
+      byReasoning: byReasoning.sort(sortDesc).slice(0, limit),
       byDay: byDay.sort(sortDayAsc).slice(-limit),
       budget: budgetRow
         ? {
@@ -148,37 +145,97 @@ export async function usageRoutes(app: FastifyInstance): Promise<void> {
             monthlyUsdCap: budgetRow.monthlyUsdCap,
             usedTokensMonth: budgetRow.usedTokensMonth,
             usedUsdMonth: budgetRow.usedUsdMonth,
+            usedUsdNanos: budgetRow.usedUsdNanos,
             periodStart: budgetRow.periodStart.getTime(),
           }
         : null,
     });
   });
+
+  /** Reconciliation surface: every provider attempt, including failures. */
+  app.get<{ Querystring: CallsQueryString }>("/usage/calls", async (req, reply) => {
+    const auth = requireAuth(req);
+    const q = req.query;
+    const conditions = [eq(llmCalls.tenantId, auth.tenantId)];
+    if (q.runId) conditions.push(eq(llmCalls.runId, q.runId));
+    if (q.status && ["started", "ok", "failed"].includes(q.status)) {
+      conditions.push(eq(llmCalls.status, q.status));
+    }
+    if (q.since != null && Number.isFinite(Number(q.since))) {
+      conditions.push(gte(llmCalls.startedAt, new Date(Number(q.since))));
+    }
+    if (q.until != null && Number.isFinite(Number(q.until))) {
+      conditions.push(lt(llmCalls.startedAt, new Date(Number(q.until))));
+    }
+    const calls = getDb()
+      .select()
+      .from(llmCalls)
+      .where(and(...conditions))
+      .orderBy(desc(llmCalls.startedAt))
+      .limit(clampLimit(q.limit))
+      .all()
+      .map((call) => ({
+        ...call,
+        startedAt: call.startedAt.getTime(),
+        endedAt: call.endedAt?.getTime() ?? null,
+        costUsd: call.costUsdNanos === null ? null : call.costUsdNanos / 1_000_000_000,
+      }));
+    return reply.ok(calls);
+  });
 }
 
-function aggregate(rows: RawRunRow[], keyFn: (r: RawRunRow) => string): UsageRow[] {
-  const m = new Map<string, UsageRow>();
-  for (const r of rows) {
-    const k = keyFn(r);
-    const tIn = r.tokensIn ?? 0;
-    const tOut = r.tokensOut ?? 0;
-    const cents = priceCents(r.model, tIn, tOut);
-    const cur = m.get(k);
-    if (cur) {
-      cur.runs += 1;
-      cur.tokensIn += tIn;
-      cur.tokensOut += tOut;
-      cur.usdCents += cents;
-    } else {
-      m.set(k, {
-        key: k,
-        runs: 1,
-        tokensIn: tIn,
-        tokensOut: tOut,
-        usdCents: cents,
-      });
-    }
+function aggregate(rows: RawUsageRow[], keyFn: (row: RawUsageRow) => string): UsageRow[] {
+  const groups = new Map<string, MutableUsageRow>();
+  for (const row of rows) {
+    const key = keyFn(row);
+    const current = groups.get(key) ?? {
+      key,
+      runIds: new Set<string>(),
+      calls: 0,
+      tokensIn: 0,
+      tokensOut: 0,
+      cachedInputTokens: 0,
+      reasoningTokens: 0,
+      usdNanos: 0,
+      unpricedCalls: 0,
+    };
+    if (row.runId) current.runIds.add(row.runId);
+    current.calls += 1;
+    current.tokensIn += row.inputTokens ?? 0;
+    current.tokensOut += row.outputTokens ?? 0;
+    current.cachedInputTokens += row.cachedInputTokens ?? 0;
+    current.reasoningTokens += row.reasoningTokens ?? 0;
+    if (row.costUsdNanos === null) current.unpricedCalls += 1;
+    else current.usdNanos += row.costUsdNanos;
+    groups.set(key, current);
   }
-  return Array.from(m.values());
+  return Array.from(groups.values(), (row) => ({
+    key: row.key,
+    runs: row.runIds.size,
+    calls: row.calls,
+    tokensIn: row.tokensIn,
+    tokensOut: row.tokensOut,
+    cachedInputTokens: row.cachedInputTokens,
+    reasoningTokens: row.reasoningTokens,
+    usdNanos: row.usdNanos,
+    usdCents: Math.ceil(row.usdNanos / USD_NANOS_PER_CENT),
+    unpricedCalls: row.unpricedCalls,
+  }));
+}
+
+function emptyUsageRow(key: string): UsageRow {
+  return {
+    key,
+    runs: 0,
+    calls: 0,
+    tokensIn: 0,
+    tokensOut: 0,
+    cachedInputTokens: 0,
+    reasoningTokens: 0,
+    usdNanos: 0,
+    usdCents: 0,
+    unpricedCalls: 0,
+  };
 }
 
 function clampLimit(raw: string | undefined): number {
@@ -188,13 +245,6 @@ function clampLimit(raw: string | undefined): number {
   return Math.min(500, Math.floor(n));
 }
 
-function toDayKey(d: Date): string {
-  // YYYY-MM-DD in UTC. Per-tenant timezone is a known follow-up.
-  const y = d.getUTCFullYear();
-  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
-  const day = String(d.getUTCDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
+function toDayKey(date: Date): string {
+  return date.toISOString().slice(0, 10);
 }
-
-// Suppress unused warning for `sql` import (kept for raw-SQL fallback).
-void sql;

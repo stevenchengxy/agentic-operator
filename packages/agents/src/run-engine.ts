@@ -208,12 +208,18 @@ export async function executeAgentRun<TInput, TOutput>(
   try {
     const provider: ProviderId | undefined = ctx.provider ?? agent.defaultProvider;
     const model = ctx.model ?? agent.defaultModel;
+    const reasoning = ctx.reasoning ?? agent.defaultReasoning;
+    const verbosity = ctx.verbosity ?? agent.defaultVerbosity;
+    const store = ctx.store ?? agent.storeResponses;
 
     const messages: ChatMessage[] = await agent._buildMessages(input, ctx);
     const inputArtifact = await writeArtifact(runId, "step-1-input.json", {
       agent: agent.name,
       provider,
       model,
+      reasoning,
+      verbosity,
+      store,
       messages,
     });
 
@@ -230,6 +236,13 @@ export async function executeAgentRun<TInput, TOutput>(
       messages,
       provider,
       model: model ?? undefined,
+      reasoning,
+      verbosity,
+      store,
+      tenantId,
+      runId,
+      stepId,
+      purpose: "code-agent",
     });
 
     // Cooperative cancel checkpoint #2 — between the LLM response and
@@ -277,6 +290,7 @@ export async function executeAgentRun<TInput, TOutput>(
         durationMs: runEndedAt - startedAt,
         tokensIn: response.tokensIn ?? null,
         tokensOut: response.tokensOut ?? null,
+        provider: response.provider,
         model: response.model,
       })
       .where(eq(runs.id, runId))

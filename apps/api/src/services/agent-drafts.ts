@@ -1912,6 +1912,7 @@ export async function generateDraftInstructions(
   const response = await gateway.chat({
     tenantId: ctx.tenantId,
     tenantSlug: ctx.tenantSlug,
+    purpose: "studio.instruction-authoring",
     provider: input.provider,
     model: input.model,
     temperature: 0.2,

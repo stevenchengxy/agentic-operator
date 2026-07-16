@@ -1,5 +1,8 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import {
+  AgentArchetypeListResponse,
+  AgentNameAvailabilityQuery,
+  AgentNameAvailabilityResponse,
   DeployAuthoredAgentBody,
   DeployAuthoredAgentResponse,
   GenerateAgentPromptBody,
@@ -14,6 +17,7 @@ import {
   deployAuthoredAgent,
   DuplicateAuthoredAgentError,
   generateAgentSystemPrompt,
+  getAuthoredAgentNameAvailability,
   InvalidAuthoredToolError,
 } from "../../services/agent-authoring";
 import {
@@ -21,6 +25,7 @@ import {
   OverwriteRequiredError,
   type AuditCtx,
 } from "../../services/manifest-import";
+import { AGENT_ARCHETYPE_SPECS } from "../../services/agent-archetypes";
 
 function auditCtxFor(req: FastifyRequest): AuditCtx {
   return {
@@ -49,7 +54,27 @@ function llmStatus(code: string): number {
   }
 }
 
-export async function agentAuthoringRoutes(app: FastifyInstance): Promise<void> {
+export async function agentAuthoringRoutes(
+  app: FastifyInstance,
+): Promise<void> {
+  app.get("/agents/archetypes", async (req, reply) => {
+    requireAuth(req);
+    return reply.ok(
+      AgentArchetypeListResponse.parse({ archetypes: AGENT_ARCHETYPE_SPECS }),
+    );
+  });
+
+  app.get("/agents/availability", async (req, reply) => {
+    const auth = requireAuth(req);
+    const { name } = AgentNameAvailabilityQuery.parse(req.query);
+    reply.header("Cache-Control", "no-store");
+    return reply.ok(
+      AgentNameAvailabilityResponse.parse(
+        getAuthoredAgentNameAvailability(name, auth),
+      ),
+    );
+  });
+
   app.post("/agents/system-prompt", async (req, reply) => {
     const auth = requireAuth(req);
     const body = GenerateAgentPromptBody.parse(req.body);
@@ -78,6 +103,13 @@ export async function agentAuthoringRoutes(app: FastifyInstance): Promise<void> 
       }
       if ((err as Error).message.startsWith("prompt_generation_empty:")) {
         return reply.fail("empty_generation", (err as Error).message, 502);
+      }
+      if ((err as Error).message.startsWith("model_selection_unavailable:")) {
+        return reply.fail(
+          "model_selection_unavailable",
+          (err as Error).message,
+          400,
+        );
       }
       throw err;
     }
@@ -133,6 +165,13 @@ export async function agentAuthoringRoutes(app: FastifyInstance): Promise<void> 
       }
       if ((err as Error).message.startsWith("duplicate_tool:")) {
         return reply.fail("duplicate_tool", (err as Error).message, 400);
+      }
+      if ((err as Error).message.startsWith("model_selection_unavailable:")) {
+        return reply.fail(
+          "model_selection_unavailable",
+          (err as Error).message,
+          400,
+        );
       }
       throw err;
     }

@@ -131,9 +131,10 @@ describe("regression: production wizard wiring", () => {
     const modal = read("app/portal/components/events/PublishEventModal.tsx");
     const hooks = read("lib/hooks/useEvents.ts");
 
-    it("routes the selected agent into the production Studio", () => {
+    it("routes the selected agent into the production Studio test section", () => {
       expect(page).toContain("<AgentStudio");
       expect(page).toContain('agentId={params?.id ?? ""}');
+      expect(page).toContain('searchParams.get("section") === "test"');
     });
 
     it("publishes as the operator and waits for the exact event causality link", () => {

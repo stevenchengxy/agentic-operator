@@ -14,6 +14,11 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { UseQueryResult } from "@tanstack/react-query";
+import type {
+  ReasoningEffort,
+  ReasoningMode,
+  TextVerbosity,
+} from "@agentic/contracts";
 import { tenantHeader } from "./tenant-header";
 
 interface ApiOk<T> {
@@ -75,6 +80,13 @@ export interface AvailableModel {
   vision: boolean;
   tools: boolean;
   reasoning: boolean;
+  reasoningEfforts: ReasoningEffort[];
+  reasoningModes: ReasoningMode[];
+  defaultReasoningEffort: ReasoningEffort | null;
+  defaultReasoningMode: ReasoningMode | null;
+  reasoningMandatory: boolean;
+  reasoningDefaultEnabled: boolean;
+  textVerbosities: TextVerbosity[];
   inFleet: boolean;
   origin: "live" | "catalog";
 }

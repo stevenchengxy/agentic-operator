@@ -55,6 +55,8 @@ import {
 } from "./fs";
 import { httpFetchTool } from "./http";
 import { ping } from "./meta";
+import { webSearch } from "./search";
+import { ontologyQuery } from "./ontology";
 
 /** Per-field metadata used to render args / returns tables. */
 export interface ToolFieldSchema {
@@ -564,6 +566,197 @@ const REGISTRATIONS: ToolRegistration[] = [
         },
       },
       sourcePath: "packages/tools/src/gohire/invite-candidate.ts",
+    },
+  },
+
+  // ── search.* ────────────────────────────────────────────────────────────
+  {
+    descriptor: webSearch,
+    catalog: {
+      name: "search.web",
+      category: "search",
+      summary:
+        "Read-only public web search with normalized sources for Deep Search agents.",
+      description:
+        "Supports Tavily (default), Brave Search, Serper, or a compatible custom endpoint. Advanced Tavily searches request cleaned source Markdown and return it under strict per-result and aggregate size limits, letting the agent inspect source evidence while owning its citations.",
+      argsSchema: {
+        query: {
+          type: "string",
+          required: true,
+          description:
+            "One focused search query. Issue multiple varied queries for broad research.",
+        },
+        max_results: { type: "number", default: 8, description: "1-20." },
+        search_depth: { type: "'basic'|'advanced'", default: "basic" },
+        include_raw_content: {
+          type: "boolean",
+          description:
+            "Tavily only. Requests cleaned source Markdown; defaults to true for advanced searches and false for basic searches.",
+        },
+        include_domains: { type: "string[]" },
+        exclude_domains: { type: "string[]" },
+        time_range: {
+          type: "string",
+          description: "Provider-native freshness filter when supported.",
+        },
+      },
+      argsExample: {
+        query: "durable agent workflow runtime primary source",
+        max_results: 8,
+        search_depth: "advanced",
+      },
+      configSchema: {
+        provider: {
+          type: "'tavily'|'brave'|'serper'|'custom'",
+          default: "tavily",
+        },
+        api_key_env: {
+          type: "string",
+          description:
+            "Tenant-scoped env name. Defaults to the selected provider's standard env var.",
+        },
+        base_url: {
+          type: "string",
+          description:
+            "Optional endpoint override. It must be provider-owned or server-allowlisted and requires an explicit tenant-scoped api_key_env.",
+        },
+        timeout_ms: { type: "number", default: 30000 },
+        max_content_chars_per_result: {
+          type: "number",
+          default: 12000,
+          description: "Server-capped at 30,000 characters.",
+        },
+        max_content_chars_total: {
+          type: "number",
+          default: 48000,
+          description: "Server-capped at 100,000 characters.",
+        },
+        max_content_bytes_per_result: {
+          type: "number",
+          default: 48000,
+          description: "Server-capped at 120,000 UTF-8 bytes.",
+        },
+        max_content_bytes_total: {
+          type: "number",
+          default: 192000,
+          description: "Server-capped at 400,000 UTF-8 bytes.",
+        },
+      },
+      configExample: {
+        provider: "tavily",
+        api_key_env: "TENANT_X_TAVILY_API_KEY",
+      },
+      returnsSchema: {
+        query: { type: "string" },
+        provider: { type: "string" },
+        results: {
+          type: "Array<{title,url,snippet,publishedAt,score,content,contentCharacters,contentBytes,contentTruncated}>",
+          description:
+            "Normalized evidence candidates with citeable URLs and optional bounded source Markdown.",
+        },
+        contentRequested: { type: "boolean" },
+        contentCharacters: { type: "number" },
+        contentBytes: { type: "number" },
+        contentTruncated: {
+          type: "boolean",
+          description:
+            "True when any returned source content exceeded a per-result or aggregate content budget.",
+        },
+      },
+      sourcePath: "packages/tools/src/search/web.ts",
+      sideEffect: "read",
+      testPolicy: "allow",
+    },
+  },
+
+  // ── ontology.* ──────────────────────────────────────────────────────────
+  {
+    descriptor: ontologyQuery,
+    catalog: {
+      name: "ontology.query",
+      category: "ontology",
+      summary:
+        "Tenant-scoped, read-only Neo4j Query API SDK with generated parameterized Cypher.",
+      description:
+        "The model chooses a bounded retrieval operation and values, never raw Cypher. The SDK generates the statement, requests Query API accessMode Read, projects only server-allowlisted properties, and applies the tenant predicate to every matched node (including all nodes in a path). The Neo4j principal must also be read-only because accessMode controls routing, not authorization.",
+      argsSchema: {
+        operation: {
+          type: "'search_nodes'|'get_node'|'neighbors'|'find_paths'|'schema'",
+          required: true,
+        },
+        query: {
+          type: "string",
+          description: "Required by search_nodes.",
+        },
+        id: {
+          type: "string",
+          description: "Required by get_node and neighbors.",
+        },
+        start_id: { type: "string", description: "Required by find_paths." },
+        end_id: { type: "string", description: "Required by find_paths." },
+        max_depth: {
+          type: "number",
+          default: 3,
+          description: "find_paths only; clamped to 1-4.",
+        },
+        labels: { type: "string[]" },
+        properties: { type: "string[]" },
+        relationship_types: { type: "string[]" },
+        neighbor_labels: { type: "string[]" },
+        limit: {
+          type: "number",
+          default: 20,
+          description: "Clamped to 1-100.",
+        },
+      },
+      argsExample: {
+        operation: "neighbors",
+        id: "customer-42",
+        relationship_types: ["OWNS", "USES"],
+        limit: 20,
+      },
+      configSchema: {
+        base_url: {
+          type: "string",
+          description:
+            "Neo4j Query API origin or full /db/<database>/query/v2 URL. Defaults to the server-pinned NEO4J_QUERY_API_URL. An override must be server-allowlisted and use explicit tenant-scoped credential env names.",
+        },
+        database: { type: "string", default: "neo4j" },
+        username_env: { type: "string", default: "NEO4J_USERNAME" },
+        password_env: { type: "string", default: "NEO4J_PASSWORD" },
+        tenant_property: {
+          type: "string",
+          default: "tenant_slug",
+          description:
+            "Server-owned isolation key; an agent may only repeat the configured NEO4J_TENANT_PROPERTY value.",
+        },
+        id_property: {
+          type: "string",
+          default: "id",
+          description:
+            "Server-owned identifier key; an agent may only repeat the configured NEO4J_ID_PROPERTY value.",
+        },
+        search_properties: {
+          type: "string[]",
+          default: ["name", "title", "description", "summary", "content"],
+        },
+        timeout_ms: { type: "number", default: 20000 },
+        max_execution_time_ms: { type: "number", default: 15000 },
+      },
+      configExample: {
+        username_env: "TENANT_X_NEO4J_USERNAME",
+        password_env: "TENANT_X_NEO4J_PASSWORD",
+      },
+      returnsSchema: {
+        operation: { type: "string" },
+        fields: { type: "string[]" },
+        records: { type: "Record<string,unknown>[]" },
+        count: { type: "number" },
+        truncated: { type: "boolean" },
+      },
+      sourcePath: "packages/tools/src/ontology/query.ts",
+      sideEffect: "read",
+      testPolicy: "allow",
     },
   },
 

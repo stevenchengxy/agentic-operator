@@ -31,13 +31,18 @@ Event-driven agentic workflow runtime + admin console.
 ## Quick start
 
 ```bash
-nvm use                       # selects Node 26.5.0 from .nvmrc
+nvm install 26.5.0            # one-time installation
+nvm use 26.5.0                # exact version required by lifecycle scripts
 pnpm install                  # ~10s, builds native modules
 pnpm db:migrate               # creates data/agentic.db (18 tables)
 pnpm db:seed                  # 3 tenants + 1 admin user
 pnpm seed:rich                # (RF-1.7) loads RAAS historical fixtures + ontology
 pnpm dev                      # boots web + api + inngest concurrently
 ```
+
+To stop any existing local stack and restart all three services with the
+pinned Node runtime, run `./restart.sh` (or `pnpm restart`). Use
+`./restart.sh --check` for a non-destructive environment check.
 
 Open <http://localhost:3599>.
 

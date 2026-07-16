@@ -61,6 +61,9 @@ export interface StudioDefinition extends JsonObject {
   tool_use: StudioToolBinding[];
   provider: string;
   model: string;
+  reasoning?: JsonObject;
+  verbosity?: string;
+  store?: boolean;
   temperature: number;
   max_tokens: number;
   timeout_s: number;
@@ -297,6 +300,13 @@ export function normalizeStudioDefinition(
     tool_use: normalizeTools(raw),
     provider: asString(raw.provider),
     model: asString(raw.model),
+    ...(Object.keys(asRecord(raw.reasoning)).length > 0
+      ? { reasoning: cloneDefinition(asRecord(raw.reasoning)) }
+      : {}),
+    ...(typeof raw.verbosity === "string"
+      ? { verbosity: raw.verbosity }
+      : {}),
+    ...(typeof raw.store === "boolean" ? { store: raw.store } : {}),
     temperature: asNumber(raw.temperature, 0.2),
     max_tokens: asNumber(raw.max_tokens, 2400),
     timeout_s: asNumber(raw.timeout_s, 120),

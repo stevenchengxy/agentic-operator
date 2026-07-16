@@ -11,7 +11,11 @@
  * config (Azure) report `source: "unsupported"` so the UI can fall back to
  * the hardcoded catalog or a free-text input.
  */
-import type { ProviderId } from "@agentic/contracts";
+import {
+  REASONING_EFFORTS,
+  type ProviderId,
+  type ReasoningEffort,
+} from "@agentic/contracts";
 
 export interface DiscoveredModel {
   /** Provider-native model ID, e.g. "claude-sonnet-4-5", "openai/gpt-4.1". */
@@ -26,6 +30,14 @@ export interface DiscoveredModel {
   vision?: boolean;
   /** Supports tool/function calling (derived from supported_parameters). */
   tools?: boolean;
+  /** Supports a reasoning/thinking control. */
+  reasoning?: boolean;
+  /** Exact normalized effort values advertised by a live catalog. */
+  reasoningEfforts?: ReasoningEffort[];
+  defaultReasoningEffort?: ReasoningEffort;
+  /** True when the upstream model cannot disable thinking. */
+  reasoningMandatory?: boolean;
+  reasoningDefaultEnabled?: boolean;
 }
 
 export type DiscoverySource = "live" | "unsupported";
@@ -74,7 +86,9 @@ const OPENAI_COMPAT: Partial<Record<ProviderId, OpenAICompatConfig>> = {
   groq: { baseURL: "https://api.groq.com/openai/v1" },
   together: { baseURL: "https://api.together.xyz/v1" },
   mistral: { baseURL: "https://api.mistral.ai/v1" },
-  deepseek: { baseURL: "https://api.deepseek.com/v1" },
+  deepseek: { baseURL: "https://api.deepseek.com" },
+  moonshot: { baseURL: "https://api.moonshot.ai/v1" },
+  zai: { baseURL: "https://api.z.ai/api/paas/v4" },
   qwen: { baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1" },
 };
 
@@ -86,7 +100,7 @@ const OPENAI_COMPAT: Partial<Record<ProviderId, OpenAICompatConfig>> = {
  * only, so the price/capability fields are undefined and the picker falls
  * back to the curated catalog for those rows.
  */
-function parseOpenAICompatBody(body: unknown): DiscoveredModel[] {
+export function parseOpenAICompatBody(body: unknown): DiscoveredModel[] {
   if (!body || typeof body !== "object") return [];
   const data = (body as Record<string, unknown>).data;
   if (!Array.isArray(data)) return [];
@@ -130,6 +144,47 @@ function parseOpenAICompatBody(body: unknown): DiscoveredModel[] {
       entry.tools = supported.some(
         (s) => typeof s === "string" && (s === "tools" || s === "tool_choice"),
       );
+      entry.reasoning = supported.some(
+        (s) =>
+          typeof s === "string" &&
+          (s === "reasoning" ||
+            s === "reasoning_effort" ||
+            s === "include_reasoning"),
+      );
+    }
+
+    // OpenRouter publishes a provider-normalized reasoning capability object
+    // on each live model row. Keep this metadata instead of guessing from a
+    // model-name suffix so newly released models become immediately testable.
+    const reasoning = obj.reasoning;
+    if (reasoning && typeof reasoning === "object") {
+      const r = reasoning as Record<string, unknown>;
+      const rawEfforts = Array.isArray(r.supported_efforts)
+        ? r.supported_efforts
+        : Array.isArray(r.efforts)
+          ? r.efforts
+          : [];
+      const efforts = rawEfforts.filter(
+        (value): value is ReasoningEffort =>
+          typeof value === "string" &&
+          (REASONING_EFFORTS as readonly string[]).includes(value),
+      );
+      entry.reasoning = true;
+      if (efforts.length > 0) entry.reasoningEfforts = efforts;
+
+      const defaultEffort = r.default_effort;
+      if (
+        typeof defaultEffort === "string" &&
+        (REASONING_EFFORTS as readonly string[]).includes(defaultEffort)
+      ) {
+        entry.defaultReasoningEffort = defaultEffort as ReasoningEffort;
+      }
+      if (typeof r.mandatory === "boolean") {
+        entry.reasoningMandatory = r.mandatory;
+      }
+      if (typeof r.default_enabled === "boolean") {
+        entry.reasoningDefaultEnabled = r.default_enabled;
+      }
     }
     out.push(entry);
   }

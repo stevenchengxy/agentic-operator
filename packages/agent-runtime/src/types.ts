@@ -5,7 +5,11 @@
  * AgentResult is what run() returns to the caller.
  */
 
-import type { ProviderId } from "@agentic/contracts";
+import type {
+  ProviderId,
+  ReasoningConfig,
+  TextVerbosity,
+} from "@agentic/contracts";
 import type { MemoryHandle } from "@agentic/agent-sdk";
 
 export type AgentKind = "manifest" | "code";
@@ -20,6 +24,9 @@ export interface AgentContext {
   /** Optional override of provider/model for this invocation. */
   provider?: ProviderId;
   model?: string;
+  reasoning?: ReasoningConfig;
+  verbosity?: TextVerbosity;
+  store?: boolean;
   /**
    * Failover chain (P1-RT-06). When set, the agent passes this through to
    * `gateway.chat({providers})` so callers can override the agent's

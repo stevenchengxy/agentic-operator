@@ -9,6 +9,7 @@ import {
   CreateAgentRunResponseSchema,
   GenerateDraftInstructionsBodySchema,
   GenerateDraftInstructionsResponseSchema,
+  GetRunSessionResponseSchema,
   GetRunTraceResponseSchema,
   ListAgentRunsResponseSchema,
   ListAgentVersionsResponseSchema,
@@ -26,6 +27,7 @@ import {
   type CreateAgentRunResponse as ContractCreateAgentRunResponse,
   type GenerateDraftInstructionsBody as ContractGenerateDraftInstructionsBody,
   type GenerateDraftInstructionsResponse as ContractGenerateDraftInstructionsResponse,
+  type GetRunSessionResponse as ContractGetRunSessionResponse,
   type GetRunTraceResponse as ContractGetRunTraceResponse,
   type PublishAgentDraftResponse as ContractPublishAgentDraftResponse,
   type RunOutputResponse as ContractRunOutputResponse,
@@ -168,6 +170,7 @@ export interface AgentVersionPage {
 export type RunTraceEvent = ContractRunTraceEvent;
 export type RunTracePage = ContractGetRunTraceResponse;
 export type RunOutputResponse = ContractRunOutputResponse;
+export type RunSessionResponse = ContractGetRunSessionResponse;
 
 export const AGENT_STUDIO_KEYS = {
   all: ["agent-studio"] as const,
@@ -180,6 +183,8 @@ export const AGENT_STUDIO_KEYS = {
   trace: (runId: string, after: number) =>
     ["agent-studio", "trace", runId, after] as const,
   output: (runId: string) => ["agent-studio", "output", runId] as const,
+  session: (sessionId: string) =>
+    ["agent-studio", "session", sessionId] as const,
 };
 
 function prepareDefinition(definition: StudioDefinition): unknown {
@@ -351,13 +356,44 @@ export function useCreateAgentRun(agentId: string) {
         ),
       );
     },
-    onSuccess: async () => {
+    onSettled: async (response) => {
       await Promise.all([
         client.invalidateQueries({
           queryKey: ["agent-studio", "history", agentId],
         }),
+        ...(response
+          ? [
+              client.invalidateQueries({
+                queryKey: AGENT_STUDIO_KEYS.session(response.sessionId),
+              }),
+            ]
+          : []),
         client.invalidateQueries({ queryKey: ["runs"] }),
       ]);
+    },
+  });
+}
+
+export function useRunSession(sessionId: string | null | undefined) {
+  return useQuery({
+    queryKey: sessionId
+      ? AGENT_STUDIO_KEYS.session(sessionId)
+      : (["agent-studio", "session", "__none__"] as const),
+    queryFn: async () =>
+      GetRunSessionResponseSchema.parse(
+        await callV1<unknown>(
+          `/v1/run-sessions/${encodeURIComponent(sessionId!)}`,
+        ),
+      ),
+    enabled: Boolean(sessionId),
+    staleTime: 500,
+    refetchInterval: (queryState) => {
+      const session = queryState.state.data as RunSessionResponse | undefined;
+      return session?.runs.some(
+        (run) => !["ok", "failed", "cancelled"].includes(run.status),
+      )
+        ? 1_000
+        : false;
     },
   });
 }

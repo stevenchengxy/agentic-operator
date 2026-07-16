@@ -559,9 +559,93 @@ export const steps = sqliteTable(
 );
 
 /**
- * Explicit session messages. Initial Studio runs remain independent; these
- * rows power the chat/history presentation without silently injecting prior
- * turns into a later run.
+ * One row per provider attempt, including retries and failover. Token and
+ * cost fields are finalized only when the provider returned authoritative
+ * usage; failed/ambiguous attempts remain visible without inventing spend.
+ */
+export const llmCalls = sqliteTable(
+  "llm_calls",
+  {
+    id: text("id").primaryKey(),
+    logicalCallId: text("logical_call_id").notNull(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    runId: text("run_id").references(() => runs.id, { onDelete: "set null" }),
+    stepId: text("step_id").references(() => steps.id, { onDelete: "set null" }),
+    purpose: text("purpose"),
+    provider: text("provider").notNull(),
+    requestedModel: text("requested_model").notNull(),
+    reasoningMode: text("reasoning_mode", { enum: ["standard", "pro"] }),
+    reasoningEffort: text("reasoning_effort", {
+      enum: ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+    }),
+    reasoningSummary: text("reasoning_summary", {
+      enum: ["none", "auto", "concise", "detailed"],
+    }),
+    reasoningContext: text("reasoning_context", {
+      enum: ["auto", "current_turn", "all_turns"],
+    }),
+    textVerbosity: text("text_verbosity", {
+      enum: ["low", "medium", "high"],
+    }),
+    storeResponse: integer("store_response", { mode: "boolean" }),
+    responseModel: text("response_model"),
+    providerRequestId: text("provider_request_id"),
+    attempt: integer("attempt").notNull(),
+    status: text("status", { enum: ["started", "ok", "failed"] })
+      .notNull()
+      .default("started"),
+    inputTokens: integer("input_tokens"),
+    outputTokens: integer("output_tokens"),
+    totalTokens: integer("total_tokens"),
+    cachedInputTokens: integer("cached_input_tokens"),
+    cacheWriteInputTokens: integer("cache_write_input_tokens"),
+    cacheWrite5mInputTokens: integer("cache_write_5m_input_tokens"),
+    cacheWrite1hInputTokens: integer("cache_write_1h_input_tokens"),
+    reasoningTokens: integer("reasoning_tokens"),
+    inputAudioTokens: integer("input_audio_tokens"),
+    outputAudioTokens: integer("output_audio_tokens"),
+    costUsdNanos: integer("cost_usd_nanos"),
+    inputUsdNanos: integer("input_usd_nanos"),
+    cachedInputUsdNanos: integer("cached_input_usd_nanos"),
+    cacheWriteUsdNanos: integer("cache_write_usd_nanos"),
+    outputUsdNanos: integer("output_usd_nanos"),
+    costSource: text("cost_source", {
+      enum: ["provider", "catalog", "unpriced"],
+    }),
+    priceSource: text("price_source"),
+    priceAsOf: text("price_as_of"),
+    finishReason: text("finish_reason"),
+    latencyMs: integer("latency_ms"),
+    errorCode: text("error_code"),
+    errorMessage: text("error_message"),
+    usageJson: text("usage_json", { mode: "json" }),
+    startedAt: integer("started_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+    endedAt: integer("ended_at", { mode: "timestamp_ms" }),
+  },
+  (t) => ({
+    logicalAttemptUq: uniqueIndex("llm_calls_logical_attempt_uq").on(
+      t.logicalCallId,
+      t.attempt,
+    ),
+    tenantStartedIdx: index("llm_calls_tenant_started_idx").on(
+      t.tenantId,
+      t.startedAt,
+    ),
+    runIdx: index("llm_calls_run_idx").on(t.runId),
+    stepIdx: index("llm_calls_step_idx").on(t.stepId),
+  }),
+);
+
+/**
+ * Explicit Studio session messages. Runs default to isolated context and use
+ * these rows only for chat/history presentation. A run that explicitly opts
+ * into session context snapshots bounded prior user/assistant turns before it
+ * appends its own user message; later mutations therefore cannot change the
+ * prompt used by that run or one of its replays.
  */
 export const runMessages = sqliteTable(
   "run_messages",
@@ -877,6 +961,8 @@ export const tenantBudgets = sqliteTable("tenant_budgets", {
   monthlyUsdCap: integer("monthly_usd_cap"),
   usedTokensMonth: integer("used_tokens_month").notNull().default(0),
   usedUsdMonth: integer("used_usd_month").notNull().default(0),
+  /** Exact accumulated spend; usedUsdMonth is retained as a cents projection. */
+  usedUsdNanos: integer("used_usd_nanos").notNull().default(0),
   periodStart: integer("period_start", { mode: "timestamp_ms" })
     .notNull()
     .default(now),
@@ -1219,10 +1305,20 @@ export const runsRelations = relations(runs, ({ one, many }) => ({
   artifacts: many(artifacts),
   traceEvents: many(runTraceEvents),
   emittedEvents: many(runEmittedEvents),
+  llmCalls: many(llmCalls),
 }));
 
 export const stepsRelations = relations(steps, ({ one }) => ({
   run: one(runs, { fields: [steps.runId], references: [runs.id] }),
+}));
+
+export const llmCallsRelations = relations(llmCalls, ({ one }) => ({
+  tenant: one(tenants, {
+    fields: [llmCalls.tenantId],
+    references: [tenants.id],
+  }),
+  run: one(runs, { fields: [llmCalls.runId], references: [runs.id] }),
+  step: one(steps, { fields: [llmCalls.stepId], references: [steps.id] }),
 }));
 
 export const runMessagesRelations = relations(runMessages, ({ one }) => ({
@@ -1302,6 +1398,7 @@ export const schema = {
   agentRunSessions,
   runs,
   steps,
+  llmCalls,
   runMessages,
   tasks,
   artifacts,
@@ -1328,6 +1425,7 @@ export const schema = {
   agentRunSessionsRelations,
   runsRelations,
   stepsRelations,
+  llmCallsRelations,
   runMessagesRelations,
   artifactsRelations,
   runTraceEventsRelations,

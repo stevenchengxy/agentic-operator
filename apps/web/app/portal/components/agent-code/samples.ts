@@ -91,12 +91,23 @@ async function checkReflux(ctx: any, candidate_id: string) {
 }
 `;
 
+export interface ToolInputPropertySchema {
+  type?: string | string[];
+  description?: string;
+  enum?: Array<string | number | boolean | null>;
+  items?: ToolInputPropertySchema;
+  anyOf?: ToolInputPropertySchema[];
+  additionalProperties?: boolean | ToolInputPropertySchema;
+  default?: unknown;
+  [key: string]: unknown;
+}
+
 export interface ToolUseSchema {
   name: string;
   description: string;
   input_schema: {
     type: "object";
-    properties: Record<string, { type: string; description?: string }>;
+    properties: Record<string, ToolInputPropertySchema>;
     required: string[];
   };
 }
@@ -109,7 +120,10 @@ export const AGENT_SAMPLE_TOOL_USE: ToolUseSchema[] = [
     input_schema: {
       type: "object",
       properties: {
-        candidate_id: { type: "string", description: "RAAS candidate id, e.g. CAN-88412" },
+        candidate_id: {
+          type: "string",
+          description: "RAAS candidate id, e.g. CAN-88412",
+        },
         client_id: { type: "string", description: "Client id, e.g. Tencent" },
       },
       required: ["candidate_id", "client_id"],
@@ -136,7 +150,10 @@ export const AGENT_SAMPLE_TOOL_USE: ToolUseSchema[] = [
       type: "object",
       properties: {
         resume: { type: "object", description: "Parsed candidate resume" },
-        requisition: { type: "object", description: "Normalized job requisition" },
+        requisition: {
+          type: "object",
+          description: "Normalized job requisition",
+        },
       },
       required: ["resume", "requisition"],
     },

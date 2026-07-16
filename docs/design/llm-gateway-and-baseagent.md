@@ -4,6 +4,13 @@
 **Authors:** AI architect / technical PM personas
 **Scope:** `packages/llm-gateway/`, `packages/agents/`, schema deltas, API surface, frontend catalog move
 
+> July 2026 accounting/provider addendum: see
+> [llm-gateway-usage-and-pricing.md](./llm-gateway-usage-and-pricing.md). It
+> supersedes the original provider count, response usage shape, persistence,
+> and cost-accounting assumptions in this v1 design.
+> Frontier-model controls and the dated catalog are documented in
+> [llm-model-controls-and-catalog.md](./llm-model-controls-and-catalog.md).
+
 ---
 
 ## 1. Motivation
@@ -15,7 +22,7 @@ The Agentic Operator (`/Users/kenny/CSI-AICOE/agentic-operator`) is feature-comp
 - Engineers cannot author code-level LLM agents — only declarative JSON manifests are supported.
 
 To close that gap with minimum scope creep, this design adds:
-- A real **LLM Gateway** package that fronts 13 LLM providers + a mock.
+- A real **LLM Gateway** package that fronts 15 external providers + a mock.
 - A **`BaseAgent`** abstract class for code-defined agents, coexisting with the manifest runtime.
 - A first concrete agent — **`testAgent`** — as an end-to-end smoke signal.
 - **Deployment + monitoring** plumbing that reuses the existing `runs` + `steps` tables and the existing SSE log tail.
@@ -46,7 +53,7 @@ To close that gap with minimum scope creep, this design adds:
 ┌────────────────────┐  ┌──────────────────────────┐  ┌─────────────────────┐
 │ packages/agents/   │  │ packages/llm-gateway/    │  │ packages/runtime/   │
 │  • BaseAgent       │──┤  • LLMGateway            │  │ • step-engine       │
-│  • RunEngine       │  │  • 14 provider adapters  │←─┤   uses gateway      │
+│  • RunEngine       │  │  • 16 provider adapters  │←─┤   uses gateway      │
 │  • AgentRegistry   │  │  • LLMError              │  │   instead of mock   │
 │  • TestAgent       │  │                          │  │                     │
 └────────────────────┘  └──────────────────────────┘  └─────────────────────┘
@@ -68,19 +75,21 @@ To close that gap with minimum scope creep, this design adds:
 
 ## 3. LLM Gateway
 
-### 3.1 Provider catalog (14)
+### 3.1 Provider catalog (16)
 
 | ID | Adapter | Native SDK | Notes |
 |---|---|---|---|
 | `mock` | mock adapter | — | Always registered. Deterministic. Default fallback. |
 | `anthropic` | `@anthropic-ai/sdk` | yes | System/user/assistant alternation enforced. |
-| `openai` | `openai` (chat.completions) | yes | OpenAI-compatible factory with default config. |
-| `openrouter` | `openai` SDK + baseURL override | shared | Adds `HTTP-Referer` + `X-Title` headers. Models use prefixed names (`anthropic/claude-sonnet-4-5`). |
-| `gemini` | `@google/generative-ai` | yes | System messages go into `systemInstruction`; alternation. |
+| `openai` | `openai` (Responses API) | yes | Preserves reasoning mode/effort/context/summary, text verbosity, storage, and tool calls. |
+| `openrouter` | `openai` SDK + baseURL override | shared | Chat Completions for broad effort-only routing; Responses for richer controls. Adds `HTTP-Referer` + `X-Title`. |
+| `gemini` | `@google/genai` | yes | System messages go into `systemInstruction`; normalized effort maps to `thinkingLevel`. |
 | `groq` | `openai` SDK + baseURL | shared | `https://api.groq.com/openai/v1`. |
 | `together` | `openai` SDK + baseURL | shared | `https://api.together.xyz/v1`. |
 | `mistral` | `openai` SDK + baseURL | shared | `https://api.mistral.ai/v1`. |
-| `deepseek` | `openai` SDK + baseURL | shared | `https://api.deepseek.com/v1`. |
+| `deepseek` | `openai` SDK + baseURL | shared | `https://api.deepseek.com`; normalized thinking effort and exact `reasoning_content` replay. |
+| `moonshot` | `openai` SDK + baseURL | shared | `https://api.moonshot.ai/v1`. |
+| `zai` | `openai` SDK + baseURL | shared | `https://api.z.ai/api/paas/v4`. |
 | `qwen` | `openai` SDK + baseURL | shared | `https://dashscope.aliyuncs.com/compatible-mode/v1`. |
 | `azure` | `openai` SDK + custom URL pattern | own | URL = `{endpoint}/openai/deployments/{deployment}/chat/completions?api-version=...`. Auth via `api-key` header. |
 | `custom` | `openai` SDK + caller-provided baseURL | shared | For self-hosted OpenAI-compatible endpoints. |
@@ -94,12 +103,14 @@ To close that gap with minimum scope creep, this design adds:
 
 export type ProviderId =
   | "anthropic" | "openai" | "openrouter" | "gemini"
-  | "mistral" | "groq" | "together" | "deepseek" | "qwen"
+  | "mistral" | "groq" | "together" | "deepseek" | "moonshot"
+  | "zai" | "qwen"
   | "azure" | "bedrock" | "vertex" | "custom" | "mock";
 
 export interface ChatMessage {
-  role: "system" | "user" | "assistant";
-  content: string;
+  role: "system" | "user" | "assistant" | "tool";
+  content: string | ChatContentBlock[];
+  reasoningContent?: string; // opaque replay state; never logged
 }
 
 export interface ChatRequest {
@@ -113,6 +124,14 @@ export interface ChatRequest {
   timeoutMs?: number;
   signal?: AbortSignal;
   jsonMode?: boolean;
+  reasoning?: {
+    mode?: "standard" | "pro";
+    effort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+    summary?: "none" | "auto" | "concise" | "detailed";
+    context?: "auto" | "current_turn" | "all_turns";
+  };
+  verbosity?: "low" | "medium" | "high";
+  store?: boolean;
 }
 
 export interface ChatResponse {
@@ -203,6 +222,8 @@ GROQ_API_KEY=
 TOGETHER_API_KEY=
 MISTRAL_API_KEY=
 DEEPSEEK_API_KEY=
+MOONSHOT_API_KEY=
+ZAI_API_KEY=
 QWEN_API_KEY=
 
 # Azure (needs three values to function)
@@ -246,6 +267,9 @@ export abstract class BaseAgent<TInput = unknown, TOutput = string> {
   readonly enabled: boolean = true;
   readonly defaultProvider?: ProviderId;
   readonly defaultModel?: string;
+  readonly defaultReasoning?: ReasoningConfig;
+  readonly defaultVerbosity?: TextVerbosity;
+  readonly storeResponses?: boolean;
   readonly maxSteps: number = 1;       // v1 = single-step; >1 for future tool-use
   readonly concurrency: { limit: number; key?: string } = { limit: 4 };
 
@@ -373,7 +397,7 @@ The seed script adds the `__system` tenant:
 
 ### `GET /v1/llm/providers`
 
-Returns `{ ok: true, data: ProviderInfo[] }` where each entry is `{ id, name, hasKey, defaultModel, models }`. All 14 providers (13 real + mock) are always listed. `hasKey` is true when the env vars required by that adapter are present.
+Returns `{ ok: true, data: ProviderInfo[] }` where each entry is `{ id, name, hasKey, defaultModel, models }`. All configured providers are always listed. `hasKey` is true when the env vars required by that adapter are present.
 
 ### `GET /v1/llm/models?provider=:id`
 
@@ -552,7 +576,7 @@ No new monitoring surface is needed.
 ## 14. Done definition
 
 1. All 5 vitest cases pass.
-2. `GET /v1/llm/providers` returns exactly 14 entries.
+2. `GET /v1/llm/providers` returns every entry in `PROVIDER_IDS`.
 3. `POST /v1/agents/testAgent/invoke` returns a non-empty `output`.
 4. testAgent invocation persists: a `runs` row, a `steps` row with provider+model+tokens, a file log with `run.start`/`run.ok` markers, and a `deployments` row with `target='code_agent'`.
 5. Frontend Settings → Models tab shows OpenRouter as an installed provider.

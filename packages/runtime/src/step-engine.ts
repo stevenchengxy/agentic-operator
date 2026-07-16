@@ -47,6 +47,7 @@ import {
   prepareAgentExecution,
   resolveRestrictedJsonPath,
   validateValueAgainstJsonSchema,
+  type AgentConversationTurn,
 } from "./agent-execution";
 import { appendRuntimeTrace, type RuntimeTraceSink } from "./execution-trace";
 import type {
@@ -55,6 +56,8 @@ import type {
   AgentOutputPortV2,
   AgentObservabilityV2,
   AgentToolLoopV2,
+  ReasoningConfigDTO,
+  TextVerbosity,
 } from "@agentic/contracts";
 
 /**
@@ -83,6 +86,9 @@ interface AgentSlots {
   model?: string;
   /** Explicit provider selected in the deploy wizard. */
   provider?: ProviderId;
+  reasoning?: ReasoningConfigDTO;
+  verbosity?: TextVerbosity;
+  store?: boolean;
   /** Per-call gateway timeout authored in the manifest. */
   timeout_s?: number;
   temperature?: number;
@@ -210,6 +216,8 @@ async function emitTraceBestEffort(
 export interface StepInput {
   ctx: ToolContext;
   action: ActionSpec;
+  /** Caller-sanitized prior user/assistant turns for a continued Test Lab run. */
+  conversationHistory?: AgentConversationTurn[];
   /**
    * Optional agent-level metadata that influences prompt assembly:
    *   - `description` is concatenated into the runtime prelude
@@ -411,6 +419,9 @@ async function callLLM(
         messages,
         model: preferredModel,
         provider: agent?.provider,
+        reasoning: agent?.reasoning,
+        verbosity: agent?.verbosity,
+        store: agent?.store,
         temperature: agent?.temperature,
         maxTokens: agent?.max_tokens,
         timeoutMs:
@@ -421,6 +432,9 @@ async function callLLM(
         jsonMode: execution?.jsonMode,
         tenantId: agent?.tenantId,
         tenantSlug: ctx?.tenantSlug,
+        runId: execution?.runId,
+        stepId: execution?.stepId,
+        purpose: "manifest.logic",
       });
     } catch (error) {
       const llmEndedAt = new Date();
@@ -480,6 +494,29 @@ async function callLLM(
         },
         visibility: "operator",
       });
+      if (response.reasoningSummary) {
+        await emitTraceBestEffort(execution.trace, {
+          runId: execution.runId,
+          ...(execution.stepId ? { stepId: execution.stepId } : {}),
+          kind: "llm",
+          level: "standard",
+          name: "llm.reasoning_summary",
+          status: "ok",
+          startedAt: llmStartedAt,
+          endedAt: llmEndedAt,
+          durationMs: Math.max(
+            0,
+            llmEndedAt.getTime() - llmStartedAt.getTime(),
+          ),
+          summary: response.reasoningSummary,
+          data: {
+            provider: response.provider,
+            model: response.model,
+            reasoning: response.reasoning,
+          },
+          visibility: "user",
+        });
+      }
     }
 
     const requestedCalls = response.toolCalls ?? [];
@@ -514,7 +551,13 @@ async function callLLM(
       };
       assistantBlocks.push(block);
     }
-    messages.push({ role: "assistant", content: assistantBlocks });
+    messages.push({
+      role: "assistant",
+      content: assistantBlocks,
+      ...(response.reasoningContent
+        ? { reasoningContent: response.reasoningContent }
+        : {}),
+    });
 
     // Execute each tool call, collect tool_result blocks for the next turn.
     const resultBlocks: ChatContentBlock[] = [];
@@ -754,6 +797,7 @@ async function runTenantPrompt(
   runId?: string,
   stepId?: string,
   validateOutput = true,
+  conversationHistory?: AgentConversationTurn[],
 ): Promise<StepOutput> {
   const rendered = prompt.template(ctx);
   const usesV2Execution =
@@ -776,12 +820,17 @@ async function runTenantPrompt(
       const suppliedInputs = isPlainSchema(eventData.inputs)
         ? { ...eventData.inputs }
         : undefined;
+      const promptPorts = normalizeAgentForExecution(
+        agent,
+      ).definition.inputs.filter((input) => input.kind === "prompt");
+      const promptPort = promptPorts.length === 1 ? promptPorts[0] : undefined;
       if (
         suppliedInputs &&
-        !Object.hasOwn(suppliedInputs, "prompt") &&
+        promptPort &&
+        !Object.hasOwn(suppliedInputs, promptPort.id) &&
         typeof eventData.prompt === "string"
       ) {
-        suppliedInputs.prompt = eventData.prompt;
+        suppliedInputs[promptPort.id] = eventData.prompt;
       }
       const prepared = await prepareAgentExecution({
         definition: agent,
@@ -797,6 +846,7 @@ async function runTenantPrompt(
         promptOptions: {
           tenantInstructions: prompt.system,
           actionObjective: authoredActionObjective,
+          includeOutputContract: validateOutput,
           // PromptDescriptor templates historically formed the user turn.
           // Keep their dynamic context in that same trust tier while the
           // Studio-owned `inputs.prompt` remains the immutable first block.
@@ -805,6 +855,7 @@ async function runTenantPrompt(
             subject: ctx.subject ?? null,
             correlationId: ctx.correlationId,
           },
+          conversationHistory,
         },
         trace,
         runId,
@@ -821,6 +872,7 @@ async function runTenantPrompt(
           },
         ]);
       }
+      const currentUserMessage = messages[messages.length - 1];
       if (runId) {
         const persistRendered =
           agent?.observability?.persist_rendered_prompts === true;
@@ -841,8 +893,8 @@ async function runTenantPrompt(
                     ? Buffer.byteLength(messages[0].content)
                     : 0,
                 userBytes:
-                  typeof messages[1]?.content === "string"
-                    ? Buffer.byteLength(messages[1].content)
+                  typeof currentUserMessage?.content === "string"
+                    ? Buffer.byteLength(currentUserMessage.content)
                     : 0,
               },
           visibility: persistRendered ? "debug" : "operator",
@@ -865,7 +917,7 @@ async function runTenantPrompt(
   }
   const result = await callLLM(
     rendered,
-    prompt.model,
+    action.model ?? prompt.model ?? agent?.model,
     prompt.system,
     agent,
     tenantRegistry,
@@ -922,8 +974,11 @@ async function runTenantPrompt(
                 ].join("\n\n"),
               },
             ],
-            model: prompt.model ?? agent?.model,
+            model: action.model ?? prompt.model ?? agent?.model,
             provider: agent?.provider,
+            reasoning: agent?.reasoning,
+            verbosity: agent?.verbosity,
+            store: agent?.store,
             temperature: agent?.temperature,
             maxTokens: agent?.max_tokens,
             timeoutMs:
@@ -932,6 +987,9 @@ async function runTenantPrompt(
                 : undefined,
             jsonMode: true,
             tenantId: agent?.tenantId,
+            runId,
+            stepId,
+            purpose: "manifest.output-repair",
             tenantSlug: ctx.tenantSlug,
           });
           repairTokensIn += response.tokensIn ?? 0;
@@ -1257,6 +1315,7 @@ export async function runAction(input: StepInput): Promise<StepOutput> {
     stepOrd,
     trace,
     finalOutput = true,
+    conversationHistory,
   } = input;
   const ctx = applyActionInputMapping(suppliedCtx, action);
   const logCtx = deriveLogCtx(ctx, runId);
@@ -1419,10 +1478,7 @@ export async function runAction(input: StepInput): Promise<StepOutput> {
         const logicPrompt =
           tenantRegistry?.prompts?.[action.name] ??
           (agent?.generated
-            ? {
-                ...makeGeneratedAgentPrompt(action.name, action.description),
-                model: agent.model,
-              }
+            ? makeGeneratedAgentPrompt(action.name, action.description)
             : undefined);
         if (!logicPrompt) {
           // UC-V11-25 / AR-GAP-13 — strict mode. Boot-time validation in
@@ -1449,10 +1505,31 @@ export async function runAction(input: StepInput): Promise<StepOutput> {
 
         const retryCount = Math.min(10, Math.max(0, action.retries ?? 0));
         const maxAttempts = retryCount + 1;
-        const effectiveAgent =
-          agent && typeof action.timeout_s === "number"
-            ? { ...agent, timeout_s: action.timeout_s }
-            : agent;
+        // Action controls are true per-step overrides. Any omitted field
+        // inherits the agent-level selection, preserving old manifests while
+        // allowing a cheap classifier, a reasoning-heavy planner, and a
+        // long-context synthesizer to coexist in one authored agent.
+        const effectiveAgent = agent
+          ? {
+              ...agent,
+              ...(action.provider ? { provider: action.provider } : {}),
+              ...(action.model ? { model: action.model } : {}),
+              ...(action.reasoning ? { reasoning: action.reasoning } : {}),
+              ...(action.verbosity ? { verbosity: action.verbosity } : {}),
+              ...(typeof action.store === "boolean"
+                ? { store: action.store }
+                : {}),
+              ...(typeof action.temperature === "number"
+                ? { temperature: action.temperature }
+                : {}),
+              ...(typeof action.max_tokens === "number"
+                ? { max_tokens: action.max_tokens }
+                : {}),
+              ...(typeof action.timeout_s === "number"
+                ? { timeout_s: action.timeout_s }
+                : {}),
+            }
+          : agent;
         const hasOutputMapping =
           isPlainSchema(action.output_mapping) &&
           Object.keys(action.output_mapping).length > 0;
@@ -1471,6 +1548,7 @@ export async function runAction(input: StepInput): Promise<StepOutput> {
               runId,
               stepId,
               finalOutput && !hasOutputMapping,
+              conversationHistory,
             );
           } catch (error) {
             if (attempts >= maxAttempts) throw error;

@@ -60,6 +60,7 @@ export default function UsagePage() {
   const byDay = usage.data?.byDay ?? [];
   const byAgent = usage.data?.byAgent ?? [];
   const byModel = usage.data?.byModel ?? [];
+  const byReasoning = usage.data?.byReasoning ?? [];
   const budgetRow = usage.data?.budget ?? budget.data ?? null;
   const usageUnavailable = !usage.data && (usage.error != null);
 
@@ -238,6 +239,23 @@ export default function UsagePage() {
               />
             </Panel>
           </div>
+
+          <Panel
+            title="By reasoning configuration"
+            subtitle="Mode · effort · summary/context · verbosity/storage · tokens in+out"
+            padded={false}
+          >
+            <HorizontalBarChart
+              data={byReasoning
+                .map((row) => ({
+                  key: row.key,
+                  value: row.tokensIn + row.tokensOut,
+                  secondary: row.usdCents,
+                }))
+                .sort((a, b) => b.value - a.value)}
+              formatValue={fmtNum}
+            />
+          </Panel>
 
           {usageUnavailable && (
             <Empty

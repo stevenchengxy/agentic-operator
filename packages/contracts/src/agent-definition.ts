@@ -1,5 +1,9 @@
 import { z } from "zod";
-import { ProviderIdSchema } from "./llm";
+import {
+  ProviderIdSchema,
+  ReasoningConfigSchema,
+  TextVerbositySchema,
+} from "./llm";
 
 /**
  * Canonical Agent Definition v2.
@@ -145,6 +149,9 @@ export const AgentPromptProvenanceV2Schema = z
     source_hash: z.string().min(1).optional(),
     provider: ProviderIdSchema.optional(),
     model: z.string().trim().min(1).max(240).optional(),
+    reasoning: ReasoningConfigSchema.optional(),
+    verbosity: TextVerbositySchema.optional(),
+    store: z.boolean().optional(),
     generated_at: z.string().datetime().optional(),
     tokens_in: z.number().int().nonnegative().nullable().optional(),
     tokens_out: z.number().int().nonnegative().nullable().optional(),
@@ -185,6 +192,19 @@ export const AgentActionV2Schema = z
       .string()
       .max(32 * 1024)
       .optional(),
+    /**
+     * Optional per-step model controls. An omitted value inherits the agent
+     * runtime setting; an authored value overrides it for this action only.
+     * Keeping these on the canonical action schema makes Studio, manifest
+     * import, and the Inngest runtime share one lossless contract.
+     */
+    provider: ProviderIdSchema.optional(),
+    model: z.string().trim().min(1).max(240).optional(),
+    reasoning: ReasoningConfigSchema.optional(),
+    verbosity: TextVerbositySchema.optional(),
+    store: z.boolean().optional(),
+    temperature: z.number().min(0).max(2).optional(),
+    max_tokens: z.number().int().positive().max(1_000_000).optional(),
     retries: z.number().int().nonnegative().max(10).optional(),
     timeout_s: z.number().int().positive().max(86_400).optional(),
     tool: z.string().trim().min(1).max(160).optional(),
@@ -290,6 +310,9 @@ export const AgentRuntimeConfigV2Schema = z
   .object({
     provider: ProviderIdSchema.optional(),
     model: z.string().trim().min(1).max(240).optional(),
+    reasoning: ReasoningConfigSchema.optional(),
+    verbosity: TextVerbositySchema.optional(),
+    store: z.boolean().optional(),
     temperature: z.number().min(0).max(2).optional(),
     max_tokens: z.number().int().positive().max(1_000_000).optional(),
     timeout_s: z.number().int().positive().max(86_400).optional(),
@@ -351,6 +374,9 @@ const AgentDefinitionV2BaseSchema = z
     output_bindings: AgentOutputBindingsV2Schema.optional(),
     provider: ProviderIdSchema.optional(),
     model: z.string().trim().min(1).max(240).optional(),
+    reasoning: ReasoningConfigSchema.optional(),
+    verbosity: TextVerbositySchema.optional(),
+    store: z.boolean().optional(),
     temperature: z.number().min(0).max(2).optional(),
     max_tokens: z.number().int().positive().max(1_000_000).optional(),
     timeout_s: z.number().int().positive().max(86_400).optional(),

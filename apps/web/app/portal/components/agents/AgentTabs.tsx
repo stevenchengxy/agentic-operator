@@ -542,7 +542,7 @@ export function EditConfigTab({ agent, models }: { agent: ViewAgent; models: Mod
             <AgentToolUseEditPanel tools={toolUse} onChange={setToolUse} />
 
             <Panel title="Behavior" padded>
-              <EditField label="Retries" hint="Maximum retry attempts on tool/model errors. Exponential backoff.">
+              <EditField label="Retries" hint="Maximum immediate retry attempts for a failed model action.">
                 <EditText
                   value={String(retries)}
                   onChange={(v) => setRetries(parseInt(v) || 0)}
@@ -550,7 +550,7 @@ export function EditConfigTab({ agent, models }: { agent: ViewAgent; models: Mod
                   suffix="attempts"
                 />
               </EditField>
-              <EditField label="Timeout" hint="Per-run hard timeout. After this the run is marked failed.">
+              <EditField label="Per-call timeout" hint="Maximum duration of each model gateway call; a multi-step run may take longer.">
                 <EditText
                   value={String(timeout)}
                   onChange={(v) => setTimeoutVal(parseInt(v) || 0)}

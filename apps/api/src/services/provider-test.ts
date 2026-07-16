@@ -64,7 +64,9 @@ const OPENAI_COMPATIBLE: Partial<Record<ProviderId, OpenAICompatibleConfig>> = {
   groq: { baseURL: "https://api.groq.com/openai/v1" },
   together: { baseURL: "https://api.together.xyz/v1" },
   mistral: { baseURL: "https://api.mistral.ai/v1" },
-  deepseek: { baseURL: "https://api.deepseek.com/v1" },
+  deepseek: { baseURL: "https://api.deepseek.com" },
+  moonshot: { baseURL: "https://api.moonshot.ai/v1" },
+  zai: { baseURL: "https://api.z.ai/api/paas/v4" },
   qwen: { baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1" },
 };
 

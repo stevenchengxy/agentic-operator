@@ -1,12 +1,13 @@
 /**
  * TC-1 — Provider listing reflects env state.
  *
- * Boots the API, ensures GET /v1/llm/providers returns all 14 providers,
+ * Boots the API, ensures GET /v1/llm/providers returns every provider,
  * and that hasKey accurately reflects which env vars are set.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { buildTestEnv, type TestEnv } from "./harness";
+import { PROVIDER_IDS } from "@agentic/contracts";
 
 const ENV_BEFORE = {
   ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
@@ -28,7 +29,7 @@ describe("TC-1: /v1/llm/providers", () => {
     await env.cleanup();
   });
 
-  it("returns exactly 14 providers", async () => {
+  it("returns every configured provider", async () => {
     const res = await env.fetch("/v1/llm/providers");
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
@@ -37,7 +38,10 @@ describe("TC-1: /v1/llm/providers", () => {
     };
     expect(body.ok).toBe(true);
     expect(body.data).toBeInstanceOf(Array);
-    expect(body.data).toHaveLength(14);
+    expect(body.data).toHaveLength(PROVIDER_IDS.length);
+    expect(body.data.map((provider) => provider.id)).toEqual(
+      expect.arrayContaining(["moonshot", "zai"]),
+    );
   });
 
   it("includes the openrouter entry", async () => {

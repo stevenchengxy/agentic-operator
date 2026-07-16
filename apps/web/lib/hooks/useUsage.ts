@@ -48,20 +48,32 @@ async function callV1<T>(path: string, init: RequestInit = {}): Promise<T> {
 export interface UsageRow {
   key: string;
   runs: number;
+  calls: number;
   tokensIn: number;
   tokensOut: number;
+  cachedInputTokens: number;
+  reasoningTokens: number;
+  usdNanos: number;
   usdCents: number;
+  unpricedCalls: number;
 }
 
 export interface UsageResponse {
   totals: {
     runs: number;
+    calls: number;
     tokensIn: number;
     tokensOut: number;
+    cachedInputTokens: number;
+    reasoningTokens: number;
+    usdNanos: number;
     usdCents: number;
+    unpricedCalls: number;
   };
   byAgent: UsageRow[];
   byModel: UsageRow[];
+  byProvider: UsageRow[];
+  byReasoning: UsageRow[];
   byDay: UsageRow[];
   budget: BudgetRow | null;
 }
@@ -72,6 +84,7 @@ export interface BudgetRow {
   monthlyUsdCap: number | null;
   usedTokensMonth: number;
   usedUsdMonth: number;
+  usedUsdNanos: number;
   periodStart: number;
   updatedAt?: number;
 }

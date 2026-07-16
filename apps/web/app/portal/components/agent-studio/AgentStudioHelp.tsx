@@ -92,7 +92,7 @@ const FIELD_GROUPS: HelpFieldGroup[] = [
         name: "Starting template",
         meaning: "A starting pattern for the agent.",
         enter:
-          "Blank, classify, extract, RAG, loop, or human. It is a design hint; review every generated setting.",
+          "Blank, classify, extract, Deep Search, loop, or human. It is a design hint; review every generated setting.",
       },
       {
         name: "Edit",
@@ -1354,20 +1354,20 @@ function LifecycleGuide() {
       <GuideSection number="01" title="Create a new agent">
         <ol style={listStyle}>
           <li>
-            Open <strong>Agents</strong> and choose{" "}
-            <strong>Deploy agent</strong>.
+            Open <strong>Agents</strong> and choose <strong>New Agent</strong>.
           </li>
           <li>
-            Pick a template. Blank is best when unsure; Classify and Extract
-            provide useful starting patterns.
+            Pick an execution pattern. Blank agent is best when unsure;
+            Classifier, Extractor, and Deep Search provide focused starting
+            plans.
           </li>
           <li>
-            Complete Identity, Events, Implementation, and Behavior. Review the
-            pre-flight checks.
+            Complete Identity, Events, Build, and Runtime. Review the event
+            contract, model policy, ontology access, and pre-flight checks.
           </li>
           <li>
-            Choose <strong>Deploy agent</strong>. Open its card to enter Agent
-            Studio.
+            Choose <strong>Create &amp; publish</strong>, then open the live
+            agent to test it in Agent Studio.
           </li>
         </ol>
         <Callout tone="amber" title="Creating immediately makes a version live">

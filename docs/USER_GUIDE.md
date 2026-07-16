@@ -24,7 +24,8 @@ Both run under the same runtime, write to the same ledger, and surface in the sa
 ```bash
 # 1. Clone + install
 git clone <your-fork> agentic-operator && cd agentic-operator
-nvm use                                 # picks Node 26.5.0 from .nvmrc
+nvm install 26.5.0                      # one-time installation
+nvm use 26.5.0                          # exact version required by scripts
 pnpm install
 
 # 2. Configure (one-time)

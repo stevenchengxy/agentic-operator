@@ -5,10 +5,15 @@ export {
   eventTargetsAgent,
   resolveAgentConcurrency,
   resolveAgentTriggerNames,
+  buildManualTaskPayload,
+  buildManualTaskResolution,
   findMissingTenantPrompts,
   formatMissingPromptsError,
   type RegisterContext,
   type ResolvedAgentConcurrency,
+  type ManualTaskDecision,
+  type ManualTaskOutcome,
+  type ManualTaskResolution,
 } from "./register";
 export { makeGeneratedAgentPrompt } from "./generated-agent";
 export {
@@ -67,6 +72,7 @@ export {
   resolveRestrictedJsonPath,
   canonicalJson,
   type RuntimeValidationIssue,
+  type AgentConversationTurn,
   type NormalizedAgentExecutionDefinition,
   type ValidatedAgentInputs,
   type CompileAgentPromptsOptions,
@@ -98,6 +104,11 @@ export {
   type RuntimeTraceSink,
 } from "./execution-trace";
 export { appendToLedger, eventLedgerPath } from "./event-ledger";
+export {
+  buildCanonicalEventPayload,
+  stripPrivateEventMetadata,
+  type BuildCanonicalEventPayloadInput,
+} from "./event-envelope";
 export { correlationFromEvent, withCorrelation } from "./correlation";
 export {
   setRuntimeGateway,

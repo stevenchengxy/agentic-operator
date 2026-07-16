@@ -21,6 +21,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { readFile } from "node:fs/promises";
 import { and, eq } from "drizzle-orm";
 import {
   agents,
@@ -216,6 +217,81 @@ describe("Event Tester backend", () => {
           r.data.events.find((e) => e.id === body.data.event_id),
         ).toBeDefined();
       } finally {
+        cap.restore();
+      }
+    });
+
+    it("persists and delivers one canonical logical envelope with the exact prompt", async () => {
+      const cap = captureInngest();
+      let eventId: string | undefined;
+      try {
+        const exactPrompt = "  Investigate this request.\nKeep spacing.  ";
+        const subject = `canonical-${makeId("tag")}`;
+        const res = await env.fetch("/v1/events", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            name: "CLIENT_RULES_PASSED",
+            subject,
+            payload: {
+              event_type: "CALLER_CANNOT_OVERRIDE",
+              event_name: "CALLER_CANNOT_OVERRIDE",
+              event_id: "evt-caller",
+              request_id: "   ",
+              prompt: exactPrompt,
+              domain_field: "preserved",
+            },
+          }),
+        });
+
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as PublishResponse;
+        eventId = body.data.event_id;
+        expect(cap.calls).toHaveLength(1);
+        const delivered = cap.calls[0]!.data;
+        const correlationId = delivered.__correlationId;
+        expect(typeof correlationId).toBe("string");
+        const {
+          __triggerEventId: triggerEventId,
+          __correlationId: _privateCorrelationId,
+          ...deliveredLogical
+        } = delivered;
+        expect(triggerEventId).toBe(eventId);
+        expect(deliveredLogical).toEqual({
+          request_id: correlationId,
+          domain_field: "preserved",
+          event_type: "CLIENT_RULES_PASSED",
+          event_name: "CLIENT_RULES_PASSED",
+          event_id: eventId,
+          subject,
+          prompt: exactPrompt,
+          input: exactPrompt,
+          context: exactPrompt,
+        });
+
+        const persisted = getDb()
+          .select({ payloadRef: events.payloadRef })
+          .from(events)
+          .where(eq(events.id, eventId))
+          .all()[0];
+        expect(persisted?.payloadRef).toBeTruthy();
+        const [ledgerPath, offset = "0"] = persisted!.payloadRef!.split("#");
+        const ledgerBytes = await readFile(ledgerPath!);
+        const ledgerLine = ledgerBytes
+          .subarray(Number(offset))
+          .toString("utf8")
+          .split("\n")[0]!;
+        const ledgerRecord = JSON.parse(ledgerLine) as {
+          data: Record<string, unknown>;
+        };
+        expect(ledgerRecord.data).toEqual(deliveredLogical);
+        expect(
+          Object.keys(ledgerRecord.data).some((key) => key.startsWith("__")),
+        ).toBe(false);
+      } finally {
+        if (eventId) {
+          getDb().delete(events).where(eq(events.id, eventId)).run();
+        }
         cap.restore();
       }
     });

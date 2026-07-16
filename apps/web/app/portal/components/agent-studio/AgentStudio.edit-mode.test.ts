@@ -13,6 +13,10 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const source = readFileSync(resolve(__dirname, "AgentStudio.tsx"), "utf8");
+const globalCss = readFileSync(
+  resolve(__dirname, "..", "..", "..", "global.css"),
+  "utf8",
+);
 
 describe("Agent Studio edit-mode wiring", () => {
   it("opens in protected view mode and requires editing before fields unlock", () => {
@@ -75,6 +79,17 @@ describe("Agent Studio edit-mode wiring", () => {
     );
     expect(source).toMatch(
       /codeCompatibility \?\s*\(\s*<Button[\s\S]{0,220}disabled[\s\S]{0,220}Edit unavailable/,
+    );
+  });
+
+  it("packs draft notices side by side without crowding smaller screens", () => {
+    expect(source).toContain("agent-studio-notice-grid--split");
+    expect(globalCss).toContain(".agent-studio-notice-grid--split");
+    expect(globalCss).toContain(
+      "grid-template-columns: repeat(2, minmax(0, 1fr))",
+    );
+    expect(globalCss).toMatch(
+      /@media \(max-width: 1100px\)[\s\S]{0,180}\.agent-studio-notice-grid--split[\s\S]{0,120}grid-template-columns: minmax\(0, 1fr\)/,
     );
   });
 });

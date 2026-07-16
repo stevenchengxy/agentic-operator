@@ -5,7 +5,11 @@
  * AgentResult is what run() returns to the caller.
  */
 
-import type { ProviderId } from "@agentic/contracts";
+import type {
+  ProviderId,
+  ReasoningConfig,
+  TextVerbosity,
+} from "@agentic/contracts";
 
 export type AgentKind = "manifest" | "code";
 
@@ -19,6 +23,9 @@ export interface AgentContext {
   /** Optional override of provider/model for this invocation. */
   provider?: ProviderId;
   model?: string;
+  reasoning?: ReasoningConfig;
+  verbosity?: TextVerbosity;
+  store?: boolean;
   /**
    * P2-FE-18: test-run flag. When true the run engine sets `runs.is_test=true`
    * and the broadcast `run.started` event carries `testRun: true` so SSE

@@ -14,10 +14,20 @@ export { LLMError, isLLMError, classifyHttpError, type LLMErrorCode } from "./er
 export { resolveConfig, type ResolvedConfig, type AdapterEnvSlice } from "./config";
 export { registerAllProviders } from "./providers/index";
 export { redact, redactObject } from "./redact";
+export { calculateCost, normalizeUsage, USD_NANOS_PER_CENT } from "./pricing";
+export { assertModelControls } from "./capabilities";
 // P1-LLM-04 — mock adapter + the test-only id sequencer the adapter exposes.
 // Surfaced from the barrel so test code can `import { MockAdapter, _resetMockIdSeq }
 // from "@agentic/llm-gateway"` without reaching into adapter paths.
 export { MockAdapter, _resetMockIdSeq } from "./adapters/mock";
+export {
+  buildOpenAIResponsesRequest,
+  createOpenAIResponsesAdapter,
+} from "./adapters/openai-responses";
+export {
+  mapOpenAICompatibleMessages,
+  mapOpenAICompatibleReasoning,
+} from "./adapters/openai-compatible";
 // P1-CON-01 — adapter helper for collapsing typed content blocks into text.
 export { flattenContentToText } from "./types";
 export type {
@@ -34,4 +44,13 @@ export type {
   ToolResultBlock,
   ToolDef,
   ToolCall,
+  TokenUsage,
+  CostBreakdown,
+  CostSource,
+  ReasoningConfig,
+  ReasoningEffort,
+  ReasoningMode,
+  ReasoningSummary,
+  ReasoningContext,
+  TextVerbosity,
 } from "./types";

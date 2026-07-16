@@ -38,28 +38,120 @@ import { LLMError, classifyHttpError } from "../errors";
  *
  * Returns an array so case 2 can fan out into multiple OpenAI messages.
  */
+type OAIReasoningReplayFields = {
+  reasoning_content?: string;
+  reasoning_details?: unknown[];
+};
+
 type OAIChatMsg =
-  | { role: "system" | "user" | "assistant"; content: string }
-  | {
+  | { role: "system" | "user"; content: string }
+  | (OAIReasoningReplayFields & {
       role: "assistant";
       content: string;
-      tool_calls: Array<{
+      tool_calls?: Array<{
         id: string;
         type: "function";
         function: { name: string; arguments: string };
       }>;
-    }
+    })
   | { role: "tool"; tool_call_id: string; content: string };
+
+interface OpenRouterChatReasoningReplayEnvelope {
+  provider: "openrouter";
+  api: "chat";
+  items: unknown[];
+}
+
+function isReasoningDetails(value: unknown): value is unknown[] {
+  return Array.isArray(value) && value.every(
+    (item) =>
+      Boolean(item)
+      && typeof item === "object"
+      && !Array.isArray(item)
+      && typeof (item as { type?: unknown }).type === "string"
+      && (item as { type: string }).type.startsWith("reasoning."),
+  );
+}
+
+function reasoningReplayFields(
+  serialized: string | undefined,
+  provider: ProviderId | undefined,
+): OAIReasoningReplayFields {
+  if (!serialized) return {};
+  if (provider !== "openrouter") {
+    return { reasoning_content: serialized };
+  }
+
+  try {
+    const parsed = JSON.parse(serialized) as Record<string, unknown>;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      if (
+        parsed.provider === "openrouter"
+        && parsed.api === "chat"
+        && isReasoningDetails(parsed.items)
+      ) {
+        return { reasoning_details: parsed.items };
+      }
+
+      // Never send an internal envelope for another transport as plaintext
+      // reasoning. The Responses adapter owns its item-based replay format.
+      if ("provider" in parsed || "api" in parsed) return {};
+    }
+  } catch {
+    // Plaintext reasoning is intentionally not JSON and uses the alias below.
+  }
+
+  return { reasoning_content: serialized };
+}
+
+/**
+ * Capture OpenRouter Chat reasoning for opaque replay. Structured details win
+ * over plaintext because encrypted/signed blocks must be returned unchanged.
+ */
+export function extractOpenAICompatibleReasoningContent(
+  message: unknown,
+  provider: ProviderId,
+): string | undefined {
+  const record = message && typeof message === "object"
+    ? message as Record<string, unknown>
+    : undefined;
+
+  if (provider === "openrouter") {
+    const details = record?.reasoning_details;
+    if (isReasoningDetails(details) && details.length > 0) {
+      return JSON.stringify({
+        provider: "openrouter",
+        api: "chat",
+        items: details,
+      } satisfies OpenRouterChatReasoningReplayEnvelope);
+    }
+
+    const raw = record?.reasoning ?? record?.reasoning_content;
+    return typeof raw === "string" && raw.length > 0 ? raw : undefined;
+  }
+
+  const raw = record?.reasoning_content;
+  return typeof raw === "string" && raw.length > 0 ? raw : undefined;
+}
 
 function mapMessageToOpenAI(
   role: "system" | "user" | "assistant" | "tool",
   content: ChatRequest["messages"][number]["content"],
+  reasoningContent?: string,
+  provider?: ProviderId,
 ): OAIChatMsg[] {
   // Plain string content — legacy path.
   if (typeof content === "string") {
     if (role === "tool") {
       // String-typed tool messages don't carry a tool_call_id; fold to assistant text.
       return [{ role: "assistant", content }];
+    }
+    if (role === "assistant") {
+      return [{
+        role,
+        content,
+        ...reasoningReplayFields(reasoningContent, provider),
+      }];
     }
     return [{ role, content }];
   }
@@ -109,14 +201,38 @@ function mapMessageToOpenAI(
     }
     if (toolCalls.length > 0) {
       return [
-        { role: "assistant", content: proseText, tool_calls: toolCalls },
+        {
+          role: "assistant",
+          content: proseText,
+          ...reasoningReplayFields(reasoningContent, provider),
+          tool_calls: toolCalls,
+        },
       ];
     }
-    return [{ role: "assistant", content: proseText }];
+    return [{
+      role: "assistant",
+      content: proseText,
+      ...reasoningReplayFields(reasoningContent, provider),
+    }];
   }
 
   // system / user with structured content — flatten to text.
   return [{ role, content: flattenContentToText(content) }];
+}
+
+/** Pure projector exposed for provider tool-loop compatibility tests. */
+export function mapOpenAICompatibleMessages(
+  messages: ChatRequest["messages"],
+  provider?: ProviderId,
+): unknown[] {
+  return messages.flatMap((message) =>
+    mapMessageToOpenAI(
+      message.role,
+      message.content,
+      message.reasoningContent,
+      provider,
+    ),
+  );
 }
 
 /**
@@ -175,6 +291,131 @@ export interface OpenAICompatibleConfig {
   extraHeaders?: Record<string, string>;
   /** Fallback model when caller omits one. */
   defaultModel: string | null;
+  /** New OpenAI reasoning models use max_completion_tokens. */
+  maxTokensParam?: "max_tokens" | "max_completion_tokens";
+  /** Provider-specific wire mapping for the normalized reasoning controls. */
+  reasoningDialect?:
+    | "openai-chat"
+    | "openrouter"
+    | "deepseek"
+    | "moonshot"
+    | "zai"
+    | "unsupported";
+}
+
+/**
+ * Translate normalized reasoning controls into an OpenAI-compatible request
+ * body. Compatibility at the HTTP-shape level does not imply parameter
+ * compatibility, so every provider opts into an explicit dialect.
+ */
+export function mapOpenAICompatibleReasoning(
+  dialect: OpenAICompatibleConfig["reasoningDialect"],
+  req: Pick<ChatRequest, "reasoning" | "verbosity" | "store" | "tools">,
+  provider: ProviderId,
+  model: string,
+): Record<string, unknown> {
+  if (req.verbosity !== undefined || req.store !== undefined) {
+    const control = req.verbosity !== undefined ? "text verbosity" : "response storage";
+    throw new LLMError(
+      `${provider}/${model} does not expose normalized ${control} through Chat Completions`,
+      "bad_request",
+      provider,
+    );
+  }
+  const reasoning = req.reasoning;
+  if (!reasoning) {
+    if (
+      dialect === "moonshot" &&
+      model.startsWith("kimi-k2.6") &&
+      req.tools?.length
+    ) {
+      return { thinking: { type: "enabled", keep: "all" } };
+    }
+    if (dialect === "zai" && req.tools?.length) {
+      return { thinking: { type: "enabled", clear_thinking: false } };
+    }
+    return {};
+  }
+
+  if (reasoning.mode !== undefined) {
+    throw new LLMError(
+      `${provider}/${model} does not accept reasoning mode on Chat Completions`,
+      "bad_request",
+      provider,
+    );
+  }
+  if (reasoning.context !== undefined || reasoning.summary !== undefined) {
+    const control = reasoning.context !== undefined
+      ? "reasoning context"
+      : "reasoning summary";
+    throw new LLMError(
+      `${provider}/${model} does not expose ${control} through Chat Completions`,
+      "bad_request",
+      provider,
+    );
+  }
+
+  if (!reasoning.effort) return {};
+
+  if (dialect === "openai-chat") {
+    return { reasoning_effort: reasoning.effort };
+  }
+
+  if (dialect === "openrouter") {
+    return { reasoning: { effort: reasoning.effort } };
+  }
+
+  if (dialect === "deepseek") {
+    if (reasoning.effort === "none") {
+      return { thinking: { type: "disabled" } };
+    }
+    if (reasoning.effort === "minimal") {
+      throw new LLMError(
+        `DeepSeek ${model} does not support minimal reasoning effort`,
+        "bad_request",
+        provider,
+      );
+    }
+    const effort =
+      reasoning.effort === "xhigh" || reasoning.effort === "max"
+        ? "max"
+        : "high";
+    return {
+      thinking: { type: "enabled" },
+      reasoning_effort: effort,
+    };
+  }
+
+  if (dialect === "moonshot") {
+    if (model.startsWith("kimi-k2.6") && reasoning.effort === "none") {
+      return { thinking: { type: "disabled" } };
+    }
+    const detail = model.startsWith("kimi-k2.7")
+      ? "Kimi K2.7 has mandatory thinking and no effort selector"
+      : "Moonshot exposes only an on/off thinking control, not effort levels";
+    throw new LLMError(
+      `${detail}; omit reasoning.effort${model.startsWith("kimi-k2.6") ? ' or use "none" to disable K2.6 thinking' : ""}`,
+      "bad_request",
+      provider,
+    );
+  }
+
+  if (dialect === "zai") {
+    if (reasoning.effort === "none") {
+      return { thinking: { type: "disabled" } };
+    }
+    throw new LLMError(
+      `Z.AI ${model} exposes thinking on/off but no native effort level; omit reasoning.effort or use "none" to disable thinking`,
+      "bad_request",
+      provider,
+    );
+  }
+
+  throw new LLMError(
+    `${provider}/${model} does not expose a normalized reasoning-effort control`,
+    "bad_request",
+    provider,
+  );
 }
 
 // Legacy single-string projector retained for non-tool-aware callers — the
@@ -207,6 +448,17 @@ function mapFinishReason(reason: string | null | undefined): ChatResponse["finis
     default:
       return "unknown";
   }
+}
+
+function usageNumber(record: Record<string, unknown> | undefined, key: string): number {
+  const value = record?.[key];
+  return typeof value === "number" && Number.isFinite(value) ? Math.max(0, value) : 0;
+}
+
+function usageDecimal(record: Record<string, unknown> | undefined, key: string): number | undefined {
+  const value = record?.[key];
+  const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
 }
 
 export function createOpenAICompatibleAdapter(
@@ -257,23 +509,33 @@ export function createOpenAICompatibleAdapter(
         // Fan out structured messages into the OpenAI shape, preserving
         // tool_use → tool_calls and tool_result → role:"tool" so the
         // upstream model sees a real tool-use loop instead of prose.
-        const flatMessages = req.messages.flatMap((m) =>
-          mapMessageToOpenAI(m.role, m.content),
+        const flatMessages = mapOpenAICompatibleMessages(
+          req.messages,
+          config.id,
         );
         const oaTools = mapToolsForRequest(req.tools);
+        const reasoning = mapOpenAICompatibleReasoning(
+          config.reasoningDialect,
+          req,
+          config.id,
+          model,
+        );
 
+        const params: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming = {
+          model,
+          stream: false,
+          messages: flatMessages as OpenAI.Chat.Completions.ChatCompletionMessageParam[],
+          temperature: req.temperature,
+          ...(config.maxTokensParam === "max_completion_tokens"
+            ? { max_completion_tokens: req.maxTokens }
+            : { max_tokens: req.maxTokens }),
+          stop: req.stop,
+          ...(oaTools ? { tools: oaTools } : {}),
+          ...(req.jsonMode ? { response_format: { type: "json_object" as const } } : {}),
+          ...reasoning,
+        };
         const completion = await c.chat.completions.create(
-          {
-            model,
-            messages: flatMessages as Parameters<
-              typeof c.chat.completions.create
-            >[0]["messages"],
-            temperature: req.temperature,
-            max_tokens: req.maxTokens,
-            stop: req.stop,
-            ...(oaTools ? { tools: oaTools } : {}),
-            ...(req.jsonMode ? { response_format: { type: "json_object" as const } } : {}),
-          },
+          params,
           {
             signal: req.signal,
           },
@@ -281,7 +543,22 @@ export function createOpenAICompatibleAdapter(
 
         const choice = completion.choices[0];
         const text = choice?.message?.content ?? "";
+        const reasoningContent = extractOpenAICompatibleReasoningContent(
+          choice?.message,
+          config.id,
+        );
         const usage = completion.usage;
+        const usageRecord = usage as unknown as Record<string, unknown> | undefined;
+        const promptDetails = usageRecord?.prompt_tokens_details as Record<string, unknown> | undefined;
+        const completionDetails = usageRecord?.completion_tokens_details as Record<string, unknown> | undefined;
+        const inputTokens = usageNumber(usageRecord, "prompt_tokens");
+        const outputTokens = usageNumber(usageRecord, "completion_tokens");
+        const cachedInputTokens = Math.max(
+          usageNumber(promptDetails, "cached_tokens"),
+          usageNumber(usageRecord, "prompt_cache_hit_tokens"),
+        );
+        const cacheWriteInputTokens = usageNumber(promptDetails, "cache_write_tokens");
+        const providerCostUsd = usageDecimal(usageRecord, "cost");
 
         // Parse tool_calls back into the gateway's typed ToolCall[] so the
         // step engine's tool-use loop can dispatch them. The OpenAI SDK
@@ -319,8 +596,29 @@ export function createOpenAICompatibleAdapter(
           model: completion.model ?? model,
           tokensIn: usage?.prompt_tokens ?? null,
           tokensOut: usage?.completion_tokens ?? null,
+          usage: usage ? {
+            inputTokens,
+            outputTokens,
+            totalTokens: usageNumber(usageRecord, "total_tokens") || inputTokens + outputTokens,
+            cachedInputTokens,
+            cacheWriteInputTokens,
+            cacheWrite5mInputTokens: usageNumber(promptDetails, "cache_write_tokens_5m"),
+            cacheWrite1hInputTokens: usageNumber(promptDetails, "cache_write_tokens_1h"),
+            reasoningTokens: Math.max(
+              usageNumber(completionDetails, "reasoning_tokens"),
+              usageNumber(usageRecord, "reasoning_tokens"),
+            ),
+            inputAudioTokens: usageNumber(promptDetails, "audio_tokens"),
+            outputAudioTokens: usageNumber(completionDetails, "audio_tokens"),
+            raw: usage,
+          } : undefined,
+          providerReportedCostUsd: providerCostUsd,
+          providerRequestId: completion.id,
           finishReason: mapFinishReason(choice?.finish_reason),
           latencyMs: Date.now() - start,
+          reasoning: req.reasoning,
+          verbosity: req.verbosity,
+          reasoningContent,
           toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
           raw: completion,
         };

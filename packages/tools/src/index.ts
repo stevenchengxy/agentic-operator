@@ -35,6 +35,8 @@ export * as gohire from "./gohire";
 export * as fs from "./fs";
 export * as http from "./http";
 export * as meta from "./meta";
+export * as search from "./search";
+export * as ontology from "./ontology";
 
 // DI seam: apps/api injects a resolver at boot so DB-backed integration
 // credentials (configured in Settings → Integrations) reach the GoHire tool

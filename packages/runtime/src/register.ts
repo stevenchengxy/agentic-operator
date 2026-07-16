@@ -22,6 +22,10 @@ import { stat } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { runAction } from "./step-engine";
 import { appendToLedger } from "./event-ledger";
+import {
+  buildCanonicalEventPayload,
+  stripPrivateEventMetadata,
+} from "./event-envelope";
 import { writeRunLog } from "./log-writer";
 import {
   createFilesystemArtifactSink,
@@ -270,6 +274,22 @@ export function eventTargetsAgent(
   return typeof target !== "string" || target === "" || target === agentName;
 }
 
+/**
+ * Add transport-only metadata to a canonical downstream payload. Keeping
+ * this boundary explicit guarantees that stripping private keys from the
+ * delivered data reproduces the exact object persisted in the event ledger.
+ */
+export function buildManifestEventDeliveryData(args: {
+  logicalPayload: Record<string, unknown>;
+  eventId: string;
+  correlationId: string;
+}): Record<string, unknown> {
+  return withCorrelation(args.correlationId, {
+    ...stripPrivateEventMetadata(args.logicalPayload),
+    __triggerEventId: args.eventId,
+  });
+}
+
 export interface ResolvedAgentConcurrency {
   limit: number;
   key: string;
@@ -417,18 +437,19 @@ export function registerAgent(
       triggers,
     },
     async ({ event, step, logger }) => {
-      const data = (event.data ?? {}) as Record<string, unknown>;
-      if (!eventTargetsAgent(data, agent.name)) {
+      const deliveryData = (event.data ?? {}) as Record<string, unknown>;
+      if (!eventTargetsAgent(deliveryData, agent.name)) {
         return {
           skipped: true,
           reason: "targeted_event_for_another_agent",
-          targetAgent: data.__invokedAgent,
+          targetAgent: deliveryData.__invokedAgent,
         };
       }
-      const subject = typeof data.subject === "string" ? data.subject : null;
+      const subject =
+        typeof deliveryData.subject === "string" ? deliveryData.subject : null;
       const triggerEventId =
-        typeof data.__triggerEventId === "string"
-          ? data.__triggerEventId
+        typeof deliveryData.__triggerEventId === "string"
+          ? deliveryData.__triggerEventId
           : null;
       // Event Tester plumbing: the publish route stamps `__test: true` on the
       // Inngest envelope when the caller opted in. We propagate that into
@@ -436,7 +457,7 @@ export function registerAgent(
       // and never pollutes production observability (PRD G5, NFR-7). The
       // legacy spelling is `__test`; downstream actions should not read it
       // directly — runs.isTest is the source of truth.
-      const isTest = data.__test === true;
+      const isTest = deliveryData.__test === true;
 
       // step.run memoizes results across Inngest replays. Wrap correlation +
       // run-row allocation so identical IDs are reused on every replay, and
@@ -537,6 +558,27 @@ export function registerAgent(
       const startedAtMs = init.startedAt;
       const startedAt = new Date(startedAtMs);
       const db = getDb();
+      const bareEventName = event.name.startsWith(`${tenantSlug}/`)
+        ? event.name.slice(tenantSlug.length + 1)
+        : event.name;
+      const deliveredEventId =
+        typeof (event as { id?: unknown }).id === "string"
+          ? (event as { id: string }).id
+          : typeof deliveryData.event_id === "string" &&
+              deliveryData.event_id.trim().length > 0
+            ? deliveryData.event_id
+            : makeId("evt");
+      // Keep routing/control fields on the Inngest envelope, but expose only
+      // the canonical logical event to validation, prompts, tools, and run
+      // artifacts. Canonical ingress payloads round-trip unchanged here;
+      // older direct Inngest/schedule events gain the same identity contract.
+      const data = buildCanonicalEventPayload({
+        eventName: bareEventName,
+        eventId: triggerEventId ?? deliveredEventId,
+        correlationId,
+        subject,
+        payload: deliveryData,
+      });
 
       const logCtx = {
         tenantSlug,
@@ -1194,11 +1236,18 @@ export function registerAgent(
 
           const eventId = makeId("evt");
           const emittedAt = new Date();
+          const logicalPayload = buildCanonicalEventPayload({
+            eventName: emission.name,
+            eventId,
+            correlationId,
+            subject,
+            payload: emission.payload,
+          });
           const payloadRef = await appendToLedger(tenantSlug, {
             id: eventId,
             name: emission.name,
             subject: subject ?? undefined,
-            data: emission.payload,
+            data: logicalPayload,
             ts: emittedAt.getTime(),
           });
           dbInner
@@ -1235,7 +1284,11 @@ export function registerAgent(
               createdAt: emittedAt,
             });
           }
-          finalizedEmissions.push({ ...emission, eventId });
+          finalizedEmissions.push({
+            ...emission,
+            payload: logicalPayload,
+            eventId,
+          });
           await safeRunLog("INFO", "event.emit", {
             name: emission.name,
             event_id: eventId,
@@ -1509,9 +1562,10 @@ export function registerAgent(
         if (!emission.eventId || emission.suppressed) continue;
         await step.sendEvent(`emit.${index}.${emission.name}`, {
           name: `${tenantSlug}/${emission.name}` as `${string}/${string}`,
-          data: withCorrelation(correlationId, {
-            ...emission.payload,
-            __triggerEventId: emission.eventId,
+          data: buildManifestEventDeliveryData({
+            logicalPayload: emission.payload,
+            eventId: emission.eventId,
+            correlationId,
           }),
         });
       }

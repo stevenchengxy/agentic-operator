@@ -46,7 +46,11 @@ import {
   tenants as tenantsTable,
   workflows as workflowsTable,
 } from "@agentic/db";
-import { appendToLedger, inngest } from "@agentic/runtime";
+import {
+  appendToLedger,
+  buildCanonicalEventPayload,
+  inngest,
+} from "@agentic/runtime";
 import { makeId } from "@agentic/shared";
 import { isDemoMode } from "../config/demo-mode.js";
 
@@ -191,13 +195,22 @@ async function tickPublishEvent(
 
   const subject = `${SUBJECT_PREFIX}-${randomHex(4)}`;
   const eventId = makeId("evt");
+  const correlationId = makeId("cor");
+  const generatedAt = Date.now();
+  const logicalPayload = buildCanonicalEventPayload({
+    eventName,
+    eventId,
+    correlationId,
+    subject,
+    payload: { demo: true, generatedAt },
+  });
 
   const payloadRef = await appendToLedger(tenant.slug, {
     id: eventId,
     name: eventName,
     subject,
-    data: { __demo: true, generatedAt: Date.now() },
-    ts: Date.now(),
+    data: logicalPayload,
+    ts: generatedAt,
   });
 
   const db = getDb();
@@ -226,10 +239,10 @@ async function tickPublishEvent(
   await inngest.send({
     name: namespaced,
     data: {
+      ...logicalPayload,
       __demo: true,
       __triggerEventId: eventId,
-      subject,
-      generatedAt: Date.now(),
+      __correlationId: correlationId,
     },
   });
 

@@ -24,6 +24,7 @@ const ajv = new Ajv2020({
 addFormats(ajv);
 
 const validatorCache = new Map<string, ValidateFunction>();
+const MAX_AGENT_CONVERSATION_MESSAGES = 20;
 const FORBIDDEN_PATH_SEGMENTS = new Set([
   "__proto__",
   "prototype",
@@ -85,6 +86,12 @@ export interface PromptRunContext {
   [key: string]: unknown;
 }
 
+/** A caller-sanitized prior conversational turn for continued agent runs. */
+export interface AgentConversationTurn {
+  role: "user" | "assistant";
+  content: string;
+}
+
 export interface CompileAgentPromptsOptions {
   platformInstructions?: string;
   tenantInstructions?: string;
@@ -94,7 +101,19 @@ export interface CompileAgentPromptsOptions {
    * the user role and is appended after the locked prompt/input blocks.
    */
   actionContext?: string;
+  /**
+   * Intermediate actions produce working state for the next action and must
+   * not be instructed to satisfy the terminal agent output schema.
+   * Defaults to true for direct/single-step callers.
+   */
+  includeOutputContract?: boolean;
   run?: PromptRunContext;
+  /**
+   * Caller-sanitized prior turns. The runtime keeps only the newest 20 and
+   * always places them between the immutable system message and current user
+   * message.
+   */
+  conversationHistory?: AgentConversationTurn[];
 }
 
 export interface CompiledAgentPrompts {
@@ -271,12 +290,14 @@ export function bindTriggerInputs(
     }
   }
 
+  const promptPorts = agent.inputs.filter((port) => port.kind === "prompt");
+  const promptPort = promptPorts.length === 1 ? promptPorts[0] : undefined;
   if (
+    promptPort &&
     typeof event.data.prompt === "string" &&
-    agent.inputs.some((port) => port.id === "prompt") &&
-    !Object.hasOwn(supplied, "prompt")
+    !Object.hasOwn(supplied, promptPort.id)
   ) {
-    supplied.prompt = event.data.prompt;
+    supplied[promptPort.id] = event.data.prompt;
   }
   return supplied;
 }
@@ -336,9 +357,10 @@ export function validateAgentInputs(
 }
 
 /**
- * Deterministically compile the effective system message and one real user
- * message. The prompt input is always the first, exact user-owned block; a
- * custom context template cannot omit or promote it into the system role.
+ * Deterministically compile the effective system message, bounded prior
+ * conversation, and one real current-user message. The prompt input is always
+ * the first, exact user-owned block of the current turn; a custom context
+ * template or prior turn cannot omit or promote it into the system role.
  */
 export function compileAgentPrompts(
   definition: unknown,
@@ -409,12 +431,18 @@ export function compileAgentPrompts(
     options.actionObjective
       ? `Current action objective:\n${options.actionObjective}`
       : undefined,
-    buildOutputContractInstructions(normalized.outputSchema),
+    options.includeOutputContract === false
+      ? undefined
+      : buildOutputContractInstructions(normalized.outputSchema),
     buildToolConstraintInstructions(agent.tool_use),
   ].filter((part): part is string => Boolean(part && part.trim()));
   const system = systemParts.join("\n\n");
+  const conversationHistory = (options.conversationHistory ?? [])
+    .slice(-MAX_AGENT_CONVERSATION_MESSAGES)
+    .map((turn) => ({ role: turn.role, content: turn.content }));
   const messages: ChatMessage[] = [
     { role: "system", content: system },
+    ...conversationHistory,
     { role: "user", content: user },
   ];
   return { system, user, messages, outputSchema: normalized.outputSchema };

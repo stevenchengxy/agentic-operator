@@ -219,6 +219,70 @@ describe("runAction v2 integration", () => {
     );
   });
 
+  it("delivers prior conversation to the gateway before the exact current user turn", async () => {
+    responses.push(
+      response(JSON.stringify({ result: { decision: "advance" } })),
+    );
+    const trace = createBufferedTraceSink();
+    const conversationHistory = [
+      { role: "user" as const, content: "What did you find previously?" },
+      {
+        role: "assistant" as const,
+        content: "I found one relevant piece of evidence.",
+      },
+    ];
+    const result = await runAction({
+      runId: "run-v2-chat",
+      stepId: "stp-v2-chat",
+      trace,
+      conversationHistory,
+      ctx: {
+        agentName: "studioAgent",
+        actionName: "execute",
+        correlationId: "cor-v2-chat",
+        tenantSlug: "test",
+        event: {
+          name: "RUN",
+          data: {
+            prompt: "Now assess candidate cand-chat with that context.",
+            inputs: { candidate: { id: "cand-chat" } },
+          },
+        },
+      },
+      action: {
+        order: "1",
+        name: "execute",
+        description: "Produce the declared result.",
+        type: "logic",
+      },
+      agent: v2Agent(),
+      tenantRegistry: {},
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(requests.length, 1);
+    assert.deepEqual(
+      requests[0]?.messages.map((message) => message.role),
+      ["system", "user", "assistant", "user"],
+    );
+    assert.deepEqual(requests[0]?.messages.slice(1, -1), conversationHistory);
+    const currentUser = requests[0]?.messages.at(-1);
+    assert.equal(currentUser?.role, "user");
+    assert.ok(
+      typeof currentUser?.content === "string" &&
+        currentUser.content.startsWith(
+          "Now assess candidate cand-chat with that context.",
+        ),
+    );
+    const promptTrace = trace.events.find(
+      (event) => event.name === "prompt.compiled",
+    );
+    assert.equal(
+      promptTrace?.data?.userBytes,
+      Buffer.byteLength(String(currentUser?.content)),
+    );
+  });
+
   it("rejects schema-invalid model tool input before the handler", async () => {
     let handlerCalls = 0;
     responses.push(

@@ -68,6 +68,95 @@
             "action_prompt": {
               "type": "string"
             },
+            "provider": {
+              "type": "string",
+              "enum": [
+                "anthropic",
+                "openai",
+                "openrouter",
+                "gemini",
+                "mistral",
+                "groq",
+                "together",
+                "deepseek",
+                "moonshot",
+                "zai",
+                "qwen",
+                "azure",
+                "bedrock",
+                "vertex",
+                "custom",
+                "mock"
+              ]
+            },
+            "model": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 240
+            },
+            "reasoning": {
+              "type": "object",
+              "properties": {
+                "effort": {
+                  "type": "string",
+                  "enum": [
+                    "none",
+                    "minimal",
+                    "low",
+                    "medium",
+                    "high",
+                    "xhigh",
+                    "max"
+                  ]
+                },
+                "mode": {
+                  "type": "string",
+                  "enum": [
+                    "standard",
+                    "pro"
+                  ]
+                },
+                "summary": {
+                  "type": "string",
+                  "enum": [
+                    "none",
+                    "auto",
+                    "concise",
+                    "detailed"
+                  ]
+                },
+                "context": {
+                  "type": "string",
+                  "enum": [
+                    "auto",
+                    "current_turn",
+                    "all_turns"
+                  ]
+                }
+              },
+              "additionalProperties": false
+            },
+            "verbosity": {
+              "type": "string",
+              "enum": [
+                "low",
+                "medium",
+                "high"
+              ]
+            },
+            "store": {
+              "type": "boolean"
+            },
+            "temperature": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 2
+            },
+            "max_tokens": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 1000000
+            },
             "tool": {
               "type": "string"
             },

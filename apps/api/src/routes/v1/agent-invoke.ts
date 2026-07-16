@@ -23,7 +23,11 @@ import type { FastifyInstance } from "fastify";
 import { agentRegistry, RunCancelledError } from "@agentic/agents";
 import { PROVIDER_IDS, type ProviderId } from "@agentic/contracts";
 import { isLLMError } from "@agentic/llm-gateway";
-import { appendToLedger, inngest } from "@agentic/runtime";
+import {
+  appendToLedger,
+  buildCanonicalEventPayload,
+  inngest,
+} from "@agentic/runtime";
 import { events, eventTypes, getDb } from "@agentic/db";
 import { and, eq } from "drizzle-orm";
 import { InvokeAgentBody } from "@agentic/contracts";
@@ -133,7 +137,9 @@ export async function agentInvokeRoutes(app: FastifyInstance): Promise<void> {
         // or {candidate_id, job_requisition_id}); fall back to a synthetic test
         // subject so the run doesn't surface a NULL subject in the UI.
         const inputObj =
-          body.input && typeof body.input === "object"
+          body.input &&
+          typeof body.input === "object" &&
+          !Array.isArray(body.input)
             ? (body.input as Record<string, unknown>)
             : {};
         const subject =
@@ -142,10 +148,23 @@ export async function agentInvokeRoutes(app: FastifyInstance): Promise<void> {
           (typeof inputObj.job_requisition_id === "string" &&
             inputObj.job_requisition_id) ||
           `TEST-${eventId.slice(4, 12)}`;
+        const exactPrompt =
+          typeof body.input === "string"
+            ? body.input
+            : typeof inputObj.prompt === "string"
+              ? inputObj.prompt
+              : undefined;
+        const logicalPayload = buildCanonicalEventPayload({
+          eventName: triggerEvent,
+          eventId,
+          correlationId,
+          subject,
+          payload: inputObj,
+          ...(exactPrompt === undefined ? {} : { prompt: exactPrompt }),
+        });
 
         const inngestData: Record<string, unknown> = {
-          ...inputObj,
-          subject,
+          ...logicalPayload,
           __triggerEventId: eventId,
           __correlationId: correlationId,
           __invokedAgent: agentName,
@@ -165,7 +184,7 @@ export async function agentInvokeRoutes(app: FastifyInstance): Promise<void> {
             id: eventId,
             name: triggerEvent,
             subject,
-            data: inngestData,
+            data: logicalPayload,
             ts: Date.now(),
           });
           const db = getDb();
@@ -270,6 +289,9 @@ export async function agentInvokeRoutes(app: FastifyInstance): Promise<void> {
           invocationId,
           provider: body.provider as ProviderId | undefined,
           model: body.model,
+          reasoning: body.reasoning,
+          verbosity: body.verbosity,
+          store: body.store,
           // P2-FE-18 — propagate `?testRun=1` into the run engine so it can
           // flip `runs.is_test` and tag the broadcast `run.started` event.
           testRun: testRunQuery,

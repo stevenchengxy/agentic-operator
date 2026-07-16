@@ -5,7 +5,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Toolchain
 
 - **Node 26.5.0** (`.nvmrc` = 26.5.0). `better-sqlite3` (native module) is compiled against Node 26's MODULE_VERSION (ABI 147); running on a different major crashes with `ERR_DLOPEN_FAILED` / `NODE_MODULE_VERSION` mismatch. Run `nvm use` after switching shells.
-  - **Self-heal:** `scripts/ensure-native-modules.mjs` detects an ABI mismatch (via `process.dlopen` on the resolved `.node`) and rebuilds in-place. It's wired into `postinstall` + every `pre*` script (`predev`, `prebuild`, `pretest`, `predb:*`, `preseed:rich`), so a stale binary auto-rebuilds before the next command instead of crashing. Note: `pnpm rebuild <pkg>` is a silent no-op under pnpm 11 — the guard runs the package's own `prebuild-install || node-gyp` chain inside the package dir, then re-verifies in a child process (dlopen caches per-process).
+  - **Exact-version guard:** `scripts/ensure-node-version.mjs` rejects any runtime other than 26.5.0 and verifies `.nvmrc` matches `package.json#engines.node`. `.npmrc#engine-strict=true` and the root lifecycle pre-scripts enforce it for install, dev, build, lint, typecheck, test, clean, format, database, and seed commands.
+  - **Self-heal:** `scripts/ensure-native-modules.mjs` detects an ABI mismatch (via `process.dlopen` on the resolved `.node`) and rebuilds in-place. It's wired into `postinstall` + every runtime-sensitive pre-script (`predev`, `prebuild`, `pretest`, `predb:*`, `preseed:rich`), so a stale binary auto-rebuilds before the next command instead of crashing. Note: `pnpm rebuild <pkg>` is a silent no-op under pnpm 11 — the guard runs the package's own `prebuild-install || node-gyp` chain inside the package dir, then re-verifies in a child process (dlopen caches per-process).
 - **pnpm 11** workspaces — `pnpm install`. Build approval for native deps lives in `pnpm-workspace.yaml` under `allowBuilds:` (the old `pnpm.onlyBuiltDependencies` field in `package.json` is no longer read by pnpm 11 and was removed — `pnpm-workspace.yaml` is the single source of truth).
 - Node is pinned consistently in README, `.nvmrc`, CI, Docker, and `package.json#engines`.
 
@@ -13,6 +14,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 pnpm dev                  # web :3599 + api :3501 + inngest dev :8288 (predev runs ensure:native, then frees those ports + 8289/50052/50053)
+./restart.sh              # gracefully stop the current local stack, then run pnpm dev under the pinned Node version
+./restart.sh --check      # validate the restart harness without changing running processes
 pnpm build                # turbo run build across all workspaces
 pnpm lint                 # turbo run lint (Next.js ESLint on web only)
 pnpm typecheck            # turbo run typecheck (every package has its own tsc --noEmit)

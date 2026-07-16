@@ -5,7 +5,11 @@ import {
   JsonSchemaSchema,
 } from "./agent-definition";
 import { AgentKindEnum, ActorEnum } from "./agents";
-import { ProviderIdSchema } from "./llm";
+import {
+  ProviderIdSchema,
+  ReasoningConfigSchema,
+  TextVerbositySchema,
+} from "./llm";
 import { RunStatus } from "./runs";
 
 export const AgentLifecycleSchema = z.enum(["draft", "active", "archived"]);
@@ -303,9 +307,31 @@ export type StudioRunTarget = z.infer<typeof StudioRunTargetSchema>;
 export const StudioToolPolicySchema = z.enum(["safe", "simulate", "live"]);
 export type StudioToolPolicy = z.infer<typeof StudioToolPolicySchema>;
 
+export const StudioContextModeSchema = z.enum(["isolated", "session"]);
+export type StudioContextMode = z.infer<typeof StudioContextModeSchema>;
+
+/**
+ * Test Lab uses a private control event to execute pinned draft/live
+ * definitions, but the durable payload carries the authored trigger name so
+ * the agent observes the same event identity it would receive in production.
+ */
+export const STUDIO_AGENT_RUN_CONTROL_EVENT = "studio/agent.run" as const;
+export const STUDIO_CHAT_MESSAGE_EVENT = "STUDIO_CHAT_MESSAGE" as const;
+
+export const StudioConversationTurnSchema = z.object({
+  role: z.enum(["user", "assistant"]),
+  content: z.string(),
+});
+export type StudioConversationTurn = z.infer<
+  typeof StudioConversationTurnSchema
+>;
+
 export const StudioRuntimeOverridesSchema = z.object({
   provider: ProviderIdSchema.optional(),
   model: z.string().trim().min(1).max(240).optional(),
+  reasoning: ReasoningConfigSchema.optional(),
+  verbosity: TextVerbositySchema.optional(),
+  store: z.boolean().optional(),
   temperature: z.number().min(0).max(2).optional(),
   maxTokens: z.number().int().positive().max(1_000_000).optional(),
   timeoutS: z.number().int().positive().max(86_400).optional(),
@@ -316,7 +342,10 @@ export type StudioRuntimeOverrides = z.infer<
 
 export const CreateAgentRunBodySchema = z.object({
   sessionId: z.string().optional(),
+  contextMode: StudioContextModeSchema.default("isolated"),
   target: StudioRunTargetSchema,
+  /** Optional authored trigger to simulate; defaults to the first trigger. */
+  triggerEvent: z.string().trim().min(1).max(160).optional(),
   prompt: z
     .string()
     .min(1)
@@ -330,6 +359,10 @@ export type CreateAgentRunBody = z.infer<typeof CreateAgentRunBodySchema>;
 export const CreateAgentRunResponseSchema = z.object({
   runId: z.string(),
   sessionId: z.string(),
+  /** Locally persisted trigger event that dispatched this reserved run. */
+  eventId: z.string(),
+  /** Authored bare trigger name, or STUDIO_CHAT_MESSAGE when none is declared. */
+  eventName: z.string(),
   status: z.literal("queued"),
   definitionHash: z.string(),
   traceUrl: z.string(),
@@ -337,6 +370,78 @@ export const CreateAgentRunResponseSchema = z.object({
 });
 export type CreateAgentRunResponse = z.infer<
   typeof CreateAgentRunResponseSchema
+>;
+
+/**
+ * The authored trigger as observed by the agent and stored in the event
+ * ledger. Studio dispatch metadata (tenant ids, definition hashes, tool
+ * policy, conversation history, etc.) intentionally does not belong here.
+ *
+ * Snake-case identity aliases are included for compatibility with generated
+ * workflow prompts that consume event payloads as JSON. Runtime identity and
+ * chat fields are server-owned; authored `request_id` and `context` values are
+ * retained when supplied. Arbitrary non-reserved fields from an authored
+ * `payload` input pass through the catch-all portion of the schema.
+ */
+export const StudioLogicalTriggerPayloadSchema = z
+  .object({
+    event_type: z.string().trim().min(1).max(160),
+    event_name: z.string().trim().min(1).max(160),
+    event_id: z.string().min(1),
+    request_id: z.string().min(1),
+    run_id: z.string().min(1),
+    session_id: z.string().min(1),
+    correlation_id: z.string().min(1),
+    prompt: z
+      .string()
+      .min(1)
+      .max(128 * 1024),
+    input: z
+      .string()
+      .min(1)
+      .max(128 * 1024),
+    /** Authored structured context, or the exact chat prompt when omitted. */
+    context: z.unknown(),
+    subject: z.string().optional(),
+  })
+  .catchall(z.unknown());
+export type StudioLogicalTriggerPayload = z.infer<
+  typeof StudioLogicalTriggerPayloadSchema
+>;
+
+/**
+ * Durable data carried by the private Studio Inngest control event. `prompt`
+ * is the exact user-owned chat text; `inputs` also contains that same value
+ * under the definition's authored prompt-port id. `payload` is the immutable
+ * logical trigger exposed to the agent; the remaining fields are private
+ * reservation/control metadata.
+ */
+export const StudioAgentRunEventDataSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    eventId: z.string(),
+    eventName: z.string().trim().min(1).max(160),
+    runId: z.string(),
+    sessionId: z.string(),
+    correlationId: z.string(),
+    agentId: z.string(),
+    definitionHash: z.string(),
+    tenantId: z.string(),
+    tenantSlug: z.string().min(1),
+    subject: z.string().nullable(),
+    prompt: z
+      .string()
+      .min(1)
+      .max(128 * 1024),
+    payload: StudioLogicalTriggerPayloadSchema,
+    inputs: z.record(z.string(), z.unknown()),
+    conversationHistory: z.array(StudioConversationTurnSchema).max(20),
+    runtimeOverrides: StudioRuntimeOverridesSchema,
+    toolPolicy: StudioToolPolicySchema,
+  })
+  .strict();
+export type StudioAgentRunEventData = z.infer<
+  typeof StudioAgentRunEventDataSchema
 >;
 
 export const RunInvocationSourceSchema = z.enum([
@@ -434,10 +539,25 @@ export const RunMessageSchema = z.object({
 });
 export type RunMessage = z.infer<typeof RunMessageSchema>;
 
+/**
+ * Server-authoritative values required to continue a saved Test Lab chat.
+ * Draft revisions and alternate triggers must not silently fall back to the
+ * editor's current selection when a session is reopened.
+ */
+export const StudioRunContinuationSchema = z.object({
+  runId: z.string(),
+  target: StudioRunTargetSchema,
+  triggerEvent: z.string().trim().min(1).max(160),
+  inputs: z.record(z.string(), z.unknown()),
+  toolPolicy: StudioToolPolicySchema,
+});
+export type StudioRunContinuation = z.infer<typeof StudioRunContinuationSchema>;
+
 export const GetRunSessionResponseSchema = z.object({
   session: AgentRunSessionSchema,
   messages: z.array(RunMessageSchema),
   runs: z.array(AgentRunHistoryRowSchema),
+  continuation: StudioRunContinuationSchema.nullable().optional(),
 });
 export type GetRunSessionResponse = z.infer<typeof GetRunSessionResponseSchema>;
 

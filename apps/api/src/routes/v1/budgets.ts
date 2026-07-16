@@ -38,6 +38,7 @@ function shapeRow(row: typeof tenantBudgets.$inferSelect) {
     monthlyUsdCap: row.monthlyUsdCap,
     usedTokensMonth: row.usedTokensMonth,
     usedUsdMonth: row.usedUsdMonth,
+    usedUsdNanos: row.usedUsdNanos,
     periodStart: row.periodStart.getTime(),
     updatedAt: row.updatedAt.getTime(),
   };
@@ -95,6 +96,7 @@ export async function budgetsRoutes(app: FastifyInstance): Promise<void> {
     if (body.reset) {
       update.usedTokensMonth = 0;
       update.usedUsdMonth = 0;
+      update.usedUsdNanos = 0;
       update.periodStart = new Date();
     }
 

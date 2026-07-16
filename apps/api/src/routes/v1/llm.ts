@@ -15,7 +15,14 @@
  */
 
 import type { FastifyInstance } from "fastify";
-import { PROVIDER_IDS, PROVIDER_MODEL_CATALOG, type ProviderId } from "@agentic/contracts";
+import {
+  PROVIDER_IDS,
+  PROVIDER_MODEL_CATALOG,
+  type ProviderId,
+  type ReasoningEffort,
+  type ReasoningMode,
+  type TextVerbosity,
+} from "@agentic/contracts";
 import { getLLMGateway, resetLLMGateway } from "../../services/llm";
 import { requireAuth } from "../../plugins/auth";
 import { writeAudit } from "../../plugins/audit";
@@ -191,6 +198,13 @@ export async function llmRoutes(app: FastifyInstance): Promise<void> {
         vision: boolean;
         tools: boolean;
         reasoning: boolean;
+        reasoningEfforts: ReasoningEffort[];
+        reasoningModes: ReasoningMode[];
+        defaultReasoningEffort: ReasoningEffort | null;
+        defaultReasoningMode: ReasoningMode | null;
+        reasoningMandatory: boolean;
+        reasoningDefaultEnabled: boolean;
+        textVerbosities: TextVerbosity[];
         inFleet: boolean;
         /** Where this row came from. */
         origin: "live" | "catalog";
@@ -213,7 +227,20 @@ export async function llmRoutes(app: FastifyInstance): Promise<void> {
           outputPricePerMTok: m.outputPricePerMTok ?? cat?.outP ?? null,
           vision: m.vision ?? cat?.vision ?? false,
           tools: m.tools ?? cat?.tools ?? false,
-          reasoning: cat?.reasoning ?? false,
+          reasoning: m.reasoning ?? cat?.reasoning ?? false,
+          reasoningEfforts:
+            m.reasoningEfforts ?? cat?.reasoningEfforts ?? [],
+          reasoningModes: cat?.reasoningModes ?? [],
+          defaultReasoningEffort:
+            m.defaultReasoningEffort ?? cat?.defaultReasoningEffort ?? null,
+          defaultReasoningMode: cat?.defaultReasoningMode ?? null,
+          reasoningMandatory:
+            m.reasoningMandatory ?? cat?.reasoningMandatory ?? false,
+          reasoningDefaultEnabled:
+            m.reasoningDefaultEnabled ??
+            cat?.reasoningDefaultEnabled ??
+            false,
+          textVerbosities: cat?.textVerbosities ?? [],
           inFleet: fleetSet.has(m.id),
           origin: "live",
         });
@@ -232,6 +259,13 @@ export async function llmRoutes(app: FastifyInstance): Promise<void> {
           vision: cat.vision,
           tools: cat.tools,
           reasoning: cat.reasoning,
+          reasoningEfforts: cat.reasoningEfforts ?? [],
+          reasoningModes: cat.reasoningModes ?? [],
+          defaultReasoningEffort: cat.defaultReasoningEffort ?? null,
+          defaultReasoningMode: cat.defaultReasoningMode ?? null,
+          reasoningMandatory: cat.reasoningMandatory ?? false,
+          reasoningDefaultEnabled: cat.reasoningDefaultEnabled ?? false,
+          textVerbosities: cat.textVerbosities ?? [],
           inFleet: fleetSet.has(cat.name),
           origin: "catalog",
         });

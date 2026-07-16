@@ -7,9 +7,25 @@
  * on this package.
  */
 
-import type { ProviderId } from "@agentic/contracts";
+import type {
+  ProviderId,
+  ReasoningConfig,
+  ReasoningContext,
+  ReasoningEffort,
+  ReasoningMode,
+  ReasoningSummary,
+  TextVerbosity,
+} from "@agentic/contracts";
 
-export type { ProviderId };
+export type {
+  ProviderId,
+  ReasoningConfig,
+  ReasoningContext,
+  ReasoningEffort,
+  ReasoningMode,
+  ReasoningSummary,
+  TextVerbosity,
+};
 
 // ─── P1-CON-01 — Typed content blocks for multi-modal / tool-use ──────────
 //
@@ -47,6 +63,12 @@ export interface ChatMessage {
   /** `tool` is the SDK's role for tool-result messages (a/k/a the "user-side" of a tool call). */
   role: "system" | "user" | "assistant" | "tool";
   content: string | ChatContentBlock[];
+  /**
+   * Opaque provider reasoning state that must be replayed verbatim on an
+   * assistant tool-call turn (DeepSeek, Kimi, and GLM). It is transport
+   * state, not a user-visible chain-of-thought, and must never be logged.
+   */
+  reasoningContent?: string;
 }
 
 /**
@@ -102,12 +124,55 @@ export interface ChatRequest {
   signal?: AbortSignal;
   /** Hint the model to return JSON. Each adapter maps this to its native flag. */
   jsonMode?: boolean;
+  /** Provider-neutral reasoning controls; model capabilities define valid subsets. */
+  reasoning?: ReasoningConfig;
+  /** Output detail control supported by GPT-5-family models and some gateways. */
+  verbosity?: TextVerbosity;
+  /** Whether the upstream provider may retain the response for later retrieval. */
+  store?: boolean;
   /** P1-CON-02 — advertised tools for tool-use models. */
   tools?: ToolDef[];
   /** P1-RT-06 — caller-provided tenantId for usage attribution (optional). */
   tenantId?: string;
   /** Alias of `tenantId` used by some legacy callers. */
   tenantSlug?: string;
+  /** Durable attribution for the per-provider-attempt usage ledger. */
+  runId?: string;
+  stepId?: string;
+  /** Stable caller label such as `manifest.logic`, `code-agent`, or `studio`. */
+  purpose?: string;
+}
+
+/** Provider-neutral token accounting. Cached/write/reasoning tokens are subsets. */
+export interface TokenUsage {
+  /** False when the provider omitted authoritative usage entirely. */
+  available?: boolean;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  cachedInputTokens: number;
+  cacheWriteInputTokens: number;
+  cacheWrite5mInputTokens: number;
+  cacheWrite1hInputTokens: number;
+  reasoningTokens: number;
+  inputAudioTokens: number;
+  outputAudioTokens: number;
+  /** Original provider usage object for reconciliation/debugging. */
+  raw?: unknown;
+}
+
+export type CostSource = "provider" | "catalog" | "unpriced";
+
+/** USD nanodollars are used so sub-cent calls accumulate without rounding loss. */
+export interface CostBreakdown {
+  totalUsdNanos: number | null;
+  inputUsdNanos: number | null;
+  cachedInputUsdNanos: number | null;
+  cacheWriteUsdNanos: number | null;
+  outputUsdNanos: number | null;
+  source: CostSource;
+  priceSource?: string;
+  priceAsOf?: string;
 }
 
 export interface ChatResponse {
@@ -118,6 +183,20 @@ export interface ChatResponse {
   tokensOut: number | null;
   finishReason: "stop" | "length" | "tool_calls" | "error" | "unknown";
   latencyMs: number;
+  /** Detailed, normalized token accounting; legacy adapters may omit it. */
+  usage?: TokenUsage;
+  /** Final cost computed from provider billing data or the dated catalog. */
+  cost?: CostBreakdown;
+  /** Raw cost in USD reported by a provider such as OpenRouter. */
+  providerReportedCostUsd?: number;
+  providerRequestId?: string;
+  /** Effective controls when the provider reports them, otherwise the requested values. */
+  reasoning?: ReasoningConfig;
+  verbosity?: TextVerbosity;
+  /** Provider-generated, deliberately summarized reasoning; never raw chain-of-thought. */
+  reasoningSummary?: string;
+  /** Opaque reasoning state for exact tool-loop replay; never persist or display. */
+  reasoningContent?: string;
   /** P1-LLM-04 — structured tool calls emitted by the model on this turn. */
   toolCalls?: ToolCall[];
   /** Provider-specific extras (e.g. tool calls). Opaque in v1. */

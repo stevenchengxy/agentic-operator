@@ -1,7 +1,12 @@
 import { z } from "zod";
-import { ProviderIdSchema } from "./llm";
+import {
+  ProviderIdSchema,
+  ReasoningConfigSchema,
+  TextVerbositySchema,
+} from "./llm";
 import {
   AgentActionV2Schema,
+  AgentActionTypeV2Schema,
   AgentConcurrencyV2Schema,
   AgentInputPortV2Schema,
   AgentObservabilityV2Schema,
@@ -70,6 +75,9 @@ export const AgentSpec = z
     generated: z.boolean().optional(),
     provider: ProviderIdSchema.optional(),
     model: z.string().optional(),
+    reasoning: ReasoningConfigSchema.optional(),
+    verbosity: TextVerbositySchema.optional(),
+    store: z.boolean().optional(),
     temperature: z.number().optional(),
     max_tokens: z.number().int().positive().optional(),
     retries: z.number().int().nonnegative().optional(),
@@ -117,7 +125,7 @@ export const ManifestUploadResponse = z.object({
 
 // ─── Agent authoring / deploy wizard ──────────────────────────────────────
 
-const AuthoringAgentName = z
+export const AuthoringAgentName = z
   .string()
   .trim()
   .min(1)
@@ -126,6 +134,33 @@ const AuthoringAgentName = z
     /^[a-z][A-Za-z0-9]*$/,
     "name must be lower camelCase (letters and numbers only)",
   );
+
+/** Query contract for the Identity step's early duplicate-name check. */
+export const AgentNameAvailabilityQuery = z.object({
+  name: AuthoringAgentName,
+});
+export type AgentNameAvailabilityQuery = z.infer<
+  typeof AgentNameAvailabilityQuery
+>;
+
+/**
+ * Availability mirrors deploy's conflict precedence: case-insensitive agent
+ * name first, then the kebab id derived from that name.
+ */
+export const AgentNameAvailabilityResponse = z.object({
+  name: AuthoringAgentName,
+  id: z.string().min(1).max(160),
+  available: z.boolean(),
+  conflict: z
+    .object({
+      field: z.enum(["name", "id"]),
+      value: z.string().min(1),
+    })
+    .nullable(),
+});
+export type AgentNameAvailabilityResponse = z.infer<
+  typeof AgentNameAvailabilityResponse
+>;
 
 const AuthoringEventName = z
   .string()
@@ -157,6 +192,93 @@ export const AgentTemplate = z.enum([
 ]);
 export type AgentTemplate = z.infer<typeof AgentTemplate>;
 
+/** Friendly step shape accepted by the New Agent authoring endpoints. */
+export const AgentAuthoringStep = z
+  .object({
+    id: z.string().trim().min(1).max(160).optional(),
+    name: z.string().trim().min(1).max(160),
+    description: z.string().trim().max(8_000).default(""),
+    type: AgentActionTypeV2Schema.default("logic"),
+    actionPrompt: z
+      .string()
+      .trim()
+      .max(32 * 1024)
+      .optional(),
+    tool: z.string().trim().min(1).max(160).optional(),
+    provider: ProviderIdSchema.optional(),
+    model: z.string().trim().min(1).max(240).optional(),
+    reasoning: ReasoningConfigSchema.optional(),
+    verbosity: TextVerbositySchema.optional(),
+    store: z.boolean().optional(),
+    temperature: z.number().min(0).max(2).optional(),
+    maxTokens: z.number().int().positive().max(1_000_000).optional(),
+    retries: z.number().int().min(0).max(10).optional(),
+    timeoutS: z.number().int().min(1).max(86_400).optional(),
+  })
+  .passthrough();
+export type AgentAuthoringStep = z.infer<typeof AgentAuthoringStep>;
+
+export const AgentModelProfile = z.enum([
+  "balanced",
+  "fast",
+  "structured",
+  "research",
+  "tool_use",
+  "human",
+]);
+export type AgentModelProfile = z.infer<typeof AgentModelProfile>;
+
+export const AgentSearchMode = z.enum([
+  "answer",
+  "investigate",
+  "deep_research",
+]);
+export type AgentSearchMode = z.infer<typeof AgentSearchMode>;
+
+export const AgentModelSelection = z.object({
+  provider: ProviderIdSchema,
+  model: z.string(),
+  profile: AgentModelProfile,
+  source: z.enum([
+    "explicit",
+    "template_default",
+    "description_inferred",
+    "workspace_default",
+  ]),
+  reason: z.string(),
+});
+export type AgentModelSelection = z.infer<typeof AgentModelSelection>;
+
+/** Server-owned product specification for one New Agent archetype. */
+export const AgentArchetypeSpec = z.object({
+  id: AgentTemplate,
+  name: z.string(),
+  actor: ActorEnum,
+  summary: z.string(),
+  useCases: z.array(z.string()),
+  capabilities: z.array(z.string()),
+  modelProfile: AgentModelProfile,
+  defaultTools: z.array(z.string()),
+  searchModes: z.array(AgentSearchMode).optional(),
+  actions: z.array(
+    z.object({
+      id: z.string(),
+      name: z.string(),
+      type: AgentActionTypeV2Schema,
+      purpose: z.string(),
+    }),
+  ),
+  outputSchema: z.record(z.string(), z.unknown()),
+});
+export type AgentArchetypeSpec = z.infer<typeof AgentArchetypeSpec>;
+
+export const AgentArchetypeListResponse = z.object({
+  archetypes: z.array(AgentArchetypeSpec).length(6),
+});
+export type AgentArchetypeListResponse = z.infer<
+  typeof AgentArchetypeListResponse
+>;
+
 /** Shared context sent to the LLM prompt generator. */
 export const GenerateAgentPromptBody = z.object({
   name: AuthoringAgentName,
@@ -164,12 +286,17 @@ export const GenerateAgentPromptBody = z.object({
   description: z.string().trim().min(10).max(8_000),
   actor: ActorEnum.default("Agent"),
   template: AgentTemplate.default("blank"),
-  stage: z.number().int().min(0).max(99).default(0),
-  triggers: z.array(AuthoringEventName).max(50).default([]),
-  emits: z.array(AuthoringEventName).max(50).default([]),
+  // Workflow placement is optional. Event triggers, not a canvas column,
+  // determine whether an authored agent can run.
+  stage: z.number().int().min(0).max(999).optional(),
+  triggers: z.array(AuthoringEventName).min(1).max(50),
+  emits: z.array(AuthoringEventName).min(1).max(50),
   tools: z.array(AgentAuthoringTool).max(50).default([]),
   provider: ProviderIdSchema.optional(),
   model: z.string().trim().min(1).max(240).optional(),
+  steps: z.array(AgentAuthoringStep).min(1).max(100).optional(),
+  /** Deep Search depth. Ignored by the other five archetypes. */
+  searchMode: AgentSearchMode.optional(),
 });
 export type GenerateAgentPromptBody = z.infer<typeof GenerateAgentPromptBody>;
 
@@ -182,6 +309,7 @@ export const GenerateAgentPromptResponse = z.object({
   model: z.string(),
   tokensIn: z.number().nullable(),
   tokensOut: z.number().nullable(),
+  modelSelection: AgentModelSelection,
 });
 export type GenerateAgentPromptResponse = z.infer<
   typeof GenerateAgentPromptResponse
@@ -200,9 +328,9 @@ export const DeployAuthoredAgentBody = GenerateAgentPromptBody.omit({
   // endpoint therefore makes this invariant explicit instead of reporting a
   // successful deployment that can never run.
   triggers: z.array(AuthoringEventName).min(1).max(50),
-  // The runtime currently emits the first declared event. Keep the deploy
-  // contract honest until branching/multi-emit semantics are implemented.
-  emits: z.array(AuthoringEventName).max(1),
+  // Authored agents use the v2 event contract, which supports fan-out to all
+  // declared events. Both sides are required by the event-driven builder.
+  emits: z.array(AuthoringEventName).min(1).max(50),
   systemPrompt: z
     .string()
     .trim()
@@ -224,7 +352,11 @@ export const DeployAuthoredAgentResponse = z.object({
     id: z.string(),
     name: z.string(),
     title: z.string(),
+    template: AgentTemplate,
+    provider: ProviderIdSchema,
+    model: z.string(),
   }),
+  modelSelection: AgentModelSelection,
   workflowVersionId: z.string(),
   version: z.string(),
   deploymentId: z.string(),

@@ -159,12 +159,19 @@ function studioFailure(reply: FastifyReply, error: unknown): FastifyReply {
     );
   }
   if (error instanceof StudioRunInputError) {
-    const status =
-      error.code === "session_not_found"
+    const status = [
+      "session_busy",
+      "session_target_mismatch",
+      "session_trigger_mismatch",
+    ].includes(error.code)
+      ? 409
+      : error.code === "session_not_found"
         ? 404
-        : error.code.endsWith("expired")
-          ? 410
-          : 400;
+        : error.code === "dispatch_failed"
+          ? 503
+          : error.code.endsWith("expired")
+            ? 410
+            : 400;
     return reply.fail(
       error.code,
       error.message,
@@ -525,7 +532,10 @@ export async function agentStudioRoutes(app: FastifyInstance): Promise<void> {
           meta: {
             agent_id: req.params.id,
             session_id: reserved.sessionId,
+            event_id: reserved.eventId,
+            event_name: reserved.eventName,
             target: body.target.kind,
+            context_mode: body.contextMode,
             tool_policy: body.toolPolicy,
             definition_hash: reserved.definitionHash,
           },

@@ -42,7 +42,14 @@ interface AgentStats {
 }
 
 function emptyStats(): AgentStats {
-  return { runs: 0, errors: 0, lastRun: 0, tests: 0, lastTestRunId: null, lastTestAt: 0 };
+  return {
+    runs: 0,
+    errors: 0,
+    lastRun: 0,
+    tests: 0,
+    lastTestRunId: null,
+    lastTestAt: 0,
+  };
 }
 
 export default function AgentsPage() {
@@ -53,8 +60,10 @@ export default function AgentsPage() {
   const agents = agentsQuery.data ?? [];
   const runs = runsQuery.data ?? [];
   const [query, setQuery] = useState("");
-  const [actorFilter, setActorFilter] = useState<"all" | "Agent" | "Human">("all");
-  const [deployOpen, setDeployOpen] = useState(false);
+  const [actorFilter, setActorFilter] = useState<"all" | "Agent" | "Human">(
+    "all",
+  );
+  const [newAgentOpen, setNewAgentOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
 
   const stats = useMemo(() => {
@@ -110,18 +119,31 @@ export default function AgentsPage() {
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
       <ViewHeader
         title="Agents"
-        subtitle={`${agents.length} agents in this workflow · ${agents.filter((a) => a.actor === "Agent").length} automated · ${agents.filter((a) => a.actor === "Human").length} human`}
+        subtitle={`${agents.length} event-driven agents · ${agents.filter((a) => a.actor === "Agent").length} automated · ${agents.filter((a) => a.actor === "Human").length} human`}
         action={[
-          <Button key="upload" icon="upload" small onClick={() => setImportOpen(true)}>
+          <Button
+            key="upload"
+            icon="upload"
+            small
+            onClick={() => setImportOpen(true)}
+          >
             Import manifest
           </Button>,
-          <Button key="new" icon="plus" tone="primary" small onClick={() => setDeployOpen(true)}>
-            Deploy agent
+          <Button
+            key="new"
+            icon="plus"
+            tone="primary"
+            small
+            onClick={() => setNewAgentOpen(true)}
+          >
+            New Agent
           </Button>,
         ]}
       />
 
-      <div style={{ flex: 1, display: "flex", flexDirection: "row", minHeight: 0 }}>
+      <div
+        style={{ flex: 1, display: "flex", flexDirection: "row", minHeight: 0 }}
+      >
         <aside
           style={{
             width: "100%",
@@ -140,7 +162,11 @@ export default function AgentsPage() {
               gap: 8,
             }}
           >
-            <SearchInput value={query} onChange={setQuery} placeholder="agent name…" />
+            <SearchInput
+              value={query}
+              onChange={setQuery}
+              placeholder="agent name…"
+            />
           </div>
           <div
             style={{
@@ -150,13 +176,22 @@ export default function AgentsPage() {
               gap: 6,
             }}
           >
-            <FilterChip active={actorFilter === "all"} onClick={() => setActorFilter("all")}>
+            <FilterChip
+              active={actorFilter === "all"}
+              onClick={() => setActorFilter("all")}
+            >
               All
             </FilterChip>
-            <FilterChip active={actorFilter === "Agent"} onClick={() => setActorFilter("Agent")}>
+            <FilterChip
+              active={actorFilter === "Agent"}
+              onClick={() => setActorFilter("Agent")}
+            >
               Agents
             </FilterChip>
-            <FilterChip active={actorFilter === "Human"} onClick={() => setActorFilter("Human")}>
+            <FilterChip
+              active={actorFilter === "Human"}
+              onClick={() => setActorFilter("Human")}
+            >
               Human
             </FilterChip>
           </div>
@@ -173,7 +208,7 @@ export default function AgentsPage() {
                 title="No agents yet"
                 hint={
                   agents.length === 0
-                    ? "Deploy a manifest or run `agentic deploy` to register agents."
+                    ? "Create an agent here or import a manifest to get started."
                     : "No agents match the current filter."
                 }
               />
@@ -184,8 +219,15 @@ export default function AgentsPage() {
         </aside>
       </div>
 
-      {deployOpen && <DeployAgentModal onClose={() => setDeployOpen(false)} />}
-      {importOpen && <ImportManifestModal onClose={() => setImportOpen(false)} mode="agent" />}
+      {newAgentOpen && (
+        <DeployAgentModal onClose={() => setNewAgentOpen(false)} />
+      )}
+      {importOpen && (
+        <ImportManifestModal
+          onClose={() => setImportOpen(false)}
+          mode="agent"
+        />
+      )}
 
       {/* preserve unused-import lint pass */}
       {false && <Panel title="hidden" />}
@@ -228,13 +270,22 @@ function AgentsGrid({
               cursor: "pointer",
             }}
             onMouseEnter={(e) => {
-              (e.currentTarget as HTMLButtonElement).style.background = "var(--panel-2)";
+              (e.currentTarget as HTMLButtonElement).style.background =
+                "var(--panel-2)";
             }}
             onMouseLeave={(e) => {
-              (e.currentTarget as HTMLButtonElement).style.background = "var(--panel)";
+              (e.currentTarget as HTMLButtonElement).style.background =
+                "var(--panel)";
             }}
           >
-            <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                marginBottom: 6,
+              }}
+            >
               <ActorTag actor={a.actor} />
               <Badge tone="muted">{a.kebabId}</Badge>
               <span
@@ -284,8 +335,12 @@ function AgentsGrid({
               }}
             >
               <span>{s.runs} runs</span>
-              {s.errors > 0 && <span style={{ color: "var(--red)" }}>{s.errors} err</span>}
-              {s.tests > 0 && <span style={{ color: "var(--signal)" }}>{s.tests} test</span>}
+              {s.errors > 0 && (
+                <span style={{ color: "var(--red)" }}>{s.errors} err</span>
+              )}
+              {s.tests > 0 && (
+                <span style={{ color: "var(--signal)" }}>{s.tests} test</span>
+              )}
               <span style={{ marginLeft: "auto" }}>{a.kind}</span>
             </div>
           </button>

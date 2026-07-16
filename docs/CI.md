@@ -79,7 +79,7 @@ Scope notes:
 ### 2.1 Validating coverage locally
 
 ```bash
-nvm use                        # picks up .nvmrc (26)
+nvm use                        # picks up .nvmrc (26.5.0)
 pnpm install
 pnpm db:migrate && pnpm db:seed
 pnpm -r test:coverage

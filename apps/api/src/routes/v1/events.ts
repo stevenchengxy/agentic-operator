@@ -1,7 +1,11 @@
 import type { FastifyInstance } from "fastify";
 import { readFile } from "node:fs/promises";
 import { and, eq } from "drizzle-orm";
-import { appendToLedger, inngest } from "@agentic/runtime";
+import {
+  appendToLedger,
+  buildCanonicalEventPayload,
+  inngest,
+} from "@agentic/runtime";
 import { agents, events, eventTypes, getDb } from "@agentic/db";
 import { makeId } from "@agentic/shared";
 import { IngestEventBody, ListEventsQuery } from "@agentic/contracts";
@@ -131,12 +135,20 @@ export async function eventsRoutes(app: FastifyInstance) {
     }
 
     const eventId = makeId("evt");
+    const correlationId = makeId("cor");
+    const logicalPayload = buildCanonicalEventPayload({
+      eventName: bareName,
+      eventId,
+      correlationId,
+      subject: parsed.subject,
+      payload: parsed.payload,
+    });
 
     const payloadRef = await appendToLedger(auth.tenantSlug, {
       id: eventId,
       name: bareName,
       subject: parsed.subject,
-      data: parsed.payload ?? {},
+      data: logicalPayload,
       ts: Date.now(),
     });
 
@@ -171,9 +183,9 @@ export async function eventsRoutes(app: FastifyInstance) {
     // it on payloads that didn't ask — that would silently flag production
     // traffic as test, breaking dashboards in the opposite direction.
     const inngestData: Record<string, unknown> = {
-      ...(parsed.payload ?? {}),
-      subject: parsed.subject,
+      ...logicalPayload,
       __triggerEventId: eventId,
+      __correlationId: correlationId,
     };
     if (parsed.targetAgent) {
       // Reuse the manifest-invoke metadata key. Runtime functions with the
@@ -296,17 +308,54 @@ export async function eventsRoutes(app: FastifyInstance) {
       // P0-API-01 — use makeId("evt") so same-millisecond replays cannot
       // collide on the legacy `${id}-replay-${Date.now()}` pattern.
       const newId = makeId("evt");
+      const correlationId = makeId("cor");
+      const logicalPayload = buildCanonicalEventPayload({
+        eventName: row.name,
+        eventId: newId,
+        correlationId,
+        subject: row.subject,
+        payload,
+      });
+      const payloadRef = await appendToLedger(auth.tenantSlug, {
+        id: newId,
+        name: row.name,
+        subject: row.subject ?? undefined,
+        data: logicalPayload,
+        ts: Date.now(),
+      });
+      db.insert(events)
+        .values({
+          id: newId,
+          tenantId: auth.tenantId,
+          name: row.name,
+          category: row.category,
+          sourceAgentId: row.sourceAgentId,
+          subject: row.subject,
+          payloadRef,
+        })
+        .run();
       try {
         await inngest.send({
           name: `${auth.tenantSlug}/${row.name}` as `${string}/${string}`,
           data: {
-            ...((payload as Record<string, unknown>) ?? {}),
+            ...logicalPayload,
             __triggerEventId: newId,
+            __correlationId: correlationId,
             __replayOf: id,
           },
         });
       } catch (err) {
-        req.log.warn({ err }, "event.replay: inngest.send failed");
+        db.delete(events)
+          .where(
+            and(eq(events.id, newId), eq(events.tenantId, auth.tenantId)),
+          )
+          .run();
+        req.log.error({ err }, "event.replay: inngest.send failed");
+        return reply.fail(
+          "event_dispatch_failed",
+          "The runtime did not accept the replay; nothing was dispatched",
+          500,
+        );
       }
       try {
         const audit = await import("../../plugins/audit");

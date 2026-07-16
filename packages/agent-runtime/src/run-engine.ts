@@ -145,6 +145,12 @@ function buildToolResultMessage(
   return { role: "tool", content: blocks };
 }
 
+function artifactSafeMessages(messages: ChatMessage[]): ChatMessage[] {
+  return messages.map(({ reasoningContent: _reasoningContent, ...message }) =>
+    message,
+  );
+}
+
 export async function executeAgentRun<TInput, TOutput>(
   agent: BaseAgent<TInput, TOutput>,
   input: TInput,
@@ -212,6 +218,9 @@ export async function executeAgentRun<TInput, TOutput>(
   try {
     const provider: ProviderId | undefined = ctx.provider ?? agent.defaultProvider;
     const model = ctx.model ?? agent.defaultModel;
+    const reasoning = ctx.reasoning ?? agent.defaultReasoning;
+    const verbosity = ctx.verbosity ?? agent.defaultVerbosity;
+    const store = ctx.store ?? agent.storeResponses;
 
     const messages: ChatMessage[] = await agent._buildMessages(input, ctx);
 
@@ -242,7 +251,10 @@ export async function executeAgentRun<TInput, TOutput>(
         agent: agent.name,
         provider,
         model,
-        messages,
+        reasoning,
+        verbosity,
+        store,
+        messages: artifactSafeMessages(messages),
         tools: tools.length > 0 ? tools : undefined,
       });
 
@@ -251,9 +263,15 @@ export async function executeAgentRun<TInput, TOutput>(
         provider,
         providers: ctx.providers,
         model: model ?? undefined,
+        reasoning,
+        verbosity,
+        store,
         tools: tools.length > 0 ? tools : undefined,
         jsonMode: agent.outputSchema ? true : undefined,
         tenantId,
+        runId,
+        stepId,
+        purpose: "agent-runtime",
       } as never);
 
       const outputArtifact = await writeArtifact(runId, `step-${ord}-output.json`, {
@@ -299,6 +317,9 @@ export async function executeAgentRun<TInput, TOutput>(
       messages.push({
         role: "assistant",
         content: buildAssistantTurnContent(response.text, toolCalls),
+        ...(response.reasoningContent
+          ? { reasoningContent: response.reasoningContent }
+          : {}),
       });
 
       // Dispatch tool calls in order, one tool step per call.
@@ -396,8 +417,14 @@ export async function executeAgentRun<TInput, TOutput>(
           provider,
           providers: ctx.providers,
           model: model ?? undefined,
+          reasoning,
+          verbosity,
+          store,
           jsonMode: true,
           tenantId,
+          runId,
+          stepId: repairStepId,
+          purpose: "agent-runtime.output-repair",
         } as never);
         const repairEndedAt = Date.now();
         db.update(steps)

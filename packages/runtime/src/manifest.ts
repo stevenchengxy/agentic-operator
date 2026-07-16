@@ -12,6 +12,9 @@ import path from "node:path";
 import {
   WorkflowManifestCompatSchema,
   type AgentDefinitionV2,
+  ReasoningConfigSchema,
+  TextVerbositySchema,
+  ProviderIdSchema,
 } from "@agentic/contracts";
 
 export const ActorEnum = z.enum(["Agent", "Human"]);
@@ -42,6 +45,13 @@ export const ActionSchema = z
     description: z.string().optional().default(""),
     type: StepTypeEnum,
     action_prompt: z.string().optional(),
+    provider: ProviderIdSchema.optional(),
+    model: z.string().trim().min(1).max(240).optional(),
+    reasoning: ReasoningConfigSchema.optional(),
+    verbosity: TextVerbositySchema.optional(),
+    store: z.boolean().optional(),
+    temperature: z.number().min(0).max(2).optional(),
+    max_tokens: z.number().int().positive().max(1_000_000).optional(),
     tool: z.string().optional(),
     condition: z.string().optional(),
     true_action_id: z.string().optional(),

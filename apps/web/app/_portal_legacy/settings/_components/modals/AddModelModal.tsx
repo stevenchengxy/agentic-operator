@@ -338,7 +338,10 @@ export function AddModelModal({ onClose }: { onClose: () => void }) {
                   }}
                 >
                   <SpecCell label="Context" value={`${(sel.ctx / 1000).toFixed(0)}k`} />
-                  <SpecCell label="Max out" value={`${(sel.out / 1000).toFixed(0)}k`} />
+                  <SpecCell
+                    label="Max out"
+                    value={sel.out == null ? "Not published" : `${(sel.out / 1000).toFixed(0)}k`}
+                  />
                   <SpecCell label="$ / 1M in"  value={`$${sel.inP}`} />
                   <SpecCell label="$ / 1M out" value={`$${sel.outP}`} />
                 </div>

@@ -272,6 +272,7 @@ describe("Agent Studio terminal storage boundaries", () => {
         agentId,
         {
           target: { kind: "live", agentVersionId },
+          contextMode: "isolated",
           prompt: "Summarize the attachment.",
           inputs: {
             document: {

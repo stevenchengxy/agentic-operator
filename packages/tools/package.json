@@ -11,7 +11,9 @@
     "./robohire": "./src/robohire/index.ts",
     "./fs": "./src/fs/index.ts",
     "./http": "./src/http/index.ts",
-    "./meta": "./src/meta/index.ts"
+    "./meta": "./src/meta/index.ts",
+    "./search": "./src/search/index.ts",
+    "./ontology": "./src/ontology/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

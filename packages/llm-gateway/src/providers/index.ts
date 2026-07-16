@@ -1,5 +1,5 @@
 /**
- * Provider registry — single function that registers all 14 providers on a
+ * Provider registry — single function that registers every provider on a
  * gateway instance. Called once at gateway construction.
  *
  * Each provider wiring file is responsible for building its adapter from
@@ -22,6 +22,8 @@ import { makeAzure } from "./azure";
 import { makeCustom } from "./custom";
 import { makeBedrock } from "./bedrock";
 import { makeVertex } from "./vertex";
+import { makeMoonshot } from "./moonshot";
+import { makeZai } from "./zai";
 
 export function registerAllProviders(
   gateway: LLMGateway,
@@ -37,6 +39,8 @@ export function registerAllProviders(
   gateway.registerProvider(makeTogether(env));
   gateway.registerProvider(makeMistral(env));
   gateway.registerProvider(makeDeepSeek(env));
+  gateway.registerProvider(makeMoonshot(env));
+  gateway.registerProvider(makeZai(env));
   gateway.registerProvider(makeQwen(env));
   gateway.registerProvider(makeAzure(env));
   gateway.registerProvider(makeCustom(env));

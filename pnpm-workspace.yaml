@@ -12,8 +12,13 @@ packages:
 # warns and ignores it), so that redundant copy was removed — this file is now
 # the single source of truth for build approval.
 allowBuilds:
+  # Published SDK artifacts are complete; its lifecycle build is not needed.
+  '@google/genai': false
   better-sqlite3: true
   esbuild: true
   protobufjs: true
   sharp: true
   unrs-resolver: true
+
+minimumReleaseAgeExclude:
+  - openai@6.47.0

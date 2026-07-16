@@ -76,7 +76,14 @@ describe("TC-96: generated system prompt", () => {
     expect(result.systemPrompt).toContain("ARCHITECTURE_RESEARCH_REQUESTED");
     expect(result.systemPrompt).toContain("ARCHITECTURE_RESEARCH_COMPLETED");
     expect(result.systemPrompt).toContain("meta.ping");
-    expect(result.systemPrompt).toContain("Verify the live tenant and event context");
+    expect(result.systemPrompt).toContain(
+      "Verify the live tenant and event context",
+    );
     expect(result.systemPrompt).toContain("tenant raas");
+    expect(result.systemPrompt).toContain("event_type");
+    expect(result.systemPrompt).toContain("prompt");
+    expect(result.systemPrompt).toContain(
+      "never require them to wrap a request in event JSON",
+    );
   });
 });

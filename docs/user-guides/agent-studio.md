@@ -33,17 +33,18 @@ Saving a draft does not change the live agent. Publishing creates a new immutabl
 ## Create an agent
 
 1. Open **Agents**.
-2. Choose **Deploy agent**.
+2. Choose **New Agent**.
 3. Pick a template:
-   - **Blank** for a clean starting point.
-   - **Classify** for choosing a category.
-   - **Extract** for turning text or documents into structured data.
-   - **RAG** for answers grounded in retrieved information.
-   - **Loop** for work that may repeat steps.
-   - **Human** for a task completed by an operator.
-4. Complete the six creation steps: Template, Identity, Events, Implementation, Behavior, and Review.
-5. Read the pre-flight checks and choose **Deploy agent**.
-6. Open the new agent and choose **Edit** before refining it.
+   - **Blank agent** for a clean, event-driven starting point.
+   - **Classifier** for choosing a category with confidence and review signals.
+   - **Extractor** for turning text or documents into validated structured data.
+   - **Deep Search** for evidence-backed research across approved web and ontology sources.
+   - **Tool-loop agent** for bounded work that may call tools repeatedly.
+   - **Human approval** for a durable operator decision.
+4. Complete the six creation steps: Template, Identity, Events, Build, Runtime, and Review.
+5. Declare one or more trigger events and emitted events. New agents do not require a workflow stage.
+6. Read the pre-flight checks and choose **Create & publish**.
+7. Choose **Open & run**, or open the new agent and choose **Edit** before refining it.
 
 Creating an agent deploys its first version. Start with conservative tool permissions and runtime limits, then improve it through a tested draft.
 

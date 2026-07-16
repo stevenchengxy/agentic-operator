@@ -15,6 +15,7 @@ export type LLMErrorCode =
   | "provider_error"     // 5xx from upstream
   | "network"            // ECONNRESET, DNS failure
   | "not_configured"     // adapter is a stub / no API key set
+  | "accounting_error"   // durable usage/cost recording failed after dispatch
   | "cost_limit_exceeded"; // P1-LLM-05 — tenant exceeded monthly budget cap
 
 const TRANSIENT: ReadonlySet<LLMErrorCode> = new Set([

@@ -6,9 +6,8 @@
  *   - chat() dispatch with provider resolution, failover, timeout, retry
  *   - Surface configured providers (for /v1/llm/providers)
  *
- * Not responsible for: persistence (BaseAgent + step engine handle that),
- * audit logging (caller writes to audit_log with the response metadata),
- * cost calculation (derived elsewhere from tokens × prices).
+ * Every attributed provider attempt is persisted before dispatch and then
+ * finalized with normalized usage and exact/dated cost information.
  */
 
 import { PROVIDER_MODEL_CATALOG, type ProviderId } from "@agentic/contracts";
@@ -21,6 +20,14 @@ import type {
 } from "./types";
 import { LLMError, isLLMError } from "./errors";
 import { assertBudgetAvailable, recordActualSpend } from "./budget";
+import { calculateCost, normalizeUsage } from "./pricing";
+import { assertModelControls } from "./capabilities";
+import {
+  failAttempt,
+  finishAttempt,
+  newLogicalCallId,
+  startAttempt,
+} from "./usage-ledger";
 
 export class LLMGateway {
   private readonly providers = new Map<ProviderId, ProviderAdapter>();
@@ -72,16 +79,9 @@ export class LLMGateway {
   async chat(req: ChatRequest): Promise<ChatResponse> {
     const providers = this.resolveProviderChain(req);
     const timeoutMs = req.timeoutMs ?? this.config.timeoutMs;
-    // Env-supplied model wins over adapter's catalog default when caller didn't specify.
-    const resolvedModel = req.model ?? this.config.defaultModel ?? undefined;
     let lastError: unknown = null;
-
-    // P1-LLM-05: per-tenant budget hook. Throws cost_limit_exceeded BEFORE
-    // we run any adapter when the tenant is already over either cap. The
-    // post-call deduction uses the adapter's actual token usage.
-    if (req.tenantId) {
-      assertBudgetAvailable(req.tenantId, providers[0] ?? this.config.defaultProvider);
-    }
+    const logicalCallId = newLogicalCallId();
+    let attemptNumber = 0;
 
     for (const id of providers) {
       const adapter = this.providers.get(id);
@@ -94,6 +94,19 @@ export class LLMGateway {
         continue;
       }
 
+      // A gateway-global default belongs only to its configured provider.
+      // Fallback providers use their own catalog default unless the caller
+      // explicitly supplied a model.
+      const resolvedModel = req.model
+        ?? (id === this.config.defaultProvider ? this.config.defaultModel : null)
+        ?? adapter.defaultModel
+        ?? undefined;
+
+      if (resolvedModel) {
+        assertModelControls(id, resolvedModel, req);
+      }
+      assertBudgetAvailable(req.tenantId, id);
+
       const signal = combineSignals(req.signal, timeoutMs);
       const subReq: ChatRequest = {
         ...req,
@@ -103,20 +116,82 @@ export class LLMGateway {
         provider: id,
       };
 
-      const finish = (response: ChatResponse): ChatResponse => {
-        if (req.tenantId) {
-          recordActualSpend({
+      const executeAttempt = async (attemptReq: ChatRequest): Promise<ChatResponse> => {
+        attemptNumber += 1;
+        let ledgerAttempt;
+        try {
+          ledgerAttempt = startAttempt({
+            logicalCallId,
+            attempt: attemptNumber,
             tenantId: req.tenantId,
+            runId: req.runId,
+            stepId: req.stepId,
+            purpose: req.purpose,
             provider: id,
-            tokensIn: response.tokensIn ?? 0,
-            tokensOut: response.tokensOut ?? 0,
+            requestedModel: resolvedModel ?? "<unspecified>",
+            reasoning: attemptReq.reasoning,
+            verbosity: attemptReq.verbosity,
+            store: attemptReq.store,
           });
+        } catch (error) {
+          throw new LLMError(
+            `could not start durable LLM accounting: ${error instanceof Error ? error.message : String(error)}`,
+            "accounting_error",
+            id,
+            error,
+          );
         }
-        return response;
+
+        let response: ChatResponse;
+        try {
+          response = await adapter.chat(attemptReq);
+        } catch (error) {
+          const providerError = toLLMError(error, id);
+          try {
+            failAttempt(ledgerAttempt, providerError);
+          } catch (ledgerError) {
+            throw new LLMError(
+              `could not record failed LLM attempt: ${ledgerError instanceof Error ? ledgerError.message : String(ledgerError)}`,
+              "accounting_error",
+              id,
+              ledgerError,
+            );
+          }
+          throw providerError;
+        }
+
+        const usage = normalizeUsage(response);
+        const cost = calculateCost({
+          provider: id,
+          model: response.model || resolvedModel || "<unspecified>",
+          usage,
+          providerReportedCostUsd: response.providerReportedCostUsd,
+        });
+        const normalized: ChatResponse = {
+          ...response,
+          tokensIn: usage.available === false ? null : usage.inputTokens,
+          tokensOut: usage.available === false ? null : usage.outputTokens,
+          usage,
+          cost,
+        };
+        try {
+          finishAttempt(ledgerAttempt, normalized, usage, cost);
+          recordActualSpend({ tenantId: req.tenantId, usage, cost });
+        } catch (error) {
+          // This is deliberately non-transient: the provider already ran, so
+          // an accounting failure must never trigger an internal model retry.
+          throw new LLMError(
+            `could not finalize durable LLM accounting: ${error instanceof Error ? error.message : String(error)}`,
+            "accounting_error",
+            id,
+            error,
+          );
+        }
+        return normalized;
       };
 
       try {
-        return finish(await adapter.chat(subReq));
+        return await executeAttempt(subReq);
       } catch (err1) {
         const e1 = toLLMError(err1, id);
         if (!e1.transient) throw e1;
@@ -124,7 +199,7 @@ export class LLMGateway {
         await delay(250);
         try {
           const signal2 = combineSignals(req.signal, timeoutMs);
-          return finish(await adapter.chat({ ...subReq, signal: signal2 }));
+          return await executeAttempt({ ...subReq, signal: signal2 });
         } catch (err2) {
           const e2 = toLLMError(err2, id);
           lastError = e2;

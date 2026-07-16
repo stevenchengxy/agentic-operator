@@ -38,6 +38,8 @@ const PROVIDERS = [
   "together",
   "mistral",
   "deepseek",
+  "moonshot",
+  "zai",
   "qwen",
   "azure",
   "bedrock",
@@ -455,7 +457,18 @@ function CapabilityChips({ model }: { model: AvailableModel }) {
   const chips: string[] = [];
   if (model.vision) chips.push("vision");
   if (model.tools) chips.push("tools");
-  if (model.reasoning) chips.push("reasoning");
+  if (model.reasoning) {
+    chips.push(
+      model.reasoningEfforts.length > 0
+        ? `effort ${model.reasoningEfforts.join("/")}`
+        : "reasoning",
+    );
+  }
+  if (model.reasoningModes.length > 0) {
+    chips.push(`mode ${model.reasoningModes.join("/")}`);
+  }
+  if (model.reasoningMandatory) chips.push("always thinking");
+  if (model.textVerbosities.length > 0) chips.push("verbosity");
   if (chips.length === 0) return <span style={{ color: "var(--text-3)", fontSize: 11 }}>—</span>;
   return (
     <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>

@@ -22,7 +22,11 @@
  */
 
 import type { ChatMessage, ToolDef } from "@agentic/llm-gateway";
-import type { ProviderId } from "@agentic/contracts";
+import type {
+  ProviderId,
+  ReasoningConfig,
+  TextVerbosity,
+} from "@agentic/contracts";
 import type { z } from "zod";
 import type {
   AgentContext,
@@ -43,6 +47,10 @@ export abstract class BaseAgent<TInput = unknown, TOutput = string> {
   readonly defaultProvider?: ProviderId;
   /** Optional default model override. Falls back to gateway default. */
   readonly defaultModel?: string;
+  /** Optional provider-neutral reasoning defaults for every invocation. */
+  readonly defaultReasoning?: ReasoningConfig;
+  readonly defaultVerbosity?: TextVerbosity;
+  readonly storeResponses?: boolean;
 
   /** v1 == 1 single-shot LLM call; future tool-use agents bump this. */
   readonly maxSteps: number = 1;

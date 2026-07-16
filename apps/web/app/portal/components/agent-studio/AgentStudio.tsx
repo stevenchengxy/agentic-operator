@@ -4,6 +4,11 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  PROVIDER_MODEL_CATALOG,
+  type CatalogModel,
+  type ProviderId,
+} from "@agentic/contracts";
+import {
   Badge,
   Button,
   Empty,
@@ -108,11 +113,37 @@ const PROVIDERS = [
   "together",
   "mistral",
   "deepseek",
+  "moonshot",
+  "zai",
   "qwen",
   "bedrock",
   "vertex",
   "custom",
 ];
+
+function selectedCatalogModel(
+  provider: string,
+  model: string,
+): CatalogModel | undefined {
+  if (!(provider in PROVIDER_MODEL_CATALOG) || !model) return undefined;
+  return PROVIDER_MODEL_CATALOG[provider as ProviderId].find(
+    (candidate) => candidate.name === model.replace(/^~/, ""),
+  );
+}
+
+function withReasoningControl(
+  definition: StudioDefinition,
+  key: "mode" | "effort" | "summary" | "context",
+  value: string,
+): StudioDefinition {
+  const reasoning = { ...asRecord(definition.reasoning) };
+  if (value) reasoning[key] = value;
+  else delete reasoning[key];
+  const next = { ...definition };
+  delete next.reasoning;
+  if (Object.keys(reasoning).length > 0) next.reasoning = reasoning;
+  return next;
+}
 const INSTRUCTION_ACTIONS = [
   { value: "generate" as const, label: "Write for me" },
   { value: "improve" as const, label: "Improve" },
@@ -123,7 +154,7 @@ const TEMPLATES = [
   { value: "blank", label: "Blank — start from scratch" },
   { value: "classify", label: "Classify — sort into categories" },
   { value: "extract", label: "Extract — read structured facts" },
-  { value: "rag", label: "Knowledge search (RAG)" },
+  { value: "rag", label: "Deep Search" },
   { value: "loop", label: "Repeat until complete" },
   { value: "human", label: "Human task" },
 ];
@@ -305,14 +336,22 @@ function RawDefinitionEditor({
   );
 }
 
-export function AgentStudio({ agentId }: { agentId: string }) {
+export function AgentStudio({
+  agentId,
+  initialSection,
+}: {
+  agentId: string;
+  initialSection?: "overview" | "test";
+}) {
   const tenant = useTenant();
   const router = useRouter();
   const toast = useToast();
   const dirtyStore = useDirty();
   const editor = useAgentEditor(agentId);
   const agents = useAgents();
-  const [section, setSection] = useState<SectionId>("overview");
+  const [section, setSection] = useState<SectionId>(
+    initialSection ?? "overview",
+  );
   const [mode, setMode] = useState<EditorMode>("guided");
   const [definition, setDefinition] = useState<StudioDefinition | null>(null);
   const [baseline, setBaseline] = useState("");
@@ -382,6 +421,9 @@ export function AgentStudio({ agentId }: { agentId: string }) {
   const errorCount = allIssues.filter(
     (issue) => issue.severity === "error",
   ).length;
+  const runtimeModelCapabilities = definition
+    ? selectedCatalogModel(definition.provider, definition.model)
+    : undefined;
 
   useEffect(() => {
     definitionRef.current = definition;
@@ -1205,6 +1247,157 @@ export function AgentStudio({ agentId }: { agentId: string }) {
                   onChange={(model) => update({ ...definition, model })}
                 />
               </Field>
+              {runtimeModelCapabilities?.reasoningModes?.length ? (
+                <Field
+                  label="Reasoning mode"
+                  hint="Standard balances quality and speed. Pro gives supported frontier models their highest-compute execution path."
+                >
+                  <SelectInput
+                    value={String(asRecord(definition.reasoning).mode ?? "")}
+                    disabled={!editable}
+                    onChange={(mode) =>
+                      update(withReasoningControl(definition, "mode", mode))
+                    }
+                    options={[
+                      { value: "", label: "Use model default" },
+                      ...runtimeModelCapabilities.reasoningModes.map(
+                        (value) => ({
+                          value,
+                          label: value,
+                        }),
+                      ),
+                    ]}
+                  />
+                </Field>
+              ) : null}
+              {runtimeModelCapabilities?.reasoningEfforts?.length ? (
+                <Field
+                  label="Reasoning effort"
+                  hint="Higher effort can improve difficult reasoning, but usually adds latency and reasoning tokens."
+                >
+                  <SelectInput
+                    value={String(asRecord(definition.reasoning).effort ?? "")}
+                    disabled={!editable}
+                    onChange={(effort) =>
+                      update(withReasoningControl(definition, "effort", effort))
+                    }
+                    options={[
+                      { value: "", label: "Use model default" },
+                      ...runtimeModelCapabilities.reasoningEfforts.map(
+                        (value) => ({
+                          value,
+                          label: value,
+                        }),
+                      ),
+                    ]}
+                  />
+                </Field>
+              ) : null}
+              {runtimeModelCapabilities?.reasoningSummaries?.length ? (
+                <Field
+                  label="Reasoning summary"
+                  hint="Requests a provider-generated summary for evaluation; raw chain-of-thought is never stored."
+                >
+                  <SelectInput
+                    value={String(asRecord(definition.reasoning).summary ?? "")}
+                    disabled={!editable}
+                    onChange={(summary) =>
+                      update(
+                        withReasoningControl(definition, "summary", summary),
+                      )
+                    }
+                    options={[
+                      { value: "", label: "Use model default" },
+                      ...runtimeModelCapabilities.reasoningSummaries.map(
+                        (value) => ({
+                          value,
+                          label: value,
+                        }),
+                      ),
+                    ]}
+                  />
+                </Field>
+              ) : null}
+              {runtimeModelCapabilities?.reasoningContexts?.length ? (
+                <Field
+                  label="Reasoning context"
+                  hint="Controls which persisted reasoning items the provider may reuse on later turns."
+                >
+                  <SelectInput
+                    value={String(asRecord(definition.reasoning).context ?? "")}
+                    disabled={!editable}
+                    onChange={(context) =>
+                      update(
+                        withReasoningControl(definition, "context", context),
+                      )
+                    }
+                    options={[
+                      { value: "", label: "Use model default" },
+                      ...runtimeModelCapabilities.reasoningContexts.map(
+                        (value) => ({
+                          value,
+                          label: value.replaceAll("_", " "),
+                        }),
+                      ),
+                    ]}
+                  />
+                </Field>
+              ) : null}
+              {runtimeModelCapabilities?.textVerbosities?.length ? (
+                <Field
+                  label="Answer verbosity"
+                  hint="Controls how concise or detailed the model's visible answer should be."
+                >
+                  <SelectInput
+                    value={definition.verbosity ?? ""}
+                    disabled={!editable}
+                    onChange={(verbosity) => {
+                      const next = { ...definition };
+                      delete next.verbosity;
+                      if (verbosity) next.verbosity = verbosity;
+                      update(next);
+                    }}
+                    options={[
+                      { value: "", label: "Use model default" },
+                      ...runtimeModelCapabilities.textVerbosities.map(
+                        (value) => ({
+                          value,
+                          label: value,
+                        }),
+                      ),
+                    ]}
+                  />
+                </Field>
+              ) : null}
+              {definition.provider === "openai" ||
+              definition.provider === "openrouter" ? (
+                <Field
+                  label="Provider response storage"
+                  hint="Controls provider-side response retention. Local run logs and usage accounting remain independent."
+                >
+                  <SelectInput
+                    value={
+                      typeof definition.store === "boolean"
+                        ? String(definition.store)
+                        : ""
+                    }
+                    disabled={!editable}
+                    onChange={(store) => {
+                      const next = { ...definition };
+                      delete next.store;
+                      if (store) next.store = store === "true";
+                      update(next);
+                    }}
+                    options={[
+                      { value: "", label: "Use service default" },
+                      { value: "false", label: "Do not store upstream" },
+                      ...(definition.provider === "openai"
+                        ? [{ value: "true", label: "Store upstream" }]
+                        : []),
+                    ]}
+                  />
+                </Field>
+              ) : null}
               <Field
                 label="Creativity"
                 hint="Controls variation. Use 0–0.3 for consistent extraction/classification and 0.7–1 for creative writing."
@@ -2036,9 +2229,12 @@ export function AgentStudio({ agentId }: { agentId: string }) {
 
       {draft && (
         <div
+          className={`agent-studio-notice-grid${
+            generatedCompatibility || upgradedCompatibility
+              ? " agent-studio-notice-grid--split"
+              : ""
+          }`}
           style={{
-            padding: "8px 16px",
-            borderBottom: "1px solid var(--border)",
             background: editing
               ? "rgba(208,255,0,0.035)"
               : "rgba(132,169,255,0.035)",
@@ -2066,31 +2262,20 @@ export function AgentStudio({ agentId }: { agentId: string }) {
               ? "Make changes across any section. Autosave creates checkpoints; Save stores one immediately, Done saves and exits, and Cancel restores the draft to the start of this edit session."
               : "You can inspect, validate, test, or publish this saved draft. Click Edit before changing fields."}
           </InlineNotice>
-        </div>
-      )}
-
-      {draft && (generatedCompatibility || upgradedCompatibility) && (
-        <div
-          style={{
-            padding: "8px 16px",
-            borderBottom: "1px solid var(--border)",
-            background: generatedCompatibility
-              ? "rgba(255,190,66,0.06)"
-              : "rgba(132,169,255,0.06)",
-          }}
-        >
-          <InlineNotice
-            tone={generatedCompatibility ? "amber" : "blue"}
-            title={
-              generatedCompatibility
-                ? "Starter manifest created for this older agent"
-                : "Older definition converted to the current format"
-            }
-          >
-            {generatedCompatibility
-              ? "No usable manifest was saved, so Agent Studio created a safe starting draft from the agent's identity and known event triggers. Review the instructions, inputs, steps, and outputs; then test before publishing."
-              : `Agent Studio recovered this draft from ${compatibilitySource.includes("action-catalog") ? "the older action catalog" : "an earlier saved version"}. The original version remains unchanged for historical runs. Review and test this draft before publishing.`}
-          </InlineNotice>
+          {(generatedCompatibility || upgradedCompatibility) && (
+            <InlineNotice
+              tone={generatedCompatibility ? "amber" : "blue"}
+              title={
+                generatedCompatibility
+                  ? "Starter manifest created for this older agent"
+                  : "Older definition converted to the current format"
+              }
+            >
+              {generatedCompatibility
+                ? "No usable manifest was saved, so Agent Studio created a safe starting draft from the agent's identity and known event triggers. Review the instructions, inputs, steps, and outputs; then test before publishing."
+                : `Agent Studio recovered this draft from ${compatibilitySource.includes("action-catalog") ? "the older action catalog" : "an earlier saved version"}. The original version remains unchanged for historical runs. Review and test this draft before publishing.`}
+            </InlineNotice>
+          )}
         </div>
       )}
 

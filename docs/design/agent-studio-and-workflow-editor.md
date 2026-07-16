@@ -502,13 +502,13 @@ External schema references, excessive nesting/property counts, and unbounded out
 
 Every run writes through the shared artifact service under the configured data root; callers never choose an arbitrary directory.
 
-| Artifact            | Content                                                                                                                                     | Policy                                                         |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
-| `run-input.json`    | Normalized input values and artifact references; sensitive values are redacted or referenced.                                               | Always for Studio runs; configurable retention for production. |
-| `output.json`       | Exact user-defined output JSON.                                                                                                             | Mandatory for every successful run.                            |
-| `run-record.json`   | Stable platform envelope: IDs, pinned definition, status, input/output artifact IDs, validation, events, model, tokens, timing, and errors. | Mandatory for every terminal state.                            |
-| `raw-response.txt`  | Provider text before parse/repair.                                                                                                          | Off by default; permission- and retention-controlled.          |
-| step/tool artifacts | Redacted request/result payloads for selected trace levels.                                                                                 | Controlled by trace and sensitivity policy.                    |
+| Artifact            | Content                                                                                                                                                                                                              | Policy                                                         |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| `run-input.json`    | Normalized input values and artifact references; sensitive values are redacted or referenced. Session-context runs also store the exact bounded prior turns under the reserved `__agentic_conversation_history` key. | Always for Studio runs; configurable retention for production. |
+| `output.json`       | Exact user-defined output JSON.                                                                                                                                                                                      | Mandatory for every successful run.                            |
+| `run-record.json`   | Stable platform envelope: IDs, pinned definition, status, input/output artifact IDs, validation, events, model, tokens, timing, and errors.                                                                          | Mandatory for every terminal state.                            |
+| `raw-response.txt`  | Provider text before parse/repair.                                                                                                                                                                                   | Off by default; permission- and retention-controlled.          |
+| step/tool artifacts | Redacted request/result payloads for selected trace levels.                                                                                                                                                          | Controlled by trace and sensitivity policy.                    |
 
 Write a temporary file, flush/close it, atomically rename it, insert the artifact row, and only then mark a successful run `ok`. A failed mandatory output write makes the run fail with `artifact_persistence_failed`; it must not report success without the promised file. A boot reconciler detects orphaned files and missing artifact rows.
 
@@ -625,7 +625,9 @@ The left pane contains:
 - a clear Draft/Live target;
 - a safe-tools/live-tools execution policy.
 
-Submitting a user message creates one independent run. A session groups related attempts in the chat history, but prior conversation is not silently added to a new prompt. A future conversation-memory mode must be explicit, versioned, and visible in the effective-message preview.
+Submitting a user message creates one run. The API defaults `contextMode` to `isolated` for backwards compatibility, while the Test Lab chat composer explicitly uses `contextMode: "session"` when continuing a conversation. Session mode validates that the session belongs to the same tenant and agent, rejects a second queued/running/waiting run in that session with `session_busy`, and loads only completed prior user and assistant messages before appending the current user message.
+
+Conversation history is normalized at the API boundary: user turns preserve the stored prompt verbatim except for canonical LF line endings, while assistant JSON is serialized with deterministic key ordering. The newest history is capped at 20 messages and 64 KiB. The exact bounded array is stored in `run-input.json` under `__agentic_conversation_history`, sent with the durable Inngest event, and inserted between the immutable system instructions and current user prompt by the runtime. A replay reuses the original artifact snapshot—even if the session has received newer messages—and caller input patches cannot replace the reserved history key. Older isolated artifacts without the key continue to replay without conversation history.
 
 The center pane shows live ordered spans. Expanding a span reveals redacted input/output, model/provider, tokens, duration, retry number, and errors. The right pane renders the validated output by port, exact JSON, artifacts, and logs.
 
@@ -814,7 +816,7 @@ id, tenant_id, agent_id, created_by, title,
 created_at, updated_at, last_run_at
 ```
 
-If multi-turn context is later enabled, add explicit `run_messages`. For the first release, the existing run input/output artifacts are sufficient; a session is presentation grouping, not hidden memory.
+`run_messages` stores explicit user and assistant turns for presentation and opt-in continuation. Isolated runs use the session only as presentation grouping. Session-context runs copy a bounded snapshot into their immutable `run-input.json` evidence before appending the current turn; the mutable message table is never consulted during execution or replay.
 
 Extend `runs` with:
 
@@ -1156,7 +1158,7 @@ Expose and backfill the `agent_versions.created_at`/`updated_at` columns already
 ## 25. Explicit non-goals for the first release
 
 - No arbitrary inline TypeScript execution from manifest JSON.
-- No hidden conversational memory between chat-style test runs.
+- No hidden conversational memory: continuation is enabled only by the explicit `contextMode: "session"` run option and is visible in the effective-message trace.
 - No display or persistence of hidden chain-of-thought.
 - No direct agent-to-agent call graph that bypasses the event ledger and Inngest durability model.
 - No remote JSON Schema references or arbitrary template code.

@@ -17,6 +17,7 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { buildTestEnv, type TestEnv } from "./harness";
+import { parseOpenAICompatBody } from "../src/services/model-discovery";
 
 const TMP = mkdtempSync(path.join(tmpdir(), "tc75-"));
 const FLEET_PATH = path.join(TMP, "model-fleet.json");
@@ -71,6 +72,36 @@ describe("TC-75: /v1/llm/providers/:id/available-models", () => {
 
   beforeEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it("keeps OpenRouter live reasoning metadata and ignores dynamic price sentinels", () => {
+    const [model] = parseOpenAICompatBody({
+      data: [
+        {
+          id: "openai/gpt-5.6-sol",
+          pricing: { prompt: "-1", completion: "0.00003" },
+          supported_parameters: ["tools", "reasoning"],
+          reasoning: {
+            supported_efforts: ["none", "low", "medium", "max", "future"],
+            default_effort: "medium",
+            mandatory: false,
+            default_enabled: true,
+          },
+        },
+      ],
+    });
+
+    expect(model).toMatchObject({
+      id: "openai/gpt-5.6-sol",
+      outputPricePerMTok: 30,
+      tools: true,
+      reasoning: true,
+      reasoningEfforts: ["none", "low", "medium", "max"],
+      defaultReasoningEffort: "medium",
+      reasoningMandatory: false,
+      reasoningDefaultEnabled: true,
+    });
+    expect(model?.inputPricePerMTok).toBeUndefined();
   });
 
   it("rejects unknown provider with 400", async () => {

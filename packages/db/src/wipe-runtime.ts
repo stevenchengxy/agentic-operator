@@ -8,7 +8,7 @@
  * `AGENTIC_DEMO_MODE` between states, or any time you want to confirm a
  * dashboard genuinely reflects live traffic vs. stale fixtures.
  *
- * Wiped: `runs`, `steps`, `events`, `tasks`, `audit_log`, `artifacts`,
+ * Wiped: `runs`, `steps`, `llm_calls`, `events`, `tasks`, `audit_log`, `artifacts`,
  *        `run_trace_events`, `run_emitted_events`, `run_messages`,
  *        `agent_run_sessions`, `event_listeners` (regenerated on bootstrap),
  *        `agent_memory_short`, `agent_memory_long` (per-run scratch),
@@ -36,6 +36,7 @@ const TABLES_TO_WIPE = [
   "run_trace_events",
   "run_emitted_events",
   "run_messages",
+  "llm_calls",
   "steps",
   "artifacts",
   "agent_memory_short",
