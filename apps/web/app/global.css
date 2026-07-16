@@ -199,7 +199,29 @@ a {
 }
 
 .agent-studio-test-grid {
-  grid-template-columns: minmax(280px, 0.85fr) minmax(340px, 1.15fr) 250px;
+  grid-template-columns:
+    minmax(280px, var(--agent-studio-test-setup-width, 0.85fr))
+    6px
+    minmax(340px, 1.15fr)
+    6px
+    var(--agent-studio-test-history-width, 250px);
+}
+
+.agent-studio-test-grid--history-closed {
+  grid-template-columns:
+    minmax(280px, var(--agent-studio-test-setup-width, 0.85fr))
+    6px
+    minmax(340px, 1.15fr);
+}
+
+.agent-studio-test-splitter {
+  min-width: 0;
+  min-height: 0;
+}
+
+.agent-studio-test-splitter [role="separator"]:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: -2px;
 }
 
 /* Production two-agent system check — wide evidence area + compact history. */
@@ -221,13 +243,21 @@ a {
   }
 
   .agent-studio-test-grid {
-    grid-template-columns: minmax(280px, 0.85fr) minmax(340px, 1.15fr);
+    grid-template-columns:
+      minmax(280px, var(--agent-studio-test-setup-width, 0.85fr))
+      6px
+      minmax(340px, 1.15fr);
+  }
+
+  .agent-studio-test-splitter--history {
+    grid-column: 1 / -1;
   }
 
   .agent-studio-test-history {
     grid-column: 1 / -1;
-    min-height: 220px;
-    max-height: 260px;
+    height: var(--agent-studio-test-history-height, 250px);
+    min-height: 180px;
+    max-height: 520px;
     border-top: 1px solid var(--border);
   }
 }
@@ -400,6 +430,121 @@ a {
   color: var(--signal);
 }
 
+.agent-studio-output-details {
+  padding-top: 9px;
+  border-top: 1px solid var(--border);
+}
+
+.agent-studio-output-details > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  cursor: pointer;
+  color: var(--text-2);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  list-style: none;
+}
+
+.agent-studio-output-details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.agent-studio-output-details > summary::before {
+  content: "▶";
+  color: var(--text-3);
+  font-size: 8px;
+}
+
+.agent-studio-output-details[open] > summary::before {
+  content: "▼";
+}
+
+.agent-studio-output-details > summary > :first-child {
+  flex: 1;
+}
+
+.agent-studio-output-details > summary > :last-child {
+  overflow: hidden;
+  color: var(--text-3);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-studio-output-details__body {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.agent-studio-output-details textarea {
+  width: 100%;
+  min-height: 180px;
+  padding: 9px 10px;
+  resize: vertical;
+  border: 1px solid var(--border-2);
+  border-radius: 5px;
+  outline: 0;
+  background: var(--bg-2);
+  color: var(--text-2);
+  font: 10.5px/1.55 var(--mono);
+  tab-size: 2;
+}
+
+.agent-studio-output-details textarea:focus {
+  border-color: var(--signal);
+}
+
+.agent-studio-output-details textarea::placeholder {
+  color: var(--text-4);
+}
+
+.agent-studio-output-details__hint {
+  color: var(--text-2);
+  font-size: 9.5px;
+  line-height: 1.45;
+}
+
+.agent-studio-test-event-list {
+  display: flex;
+  min-height: 34px;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 9px;
+  border: 1px solid var(--border-2);
+  border-radius: 4px;
+  background: var(--bg-2);
+}
+
+.agent-studio-test-event-chip {
+  max-width: 100%;
+  padding: 3px 7px;
+  border: 1px solid color-mix(in srgb, var(--green) 38%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--green) 8%, transparent);
+  color: var(--green);
+  font: 10px/1.35 var(--mono);
+  overflow-wrap: anywhere;
+}
+
+.agent-studio-test-event-empty {
+  color: var(--text-3);
+  font: 10.5px/1.4 var(--sans);
+}
+
+.agent-studio-test-history-header {
+  display: flex;
+  min-height: 54px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 8px 9px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
 .agent-studio-chat-welcome {
   display: grid;
   max-width: 460px;
@@ -505,6 +650,10 @@ a {
     grid-template-columns: minmax(0, 1fr);
   }
 
+  .agent-studio-test-splitter {
+    display: none;
+  }
+
   .agent-studio-test-setup {
     max-height: 520px;
     border-right: 0 !important;
@@ -518,6 +667,9 @@ a {
 
   .agent-studio-test-history {
     grid-column: auto;
+    height: auto;
+    min-height: 220px;
+    max-height: 260px;
   }
 }
 

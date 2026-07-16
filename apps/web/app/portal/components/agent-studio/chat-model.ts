@@ -20,6 +20,26 @@ export interface ChatMessageView {
   createdAt: Date | null;
 }
 
+const ASSISTANT_TEXT_KEYS = [
+  "result",
+  "answer",
+  "response",
+  "message",
+  "text",
+  "content",
+  "summary",
+  "executive_summary",
+] as const;
+
+const ASSISTANT_TEXT_WRAPPERS = [
+  "result",
+  "output",
+  "outputs",
+  "data",
+  "payload",
+  "value",
+] as const;
+
 function runFallback(
   run: AgentRunHistoryRow,
   fallbackOutputs: ReadonlyMap<string, unknown>,
@@ -96,6 +116,98 @@ export function normalizeAssistantContent(value: unknown): unknown {
   } catch {
     return value;
   }
+}
+
+function nonEmptyText(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+function textFromBlocks(value: unknown[]): string | null {
+  const parts = value.map((item) => {
+    const direct = nonEmptyText(item);
+    if (direct) return direct;
+    if (!isPlainRecord(item)) return null;
+    return nonEmptyText(item.text) ?? nonEmptyText(item.content);
+  });
+  return parts.length > 0 && parts.every((part): part is string => part != null)
+    ? parts.join("\n")
+    : null;
+}
+
+function assistantTextAtDepth(
+  value: unknown,
+  preferredTextKeys: readonly string[],
+  depth: number,
+): string | null {
+  const normalized = normalizeAssistantContent(value);
+  const direct = nonEmptyText(normalized);
+  if (direct) return direct;
+  if (depth >= 4) return null;
+  if (Array.isArray(normalized)) return textFromBlocks(normalized);
+  if (!isPlainRecord(normalized)) return null;
+
+  const textKeys = Array.from(
+    new Set([...preferredTextKeys, ...ASSISTANT_TEXT_KEYS]),
+  );
+  for (const key of textKeys) {
+    if (!(key in normalized)) continue;
+    const candidate = normalizeAssistantContent(normalized[key]);
+    const candidateText = nonEmptyText(candidate);
+    if (candidateText) return candidateText;
+    if (isStructuredChatValue(candidate)) {
+      const nested = assistantTextAtDepth(
+        candidate,
+        preferredTextKeys,
+        depth + 1,
+      );
+      if (nested) return nested;
+    }
+  }
+
+  for (const key of ASSISTANT_TEXT_WRAPPERS) {
+    if (!(key in normalized)) continue;
+    const candidate = normalized[key];
+    if (!isStructuredChatValue(candidate)) continue;
+    const nested = assistantTextAtDepth(
+      candidate,
+      preferredTextKeys,
+      depth + 1,
+    );
+    if (nested) return nested;
+  }
+  return null;
+}
+
+/**
+ * Select the human-readable portion of a structured assistant result without
+ * discarding or mutating the aggregate JSON. Ambiguous classifier/extractor
+ * objects intentionally return null so the caller can render their JSON.
+ */
+export function assistantTextFromValue(
+  value: unknown,
+  preferredTextKeys: readonly string[] = [],
+): string | null {
+  return assistantTextAtDepth(value, preferredTextKeys, 0);
+}
+
+/**
+ * Prefer the authored output contract only when it identifies one
+ * unambiguous text field. A single-output agent remains compatible with older
+ * definitions whose JSON schema did not declare a type.
+ */
+export function assistantTextOutputKeys(
+  outputs: readonly { id: string; schema?: unknown }[],
+): string[] {
+  if (outputs.length === 1) {
+    const onlyOutput = outputs[0];
+    return onlyOutput ? [onlyOutput.id] : [];
+  }
+  const stringOutputs = outputs.filter(
+    (output) => isPlainRecord(output.schema) && output.schema.type === "string",
+  );
+  return stringOutputs.length === 1 && stringOutputs[0]
+    ? [stringOutputs[0].id]
+    : [];
 }
 
 function visibleMessage(message: RunMessage): ChatMessageView | null {
@@ -189,6 +301,15 @@ export function prettyChatValue(value: unknown): string {
     return JSON.stringify(value, null, 2);
   } catch {
     return String(value);
+  }
+}
+
+export function prettyJsonOutput(value: unknown): string {
+  const normalized = normalizeAssistantContent(value);
+  try {
+    return JSON.stringify(normalized, null, 2) ?? "";
+  } catch {
+    return String(normalized);
   }
 }
 

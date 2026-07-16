@@ -1,9 +1,16 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  type CSSProperties,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   PROVIDER_MODEL_CATALOG,
+  PROVIDER_IDS,
   type CatalogModel,
   type ProviderId,
   type ReasoningConfig,
@@ -13,7 +20,7 @@ import {
   type ReasoningSummary,
   type TextVerbosity,
 } from "@agentic/contracts";
-import { Badge, Button, Empty } from "@/app/portal/components";
+import { Badge, Button, Empty, Splitter } from "@/app/portal/components";
 import { useTenant } from "@/app/portal/lib/use-tenant";
 import {
   useAgentRunHistory,
@@ -28,6 +35,7 @@ import {
 } from "@/lib/hooks/useAgentStudio";
 import { useCancelRun, useRunArtifacts } from "@/lib/hooks/useRuns";
 import { useRunLogStream } from "@/lib/hooks/useRunLogStream";
+import { useAvailableModels } from "@/lib/hooks/useModelFleet";
 import {
   Field,
   InlineNotice,
@@ -45,33 +53,36 @@ import {
   type StudioInputPort,
 } from "./model";
 import {
+  assistantTextFromValue,
+  assistantTextOutputKeys,
   buildChatTranscript,
   isStructuredChatValue,
   prettyChatValue,
+  prettyJsonOutput,
   type ChatMessageView,
 } from "./chat-model";
 import { buildStudioChatRunRequest } from "./chat-request";
+import {
+  clampPanelWidth,
+  maxTestHistoryWidth,
+  maxTestSetupWidth,
+  TEST_HISTORY_DEFAULT_WIDTH,
+  TEST_HISTORY_DEFAULT_HEIGHT,
+  TEST_HISTORY_MAX_HEIGHT,
+  TEST_HISTORY_MAX_WIDTH,
+  TEST_HISTORY_MIN_HEIGHT,
+  TEST_HISTORY_MIN_WIDTH,
+  TEST_SETUP_MIN_WIDTH,
+} from "./test-layout";
+import {
+  CUSTOM_MODEL_OPTION,
+  providerModelIds,
+  providerOverrideNeedsModel,
+  testModelOptions,
+} from "./test-model-selector";
 
 type ResultTab = "chat" | "trace" | "output" | "logs" | "artifacts";
-const RUN_PROVIDERS = [
-  "",
-  "mock",
-  "anthropic",
-  "openai",
-  "openrouter",
-  "gemini",
-  "azure",
-  "groq",
-  "together",
-  "mistral",
-  "deepseek",
-  "moonshot",
-  "zai",
-  "qwen",
-  "bedrock",
-  "vertex",
-  "custom",
-];
+const RUN_PROVIDERS = ["", ...PROVIDER_IDS];
 const DEFAULT_FILE_MAX_BYTES = 10_000_000;
 
 function selectedCatalogModel(
@@ -411,13 +422,20 @@ function VariableControl({
 function ChatBubble({
   message,
   selected,
+  textOutputKeys,
   onInspectRun,
 }: {
   message: ChatMessageView;
   selected: boolean;
+  textOutputKeys: readonly string[];
   onInspectRun: (runId: string) => void;
 }) {
-  const structured = isStructuredChatValue(message.content);
+  const assistantText =
+    message.role === "assistant"
+      ? assistantTextFromValue(message.content, textOutputKeys)
+      : null;
+  const structured =
+    assistantText == null && isStructuredChatValue(message.content);
   const stateLabel =
     message.state === "working"
       ? "Working"
@@ -450,7 +468,9 @@ function ChatBubble({
             </span>
           )}
         </div>
-        {structured ? (
+        {assistantText != null ? (
+          <div className="agent-studio-chat-text">{assistantText}</div>
+        ) : structured ? (
           <pre className="agent-studio-chat-json">
             {prettyChatValue(message.content)}
           </pre>
@@ -535,6 +555,7 @@ export function TestLab({
   const [runtimeOpen, setRuntimeOpen] = useState(false);
   const [provider, setProvider] = useState("");
   const [model, setModel] = useState("");
+  const [manualModelEntry, setManualModelEntry] = useState(false);
   const [reasoningMode, setReasoningMode] = useState("");
   const [reasoningEffort, setReasoningEffort] = useState("");
   const [reasoningSummary, setReasoningSummary] = useState("");
@@ -544,6 +565,16 @@ export function TestLab({
   const [temperature, setTemperature] = useState("");
   const [maxTokens, setMaxTokens] = useState("");
   const [timeoutSeconds, setTimeoutSeconds] = useState("");
+  const [setupPanelWidth, setSetupPanelWidth] = useState<number | null>(null);
+  const [historyPanelWidth, setHistoryPanelWidth] = useState(
+    TEST_HISTORY_DEFAULT_WIDTH,
+  );
+  const [historyPanelHeight, setHistoryPanelHeight] = useState(
+    TEST_HISTORY_DEFAULT_HEIGHT,
+  );
+  const [historyOpen, setHistoryOpen] = useState(true);
+  const [testGridWidth, setTestGridWidth] = useState(1_500);
+  const [historyInline, setHistoryInline] = useState(true);
   const createRun = useCreateAgentRun(agentId);
   const history = useAgentRunHistory(agentId, { limit: 100 });
   const session = useRunSession(sessionId);
@@ -561,10 +592,14 @@ export function TestLab({
     maxLines: 2000,
   });
   const cancelRun = useCancelRun();
+  const effectiveProvider = provider || definition.provider;
+  const availableModels = useAvailableModels(effectiveProvider);
   const hadDraft = useRef(Boolean(draft));
   const dispatchInFlightRef = useRef(false);
   const hydratedSessionRef = useRef<string | null>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const testGridRef = useRef<HTMLDivElement>(null);
+  const setupPanelRef = useRef<HTMLElement>(null);
   const artifactFilename = String(
     asRecord(definition.output_config.artifact).filename ?? "output.json",
   );
@@ -578,6 +613,61 @@ export function TestLab({
         ? [conversationTriggerEvent, ...definition.trigger]
         : definition.trigger,
     [conversationTriggerEvent, definition.trigger],
+  );
+  const emittedEvents = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          definition.triggered_event
+            .map((eventName) => eventName.trim())
+            .filter(Boolean),
+        ),
+      ),
+    [definition.triggered_event],
+  );
+  const textOutputKeys = useMemo(
+    () => assistantTextOutputKeys(definition.outputs),
+    [definition.outputs],
+  );
+  const historyWidthForBounds = clampPanelWidth(
+    historyPanelWidth,
+    TEST_HISTORY_MIN_WIDTH,
+    TEST_HISTORY_MAX_WIDTH,
+  );
+  const historyVisibleInline = historyInline && historyOpen;
+  const setupPanelMaxWidth = maxTestSetupWidth(
+    testGridWidth,
+    historyWidthForBounds,
+    historyVisibleInline,
+  );
+  const effectiveSetupPanelWidth =
+    setupPanelWidth == null
+      ? null
+      : clampPanelWidth(
+          setupPanelWidth,
+          TEST_SETUP_MIN_WIDTH,
+          setupPanelMaxWidth,
+        );
+  const setupWidthForBounds =
+    effectiveSetupPanelWidth ??
+    Math.round(
+      setupPanelRef.current?.getBoundingClientRect().width ??
+        TEST_SETUP_MIN_WIDTH,
+    );
+  const historyPanelMaxWidth = maxTestHistoryWidth(
+    testGridWidth,
+    setupWidthForBounds,
+    historyVisibleInline,
+  );
+  const effectiveHistoryPanelWidth = clampPanelWidth(
+    historyPanelWidth,
+    TEST_HISTORY_MIN_WIDTH,
+    historyPanelMaxWidth,
+  );
+  const effectiveHistoryPanelHeight = clampPanelWidth(
+    historyPanelHeight,
+    TEST_HISTORY_MIN_HEIGHT,
+    TEST_HISTORY_MAX_HEIGHT,
   );
 
   useEffect(() => {
@@ -596,6 +686,30 @@ export function TestLab({
         : (definition.trigger[0] ?? ""),
     );
   }, [definition.trigger, sessionId]);
+
+  useEffect(() => {
+    const element = testGridRef.current;
+    if (!element) return;
+
+    const updateBounds = () => {
+      setTestGridWidth(
+        Math.max(0, Math.round(element.getBoundingClientRect().width)),
+      );
+      setHistoryInline(window.innerWidth > 1_280);
+    };
+
+    updateBounds();
+    const observer =
+      typeof ResizeObserver === "undefined"
+        ? null
+        : new ResizeObserver(updateBounds);
+    observer?.observe(element);
+    window.addEventListener("resize", updateBounds);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", updateBounds);
+    };
+  }, []);
 
   useEffect(() => {
     const continuation = session.data?.continuation;
@@ -622,6 +736,17 @@ export function TestLab({
     : (output.data?.status ??
       selectedHistory?.status ??
       (selectedRunId ? "queued" : null));
+  const selectedOutputText =
+    output.data?.output == null ? "" : prettyJsonOutput(output.data.output);
+  const selectedOutputPlaceholder = !selectedRunId
+    ? "Run the agent or select a saved run to inspect its JSON output."
+    : output.isLoading
+      ? "Loading the selected run output…"
+      : output.isError
+        ? formatAgentStudioError(output.error)
+        : output.data && !isTerminalStatus(output.data.status)
+          ? "The selected run is still producing output…"
+          : "This run did not produce a validated JSON output.";
   const reasoningSummaries = useMemo(
     () =>
       (trace.data?.events ?? []).filter(
@@ -661,12 +786,45 @@ export function TestLab({
   const parsedMaxTokens = Number(maxTokens);
   const parsedTimeoutSeconds = Number(timeoutSeconds);
   const modelOverride = model.trim();
-  const effectiveProvider = provider || definition.provider;
   const effectiveModel = modelOverride || definition.model;
-  const modelCapabilities = selectedCatalogModel(
+  const catalogModelCapabilities = selectedCatalogModel(
     effectiveProvider,
     effectiveModel,
   );
+  const discoveredModelCapabilities = availableModels.data?.models.find(
+    (candidate) => candidate.id === effectiveModel.replace(/^~/, ""),
+  );
+  const modelCapabilities = {
+    reasoningModes: discoveredModelCapabilities?.reasoningModes.length
+      ? discoveredModelCapabilities.reasoningModes
+      : catalogModelCapabilities?.reasoningModes,
+    reasoningEfforts: discoveredModelCapabilities?.reasoningEfforts.length
+      ? discoveredModelCapabilities.reasoningEfforts
+      : catalogModelCapabilities?.reasoningEfforts,
+    reasoningSummaries: catalogModelCapabilities?.reasoningSummaries,
+    reasoningContexts: catalogModelCapabilities?.reasoningContexts,
+    textVerbosities: discoveredModelCapabilities?.textVerbosities.length
+      ? discoveredModelCapabilities.textVerbosities
+      : catalogModelCapabilities?.textVerbosities,
+  };
+  const modelIds = providerModelIds(
+    effectiveProvider,
+    availableModels.data?.models,
+  );
+  const modelOptions = testModelOptions({
+    providerOverride: provider,
+    effectiveProvider,
+    inheritedModel: definition.model,
+    modelIds,
+  });
+  const modelDiscoveryPending =
+    Boolean(effectiveProvider) &&
+    availableModels.isLoading &&
+    modelIds.length === 0;
+  const showModelSelector =
+    Boolean(effectiveProvider) &&
+    (modelIds.length > 0 || modelDiscoveryPending);
+  const providerModelMissing = providerOverrideNeedsModel(provider, model);
   const reasoningOverride: ReasoningConfig = {
     ...(reasoningMode ? { mode: reasoningMode as ReasoningMode } : {}),
     ...(reasoningEffort ? { effort: reasoningEffort as ReasoningEffort } : {}),
@@ -678,7 +836,7 @@ export function TestLab({
       : {}),
   };
   const hasReasoningOverride = Object.keys(reasoningOverride).length > 0;
-  const runtimeOverridesInvalid = Boolean(
+  const numericRuntimeOverridesInvalid = Boolean(
     (temperature.trim() &&
       (!Number.isFinite(parsedTemperature) ||
         parsedTemperature < 0 ||
@@ -688,6 +846,8 @@ export function TestLab({
     (timeoutSeconds.trim() &&
       (!Number.isInteger(parsedTimeoutSeconds) || parsedTimeoutSeconds <= 0)),
   );
+  const runtimeOverridesInvalid =
+    numericRuntimeOverridesInvalid || providerModelMissing;
   const draftNotReady =
     !sessionId && target === "draft" && draftHasUnsavedChanges;
   const sessionHasActiveRun = Boolean(
@@ -825,6 +985,38 @@ export function TestLab({
     }
   }
 
+  function clearModelSpecificOverrides() {
+    setReasoningMode("");
+    setReasoningEffort("");
+    setReasoningSummary("");
+    setReasoningContext("");
+    setVerbosity("");
+    setStoreResponse("");
+  }
+
+  function changeProvider(nextProvider: string) {
+    setProvider(nextProvider);
+    setModel("");
+    setManualModelEntry(false);
+    clearModelSpecificOverrides();
+  }
+
+  function changeCatalogModel(nextModel: string) {
+    if (nextModel === CUSTOM_MODEL_OPTION) {
+      setModel("");
+      setManualModelEntry(true);
+    } else {
+      setModel(nextModel);
+      setManualModelEntry(false);
+    }
+    clearModelSpecificOverrides();
+  }
+
+  function changeManualModel(nextModel: string) {
+    setModel(nextModel);
+    clearModelSpecificOverrides();
+  }
+
   function newChat() {
     hydratedSessionRef.current = null;
     setSessionId(undefined);
@@ -854,22 +1046,32 @@ export function TestLab({
         </InlineNotice>
       )}
       <div
-        className="agent-studio-test-grid"
-        style={{
-          display: "grid",
-          minHeight: 600,
-          border: "1px solid var(--border)",
-          borderRadius: 7,
-          overflow: "hidden",
-          background: "var(--panel)",
-        }}
+        ref={testGridRef}
+        className={`agent-studio-test-grid${historyOpen ? "" : " agent-studio-test-grid--history-closed"}`}
+        style={
+          {
+            display: "grid",
+            minHeight: 600,
+            border: "1px solid var(--border)",
+            borderRadius: 7,
+            overflow: "hidden",
+            background: "var(--panel)",
+            "--agent-studio-test-setup-width":
+              effectiveSetupPanelWidth == null
+                ? undefined
+                : `${effectiveSetupPanelWidth}px`,
+            "--agent-studio-test-history-width": `${effectiveHistoryPanelWidth}px`,
+            "--agent-studio-test-history-height": `${effectiveHistoryPanelHeight}px`,
+          } as CSSProperties
+        }
       >
         <section
+          id="agent-studio-test-setup-panel"
+          ref={setupPanelRef}
           className="agent-studio-test-setup"
           style={{
             display: "flex",
             flexDirection: "column",
-            borderRight: "1px solid var(--border)",
             minWidth: 0,
           }}
         >
@@ -1035,6 +1237,77 @@ export function TestLab({
                 />
               </Field>
             )}
+            <div>
+              <div
+                style={{
+                  marginBottom: 4,
+                  color: "var(--text)",
+                  fontSize: 11,
+                  fontWeight: 500,
+                }}
+              >
+                {emittedEvents.length === 1 ? "Emit event" : "Emit events"}
+              </div>
+              <div
+                style={{
+                  marginBottom: 6,
+                  color: "var(--text-3)",
+                  fontSize: 10.5,
+                  lineHeight: 1.45,
+                }}
+              >
+                Configured outgoing events. Successful runs can publish them to
+                continue downstream workflow steps.
+              </div>
+              <div
+                className="agent-studio-test-event-list"
+                role="list"
+                aria-label="Emitted events"
+              >
+                {emittedEvents.length > 0 ? (
+                  emittedEvents.map((name) => (
+                    <span
+                      key={name}
+                      className="agent-studio-test-event-chip"
+                      role="listitem"
+                      title={name}
+                    >
+                      {name}
+                    </span>
+                  ))
+                ) : (
+                  <span className="agent-studio-test-event-empty">
+                    No emitted events configured
+                  </span>
+                )}
+              </div>
+            </div>
+            <details className="agent-studio-output-details">
+              <summary>
+                <span>JSON OUTPUT</span>
+                <span>
+                  {selectedRunId
+                    ? (activeStatus ?? "selected run")
+                    : "no run selected"}
+                </span>
+              </summary>
+              <div className="agent-studio-output-details__body">
+                <textarea
+                  aria-label="Selected run JSON output"
+                  aria-busy={output.isLoading}
+                  readOnly
+                  spellCheck={false}
+                  rows={10}
+                  value={selectedOutputText}
+                  placeholder={selectedOutputPlaceholder}
+                />
+                <div className="agent-studio-output-details__hint">
+                  {selectedOutputText
+                    ? "Complete validated output for the selected run. This remains JSON even when the conversation shows only its response text."
+                    : selectedOutputPlaceholder}
+                </div>
+              </div>
+            </details>
             <details
               open={runtimeOpen}
               onToggle={(event) => setRuntimeOpen(event.currentTarget.open)}
@@ -1099,7 +1372,7 @@ export function TestLab({
                   >
                     <SelectInput
                       value={provider}
-                      onChange={setProvider}
+                      onChange={changeProvider}
                       options={RUN_PROVIDERS.map((value) => ({
                         value,
                         label:
@@ -1110,15 +1383,49 @@ export function TestLab({
                   </Field>
                   <Field
                     label="Temporary AI model"
-                    hint="Only changes this test run. Leave blank to use the agent or workspace model."
-                    example="gpt-5-mini"
+                    required={providerModelMissing}
+                    hint={
+                      providerModelMissing
+                        ? `Choose or enter a model for ${effectiveProvider}. A temporary provider override must send an explicit provider/model pair.`
+                        : !effectiveProvider
+                          ? "Select a provider to browse its models, or enter a workspace model ID manually."
+                          : showModelSelector
+                            ? `Choose a model available from ${effectiveProvider}, or enter a custom model ID.`
+                            : `Enter the model or deployment ID expected by ${effectiveProvider}; no provider model list is available.`
+                    }
                   >
-                    <TextInput
-                      value={model}
-                      mono
-                      placeholder={definition.model || "Use agent / workspace"}
-                      onChange={setModel}
-                    />
+                    <div style={{ display: "grid", gap: 6 }}>
+                      {showModelSelector ? (
+                        <SelectInput
+                          value={manualModelEntry ? CUSTOM_MODEL_OPTION : model}
+                          onChange={changeCatalogModel}
+                          disabled={modelDiscoveryPending}
+                          options={
+                            modelDiscoveryPending
+                              ? [
+                                  {
+                                    value: "",
+                                    label: `Loading ${effectiveProvider} models…`,
+                                  },
+                                ]
+                              : modelOptions
+                          }
+                        />
+                      ) : null}
+                      {(!showModelSelector || manualModelEntry) && (
+                        <TextInput
+                          value={model}
+                          mono
+                          placeholder={
+                            provider
+                              ? `Enter a ${provider} model ID`
+                              : definition.model ||
+                                "Use agent / workspace model"
+                          }
+                          onChange={changeManualModel}
+                        />
+                      )}
+                    </div>
                   </Field>
                 </div>
                 {(modelCapabilities?.reasoningModes?.length ||
@@ -1313,7 +1620,7 @@ export function TestLab({
                     />
                   </Field>
                 </div>
-                {runtimeOverridesInvalid && (
+                {numericRuntimeOverridesInvalid && (
                   <div style={{ color: "var(--red)", fontSize: 10.5 }}>
                     Temperature must be between 0 and 2; max tokens and timeout
                     must be positive whole numbers.
@@ -1348,13 +1655,31 @@ export function TestLab({
           )}
         </section>
 
+        <div className="agent-studio-test-splitter agent-studio-test-splitter--setup">
+          <Splitter
+            axis="x"
+            getValue={() =>
+              effectiveSetupPanelWidth ??
+              Math.round(
+                setupPanelRef.current?.getBoundingClientRect().width ??
+                  TEST_SETUP_MIN_WIDTH,
+              )
+            }
+            setValue={setSetupPanelWidth}
+            min={TEST_SETUP_MIN_WIDTH}
+            max={setupPanelMaxWidth}
+            ariaLabel="Resize Test setup and Conversation panels"
+            ariaControls="agent-studio-test-setup-panel agent-studio-test-conversation-panel"
+          />
+        </div>
+
         <section
+          id="agent-studio-test-conversation-panel"
           className="agent-studio-test-conversation"
           style={{
             minWidth: 0,
             display: "flex",
             flexDirection: "column",
-            borderRight: "1px solid var(--border)",
           }}
         >
           <div
@@ -1416,6 +1741,20 @@ export function TestLab({
                 gap: 7,
               }}
             >
+              <Button
+                small
+                tone="ghost"
+                icon="logs"
+                title={historyOpen ? "Hide run history" : "Show run history"}
+                onClick={() => setHistoryOpen((open) => !open)}
+                ariaLabel={
+                  historyOpen ? "Hide run history" : "Show run history"
+                }
+                ariaControls="agent-studio-test-history-panel"
+                ariaExpanded={historyOpen}
+              >
+                History
+              </Button>
               {sessionId && (
                 <Button small disabled={conversationBusy} onClick={newChat}>
                   New chat
@@ -1510,6 +1849,7 @@ export function TestLab({
                       key={message.id}
                       message={message}
                       selected={message.runId === selectedRunId}
+                      textOutputKeys={textOutputKeys}
                       onInspectRun={setSelectedRunId}
                     />
                   ))
@@ -1539,6 +1879,7 @@ export function TestLab({
                         pendingTurn.runId &&
                         pendingTurn.runId === selectedRunId,
                       )}
+                      textOutputKeys={textOutputKeys}
                       onInspectRun={setSelectedRunId}
                     />
                     <ChatBubble
@@ -1557,6 +1898,7 @@ export function TestLab({
                         pendingTurn.runId &&
                         pendingTurn.runId === selectedRunId,
                       )}
+                      textOutputKeys={textOutputKeys}
                       onInspectRun={setSelectedRunId}
                     />
                   </>
@@ -1674,7 +2016,7 @@ export function TestLab({
                       overflow: "auto",
                     }}
                   >
-                    {toPrettyJson(output.data.output)}
+                    {prettyJsonOutput(output.data.output)}
                   </pre>
                 </div>
               )
@@ -1863,20 +2205,57 @@ export function TestLab({
           )}
         </section>
 
+        {historyOpen && (
+          <div className="agent-studio-test-splitter agent-studio-test-splitter--history">
+            <Splitter
+              axis={historyInline ? "x" : "y"}
+              getValue={() =>
+                historyInline
+                  ? effectiveHistoryPanelWidth
+                  : effectiveHistoryPanelHeight
+              }
+              setValue={
+                historyInline ? setHistoryPanelWidth : setHistoryPanelHeight
+              }
+              min={
+                historyInline ? TEST_HISTORY_MIN_WIDTH : TEST_HISTORY_MIN_HEIGHT
+              }
+              max={
+                historyInline ? historyPanelMaxWidth : TEST_HISTORY_MAX_HEIGHT
+              }
+              invert
+              ariaLabel={
+                historyInline
+                  ? "Resize Conversation and Run history panels"
+                  : "Resize Conversation and Run history rows"
+              }
+              ariaControls="agent-studio-test-conversation-panel agent-studio-test-history-panel"
+            />
+          </div>
+        )}
+
         <aside
+          id="agent-studio-test-history-panel"
           className="agent-studio-test-history"
-          style={{ minWidth: 0, display: "flex", flexDirection: "column" }}
+          aria-hidden={!historyOpen}
+          style={{
+            minWidth: 0,
+            display: historyOpen ? "flex" : "none",
+            flexDirection: "column",
+          }}
         >
-          <div style={{ padding: 12, borderBottom: "1px solid var(--border)" }}>
-            <div
-              style={{ color: "var(--text)", fontSize: 12, fontWeight: 600 }}
-            >
-              Run history
-            </div>
-            <div
-              style={{ color: "var(--text-3)", fontSize: 10.5, marginTop: 2 }}
-            >
-              Saved for this agent
+          <div className="agent-studio-test-history-header">
+            <div style={{ minWidth: 0 }}>
+              <div
+                style={{ color: "var(--text)", fontSize: 12, fontWeight: 600 }}
+              >
+                Run history
+              </div>
+              <div
+                style={{ color: "var(--text-3)", fontSize: 10.5, marginTop: 2 }}
+              >
+                Saved for this agent
+              </div>
             </div>
           </div>
           <div style={{ flex: 1, overflow: "auto" }}>

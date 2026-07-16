@@ -30,6 +30,8 @@ export interface SplitterProps {
    * being resized (e.g. "Agent list and detail").
    */
   ariaLabel?: string;
+  /** Space-separated ids of the adjacent regions controlled by the splitter. */
+  ariaControls?: string;
 }
 
 export function Splitter({
@@ -40,29 +42,48 @@ export function Splitter({
   max,
   invert,
   ariaLabel,
+  ariaControls,
 }: SplitterProps) {
   const [hov, setHov] = useState(false);
   const isX = axis === "x";
 
-  function onMouseDown(e: React.MouseEvent) {
+  function onPointerDown(e: React.PointerEvent<HTMLDivElement>) {
+    if (!e.isPrimary || e.button !== 0) return;
     e.preventDefault();
+    const pointerId = e.pointerId;
+    const target = e.currentTarget;
+    target.setPointerCapture(pointerId);
     const startPos = isX ? e.clientX : e.clientY;
     const start = getValue();
-    function move(ev: MouseEvent) {
+    function move(ev: PointerEvent) {
+      if (ev.pointerId !== pointerId) return;
       const cur = isX ? ev.clientX : ev.clientY;
-      const delta = invert ? start - (cur - startPos) : start + (cur - startPos);
+      const delta = invert
+        ? start - (cur - startPos)
+        : start + (cur - startPos);
       setValue(Math.max(min, Math.min(max, delta)));
     }
-    function up() {
-      window.removeEventListener("mousemove", move);
-      window.removeEventListener("mouseup", up);
+    function cleanUp() {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", finish);
+      target.removeEventListener("lostpointercapture", cleanUp);
       document.body.style.userSelect = "";
       document.body.style.cursor = "";
     }
+    function finish(ev: PointerEvent) {
+      if (ev.pointerId !== pointerId) return;
+      cleanUp();
+      if (target.hasPointerCapture(pointerId)) {
+        target.releasePointerCapture(pointerId);
+      }
+    }
     document.body.style.userSelect = "none";
     document.body.style.cursor = isX ? "col-resize" : "row-resize";
-    window.addEventListener("mousemove", move);
-    window.addEventListener("mouseup", up);
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", finish);
+    target.addEventListener("lostpointercapture", cleanUp);
   }
 
   // P2-FE-24 — keyboard-resizable splitter. Arrow keys nudge by 16px,
@@ -90,7 +111,7 @@ export function Splitter({
 
   return (
     <div
-      onMouseDown={onMouseDown}
+      onPointerDown={onPointerDown}
       onMouseEnter={() => setHov(true)}
       onMouseLeave={() => setHov(false)}
       onKeyDown={onKeyDown}
@@ -104,6 +125,7 @@ export function Splitter({
         alignItems: "center",
         justifyContent: "center",
         background: "transparent",
+        touchAction: "none",
         position: "relative",
         // The splitter rides above the panels it divides so the 6px hit
         // area receives mouse events even when the adjacent content is a
@@ -113,6 +135,7 @@ export function Splitter({
       role="separator"
       aria-orientation={isX ? "vertical" : "horizontal"}
       aria-label={ariaLabel ?? "panel splitter"}
+      aria-controls={ariaControls}
       aria-valuenow={getValue()}
       aria-valuemin={min}
       aria-valuemax={max}

@@ -38,4 +38,22 @@ describe("Test Lab chat request", () => {
     expect(request.contextMode).toBe("session");
     expect(request.triggerEvent).toBeUndefined();
   });
+
+  it("sends the selected temporary provider and model as an exact pair", () => {
+    const request = buildStudioChatRunRequest({
+      target: { kind: "live", agentVersionId: "av-1" },
+      prompt: "Compare the rollout options",
+      inputs: {},
+      toolPolicy: "safe",
+      runtimeOverrides: {
+        provider: "deepseek",
+        model: "deepseek-v4-flash",
+      },
+    });
+
+    expect(request.runtimeOverrides).toEqual({
+      provider: "deepseek",
+      model: "deepseek-v4-flash",
+    });
+  });
 });

@@ -1,10 +1,13 @@
 import type { GetRunSessionResponse } from "@agentic/contracts";
 import { describe, expect, it } from "vitest";
 import {
+  assistantTextFromValue,
+  assistantTextOutputKeys,
   buildChatTranscript,
   isStructuredChatValue,
   normalizeAssistantContent,
   prettyChatValue,
+  prettyJsonOutput,
 } from "./chat-model";
 
 const now = new Date("2026-07-15T04:00:00.000Z");
@@ -148,6 +151,82 @@ describe("Test Lab chat transcript", () => {
     );
     expect(normalizeAssistantContent("{not valid JSON}")).toBe(
       "{not valid JSON}",
+    );
+  });
+
+  it("extracts the human-readable result while preserving its exact text", () => {
+    const result =
+      'There is no single "best" design.\n\n**Use an orchestrator when:**\n- coordination matters';
+    const value = {
+      result,
+      ontology_used: false,
+      ontology_query_result: null,
+    };
+
+    expect(assistantTextFromValue(value)).toBe(result);
+    expect(assistantTextFromValue(JSON.stringify(value))).toBe(result);
+    expect(
+      assistantTextFromValue(`\`\`\`json\n${JSON.stringify(value)}\n\`\`\``),
+    ).toBe(result);
+  });
+
+  it("supports declared text outputs and known nested response wrappers", () => {
+    expect(
+      assistantTextFromValue(
+        { recommendation: "Use the safe rollout plan.", confidence: 0.91 },
+        ["recommendation"],
+      ),
+    ).toBe("Use the safe rollout plan.");
+    expect(
+      assistantTextFromValue({
+        output: { payload: { answer: "Nested response" } },
+      }),
+    ).toBe("Nested response");
+    expect(
+      assistantTextFromValue({
+        content: [
+          { type: "text", text: "First paragraph." },
+          { type: "text", text: "Second paragraph." },
+        ],
+      }),
+    ).toBe("First paragraph.\nSecond paragraph.");
+  });
+
+  it("uses an unambiguous authored text output for assistant copy", () => {
+    expect(
+      assistantTextOutputKeys([{ id: "legacy_result", schema: {} }]),
+    ).toEqual(["legacy_result"]);
+    expect(
+      assistantTextOutputKeys([
+        { id: "recommendation", schema: { type: "string" } },
+        { id: "confidence", schema: { type: "number" } },
+      ]),
+    ).toEqual(["recommendation"]);
+    expect(
+      assistantTextOutputKeys([
+        { id: "category", schema: { type: "string" } },
+        { id: "rationale", schema: { type: "string" } },
+      ]),
+    ).toEqual([]);
+  });
+
+  it("keeps ambiguous structured results as JSON", () => {
+    const value = {
+      category: "billing",
+      rationale: "The invoice number is missing.",
+      confidence: 0.96,
+    };
+    expect(assistantTextFromValue(value)).toBeNull();
+    expect(prettyJsonOutput(value)).toBe(
+      '{\n  "category": "billing",\n  "rationale": "The invoice number is missing.",\n  "confidence": 0.96\n}',
+    );
+  });
+
+  it("pretty-prints legacy stringified JSON for the output viewer", () => {
+    expect(
+      prettyJsonOutput('{"result":"ok","metadata":{"cached":false}}'),
+    ).toBe(
+      '{\n  "result": "ok",\n  "metadata": {\n    "cached": false\n  }\n}',
     );
   });
 
