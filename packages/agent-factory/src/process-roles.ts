@@ -43,6 +43,7 @@ export const ROLE_OF_TOOL: Record<string, string> = {
   validate_graph: "QA 工程师",
   verify_chain: "QA 工程师",
   read_spec: "QA 工程师",
+  recall_conversation: "档案管理员",
   diff_spec: "QA 工程师",
   review_agent: "质量评审",
   review_context: "质量评审",

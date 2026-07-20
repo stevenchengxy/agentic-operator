@@ -22,11 +22,11 @@ import {
   type SandboxDeployResult,
 } from "@agentic/agent-factory";
 
+// Type-only: the CONTROL image's curated static closure must not include the bundle builder's
+// deployer/llm graph. The runtime constant lives in the zero-dependency protocol module below.
+import type { SandboxCandidateBundle } from "./services/agent-factory/sandbox-bundle-builder";
 import {
   MAX_SANDBOX_CANDIDATE_RUN_MS,
-  type SandboxCandidateBundle,
-} from "./services/agent-factory/sandbox-bundle-builder";
-import {
   REMOTE_SANDBOX_ENVELOPE_SCHEMA,
   REMOTE_SANDBOX_RESULT_SCHEMA,
   RemoteSandboxProtocolError,

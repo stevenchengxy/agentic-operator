@@ -60,15 +60,16 @@ WORKDIR /app
 FROM base AS build
 # Copy lockfiles + workspace manifests first so dep installs are cacheable
 # independent of source-code changes.
-COPY pnpm-workspace.yaml pnpm-lock.yaml package.json tsconfig.base.json turbo.json ./
+COPY pnpm-workspace.yaml pnpm-lock.yaml package.json tsconfig.base.json turbo.json .nvmrc ./
 COPY apps/api/package.json apps/api/tsconfig.json apps/api/
 COPY apps/web/package.json apps/web/tsconfig.json apps/web/
 COPY apps/cli/package.json apps/cli/tsconfig.json apps/cli/
 COPY packages packages
 COPY tenants tenants
-# The root `postinstall` (package.json) runs scripts/ensure-native-modules.mjs
-# during `pnpm install` (enable-pre-post-scripts=true), so scripts/ + .npmrc must
-# be in the context BEFORE install or it dies with MODULE_NOT_FOUND.
+# The root `preinstall` runs scripts/ensure-node-version.mjs (reads .nvmrc, copied
+# above) and the `postinstall` runs scripts/ensure-native-modules.mjs during
+# `pnpm install` (enable-pre-post-scripts=true), so scripts/ + .npmrc + .nvmrc must
+# be in the context BEFORE install or it dies with ENOENT/MODULE_NOT_FOUND.
 COPY scripts scripts
 COPY .npmrc ./
 # Install every workspace package so better-sqlite3 builds against this
@@ -243,6 +244,7 @@ COPY --from=build --chown=agentic:agentic \
   /app/apps/api/src/services/agent-factory/sandbox-runner-attestation.ts \
   /app/apps/api/src/services/agent-factory/sandbox-runner-delete-control.ts \
   /app/apps/api/src/services/agent-factory/sandbox-lifecycle-store.ts \
+  /app/apps/api/src/services/agent-factory/sandbox-cancel-fence.ts \
   /app/apps/api/src/services/agent-factory/
 
 USER agentic

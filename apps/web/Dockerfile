@@ -37,13 +37,14 @@ WORKDIR /app
 # --- build ---------------------------------------------------------------
 FROM base AS build
 # Workspace skeleton — keep dep installs cache-friendly.
-COPY pnpm-workspace.yaml pnpm-lock.yaml package.json tsconfig.base.json turbo.json ./
+COPY pnpm-workspace.yaml pnpm-lock.yaml package.json tsconfig.base.json turbo.json .nvmrc ./
 COPY apps/api/package.json apps/api/tsconfig.json apps/api/
 COPY apps/web/package.json apps/web/tsconfig.json apps/web/
 COPY apps/cli/package.json apps/cli/tsconfig.json apps/cli/
 COPY packages packages
 COPY tenants tenants
-# Root `postinstall` runs scripts/ensure-native-modules.mjs during install.
+# Root `preinstall` runs scripts/ensure-node-version.mjs (reads .nvmrc) and
+# `postinstall` runs scripts/ensure-native-modules.mjs during install.
 COPY scripts scripts
 COPY .npmrc ./
 

@@ -18,12 +18,15 @@ import {
   assertRemoteSandboxJson,
   assertRemoteSandboxSecretFree,
   canonicalSandboxSha256,
+  MAX_SANDBOX_CANDIDATE_RUN_MS,
   RemoteSandboxProtocolError,
 } from "./sandbox-remote-protocol";
 
 export const SANDBOX_CANDIDATE_BUNDLE_SCHEMA =
   "agent-factory-sandbox-candidate-bundle/v2" as const;
-export const MAX_SANDBOX_CANDIDATE_RUN_MS = 15 * 60_000;
+// Moved to the zero-dependency protocol module so the control runner can import it without
+// pulling this file's deployer graph into the sandbox-control image. Re-exported for back-compat.
+export { MAX_SANDBOX_CANDIDATE_RUN_MS };
 
 type SandboxDeployOptions = NonNullable<
   Parameters<SandboxDeployer["deployAndObserve"]>[2]

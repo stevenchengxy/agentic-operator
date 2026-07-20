@@ -18,6 +18,11 @@ export const REMOTE_SANDBOX_RESULT_SCHEMA =
   "agent-factory-sandbox-remote-result/v1" as const;
 export const REMOTE_SANDBOX_RUNNER_HEALTH_SCHEMA =
   "agent-factory-sandbox-runner-health/v1" as const;
+/** Protocol bound on a single candidate execution. Lives HERE (zero-dependency protocol module)
+ * rather than in sandbox-bundle-builder so the control runner's STATIC import closure stays the
+ * narrow curated set the sandbox-control image copies — importing the bundle builder for this one
+ * number dragged the whole deployer/llm/secret graph into the control image contract. */
+export const MAX_SANDBOX_CANDIDATE_RUN_MS = 15 * 60_000;
 
 const SHA256_HEX = /^[a-f0-9]{64}$/;
 const MAX_CANONICAL_DEPTH = 64;

@@ -23,6 +23,11 @@ vi.mock("./stream-gateway", async (importOriginal) => {
       if (o?.purpose === "specialist:intent") return "[生成] 为本域生成全部 agent ｜ 约束: 无 ｜ 期望产物: 可运行的智能体代码";
       return `[${o?.purpose}]`;
     },
+    // A scripted test must NEVER reach the network. isGatewayConfigured is mocked true (so gated
+    // paths run), which also arms design_agent's inner self-refine — its chatJson/chatJsonResult
+    // must be stubbed too or the fleet landing hangs ~20s on a real fetch (live regression).
+    chatJson: async () => null,
+    chatJsonResult: async () => ({ ok: false as const, failure: "model_no_json" as const, detail: "mocked" }),
   };
 });
 
