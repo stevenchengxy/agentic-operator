@@ -9,8 +9,10 @@
 
 import { describe, it, expect } from "vitest";
 import { spawn } from "node:child_process";
+import { createRequire } from "node:module";
 import path from "node:path";
 import net from "node:net";
+import { pathToFileURL } from "node:url";
 
 const repoRoot = path.resolve(__dirname, "../../..");
 const apiDir = path.resolve(__dirname, "..");
@@ -73,7 +75,10 @@ describe("TC-51: P4-API-01 graceful shutdown", () => {
         AGENTIC_MODELS_DIR: path.join(repoRoot, "models"),
         AGENTIC_LOGS_DIR: path.join(repoRoot, "data", "test-logs"),
         AGENTIC_ARTIFACTS_DIR: path.join(repoRoot, "data", "test-artifacts"),
-        DATABASE_URL: `file:${path.join(repoRoot, "data", "agentic.db")}`,
+        // Inherit the suite's isolated snapshot. Falling back keeps this test
+        // runnable on its own outside Vitest's shared setup.
+        DATABASE_URL:
+          process.env.DATABASE_URL ?? `file:${path.join(repoRoot, "data", "agentic.db")}`,
         LLM_DEFAULT_PROVIDER: "mock",
         LLM_DEFAULT_MODEL: "mock-model-v1",
         INNGEST_EVENT_KEY: "test-event-key",
@@ -83,18 +88,24 @@ describe("TC-51: P4-API-01 graceful shutdown", () => {
         AGENTIC_SHUTDOWN_TIMEOUT_MS: "5000",
       };
 
-      // Spawn tsx directly — `pnpm exec` would interpose a wrapper that
-      // catches SIGTERM itself and forwards via kill(), which makes the
-      // exit code look like a signal-kill even when the inner Node process
-      // exits cleanly. Calling node_modules/.bin/tsx with no wrapper lets
-      // our SIGTERM hit the Node process directly so `code === 0` reflects
-      // the clean exit.
-      const tsxBin = path.join(apiDir, "node_modules", ".bin", "tsx");
-      const proc = spawn(tsxBin, ["src/server.ts"], {
+      // Invoke the tsx module with the exact Node binary running Vitest.
+      // The `.bin/tsx` shell shim performs `exec node ...` through PATH,
+      // which is not a valid runtime dependency in hermetic CI and can leave
+      // this test waiting for a process that never started. `process.execPath`
+      // also keeps SIGTERM attached to the real Node process (unlike a pnpm
+      // wrapper), so code=0 still proves the application's shutdown handler.
+      const tsxLoader = pathToFileURL(
+        createRequire(import.meta.url).resolve("tsx"),
+      ).href;
+      const proc = spawn(
+        process.execPath,
+        ["--import", tsxLoader, "scripts/sqlite-writer-supervisor.ts"],
+        {
         cwd: apiDir,
         env,
         stdio: ["ignore", "pipe", "pipe"],
-      });
+        },
+      );
 
       const stderr: string[] = [];
       const stdout: string[] = [];

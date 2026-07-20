@@ -31,7 +31,12 @@ import {
 import { useTenant } from "@/app/portal/lib/use-tenant";
 import { useI18n } from "@/app/portal/lib/preferences-context";
 import { fmtNum } from "@/app/portal/lib/format";
-import { useBudget, useUsage, useUpdateBudget } from "@/lib/hooks/useUsage";
+import {
+  useBudget,
+  useUsage,
+  useUpdateBudget,
+  type BudgetRow as BudgetData,
+} from "@/lib/hooks/useUsage";
 import {
   HorizontalBarChart,
   LineChart,
@@ -62,8 +67,11 @@ export default function UsagePage() {
   const byDay = usage.data?.byDay ?? [];
   const byAgent = usage.data?.byAgent ?? [];
   const byModel = usage.data?.byModel ?? [];
-  const budgetRow = usage.data?.budget ?? budget.data ?? null;
+  const budgetRow = budget.data ?? usage.data?.budget ?? null;
   const usageUnavailable = !usage.data && (usage.error != null);
+  const usageLoading = !usage.data && usage.isLoading;
+  const costComplete = usage.data?.coverage.costComplete ?? true;
+  const unpricedTokens = usage.data?.coverage.unpricedTokens ?? 0;
 
   const series = useMemo(() => {
     if (byDay.length === 0) return { values: [], labels: [] };
@@ -97,7 +105,9 @@ export default function UsagePage() {
         }
         badge={
           usageUnavailable ? (
-            <Badge tone="amber">{t("usage.badgeLimited")}</Badge>
+            <Badge tone="red">{t("usage.badgeUnavailable")}</Badge>
+          ) : usageLoading ? (
+            <Badge tone="muted">{t("usage.loading")}</Badge>
           ) : (
             <Badge tone="muted">{t("usage.badgeLive")}</Badge>
           )
@@ -156,26 +166,57 @@ export default function UsagePage() {
             </div>
           </div>
 
+          {usage.data && !costComplete ? (
+            <div
+              role="note"
+              style={{
+                padding: "10px 12px",
+                border:
+                  "1px solid color-mix(in srgb, var(--amber) 35%, var(--border))",
+                borderRadius: 6,
+                color: "var(--amber)",
+                background:
+                  "color-mix(in srgb, var(--amber) 7%, transparent)",
+                fontSize: 11.5,
+              }}
+            >
+              <strong>{t("usage.costIncompleteTitle")}</strong>
+              {" · "}
+              {t("usage.costIncompleteHint", {
+                n: fmtNum(unpricedTokens),
+              })}
+            </div>
+          ) : null}
+
           {/* Totals strip */}
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(4, 1fr)",
-              gap: 0,
-              border: "1px solid var(--border)",
-              borderRadius: 6,
-              background: "var(--panel)",
-            }}
-          >
-            <Totals label={t("usage.totalsRuns")} value={fmtNum(total?.runs ?? 0)} />
-            <Totals label={t("usage.totalsTokensIn")} value={fmtNum(total?.tokensIn ?? 0)} />
-            <Totals label={t("usage.totalsTokensOut")} value={fmtNum(total?.tokensOut ?? 0)} />
-            <Totals
-              label={t("usage.totalsUsdPeriod")}
-              value={fmtUsd(total?.usdCents ?? 0)}
-              accent="var(--signal)"
+          {usageLoading ? (
+            <Empty title={t("usage.loading")} hint="" />
+          ) : usageUnavailable ? (
+            <Empty
+              title={t("usage.emptyTitle")}
+              hint={usage.error instanceof Error ? usage.error.message : t("usage.emptyHint")}
             />
-          </div>
+          ) : total ? (
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(4, 1fr)",
+                gap: 0,
+                border: "1px solid var(--border)",
+                borderRadius: 6,
+                background: "var(--panel)",
+              }}
+            >
+              <Totals label={t("usage.totalsRuns")} value={fmtNum(total.runs)} />
+              <Totals label={t("usage.totalsTokensIn")} value={fmtNum(total.tokensIn)} />
+              <Totals label={t("usage.totalsTokensOut")} value={fmtNum(total.tokensOut)} />
+              <Totals
+                label={t("usage.totalsUsdPeriod")}
+                value={`${costComplete ? "" : "≥"}${fmtUsd(total.usdCents)}`}
+                accent="var(--signal)"
+              />
+            </div>
+          ) : null}
 
           {/* Budget row */}
           {budgetRow && (
@@ -187,11 +228,24 @@ export default function UsagePage() {
               }}
             />
           )}
+          {!budgetRow && budget.isError ? (
+            <Empty
+              title={t("usage.budgetUnavailable")}
+              hint={budget.error instanceof Error ? budget.error.message : ""}
+            />
+          ) : null}
 
           {/* Per-day line chart */}
-          <Panel
+          {usage.data ? <Panel
             title={t("usage.byDayTitle", { metric })}
-            subtitle={t("usage.byDaySubtitle", { win, buckets: byDay.length })}
+            subtitle={
+              metric === "usd" && !costComplete
+                ? t("usage.byDayCostIncomplete", {
+                    win,
+                    buckets: byDay.length,
+                  })
+                : t("usage.byDaySubtitle", { win, buckets: byDay.length })
+            }
             padded={false}
           >
             <LineChart
@@ -199,16 +253,16 @@ export default function UsagePage() {
               labels={series.labels}
               formatY={(v) =>
                 metric === "usd"
-                  ? fmtUsd(v)
+                  ? `${costComplete ? "" : "≥"}${fmtUsd(v)}`
                   : metric === "tokens"
                     ? fmtNum(v)
                     : String(Math.round(v))
               }
             />
-          </Panel>
+          </Panel> : null}
 
           {/* Bar charts */}
-          <div
+          {usage.data ? <div
             style={{
               display: "grid",
               gridTemplateColumns: "1fr 1fr",
@@ -239,14 +293,7 @@ export default function UsagePage() {
                 formatValue={fmtNum}
               />
             </Panel>
-          </div>
-
-          {usageUnavailable && (
-            <Empty
-              title={t("usage.emptyTitle")}
-              hint={t("usage.emptyHint")}
-            />
-          )}
+          </div> : null}
         </div>
       </div>
     </div>
@@ -293,13 +340,7 @@ function BudgetRow({
   row,
   onCapsChanged,
 }: {
-  row: {
-    monthlyTokenCap: number | null;
-    monthlyUsdCap: number | null;
-    usedTokensMonth: number;
-    usedUsdMonth: number;
-    periodStart: number;
-  };
+  row: BudgetData;
   onCapsChanged: () => void;
 }) {
   const { t } = useI18n();
@@ -310,23 +351,42 @@ function BudgetRow({
   const [usdCap, setUsdCap] = useState(
     row.monthlyUsdCap != null ? (row.monthlyUsdCap / 100).toFixed(2) : "",
   );
+  const [feedback, setFeedback] = useState<{ ok: boolean; text: string } | null>(null);
   const tokenPct =
     row.monthlyTokenCap && row.monthlyTokenCap > 0
-      ? Math.min(100, (row.usedTokensMonth / row.monthlyTokenCap) * 100)
+      ? Math.min(100, ((row.usedTokensMonth + row.reservedTokens) / row.monthlyTokenCap) * 100)
       : null;
   const usdPct =
     row.monthlyUsdCap && row.monthlyUsdCap > 0
-      ? Math.min(100, (row.usedUsdMonth / row.monthlyUsdCap) * 100)
+      ? Math.min(100, ((row.usedUsdMonth + row.reservedUsdCents) / row.monthlyUsdCap) * 100)
       : null;
 
   async function saveCaps() {
-    const t = tokenCap.trim();
-    const u = usdCap.trim();
-    await update.mutateAsync({
-      monthlyTokenCap: t === "" ? null : Math.max(0, Math.floor(Number(t))),
-      monthlyUsdCap: u === "" ? null : Math.max(0, Math.round(Number(u) * 100)),
-    });
-    onCapsChanged();
+    const tokenText = tokenCap.trim();
+    const usdText = usdCap.trim();
+    const tokenNumber = tokenText === "" ? null : Number(tokenText);
+    const usdNumber = usdText === "" ? null : Number(usdText);
+    if (
+      (tokenNumber != null && (!Number.isFinite(tokenNumber) || tokenNumber < 0)) ||
+      (usdNumber != null && (!Number.isFinite(usdNumber) || usdNumber < 0))
+    ) {
+      setFeedback({ ok: false, text: t("usage.invalidCap") });
+      return;
+    }
+    setFeedback(null);
+    try {
+      await update.mutateAsync({
+        monthlyTokenCap: tokenNumber == null ? null : Math.floor(tokenNumber),
+        monthlyUsdCap: usdNumber == null ? null : Math.round(usdNumber * 100),
+      });
+      setFeedback({ ok: true, text: t("usage.capsSaved") });
+      onCapsChanged();
+    } catch (error) {
+      setFeedback({
+        ok: false,
+        text: error instanceof Error ? error.message : t("usage.saveCapsFailed"),
+      });
+    }
   }
 
   return (
@@ -347,6 +407,45 @@ function BudgetRow({
         </Button>
       }
     >
+      {!row.costComplete ? (
+        <div
+          role="note"
+          style={{
+            marginBottom: 14,
+            padding: "8px 10px",
+            border:
+              "1px solid color-mix(in srgb, var(--amber) 35%, var(--border))",
+            borderRadius: 6,
+            color: "var(--amber)",
+            background: "color-mix(in srgb, var(--amber) 7%, transparent)",
+            fontSize: 11,
+          }}
+        >
+          {t("usage.budgetCostIncompleteHint", {
+            n: fmtNum(row.unpricedTokens),
+          })}
+        </div>
+      ) : null}
+      {row.activeReservations > 0 ? (
+        <div
+          role="status"
+          style={{
+            marginBottom: 14,
+            padding: "8px 10px",
+            border: "1px solid color-mix(in srgb, var(--signal) 30%, var(--border))",
+            borderRadius: 6,
+            color: "var(--text-2)",
+            background: "color-mix(in srgb, var(--signal) 6%, transparent)",
+            fontSize: 11,
+          }}
+        >
+          {t("usage.activeReservations", {
+            count: row.activeReservations,
+            tokens: fmtNum(row.reservedTokens),
+            usd: fmtUsd(row.reservedUsdCents),
+          })}
+        </div>
+      ) : null}
       <div
         style={{
           display: "grid",
@@ -361,6 +460,8 @@ function BudgetRow({
           placeholder={t("usage.capUnlimited")}
           used={row.usedTokensMonth}
           usedLabel={fmtNum(row.usedTokensMonth)}
+          reserved={row.reservedTokens}
+          reservedLabel={fmtNum(row.reservedTokens)}
           pct={tokenPct}
         />
         <CapInput
@@ -369,10 +470,21 @@ function BudgetRow({
           onChange={setUsdCap}
           placeholder={t("usage.capUnlimited")}
           used={row.usedUsdMonth}
-          usedLabel={fmtUsd(row.usedUsdMonth)}
+          usedLabel={`${row.costComplete ? "" : "≥"}${fmtUsd(row.usedUsdMonth)}`}
+          reserved={row.reservedUsdCents}
+          reservedLabel={fmtUsd(row.reservedUsdCents)}
           pct={usdPct}
+          minimum={!row.costComplete}
         />
       </div>
+      {feedback ? (
+        <div
+          role={feedback.ok ? "status" : "alert"}
+          style={{ marginTop: 12, color: feedback.ok ? "var(--green)" : "var(--red)", fontSize: 11.5 }}
+        >
+          {feedback.text}
+        </div>
+      ) : null}
     </Panel>
   );
 }
@@ -384,7 +496,10 @@ function CapInput({
   placeholder,
   used,
   usedLabel,
+  reserved,
+  reservedLabel,
   pct,
+  minimum = false,
 }: {
   label: string;
   value: string;
@@ -392,7 +507,10 @@ function CapInput({
   placeholder: string;
   used: number;
   usedLabel: string;
+  reserved: number;
+  reservedLabel: string;
   pct: number | null;
+  minimum?: boolean;
 }) {
   const { t } = useI18n();
   return (
@@ -409,6 +527,9 @@ function CapInput({
         {label}
       </div>
       <input
+        type="number"
+        min={0}
+        step="any"
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
@@ -435,7 +556,8 @@ function CapInput({
       >
         <span style={{ color: "var(--text-3)" }}>
           {t("usage.used", { amount: usedLabel })}
-          {pct != null ? ` · ${pct.toFixed(0)}%` : ""}
+          {reserved > 0 ? ` · ${t("usage.reserved", { amount: reservedLabel })}` : ""}
+          {pct != null ? ` · ${minimum ? "≥" : ""}${pct.toFixed(0)}%` : ""}
         </span>
         <div
           style={{
@@ -461,7 +583,7 @@ function CapInput({
           />
         </div>
       </div>
-      {used > 0 && pct == null && (
+      {used + reserved > 0 && pct == null && (
         <div
           style={{
             marginTop: 4,

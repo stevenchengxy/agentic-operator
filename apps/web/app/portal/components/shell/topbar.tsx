@@ -17,7 +17,6 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Icon } from "../Icon";
 import { Kbd } from "../atoms";
-import { useTweaks } from "../tweaks/use-tweaks";
 import { useI18n } from "../../lib/preferences-context";
 import { ThemeToggle, LanguageToggle } from "./appearance-controls";
 import { useCommandPalette } from "../cmd-k";
@@ -26,17 +25,14 @@ import { useMe, useLogout, useChangePassword } from "@/lib/hooks/useMe";
 
 export interface TopBarProps {
   /** Display name + avatar initials for the user chip. */
-  user?: { name: string; initials: string };
+  user: { name: string; initials: string };
 }
 
 type Translate = (key: string) => string;
 
-export function TopBar({
-  user = { name: "Liu Wei", initials: "LW" },
-}: TopBarProps) {
+export function TopBar({ user }: TopBarProps) {
   const pathname = usePathname() ?? "";
   const tenant = useTenant();
-  const [tweaks, setTweak] = useTweaks();
   const { t } = useI18n();
   const cmdK = useCommandPalette();
 
@@ -44,7 +40,6 @@ export function TopBar({
     () => buildCrumb(pathname, tenant, t),
     [pathname, tenant, t],
   );
-  const liveStream = tweaks.liveStream;
 
   return (
     <div
@@ -135,27 +130,6 @@ export function TopBar({
       <ThemeToggle />
       <LanguageToggle />
 
-      <button
-        onClick={() => setTweak("liveStream", !liveStream)}
-        aria-pressed={liveStream}
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 6,
-          padding: "5px 10px",
-          background: liveStream ? "color-mix(in srgb, var(--signal) 8%, transparent)" : "transparent",
-          border: `1px solid ${liveStream ? "color-mix(in srgb, var(--signal) 30%, transparent)" : "var(--border-2)"}`,
-          borderRadius: 5,
-          fontSize: 11.5,
-          fontFamily: "var(--mono)",
-          letterSpacing: "0.04em",
-          color: liveStream ? "var(--accent-text)" : "var(--text-3)",
-        }}
-      >
-        <Icon name={liveStream ? "pause" : "play"} size={10} />
-        {liveStream ? t("topbar.live") : t("topbar.paused")}
-      </button>
-
       <UserMenu fallbackName={user.name} fallbackInitials={user.initials} />
     </div>
   );
@@ -178,6 +152,7 @@ function UserMenu({
   const logout = useLogout();
   const [open, setOpen] = useState(false);
   const [pwOpen, setPwOpen] = useState(false);
+  const [logoutError, setLogoutError] = useState<string | null>(null);
 
   const name = me?.user.name || fallbackName;
   const email = me?.user.email ?? "";
@@ -270,12 +245,25 @@ function UserMenu({
             </button>
             <button
               role="menuitem"
-              onClick={() => logout.mutate()}
+              onClick={() => {
+                setLogoutError(null);
+                logout.mutate(undefined, {
+                  onError: (error) => setLogoutError(error.message),
+                });
+              }}
               disabled={logout.isPending}
               style={{ ...menuItemStyle, cursor: logout.isPending ? "wait" : "pointer" }}
             >
               {logout.isPending ? "…" : t("auth.signOut")}
             </button>
+            {logoutError ? (
+              <div
+                role="alert"
+                style={{ padding: "5px 10px", fontSize: 11, color: "var(--red)" }}
+              >
+                {t("auth.signOutFailed")}: {logoutError}
+              </div>
+            ) : null}
           </div>
         </>
       ) : null}
@@ -315,8 +303,10 @@ function ChangePasswordModal({ onClose }: { onClose: () => void }) {
       await changePw.mutateAsync({ currentPassword: current, newPassword: next });
       setDone(true);
       setTimeout(onClose, 900);
-    } catch {
-      setError(t("auth.invalidCredentials"));
+    } catch (caught) {
+      setError(
+        caught instanceof Error ? caught.message : t("auth.passwordChangeFailed"),
+      );
     }
   }
 

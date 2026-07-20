@@ -71,23 +71,14 @@ mutates the attribute; `tokens.css` translates it to `--density-mult`:
 | default       | 1                |
 | comfortable   | 1.18             |
 
-If a component needs density-aware sizing, it has two options:
+If a component needs density-aware sizing, use `calc()` with the shared CSS
+variable inside an inline string:
 
-1. **CSS path (preferred).** Use `calc()` inside an inline string:
+```tsx
+style={{ padding: "calc(14px * var(--density-mult))" }}
+```
 
-   ```tsx
-   style={{ padding: "calc(14px * var(--density-mult))" }}
-   ```
-
-2. **JS path.** Read the scalar from the `useDensity()` hook in
-   `apps/web/app/portal/lib/density.ts`:
-
-   ```tsx
-   const d = useDensity();
-   <Stat ... style={{ marginTop: 12 * d }} />
-   ```
-
-Most primitives don't need either — the prototype's whitespace is forgiving.
+Most primitives don't need density-specific sizing — the prototype's whitespace is forgiving.
 Reserve density scaling for KPI rows and table cells where the difference
 between 0.85 and 1.18 is visible.
 

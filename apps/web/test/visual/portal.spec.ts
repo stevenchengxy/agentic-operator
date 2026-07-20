@@ -1,20 +1,11 @@
 /**
- * Pixel-diff harness for the App Router portal vs the v1_1 SPA.
+ * Pixel-diff harness for the App Router portal.
  *
  * Captures a 1440×900 screenshot of each of the 9 nav views and compares
  * it against a stored reference under `./v1_1-reference/<view>.png` with
  * a 0.1 % pixel-diff tolerance (FR-PORT-3).
  *
- * Reference set:
- *   The v1_1 SPA originally lived at `apps/web/public/portal/` and was
- *   served at `/portal/index.html`. With the App Router taking over the
- *   `/portal/...` namespace, the SPA was relocated to
- *   `apps/web/public/portal-legacy/` (P2-FE-21 transitional) and served
- *   at `/portal-legacy/index.html`. The capture-reference step below
- *   reads from there. After capture, the legacy SPA is deleted (the
- *   reference images stay).
- *
- *   The reference images are checked in once and treated as the
+ * Reference images are checked in once and treated as the
  *   "design-locked" baseline. Re-generating requires an explicit
  *   `--update-snapshots` invocation by a human reviewer.
  *
@@ -25,10 +16,8 @@
  *     chance to paint. The dashboard's event ticker is animated; we
  *     freeze it by setting `reducedMotion=reduce` AND injecting a
  *     CSS rule that pauses every animation.
- *   - Auth: the portal is gated. The Foundation auth (`@/lib/auth`)
- *     auto-mints a dev session in non-prod. We pre-set the cookie
- *     manually before each navigation so `next dev` doesn't need any
- *     side-channel setup.
+ *   - Auth: the portal is gated. Tests sign in through the real password
+ *     form using the explicitly configured bootstrap administrator.
  */
 
 import { test, expect } from "@playwright/test";
@@ -68,12 +57,17 @@ async function freezeAnimations(page: Page): Promise<void> {
 }
 
 async function prepareDevAuth(page: Page): Promise<void> {
-  // The auth plugin auto-mints a session in dev mode (AUTH_MODE=dev or
-  // !production). The portal layout reads `agentic_session` cookie at
-  // SSR. We hit `/sign-in` once to let the server mint it, then
-  // continue. This is faster than calling /api/auth/login because it
-  // round-trips through the same gate.
+  const email = process.env.AGENTIC_BOOTSTRAP_ADMIN_EMAIL?.trim();
+  const password = process.env.AGENTIC_BOOTSTRAP_ADMIN_PASSWORD;
+  if (!email || !password) {
+    throw new Error(
+      "AGENTIC_BOOTSTRAP_ADMIN_EMAIL and AGENTIC_BOOTSTRAP_ADMIN_PASSWORD are required for visual tests",
+    );
+  }
   await page.goto("/sign-in?return=/portal/raas/dashboard");
+  await page.getByLabel(/email|邮箱/i).fill(email);
+  await page.getByLabel(/password|密码/i).fill(password);
+  await page.locator('button[type="submit"]').click();
   await page.waitForURL(/\/portal\//, { timeout: 15_000 });
 }
 

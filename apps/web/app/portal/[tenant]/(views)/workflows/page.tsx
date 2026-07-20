@@ -3,13 +3,9 @@
 /**
  * Workflows view — DAG canvas of all agents wired by events. P2-FE-08.
  *
- * Ported from `agentic-operator_v1_1/views/workflows.jsx` (999 LOC), preserves:
- *   - the hand-tuned LAYOUT map (audit 01 §4.2 acceptance — see `./components/workflows/layout.ts`)
- *   - 8 stage columns + 5-lane grid
+ * The canvas is derived from the live event graph for every tenant:
  *   - cubic-bezier SVG edges with color-coded arrowheads
- *   - animated travelling dots on live edges
  *   - edit-mode banner, toolbar, draft palette, node editor
- *   - NewWorkflowModal (template / blank / import paths)
  *   - ImportManifestModal hook
  *
  * Data sources (all live, no bootstrap snapshot):
@@ -17,8 +13,8 @@
  *   - useEvents({limit})   → event catalog metadata (color/category) +
  *                            live event stream for the inspector
  *
- * Stages are derived from the live DAG's `stage` indices (see STAGE_LABELS
- * below) so each tenant's funnel reflects its own agents. Live updates
+ * Columns are topological depths derived from actual trigger/emit edges, so
+ * no tenant-specific layout can misrepresent another workflow. Live updates
  * (run.*, event.emitted) flow through useStream() at the layout root.
  */
 
@@ -28,8 +24,8 @@ import {
   ActorTag,
   Badge,
   Button,
+  Empty,
   Icon,
-  Kbd,
   ViewHeader,
   useToast,
 } from "@/app/portal/components";
@@ -44,7 +40,6 @@ import {
   PAD_Y,
   ROW_H,
   colorVar,
-  getLayout,
   topoLayout,
 } from "@/app/portal/components/workflows/layout";
 import {
@@ -56,7 +51,6 @@ import {
   EventInspector,
   type EventCatalogItem,
 } from "@/app/portal/components/workflows/inspectors";
-import { NewWorkflowModal } from "@/app/portal/components/workflows/NewWorkflowModal";
 import { ImportManifestModal } from "@/app/portal/components/import-manifest/ImportManifestModal";
 import { AgentEditor } from "@/app/portal/components/workflows/AgentEditor";
 import {
@@ -68,28 +62,16 @@ import {
   serializeDraft,
   toManifest,
   tryReadSerializedDraft,
+  type PreservedAgentBehavior,
   type WorkflowDraft,
 } from "@/app/portal/components/workflows/draft";
 import { useDeployManifest } from "@/lib/hooks/useManifest";
-import { useDag } from "@/lib/hooks/useAgents";
+import {
+  fetchAgentDetail,
+  useAgents,
+  useDag,
+} from "@/lib/hooks/useAgents";
 import { useEvents } from "@/lib/hooks/useEvents";
-
-/**
- * Stage label catalog — static workflow ontology. Mirrors the dashboard's
- * STAGE_LABELS map (see `dashboard/page.tsx`) so the workflow funnel
- * column headers match the dashboard funnel labels. Tenants whose agents
- * use stage indices outside this map get a generic "Stage N" label.
- */
-const STAGE_LABELS: Record<number, string> = {
-  0: "Intake",
-  1: "Analyze",
-  2: "JD",
-  3: "Publish",
-  4: "Resume",
-  5: "Match & Interview",
-  6: "Package",
-  7: "Submit",
-};
 
 interface EdgeMeta {
   src: string;
@@ -100,6 +82,10 @@ interface EdgeMeta {
 export default function WorkflowsPage() {
   const router = useRouter();
   const tenant = useTenant();
+  // Runtime bootstrap and persisted workflow versions share this canonical
+  // identity. Using the bare tenant slug creates a second DB workflow that
+  // the runtime never executes.
+  const runtimeWorkflowSlug = `${tenant}-default`;
   const { t } = useI18n();
   const toast = useToast();
   const deploy = useDeployManifest();
@@ -108,11 +94,13 @@ export default function WorkflowsPage() {
   // workflow. The DAG payload is also the source of truth for the agent
   // list rendered on the canvas.
   const dagQuery = useDag();
+  const agentCatalogQuery = useAgents({ kind: "manifest" });
   const workflowVersion = dagQuery.data?.workflowVersion ?? "";
   const baseAgents = useMemo(
     () => dagQuery.data?.agents ?? [],
     [dagQuery.data?.agents],
   );
+  const dagReady = Boolean(dagQuery.data) && !dagQuery.isError && baseAgents.length > 0;
 
   // Live event catalog — `/v1/events` dedup'd by name so the workflow's
   // event-color map and inspector "available events" hint always reflect
@@ -156,14 +144,9 @@ export default function WorkflowsPage() {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<WorkflowDraft>(emptyDraft);
   const [tool, setTool] = useState<"select" | "connect" | "add">("select");
-  const [showNewModal, setShowNewModal] = useState(false);
   const [showImport, setShowImport] = useState(false);
-  // Live stream — placeholder for tweaks-panel wiring (Phase 2).
-  const liveStream = true;
-  // Scroll container for the canvas viewport. The canvas is wider than the
-  // viewport when LAYOUT places nodes deep into the stage grid; this ref
-  // lets us scroll the leftmost node into view after data loads so the
-  // user actually sees their imported workflow.
+  // Scroll container for live DAGs wider than the viewport. This lets us
+  // scroll the leftmost node into view after data loads.
   const canvasScrollRef = useRef<HTMLDivElement | null>(null);
 
   // While editing, the canvas reads the *applied* draft so the operator
@@ -195,7 +178,10 @@ export default function WorkflowsPage() {
   // page or closing the tab without deploying preserves work-in-progress.
   // The key is namespaced by tenant; multiple workflows per tenant would
   // need a deeper key — today there's one workflow per tenant.
-  const storageKey = useMemo(() => draftStorageKey(tenant, tenant), [tenant]);
+  const storageKey = useMemo(
+    () => draftStorageKey(tenant, runtimeWorkflowSlug),
+    [runtimeWorkflowSlug, tenant],
+  );
   // `restoredAt` non-null means we restored a saved draft on mount; show
   // a small banner with a Discard action so the operator can opt out.
   const [restoredAt, setRestoredAt] = useState<number | null>(null);
@@ -252,13 +238,7 @@ export default function WorkflowsPage() {
     }
   }
 
-  // Real-time layout derived from the agents' event cascade. RAAS keeps its
-  // hand-tuned `LAYOUT` (audit 01 §4.2 acceptance); every other tenant —
-  // including ones that reuse RAAS kebab-ids like zhaopin's "10-1" — lays out
-  // PURELY from triggers/emits via `topoLayout`, so the canvas reflects the
-  // actual flow instead of mis-claiming a hand-tuned slot. The kebab-derived
-  // `stage` hint from the DAG is intentionally ignored for positioning.
-  const useHandTuned = tenant === "raas";
+  // Real-time layout derived only from this tenant's trigger/emit cascade.
   const topo = useMemo(
     () =>
       topoLayout(
@@ -273,8 +253,8 @@ export default function WorkflowsPage() {
   // Final (column, lane) for an agent under the active tenant's layout.
   const layAt = useCallback(
     (kebabId: string): { stage: number; lane: number } | null =>
-      useHandTuned ? getLayout(kebabId, topo) : (topo[kebabId] ?? null),
-    [useHandTuned, topo],
+      topo[kebabId] ?? null,
+    [topo],
   );
   const posAt = useCallback(
     (kebabId: string): { x: number; y: number } => {
@@ -286,8 +266,8 @@ export default function WorkflowsPage() {
     [layAt],
   );
   // Canvas dimensions + column count derived from the resolved layout so the
-  // grid is exactly as wide/tall as this workflow needs (no empty RAAS-sized
-  // columns for a small tenant).
+  // grid is exactly as wide/tall as this workflow needs, with no empty
+  // columns reserved for a different tenant.
   const dims = useMemo(() => {
     let maxCol = 0;
     let maxLane = 0;
@@ -305,19 +285,15 @@ export default function WorkflowsPage() {
     };
   }, [agents, layAt]);
 
-  // One header per column. For RAAS the column index IS the hand-tuned stage,
-  // so the named STAGE_LABELS apply; every other tenant gets a sequential
-  // "Stage N" label derived from the cascade depth.
+  // One generic header per topological depth; business labels belong to the
+  // live ontology, not a hard-coded recruitment funnel.
   const columns = useMemo(
     () =>
       Array.from({ length: dims.cols }, (_, i) => ({
         index: i,
-        label:
-          useHandTuned && i in STAGE_LABELS
-            ? t(`workflowsView.stage.${i}`)
-            : t("workflowsView.stageGeneric", { id: i + 1 }),
+        label: t("workflowsView.stageGeneric", { id: i + 1 }),
       })),
-    [dims.cols, useHandTuned, t],
+    [dims.cols, t],
   );
 
   // Build edges: for each agent's emitted event, find listeners.
@@ -328,8 +304,7 @@ export default function WorkflowsPage() {
         const listeners = agents.filter((a) => a.triggers.includes(evName));
         listeners.forEach((dst) => {
           // Edge only renders when BOTH endpoints have a resolved position
-          // under the active tenant's layout (hand-tuned for RAAS, cascade-
-          // derived topo otherwise).
+          // under the active tenant's graph-derived layout.
           if (layAt(src.kebabId) && layAt(dst.kebabId)) {
             out.push({ src: src.kebabId, dst: dst.kebabId, event: evName });
           }
@@ -406,11 +381,39 @@ export default function WorkflowsPage() {
   }
 
   async function saveDraft() {
-    const manifest = toManifest(agents);
     try {
+      if (!dagReady) {
+        throw new Error(t("workflowsView.deployGuardDag"));
+      }
+      if (draft.added.size > 0) {
+        throw new Error(
+          t("workflowsView.deployGuardAdded", { count: draft.added.size }),
+        );
+      }
+
+      const catalog = new Map(
+        (agentCatalogQuery.data ?? []).map((agent) => [agent.kebabId, agent]),
+      );
+      const behaviorEntries = await Promise.all(
+        agents.map(async (agent) => {
+          const row = catalog.get(agent.kebabId);
+          if (!row) {
+            throw new Error(
+              t("workflowsView.deployGuardMissing", { id: agent.kebabId }),
+            );
+          }
+          const detail = await fetchAgentDetail(agent.kebabId);
+          const behavior: PreservedAgentBehavior = {
+            description: row.description ?? "",
+            actions: detail.actions,
+          };
+          return [agent.kebabId, behavior] as const;
+        }),
+      );
+      const manifest = toManifest(agents, Object.fromEntries(behaviorEntries));
       const data = await deploy.mutateAsync({
         manifest,
-        workflowSlug: tenant,
+        workflowSlug: runtimeWorkflowSlug,
         note: `In-portal edit · ${draftCounts.added}+/${draftCounts.modified}~/${draftCounts.removed}-`,
       });
       toast({
@@ -428,6 +431,9 @@ export default function WorkflowsPage() {
       });
     }
   }
+  const selectedAgentRow = selectedAgent
+    ? agents.find((agent) => agent.kebabId === selectedAgent) ?? null
+    : null;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
@@ -457,16 +463,27 @@ export default function WorkflowsPage() {
                 <Button key="discard" small tone="ghost" onClick={discardDraft}>
                   {t("workflowsView.discardDraft")}
                 </Button>,
-                <Button key="val" small icon="check" tone="ghost">
-                  {t("workflowsView.validate")}
-                </Button>,
                 <Button
                   key="dep"
                   small
                   icon="deploy"
                   tone="primary"
                   onClick={saveDraft}
-                  disabled={!dirty || deploy.isPending}
+                  disabled={
+                    !dirty ||
+                    deploy.isPending ||
+                    agentCatalogQuery.isLoading ||
+                    agentCatalogQuery.isError ||
+                    !dagReady ||
+                    draft.added.size > 0
+                  }
+                  title={
+                    draft.added.size > 0
+                      ? t("workflowsView.deployGuardAdded", { count: draft.added.size })
+                      : agentCatalogQuery.isError
+                        ? t("workflowsView.deployGuardCatalog")
+                        : undefined
+                  }
                 >
                   {deploy.isPending
                     ? t("workflowsView.deploying")
@@ -474,11 +491,15 @@ export default function WorkflowsPage() {
                 </Button>,
               ]
             : [
-                <Button key="edit" icon="code" small onClick={() => setEditing(true)}>
+                <Button
+                  key="edit"
+                  icon="code"
+                  small
+                  onClick={() => setEditing(true)}
+                  disabled={!dagReady}
+                  title={!dagReady ? t("workflowsView.deployGuardDag") : undefined}
+                >
                   {t("workflowsView.editWorkflow")}
-                </Button>,
-                <Button key="new" icon="plus" tone="primary" small onClick={() => setShowNewModal(true)}>
-                  {t("workflowsView.newWorkflow")}
                 </Button>,
                 <Button key="upload" icon="upload" small onClick={() => setShowImport(true)}>
                   {t("workflowsView.importManifest")}
@@ -487,7 +508,41 @@ export default function WorkflowsPage() {
         }
       />
 
-      {editing && <EditDraftBanner />}
+      {dagQuery.isError ? (
+        <div role="alert" style={{ padding: "10px 24px", color: "var(--red)", borderBottom: "1px solid var(--border)" }}>
+          {t("workflowsView.loadFailed")}: {dagQuery.error.message}
+        </div>
+      ) : eventsQuery.isError ? (
+        <div role="alert" style={{ padding: "8px 24px", color: "var(--amber)", borderBottom: "1px solid var(--border)" }}>
+          {t("workflowsView.eventsUnavailable")}: {eventsQuery.error.message}
+        </div>
+      ) : null}
+
+      {editing && (
+        <EditDraftBanner
+          counts={draftCounts}
+          savedAt={restoredAt}
+        />
+      )}
+
+      {editing && draft.added.size > 0 ? (
+        <div
+          role="status"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            padding: "8px 24px",
+            color: "var(--amber)",
+            background: "color-mix(in srgb, var(--amber) 7%, var(--panel))",
+            borderBottom: "1px solid color-mix(in srgb, var(--amber) 25%, var(--border))",
+            fontSize: 11.5,
+          }}
+        >
+          <Icon name="alert" size={11} />
+          {t("workflowsView.deployGuardAdded", { count: draft.added.size })}
+        </div>
+      ) : null}
 
       {restoredAt && (
         <div
@@ -542,6 +597,11 @@ export default function WorkflowsPage() {
             backgroundPosition: "0 0",
           }}
         >
+          {dagQuery.isLoading && baseAgents.length === 0 ? (
+            <Empty title={t("workflowsView.loading")} hint="" />
+          ) : !dagQuery.isError && baseAgents.length === 0 ? (
+            <Empty title={t("workflowsView.emptyWorkflow")} hint={t("workflowsView.emptyWorkflowHint")} />
+          ) : null}
           {editing && <EditToolbar tool={tool} setTool={(t) => setTool(t as typeof tool)} />}
 
           {/* Stage headers row */}
@@ -670,16 +730,6 @@ export default function WorkflowsPage() {
                       onMouseLeave={() => setHoveredEdge(null)}
                       onClick={() => setSelectedEvent(e.event)}
                     />
-                    {liveStream && (isHi || (!dim && Math.abs((i * 37) % 7) === 0)) && (
-                      <circle r="3" fill={color} opacity={isHi ? 1 : 0.85} aria-hidden="true">
-                        <animateMotion
-                          dur={`${2.5 + (i % 5) * 0.4}s`}
-                          repeatCount="indefinite"
-                          begin={`${(i * 0.13) % 2}s`}
-                          path={path}
-                        />
-                      </circle>
-                    )}
                   </g>
                 );
               })}
@@ -692,8 +742,12 @@ export default function WorkflowsPage() {
                 const isSel = selectedAgent === a.kebabId;
                 const isHi = highlighted.nodes.has(a.kebabId);
                 const showDim = dim && !isHi;
-                const isAdded = editing && (a.kebabId === "10-1" || a.kebabId === "14-1");
-                const isModified = editing && (a.kebabId === "2" || a.kebabId === "12");
+                const isAdded = editing && draft.added.has(a.kebabId);
+                const isModified =
+                  editing &&
+                  !isAdded &&
+                  !draft.removed.has(a.kebabId) &&
+                  Boolean(draft.agents[a.kebabId]);
                 const borderColor = isSel
                   ? "var(--signal)"
                   : isAdded
@@ -811,11 +865,9 @@ export default function WorkflowsPage() {
             minHeight: 0,
           }}
         >
-          {selectedAgent && editing ? (
+          {selectedAgent && editing && selectedAgentRow ? (
             <AgentEditor
-              agent={
-                agents.find((a) => a.kebabId === selectedAgent) ?? agents[0]!
-              }
+              agent={selectedAgentRow}
               events={events}
               draft={draft.agents[selectedAgent]}
               onChange={(next) =>
@@ -861,18 +913,13 @@ export default function WorkflowsPage() {
               onNavigateEvents={navEvents}
             />
           ) : editing ? (
-            <DraftPalette />
+            <DraftPalette tenant={tenant} draft={draft} />
           ) : (
             <DefaultInspector events={events} agents={agents} onPick={setSelectedEvent} />
           )}
         </aside>
       </div>
-      {showNewModal && <NewWorkflowModal onClose={() => setShowNewModal(false)} />}
       {showImport && <ImportManifestModal onClose={() => setShowImport(false)} mode="workflow" />}
-
-      {/* Kbd is exposed so it bundles even when not displayed (used in EditDraftBanner via its own
-          import). Re-export so unused-import lint passes. */}
-      {false && <Kbd>⌘</Kbd>}
     </div>
   );
 }

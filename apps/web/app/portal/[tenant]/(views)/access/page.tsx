@@ -41,7 +41,8 @@ function roleLabel(t: (k: string) => string, role: TenantRole): string {
 
 export default function AccessPage() {
   const { t } = useI18n();
-  const { data: me } = useMe();
+  const meQuery = useMe();
+  const me = meQuery.data;
   const caps = me?.capabilities ?? [];
   const canRead = caps.includes("members.read");
   const canManage = caps.includes("members.write");
@@ -50,7 +51,28 @@ export default function AccessPage() {
   const [tab, setTab] = useState<"members" | "users">("members");
   const [addOpen, setAddOpen] = useState(false);
 
-  if (me && !canRead) {
+  if (meQuery.isLoading) {
+    return (
+      <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
+        <ViewHeader title={t("nav.access")} subtitle={t("access.subtitle")} />
+        <Empty title={t("access.loading")} />
+      </div>
+    );
+  }
+
+  if (meQuery.isError || !me) {
+    return (
+      <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
+        <ViewHeader title={t("nav.access")} subtitle={t("access.subtitle")} />
+        <Empty
+          title={t("access.loadFailed")}
+          hint={meQuery.error instanceof Error ? meQuery.error.message : t("access.apiUnreachable")}
+        />
+      </div>
+    );
+  }
+
+  if (!canRead) {
     return (
       <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
         <ViewHeader title={t("nav.access")} subtitle={t("access.subtitle")} />
@@ -141,7 +163,7 @@ function TabButton({
 
 function MembersView({ canManage, selfId }: { canManage: boolean; selfId: string | null }) {
   const { t } = useI18n();
-  const { data: members, isLoading, isError } = useMembers(true);
+  const { data: members, isLoading, isError, error } = useMembers(true);
   const updateRole = useUpdateMemberRole();
   const removeMember = useRemoveMember();
   const [query, setQuery] = useState("");
@@ -152,8 +174,9 @@ function MembersView({ canManage, selfId }: { canManage: boolean; selfId: string
       (m) => !q || m.email.toLowerCase().includes(q) || m.name.toLowerCase().includes(q),
     );
   }, [members, query]);
+  const adminCount = (members ?? []).filter((member) => member.role === "admin").length;
 
-  if (isError) return <Empty title={t("access.loadFailed")} hint={t("access.apiUnreachable")} />;
+  if (isError) return <Empty title={t("access.loadFailed")} hint={error instanceof Error ? error.message : t("access.apiUnreachable")} />;
   if (isLoading) return <Empty title={t("access.loading")} />;
   if (!members || members.length === 0) return <Empty title={t("access.emptyMembers")} />;
 
@@ -179,17 +202,26 @@ function MembersView({ canManage, selfId }: { canManage: boolean; selfId: string
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
       <SearchBox value={query} onChange={setQuery} placeholder={t("access.searchPlaceholder")} />
       <Table head={[t("access.colMember"), t("access.colRole"), t("access.colJoined"), ""]}>
-        {filtered.map((m) => (
+        {filtered.map((m) => {
+          const isSelf = m.userId === selfId;
+          const isLastAdmin = m.role === "admin" && adminCount <= 1;
+          const protectedReason = isSelf
+            ? t("access.selfProtected")
+            : isLastAdmin
+              ? t("access.lastAdminProtected")
+              : undefined;
+          return (
           <tr key={m.userId} style={{ borderTop: "1px solid var(--border)" }}>
             <Cell>
-              <MemberCell name={m.name} email={m.email} isSelf={m.userId === selfId} />
+              <MemberCell name={m.name} email={m.email} isSelf={isSelf} />
             </Cell>
             <Cell>
               {canManage ? (
                 <RoleSelect
                   value={m.role}
                   onChange={(r) => onRole(m, r)}
-                  disabled={updateRole.isPending}
+                  disabled={updateRole.isPending || Boolean(protectedReason)}
+                  title={protectedReason}
                 />
               ) : (
                 <Badge tone="muted">{roleLabel(t, m.role)}</Badge>
@@ -198,13 +230,20 @@ function MembersView({ canManage, selfId }: { canManage: boolean; selfId: string
             <Cell muted>{fmtDate(m.createdAt)}</Cell>
             <Cell align="right">
               {canManage ? (
-                <Button tone="danger" small onClick={() => onRemove(m)} disabled={removeMember.isPending}>
+                <Button
+                  tone="danger"
+                  small
+                  onClick={() => onRemove(m)}
+                  disabled={removeMember.isPending || Boolean(protectedReason)}
+                  title={protectedReason}
+                >
                   {t("access.remove")}
                 </Button>
               ) : null}
             </Cell>
           </tr>
-        ))}
+          );
+        })}
       </Table>
     </div>
   );
@@ -260,7 +299,7 @@ function AddMemberModal({ onClose }: { onClose: () => void }) {
 
 function AllUsersView({ selfId }: { selfId: string | null }) {
   const { t } = useI18n();
-  const { data: users, isLoading, isError } = useAdminUsers(true);
+  const { data: users, isLoading, isError, error } = useAdminUsers(true);
   const updateUser = useUpdateUser();
   const deleteUser = useDeleteUser();
   const [query, setQuery] = useState("");
@@ -272,8 +311,11 @@ function AllUsersView({ selfId }: { selfId: string | null }) {
       (u) => !q || u.email.toLowerCase().includes(q) || u.name.toLowerCase().includes(q),
     );
   }, [users, query]);
+  const superadminCount = (users ?? []).filter(
+    (user) => user.platformRole === "superadmin",
+  ).length;
 
-  if (isError) return <Empty title={t("access.loadFailed")} hint={t("access.apiUnreachable")} />;
+  if (isError) return <Empty title={t("access.loadFailed")} hint={error instanceof Error ? error.message : t("access.apiUnreachable")} />;
   if (isLoading) return <Empty title={t("access.loading")} />;
   if (!users || users.length === 0) return <Empty title={t("access.emptyUsers")} />;
 
@@ -308,7 +350,16 @@ function AllUsersView({ selfId }: { selfId: string | null }) {
           "",
         ]}
       >
-        {filtered.map((u) => (
+        {filtered.map((u) => {
+          const isSelf = u.id === selfId;
+          const isLastSuperadmin =
+            u.platformRole === "superadmin" && superadminCount <= 1;
+          const platformRoleLock = isSelf
+            ? t("access.selfProtected")
+            : isLastSuperadmin
+              ? t("access.lastSuperadminProtected")
+              : undefined;
+          return (
           <tr key={u.id} style={{ borderTop: "1px solid var(--border)" }}>
             <Cell>
               <MemberCell name={u.name} email={u.email} isSelf={u.id === selfId} />
@@ -358,7 +409,8 @@ function AllUsersView({ selfId }: { selfId: string | null }) {
                 <Button
                   tone="default"
                   small
-                  disabled={updateUser.isPending}
+                  disabled={updateUser.isPending || Boolean(platformRoleLock)}
+                  title={platformRoleLock}
                   onClick={() =>
                     patch(u, {
                       platformRole: u.platformRole === "superadmin" ? "none" : "superadmin",
@@ -372,7 +424,8 @@ function AllUsersView({ selfId }: { selfId: string | null }) {
                 <Button
                   tone={u.status === "active" ? "danger" : "default"}
                   small
-                  disabled={updateUser.isPending || u.id === selfId}
+                  disabled={updateUser.isPending || isSelf}
+                  title={isSelf ? t("access.selfProtected") : undefined}
                   onClick={() => patch(u, { status: u.status === "active" ? "suspended" : "active" })}
                 >
                   {u.status === "active" ? t("access.suspend") : t("access.activate")}
@@ -380,7 +433,8 @@ function AllUsersView({ selfId }: { selfId: string | null }) {
                 <Button
                   tone="danger"
                   small
-                  disabled={deleteUser.isPending || u.id === selfId}
+                  disabled={deleteUser.isPending || isSelf}
+                  title={isSelf ? t("access.selfProtected") : undefined}
                   onClick={() => onDelete(u)}
                 >
                   {t("access.deleteUser")}
@@ -388,17 +442,34 @@ function AllUsersView({ selfId }: { selfId: string | null }) {
               </div>
             </Cell>
           </tr>
-        ))}
+          );
+        })}
       </Table>
-      {manage ? <ManageMembershipsModal user={manage} onClose={() => setManage(null)} /> : null}
+      {manage ? (
+        <ManageMembershipsModal
+          user={manage}
+          selfId={selfId}
+          onClose={() => setManage(null)}
+        />
+      ) : null}
     </div>
   );
 }
 
-function ManageMembershipsModal({ user, onClose }: { user: AdminUserRow; onClose: () => void }) {
+function ManageMembershipsModal({
+  user,
+  selfId,
+  onClose,
+}: {
+  user: AdminUserRow;
+  selfId: string | null;
+  onClose: () => void;
+}) {
   const { t } = useI18n();
-  const { data: tenantsData } = useTenants();
-  const { data: liveUsers } = useAdminUsers(true);
+  const tenantsQuery = useTenants();
+  const usersQuery = useAdminUsers(true);
+  const tenantsData = tenantsQuery.data;
+  const liveUsers = usersQuery.data;
   const grant = useGrantMembership();
   const revoke = useRevokeMembership();
   const [tenantSlug, setTenantSlug] = useState("");
@@ -429,6 +500,15 @@ function ManageMembershipsModal({ user, onClose }: { user: AdminUserRow; onClose
 
   return (
     <Modal title={t("access.manageMembershipsFor", { name: current.name })} onClose={onClose}>
+      {tenantsQuery.isError || usersQuery.isError ? (
+        <ErrorNote
+          text={
+            (tenantsQuery.error instanceof Error ? tenantsQuery.error.message : null) ??
+            (usersQuery.error instanceof Error ? usersQuery.error.message : null) ??
+            t("access.apiUnreachable")
+          }
+        />
+      ) : null}
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {current.memberships.length === 0 ? (
           <span style={{ color: "var(--text-4)", fontSize: 12 }}>{t("access.notMember")}</span>
@@ -452,7 +532,13 @@ function ManageMembershipsModal({ user, onClose }: { user: AdminUserRow; onClose
                   · {roleLabel(t, m.role)}
                 </span>
               </span>
-              <Button tone="danger" small onClick={() => onRevoke(m.tenantSlug)} disabled={revoke.isPending}>
+              <Button
+                tone="danger"
+                small
+                onClick={() => onRevoke(m.tenantSlug)}
+                disabled={revoke.isPending || user.id === selfId}
+                title={user.id === selfId ? t("access.selfProtected") : undefined}
+              >
                 {t("access.revoke")}
               </Button>
             </div>
@@ -509,16 +595,19 @@ function RoleSelect({
   value,
   onChange,
   disabled,
+  title,
 }: {
   value: TenantRole;
   onChange: (r: TenantRole) => void;
   disabled?: boolean;
+  title?: string;
 }) {
   const { t } = useI18n();
   return (
     <select
       value={value}
       disabled={disabled}
+      title={title}
       onChange={(e) => onChange(e.target.value as TenantRole)}
       style={selectStyle}
     >

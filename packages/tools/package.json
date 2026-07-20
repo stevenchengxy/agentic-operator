@@ -12,9 +12,15 @@
     "./fs": "./src/fs/index.ts",
     "./http": "./src/http/index.ts",
     "./meta": "./src/meta/index.ts",
-    "./records": "./src/records/index.ts"
+    "./records": "./src/records/index.ts",
+    "./ontology": "./src/ontology/index.ts",
+    "./object-store": "./src/object-store/index.ts",
+    "./postgres": "./src/postgres/index.ts",
+    "./crypto": "./src/crypto/index.ts",
+    "./document": "./src/document/index.ts"
   },
   "scripts": {
+    "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist .turbo"
   },
@@ -22,10 +28,15 @@
     "@agentic/agent-kit": "workspace:*",
     "@agentic/db": "workspace:*",
     "@agentic/shared": "workspace:*",
+    "mammoth": "^1.12.0",
+    "playwright-core": "^1.60.0",
+    "pg": "^8.22.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^25.8.0",
-    "typescript": "^6.0.3"
+    "@types/pg": "^8.20.0",
+    "typescript": "^6.0.3",
+    "vitest": "^3.0.5"
   }
 }

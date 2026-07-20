@@ -6,54 +6,43 @@
  * Top to bottom: Logo + version, TenantSwitcher, 3 nav groups (Run / Observe
  * / Manage), footer status dots (Inngest + SQLite).
  *
- * Live + count pills are derived from canonical TanStack Query hooks:
- *   - Agents nav count: `useAgents().length`
- *   - Runs nav liveCount: `useRuns` filtered to running
- *   - Tasks nav count: `useTasks().length`
+ * Live + count pills come from GET /v1/counts. Unlike list-query lengths,
+ * these tenant-wide totals are not truncated by pagination and `openTasks`
+ * excludes resolved work.
  *
  * The host layout passes in the resolved tenant list so we don't refetch.
  */
 
 import { useMemo } from "react";
 import { useTenant } from "../../lib/use-tenant";
-import { useAgents } from "@/lib/hooks/useAgents";
-import { useRuns } from "@/lib/hooks/useRuns";
-import { useTasks } from "@/lib/hooks/useTasks";
+import { useCounts } from "@/lib/hooks/useAgents";
 import { useHealth, fmtBytes } from "@/lib/hooks/useHealth";
 import { useCan } from "@/lib/hooks/useMe";
-import {
-  useDemoStatus,
-  useStartDemo,
-  useStopDemo,
-} from "@/lib/hooks/useDemoMode";
 import { StatusDot } from "../atoms";
 import { Logo } from "./logo";
 import { NavGroup, NavItem } from "./nav";
 import { TenantSwitcher, type TenantOption } from "./tenant-switcher";
 import { useI18n } from "../../lib/preferences-context";
+import { reasoningAgentHref } from "@/lib/reasoning-workspace";
 
 export interface SidebarProps {
   tenants: TenantOption[];
   version?: string;
 }
 
-export function Sidebar({ tenants, version = "v0.6.2" }: SidebarProps) {
+export function Sidebar({
+  tenants,
+  version = (process.env.NEXT_PUBLIC_APP_VERSION ?? "").trim(),
+}: SidebarProps) {
   const tenantSlug = useTenant();
   const base = `/portal/${tenantSlug}`;
   const { t } = useI18n();
   const can = useCan();
-  const { data: agents = [] } = useAgents();
-  const { data: runs = [] } = useRuns({ limit: 200 });
-  const { data: tasks = [] } = useTasks();
+  const { data: counts } = useCounts();
   // Live health from /health — replaces the previously hardcoded
   // "3w · 0 lag" Inngest meta and "8.4 MB" SQLite meta in the footer so
   // both rows reflect real runtime status.
   const { data: health } = useHealth();
-
-  const runningCount = useMemo(
-    () => runs.filter((r) => r.status === "running").length,
-    [runs],
-  );
 
   const inngestMeta = useMemo(() => {
     if (!health?.inngest) return "checking…";
@@ -113,26 +102,20 @@ export function Sidebar({ tenants, version = "v0.6.2" }: SidebarProps) {
             }}
           >
             Agentic Operator
-            {/* 2026-05-26 — clickable demo toggle. Reads runtime state from
-              * `/v1/demo/status` (NOT just the env flag in /health) so the
-              * pill reflects what's actually running in-process. Click flips
-              * via `/v1/demo/{start,stop}`. Production stays clean when
-              * demo is OFF: the muted "Demo" outline only appears on
-              * hover; the lime DEMO pill is only shown when actively
-              * running. */}
-            <DemoToggle />
           </span>
-          <span
-            style={{
-              fontSize: 10,
-              color: "var(--text-3)",
-              fontFamily: "var(--mono)",
-              letterSpacing: "0.06em",
-              marginTop: 2,
-            }}
-          >
-            {version}
-          </span>
+          {version && (
+            <span
+              style={{
+                fontSize: 10,
+                color: "var(--text-3)",
+                fontFamily: "var(--mono)",
+                letterSpacing: "0.06em",
+                marginTop: 2,
+              }}
+            >
+              {version}
+            </span>
+          )}
         </div>
       </div>
 
@@ -151,17 +134,23 @@ export function Sidebar({ tenants, version = "v0.6.2" }: SidebarProps) {
             label={t("nav.workflows")}
           />
           <NavItem
+            href={reasoningAgentHref(tenantSlug)}
+            icon="spark"
+            label={t("nav.reasoningAgent")}
+            matchPrefix
+          />
+          <NavItem
             href={`${base}/agents`}
             icon="agent"
             label={t("nav.agents")}
-            count={agents.length || null}
+            count={counts?.agents || null}
             matchPrefix
           />
           <NavItem
             href={`${base}/runs`}
             icon="run"
             label={t("nav.runs")}
-            liveCount={runningCount}
+            liveCount={counts?.runningRuns ?? 0}
             matchPrefix
           />
         </NavGroup>
@@ -176,8 +165,8 @@ export function Sidebar({ tenants, version = "v0.6.2" }: SidebarProps) {
             href={`${base}/tasks`}
             icon="task"
             label={t("nav.tasks")}
-            count={tasks.length || null}
-            highlight={tasks.length > 0}
+            count={counts?.openTasks || null}
+            highlight={(counts?.openTasks ?? 0) > 0}
             matchPrefix
           />
           <NavItem href={`${base}/logs`} icon="logs" label={t("nav.logs")} />
@@ -213,7 +202,7 @@ export function Sidebar({ tenants, version = "v0.6.2" }: SidebarProps) {
             matchPrefix
           />
           {/* P6-AUTH — Access & roles. Shown only to tenant admins (members.read)
-            * and platform superadmins; viewers/operators never see it. */}
+           * and platform superadmins; viewers/operators never see it. */}
           {can("members.read") ? (
             <NavItem
               href={`${base}/access`}
@@ -244,101 +233,6 @@ export function Sidebar({ tenants, version = "v0.6.2" }: SidebarProps) {
         <FooterRow status={sqliteStatus} label="SQLite" meta={sqliteMeta} />
       </footer>
     </aside>
-  );
-}
-
-/**
- * Demo toggle — clickable pill that starts or stops the synthetic-traffic
- * loop. Reads runtime state from `/v1/demo/status` (so it reflects what
- * actually IS running, not just the boot-time env flag).
- *
- *   - Idle    → small muted "Demo" outline. Click starts demo.
- *   - Running → lime DEMO pill. Click stops demo.
- *   - Pending → faded mid-action.
- *
- * Token-burn safety: the backend swaps `LLM_DEFAULT_PROVIDER` to `mock`
- * inside `POST /v1/demo/start` and restores it on stop — see
- * `apps/api/src/routes/v1/demo.ts`. So clicking Start NEVER burns real
- * tokens via the demo loop, regardless of how `.env` is configured.
- */
-function DemoToggle() {
-  const { t } = useI18n();
-  const { data: status } = useDemoStatus();
-  const start = useStartDemo();
-  const stop = useStopDemo();
-  const running = status?.running ?? false;
-  const pending = start.isPending || stop.isPending;
-
-  const onClick = () => {
-    if (pending) return;
-    if (running) stop.mutate();
-    else start.mutate();
-  };
-
-  const stats = status?.stats;
-  const title = running
-    ? t("sidebarComp.demoOnTitle", {
-        provider: status?.llmProvider ?? "?",
-        events: stats?.eventsFired ?? 0,
-      })
-    : t("sidebarComp.demoOffTitle");
-
-  if (running) {
-    return (
-      <button
-        type="button"
-        onClick={onClick}
-        disabled={pending}
-        title={title}
-        style={{
-          display: "inline-flex",
-          alignItems: "center",
-          background: "#d0ff00",
-          color: "#0b0b0c",
-          fontSize: 9,
-          fontWeight: 700,
-          letterSpacing: "0.08em",
-          padding: "2px 6px",
-          borderRadius: 4,
-          fontFamily: "var(--mono)",
-          textTransform: "uppercase",
-          lineHeight: 1,
-          border: "none",
-          cursor: pending ? "wait" : "pointer",
-          opacity: pending ? 0.6 : 1,
-        }}
-      >
-        {pending ? "…" : "DEMO ON"}
-      </button>
-    );
-  }
-
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={pending}
-      title={title}
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        background: "transparent",
-        color: "var(--text-3)",
-        fontSize: 9,
-        fontWeight: 600,
-        letterSpacing: "0.08em",
-        padding: "2px 6px",
-        borderRadius: 4,
-        fontFamily: "var(--mono)",
-        textTransform: "uppercase",
-        lineHeight: 1,
-        border: "1px solid var(--border)",
-        cursor: pending ? "wait" : "pointer",
-        opacity: pending ? 0.6 : 1,
-      }}
-    >
-      {pending ? "…" : "DEMO"}
-    </button>
   );
 }
 

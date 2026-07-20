@@ -48,4 +48,12 @@ describe("lineChartPoints", () => {
     expect(out.path.split("M")).toHaveLength(2); // 1 leading + 1 split
     expect(out.path).toContain("L");
   });
+
+  it("centres a single observation without inventing a trend", () => {
+    const out = lineChartPoints([42], 100, 50, 0);
+    expect(out.coords).toHaveLength(1);
+    expect(out.coords[0]?.x).toBe(50);
+    expect(out.path).toBe("M 50.0 0.0");
+    expect(out.path).not.toContain("L");
+  });
 });

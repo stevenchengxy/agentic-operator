@@ -1,15 +1,10 @@
 "use client";
 
 /**
- * Run detail — 5-tab surface (P2-FE-10).
+ * Run detail — summary, execution, observability, I/O, event, and agent tabs.
  *
- * Tabs: timeline | logs | io | events | agent. The "agent" tab is the
- * cross-link to AgentCodeTab (delta D-7 from audit 01 §6). It imports the
- * heavy-views engineer's AgentCodeTab; if that module isn't loaded yet we
- * render an `Empty` fallback so the build still passes.
- *
- * Ported from `apps/web/public/portal/views/runs.jsx:133-219`. Header
- * preserves the "Open agent" jump button + TEST RUN badge for testRun runs.
+ * The agent tab reads the same deployed-agent detail contract as the Agents
+ * view; it must never substitute source or manifest fixtures.
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -38,13 +33,18 @@ import {
   type StepRow,
   type RunWaitingTask,
 } from "@/lib/hooks/useRuns";
-import { useAgents, useAgent, type AgentListRow } from "@/lib/hooks/useAgents";
+import { useAgents, useAgent } from "@/lib/hooks/useAgents";
+import {
+  getCodeActReceiptView,
+  type CodeActReceiptView,
+} from "@/lib/codeact-receipt";
 // AgentCodeTab is owned by the heavy-views engineer (P2-FE-08/09). Imported
 // directly here to satisfy delta D-7 (Runs detail "agent" tab).
 import { AgentCodeTab } from "@/app/portal/components/agent-code/AgentCodeTab";
 import { TraceTree } from "@/app/portal/components/runs/TraceTree";
 import { EventChain } from "@/app/portal/components/runs/EventChain";
 import { RunAiSummary } from "./run-ai-summary";
+import { ProductionReworkControl } from "./production-rework-control";
 
 const STATUS_TO_DOT: Record<string, StatusName> = {
   running: "running",
@@ -52,7 +52,7 @@ const STATUS_TO_DOT: Record<string, StatusName> = {
   waiting: "waiting",
   ok: "ok",
   failed: "failed",
-  cancelled: "paused",
+  cancelled: "cancelled",
   paused: "paused",
   idle: "idle",
 };
@@ -71,13 +71,20 @@ export default function RunDetailPage() {
   const params = useParams<{ id?: string }>();
   const runId = params?.id ?? null;
   const tenant = useTenant();
-  const { data, isLoading } = useRun(runId);
+  const { data, isLoading, isError, error } = useRun(runId);
   const [tab, setTab] = useState<Tab>("timeline");
   const { t } = useI18n();
 
   if (!runId) return <Empty title={t("runDetail.noRunId")} />;
-  if (isLoading || !data)
+  if (isLoading)
     return <Empty title={t("runDetail.loadingRun")} hint={runId} />;
+  if (isError || !data)
+    return (
+      <Empty
+        title={t("runDetail.loadFailed")}
+        hint={error instanceof Error ? error.message : runId}
+      />
+    );
 
   const { run, steps, waitingTask } = data;
   return (
@@ -102,7 +109,8 @@ interface RunDetailProps {
 }
 
 function RunDetail({ run, steps, waitingTask, tab, setTab, tenant }: RunDetailProps) {
-  const { data: agents = [] } = useAgents();
+  const agentsQuery = useAgents();
+  const agents = agentsQuery.data ?? [];
   const router = useRouter();
   const toast = useToast();
   const { t } = useI18n();
@@ -128,6 +136,7 @@ function RunDetail({ run, steps, waitingTask, tab, setTab, tenant }: RunDetailPr
   const agentDetail = agentDetailQuery.data ?? null;
   const testRun = (run as { testRun?: boolean }).testRun === true;
   const isReplay = Boolean(run.parentRunId);
+  const codeActReceipt = getCodeActReceiptView(run);
   // The Stop button is only meaningful for runs that haven't finished. We
   // treat the same set the API treats as cancellable: anything not in
   // {ok, failed, cancelled}. `idle` is included for completeness in case a
@@ -200,6 +209,16 @@ function RunDetail({ run, steps, waitingTask, tab, setTab, tenant }: RunDetailPr
   const isAgentTab = tab === "agent";
 
   const startedMs = run.startedAt ? Date.parse(run.startedAt) : null;
+  const statusTone =
+    run.status === "running"
+      ? "signal"
+      : run.status === "failed"
+        ? "red"
+        : run.status === "ok"
+          ? "green"
+          : run.status === "queued" || run.status === "waiting"
+            ? "amber"
+            : "muted";
 
   return (
     <div
@@ -234,19 +253,14 @@ function RunDetail({ run, steps, waitingTask, tab, setTab, tenant }: RunDetailPr
             {run.id}
           </span>
           <Badge
-            tone={
-              run.status === "running"
-                ? "signal"
-                : run.status === "failed"
-                  ? "red"
-                  : "green"
-            }
+            tone={statusTone}
             style={{ marginLeft: 4 }}
           >
             {run.status}
           </Badge>
           {testRun && <Badge tone="signal">TEST RUN</Badge>}
           {isReplay && <Badge tone="amber">REPLAY</Badge>}
+          {codeActReceipt && <CodeActReceiptBadges receipt={codeActReceipt} />}
           {run.triggerEvent && (
             <Badge tone="muted">↑ {run.triggerEvent}</Badge>
           )}
@@ -292,7 +306,7 @@ function RunDetail({ run, steps, waitingTask, tab, setTab, tenant }: RunDetailPr
             >
               {replay.isPending ? t("runDetail.replaying") : t("runDetail.replay")}
             </Button>
-            {agentRow && (
+            {agentRow && !agentsQuery.isError && (
               <Link
                 href={`/portal/${tenant}/agents/${agentRow.kebabId}` as never}
                 style={{ textDecoration: "none" }}
@@ -348,19 +362,25 @@ function RunDetail({ run, steps, waitingTask, tab, setTab, tenant }: RunDetailPr
         />
         <StatCell
           label={t("runDetail.statSteps")}
-          value={steps.length > 0 ? <CountUp value={steps.length} /> : "—"}
+          value={<CountUp value={steps.length} />}
         />
         <StatCell
           label={t("runDetail.statTokens")}
           value={
-            <>
-              <CountUp value={run.tokensIn ?? 0} format={fmtNum} /> ·{" "}
-              <CountUp value={run.tokensOut ?? 0} format={fmtNum} />
-            </>
+            run.tokensIn == null && run.tokensOut == null ? (
+              "—"
+            ) : (
+              <>
+                {run.tokensIn == null ? "—" : <CountUp value={run.tokensIn} format={fmtNum} />} ·{" "}
+                {run.tokensOut == null ? "—" : <CountUp value={run.tokensOut} format={fmtNum} />}
+              </>
+            )
           }
         />
         <StatCell label={t("runDetail.statSubject")} value={run.subject ?? "—"} mono />
       </div>
+
+      {codeActReceipt && <CodeActReceiptStrip receipt={codeActReceipt} />}
 
       {/* Live / waiting banner — Inngest-style "what's happening right now". */}
       <RunLiveBanner run={run} waitingTask={waitingTask} tenant={tenant} setTab={setTab} />
@@ -394,25 +414,26 @@ function RunDetail({ run, steps, waitingTask, tab, setTab, tenant }: RunDetailPr
         ))}
       </div>
 
-      {/* Agent tab — full-bleed flex region; embeds the AgentCodeTab from
-          heavy-views (delta D-7). The api's AgentDetail contract doesn't
-          yet surface typescript_code / tool_use / input_data /
-          ontology_instructions — those come back empty. The tab renders
-          the "no code recorded" state for manifest agents until the api
-          starts shipping those fields. */}
+      {/* Agent tab — the same exact deployed source snapshot used by the
+          Agents detail page. `sourceUnavailable` stays explicit. */}
       {isAgentTab && (
         <div style={{ flex: 1, minHeight: 0, overflow: "hidden" }}>
-          {agentDetailQuery.isLoading && !agentDetail ? (
+          {agentsQuery.isError ? (
+            <Empty title={t("runDetail.agentNotFound")} hint={agentsQuery.error.message} />
+          ) : agentDetailQuery.isError ? (
+            <Empty title={t("runDetail.agentDetailUnavailable")} hint={agentDetailQuery.error.message} />
+          ) : agentDetailQuery.isLoading && !agentDetail ? (
             <Empty title={t("runDetail.loadingAgent")} hint={agentRow?.kebabId ?? ""} />
-          ) : agentRow ? (
+          ) : agentDetail ? (
             <AgentCodeTab
               agent={{
-                actor: agentRow.actor,
-                name: agentRow.name,
-                typescript_code: "",
-                tool_use: undefined,
-                input_data: {},
-                ontology_instructions: "",
+                actor: agentDetail.actor,
+                name: agentDetail.name,
+                typescript_code: agentDetail.typescript_code,
+                tool_use: agentDetail.tool_use,
+                input_data: agentDetail.input_data,
+                ontology_instructions: agentDetail.ontology_instructions,
+                sourceUnavailable: agentDetail.sourceUnavailable,
               }}
             />
           ) : (
@@ -453,7 +474,7 @@ function RunDetail({ run, steps, waitingTask, tab, setTab, tenant }: RunDetailPr
         </Panel>
       )}
       {tab === "logs" && <LogsTab runId={run.id} tenant={tenant} />}
-      {tab === "io" && <IOTab run={run} agent={agentRow} tenant={tenant} />}
+      {tab === "io" && <IOTab run={run} />}
       {tab === "events" && <RunEventsTab run={run} />}
 
       {/* Failed-run error panel (any tab except agent) */}
@@ -471,11 +492,9 @@ function RunDetail({ run, steps, waitingTask, tab, setTab, tenant }: RunDetailPr
               lineHeight: 1.5,
             }}
           >
-            {/* RunListRow doesn't surface error message directly; surface
-                a placeholder so the audit acceptance still renders. */}
-            {(run as { error?: string }).error ?? t("runDetail.runFailedFallback")}
+            {run.error ?? t("runDetail.runFailedFallback")}
           </div>
-          <div style={{ marginTop: 10, display: "flex", gap: 8 }}>
+          <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
             <Button
               icon="replay"
               small
@@ -487,6 +506,15 @@ function RunDetail({ run, steps, waitingTask, tab, setTab, tenant }: RunDetailPr
             <Button icon="logs" small tone="ghost" onClick={() => setTab("logs")}>
               {t("runDetail.viewErrorTrace")}
             </Button>
+            {agentRow && (
+              <ProductionReworkControl
+                tenant={tenant}
+                runId={run.id}
+                agentSlug={agentRow.kebabId}
+                runStatus={run.status}
+                testRun={testRun}
+              />
+            )}
           </div>
         </Panel>
       )}
@@ -537,6 +565,81 @@ function StatCell({
   );
 }
 
+function CodeActReceiptBadges({
+  receipt,
+  compact = false,
+}: {
+  receipt: CodeActReceiptView;
+  compact?: boolean;
+}) {
+  const { t } = useI18n();
+  const tone =
+    receipt.state === "ran"
+      ? ("green" as const)
+      : receipt.state === "failed"
+        ? ("red" as const)
+        : ("amber" as const);
+  const stateLabel =
+    receipt.state === "ran"
+      ? t("runDetail.codeActRan")
+      : receipt.state === "failed"
+        ? t("runDetail.codeActFailed")
+        : t("runDetail.codeActBlocked");
+
+  return (
+    <>
+      <Badge tone={tone}>
+        {stateLabel}
+      </Badge>
+      {!compact && (
+        <>
+          <Badge tone="muted">
+            {receipt.isolation ?? t("runDetail.codeActPreflight")}
+          </Badge>
+          <Badge tone="muted">{receipt.attestation}</Badge>
+        </>
+      )}
+    </>
+  );
+}
+
+function CodeActReceiptStrip({ receipt }: { receipt: CodeActReceiptView }) {
+  const { t } = useI18n();
+  const fields = [
+    `codeExecuted=${receipt.codeExecuted}`,
+    `codeRan=${receipt.codeRan}`,
+    `isolation=${receipt.isolation ?? t("runDetail.codeActPreflight")}`,
+    `attestation=${receipt.attestation}`,
+    `sha256=${receipt.sha256 ?? "—"}`,
+    `failure=${receipt.failure ?? "—"}`,
+  ];
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        flexWrap: "wrap",
+        gap: "5px 12px",
+        padding: "8px 12px",
+        border: "1px solid var(--border)",
+        borderRadius: 6,
+        background: "var(--bg-2)",
+        fontSize: 10.5,
+        color: "var(--text-2)",
+      }}
+    >
+      <strong style={{ color: "var(--text)", fontWeight: 600 }}>
+        {t("runDetail.codeActRuntimeReceipt")}
+      </strong>
+      {fields.map((field) => (
+        <span key={field} className="mono" style={{ overflowWrap: "anywhere" }}>
+          {field}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 // ─── Live / waiting banner ───────────────────────────────────────────────────
 
 /**
@@ -562,7 +665,7 @@ function RunLiveBanner({
   if (waitingTask) {
     return (
       <Link
-        href={`/portal/${tenant}/tasks?id=${encodeURIComponent(waitingTask.id)}` as never}
+        href={`/portal/${tenant}/tasks?selected=${encodeURIComponent(waitingTask.id)}` as never}
         style={{ textDecoration: "none" }}
       >
         <div
@@ -649,8 +752,13 @@ function TimelineTab({ steps, run }: { steps: StepRow[]; run: RunListRow }) {
       <Empty title={t("runDetail.noSteps")} hint={t("runDetail.noStepsHint")} />
     );
   }
-  const startedMs = run.startedAt ? Date.parse(run.startedAt) : Date.now();
-  const total = run.durationMs ?? Date.now() - startedMs;
+  const parsedStartedMs = run.startedAt ? Date.parse(run.startedAt) : Number.NaN;
+  const startedMs = Number.isFinite(parsedStartedMs) ? parsedStartedMs : null;
+  const total =
+    run.durationMs ??
+    (startedMs != null && (run.status === "running" || run.status === "waiting")
+      ? Math.max(0, Date.now() - startedMs)
+      : null);
   const toggle = (id: string) =>
     setOpen((prev) => {
       const next = new Set(prev);
@@ -662,10 +770,14 @@ function TimelineTab({ steps, run }: { steps: StepRow[]; run: RunListRow }) {
     <Panel title={t("runDetail.stepTimeline")} padded={false}>
       <div style={{ padding: "8px 16px" }}>
         {steps.map((s, i) => {
-          const stepStartedMs = s.startedAt ? Date.parse(s.startedAt) : startedMs;
-          const startPct = total > 0 ? ((stepStartedMs - startedMs) / total) * 100 : 0;
+          const parsedStepStartedMs = s.startedAt ? Date.parse(s.startedAt) : Number.NaN;
+          const stepStartedMs = Number.isFinite(parsedStepStartedMs)
+            ? parsedStepStartedMs
+            : null;
+          const timelineReady = startedMs != null && stepStartedMs != null && total != null && total > 0;
+          const startPct = timelineReady ? ((stepStartedMs - startedMs) / total) * 100 : 0;
           const durPct =
-            total > 0
+            timelineReady
               ? ((s.durationMs ?? total - (stepStartedMs - startedMs)) / total) * 100
               : 1;
           const color =
@@ -673,11 +785,17 @@ function TimelineTab({ steps, run }: { steps: StepRow[]; run: RunListRow }) {
               ? "var(--red)"
               : s.status === "running"
                 ? "var(--signal)"
-                : "var(--green)";
+                : s.status === "ok"
+                  ? "var(--green)"
+                  : s.status === "queued" || s.status === "waiting"
+                    ? "var(--amber)"
+                    : "var(--text-3)";
           const isOpen = open.has(s.id);
           const stepIn = (s as { input?: unknown }).input;
           const stepOut = (s as { output?: unknown }).output;
-          const hasIO = stepIn != null || stepOut != null || s.error;
+          const codeActReceipt = getCodeActReceiptView(s);
+          const hasIO =
+            stepIn != null || stepOut != null || Boolean(s.error) || codeActReceipt !== null;
           return (
             <div
               key={`${s.id}-${i}`}
@@ -719,6 +837,9 @@ function TimelineTab({ steps, run }: { steps: StepRow[]; run: RunListRow }) {
                         {t("runDetail.waitingTag")}
                       </Badge>
                     )}
+                    {codeActReceipt && (
+                      <CodeActReceiptBadges receipt={codeActReceipt} compact />
+                    )}
                   </div>
                   <div style={{ fontSize: 10.5, color: "var(--text-3)" }}>
                     {t("runDetail.stepN", { n: i + 1 })} · {s.type}
@@ -742,7 +863,7 @@ function TimelineTab({ steps, run }: { steps: StepRow[]; run: RunListRow }) {
                       top: 0,
                       bottom: 0,
                       background: color,
-                      opacity: s.status === "running" ? 0.85 : 0.45,
+                      opacity: timelineReady ? (s.status === "running" ? 0.85 : 0.45) : 0,
                       borderLeft: `2px solid ${color}`,
                     }}
                   >
@@ -786,6 +907,19 @@ function TimelineTab({ steps, run }: { steps: StepRow[]; run: RunListRow }) {
                     >
                       {s.error}
                     </div>
+                  )}
+                  {codeActReceipt && (
+                    <StepIO
+                      label={t("runDetail.codeActRuntimeReceipt")}
+                      value={{
+                        codeRan: codeActReceipt.codeRan,
+                        codeExecuted: codeActReceipt.codeExecuted,
+                        isolation: codeActReceipt.isolation,
+                        codeSha256: codeActReceipt.sha256,
+                        attestation: codeActReceipt.attestation,
+                        failure: codeActReceipt.failure,
+                      }}
+                    />
                   )}
                   <StepIO label={t("runDetail.stepInput")} value={stepIn} />
                   <StepIO label={t("runDetail.stepOutput")} value={stepOut} />
@@ -863,6 +997,7 @@ function parseLogLine(raw: string): ParsedLogLine {
 function LogsTab({ runId, tenant }: { runId: string; tenant: string }) {
   const { t } = useI18n();
   const [lines, setLines] = useState<string[]>([]);
+  const [receivedCount, setReceivedCount] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [follow, setFollow] = useState(false);
@@ -876,6 +1011,7 @@ function LogsTab({ runId, tenant }: { runId: string; tenant: string }) {
     setLoading(true);
     setError(null);
     setLines([]);
+    setReceivedCount(0);
 
     const url = `/v1/runs/${encodeURIComponent(runId)}/logs${follow ? "?follow=1" : ""}`;
     (async () => {
@@ -911,6 +1047,7 @@ function LogsTab({ runId, tenant }: { runId: string; tenant: string }) {
           }
           if (batch.length && !cancelled) {
             setLoading(false);
+            setReceivedCount((count) => count + batch.length);
             setLines((prev) => {
               const next = [...prev, ...batch];
               return next.length > 5000 ? next.slice(next.length - 5000) : next;
@@ -932,6 +1069,7 @@ function LogsTab({ runId, tenant }: { runId: string; tenant: string }) {
   }, [runId, tenant, follow]);
 
   const parsed = useMemo(() => lines.map(parseLogLine), [lines]);
+  const truncated = receivedCount > lines.length;
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
     return parsed.filter(
@@ -992,7 +1130,9 @@ function LogsTab({ runId, tenant }: { runId: string; tenant: string }) {
           ? t("runDetail.logsLoading")
           : error
             ? t("runDetail.logsError")
-            : t("runDetail.logsLineCount", { count: filtered.length })
+            : truncated
+              ? t("runDetail.logsTruncated", { count: filtered.length })
+              : t("runDetail.logsLineCount", { count: filtered.length })
       }
       padded={false}
       action={
@@ -1005,8 +1145,8 @@ function LogsTab({ runId, tenant }: { runId: string; tenant: string }) {
           >
             {follow ? t("runDetail.logsFollowing") : t("runDetail.logsFollow")}
           </Button>
-          <Button small icon="upload" tone="ghost" onClick={download}>
-            {t("runDetail.logsDownload")}
+          <Button small icon="upload" tone="ghost" onClick={download} disabled={lines.length === 0}>
+            {truncated ? t("runDetail.logsDownloadVisible") : t("runDetail.logsDownload")}
           </Button>
         </div>
       }
@@ -1097,18 +1237,8 @@ function LogsTab({ runId, tenant }: { runId: string; tenant: string }) {
 
 // ─── IO tab ──────────────────────────────────────────────────────────────────
 
-function IOTab({
-  run,
-  agent,
-  tenant,
-}: {
-  run: RunListRow;
-  agent: AgentListRow | null;
-  tenant: string;
-}) {
+function IOTab({ run }: { run: RunListRow }) {
   const { t } = useI18n();
-  void agent;
-  void tenant;
   const input = (run as { inputPayload?: unknown }).inputPayload;
   const output = (run as { outputPayload?: unknown }).outputPayload;
   return (
@@ -1157,7 +1287,9 @@ function IOTab({
           <span>{fmtDur(run.durationMs)}</span>
           {(run.tokensIn != null || run.tokensOut != null) && (
             <span>
-              {(run.tokensIn ?? 0) + (run.tokensOut ?? 0)} tok
+              {run.tokensIn != null && run.tokensOut != null
+                ? run.tokensIn + run.tokensOut
+                : `${run.tokensIn ?? "—"} + ${run.tokensOut ?? "—"}`} tok
               {run.model ? ` · ${run.model}` : ""}
             </span>
           )}
@@ -1176,13 +1308,15 @@ function IOTab({
 
 function RunEventsTab({ run }: { run: RunListRow }) {
   const { t } = useI18n();
-  const startedMs = run.startedAt ? Date.parse(run.startedAt) : Date.now();
-  const endedMs = run.endedAt ? Date.parse(run.endedAt) : Date.now();
+  const parsedStartedMs = run.startedAt ? Date.parse(run.startedAt) : Number.NaN;
+  const parsedEndedMs = run.endedAt ? Date.parse(run.endedAt) : Number.NaN;
+  const startedMs = Number.isFinite(parsedStartedMs) ? parsedStartedMs : null;
+  const endedMs = Number.isFinite(parsedEndedMs) ? parsedEndedMs : null;
   const emittedEvent = (run as { emittedEvent?: string }).emittedEvent ?? null;
   const events: {
     name: string;
     kind: "trigger" | "emit";
-    at: number;
+    at: number | null;
     payload: unknown;
   }[] = [];
   if (run.triggerEvent)
@@ -1219,7 +1353,7 @@ function RunEventRow({
   event,
   last,
 }: {
-  event: { name: string; kind: "trigger" | "emit"; at: number; payload: unknown };
+  event: { name: string; kind: "trigger" | "emit"; at: number | null; payload: unknown };
   last: boolean;
 }) {
   const { t } = useI18n();
@@ -1263,7 +1397,7 @@ function RunEventRow({
             fontFamily: "var(--mono)",
           }}
         >
-          {fmtTime(event.at)}
+          {event.at == null ? "—" : fmtTime(event.at)}
         </span>
       </div>
       {open && hasPayload && (

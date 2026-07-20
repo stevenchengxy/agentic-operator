@@ -26,7 +26,6 @@ export const intakeAndParseResume: PromptDescriptor = definePrompt({
     "Read a resume file from the tenant inbox, parse it via RoboHire, emit RESUME_PARSED with the parsed candidate + JD context.",
   // Haiku gives us cheap, fast tool use. The agent only orchestrates two
   // tool calls + emits a JSON envelope; no deep reasoning needed.
-  model: "anthropic/claude-haiku-4-5",
   system: [
     "你是 resumeIntakeAgent,负责从指定的 inbox 文件夹接收一份候选人简历并交给 RoboHire 解析。",
     "",

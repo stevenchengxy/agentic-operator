@@ -44,10 +44,12 @@ export function lineChartPoints(
     return { path: "", max: 0, coords: [] };
   }
   const max = Math.max(1, ...values);
-  const dx = values.length > 1 ? width / (values.length - 1) : width;
+  const dx = values.length > 1 ? width / (values.length - 1) : 0;
   const usable = Math.max(0, height - padY * 2);
   const coords = values.map((v, i) => ({
-    x: i * dx,
+    // A single observation is a point-in-time value, not a falling trend.
+    // Centre it so the chart does not imply movement across the whole window.
+    x: values.length === 1 ? width / 2 : i * dx,
     y: padY + usable - (v / max) * usable,
   }));
   const path = coords
@@ -80,14 +82,18 @@ export function HorizontalBarChart({
     );
   }
   const max = Math.max(1, ...items.map((d) => d.value));
-  const barH = Math.max(14, Math.floor(height / Math.max(1, items.length)) - 4);
+  // Sparse series should still look like bars, not full-height colour blocks.
+  const barH = Math.min(28, Math.max(14, Math.floor(height / Math.max(1, items.length)) - 4));
   return (
     <div
       style={{
         display: "flex",
         flexDirection: "column",
+        justifyContent: "center",
         gap: 4,
         padding: "8px 14px",
+        minHeight: height,
+        boxSizing: "border-box",
       }}
     >
       {items.map((d) => (
@@ -158,6 +164,7 @@ export function LineChart({
   width = 600,
   accent = "var(--signal)",
   formatY = (v: number) => String(Math.round(v)),
+  ariaLabel,
 }: {
   values: number[];
   labels: string[];
@@ -165,6 +172,7 @@ export function LineChart({
   width?: number;
   accent?: string;
   formatY?: (v: number) => string;
+  ariaLabel?: string;
 }) {
   const { t } = useI18n();
   if (values.length === 0) {
@@ -184,7 +192,7 @@ export function LineChart({
         width="100%"
         height={height}
         style={{ display: "block" }}
-        aria-label={t("chartsComp.usageOverTime")}
+        aria-label={ariaLabel ?? t("chartsComp.usageOverTime")}
         role="img"
       >
         {/* Gridlines */}
@@ -218,7 +226,9 @@ export function LineChart({
         <g transform="translate(50, 4)">
           {path && (
             <>
-              <path d={`${path} L ${innerW} ${innerH} L 0 ${innerH} Z`} fill={accent} opacity={0.08} />
+              {coords.length > 1 && (
+                <path d={`${path} L ${innerW} ${innerH} L 0 ${innerH} Z`} fill={accent} opacity={0.08} />
+              )}
               <path d={path} fill="none" stroke={accent} strokeWidth={1.5} />
               {coords.map((c, i) => (
                 <circle
@@ -241,14 +251,15 @@ export function LineChart({
             // Show at most ~6 ticks across the width.
             const step = Math.max(1, Math.floor(labels.length / 6));
             if (i % step !== 0 && i !== labels.length - 1) return null;
+            const single = labels.length === 1;
             const dx = labels.length > 1 ? innerW / (labels.length - 1) : 0;
             return (
               <text
                 key={i}
-                x={i * dx}
+                x={single ? innerW / 2 : i * dx}
                 fontSize={10}
                 fontFamily="var(--mono)"
-                textAnchor={i === labels.length - 1 ? "end" : "middle"}
+                textAnchor={single ? "middle" : i === labels.length - 1 ? "end" : "middle"}
                 fill="var(--text-3)"
               >
                 {lbl}

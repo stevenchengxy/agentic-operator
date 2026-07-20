@@ -1,222 +1,158 @@
-# Agentic Operator — Frontend + Backend Monorepo
+# Agentic Operator
 
-Event-driven agentic workflow runtime + admin console.
+Event-driven multi-agent runtime and operations console. The portal, REST API,
+Inngest workers, SQLite system of record, append-only run logs, model gateway,
+MCP/tool integrations, and observability views run as one workspace.
 
-- **`apps/web`** — Next.js 15 + React 19 control plane (UI only)
-- **`apps/api`** — Fastify 5 backend (REST + Inngest webhook + SSE log tail + HMAC webhooks)
-- **`packages/runtime`** — Inngest agent registry, manifest loader, step engine
-- **`packages/db`** — Drizzle ORM + better-sqlite3 (WAL mode)
-- **`packages/contracts`** — Shared Zod schemas (single source of truth for the API)
-- **`packages/tools`** — Mock first-party tool implementations
-- **`packages/shared`** — IDs, SSE helper, types
-- **`models/<tenant>-v<n>/`** — Per-tenant ontology (workflow + actions + events + objects + rules)
-- **`data/`** — Runtime state (SQLite DB, logs, artifacts) — gitignored
+## Runtime contract
 
-## Stack
+- Normal and demo runs use the configured real model provider. Demo mode may
+  generate synthetic input events, but it never swaps in a fake model.
+- Non-test API processes fail closed when the provider/model is mock-like or a
+  required credential is missing.
+- External systems are called only through configured tools or MCP servers.
+  Missing credentials produce an explicit integration gap; the runtime does not
+  invent upstream records or silently report success.
+- Deterministic adapters, fixtures, and replay stubs are restricted to tests and
+  explicit sandbox verification. They are never listed as production providers.
+- SQLite, NDJSON/run-log files, SSE, and the observability APIs are fed by the
+  same persisted execution records. The UI does not maintain a second sample
+  dataset.
 
-| | Version | Notes |
-|---|---|---|
-| Node | 22 LTS | `.nvmrc` — better-sqlite3 needs Node 22 |
-| TypeScript | 5.7+ | strict |
-| Next.js | 15 | App Router, Webpack dev |
-| React | 19 | RSC + inline CSS-in-JS (no Tailwind / shadcn — design fidelity) |
-| Fastify | 5 | api server |
-| Inngest | 3.x | durable event bus, step engine |
-| better-sqlite3 | 11.x | native module — Node runtime only |
-| Drizzle ORM | 0.36 | + drizzle-kit migrations |
-| Zod | 3.23+ | request/response validation |
-| Turborepo | 2.x | pipeline |
-| pnpm | 10.x | workspaces |
+## Workspace
 
-## Quick start
+| Area | Responsibility |
+| --- | --- |
+| `apps/web` | Next.js 16 + React 19 operator portal |
+| `apps/api` | Fastify 5 REST API, auth, SSE, Inngest handlers, health and metrics |
+| `apps/cli` | Operator CLI |
+| `packages/agents` | Canonical code-agent contract, registry, tool loop and execution engine |
+| `packages/runtime` | Manifest registration and workflow step engine |
+| `packages/llm-gateway` | Credentialed provider adapters, budgets, usage telemetry |
+| `packages/tools` | Real tool dispatch and credential gating |
+| `packages/mcp` | MCP process/server lifecycle |
+| `packages/db` | Drizzle schema, migrations, seed and SQLite access |
+| `packages/contracts` | Shared API and stream schemas |
+| `packages/agent-factory` | Domain-grounded agent generation and verification |
+| `tenants/*` | Tenant-specific agents, prompts, skills and real integrations |
+| `models/*` | Versioned workflow/ontology manifests |
 
-```bash
-nvm use 22                    # better-sqlite3 needs Node 22
-pnpm install                  # ~10s, builds native modules
-pnpm db:migrate               # creates data/agentic.db (18 tables)
-pnpm db:seed                  # 3 tenants + 1 admin user
-pnpm seed:rich                # (RF-1.7) loads RAAS historical fixtures + ontology
-pnpm dev                      # boots web + api + inngest concurrently
-```
+The workspace requires Node 26+ and pnpm 11. The exact pnpm version is pinned in
+`package.json`.
 
-Open <http://localhost:3599>.
-
-- **web** on :3599 — Next.js. All `/v1/*` calls proxy to api.
-- **api** on :3501 — Fastify. Hosts `/v1/*` REST + `/inngest` webhook + `/health`.
-- **inngest** on :8288 — Inngest dev UI; auto-discovers `http://localhost:3501/inngest`.
-
-### Demo mode vs production mode (locked 2026-05-26)
-
-The api has two clean states — no in-between. Toggle with the single env flag `AGENTIC_DEMO_MODE`:
+## Local development
 
 ```bash
-# Clean slate — drop accumulated traffic + start over
-pnpm db:wipe-runtime
-
-# Production: ZERO mock/seed data. Dashboard reflects only real events.
-AGENTIC_DEMO_MODE=false pnpm dev
-
-# Demo: seed:rich runs once at boot + an in-process loop fires plausible
-# tenant events every 30s. Sidebar shows a lime "DEMO" pill.
-AGENTIC_DEMO_MODE=true  pnpm dev
+pnpm install
+cp .env.example .env
+# Configure a unique AUTH_SESSION_SECRET, a real LLM provider/model and its
+# credentials, plus explicit AGENTIC_BOOTSTRAP_ADMIN_EMAIL, _NAME and _PASSWORD
+# values for the one-time seed. The repository contains no default account.
+pnpm db:migrate
+pnpm db:seed
+pnpm dev
 ```
 
-See `CLAUDE.md` § Demo mode for the runner cadence and safety gates.
+`pnpm dev` starts one supervised stack and terminates stale processes from this
+workspace before binding ports:
 
-## Verifying end-to-end
+- portal: <http://localhost:3599>
+- API/health: <http://localhost:3540/health>
+- Inngest dev server: <http://localhost:8488>
+
+Use `pnpm dev:restart` for a clean restart. Use `bash scripts/stop-dev.sh` to
+stop only processes owned by this workspace.
+
+The API loads `.env` first and `apps/api/.env.local` second. Never commit either
+file. `.env.example` contains no usable upstream key or fake integration URL.
+
+## Health and verification
 
 ```bash
-# Fire a RAAS event (subject is the candidate / requirement being processed)
-curl -X POST http://localhost:3501/v1/events \
-  -H "Content-Type: application/json" \
-  -d '{"name":"REQUIREMENT_LOGGED","subject":"REQ-1001","payload":{"client":"Acme"}}'
-
-# Watch the chain: ~14 agents run in sequence
-# Inngest UI:    http://localhost:8288
-# Web dashboard: http://localhost:3599
-
-# Chain pauses at jdReview (a manual step) → task appears in the inbox
-curl -X POST http://localhost:3501/v1/tasks/<task-id>/resolve \
-  -H "Content-Type: application/json" \
-  -d '{"decision":"approve"}'
-
-# SSE log tail
-curl -N http://localhost:3501/v1/runs/<run-id>/logs?follow=1
-
-# Health
-curl http://localhost:3501/health
+curl --fail http://localhost:3540/health
+pnpm typecheck
+pnpm lint
+pnpm test
+pnpm build
+pnpm --filter @agentic/api verify:observability
 ```
 
-## Adding a new tenant / agent
+`/health` reports the database, event broker, storage/fanout backends, selected
+model provider/model and whether the gateway is mock-backed. A production-ready
+local response must have `ok: true` and `llmGateway.mock: false`.
 
-1. Drop a model folder at `/Users/kenny/CSI-AICOE/agentic-operator/models/<slug>-v1/`
-   with five JSON files:
-     - `workflow.json` (or `workflow_v1.json`) — array of `AgentSpec` per DESIGN.md §4
-     - `actions.json` — per-agent I/O contracts
-     - `events.json` — event catalog (feeds the Events view)
-     - `objects.json` — entity definitions (populates `entity_types` table)
-     - `rules.json` — business rules
-2. Add the tenant row in `packages/db/src/seed.ts`, run `pnpm db:seed`.
-3. Restart `apps/api`. Bootstrap auto-discovers the folder, registers
-   Inngest functions, upserts ontology tables, and the new tenant shows
-   in the sidebar switcher.
+`verify:observability` is an isolated canary labelled as a test run. It uses
+the configured real default provider/model (and refuses mock), then verifies
+persistence, run logs, SSE replay, `llm_calls`, token accounting and agent-call
+aggregation without claiming that an external business action occurred.
 
-Folder name convention: `<tenant-slug>-v<n>`; slug is derived (lowercase,
-strip `-vN` suffix). Example: `RAAS-v1` → tenant `raas`.
+The Logs page exposes:
 
-## Repository layout
+- operation, event and run logs;
+- a live SSE terminal with persisted history backfill and reconnect;
+- token usage by model, provider, agent and run;
+- agent-to-agent/tool call traces;
+- time-series, failure, latency and cost statistics.
 
-```
-portal/                              ← monorepo root
-├── apps/
-│   ├── web/                         Next.js 15 (UI only)
-│   │   ├── app/
-│   │   │   ├── layout.tsx           root HTML
-│   │   │   ├── (portal)/            sidebar+topbar route group
-│   │   │   │   ├── page.tsx         /  (dashboard)
-│   │   │   │   ├── workflows/page.tsx
-│   │   │   │   ├── agents/page.tsx + [kebab]/page.tsx
-│   │   │   │   ├── runs/page.tsx + [runId]/page.tsx
-│   │   │   │   ├── events/page.tsx
-│   │   │   │   ├── tasks/page.tsx + [id]/page.tsx
-│   │   │   │   ├── logs/page.tsx
-│   │   │   │   ├── deployments/page.tsx
-│   │   │   │   └── _components/{Sidebar,TopBar,Logo,…}.tsx
-│   │   │   ├── (auth)/sign-in/page.tsx
-│   │   │   ├── api/prefs/route.ts   only API route in web (cookie-only)
-│   │   │   └── global.css
-│   │   ├── components/              UI primitives (Icon, Badge, Panel, …)
-│   │   ├── lib/
-│   │   │   ├── api-client.ts        typed fetch wrappers (Zod-validated)
-│   │   │   ├── format.ts
-│   │   │   ├── prefs.ts
-│   │   │   └── tenants.ts
-│   │   └── next.config.ts           rewrites /v1/* → http://localhost:3501/v1/*
-│   └── api/                         Fastify backend
-│       ├── src/
-│       │   ├── server.ts            entry — registers all routes + Inngest
-│       │   ├── plugins/             auth, audit, error envelope
-│       │   ├── routes/
-│       │   │   ├── health.ts
-│       │   │   ├── inngest.ts
-│       │   │   └── v1/
-│       │   │       ├── events.ts    POST/GET + POST replay
-│       │   │       ├── runs.ts      list + detail + replay
-│       │   │       ├── runs-logs.ts SSE
-│       │   │       ├── tasks.ts     list + detail + resolve
-│       │   │       ├── agents.ts    list + detail + POST manifest upload
-│       │   │       ├── deployments.ts list + rollback
-│       │   │       ├── webhooks.ts  POST /:provider (HMAC)
-│       │   │       ├── artifacts.ts GET stream
-│       │   │       └── reads.ts     /counts, /workflows/dag
-│       │   ├── queries/             Drizzle helpers per resource
-│       │   ├── bootstrap.ts
-│       │   └── scripts/seed-rich.ts (RF-1.7) loads handoff data.js + ontology
-│       └── .env.local
-├── packages/
-│   ├── contracts/                   shared Zod schemas for /v1/*
-│   ├── db/                          schema (18 tables), client (WAL), migrations
-│   ├── runtime/                     manifest loader, register, step engine
-│   ├── shared/                      ids, SSE helper, types
-│   └── tools/                       mock http.fetch, llm.call, channel.publish
-├── data/                            runtime state — gitignored
-│   ├── agentic.db
-│   ├── logs/<tenant>/runs/<date>/<run-id>.log
-│   ├── logs/<tenant>/events/<date>.ndjson
-│   └── artifacts/
-├── tests/
-├── turbo.json
-├── pnpm-workspace.yaml
-└── package.json
+## Authentication
+
+The checked-in example defaults to `AUTH_MODE=production`, which requires real
+authenticated sessions/tokens and a unique `AUTH_SESSION_SECRET` even during
+local development. `AUTH_MODE=dev` is an explicit sandbox-only bypass: it also
+requires `AGENTIC_DEV_TENANT`, selects a real active database user, and is
+rejected whenever `NODE_ENV=production`. Tenant identity always comes from the
+authenticated principal and verified memberships.
+
+`pnpm db:seed` provisions the deployable tenant rows and exactly one bootstrap
+superadmin from `AGENTIC_BOOTSTRAP_ADMIN_EMAIL`,
+`AGENTIC_BOOTSTRAP_ADMIN_NAME`, and `AGENTIC_BOOTSTRAP_ADMIN_PASSWORD`. All
+three are mandatory. Create additional administrators/operators/viewers through
+the authenticated Access surface; seed never installs sample identities.
+
+## Adding a tenant
+
+1. Add a versioned manifest directory under `models/<tenant>-v1/` containing the
+   workflow and domain ontology JSON files.
+2. Add or update the tenant row through the supported tenant API/seed path.
+3. If custom runtime code is required, add `tenants/<tenant>/`, declare the
+   workspace dependency in `apps/api/package.json`, and register it in
+   `apps/api/src/bootstrap.ts`.
+4. Configure every external tool credential and validate it from Settings.
+5. Restart the API and verify registration through `/health`, Agents,
+   Workflows, Events and a real run trace.
+
+Manifest-only tenants do not need a TypeScript package when global tools cover
+their integrations. A missing ontology, tool binding or credential is a build or
+runtime error, not a reason to synthesize data.
+
+## Container preview
+
+```bash
+cp .env.production.example .env.production
+# Fill every required secret/provider value.
+docker compose --env-file .env.production up --build
 ```
 
-## Environment variables
+The container network uses API port 3501 and Inngest port 8288; these differ
+from the local `pnpm dev` ports so both stacks can coexist. Compose persists the
+database, logs and artifacts in named volumes.
 
-Each app has its own `.env.local`:
+The release workflow publishes lower-case image names to the current GitHub
+repository owner's GHCR namespace. It contains no placeholder registry.
 
-**apps/api/.env.local** (backend)
-```sh
-PORT=3501
-HOST=0.0.0.0
-WEB_ORIGIN=http://localhost:3599        # CORS allow-list
-DATABASE_URL=file:../../data/agentic.db
-AGENTIC_LOGS_DIR=../../data/logs
-AGENTIC_ARTIFACTS_DIR=../../data/artifacts
-AGENTIC_MODELS_DIR=/Users/kenny/CSI-AICOE/agentic-operator/models
-AUTH_MODE=dev                           # bypasses bearer auth
-AGENTIC_DEV_TENANT=raas
-INNGEST_DEV=1
-WEBHOOK_HMAC_SECRET_DEFAULT=local-dev-hmac
-```
+## Data and safety
 
-**apps/web/.env.local** (frontend)
-```sh
-AGENTIC_API_URL=http://localhost:3501   # server-component fetches
-AGENTIC_API_TOKEN=                      # empty in dev
-```
+- Runtime state lives under `data/`; model manifests live under `models/`.
+- `pnpm db:wipe-runtime` removes runtime traffic while preserving identity and
+  configuration. Treat it as destructive.
+- Run cancellation is exposed through `POST /v1/runs/:id/cancel` and is
+  idempotent.
+- Inbound provider webhooks require configured HMAC secrets.
+- External write tools must advertise side effects and pass runtime policy and
+  credential gates before dispatch.
+- Do not treat generated sandbox manifests or historical test runs as evidence
+  of a live upstream integration; use the run's test/provenance fields and live
+  provider/tool trace.
 
-## Design decisions
-
-- **Frontend/backend split.** UI is Next.js; backend is Fastify. Web has no
-  DB access — every read goes through `/v1/*` to api. Single source of truth
-  for the API contract is `@agentic/contracts` Zod schemas, imported by both
-  sides.
-- **Inline CSS-in-JS, not Tailwind.** Matches the prototype 1:1. Pseudo-selectors
-  + media queries + @keyframes live in `global.css`; everything else inline.
-- **Models dir is the source of truth for workflows.** Bootstrap auto-discovers
-  every `models/<slug>-v<n>/` folder.
-- **Idempotent runtime.** Inngest replays handlers per step; all DB writes are
-  wrapped in `step.run(...)` so exactly one `runs` / `steps` row is produced
-  per actual execution.
-- **HITL via `step.waitForEvent`.** Manual steps create a `tasks` row, then
-  `step.waitForEvent('task.resolved', { if: 'async.data.taskId == "<id>"' })`.
-
-## Deferred
-
-- Full `apps/cli` (only Mode 1 manifest upload reachable today via `curl`)
-- Mode 3 visual workflow builder
-- Sandboxed tool execution
-- OpenTelemetry export
-- Tailwind 4 / shadcn migration
-- Runtime validation of agent manifests against `objects.json` ontology
-  (RF-2 — `entity_types` table is populated for display only)
+Production variables and their validation rules are documented in
+`.env.production.example`. Operational procedures live in `docs/RUNBOOK.md`.

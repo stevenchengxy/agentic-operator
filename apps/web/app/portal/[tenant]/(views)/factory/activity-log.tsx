@@ -11,7 +11,11 @@
 import { useState } from "react";
 import { Empty, StatusDot, HelpTip, Markdown } from "@/app/portal/components";
 import { CodeBox } from "./atoms";
-import type { Block } from "./model";
+import {
+  isAnswerCompletion,
+  isDeliveryCompletion,
+  type Block,
+} from "./model";
 
 type ToolBlock = Extract<Block, { kind: "tool" }>;
 
@@ -78,14 +82,46 @@ function ActivityRow({ b }: { b: Block }) {
     case "revert": return <Row icon="⏪" color="var(--amber)" title={`回滚 · ${b.action}`} text={`回到第 ${b.toAttempt} 次之前`} />;
     case "clarify": return <Row icon="❓" color="var(--amber)" title="询问用户" text={b.question} markdown />;
     case "compaction": return <Row icon="🗜" color="var(--border-2)" title="上下文自动压缩" text={b.summary} detail={b.state || undefined} markdown />;
-    case "sandbox": { const ev = b.ev as Record<string, unknown>; const sim = Boolean(ev.simulated); return <Row icon="🧪" color={ev.fullChainRan ? "var(--green)" : "var(--red)"} title={`沙箱${sim ? "（模拟）" : "（真实）"}`} text={`部署 ${ev.functionsRegistered ?? 0} · 跑 ${ev.ran ?? 0} · ${ev.fullChainRan ? "整链跑通" : "未跑通"}`} />; }
+    case "sandbox": {
+      const ev = b.ev as Record<string, unknown>;
+      const simulated = Boolean(ev.simulated);
+      const ok =
+        !simulated &&
+        (Boolean(ev.fullChainRan) || Boolean(ev.reachedSuccessTerminal));
+      return (
+        <Row
+          icon="🧪"
+          color={ok ? "var(--green)" : "var(--red)"}
+          title={
+            simulated
+              ? "历史模拟记录 · legacy / invalid evidence"
+              : "沙箱（真实）"
+          }
+          text={`部署 ${ev.functionsRegistered ?? 0} · 跑 ${ev.ran ?? 0} · ${ok ? "整链跑通" : simulated ? "未真实执行，不计入成功统计" : "未跑通"}`}
+        />
+      );
+    }
     case "reflect": return <Row icon="💡" color="var(--border-2)" title="反思" text={b.text} markdown />;
     case "subagent": return <Row icon="🧩" color="var(--signal)" title="子智能体" text={b.summary ?? b.task} markdown />;
     case "toolnew": return <Row icon="🛠" color="var(--signal)" title={`新建工具 · ${b.name}`} text={b.desc} markdown />;
     case "web": return <Row icon="🌐" color="var(--signal)" title={`联网检索 · ${b.count} 条`} text={b.query} />;
     case "inspect": return <Row icon="🔬" color={b.degraded ? "var(--amber)" : "var(--text-3)"} title={`检视 · ${b.agentSlug}`} text={b.error || b.status} />;
     case "error": return <Row icon="⛔" color="var(--red)" title="错误" text={b.text} />;
-    case "done": return <Row icon="🏁" color="var(--text-3)" title={`结束 · ${b.status}`} />;
+    case "done": {
+      if (b.status === "waiting_human") {
+        return <Row icon="⏸" color="var(--amber)" title="等待人工回复" text="运行已安全挂起；回复当前交互后会从检查点继续。" />;
+      }
+      if (isAnswerCompletion(b.status, b.completionKind)) {
+        return <Row icon="🏁" color="var(--green)" title="回答完成" text="信息回答已完成；未产生交付或沙箱证据。" />;
+      }
+      if (isDeliveryCompletion(b.status, b.completionKind)) {
+        return <Row icon="🏁" color="var(--green)" title="交付完成" />;
+      }
+      if (b.completionKind === "legacy_unknown") {
+        return <Row icon="🏁" color="var(--amber)" title="结束 · 完成类型未知" text="历史记录未包含 completionKind，未推断为回答或交付。" />;
+      }
+      return <Row icon="🏁" color="var(--text-3)" title={`结束 · ${b.status}`} />;
+    }
     default: return null;
   }
 }

@@ -68,6 +68,37 @@ describe("verifyReportGrounding (#REPORT-VERIFY)", () => {
     expect(counts.事件.has(6)).toBe(true); // 事件图去重口径（trigger∪emit 共 6 个不同事件名）
   });
 
+  it("legit per-stage cluster / per-action sub-counts (from digest.analysis) are NOT false-flagged", () => {
+    // The report is EXPECTED to cite per-stage rule-cluster sizes etc.; those are real computed data,
+    // not the grand total. With the analysis digest, allowedCounts must accept them — a hallucinated
+    // number that matches nothing still gets flagged.
+    const digest = {
+      analysis: {
+        ruleAnalysis: {
+          total: 262,
+          clusters: [{ stage: "简历匹配", count: 174, mandatory: 120 }, { stage: "去重", count: 28 }],
+          levelDistribution: [{ level: "mandatory", count: 200 }],
+          perAction: [{ action: "matchResume", linkedRules: 31 }],
+          unmodeledStages: [{ stage: "JD创建", rules: 12 }],
+        },
+        gaps: { agentActionsWithoutTools: ["matchResume", "jdReview"] }, // length 2
+      },
+    };
+    const counts = allowedCounts(ont, digest);
+    expect(counts.规则.has(174)).toBe(true); // cluster size
+    expect(counts.规则.has(28)).toBe(true);
+    expect(counts.规则.has(120)).toBe(true); // mandatory-in-cluster
+    expect(counts.规则.has(31)).toBe(true); // per-action linkage
+    expect(counts.规则.has(12)).toBe(true); // unmodeled-stage rules
+    expect(counts.动作.has(2)).toBe(true); // agentActionsWithoutTools length (also = Agent 动作数)
+    expect(counts.规则.has(999)).toBe(false); // still catches a hallucinated number
+
+    const ok = verifyReportGrounding(`<body><p>简历匹配阶段规则最密，共 174 条规则；matchResume 关联 31 条规则。</p></body>`, ont, digest);
+    expect(ok.violations.filter((v) => v.kind === "count_mismatch")).toEqual([]);
+    const bad = verifyReportGrounding(`<body><p>本域共 999 条规则。</p></body>`, ont, digest);
+    expect(bad.violations.map((v) => v.kind)).toContain("count_mismatch");
+  });
+
   it("style/script 里的 token 不算正文（visibleText 剥离）", () => {
     const html = `<style>.X_FAKE_TOKEN{color:red}</style><body><p>正常内容。</p></body>`;
     expect(visibleText(html)).not.toContain("X_FAKE_TOKEN");

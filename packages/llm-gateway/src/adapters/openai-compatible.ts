@@ -11,14 +11,11 @@ import OpenAI from "openai";
 import type { ProviderId } from "@agentic/contracts";
 import {
   flattenContentToText,
-  type ChatContentBlock,
   type ChatRequest,
   type ChatResponse,
   type ProviderAdapter,
   type ToolCall,
   type ToolDef,
-  type ToolResultBlock,
-  type ToolUseBlock,
 } from "../types";
 import { LLMError, classifyHttpError } from "../errors";
 
@@ -177,24 +174,6 @@ export interface OpenAICompatibleConfig {
   defaultModel: string | null;
 }
 
-// Legacy single-string projector retained for non-tool-aware callers — the
-// new code path uses `mapMessageToOpenAI` (above) which preserves tool_use
-// + tool_result block shape end-to-end. This helper is kept only because a
-// handful of internal call sites in this package still pass plain prose.
-function mapToOpenAIMessage(
-  role: "system" | "user" | "assistant" | "tool",
-  content: ChatRequest["messages"][number]["content"],
-): { role: "system" | "user" | "assistant"; content: string } {
-  const text = flattenContentToText(content);
-  const projectedRole: "system" | "user" | "assistant" =
-    role === "tool" ? "assistant" : role;
-  return { role: projectedRole, content: text };
-}
-void mapToOpenAIMessage;
-void ([] as ChatContentBlock[]);
-void ([] as ToolUseBlock[]);
-void ([] as ToolResultBlock[]);
-
 function mapFinishReason(reason: string | null | undefined): ChatResponse["finishReason"] {
   switch (reason) {
     case "stop":
@@ -300,8 +279,11 @@ export function createOpenAICompatibleAdapter(
               parsedInput = parsed as Record<string, unknown>;
             }
           } catch {
-            // Leave parsedInput empty; the tool handler will surface a clear
-            // validation error if it expected fields.
+            throw new LLMError(
+              `${config.name} returned invalid JSON arguments for tool '${c.function.name}'`,
+              "provider_error",
+              config.id,
+            );
           }
           toolCalls.push({
             id: c.id,

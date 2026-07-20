@@ -20,7 +20,7 @@ describe("probeAgentModule — reviewLoop load probe", () => {
     expect(r.loads).toBe(true);
   });
 
-  it("passes the deterministic render of a spec (specToAgentCode)", async () => {
+  it("routes a deterministic tool render to the declarative runtime instead of claiming CodeAct parity", async () => {
     const spec = {
       slug: "eval-interview", short: "EvaluateInterview", nameZh: "评估面试", actionName: "EvaluateInterview",
       domainId: "raas", systemPrompt: "评估候选人的面试表现并给出结论。", tools: ["matchResumeApi"],
@@ -29,7 +29,8 @@ describe("probeAgentModule — reviewLoop load probe", () => {
     } as unknown as GeneratedAgentSpec;
     const code = specToAgentCode(spec);
     const r = await probeAgentModule(code);
-    expect(r.loads).toBe(true);
+    expect(r.loads).toBe(false);
+    expect(r.reason).toMatch(/工具|declarative|声明式/i);
   });
 
   it("REJECTS code that compiles but exposes no callable handler", async () => {

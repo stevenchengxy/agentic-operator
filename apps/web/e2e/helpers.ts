@@ -11,8 +11,31 @@
  * file:line.
  */
 
+import type { Page } from "@playwright/test";
+
 export const API_BASE = process.env.PW_API_BASE ?? "http://localhost:3540";
 export const WEB_BASE = process.env.PW_WEB_BASE ?? "http://localhost:3599";
+const bootstrapEmail = process.env.AGENTIC_BOOTSTRAP_ADMIN_EMAIL?.trim();
+const bootstrapPassword = process.env.AGENTIC_BOOTSTRAP_ADMIN_PASSWORD;
+if (!bootstrapEmail || !bootstrapPassword) {
+  throw new Error(
+    "AGENTIC_BOOTSTRAP_ADMIN_EMAIL and AGENTIC_BOOTSTRAP_ADMIN_PASSWORD are required for authenticated E2E tests",
+  );
+}
+export const BOOTSTRAP_ADMIN_EMAIL = bootstrapEmail;
+export const BOOTSTRAP_ADMIN_PASSWORD = bootstrapPassword;
+
+/** Sign in through the same password endpoint and form used by operators. */
+export async function loginBootstrapAdmin(
+  page: Page,
+  returnPath = "/portal/raas/dashboard",
+): Promise<void> {
+  await page.goto(`/sign-in?return=${encodeURIComponent(returnPath)}`);
+  await page.getByLabel(/email|邮箱/i).fill(BOOTSTRAP_ADMIN_EMAIL);
+  await page.getByLabel(/password|密码/i).fill(BOOTSTRAP_ADMIN_PASSWORD);
+  await page.locator('button[type="submit"]').click();
+  await page.waitForURL(/\/portal\//, { timeout: 15_000 });
+}
 
 interface JsonOk<T> {
   ok: true;
@@ -27,12 +50,10 @@ export type Envelope<T> = JsonOk<T> | JsonErr;
 /**
  * Issue a JSON request to apps/api.
  *
- * Authentication: the dev auth plugin (AUTH_MODE=dev) maps a missing
- * cookie to the seeded admin under the tenant slug pinned by
- * AGENTIC_DEV_TENANT. The CI workflow exports
- * `AGENTIC_DEV_TENANT=raas` so this default works for the manifest and
- * code-agent paths. If your test needs `__system` (e.g. for code-defined
- * agents like `testAgent`), pass `tenantSlug: "__system"`.
+ * Authentication: CI starts the API in explicit NODE_ENV=test/AUTH_MODE=dev
+ * and pins the explicitly configured bootstrap database user. Pass
+ * `tenantSlug` when a request must
+ * select a tenant different from the configured test tenant.
  *
  * Returns parsed JSON envelope or throws if the body isn't JSON.
  */
@@ -47,11 +68,7 @@ export async function apiFetch<T = unknown>(
   }
   if (tenantSlug) {
     // The dev auth plugin reads AGENTIC_DEV_TENANT process-wide, but
-    // tests can also send `x-agentic-dev-tenant` to scope a single
-    // request without restarting the api. The api doesn't honour this
-    // by default; we keep the field as a documentation cue so future
-    // engineers know how to scope.
-    headers.set("x-agentic-dev-tenant", tenantSlug);
+    headers.set("x-agentic-tenant", tenantSlug);
   }
   const res = await fetch(`${API_BASE}${path}`, {
     ...rest,

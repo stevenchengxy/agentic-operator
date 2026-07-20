@@ -10,7 +10,7 @@ Use this skill once a candidate has been promoted to interview.
 
 ## Procedure
 
-1. Fetch the candidate's profile with `getCandidateApi` and the requisition with `robohire-mcp.get_job_requisition`.
+1. Read the real candidate profile and requisition from the triggering event or a configured ATS connector. If either is missing, return an explicit `missing_source_data` gap; do not invent a profile or requisition.
 2. Identify the 2-3 must-have skills the candidate's profile doesn't strongly demonstrate. Those become the **technical screen** topics.
 3. For each topic, write one open-ended question and one practical follow-up. Avoid leetcode-style puzzles.
 4. Add a **values screen** slot: one question keyed off the candidate's most recent role (e.g. "Tell me about a time you disagreed with your tech lead — what did you do?").

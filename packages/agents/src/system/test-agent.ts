@@ -9,12 +9,15 @@
 
 import type { ChatMessage } from "@agentic/llm-gateway";
 import { BaseAgent } from "../base-agent";
-import { agentRegistry } from "../registry";
 
 export class TestAgent extends BaseAgent<void, string> {
   readonly name = "testAgent";
   readonly description =
     "Sanity-check agent. Asks the configured LLM to introduce the Agentic Operator.";
+  override readonly scope = "system" as const;
+  override readonly runScope = "owner" as const;
+  override readonly inngestEnabled = true;
+  override readonly maxOutputTokens = 512;
 
   protected buildMessages(): ChatMessage[] {
     return [
@@ -29,5 +32,3 @@ export class TestAgent extends BaseAgent<void, string> {
     ];
   }
 }
-
-agentRegistry.register(new TestAgent());

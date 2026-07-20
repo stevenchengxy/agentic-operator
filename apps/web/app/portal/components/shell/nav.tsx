@@ -51,7 +51,6 @@ export interface NavItemProps {
   liveCount?: number | null;
   /** Tint the count pill amber to indicate user-attention. */
   highlight?: boolean;
-  disabled?: boolean;
   /**
    * Match the URL with startsWith() instead of equality. Useful for nav
    * items that have detail sub-routes (`/portal/raas/runs/run-…`).
@@ -66,7 +65,6 @@ export function NavItem({
   count,
   liveCount,
   highlight,
-  disabled,
   matchPrefix,
 }: NavItemProps) {
   const pathname = usePathname() ?? "";
@@ -74,8 +72,6 @@ export function NavItem({
     ? pathname.startsWith(href)
     : pathname === href;
 
-  // Conditional render is OK because we pass tabIndex=-1 to keep the
-  // disabled item out of the tab order without falling out of a List.
   const body = (
     <>
       <Icon
@@ -130,20 +126,12 @@ export function NavItem({
     borderLeft: active
       ? "2px solid var(--signal)"
       : "2px solid transparent",
-    color: disabled
-      ? "var(--text-4)"
-      : active
-        ? "var(--text)"
-        : "var(--text-2)",
+    color: active ? "var(--text)" : "var(--text-2)",
     fontSize: 12.5,
     textAlign: "left" as const,
-    cursor: disabled ? "not-allowed" : "pointer",
+    cursor: "pointer",
     transition: "background 0.1s",
   };
-
-  if (disabled) {
-    return <div style={baseStyle}>{body}</div>;
-  }
 
   return (
     <Link href={href as never} style={baseStyle} tabIndex={0}>

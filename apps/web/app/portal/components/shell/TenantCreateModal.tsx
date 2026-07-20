@@ -1,9 +1,9 @@
 "use client";
 
 /**
- * TenantCreateModal — 4-step wizard for `POST /v1/tenants`.
+ * TenantCreateModal — 3-step wizard for `POST /v1/tenants`.
  *
- * Steps: Identity → Template → Quotas → Review.
+ * Steps: Identity → Quotas → Review.
  *
  * Validates the slug client-side against the same regex and reserved-list
  * the server enforces (both exported from `@agentic/contracts`). On success
@@ -20,7 +20,7 @@ import type {
 } from "@agentic/contracts";
 import { Button, Icon, ModalOverlay } from "@/app/portal/components";
 import { useI18n } from "@/app/portal/lib/preferences-context";
-import type { TenantOption } from "./tenant-switcher";
+import { readApiData } from "@/lib/api-response";
 import { computeSlugIssues, deriveSlug, shouldShowSlugIssue } from "./tenant-slug";
 
 const DEFAULT_COLORS = [
@@ -36,23 +36,19 @@ const DEFAULT_COLORS = [
 
 const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
 
-type StarterKind = "empty" | "hello" | "copy-from";
-
 export interface TenantCreateModalProps {
   onClose: () => void;
   onCreated: (created: TenantCreateResponse) => void;
   existingSlugs: Set<string>;
-  existingTenants: TenantOption[];
 }
 
 export function TenantCreateModal({
   onClose,
   onCreated,
   existingSlugs,
-  existingTenants,
 }: TenantCreateModalProps) {
   const { t } = useI18n();
-  const [step, setStep] = useState<1 | 2 | 3 | 4>(1);
+  const [step, setStep] = useState<1 | 2 | 3>(1);
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -61,9 +57,6 @@ export function TenantCreateModal({
   const [slugDirty, setSlugDirty] = useState(false);
   const [subtitle, setSubtitle] = useState("");
   const [color, setColor] = useState<string>(DEFAULT_COLORS[0]!);
-
-  const [starter, setStarter] = useState<StarterKind>("hello");
-  const [copyFromSlug, setCopyFromSlug] = useState("");
 
   const [tokenCap, setTokenCap] = useState("");
   const [usdCap, setUsdCap] = useState("");
@@ -83,8 +76,7 @@ export function TenantCreateModal({
     t(`tenantCreateModal.slugIssue.${code}`),
   );
   const canNextFrom1 = name.trim().length > 0 && slugIssueCodes.length === 0;
-  const canNextFrom2 = starter !== "copy-from" || copyFromSlug.length > 0;
-  const canNextFrom3 = true;
+  const canNextFrom2 = true;
   const colorValid = HEX_COLOR_RE.test(color);
 
   async function submit() {
@@ -100,10 +92,7 @@ export function TenantCreateModal({
       name: name.trim(),
       subtitle: subtitle.trim() || undefined,
       color,
-      starter:
-        starter === "copy-from"
-          ? (`copy-from:${copyFromSlug}` as `copy-from:${string}`)
-          : starter,
+      starter: "empty",
       mintToken,
       budget: {
         monthlyTokenCap: tokenCap === "" ? null : Number(tokenCap),
@@ -121,12 +110,7 @@ export function TenantCreateModal({
         },
         body: JSON.stringify(body),
       });
-      const raw: unknown = await res.json().catch(() => ({}));
-      if (!res.ok || isErrorEnvelope(raw)) {
-        setErr(extractError(raw, `HTTP ${res.status}`));
-        return;
-      }
-      const data = unwrapData<TenantCreateResponse>(raw);
+      const data = await readApiData<TenantCreateResponse>(res, "/v1/tenants");
       onCreated(data);
     } catch (e) {
       setErr(e instanceof Error ? e.message : t("tenantCreateModal.errNetwork"));
@@ -273,50 +257,6 @@ export function TenantCreateModal({
           )}
 
           {step === 2 && (
-            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-              <Field
-                label={t("tenantCreateModal.starterContent")}
-                hint={t("tenantCreateModal.starterContentHint")}
-              >
-                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                  <RadioRow
-                    checked={starter === "empty"}
-                    onChange={() => setStarter("empty")}
-                    title={t("tenantCreateModal.starterEmptyTitle")}
-                    body={t("tenantCreateModal.starterEmptyBody")}
-                  />
-                  <RadioRow
-                    checked={starter === "hello"}
-                    onChange={() => setStarter("hello")}
-                    title={t("tenantCreateModal.starterHelloTitle")}
-                    body={t("tenantCreateModal.starterHelloBody")}
-                  />
-                  <RadioRow
-                    checked={starter === "copy-from"}
-                    onChange={() => setStarter("copy-from")}
-                    title={t("tenantCreateModal.starterCopyTitle")}
-                    body={t("tenantCreateModal.starterCopyBody")}
-                  />
-                </div>
-                {starter === "copy-from" && (
-                  <select
-                    value={copyFromSlug}
-                    onChange={(e) => setCopyFromSlug(e.target.value)}
-                    style={{ ...inputStyle(), marginTop: 10 }}
-                  >
-                    <option value="">{t("tenantCreateModal.pickSourceTenant")}</option>
-                    {existingTenants.map((t) => (
-                      <option key={t.id} value={t.id}>
-                        {t.name} ({t.id})
-                      </option>
-                    ))}
-                  </select>
-                )}
-              </Field>
-            </div>
-          )}
-
-          {step === 3 && (
             <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
               <Field
                 label={t("tenantCreateModal.tokenCap")}
@@ -369,7 +309,7 @@ export function TenantCreateModal({
             </div>
           )}
 
-          {step === 4 && (
+          {step === 3 && (
             <div>
               <div
                 style={{
@@ -399,10 +339,6 @@ export function TenantCreateModal({
                 <KvRow k="slug" v={slug} />
                 <KvRow k="subtitle" v={subtitle || t("tenantCreateModal.reviewNone")} />
                 <KvRow k="color" v={color} />
-                <KvRow
-                  k="starter"
-                  v={starter === "copy-from" ? `copy-from:${copyFromSlug}` : starter}
-                />
                 <KvRow
                   k="monthly_token_cap"
                   v={tokenCap === "" ? t("tenantCreateModal.reviewUnlimited") : tokenCap}
@@ -434,30 +370,28 @@ export function TenantCreateModal({
           >
             <div style={{ fontSize: 11, color: "var(--text-3)" }}>
               {step === 1 && t("tenantCreateModal.stepIdentity")}
-              {step === 2 && t("tenantCreateModal.stepTemplate")}
-              {step === 3 && t("tenantCreateModal.stepQuotas")}
-              {step === 4 && t("tenantCreateModal.stepReview")}
+              {step === 2 && t("tenantCreateModal.stepQuotas")}
+              {step === 3 && t("tenantCreateModal.stepReview")}
             </div>
             <div style={{ display: "flex", gap: 8 }}>
               {step > 1 && (
-                <Button tone="ghost" onClick={() => setStep((s) => (s - 1) as 1 | 2 | 3 | 4)}>
+                <Button tone="ghost" onClick={() => setStep((s) => (s - 1) as 1 | 2 | 3)}>
                   {t("tenantCreateModal.back")}
                 </Button>
               )}
-              {step < 4 && (
+              {step < 3 && (
                 <Button
                   tone="primary"
                   disabled={
                     (step === 1 && !canNextFrom1) ||
-                    (step === 2 && !canNextFrom2) ||
-                    (step === 3 && !canNextFrom3)
+                    (step === 2 && !canNextFrom2)
                   }
-                  onClick={() => setStep((s) => (s + 1) as 1 | 2 | 3 | 4)}
+                  onClick={() => setStep((s) => (s + 1) as 1 | 2 | 3)}
                 >
                   {t("tenantCreateModal.next")}
                 </Button>
               )}
-              {step === 4 && (
+              {step === 3 && (
                 <Button
                   tone="primary"
                   onClick={submit}
@@ -479,39 +413,6 @@ export function TenantCreateModal({
 // ── Helpers ──────────────────────────────────────────────────────────────
 // computeSlugIssues / deriveSlug / shouldShowSlugIssue live in ./tenant-slug
 // (pure + unit-tested in apps/api/test/tenant-slug.test.ts).
-
-function unwrapData<T>(body: unknown): T {
-  if (
-    body !== null &&
-    typeof body === "object" &&
-    (body as { data?: unknown }).data !== undefined
-  ) {
-    return (body as { data: T }).data;
-  }
-  return body as T;
-}
-
-function isErrorEnvelope(body: unknown): boolean {
-  return (
-    body !== null &&
-    typeof body === "object" &&
-    (body as { ok?: unknown }).ok === false
-  );
-}
-
-function extractError(body: unknown, fallback: string): string {
-  if (body && typeof body === "object") {
-    const obj = body as Record<string, unknown>;
-    const err = obj.error;
-    if (err && typeof err === "object") {
-      const e = err as { message?: unknown; code?: unknown };
-      if (typeof e.message === "string") return e.message;
-      if (typeof e.code === "string") return e.code;
-    }
-    if (typeof obj.message === "string") return obj.message;
-  }
-  return fallback;
-}
 
 function inputStyle() {
   return {
@@ -557,61 +458,6 @@ function Field({
         <div style={{ fontSize: 11, color: "var(--text-3)", lineHeight: 1.4 }}>{hint}</div>
       )}
     </div>
-  );
-}
-
-function RadioRow({
-  checked,
-  onChange,
-  title,
-  body,
-}: {
-  checked: boolean;
-  onChange: () => void;
-  title: string;
-  body: string;
-}) {
-  return (
-    <button
-      onClick={onChange}
-      style={{
-        display: "flex",
-        gap: 10,
-        alignItems: "flex-start",
-        padding: 10,
-        textAlign: "left",
-        width: "100%",
-        background: checked ? "var(--panel-2)" : "transparent",
-        border: `1px solid ${checked ? "var(--signal)" : "var(--border-2)"}`,
-        borderRadius: 5,
-        cursor: "pointer",
-      }}
-    >
-      <div
-        style={{
-          width: 14,
-          height: 14,
-          borderRadius: "50%",
-          border: `2px solid ${checked ? "var(--signal)" : "var(--border-3)"}`,
-          background: checked ? "var(--signal)" : "transparent",
-          flexShrink: 0,
-          marginTop: 2,
-        }}
-      />
-      <div>
-        <div style={{ fontSize: 13, color: "var(--text)" }}>{title}</div>
-        <div
-          style={{
-            fontSize: 11.5,
-            color: "var(--text-3)",
-            marginTop: 2,
-            lineHeight: 1.45,
-          }}
-        >
-          {body}
-        </div>
-      </div>
-    </button>
   );
 }
 

@@ -11,8 +11,8 @@
  * Live version selection:
  *   1. If `deployments` has a `target='tenant_code'` row with status='live'
  *      for this tenant, use that version.
- *   2. Else, fall back to the highest-numbered `<version>/` dir on disk
- *      (semver-ish lexical sort works for our `0.1.0` style).
+ *   2. Else, fall back to the highest numeric-aware `<version>/` dir on disk
+ *      (`v10` sorts after `v9`, while dotted versions remain naturally ordered).
  *   3. Else, return null and the runtime falls back to whatever's wired up in
  *      `apps/api/src/bootstrap.ts#TENANT_REGISTRIES` (the legacy `tenants/`
  *      workspace path).
@@ -32,9 +32,9 @@
 
 import path from "node:path";
 import fs from "node:fs/promises";
-import { existsSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { and, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
+import { z } from "zod";
 import {
   deployments,
   getDb,
@@ -56,6 +56,49 @@ export interface TenantManifest {
   manifests?: string[];
   code?: { registry?: string };
   createdAt?: string;
+}
+
+const TenantManifestSchema = z
+  .object({
+    slug: z.string().min(1),
+    name: z.string().min(1).optional(),
+    schemaVersion: z.number().int().nonnegative().optional(),
+    manifests: z.array(z.string().min(1)).optional(),
+    code: z.object({ registry: z.string().min(1).optional() }).optional(),
+    createdAt: z.string().min(1).optional(),
+  })
+  .passthrough();
+
+export class TenantCodeIntegrityError extends Error {
+  override readonly cause?: unknown;
+
+  constructor(message: string, cause?: unknown) {
+    super(message);
+    this.name = "TenantCodeIntegrityError";
+    this.cause = cause;
+  }
+}
+
+const versionCollator = new Intl.Collator("en", {
+  numeric: true,
+  sensitivity: "base",
+});
+
+function compareTenantVersions(a: string, b: string): number {
+  return versionCollator.compare(a, b);
+}
+
+function isEnoent(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException | null)?.code === "ENOENT";
+}
+
+async function regularFileExists(filePath: string): Promise<boolean> {
+  try {
+    return (await fs.stat(filePath)).isFile();
+  } catch (error) {
+    if (isEnoent(error)) return false;
+    throw error;
+  }
 }
 
 export interface LoadedTenant {
@@ -92,8 +135,14 @@ export async function listTenantVersions(): Promise<
   Array<{ slug: string; version: string; dir: string }>
 > {
   const root = dataTenantsRoot();
-  if (!existsSync(root)) return [];
-  const slugs = (await fs.readdir(root, { withFileTypes: true }))
+  let rootEntries;
+  try {
+    rootEntries = await fs.readdir(root, { withFileTypes: true });
+  } catch (error) {
+    if (isEnoent(error)) return [];
+    throw error;
+  }
+  const slugs = rootEntries
     .filter((d) => d.isDirectory() && !d.name.startsWith("."))
     .map((d) => d.name)
     .sort();
@@ -105,13 +154,16 @@ export async function listTenantVersions(): Promise<
       versions = (await fs.readdir(slugDir, { withFileTypes: true }))
         .filter((d) => d.isDirectory() && !d.name.startsWith("."))
         .map((d) => d.name)
-        .sort();
-    } catch {
-      continue;
+        .sort(compareTenantVersions);
+    } catch (error) {
+      // A slug may disappear between the root and child scans. Every other
+      // failure is operational and must remain visible to bootstrap.
+      if (isEnoent(error)) continue;
+      throw error;
     }
     for (const v of versions) {
       const dir = path.join(slugDir, v);
-      if (existsSync(path.join(dir, "agentic.json"))) {
+      if (await regularFileExists(path.join(dir, "agentic.json"))) {
         out.push({ slug, version: v, dir });
       }
     }
@@ -154,17 +206,27 @@ export async function resolveLiveVersion(
           eq(deployments.status, "live"),
         ),
       )
+      .orderBy(desc(deployments.deployedAt), desc(deployments.id))
       .all()[0];
     if (live?.version) {
       const dir = path.join(dataTenantsRoot(), slug, live.version);
-      if (existsSync(path.join(dir, "agentic.json"))) return live.version;
-      // Pointer is stale (someone deleted the dir manually). Fall through.
+      if (await regularFileExists(path.join(dir, "agentic.json"))) {
+        return live.version;
+      }
+      // A live pointer is an explicit operator decision. Falling through to
+      // another on-disk version would execute code that was never selected.
+      throw new TenantCodeIntegrityError(
+        `[tenant-loader] live tenant_code deployment for ${slug}@${live.version} has no agentic.json`,
+      );
     }
   }
 
   // ── 2. Disk fallback ───────────────────────────────────────────────────
   const all = await listTenantVersions();
-  const forSlug = all.filter((x) => x.slug === slug).map((x) => x.version);
+  const forSlug = all
+    .filter((x) => x.slug === slug)
+    .map((x) => x.version)
+    .sort(compareTenantVersions);
   if (forSlug.length === 0) return null;
   return forSlug[forSlug.length - 1] ?? null;
 }
@@ -173,9 +235,8 @@ export async function resolveLiveVersion(
  * Load a tenant by slug + version. Reads `agentic.json` and dynamically
  * `import()`s the registry entrypoint.
  *
- * Returns null when the dir is missing or `agentic.json` can't be parsed.
- * Throws when the dir is found but the registry import fails — that's a
- * programmer error worth surfacing.
+ * Returns null only when `agentic.json` is absent. Malformed/unreadable
+ * manifests and declared-but-missing registries are integrity failures.
  */
 export async function loadTenant(
   slug: string,
@@ -183,21 +244,36 @@ export async function loadTenant(
 ): Promise<LoadedTenant | null> {
   const dir = path.join(dataTenantsRoot(), slug, version);
   const manifestPath = path.join(dir, "agentic.json");
-  if (!existsSync(manifestPath)) return null;
-
-  let manifest: TenantManifest;
+  let raw: string;
   try {
-    const raw = await fs.readFile(manifestPath, "utf8");
-    manifest = JSON.parse(raw) as TenantManifest;
-  } catch (err) {
-    console.warn(
+    raw = await fs.readFile(manifestPath, "utf8");
+  } catch (error) {
+    if (isEnoent(error)) return null;
+    throw new TenantCodeIntegrityError(
       `[tenant-loader] ${slug}@${version}: agentic.json unreadable`,
-      err,
+      error,
     );
-    return null;
   }
-  if (manifest.slug && manifest.slug !== slug) {
-    console.warn(
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw) as unknown;
+  } catch (error) {
+    throw new TenantCodeIntegrityError(
+      `[tenant-loader] ${slug}@${version}: agentic.json is invalid JSON`,
+      error,
+    );
+  }
+  const manifestResult = TenantManifestSchema.safeParse(parsed);
+  if (!manifestResult.success) {
+    throw new TenantCodeIntegrityError(
+      `[tenant-loader] ${slug}@${version}: invalid agentic.json (${manifestResult.error.issues
+        .map((issue) => `${issue.path.join(".") || "root"}: ${issue.message}`)
+        .join("; ")})`,
+    );
+  }
+  const manifest = manifestResult.data as TenantManifest;
+  if (manifest.slug !== slug) {
+    throw new TenantCodeIntegrityError(
       `[tenant-loader] ${slug}@${version}: agentic.json slug=${manifest.slug} mismatch`,
     );
   }
@@ -205,14 +281,20 @@ export async function loadTenant(
   const registryRel = manifest.code?.registry;
   let registry: TenantRegistry | null = null;
   if (registryRel) {
-    const registryAbs = path.join(dir, registryRel);
-    if (!existsSync(registryAbs)) {
+    const registryAbs = path.resolve(dir, registryRel);
+    const relative = path.relative(dir, registryAbs);
+    if (relative.startsWith(`..${path.sep}`) || relative === ".." || path.isAbsolute(relative)) {
+      throw new TenantCodeIntegrityError(
+        `[tenant-loader] ${slug}@${version}: registry path escapes the tenant package (${registryRel})`,
+      );
+    }
+    if (!(await regularFileExists(registryAbs))) {
       // Some authors omit the explicit .ts extension; try that.
       const alt = registryAbs.endsWith(".ts") ? null : `${registryAbs}.ts`;
-      if (alt && existsSync(alt)) {
+      if (alt && (await regularFileExists(alt))) {
         registry = await importTenantRegistry(alt, version);
       } else {
-        console.warn(
+        throw new TenantCodeIntegrityError(
           `[tenant-loader] ${slug}@${version}: registry file missing at ${registryRel}`,
         );
       }
@@ -233,14 +315,19 @@ export async function loadTenant(
 async function importTenantRegistry(
   absPath: string,
   version: string,
-): Promise<TenantRegistry | null> {
+): Promise<TenantRegistry> {
   try {
     const st = await fs.stat(absPath);
     const url = `${pathToFileURL(absPath).href}?v=${encodeURIComponent(
       version,
     )}&t=${st.mtimeMs}`;
     const mod = (await import(url)) as { default?: TenantRegistry };
-    return mod.default ?? null;
+    if (!mod.default || typeof mod.default !== "object" || Array.isArray(mod.default)) {
+      throw new TenantCodeIntegrityError(
+        `[tenant-loader] tenant registry at ${absPath} must default-export an object`,
+      );
+    }
+    return mod.default;
   } catch (err) {
     console.error(
       `[tenant-loader] failed to import tenant registry at ${absPath}`,
@@ -260,48 +347,43 @@ async function importTenantRegistry(
 export async function loadLiveTenants(): Promise<Map<string, LoadedTenant>> {
   const out = new Map<string, LoadedTenant>();
   const all = await listTenantVersions();
-  const slugs = Array.from(new Set(all.map((x) => x.slug)));
+  // Include DB-selected tenants even when their entire directory vanished;
+  // otherwise the stale live pointer would never be examined and bootstrap
+  // would quietly omit the deployed tenant.
+  const deployedSlugs = getDb()
+    .select({ slug: tenants.slug })
+    .from(deployments)
+    .innerJoin(tenants, eq(tenants.id, deployments.tenantId))
+    .where(
+      and(
+        eq(deployments.target, "tenant_code"),
+        eq(deployments.status, "live"),
+      ),
+    )
+    .all()
+    .map((row) => row.slug);
+  const slugs = Array.from(
+    new Set([...all.map((x) => x.slug), ...deployedSlugs]),
+  ).sort();
   for (const slug of slugs) {
-    const v = await resolveLiveVersion(slug);
-    if (!v) continue;
-    const loaded = await loadTenant(slug, v);
-    if (loaded) out.set(slug, loaded);
+    // Integrity failures stay FAIL-CLOSED per tenant (its code is NOT loaded — a live pointer
+    // to a missing/altered bundle never falls through to unselected code) but must not brick
+    // the whole api boot: one tenant's broken pointer previously crashed bootstrap for every
+    // tenant. Quarantine to the slug, log loud, keep booting.
+    try {
+      const v = await resolveLiveVersion(slug);
+      if (!v) continue;
+      const loaded = await loadTenant(slug, v);
+      if (loaded) out.set(slug, loaded);
+    } catch (error) {
+      try {
+        console.error(
+          `[tenant-loader] 跳过租户 ${slug} 的 tenant_code 加载（完整性/加载失败——该租户代码不生效，boot 继续）：${String((error as Error)?.message ?? error).slice(0, 300)}`,
+        );
+      } catch { /* best-effort */ }
+    }
   }
   return out;
-}
-
-/**
- * Sprint 4 — Prompt-Registry Isolator (F-S3-1 follow-up).
- *
- * Architecture invariant: the tenant prompt registry is NOT a module-level
- * singleton. Each `bootstrapTenant({ tenantRegistry })` call carries its own
- * fresh `TenantRegistry` reference (a plain object whose `.prompts` map is
- * keyed by `action.name`). `definePrompt()` is a pure factory in
- * `@agentic/agent-kit` / `@agentic/agent-sdk` — it returns a descriptor
- * without registering it anywhere global.
- *
- * Sprint 3 verifier filed F-S3-1 hypothesizing that "earlier tests mutate
- * the prompt registry singleton, leaving subsequent tc-11 runs broken." An
- * end-to-end audit confirmed this is not the case: there is no shared
- * mutable state to pollute. Sprint 3's intermittent tc-11 failures traced
- * back to either (a) stale `data/agentic.db` schema where a migration
- * regressed (`archived_at` column missing in worktree DBs), or (b) a
- * Node-binding ABI skew between the test binary and `better-sqlite3.node`.
- * Both were resolved by `pnpm rebuild better-sqlite3` + `pnpm db:migrate`.
- *
- * This export remains as a **documented reset hook** so future contributors
- * who *do* introduce module-level prompt caching have a single, well-known
- * place to wire the invalidation. The current implementation is a no-op by
- * design — calling it should never break a test, and it should never need
- * to be called from production code.
- *
- * To verify the invariant holds at test time, prefer
- * `assertTenantRegistryComplete(slug, registry, requiredActionNames)` in
- * a `beforeEach` rather than reaching for this reset hook.
- */
-export function __resetPromptRegistry(): void {
-  // No-op. See docblock above. Kept as the named hook for forward
-  // compatibility per Sprint 4 partition guidance.
 }
 
 /**

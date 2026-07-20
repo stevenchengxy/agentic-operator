@@ -17,8 +17,9 @@
  * separate package per fixture slug.
  */
 
-import { definePrompt } from "@agentic/agent-kit";
+import { definePrompt, defineTool } from "@agentic/agent-kit";
 import type { PromptDescriptor, TenantRegistry } from "@agentic/agent-kit";
+import { z } from "zod";
 
 const checkShape: PromptDescriptor = definePrompt({
   name: "checkShape",
@@ -47,9 +48,58 @@ const prompts: TenantRegistry["prompts"] = {
   applyRules,
 };
 
+// Test-only manifest tools. They perform real writes/reads against the
+// runtime MemoryHandle; the production registry never imports this package.
+const logRequest = defineTool({
+  name: "logRequest",
+  description: "Persist the inbound fixture request in the real run-scoped memory store.",
+  output: z.record(z.string(), z.unknown()),
+  async handler(ctx) {
+    if (!ctx.memory) throw new Error("logRequest: runtime memory handle is unavailable");
+    const payload = ctx.event?.data ?? {};
+    await ctx.memory.put(`request:${ctx.correlationId}`, payload, "run");
+    return { data: { ...payload, request_logged: true } };
+  },
+});
+
+const fetchContext = defineTool({
+  name: "fetchContext",
+  description: "Read the live inbound payload and persist the enrichment receipt in run memory.",
+  output: z.record(z.string(), z.unknown()),
+  async handler(ctx) {
+    if (!ctx.memory) throw new Error("fetchContext: runtime memory handle is unavailable");
+    const payload = ctx.event?.data ?? {};
+    const context = { source: "live_event", payload };
+    await ctx.memory.put(`context:${ctx.correlationId}`, context, "run");
+    return { data: context };
+  },
+});
+
+const sendNotification = defineTool({
+  name: "sendNotification",
+  description: "Persist a notification-delivery receipt to the fixture run's real memory channel.",
+  output: z.record(z.string(), z.unknown()),
+  async handler(ctx) {
+    if (!ctx.memory) throw new Error("sendNotification: runtime memory handle is unavailable");
+    const receipt = {
+      delivered: true,
+      channel: "fixture-memory",
+      correlation_id: ctx.correlationId,
+      payload: ctx.event?.data ?? ctx.lastResult ?? {},
+    };
+    await ctx.memory.put(`notification:${ctx.correlationId}`, receipt, "run");
+    return { data: receipt };
+  },
+});
+
+const tools: TenantRegistry["tools"] = {
+  logRequest,
+  fetchContext,
+  sendNotification,
+};
+
 /**
- * Default export consumed by the api's `TENANT_REGISTRIES` map. Pure-stub —
- * no tools.
+ * Default export consumed only under NODE_ENV=test.
  */
-const registry: TenantRegistry = { prompts };
+const registry: TenantRegistry = { prompts, tools };
 export default registry;

@@ -4,7 +4,7 @@
  * Targets:
  *   - `registerCodeAgentFn` builds an InngestFunction with a stable id and the
  *     `__system/code.<name>.invoke` trigger.
- *   - `buildCodeAgentFns` produces one function per registered agent.
+ *   - `buildCodeAgentFns` produces functions only for explicit opt-ins.
  *   - `bootstrapCodeAgents()` returns the function map alongside its DB
  *     summary so the API server can splice them into `serve()`.
  *   - `codeAgentEventName` / `codeAgentFnId` helpers return the expected
@@ -29,18 +29,27 @@ import {
   codeAgentFnId,
   registerCodeAgentFn,
   setGateway,
-} from "@agentic/agent-runtime";
+} from "@agentic/agents";
 import type { ChatMessage } from "@agentic/llm-gateway";
 import { runMigrations } from "@agentic/db";
 
 class PingAgent extends BaseAgent<{ message?: string }, string> {
   readonly name = "pingAgent";
   readonly description = "Test echo agent for inngest registration.";
+  override readonly inngestEnabled = true;
   protected buildMessages({ message }: { message?: string }): ChatMessage[] {
     return [
       { role: "system", content: "Echo." },
       { role: "user", content: message ?? "ping" },
     ];
+  }
+}
+
+class DirectAgent extends BaseAgent<void, string> {
+  readonly name = "directAgent";
+  readonly description = "Direct-only code capability.";
+  protected buildMessages(): ChatMessage[] {
+    return [{ role: "user", content: "direct" }];
   }
 }
 
@@ -66,12 +75,15 @@ beforeAll(async () => {
   runMigrations(path.join(repoRoot, "packages/db/drizzle"));
   setGateway(stubGateway as never);
   agentRegistry.register(new PingAgent());
+  agentRegistry.register(new DirectAgent());
   await bootstrapCodeAgents();
 });
 
 describe("TC-17: code-agent Inngest registration (P1-RT-08)", () => {
   it("codeAgentEventName / codeAgentFnId return the documented stable strings", () => {
-    expect(codeAgentEventName("pingAgent")).toBe("__system/code.pingAgent.invoke");
+    expect(codeAgentEventName("pingAgent")).toBe(
+      "__system/code.pingAgent.invoke",
+    );
     expect(codeAgentFnId("pingAgent")).toBe("__system.code.pingAgent");
   });
 
@@ -86,15 +98,18 @@ describe("TC-17: code-agent Inngest registration (P1-RT-08)", () => {
     expect(fnId).toBe("__system.code.pingAgent");
   });
 
-  it("buildCodeAgentFns produces one function per registered agent", () => {
+  it("buildCodeAgentFns excludes direct-only code agents", () => {
     const fns = buildCodeAgentFns(agentRegistry.list());
-    expect(fns.length).toBe(agentRegistry.list().length);
-    expect(fns.length).toBeGreaterThanOrEqual(1);
+    expect(fns).toHaveLength(1);
+    expect(() =>
+      registerCodeAgentFn(agentRegistry.get("directAgent")!),
+    ).toThrow(/not opted into Inngest deployment/);
   });
 
-  it("bootstrapCodeAgents exposes codeAgentFns on its summary", async () => {
+  it("bootstrapCodeAgents exposes only opted-in codeAgentFns", async () => {
     const summary = await bootstrapCodeAgents();
     expect(Array.isArray(summary.codeAgentFns)).toBe(true);
-    expect(summary.codeAgentFns.length).toBe(summary.agentCount);
+    expect(summary.codeAgentFns).toHaveLength(1);
+    expect(summary.agentCount).toBeGreaterThan(summary.codeAgentFns.length);
   });
 });

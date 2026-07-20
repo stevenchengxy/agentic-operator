@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { selectEmittedEvent } from "@agentic/runtime";
+import { selectEmittedEvent, selectEmittedEvents } from "@agentic/runtime";
 
 const EVENTS = [
   "MATCH_PASSED_NEED_INTERVIEW",
@@ -64,5 +64,24 @@ describe("selectEmittedEvent (branch-emit)", () => {
         event: "MATCH_PASSED_NO_INTERVIEW",
       }),
     ).toBe("MATCH_FAILED");
+  });
+});
+
+describe("selectEmittedEvents (error-policy emission)", () => {
+  it("suppresses only the implicit default event", () => {
+    expect(
+      selectEmittedEvents(EVENTS, { score: 0.9 }, [], { suppressImplicit: true }),
+    ).toEqual([]);
+  });
+
+  it("keeps an explicitly selected error event even when implicit emission is suppressed", () => {
+    expect(
+      selectEmittedEvents(
+        EVENTS,
+        { score: 0.9 },
+        [{ event: "MATCH_FAILED", payload: { reason: "classified" } }],
+        { suppressImplicit: true },
+      ),
+    ).toEqual([{ event: "MATCH_FAILED", payload: { reason: "classified" } }]);
   });
 });

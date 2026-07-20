@@ -5,7 +5,7 @@ import { requirePermission } from "../../plugins/rbac";
 
 /**
  * Read-only monitoring API for durable business records (candidate / resume /
- * candidate_match_result / communication_log) written by the `records.upsert`
+ * candidate_match_result / candidate_identity_result / communication_log) written by the `records.upsert`
  * tool. Tenant-scoped; reuses the `runs.read` permission (no new grant needed).
  */
 export async function recordsRoutes(app: FastifyInstance) {

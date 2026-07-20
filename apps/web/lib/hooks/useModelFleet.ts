@@ -44,9 +44,18 @@ async function callV1<T>(path: string, init: RequestInit = {}): Promise<T> {
     ...rest,
     headers,
   });
-  const body = (await res.json()) as ApiOk<T> | ApiErr;
-  if (!body.ok) {
-    throw new Error(`${path}: ${body.error.code} — ${body.error.message}`);
+  const text = await res.text();
+  let body: ApiOk<T> | ApiErr | null = null;
+  try {
+    body = text ? (JSON.parse(text) as ApiOk<T> | ApiErr) : null;
+  } catch {
+    body = null;
+  }
+  if (!res.ok || !body || !body.ok) {
+    const detail = body && !body.ok
+      ? `${body.error.code} — ${body.error.message}`
+      : text.replace(/\s+/g, " ").trim().slice(0, 240) || res.statusText || "invalid response";
+    throw new Error(`${path}: HTTP ${res.status} — ${detail}`);
   }
   return body.data;
 }
@@ -65,6 +74,9 @@ export interface FleetEntry {
   temperature: number;
   addedAt: number;
   addedBy: string | null;
+  availability: "provider_confirmed" | "unverified";
+  availabilityCheckedAt: number | null;
+  availabilityMessage: string | null;
 }
 
 export interface AvailableModel {
@@ -86,10 +98,114 @@ export interface AvailableModelsPayload {
   models: AvailableModel[];
 }
 
+export interface ProviderInfo {
+  id: string;
+  name: string;
+  hasKey: boolean;
+  defaultModel: string | null;
+  models: string[];
+}
+
+export interface ProviderKeyMeta {
+  provider: string;
+  hasKey: boolean;
+  source: "vault" | "env" | "none";
+  keyMasked: string | null;
+  scope: "workspace" | "tenant" | null;
+  setBy: string | null;
+  setAt: number | null;
+}
+
+export interface ProviderTestResult {
+  ok: boolean;
+  statusCode: number | null;
+  latencyMs: number;
+  modelCount: number | null;
+  message: string;
+}
+
+export interface DeleteProviderKeyResult {
+  provider: string;
+  deleted: true;
+  /** Effective credential after deletion (for example, an env fallback). */
+  effective: ProviderKeyMeta;
+}
+
 export const FLEET_KEYS = {
   list: ["llm", "fleet"] as const,
   available: (provider: string) => ["llm", "available-models", provider] as const,
+  providers: ["llm", "providers"] as const,
+  providerKeys: ["llm", "provider-keys"] as const,
 };
+
+/** Runtime-backed providers only; unavailable stubs and mock are filtered by the API. */
+export function useModelProviders(): UseQueryResult<ProviderInfo[]> {
+  return useQuery({
+    queryKey: FLEET_KEYS.providers,
+    queryFn: () => callV1<ProviderInfo[]>("/v1/llm/providers"),
+    staleTime: 30_000,
+  });
+}
+
+export function useProviderKeys(): UseQueryResult<ProviderKeyMeta[]> {
+  return useQuery({
+    queryKey: FLEET_KEYS.providerKeys,
+    queryFn: () => callV1<ProviderKeyMeta[]>("/v1/llm/providers/keys"),
+    staleTime: 10_000,
+  });
+}
+
+export function useSaveProviderKey() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: ({ provider, apiKey }: { provider: string; apiKey: string }) =>
+      callV1<ProviderKeyMeta>(`/v1/llm/providers/${encodeURIComponent(provider)}/key`, {
+        method: "POST",
+        body: JSON.stringify({ apiKey, scope: "workspace" }),
+      }),
+    onSuccess: async (_data, vars) => {
+      await Promise.all([
+        client.invalidateQueries({ queryKey: FLEET_KEYS.providers }),
+        client.invalidateQueries({ queryKey: FLEET_KEYS.providerKeys }),
+        client.invalidateQueries({ queryKey: FLEET_KEYS.available(vars.provider) }),
+      ]);
+    },
+  });
+}
+
+/**
+ * Remove the persisted workspace credential for a provider. Environment-backed
+ * credentials are deliberately not presented as revocable in the UI because a
+ * process restart would restore them; those must be removed from deployment
+ * configuration instead.
+ */
+export function useDeleteProviderKey() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (provider: string) =>
+      callV1<DeleteProviderKeyResult>(
+        `/v1/llm/providers/${encodeURIComponent(provider)}/key`,
+        { method: "DELETE" },
+      ),
+    onSuccess: async (_data, provider) => {
+      await Promise.all([
+        client.invalidateQueries({ queryKey: FLEET_KEYS.providers }),
+        client.invalidateQueries({ queryKey: FLEET_KEYS.providerKeys }),
+        client.invalidateQueries({ queryKey: FLEET_KEYS.available(provider) }),
+      ]);
+    },
+  });
+}
+
+export function useTestProviderKey() {
+  return useMutation({
+    mutationFn: ({ provider, apiKey }: { provider: string; apiKey?: string }) =>
+      callV1<ProviderTestResult>(`/v1/llm/providers/${encodeURIComponent(provider)}/test`, {
+        method: "POST",
+        body: JSON.stringify(apiKey?.trim() ? { apiKey: apiKey.trim() } : {}),
+      }),
+  });
+}
 
 export function useFleet(): UseQueryResult<FleetEntry[]> {
   return useQuery({

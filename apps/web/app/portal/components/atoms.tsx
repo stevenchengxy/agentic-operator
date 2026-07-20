@@ -131,6 +131,7 @@ export type StatusName =
   | "ok"
   | "failed"
   | "waiting"
+  | "cancelled"
   | "paused"
   | "idle";
 
@@ -142,6 +143,7 @@ const STATUS_MAP: Record<
   ok: { color: "var(--green)" },
   failed: { color: "var(--red)" },
   waiting: { color: "var(--amber)", pulse: true },
+  cancelled: { color: "var(--text-3)" },
   paused: { color: "var(--blue)" },
   idle: { color: "var(--text-3)" },
 };

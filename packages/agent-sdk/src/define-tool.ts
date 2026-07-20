@@ -24,12 +24,13 @@
  */
 
 import type { z } from "zod";
-import type { ToolContext, ToolDescriptor, ToolResult } from "./types";
+import type { ToolContext, ToolDescriptor, ToolFactoryMetadata, ToolResult } from "./types";
 
 export interface DefineToolInput<TOutput> {
   name: string;
   description?: string;
   output?: z.ZodType<TOutput>;
+  factory?: ToolFactoryMetadata;
   handler(ctx: ToolContext): Promise<ToolResult<TOutput>>;
 }
 
@@ -41,6 +42,7 @@ export function defineTool<TOutput>(
     name: input.name,
     description: input.description,
     output: input.output,
+    ...(input.factory ? { factory: input.factory } : {}),
     handler: input.handler,
   };
 }

@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import {
   agents,
   events,
@@ -36,7 +36,7 @@ export async function getTenantCounts(tenantSlug: string): Promise<TenantCounts>
       startedAt: runs.startedAt,
     })
     .from(runs)
-    .where(eq(runs.tenantId, tenantId))
+    .where(and(eq(runs.tenantId, tenantId), isNull(runs.deletedAt)))
     .all();
 
   let runningRuns = 0;
@@ -58,7 +58,7 @@ export async function getTenantCounts(tenantSlug: string): Promise<TenantCounts>
   const eventRows = db
     .select({ receivedAt: events.receivedAt })
     .from(events)
-    .where(eq(events.tenantId, tenantId))
+    .where(and(eq(events.tenantId, tenantId), isNull(events.deletedAt)))
     .all();
   const events24h = eventRows.filter(
     (e) => e.receivedAt && e.receivedAt >= since,
@@ -67,7 +67,13 @@ export async function getTenantCounts(tenantSlug: string): Promise<TenantCounts>
   const taskRows = db
     .select({ id: tasks.id })
     .from(tasks)
-    .where(and(eq(tasks.tenantId, tenantId), eq(tasks.status, "open")))
+    .where(
+      and(
+        eq(tasks.tenantId, tenantId),
+        inArray(tasks.status, ["open", "resolving"]),
+        isNull(tasks.deletedAt),
+      ),
+    )
     .all();
 
   return {

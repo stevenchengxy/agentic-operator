@@ -6,6 +6,15 @@ export type {
   ToolDescriptor,
   PromptDescriptor,
   TenantRegistry,
+  TenantInboundEvent,
+  TenantOutboundEvent,
+  TenantEventAdapter,
+  TenantReasoningConfigLike,
+  ToolFactoryMetadata,
+  ToolFactoryFieldSchema,
+  ToolFactoryCapability,
+  ToolFactoryProfileScope,
+  TenantRegistryFactoryMetadata,
 } from "./types";
 export type {
   MemoryHandle,

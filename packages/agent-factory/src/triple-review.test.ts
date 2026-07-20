@@ -3,8 +3,8 @@ import { FACTORY_TOOLS } from "./tools";
 import type { BrainCtx } from "./brain-types";
 
 // #REVIEW — the generation-time triple-lens review: review_context (透镜②, does each agent read+fit
-// its context) + review_completeness (透镜③, metacognition — did we think of everything). Both have a
-// deterministic tier that works WITHOUT a gateway; these tests exercise that tier.
+// its context) + review_completeness (透镜③, metacognition — did we think of everything). Their
+// deterministic findings still work without a gateway, while the missing semantic verdict blocks.
 
 const reviewContext = FACTORY_TOOLS.find((t) => t.name === "review_context")!;
 const reviewCompleteness = FACTORY_TOOLS.find((t) => t.name === "review_completeness")!;
@@ -25,10 +25,11 @@ const mk = (specs: unknown[], ont: unknown = ONT): BrainCtx =>
 const spec = (p: Record<string, unknown>) => ({ tools: [], systemPrompt: "做这件事。", trigger: [], emit: [], ...p });
 
 describe("review_context (透镜② · deterministic tier)", () => {
-  it("passes when every agent's trigger/emit events exist in the ontology", async () => {
+  it("keeps deterministic findings empty but reports unknown without the LLM judge", async () => {
     const ctx = mk([spec({ actionName: "CreateJD", nameZh: "建JD", trigger: ["JD_REQUESTED"], emit: ["JD_CREATED"], tools: ["x"] })]);
     const r = await reviewContext.execute({}, ctx);
-    expect(r.ok).toBe(true);
+    expect(r.ok).toBe(false);
+    expect(r.output).toMatchObject({ verdict: "unknown", blocking: true });
     expect((r.output as { judge: string[] }).judge).toEqual([]);
   });
 
@@ -58,12 +59,13 @@ describe("review_completeness (透镜③ · metacognition deterministic tier)", 
     expect((r.output as { deterministic: string[] }).deterministic.some((g) => g.includes("未分流"))).toBe(true);
   });
 
-  it("passes when all actions covered + multi-branch has a condition step", async () => {
+  it("does not claim completeness passed when the metacognitive judge never ran", async () => {
     const ctx = mk([
       spec({ actionName: "CreateJD", nameZh: "建JD", trigger: ["JD_REQUESTED"], emit: ["JD_CREATED"], tools: ["x"] }),
       spec({ actionName: "MatchResume", nameZh: "匹配", trigger: ["RESUME_PROCESSED"], emit: ["MATCH_PASSED", "MATCH_FAILED"], tools: ["m"], plan: [{ stepId: "gate", kind: "condition", condition: "lastResult.score > 50" }] }),
     ]);
     const r = await reviewCompleteness.execute({}, ctx);
-    expect(r.ok).toBe(true);
+    expect(r.ok).toBe(false);
+    expect(r.output).toMatchObject({ verdict: "unknown", blocking: true });
   });
 });

@@ -5,13 +5,23 @@
  *   - Token counts come from response.usageMetadata.
  */
 
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import {
+  GoogleGenerativeAI,
+  SchemaType,
+  type Content,
+  type FunctionDeclarationSchema,
+  type Part,
+  type Tool,
+} from "@google/generative-ai";
+import { randomUUID } from "node:crypto";
 import {
   flattenContentToText,
+  type ChatContentBlock,
   type ChatMessage,
   type ChatRequest,
   type ChatResponse,
   type ProviderAdapter,
+  type ToolCall,
 } from "../types";
 import { LLMError, classifyHttpError } from "../errors";
 
@@ -22,20 +32,79 @@ export interface GeminiAdapterConfig {
   defaultModel?: string;
 }
 
+function encodeToolName(name: string): string {
+  return name.replace(/\./g, "__");
+}
+
+function decodeToolName(name: string): string {
+  return name.replace(/__/g, ".");
+}
+
+function parseToolResult(content: string, isError: boolean | undefined): object {
+  try {
+    const value = JSON.parse(content) as unknown;
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      return isError ? { error: value } : value;
+    }
+    return isError ? { error: value } : { result: value };
+  } catch {
+    return isError ? { error: content } : { result: content };
+  }
+}
+
+function mapGeminiParts(
+  role: ChatMessage["role"],
+  blocks: ChatContentBlock[],
+  toolNames: Map<string, string>,
+): Part[] {
+  const parts: Part[] = [];
+  for (const block of blocks) {
+    if (block.type === "text") parts.push({ text: block.text });
+    else if (block.type === "tool_use" && role === "assistant") {
+      toolNames.set(block.id, block.name);
+      parts.push({
+        functionCall: {
+          name: encodeToolName(block.name),
+          args: block.input,
+        },
+      });
+    } else if (block.type === "tool_result" && role === "tool") {
+      const name = toolNames.get(block.tool_use_id);
+      if (!name) {
+        throw new LLMError(
+          `Gemini tool_result references unknown id '${block.tool_use_id}'`,
+          "bad_request",
+          "gemini",
+        );
+      }
+      parts.push({
+        functionResponse: {
+          name: encodeToolName(name),
+          response: parseToolResult(block.content, block.is_error),
+        },
+      });
+    }
+  }
+  return parts;
+}
+
 function partitionForGemini(messages: ChatMessage[]): {
   systemInstruction: string | undefined;
-  contents: { role: "user" | "model"; parts: { text: string }[] }[];
+  contents: Content[];
 } {
   const systemParts: string[] = [];
-  const contents: { role: "user" | "model"; parts: { text: string }[] }[] = [];
+  const contents: Content[] = [];
+  const toolNames = new Map<string, string>();
   for (const m of messages) {
-    const flat = flattenContentToText(m.content);
     if (m.role === "system") {
-      systemParts.push(flat);
+      systemParts.push(flattenContentToText(m.content));
     } else {
       contents.push({
         role: m.role === "assistant" ? "model" : "user",
-        parts: [{ text: flat }],
+        parts:
+          typeof m.content === "string"
+            ? [{ text: m.content }]
+            : mapGeminiParts(m.role, m.content, toolNames),
       });
     }
   }
@@ -43,6 +112,53 @@ function partitionForGemini(messages: ChatMessage[]): {
     systemInstruction: systemParts.length > 0 ? systemParts.join("\n\n") : undefined,
     contents,
   };
+}
+
+function schemaType(value: unknown): SchemaType {
+  switch (String(value ?? "object").toLowerCase()) {
+    case "string": return SchemaType.STRING;
+    case "number": return SchemaType.NUMBER;
+    case "integer": return SchemaType.INTEGER;
+    case "boolean": return SchemaType.BOOLEAN;
+    case "array": return SchemaType.ARRAY;
+    default: return SchemaType.OBJECT;
+  }
+}
+
+function toGeminiSchema(value: unknown): FunctionDeclarationSchema {
+  const source = value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+  const propertiesSource = source.properties && typeof source.properties === "object" && !Array.isArray(source.properties)
+    ? (source.properties as Record<string, unknown>)
+    : {};
+  const properties: FunctionDeclarationSchema["properties"] = {};
+  for (const [key, child] of Object.entries(propertiesSource)) {
+    const c = child && typeof child === "object" && !Array.isArray(child)
+      ? (child as Record<string, unknown>)
+      : {};
+    properties[key] = {
+      type: schemaType(c.type),
+      ...(typeof c.description === "string" ? { description: c.description } : {}),
+      ...(Array.isArray(c.enum) ? { enum: c.enum.map(String) } : {}),
+    };
+  }
+  return {
+    type: SchemaType.OBJECT,
+    properties,
+    ...(Array.isArray(source.required) ? { required: source.required.map(String) } : {}),
+  };
+}
+
+function mapTools(tools: ChatRequest["tools"]): Tool[] | undefined {
+  if (!tools || tools.length === 0) return undefined;
+  return [{
+    functionDeclarations: tools.map((tool) => ({
+      name: encodeToolName(tool.name),
+      description: tool.description,
+      parameters: toGeminiSchema(tool.input_schema),
+    })),
+  }];
 }
 
 function mapFinishReason(r: string | undefined): ChatResponse["finishReason"] {
@@ -102,10 +218,22 @@ export function createGeminiAdapter(config: GeminiAdapterConfig): ProviderAdapte
             stopSequences: req.stop,
             responseMimeType: req.jsonMode ? "application/json" : undefined,
           },
+          tools: mapTools(req.tools),
         });
-        const result = await m.generateContent({ contents });
+        const result = await m.generateContent({ contents }, { signal: req.signal });
         const response = result.response;
-        const text = response.text();
+        const responseParts = response.candidates?.[0]?.content?.parts ?? [];
+        const text = responseParts
+          .filter((part): part is Extract<Part, { text: string }> => typeof part.text === "string")
+          .map((part) => part.text)
+          .join("");
+        const toolCalls: ToolCall[] = responseParts
+          .filter((part): part is Extract<Part, { functionCall: object }> => !!part.functionCall)
+          .map((part) => ({
+            id: `gemini_${randomUUID()}`,
+            name: decodeToolName(part.functionCall.name),
+            input: part.functionCall.args as Record<string, unknown>,
+          }));
         const usage = response.usageMetadata;
         const finishReason = response.candidates?.[0]?.finishReason as string | undefined;
 
@@ -117,6 +245,7 @@ export function createGeminiAdapter(config: GeminiAdapterConfig): ProviderAdapte
           tokensOut: usage?.candidatesTokenCount ?? null,
           finishReason: mapFinishReason(finishReason),
           latencyMs: Date.now() - start,
+          toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
           raw: response,
         };
       } catch (err) {

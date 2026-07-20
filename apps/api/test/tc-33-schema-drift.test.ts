@@ -4,11 +4,13 @@
  * Catches the "silent drop" class of bug (Audit #3 §3.1, the original
  * motivation for TC-7) **without hand-listing the fields**. The hardcoded
  * slot list in TC-7 case 4 is easy to forget when adding a new field to
- * `AgentSchema`; this test introspects `AgentSchema.shape` so any new key
- * is automatically covered.
+ * `AgentSchema`; this test introspects the generated JSON Schema properties so
+ * any new key is automatically covered. `AgentSchema` now includes preprocess
+ * and cross-field refinements, so reaching through it for a ZodObject `.shape`
+ * would couple the test to an implementation detail that no longer exists.
  *
  * Cases:
- *   1. Every key declared in `AgentSchema.shape` survives a round-trip on
+ *   1. Every declared agent property survives a round-trip on
  *      the RAAS-v1 fixture (or is a documented normalization).
  *   2. Every raw-JSON key on every agent in the RAAS-v1 fixture appears
  *      in the parsed result (modulo documented normalizations + `.passthrough()`).
@@ -21,7 +23,6 @@ import path from "node:path";
 import { readFile } from "node:fs/promises";
 import { describe, it, expect } from "vitest";
 import {
-  AgentSchema,
   WorkflowManifestSchema,
   buildWorkflowJsonSchema,
   serializeWorkflowSchema,
@@ -57,15 +58,26 @@ const EMPTY_STRING_NORMALIZED: ReadonlySet<string> = new Set([
  */
 const TOOL_USE_NORMALIZED = "tool_use";
 
+function declaredAgentKeys(): string[] {
+  const schema = buildWorkflowJsonSchema() as {
+    items?: { properties?: Record<string, unknown> };
+  };
+  const properties = schema.items?.properties;
+  if (!properties) {
+    throw new Error("generated workflow JSON Schema has no agent properties");
+  }
+  return Object.keys(properties);
+}
+
 describe("TC-33: schema-drift regression net", () => {
-  it("introspects AgentSchema.shape and round-trips every declared key", async () => {
+  it("introspects the canonical JSON Schema and round-trips every declared key", async () => {
     const raw = JSON.parse(await readFile(RAAS_WORKFLOW, "utf8")) as Array<
       Record<string, unknown>
     >;
     const manifest = WorkflowManifestSchema.parse(raw);
     expect(manifest.length).toBe(raw.length);
 
-    const declaredKeys = Object.keys(AgentSchema.shape);
+    const declaredKeys = declaredAgentKeys();
     expect(declaredKeys.length).toBeGreaterThan(0);
 
     for (let i = 0; i < raw.length; i++) {

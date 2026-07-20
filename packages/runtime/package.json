@@ -12,6 +12,7 @@
     "./register": "./src/register.ts"
   },
   "scripts": {
+    "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "rotate-logs": "tsx src/log-rotate.ts",
     "gen:schema": "tsx src/generate-workflow-schema.ts",
@@ -32,6 +33,7 @@
   },
   "devDependencies": {
     "tsx": "^4.22.0",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3",
+    "vitest": "^3.0.5"
   }
 }

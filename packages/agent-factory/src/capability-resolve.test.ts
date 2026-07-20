@@ -17,7 +17,7 @@ function ont(): DomainOntology {
     rules: [],
     actions: [
       { id: "1", name: "processResume", actor: ["Agent"], trigger: ["RESUME_DOWNLOADED"], triggered_event: ["RESUME_PROCESSED"], target_objects: [], tool_use: ["parseResumeApi"], system_prompt: "", user_prompt: "", description: "解析简历并锁定归属" },
-      { id: "2", name: "syncVendorFeed", actor: ["Agent"], trigger: ["FEED_READY"], triggered_event: ["FEED_SYNCED"], target_objects: [], tool_use: [], system_prompt: "", user_prompt: "", description: "调用第三方 API 同步至供应商系统" },
+      { id: "2", name: "syncVendorFeed", actor: ["Agent"], trigger: ["FEED_READY"], triggered_event: ["FEED_SYNCED"], target_objects: [], tool_use: [], system_prompt: "", user_prompt: "", description: "调用第三方 API 同步至供应商系统", integration: { systems: [{ name: "vendor-feed", kind: "external_api", role: "call", capability: "/api/v1/syncVendorFeed" }] } },
       { id: "3", name: "humanReview", actor: ["Human"], trigger: [], triggered_event: [], target_objects: [], tool_use: [], system_prompt: "", user_prompt: "" },
     ] as DomainOntology["actions"],
     events: [],
@@ -67,12 +67,18 @@ describe("capability_resolve — G1 能力解析门", () => {
     expect(events.some((e) => e.t === "reflect" && (e as { kind?: string }).kind === "capability")).toBe(true);
   });
 
-  it("新造判据：无声明工具且描述带 API 味道 → agent+先补tool", async () => {
+  it("新造判据来自结构化执行声明，不从描述关键词猜工具", async () => {
     const { ctx } = mkCtx({ fleet: { list: async () => [] } });
     const r = await resolve.execute({}, ctx);
-    const rows = (r.output as { rows: Array<{ action: string; makeForm?: string }> }).rows;
-    expect(rows.find((x) => x.action === "syncVendorFeed")!.makeForm).toBe("agent+先补tool");
-    expect(rows.find((x) => x.action === "processResume")!.makeForm).toBeUndefined; // 命中舰队时无 makeForm —— 此 fleet 为空则为 "agent"
+    let rows = (r.output as { rows: Array<{ action: string; makeForm?: string }> }).rows;
+    expect(rows.find((x) => x.action === "syncVendorFeed")!.makeForm).toBe("agent+待绑定执行面");
+    expect(rows.find((x) => x.action === "processResume")!.makeForm).toBe("agent+tool");
+
+    const sync = ctx.ontology!.actions.find((action) => action.name === "syncVendorFeed")!;
+    delete sync.integration;
+    const proseOnly = await resolve.execute({}, ctx);
+    rows = (proseOnly.output as { rows: Array<{ action: string; makeForm?: string }> }).rows;
+    expect(rows.find((x) => x.action === "syncVendorFeed")!.makeForm).toBe("agent");
   });
 
   it("技能面：CJK 双字重合命中（动作描述 ↔ 技能名/用途）", async () => {

@@ -117,20 +117,11 @@ export const TenantCreateBody = z
       })
       .optional(),
     /**
-     * Starter content. `empty` writes only the tenant row + budget + audit.
-     * `hello` seeds a "HELLO_WORLD" event type so the dashboard isn't blank.
-     * `copy-from:<slug>` clones the manifest from an existing tenant (P5-TEN-02).
+     * New domains are deliberately empty. Deploy or import a validated live
+     * manifest after creation; the API never invents sample runtime data or
+     * claims that a partial metadata clone is executable.
      */
-    starter: z
-      .union([
-        z.literal("empty"),
-        z.literal("hello"),
-        z
-          .string()
-          .regex(/^copy-from:[a-z][a-z0-9-]{1,31}$/, "expected copy-from:<slug>"),
-      ])
-      .optional()
-      .default("hello"),
+    starter: z.literal("empty").optional().default("empty"),
     /** Issue a fresh bootstrap API token in the response. Default true. */
     mintToken: z.boolean().optional().default(true),
   })
@@ -198,13 +189,7 @@ export const TenantCreateResponse = z.object({
       scopes: z.array(z.string()),
     })
     .nullable(),
-  starter: z
-    .object({
-      kind: z.enum(["empty", "hello", "copy-from"]),
-      seededEventTypes: z.number(),
-      sourceSlug: z.string().optional(),
-    })
-    .nullable(),
+  starter: z.null(),
 });
 export type TenantCreateResponse = z.infer<typeof TenantCreateResponse>;
 

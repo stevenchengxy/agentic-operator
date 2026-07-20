@@ -10,10 +10,14 @@ import { QueryClient } from "@tanstack/react-query";
 import {
   dispatch,
   AGENT_KEYS,
+  AUDIT_KEYS,
   COUNT_KEYS,
+  DEPLOYMENT_KEYS,
   EVENT_KEYS,
   RUN_KEYS,
   TASK_KEYS,
+  USAGE_KEYS,
+  streamPathWithCursor,
 } from "./useStream";
 
 function makeClient() {
@@ -52,6 +56,7 @@ describe("dispatch — SSE events → query cache invalidations", () => {
     expect(keys).toContainEqual(RUN_KEYS.all);
     expect(keys).toContainEqual(COUNT_KEYS.tenant);
     expect(keys).toContainEqual(RUN_KEYS.detail("run-001"));
+    expect(keys).toContainEqual(USAGE_KEYS.all);
   });
 
   it("run.step.completed invalidates the run detail + list", () => {
@@ -153,6 +158,67 @@ describe("dispatch — SSE events → query cache invalidations", () => {
     expect(keys).toContainEqual(RUN_KEYS.detail("run-002"));
     expect(keys).toContainEqual(RUN_KEYS.all);
     expect(keys).toContainEqual(COUNT_KEYS.tenant);
+    expect(keys).toContainEqual(USAGE_KEYS.all);
+  });
+
+  it("deployment.created refreshes deployments, agents, and canonical counts", () => {
+    const { client, spy } = makeClient();
+    dispatch(
+      {
+        type: "deployment.created",
+        tenantId: "t1",
+        at: 7,
+        deploymentId: "dep-1",
+        kind: "manifest",
+        version: "1",
+        workflowSlug: "default",
+      },
+      client,
+    );
+    const keys = invalidatedKeys(spy as never);
+    expect(keys).toContainEqual(DEPLOYMENT_KEYS.list);
+    expect(keys).toContainEqual(AGENT_KEYS.all);
+    expect(keys).toContainEqual(COUNT_KEYS.tenant);
+  });
+
+  it("observability variants refresh their durable read models", () => {
+    const { client, spy } = makeClient();
+    dispatch(
+      {
+        type: "audit.recorded",
+        tenantId: "t1",
+        at: 7,
+        auditId: "audit-1",
+        action: "run.cancel",
+        actorUserId: "user-1",
+        targetType: "run",
+        targetId: "run-1",
+        decision: "allow",
+      },
+      client,
+    );
+    dispatch(
+      {
+        type: "llm.call.completed",
+        tenantId: "t1",
+        at: 8,
+        callId: "llm-1",
+        purpose: "agent-step",
+        provider: "openai",
+        requestedModel: "gpt-4.1-mini",
+        servedModel: "gpt-4.1-mini",
+        tokensIn: 100,
+        tokensOut: 20,
+        latencyMs: 90,
+        fallback: false,
+        ok: true,
+        failureReason: null,
+      },
+      client,
+    );
+    const keys = invalidatedKeys(spy as never);
+    expect(keys).toContainEqual(AUDIT_KEYS.all);
+    expect(keys).toContainEqual(USAGE_KEYS.all);
   });
 
   it("AGENT_KEYS export is available for invalidation by mutations", () => {
@@ -163,5 +229,24 @@ describe("dispatch — SSE events → query cache invalidations", () => {
       "detail",
       "match-resume",
     ]);
+  });
+});
+
+describe("streamPathWithCursor", () => {
+  it("preserves existing proxy parameters and URL-encodes the durable cursor", () => {
+    expect(
+      streamPathWithCursor(
+        "/livefeed?tenant=raas&backfill=1000",
+        "llm:call-123",
+      ),
+    ).toBe(
+      "/livefeed?tenant=raas&backfill=1000&lastEventId=llm%3Acall-123",
+    );
+  });
+
+  it("does not mutate paths before the first event arrives", () => {
+    expect(streamPathWithCursor("/livefeed?tenant=raas", "")).toBe(
+      "/livefeed?tenant=raas",
+    );
   });
 });

@@ -11,29 +11,18 @@ import type { Language } from "@/lib/i18n/types";
 
 export type Theme = "system" | "light" | "dark";
 export type Density = "compact" | "default" | "comfortable";
-export type DataSource = "json" | "neo4j";
-
 export interface Preferences {
   theme: Theme;
   language: Language;
   density: Density;
-  liveStream: boolean;
-  showDebug: boolean;
-  tenant: string;
   accent: string;
-  /** Latent — the data source is always the real API now. */
-  dataSource: DataSource;
 }
 
 export const DEFAULT_PREFERENCES: Preferences = {
   theme: "system",
   language: "en",
   density: "default",
-  liveStream: true,
-  showDebug: false,
-  tenant: "raas",
   accent: "#d0ff00",
-  dataSource: "json",
 };
 
 export const ACCENT_DIMS: Record<string, string> = {
@@ -240,7 +229,6 @@ export function resolveTheme(theme: Theme, prefersDark: boolean): "light" | "dar
 const THEMES: readonly Theme[] = ["system", "light", "dark"];
 const LANGUAGES: readonly Language[] = ["en", "zh"];
 const DENSITIES: readonly Density[] = ["compact", "default", "comfortable"];
-const DATA_SOURCES: readonly DataSource[] = ["json", "neo4j"];
 
 function oneOf<T extends string>(
   value: unknown,
@@ -261,20 +249,7 @@ export function normalizePreferences(raw: unknown): Preferences {
     theme: oneOf(r.theme, THEMES, DEFAULT_PREFERENCES.theme),
     language: oneOf(r.language, LANGUAGES, DEFAULT_PREFERENCES.language),
     density: oneOf(r.density, DENSITIES, DEFAULT_PREFERENCES.density),
-    liveStream:
-      typeof r.liveStream === "boolean"
-        ? r.liveStream
-        : DEFAULT_PREFERENCES.liveStream,
-    showDebug:
-      typeof r.showDebug === "boolean"
-        ? r.showDebug
-        : DEFAULT_PREFERENCES.showDebug,
-    tenant:
-      typeof r.tenant === "string" && r.tenant.length > 0
-        ? r.tenant
-        : DEFAULT_PREFERENCES.tenant,
     accent:
       typeof r.accent === "string" ? r.accent : DEFAULT_PREFERENCES.accent,
-    dataSource: oneOf(r.dataSource, DATA_SOURCES, DEFAULT_PREFERENCES.dataSource),
   };
 }

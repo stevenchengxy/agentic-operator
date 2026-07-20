@@ -115,6 +115,42 @@ describe("runGeneratedModuleProcess — child-process isolation", () => {
     }
   }, 20000);
 
+  it("rejects a non-allowlisted dependency instead of injecting a fake module", async () => {
+    const code = `const fs = require("node:fs"); export function probe() { return typeof fs.readFileSync; }`;
+    const r = await runGeneratedModuleProcess(code, {
+      entryName: "probe",
+      call: true,
+      timeoutMs: 12_000,
+    });
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/not allowlisted/i);
+  }, 20_000);
+
+  it("fails when an explicitly allowlisted dependency cannot be loaded", async () => {
+    const missing = "__agentic_dependency_that_does_not_exist__";
+    const code = `const dep = require(${JSON.stringify(missing)}); export function probe() { return !!dep; }`;
+    const r = await runGeneratedModuleProcess(code, {
+      entryName: "probe",
+      call: true,
+      allowlist: [missing],
+      timeoutMs: 12_000,
+    });
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/Cannot find module|cannot be found/i);
+  }, 20_000);
+
+  it("reports an unserializable return value as failure", async () => {
+    const code = `export function circular() { const out = {}; out.self = out; return out; }`;
+    const r = await runGeneratedModuleProcess(code, {
+      entryName: "circular",
+      call: true,
+      timeoutMs: 12_000,
+    });
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/not JSON-serializable/i);
+    expect(r.result).toBeUndefined();
+  }, 20_000);
+
   it("SIGKILLs a synchronous infinite loop at the wall-clock deadline (cannot hang the host)", async () => {
     const code = `export function boom() { while (true) { /* spin */ } }`;
     const t0 = Date.now();

@@ -10,6 +10,7 @@
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import type { UseQueryResult } from "@tanstack/react-query";
+import { readApiData } from "@/lib/api-response";
 import { tenantHeader } from "./tenant-header";
 
 export interface ToolFieldSchema {
@@ -80,25 +81,12 @@ export interface SaveToolBody {
   shared?: boolean;
 }
 
-interface ApiOk<T> {
-  ok: true;
-  data: T;
-}
-interface ApiErr {
-  ok: false;
-  error: { code: string; message: string };
-}
-
 async function callV1<T>(path: string): Promise<T> {
   const res = await fetch(path, {
     credentials: "same-origin",
     headers: { Accept: "application/json", ...tenantHeader() },
   });
-  const body = (await res.json()) as ApiOk<T> | ApiErr;
-  if (!body.ok) {
-    throw new Error(`${path}: ${body.error.code} — ${body.error.message}`);
-  }
-  return body.data;
+  return readApiData<T>(res, path);
 }
 
 async function sendV1<T>(path: string, method: "POST" | "DELETE", payload?: unknown): Promise<T> {
@@ -108,9 +96,7 @@ async function sendV1<T>(path: string, method: "POST" | "DELETE", payload?: unkn
     headers: { Accept: "application/json", ...(payload !== undefined ? { "Content-Type": "application/json" } : {}), ...tenantHeader() },
     body: payload !== undefined ? JSON.stringify(payload) : undefined,
   });
-  const body = (await res.json()) as ApiOk<T> | ApiErr;
-  if (!body.ok) throw new Error(body.error.message || body.error.code);
-  return body.data;
+  return readApiData<T>(res, path);
 }
 
 export function useTools(): UseQueryResult<ToolCatalogPayload> {

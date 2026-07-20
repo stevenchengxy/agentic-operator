@@ -2,9 +2,10 @@
  * Shared LLM provider catalog — single source of truth for both frontend
  * (Settings → Models page) and backend (LLM gateway).
  *
- * The catalog enumerates the 14 providers the platform supports:
- *   - 13 real providers (with adapter implementations in @agentic/llm-gateway)
- *   - 1 mock provider (always available, used for tests/dev)
+ * The catalog enumerates provider presets understood by configuration and UI. `installed` means a
+ * real adapter ships in @agentic/llm-gateway; it does not mean credentials are configured. Bedrock
+ * and Vertex remain discoverable roadmap presets but are unavailable until real signed adapters
+ * ship. The deterministic mock is test-only and is never advertised as installed in a real UI.
  *
  * UI-specific fields (color, docs URL, keyPrefix for masked display) coexist
  * with backend-relevant fields (endpoint, header). The gateway reads only what
@@ -79,7 +80,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     keyPrefix: "AIza",
     header: "x-goog-api-key",
     docs: "https://aistudio.google.com/app/apikey",
-    installed: false,
+    installed: true,
     color: "#4285f4",
   },
   {
@@ -89,7 +90,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     keyPrefix: "",
     header: "Authorization: Bearer",
     docs: "https://console.mistral.ai/api-keys/",
-    installed: false,
+    installed: true,
     color: "#ff7000",
   },
   {
@@ -99,7 +100,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     keyPrefix: "gsk_",
     header: "Authorization: Bearer",
     docs: "https://console.groq.com/keys",
-    installed: false,
+    installed: true,
     color: "#f55036",
   },
   {
@@ -109,7 +110,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     keyPrefix: "",
     header: "Authorization: Bearer",
     docs: "https://api.together.ai/settings/api-keys",
-    installed: false,
+    installed: true,
     color: "#0f6fff",
   },
   {
@@ -139,7 +140,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     keyPrefix: "",
     header: "api-key",
     docs: "https://learn.microsoft.com/azure/ai-services/openai/",
-    installed: false,
+    installed: true,
     color: "#0078d4",
   },
   {
@@ -149,7 +150,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     keyPrefix: "sk-",
     header: "Authorization: Bearer",
     docs: "https://platform.deepseek.com/api_keys",
-    installed: false,
+    installed: true,
     color: "#4d6bfe",
   },
   {
@@ -159,7 +160,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     keyPrefix: "sk-",
     header: "Authorization: Bearer",
     docs: "https://dashscope.console.aliyun.com/apiKey",
-    installed: false,
+    installed: true,
     color: "#615ced",
   },
   {
@@ -169,7 +170,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     keyPrefix: "",
     header: "Authorization: Bearer",
     docs: null,
-    installed: false,
+    installed: true,
     color: "#6f7178",
   },
   {
@@ -179,7 +180,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     keyPrefix: "",
     header: "(no auth)",
     docs: null,
-    installed: true,
+    installed: false,
     color: "#9aa0a6",
   },
 ];
@@ -211,7 +212,16 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderId, CatalogModel[]> = {
   openai: [
     { name: "gpt-4.1",      ctx: 1_000_000, out: 32_000,  inP: 5,   outP: 20,  vision: true,  tools: true,  reasoning: false },
     { name: "gpt-4.1-mini", ctx: 128_000,   out: 16_384,  inP: 0.4, outP: 1.6, vision: true,  tools: true,  reasoning: false, added: true },
+    // gpt-5.6 series (sol > terra > luna by strength/price; `-pro` = extended-reasoning variant at the
+    // same token price). Ordered after the pinned default (gpt-4.1-mini) so defaultModelFor is unchanged.
+    { name: "gpt-5.6-sol",       ctx: 400_000, out: 128_000, inP: 5,   outP: 30, vision: true,  tools: true,  reasoning: true, added: true },
+    { name: "gpt-5.6-sol-pro",   ctx: 400_000, out: 128_000, inP: 5,   outP: 30, vision: true,  tools: true,  reasoning: true, added: true },
+    { name: "gpt-5.6-terra",     ctx: 400_000, out: 128_000, inP: 2.5, outP: 15, vision: true,  tools: true,  reasoning: true, added: true },
+    { name: "gpt-5.6-terra-pro", ctx: 400_000, out: 128_000, inP: 2.5, outP: 15, vision: true,  tools: true,  reasoning: true, added: true },
+    { name: "gpt-5.6-luna",      ctx: 400_000, out: 128_000, inP: 1,   outP: 6,  vision: true,  tools: true,  reasoning: true, added: true },
+    { name: "gpt-5.6-luna-pro",  ctx: 400_000, out: 128_000, inP: 1,   outP: 6,  vision: true,  tools: true,  reasoning: true, added: true },
     { name: "gpt-4o",       ctx: 128_000,   out: 16_384,  inP: 2.5, outP: 10,  vision: true,  tools: true,  reasoning: false },
+    { name: "gpt-4o-mini",  ctx: 128_000,   out: 16_384,  inP: 0.15, outP: 0.6, vision: true, tools: true,  reasoning: false },
     { name: "o1-pro",       ctx: 200_000,   out: 100_000, inP: 150, outP: 600, vision: false, tools: false, reasoning: true  },
   ],
   openrouter: [
@@ -219,6 +229,12 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderId, CatalogModel[]> = {
     { name: "anthropic/claude-haiku-4-5",    ctx: 200_000,   out: 8192,   inP: 0.8,   outP: 4,    vision: true,  tools: true,  reasoning: false },
     { name: "openai/gpt-4.1",                ctx: 1_000_000, out: 32_000, inP: 5,     outP: 20,   vision: true,  tools: true,  reasoning: false },
     { name: "openai/gpt-4.1-mini",           ctx: 128_000,   out: 16_384, inP: 0.4,   outP: 1.6,  vision: true,  tools: true,  reasoning: false },
+    { name: "openai/gpt-5.6-sol",            ctx: 400_000,   out: 128_000, inP: 5,    outP: 30,   vision: true,  tools: true,  reasoning: true,  added: true },
+    { name: "openai/gpt-5.6-sol-pro",        ctx: 400_000,   out: 128_000, inP: 5,    outP: 30,   vision: true,  tools: true,  reasoning: true,  added: true },
+    { name: "openai/gpt-5.6-terra",          ctx: 400_000,   out: 128_000, inP: 2.5,  outP: 15,   vision: true,  tools: true,  reasoning: true,  added: true },
+    { name: "openai/gpt-5.6-terra-pro",      ctx: 400_000,   out: 128_000, inP: 2.5,  outP: 15,   vision: true,  tools: true,  reasoning: true,  added: true },
+    { name: "openai/gpt-5.6-luna",           ctx: 400_000,   out: 128_000, inP: 1,    outP: 6,    vision: true,  tools: true,  reasoning: true,  added: true },
+    { name: "openai/gpt-5.6-luna-pro",       ctx: 400_000,   out: 128_000, inP: 1,    outP: 6,    vision: true,  tools: true,  reasoning: true,  added: true },
     { name: "openai/gpt-oss-120b",           ctx: 128_000,   out: 16_384, inP: 0.15,  outP: 0.6,  vision: false, tools: true,  reasoning: false },
     { name: "google/gemini-2.5-flash",       ctx: 1_000_000, out: 8192,   inP: 0.075, outP: 0.3,  vision: true,  tools: true,  reasoning: false },
     { name: "google/gemini-3-flash-preview", ctx: 1_000_000, out: 8192,   inP: 0.1,   outP: 0.4,  vision: true,  tools: true,  reasoning: false },

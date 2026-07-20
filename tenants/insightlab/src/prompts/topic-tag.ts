@@ -13,7 +13,6 @@ export const tagArticle: PromptDescriptor = definePrompt({
   name: "tagArticle",
   description:
     "Classify an article along the InsightLab taxonomy and extract named entities.",
-  model: "anthropic/claude-haiku-4-5",
   system: [
     "You are topicTagAgent. Your job is to read one article and emit a single",
     "structured JSON object describing its topic and entities.",

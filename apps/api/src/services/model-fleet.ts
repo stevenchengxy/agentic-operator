@@ -8,12 +8,24 @@
  * flat JSON file is the right granularity — no migration overhead, easy to
  * inspect, atomic write per change.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { PROVIDER_IDS, type ProviderId } from "@agentic/contracts";
 import { makeId } from "@agentic/shared";
 
 export type FleetRole = "primary" | "fallback" | "shadow";
+export type ModelAvailability = "provider_confirmed" | "unverified";
 const FLEET_ROLES: readonly FleetRole[] = ["primary", "fallback", "shadow"];
 
 export interface ModelFleetEntry {
@@ -28,6 +40,11 @@ export interface ModelFleetEntry {
   dailyCapUsd: number;
   maxOutTokens: number;
   temperature: number;
+  /** provider_confirmed means the exact id appeared in a live upstream
+   * listing at add time. Unsupported providers remain explicitly unverified. */
+  availability: ModelAvailability;
+  availabilityCheckedAt: number | null;
+  availabilityMessage: string | null;
   addedAt: number;
   addedBy: string | null;
 }
@@ -45,31 +62,66 @@ function defaultPath(): string {
   return join(process.cwd(), "data", "model-fleet.json");
 }
 
-const FLEET_PATH = defaultPath();
-let cache: FleetFile | null = null;
+let cache: { path: string; file: FleetFile } | null = null;
 
 function load(): FleetFile {
-  if (cache) return cache;
-  if (!existsSync(FLEET_PATH)) {
-    cache = { entries: [] };
-    return cache;
+  const fleetPath = defaultPath();
+  if (cache?.path === fleetPath) return cache.file;
+  if (!existsSync(fleetPath)) {
+    const file = { entries: [] };
+    cache = { path: fleetPath, file };
+    return file;
   }
   try {
-    const parsed = JSON.parse(readFileSync(FLEET_PATH, "utf8")) as FleetFile;
+    const parsed = JSON.parse(readFileSync(fleetPath, "utf8")) as FleetFile;
     if (!Array.isArray(parsed.entries)) throw new Error("malformed fleet file");
-    cache = parsed;
-    return parsed;
+    const normalized: FleetFile = {
+      entries: parsed.entries.map((entry) => ({
+        ...entry,
+        availability:
+          entry.availability === "provider_confirmed"
+            ? "provider_confirmed"
+            : "unverified",
+        availabilityCheckedAt:
+          typeof entry.availabilityCheckedAt === "number"
+            ? entry.availabilityCheckedAt
+            : null,
+        availabilityMessage:
+          typeof entry.availabilityMessage === "string"
+            ? entry.availabilityMessage
+            : "Legacy entry was not provider-confirmed",
+      })),
+    };
+    cache = { path: fleetPath, file: normalized };
+    return normalized;
   } catch (err) {
     throw new Error(
-      `model-fleet file at ${FLEET_PATH} is unreadable: ${(err as Error).message}`,
+      `model-fleet file at ${fleetPath} is unreadable: ${(err as Error).message}`,
     );
   }
 }
 
 function persist(file: FleetFile): void {
-  mkdirSync(dirname(FLEET_PATH), { recursive: true });
-  writeFileSync(FLEET_PATH, JSON.stringify(file, null, 2), { mode: 0o600 });
-  cache = file;
+  const fleetPath = defaultPath();
+  mkdirSync(dirname(fleetPath), { recursive: true });
+  const temp = `${fleetPath}.${process.pid}.${randomUUID()}.tmp`;
+  let fd: number | undefined;
+  try {
+    fd = openSync(temp, "wx", 0o600);
+    writeFileSync(fd, JSON.stringify(file, null, 2), "utf8");
+    fsyncSync(fd);
+    closeSync(fd);
+    fd = undefined;
+    renameSync(temp, fleetPath);
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+    try {
+      unlinkSync(temp);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
+  cache = { path: fleetPath, file };
 }
 
 function isProviderId(s: string): s is ProviderId {
@@ -96,6 +148,9 @@ export interface AddFleetInput {
   maxOutTokens?: number;
   temperature?: number;
   addedBy?: string | null;
+  availability?: ModelAvailability;
+  availabilityCheckedAt?: number | null;
+  availabilityMessage?: string | null;
 }
 
 export class FleetValidationError extends Error {
@@ -109,7 +164,10 @@ export function addFleetEntry(input: AddFleetInput): ModelFleetEntry {
   if (!isProviderId(input.provider)) {
     throw new FleetValidationError(`unknown provider: ${input.provider}`);
   }
-  const modelName = (input.modelName ?? "").trim();
+  if (typeof input.modelName !== "string") {
+    throw new FleetValidationError("modelName must be a string");
+  }
+  const modelName = input.modelName.trim();
   if (!modelName) {
     throw new FleetValidationError("modelName is required");
   }
@@ -119,15 +177,23 @@ export function addFleetEntry(input: AddFleetInput): ModelFleetEntry {
   // The picker shows live results; rejecting them at add-time was a
   // permanent footgun. The catalog now serves UI metadata only; bad
   // modelNames surface at invocation time when the upstream returns 404.
-  const role: FleetRole = isFleetRole(input.role) ? input.role : "primary";
+  if (input.role !== undefined && !isFleetRole(input.role)) {
+    throw new FleetValidationError(`invalid role: ${String(input.role)}`);
+  }
+  if (input.alias !== undefined && typeof input.alias !== "string") {
+    throw new FleetValidationError("alias must be a string");
+  }
+  const role: FleetRole = input.role ?? "primary";
   const alias = (input.alias ?? "").trim() || modelName;
-  const dailyCapUsd = Number.isFinite(input.dailyCapUsd) ? Math.max(0, Number(input.dailyCapUsd)) : 30;
-  const maxOutTokens = Number.isInteger(input.maxOutTokens) && input.maxOutTokens! > 0
-    ? input.maxOutTokens!
-    : 2048;
-  const temperature = Number.isFinite(input.temperature)
-    ? Math.min(2, Math.max(0, Number(input.temperature)))
-    : 0.2;
+  const dailyCapUsd = input.dailyCapUsd === undefined
+    ? 30
+    : requireFiniteRange("dailyCapUsd", input.dailyCapUsd, 0, Number.MAX_SAFE_INTEGER);
+  const maxOutTokens = input.maxOutTokens === undefined
+    ? 2048
+    : requirePositiveInteger("maxOutTokens", input.maxOutTokens);
+  const temperature = input.temperature === undefined
+    ? 0.2
+    : requireFiniteRange("temperature", input.temperature, 0, 2);
 
   const file = load();
   // Duplicate guard: same tenant + provider + modelName means it's already in
@@ -160,6 +226,15 @@ export function addFleetEntry(input: AddFleetInput): ModelFleetEntry {
     dailyCapUsd,
     maxOutTokens,
     temperature,
+    availability:
+      input.availability === "provider_confirmed"
+        ? "provider_confirmed"
+        : "unverified",
+    availabilityCheckedAt:
+      input.availability === "provider_confirmed"
+        ? (input.availabilityCheckedAt ?? Date.now())
+        : null,
+    availabilityMessage: input.availabilityMessage ?? null,
     addedAt: Date.now(),
     addedBy: input.addedBy ?? null,
   };
@@ -175,11 +250,61 @@ export interface UpdateFleetInput {
   temperature?: number;
 }
 
+function requireFiniteRange(
+  name: string,
+  value: unknown,
+  min: number,
+  max: number,
+): number {
+  if (
+    typeof value !== "number" ||
+    !Number.isFinite(value) ||
+    value < min ||
+    value > max
+  ) {
+    throw new FleetValidationError(
+      `${name} must be a finite number between ${min} and ${max}`,
+    );
+  }
+  return value;
+}
+
+function requirePositiveInteger(name: string, value: unknown): number {
+  if (
+    typeof value !== "number" ||
+    !Number.isSafeInteger(value) ||
+    value <= 0
+  ) {
+    throw new FleetValidationError(`${name} must be a positive integer`);
+  }
+  return value;
+}
+
 export function updateFleetEntry(
   tenantSlug: string,
   id: string,
   patch: UpdateFleetInput,
 ): ModelFleetEntry | null {
+  if (!patch || typeof patch !== "object" || Array.isArray(patch)) {
+    throw new FleetValidationError("update body must be an object");
+  }
+  const allowed = new Set([
+    "alias",
+    "role",
+    "dailyCapUsd",
+    "maxOutTokens",
+    "temperature",
+  ]);
+  const keys = Object.keys(patch as Record<string, unknown>);
+  const unknown = keys.filter((key) => !allowed.has(key));
+  if (unknown.length > 0) {
+    throw new FleetValidationError(
+      `unknown fleet update field(s): ${unknown.join(", ")}`,
+    );
+  }
+  if (keys.length === 0) {
+    throw new FleetValidationError("at least one fleet field is required");
+  }
   const file = load();
   const idx = file.entries.findIndex(
     (e) => e.id === id && e.tenantSlug === tenantSlug,
@@ -187,7 +312,10 @@ export function updateFleetEntry(
   if (idx < 0) return null;
   const cur = file.entries[idx]!;
   const next: ModelFleetEntry = { ...cur };
-  if (typeof patch.alias === "string") {
+  if (patch.alias !== undefined) {
+    if (typeof patch.alias !== "string") {
+      throw new FleetValidationError("alias must be a string");
+    }
     const alias = patch.alias.trim() || cur.modelName;
     const dup = file.entries.find(
       (e) => e.id !== cur.id && e.tenantSlug === tenantSlug && e.alias === alias,
@@ -203,14 +331,27 @@ export function updateFleetEntry(
     }
     next.role = patch.role;
   }
-  if (patch.dailyCapUsd !== undefined && Number.isFinite(patch.dailyCapUsd)) {
-    next.dailyCapUsd = Math.max(0, patch.dailyCapUsd);
+  if (patch.dailyCapUsd !== undefined) {
+    next.dailyCapUsd = requireFiniteRange(
+      "dailyCapUsd",
+      patch.dailyCapUsd,
+      0,
+      Number.MAX_SAFE_INTEGER,
+    );
   }
-  if (patch.maxOutTokens !== undefined && Number.isInteger(patch.maxOutTokens) && patch.maxOutTokens > 0) {
-    next.maxOutTokens = patch.maxOutTokens;
+  if (patch.maxOutTokens !== undefined) {
+    next.maxOutTokens = requirePositiveInteger(
+      "maxOutTokens",
+      patch.maxOutTokens,
+    );
   }
-  if (patch.temperature !== undefined && Number.isFinite(patch.temperature)) {
-    next.temperature = Math.min(2, Math.max(0, patch.temperature));
+  if (patch.temperature !== undefined) {
+    next.temperature = requireFiniteRange(
+      "temperature",
+      patch.temperature,
+      0,
+      2,
+    );
   }
   const entries = [...file.entries];
   entries[idx] = next;

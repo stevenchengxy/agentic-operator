@@ -1,0 +1,99 @@
+name: factory-regression-export
+run-name: factory-regression-export/${{ inputs.consumer_run_id || github.run_id }}/${{ inputs.consumer_run_attempt || github.run_attempt }}/${{ inputs.request_nonce || format('standalone-{0}-{1}', github.run_id, github.run_attempt) }}
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      consumer_workflow:
+        description: "Exact CI/release workflow consuming this signed snapshot"
+        required: false
+        type: string
+      consumer_run_id:
+        description: "Exact consumer GitHub run id"
+        required: false
+        type: string
+      consumer_run_attempt:
+        description: "Exact consumer GitHub run attempt"
+        required: false
+        type: string
+      request_nonce:
+        description: "Fresh consumer-generated correlation nonce"
+        required: false
+        type: string
+
+concurrency:
+  group: factory-regression-export-${{ github.sha }}-${{ inputs.request_nonce || github.run_id }}
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: "26"
+  PNPM_VERSION: "11.3.0"
+
+jobs:
+  export:
+    name: Export signed live Factory regression inventory
+    # This runner label is intentional: a GitHub-hosted runner cannot and must
+    # not pretend it can see the live SQLite/data volume.
+    runs-on: [self-hosted, agentic-production-evidence]
+    environment: production
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Require mounted production evidence sources
+        shell: bash
+        env:
+          DATA_ROOT: ${{ vars.AGENTIC_FACTORY_PRODUCTION_DATA_ROOT }}
+          DATABASE_URL: ${{ vars.AGENTIC_FACTORY_PRODUCTION_DATABASE_URL }}
+          SIGNING_KEY: ${{ secrets.FACTORY_REGRESSION_EXPORT_SIGNING_KEY }}
+        run: |
+          if [ -z "$DATA_ROOT" ] || [ -z "$DATABASE_URL" ] || [ -z "$SIGNING_KEY" ]; then
+            echo "::error::The production evidence runner is missing its data-root, SQLite URL, or signing key configuration."
+            exit 1
+          fi
+          if [ ! -d "$DATA_ROOT" ]; then
+            echo "::error::The mounted production Agentic data root is unavailable."
+            exit 1
+          fi
+
+      - name: Export live inventory and immutable replay evidence
+        env:
+          AGENTIC_DATA_ROOT: ${{ vars.AGENTIC_FACTORY_PRODUCTION_DATA_ROOT }}
+          DATABASE_URL: ${{ vars.AGENTIC_FACTORY_PRODUCTION_DATABASE_URL }}
+          AGENTIC_DATABASE_READONLY: "1"
+          FACTORY_REGRESSION_EXPORT_SIGNING_KEY: ${{ secrets.FACTORY_REGRESSION_EXPORT_SIGNING_KEY }}
+          FACTORY_REGRESSION_EXPORT_TTL_SECONDS: "21600"
+          FACTORY_REGRESSION_EXPORT_CONSUMER_WORKFLOW: ${{ inputs.consumer_workflow || '.github/workflows/factory-regression-export.yml' }}
+          FACTORY_REGRESSION_EXPORT_CONSUMER_RUN_ID: ${{ inputs.consumer_run_id || github.run_id }}
+          FACTORY_REGRESSION_EXPORT_CONSUMER_RUN_ATTEMPT: ${{ inputs.consumer_run_attempt || github.run_attempt }}
+          FACTORY_REGRESSION_EXPORT_REQUEST_NONCE: ${{ inputs.request_nonce || format('standalone-{0}-{1}', github.run_id, github.run_attempt) }}
+        run: >-
+          pnpm --filter @agentic/api export:factory-regressions --
+          --data-root "${AGENTIC_DATA_ROOT}"
+          --output "${RUNNER_TEMP}/agent-factory-promoted-regressions"
+
+      - name: Upload signed private evidence bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-factory-promoted-regressions-${{ github.sha }}
+          path: ${{ runner.temp }}/agent-factory-promoted-regressions
+          if-no-files-found: error
+          include-hidden-files: false
+          retention-days: 1

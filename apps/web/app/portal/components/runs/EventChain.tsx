@@ -23,7 +23,7 @@ const STATUS_TO_DOT: Record<string, StatusName> = {
   waiting: "waiting",
   ok: "ok",
   failed: "failed",
-  cancelled: "paused",
+  cancelled: "cancelled",
   paused: "paused",
   idle: "idle",
 };
@@ -37,10 +37,13 @@ function tone(status: string): string {
 
 export function EventChain({ run, tenant }: { run: RunListRow; tenant: string }) {
   const { t } = useI18n();
-  const { data, isLoading } = useRunChain(run.id);
+  const { data, isLoading, isError, error } = useRunChain(run.id);
   const chain = data?.runs ?? [];
 
   if (isLoading) return <Empty title={t("runDetail.chainLoading")} hint={run.id} />;
+  if (isError) {
+    return <Empty title={t("runDetail.chainLoadFailed")} hint={error.message} />;
+  }
   if (chain.length <= 1) {
     return (
       <Empty

@@ -1,0 +1,13 @@
+# Explicit ingress overlay. The standalone stack publishes no ports without
+# this file. Keep the bind on loopback and terminate trusted TLS in an existing
+# host/VPN reverse proxy; never expose container port 3560 directly.
+
+services:
+  sandbox-runner:
+    ports:
+      - name: sandbox-control-loopback
+        target: 3560
+        published: "${EXTERNAL_SANDBOX_CONTROL_LOOPBACK_PORT:-3560}"
+        host_ip: "${EXTERNAL_SANDBOX_CONTROL_BIND_ADDRESS:-127.0.0.1}"
+        protocol: tcp
+

@@ -3,7 +3,7 @@
  *
  * Exercises every route in `apps/api/src/routes/v1/tenants.ts`:
  *
- *   POST   /v1/tenants                — create with starter='hello' + token
+ *   POST   /v1/tenants                — create an empty tenant + token
  *   POST   /v1/tenants                — duplicate slug → 409
  *   GET    /v1/tenants                — list excludes archived by default
  *   GET    /v1/tenants/:slug          — detail with budgets + counts
@@ -26,7 +26,6 @@ import {
   getDb,
   tenantBudgets,
   tenants,
-  eventTypes,
 } from "@agentic/db";
 import { buildTestEnv, type TestEnv } from "./harness";
 
@@ -51,7 +50,6 @@ describe("TC-50: tenant CRUD", () => {
     if (row) {
       db.delete(apiTokens).where(eq(apiTokens.tenantId, row.id)).run();
       db.delete(tenantBudgets).where(eq(tenantBudgets.tenantId, row.id)).run();
-      db.delete(eventTypes).where(eq(eventTypes.tenantId, row.id)).run();
       db.delete(auditLog).where(eq(auditLog.tenantId, row.id)).run();
       db.delete(tenants).where(eq(tenants.id, row.id)).run();
     }
@@ -66,7 +64,7 @@ describe("TC-50: tenant CRUD", () => {
         name: "Crud Test Tenant",
         subtitle: "tc-50",
         color: "#5deeff",
-        starter: "hello",
+        starter: "empty",
         mintToken: true,
         budget: { monthlyTokenCap: 1000, monthlyUsdCap: 250 },
       }),
@@ -80,8 +78,7 @@ describe("TC-50: tenant CRUD", () => {
     expect(body.data.tenant.archivedAt).toBeNull();
     expect(body.data.token).not.toBeNull();
     expect(body.data.token.plaintext).toMatch(/^agentic_/);
-    expect(body.data.starter.kind).toBe("hello");
-    expect(body.data.starter.seededEventTypes).toBe(2);
+    expect(body.data.starter).toBeNull();
 
     // Verify the DB rows landed.
     const db = getDb();
@@ -100,16 +97,6 @@ describe("TC-50: tenant CRUD", () => {
       .all()[0];
     expect(budget).toBeDefined();
     expect(budget!.monthlyTokenCap).toBe(1000);
-
-    const seededEvents = db
-      .select()
-      .from(eventTypes)
-      .where(eq(eventTypes.tenantId, row!.id))
-      .all();
-    expect(seededEvents.map((e) => e.name).sort()).toEqual([
-      "HELLO_WORLD",
-      "TENANT_BOOTSTRAPPED",
-    ]);
 
     const audits = db
       .select()
@@ -139,6 +126,22 @@ describe("TC-50: tenant CRUD", () => {
     const body = await res.json();
     expect(body.ok).toBe(false);
     expect(body.error.code).toBe("slug_taken");
+  });
+
+  it("POST /v1/tenants — rejects removed sample starters", async () => {
+    const res = await env.fetch("/v1/tenants", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        slug: `${SLUG}-sample`,
+        name: "No Sample Runtime",
+        starter: "hello",
+        mintToken: false,
+      }),
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error.code).toBe("invalid_input");
   });
 
   it("POST /v1/tenants — reserved slug → 400 reserved_slug", async () => {

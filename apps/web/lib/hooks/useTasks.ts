@@ -9,16 +9,8 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import type { UseQueryResult } from "@tanstack/react-query";
 import { TASK_KEYS, COUNT_KEYS } from "./useStream";
+import { readApiData } from "@/lib/api-response";
 import { tenantHeader } from "./tenant-header";
-
-interface ApiOk<T> {
-  ok: true;
-  data: T;
-}
-interface ApiErr {
-  ok: false;
-  error: { code: string; message: string };
-}
 
 async function callV1<T>(path: string, init: RequestInit = {}): Promise<T> {
   const { headers: initHeaders, ...rest } = init;
@@ -31,11 +23,7 @@ async function callV1<T>(path: string, init: RequestInit = {}): Promise<T> {
       ...(initHeaders as Record<string, string> | undefined),
     },
   });
-  const body = (await res.json()) as ApiOk<T> | ApiErr;
-  if (!body.ok) {
-    throw new Error(`${path}: ${body.error.code} — ${body.error.message}`);
-  }
-  return body.data;
+  return readApiData<T>(res, path);
 }
 
 export interface TaskRow {
@@ -72,19 +60,24 @@ export function useTask(id: string | null | undefined): UseQueryResult<TaskRow> 
 export function useResolveTask() {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: (vars: {
+    mutationFn: async (vars: {
       id: string;
       decision: "approve" | "reject";
       payload?: unknown;
-    }) =>
-      callV1<{ task_id: string; decision: string }>(
+    }) => {
+      const result = await callV1<{ task_id?: unknown; decision?: unknown }>(
         `/v1/tasks/${encodeURIComponent(vars.id)}/resolve`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ decision: vars.decision, payload: vars.payload }),
         },
-      ),
+      );
+      if (result.task_id !== vars.id || result.decision !== vars.decision) {
+        throw new Error("Task resolution response did not confirm the requested decision");
+      }
+      return { task_id: result.task_id, decision: result.decision };
+    },
     onSettled: (_data, _err, vars) => {
       void client.invalidateQueries({ queryKey: TASK_KEYS.all });
       void client.invalidateQueries({ queryKey: TASK_KEYS.detail(vars.id) });

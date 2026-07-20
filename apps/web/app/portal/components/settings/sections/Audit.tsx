@@ -8,11 +8,10 @@
  * `meta` which often contains `before`/`after` blobs — those are rendered
  * as a compact JSON diff in an expanded panel.
  *
- * Falls back to `SETTINGS_AUDIT_FALLBACK` only when the API call fails so
- * the section still renders in dev / disconnected.
+ * API failures remain visible and retryable; no local fixture is substituted.
  */
 
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import {
   Badge,
   Button,
@@ -24,8 +23,8 @@ import {
   Th,
 } from "@/app/portal/components";
 import { fmtAgo } from "@/lib/format";
-import { SETTINGS_AUDIT_FALLBACK } from "@/app/portal/components/settings/data";
 import { useI18n } from "@/app/portal/lib/preferences-context";
+import { useAuditPages, type AuditRow as AuditApiRow } from "@/lib/hooks/useAudit";
 
 /**
  * Shape returned by `GET /v1/audit`. `at` is unix-ms.
@@ -34,35 +33,13 @@ import { useI18n } from "@/app/portal/lib/preferences-context";
  * `before` / `after` keys when present (e.g. `settings.update`,
  * `deploy.rollback`).
  */
-export interface AuditApiRow {
-  id: string;
-  tenantId: string;
-  actorUserId: string | null;
-  action: string;
-  targetType: string | null;
-  targetId: string | null;
-  at: number;
-  meta: Record<string, unknown> | null;
-}
-
-interface AuditApiResponse {
-  items: AuditApiRow[];
-  nextCursor: string | null;
-  count: number;
-}
-
-/**
- * Internal row shape used by the table. Normalises both the live API
- * response and the static `SETTINGS_AUDIT_FALLBACK` shape so the renderer
- * only has one type to think about.
- */
+/** Internal row shape used by the table. */
 interface AuditRow {
   id: string;
   at: number;
   actor: string;
   action: string;
   target: string;
-  ip: string;
   before: Record<string, unknown> | null;
   after: Record<string, unknown> | null;
 }
@@ -83,25 +60,8 @@ function normalizeApiRow(r: AuditApiRow): AuditRow {
     actor: r.actorUserId ?? "system",
     action: r.action,
     target,
-    ip: "—",
     before,
     after,
-  };
-}
-
-function normalizeFallbackRow(
-  r: (typeof SETTINGS_AUDIT_FALLBACK)[number],
-  i: number,
-): AuditRow {
-  return {
-    id: `local-${i}`,
-    at: r.at,
-    actor: r.actor,
-    action: r.action,
-    target: r.target,
-    ip: r.ip,
-    before: null,
-    after: null,
   };
 }
 
@@ -121,71 +81,17 @@ function isRecord(x: unknown): x is Record<string, unknown> {
 
 export function AuditSection() {
   const { t } = useI18n();
-  const [rows, setRows] = useState<AuditRow[]>(() =>
-    SETTINGS_AUDIT_FALLBACK.map(normalizeFallbackRow),
-  );
+  const audit = useAuditPages({ limit: 100 });
   const [q, setQ] = useState("");
   const [filter, setFilter] = useState<
     "all" | "deploy" | "key" | "member" | "agent"
   >("all");
-  const [nextCursor, setNextCursor] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [usingApi, setUsingApi] = useState(false);
   const [expanded, setExpanded] = useState<string | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
-    async function load() {
-      setLoading(true);
-      try {
-        const res = await fetch("/v1/audit?limit=100", {
-          credentials: "same-origin",
-          headers: { Accept: "application/json" },
-        });
-        if (!res.ok) return;
-        const json = (await res.json()) as
-          | { ok: true; data: AuditApiResponse }
-          | { ok: false };
-        if (cancelled) return;
-        if (!json.ok) return;
-        if (Array.isArray(json.data.items) && json.data.items.length > 0) {
-          setRows(json.data.items.map(normalizeApiRow));
-          setNextCursor(json.data.nextCursor);
-          setUsingApi(true);
-        }
-      } catch {
-        // keep fallback
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    }
-    void load();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  async function loadMore() {
-    if (!nextCursor) return;
-    setLoading(true);
-    try {
-      const res = await fetch(
-        `/v1/audit?limit=100&cursor=${encodeURIComponent(nextCursor)}`,
-        { credentials: "same-origin", headers: { Accept: "application/json" } },
-      );
-      if (!res.ok) return;
-      const json = (await res.json()) as
-        | { ok: true; data: AuditApiResponse }
-        | { ok: false };
-      if (!json.ok) return;
-      setRows((prev) => [...prev, ...json.data.items.map(normalizeApiRow)]);
-      setNextCursor(json.data.nextCursor);
-    } catch {
-      // swallow — next "Load more" attempt will retry
-    } finally {
-      setLoading(false);
-    }
-  }
+  const rows = useMemo(
+    () => (audit.data?.pages ?? []).flatMap((page) => page.items).map(normalizeApiRow),
+    [audit.data],
+  );
 
   const filtered = useMemo(() => {
     return rows.filter((r) => {
@@ -205,17 +111,8 @@ export function AuditSection() {
   return (
     <Panel
       title={t("auditSection.panelTitle", { count: filtered.length })}
-      subtitle={
-        usingApi
-          ? t("auditSection.subtitleLive")
-          : t("auditSection.subtitleReadOnly")
-      }
+      subtitle={t("auditSection.subtitleLive")}
       padded={false}
-      action={
-        <Button small icon="upload" tone="ghost">
-          {t("auditSection.exportCsv")}
-        </Button>
-      }
     >
       <div
         style={{
@@ -243,7 +140,19 @@ export function AuditSection() {
           {t("auditSection.filterMembers")}
         </FilterChip>
       </div>
-      {filtered.length === 0 ? (
+      {audit.isError && rows.length === 0 ? (
+        <div role="alert" style={{ padding: 18, color: "var(--red)", fontSize: 12.5 }}>
+          <div>{t("auditSection.loadFailed")}</div>
+          <div className="mono" style={{ marginTop: 6, color: "var(--text-3)", fontSize: 11 }}>
+            {audit.error instanceof Error ? audit.error.message : String(audit.error)}
+          </div>
+          <Button small icon="replay" tone="ghost" onClick={() => void audit.refetch()} style={{ marginTop: 10 }}>
+            {t("auditSection.retry")}
+          </Button>
+        </div>
+      ) : audit.isLoading && rows.length === 0 ? (
+        <Empty title={t("auditSection.loading")} />
+      ) : filtered.length === 0 ? (
         <Empty title={t("auditSection.emptyTitle")} />
       ) : (
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
@@ -312,7 +221,7 @@ export function AuditSection() {
           </tbody>
         </table>
       )}
-      {usingApi && nextCursor && (
+      {audit.hasNextPage && (
         <div
           style={{
             padding: "10px 14px",
@@ -321,8 +230,13 @@ export function AuditSection() {
             justifyContent: "center",
           }}
         >
-          <Button small icon="logs" onClick={loadMore} disabled={loading}>
-            {loading ? t("auditSection.loading") : t("auditSection.loadOlder")}
+          <Button
+            small
+            icon="logs"
+            onClick={() => void audit.fetchNextPage()}
+            disabled={audit.isFetchingNextPage}
+          >
+            {audit.isFetchingNextPage ? t("auditSection.loading") : t("auditSection.loadOlder")}
           </Button>
         </div>
       )}
@@ -477,4 +391,3 @@ function toCompactJson(v: unknown): string {
     return "[unrenderable]";
   }
 }
-

@@ -26,7 +26,6 @@ import { and, eq, like } from "drizzle-orm";
 import {
   apiTokens,
   auditLog,
-  eventTypes,
   getDb,
   tenantBudgets,
   tenants,
@@ -68,7 +67,7 @@ describe("TC-52: cross-tenant isolation", () => {
         body: JSON.stringify({
           slug: SLUG_B,
           name: "Isolation B",
-          starter: "hello",
+          starter: "empty",
           mintToken: false,
         }),
       })
@@ -88,7 +87,6 @@ describe("TC-52: cross-tenant isolation", () => {
     for (const row of rows) {
       db.delete(apiTokens).where(eq(apiTokens.tenantId, row.id)).run();
       db.delete(tenantBudgets).where(eq(tenantBudgets.tenantId, row.id)).run();
-      db.delete(eventTypes).where(eq(eventTypes.tenantId, row.id)).run();
       db.delete(auditLog).where(eq(auditLog.tenantId, row.id)).run();
       db.delete(tenants).where(eq(tenants.id, row.id)).run();
     }
@@ -179,23 +177,4 @@ describe("TC-52: cross-tenant isolation", () => {
     expect(b!.archivedAt).toBeNull();
   });
 
-  it("starter='hello' seeded event types on B only", async () => {
-    const db = getDb();
-    const aEvents = db
-      .select()
-      .from(eventTypes)
-      .where(eq(eventTypes.tenantId, tenantAId))
-      .all();
-    const bEvents = db
-      .select()
-      .from(eventTypes)
-      .where(eq(eventTypes.tenantId, tenantBId))
-      .all();
-    expect(aEvents.length).toBe(0);
-    expect(bEvents.length).toBe(2);
-    expect(bEvents.map((e) => e.name).sort()).toEqual([
-      "HELLO_WORLD",
-      "TENANT_BOOTSTRAPPED",
-    ]);
-  });
 });

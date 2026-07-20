@@ -31,6 +31,9 @@ data
 **/agentic.db-wal
 **/test-logs
 **/test-artifacts
+# Manifest import crash-recovery staging is colocated with models for atomic
+# rename, but is runtime state rather than a seed manifest.
+models/.imports
 
 # Local env (`.env` carries secrets; provide via docker run -e or compose env_file)
 .env
@@ -38,6 +41,12 @@ data
 !.env.example
 !.env.production.example
 **/.env.local
+
+# Runtime secrets are bind-mounted from the host. They must never enter a
+# Docker build context, even when every Dockerfile currently COPYs only an
+# explicit source allowlist: the build daemon is outside that trust boundary.
+.secrets
+.secrets/**
 
 # Editor / OS / git
 .git

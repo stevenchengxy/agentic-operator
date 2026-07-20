@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { designSelfCheck, internalDesignRefine, innerLoopEnabled, isSideEffectfulTool, type DesignDraft } from "./design-loop";
+import { designSelfCheck, internalDesignRefine, innerLoopEnabled, isReviewedToolExecutionPolicy, requiresAttemptGrantPolicy, type DesignDraft } from "./design-loop";
 
 // design 内部循环（架构书 §5 内推演）：确定性自检把外层最常打回的点前移到设计当下；命中硬问题
 // 跑一次内部精修，失败/无改进兜底原稿。全程零真实 LLM（refine 注入假实现）。
@@ -34,12 +34,12 @@ describe("designSelfCheck — 确定性自检", () => {
     expect(r.issues.some((i) => i.code === "ungrounded_event" && i.hard)).toBe(true);
   });
 
-  it("decision_logic 太薄 / 无工具 → 软问题（不触发精修）", () => {
+  it("decision_logic 太薄是软问题；零工具纯逻辑不是问题", () => {
     // 单个短事件名，logic 覆盖它但整体 <40 字 → 触发 shallow，且不触发 branch_uncovered。
     const r = designSelfCheck({ ...base, emitEvents: ["DONE"], decisionLogic: "完成后 emit DONE", toolCount: 0 });
     expect(r.hardCount).toBe(0);
     expect(r.issues.some((i) => i.code === "shallow_logic" && !i.hard)).toBe(true);
-    expect(r.issues.some((i) => i.code === "no_tool" && !i.hard)).toBe(true);
+    expect(r.issues.some((i) => i.code === "no_tool")).toBe(false);
   });
 
   // #SAGA ⑥ — 副作用工具却没声明补偿事件 → 软警告；声明了/纯读 agent → 无警告。
@@ -54,16 +54,17 @@ describe("designSelfCheck — 确定性自检", () => {
   });
 });
 
-describe("isSideEffectfulTool (#SAGA 判定)", () => {
-  it("发送/发布/写外部 → true；只读/内部 → false", () => {
-    expect(isSideEffectfulTool("send_email")).toBe(true);
-    expect(isSideEffectfulTool("inviteCandidateApi")).toBe(true);
-    expect(isSideEffectfulTool("http.fetch")).toBe(true);
-    expect(isSideEffectfulTool("fs.writeHtmlToArchive")).toBe(true);
-    expect(isSideEffectfulTool("fs.readFromInbox")).toBe(false);
-    expect(isSideEffectfulTool("ontology.fetchActionRules")).toBe(false);
-    expect(isSideEffectfulTool("meta.ping")).toBe(false);
-    expect(isSideEffectfulTool("parseResumeApi")).toBe(false); // 解析是读语义
+describe("reviewed tool execution policy (#SAGA 判定)", () => {
+  it("只把完整、合法的 policy 作为权限元数据", () => {
+    const write = { operation: "write", effectScope: "external", sandboxPolicy: "requires_attempt_grant" };
+    const read = { operation: "read", effectScope: "external", sandboxPolicy: "live_external" };
+    expect(isReviewedToolExecutionPolicy(write)).toBe(true);
+    expect(isReviewedToolExecutionPolicy(read)).toBe(true);
+    expect(requiresAttemptGrantPolicy(write)).toBe(true);
+    expect(requiresAttemptGrantPolicy(read)).toBe(false);
+    expect(isReviewedToolExecutionPolicy(undefined)).toBe(false);
+    expect(isReviewedToolExecutionPolicy("getCandidate")).toBe(false);
+    expect(isReviewedToolExecutionPolicy({ ...write, effectScope: "none" })).toBe(false);
   });
 });
 

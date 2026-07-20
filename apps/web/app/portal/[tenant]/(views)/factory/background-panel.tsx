@@ -5,7 +5,7 @@
  *
  * 主体是【当前会话】的任务分解（deriveSessionTasks）：Harness（ReAct 主循环）、每个
  * Agent 的构建（内部 plan/工具调用/沙箱 I/O/修订）、Sub-agent（固化的 + 运行时 spawn）、
- * Tool（造工具，未表态的直接在卡片上问「存入工具库？」）、Sandbox（每次部署）——每条
+ * Tool（造工具，真实入库后在卡片上问「保留还是删除？」）、Sandbox（每次部署）——每条
  * 可 View transcript 看专属过程与推理；Agent 条目可一键跳到右栏检查器。
  *
  * 其后是跨会话的后台：领域报告任务（实时阶段 + 产物下载 + Clear）与其它仍在运行、
@@ -17,29 +17,37 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button, HelpTip, Markdown } from "@/app/portal/components";
 import { tenantHeader } from "@/lib/hooks/tenant-header";
 import type { BrainEvent } from "@/lib/hooks/useBrainStream";
+import { FactoryRequestGate } from "@/lib/factory-request-gate";
 import { chip } from "./atoms";
+import { decodeFactoryResponse, factoryNetworkFailure, type FactoryApiResult } from "./factory-api";
 import type { RunRow } from "./model";
-import { deriveSessionTasks, deriveGeneratedTools, type SessionTask, type SessionTaskStatus } from "./workers";
+import { deriveSessionTasks, deriveGeneratedTools, deriveAcceptance, type SessionTask, type SessionTaskStatus } from "./workers";
 import { derivePhaseTimeline, type PhaseGroup } from "./phase-timeline";
 
-async function apiGet<T>(path: string): Promise<T | null> {
+function tenantHeaders(tenant: string): Record<string, string> {
+  return { ...tenantHeader(), "x-agentic-tenant": tenant };
+}
+
+function isViewedTenant(tenant: string): boolean {
+  return tenantHeader()["x-agentic-tenant"] === tenant;
+}
+
+async function apiGet<T>(tenant: string, path: string): Promise<FactoryApiResult<T>> {
   try {
-    const r = await fetch(path, { credentials: "same-origin", headers: { Accept: "application/json", ...tenantHeader() } });
-    const b = await r.json();
-    return b?.ok ? (b.data as T) : null;
-  } catch {
-    return null;
+    const r = await fetch(path, { credentials: "same-origin", headers: { Accept: "application/json", ...tenantHeaders(tenant) } });
+    return await decodeFactoryResponse<T>(r);
+  } catch (error) {
+    return factoryNetworkFailure(error);
   }
 }
-async function apiSend<T = unknown>(path: string, method: "POST" | "DELETE", body?: unknown): Promise<{ ok: boolean; data?: T; message?: string }> {
+async function apiSend<T = unknown>(tenant: string, path: string, method: "POST" | "DELETE", body?: unknown): Promise<FactoryApiResult<T>> {
   try {
-    const headers: Record<string, string> = { Accept: "application/json", ...tenantHeader() };
+    const headers: Record<string, string> = { Accept: "application/json", ...tenantHeaders(tenant) };
     if (body !== undefined) headers["Content-Type"] = "application/json";
     const r = await fetch(path, { method, credentials: "same-origin", headers, body: body !== undefined ? JSON.stringify(body) : undefined });
-    const b = await r.json();
-    return b?.ok ? { ok: true, data: b.data as T } : { ok: false, message: b?.error?.message };
+    return await decodeFactoryResponse<T>(r);
   } catch (e) {
-    return { ok: false, message: (e as Error).message };
+    return factoryNetworkFailure(e);
   }
 }
 
@@ -65,7 +73,11 @@ interface LibToolRow {
   description: string;
 }
 
+const EMPTY_BACKGROUND: { runs: BgRun[]; jobs: ReportJobRow[] } = { runs: [], jobs: [] };
+const EMPTY_LIB_TOOLS: LibToolRow[] = [];
+
 type FilterKey = "all" | "running" | "done" | "failed";
+type PanelReadSurface = "background" | "mailbox" | "tools";
 
 const STATUS_COLOR: Record<SessionTaskStatus, string> = {
   running: "var(--signal)",
@@ -101,7 +113,9 @@ const durOf = (a?: number, b?: number): string => {
 
 const ICON_OF_KIND: Record<string, string> = { think: "🧠", message: "💬", tool: "🔧", gate: "🙋", stage: "▶", event: "•", error: "✗" };
 
-function TaskTranscript({ task }: { task: SessionTask }) {
+/** Per-task 推理过程 timeline. Exported so the right-rail AgentInspector renders the SAME
+ *  per-agent stream (reasoning.step/strategy/tool/think attribution) instead of duplicating it. */
+export function TaskTranscript({ task }: { task: SessionTask }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
       {task.transcript.length === 0 && <div style={{ fontSize: 12, color: "var(--text-4)", padding: 12 }}>暂无过程记录</div>}
@@ -169,6 +183,16 @@ function AgentDrillIn({ task, taskBySlug, depth = 0, parts, flush }: { task: Ses
         <DrillCard icon="⚠️" title="发现的问题 · 修订" color="var(--amber)">
           {d.problems.map((p, i) => <div key={`p${i}`}>· {p}</div>)}
           {d.refineCritiques.slice(-3).map((c, i) => <div key={`c${i}`} style={{ color: "var(--text-4)" }}>↻ {c}</div>)}
+        </DrillCard>
+      )}
+      {/* #CHECKLIST — harness 持有的该 agent 验收清单：大脑无权删改，翻绿只能靠真实执行证据 */}
+      {show("problems") && d.checklist && d.checklist.length > 0 && (
+        <DrillCard icon="🧾" title={`验收清单（harness 持有 · 真实证据翻绿）${d.checklist.every((c) => c.pass) ? " ✓" : ""}`} color={d.checklist.every((c) => c.pass) ? "var(--green)" : "var(--amber)"}>
+          {d.checklist.map((c) => (
+            <div key={c.key} style={{ color: c.pass ? "var(--text-3)" : "var(--amber)" }}>
+              {c.pass ? "✓" : "✗"} {c.label}{c.detail ? ` — ${c.detail}` : ""}
+            </div>
+          ))}
         </DrillCard>
       )}
       {show("subs") && d.subAgents.length > 0 && (
@@ -358,7 +382,48 @@ function PhaseTimelineView({ events }: { events: BrainEvent[] }) {
   );
 }
 
+/** #CHECKLIST — 舰队级验收清单（harness 持有）：finish 每次尝试的快照。全绿=交付达标；
+ *  未过项直接点名（大脑无权改任何一项——翻绿只能靠注册/真跑/code_ran 回执/保真评分这类真实证据）。 */
+function AcceptanceChecklistView({ events }: { events: BrainEvent[] }) {
+  const snap = useMemo(() => deriveAcceptance(events), [events]);
+  const [open, setOpen] = useState(true);
+  if (!snap) return null;
+  const passed = snap.criteria.filter((c) => c.pass).length;
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 5, border: `1px solid ${snap.allPass ? "var(--green)" : "var(--border)"}`, borderRadius: 10, padding: "9px 10px", background: "var(--panel)" }}>
+      <button onClick={() => setOpen(!open)} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11, background: "none", border: "none", padding: 0, cursor: "pointer", color: "inherit", textAlign: "left" }}>
+        <span style={{ fontWeight: 700, color: snap.allPass ? "var(--green)" : "var(--text-2)" }}>
+          🧾 验收清单（harness 持有）{snap.allPass ? " · 全绿 ✓" : ` · ${passed}/${snap.criteria.length}`}
+        </span>
+        <span style={{ marginLeft: "auto", fontFamily: "var(--mono)", fontSize: 10, color: "var(--text-3)" }}>{open ? "▾" : "▸"} 真实证据翻绿 · 大脑无权删改</span>
+      </button>
+      {open && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 11 }}>
+          {snap.criteria.map((c) => (
+            <div key={c.key} style={{ display: "flex", gap: 6, alignItems: "baseline", color: c.pass ? "var(--text-3)" : "var(--amber)" }}>
+              <span style={{ fontFamily: "var(--mono)" }}>{c.pass ? "✓" : "✗"}</span>
+              <span>{c.label}</span>
+              <span style={{ fontSize: 10, color: "var(--text-4)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.detail}</span>
+            </div>
+          ))}
+          {snap.perAgent.length > 0 && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 3 }}>
+              {snap.perAgent.map((p) => (
+                <span key={p.slug} title={p.items.map((i) => `${i.pass ? "✓" : "✗"} ${i.label}`).join("\n")}
+                  style={{ fontFamily: "var(--mono)", fontSize: 10, padding: "1px 7px", borderRadius: 999, border: `1px solid ${p.pass ? "var(--green)" : "var(--amber)"}`, color: p.pass ? "var(--green)" : "var(--amber)" }}>
+                  {p.pass ? "✓" : "✗"} {p.short}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function BackgroundPanel({ tenant, domain, events, running, convId, viewingRunId, liveRunId, awaitingHint, onReconnectRun, onSelectAgent, onClose, inline }: BackgroundPanelProps) {
+  const [requestGate] = useState(() => new FactoryRequestGate());
   const sessionTasks = useMemo(() => deriveSessionTasks(events, running), [events, running]);
   // #UI-DRILL — slug→task 索引供子 agent 递归下钻（抽屉里的 Sub-agents 分区用）。
   const taskBySlug = useMemo(() => new Map(sessionTasks.filter((t) => t.agentSlug).map((t) => [t.agentSlug!, t])), [sessionTasks]);
@@ -367,24 +432,73 @@ export function BackgroundPanel({ tenant, domain, events, running, convId, viewi
   const openTask = useMemo(() => sessionTasks.find((t) => t.id === openTaskId) ?? null, [sessionTasks, openTaskId]);
   const [filter, setFilter] = useState<FilterKey>("all");
   const [note, setNote] = useState("");
-  const [pending, setPending] = useState(0);
-
-  const [bg, setBg] = useState<{ runs: BgRun[]; jobs: ReportJobRow[] }>({ runs: [], jobs: [] });
-  const refreshBg = useCallback(() => {
-    void apiGet<{ runs: BgRun[]; jobs: ReportJobRow[] }>("/v1/agent-factory/background").then((d) => d && setBg(d));
+  const [readErrors, setReadErrors] = useState<Partial<Record<PanelReadSurface, string>>>({});
+  const setReadError = useCallback((surface: PanelReadSurface, message?: string) => {
+    setReadErrors((previous) => {
+      if (message) return { ...previous, [surface]: message };
+      if (!(surface in previous)) return previous;
+      const next = { ...previous };
+      delete next[surface];
+      return next;
+    });
   }, []);
+  const [pendingSnapshot, setPendingSnapshot] = useState<{ tenant: string; domain: string; conversation: string; value: number } | null>(null);
+  const pending = pendingSnapshot?.tenant === tenant && pendingSnapshot.domain === domain && pendingSnapshot.conversation === convId
+    ? pendingSnapshot.value
+    : 0;
+
+  const [bgSnapshot, setBgSnapshot] = useState<{ tenant: string; value: { runs: BgRun[]; jobs: ReportJobRow[] } } | null>(null);
+  const bg = bgSnapshot?.tenant === tenant ? bgSnapshot.value : EMPTY_BACKGROUND;
+  const refreshBg = useCallback(() => {
+    const scope = { tenant };
+    const ticket = requestGate.begin("background", scope);
+    void apiGet<{ runs: BgRun[]; jobs: ReportJobRow[] }>(tenant, "/v1/agent-factory/background").then((result) => {
+      if (!requestGate.isCurrent(ticket, scope)) return;
+      if (!result.ok) {
+        setReadError("background", `后台任务读取失败：${result.message}`);
+        return;
+      }
+      if (!result.data || !Array.isArray(result.data.runs) || !Array.isArray(result.data.jobs)) {
+        setReadError("background", "后台任务读取失败：接口响应结构无效");
+        return;
+      }
+      setReadError("background");
+      setBgSnapshot({ tenant, value: result.data });
+    });
+  }, [requestGate, setReadError, tenant]);
   useEffect(() => {
     refreshBg();
     const t = setInterval(refreshBg, 5000);
     return () => clearInterval(t);
   }, [refreshBg]);
   useEffect(() => {
-    if (!convId) return setPending(0);
-    const tick = () => void apiGet<{ pending: number }>(`/v1/agent-factory/mailbox?conversation=${encodeURIComponent(convId)}`).then((d) => setPending(d?.pending ?? 0));
+    if (!convId) {
+      requestGate.invalidate("mailbox");
+      setPendingSnapshot(null);
+      setReadError("mailbox");
+      return;
+    }
+    const scope = { tenant, domain: `${domain}\u0000${convId}` };
+    const tick = () => {
+      const ticket = requestGate.begin("mailbox", scope);
+      void apiGet<{ pending: number }>(tenant, `/v1/agent-factory/mailbox?conversation=${encodeURIComponent(convId)}`).then((result) => {
+        if (!requestGate.isCurrent(ticket, scope)) return;
+        if (!result.ok) {
+          setReadError("mailbox", `介入队列读取失败：${result.message}`);
+          return;
+        }
+        if (!result.data || typeof result.data.pending !== "number") {
+          setReadError("mailbox", "介入队列读取失败：接口响应结构无效");
+          return;
+        }
+        setReadError("mailbox");
+        setPendingSnapshot({ tenant, domain, conversation: convId, value: result.data.pending });
+      });
+    };
     tick();
     const t = setInterval(tick, 6000);
     return () => clearInterval(t);
-  }, [convId]);
+  }, [convId, domain, requestGate, setReadError, tenant]);
   useEffect(() => {
     if (inline || !onClose) return;
     const h = (e: KeyboardEvent) => e.key === "Escape" && onClose();
@@ -392,10 +506,13 @@ export function BackgroundPanel({ tenant, domain, events, running, convId, viewi
     return () => window.removeEventListener("keydown", h);
   }, [onClose, inline]);
 
-  // ── 「存入工具库？」ask-user 闭环（内联在 Tool 任务卡上）──
-  const keptKey = `ao:factory:keptTools:${tenant}`;
+  // ── 已真实入库工具的「保留还是删除？」确认闭环（内联在 Tool 任务卡上）──
+  const keptKey = `ao:factory:keptTools:${tenant}:${domain}`;
   const [kept, setKept] = useState<Set<string>>(new Set());
   useEffect(() => {
+    // Absence of a key is meaningful: do not retain the previous tenant or
+    // ontology's acknowledgements in component state.
+    setKept(new Set());
     try {
       const v = localStorage.getItem(keptKey);
       if (v) setKept(new Set(JSON.parse(v) as string[]));
@@ -415,10 +532,27 @@ export function BackgroundPanel({ tenant, domain, events, running, convId, viewi
       return next;
     });
   };
-  const [libTools, setLibTools] = useState<LibToolRow[]>([]);
+  const [libToolsSnapshot, setLibToolsSnapshot] = useState<{ tenant: string; domain: string; tools: LibToolRow[] } | null>(null);
+  const libTools = libToolsSnapshot?.tenant === tenant && libToolsSnapshot.domain === domain
+    ? libToolsSnapshot.tools
+    : EMPTY_LIB_TOOLS;
   const refreshLibTools = useCallback(() => {
-    void apiGet<{ tools: LibToolRow[] }>("/v1/agent-factory/generated-tools").then((d) => setLibTools(d?.tools ?? []));
-  }, []);
+    const scope = { tenant, domain };
+    const ticket = requestGate.begin("generated-tools", scope);
+    void apiGet<{ tools: LibToolRow[] }>(tenant, "/v1/agent-factory/generated-tools").then((result) => {
+      if (!requestGate.isCurrent(ticket, scope)) return;
+      if (!result.ok) {
+        setReadError("tools", `工具库读取失败：${result.message}`);
+        return;
+      }
+      if (!result.data || !Array.isArray(result.data.tools)) {
+        setReadError("tools", "工具库读取失败：接口响应结构无效");
+        return;
+      }
+      setReadError("tools");
+      setLibToolsSnapshot({ tenant, domain, tools: result.data.tools });
+    });
+  }, [domain, requestGate, setReadError, tenant]);
   useEffect(() => {
     refreshLibTools();
   }, [refreshLibTools, runTools.length]);
@@ -427,23 +561,34 @@ export function BackgroundPanel({ tenant, domain, events, running, convId, viewi
     if (viewingRunId) return new Set<string>();
     return new Set(runTools.filter((t) => !kept.has(t.name) && libTools.some((l) => l.name === t.name)).map((t) => t.name));
   }, [runTools, kept, libTools, viewingRunId]);
-  const acceptTool = (name: string) => {
-    markKept(name);
+  const acceptTool = async (name: string) => {
+    setNote("");
     if (running && convId) {
-      void apiSend("/v1/agent-factory/inject", "POST", { conversation: convId, text: `工具「${name}」我已确认保留在工具库，可以在后续设计中放心复用。` });
+      const result = await apiSend<{ queued: boolean }>(tenant, "/v1/agent-factory/inject", "POST", { conversation: convId, text: `工具「${name}」我已确认保留在工具库，可以在后续设计中放心复用。` });
+      if (!isViewedTenant(tenant)) return;
+      if (!result.ok || result.data.queued !== true) {
+        setNote(`保留确认未送达大脑：${result.ok ? "服务端未确认消息已入队" : result.message}`);
+        return;
+      }
     }
+    markKept(name);
   };
   const declineTool = async (name: string) => {
+    const scope = { tenant, domain };
+    const ticket = requestGate.begin("tool-mutation", scope);
     setNote("");
-    const r = await apiSend(`/v1/agent-factory/generated-tools/${encodeURIComponent(name)}`, "DELETE");
-    if (!r.ok) {
-      setNote(`删除「${name}」失败：${r.message ?? "可能已被删除或没有权限"}`);
+    const r = await apiSend<{ deleted: boolean }>(tenant, `/v1/agent-factory/generated-tools/${encodeURIComponent(name)}`, "DELETE");
+    if (!isViewedTenant(tenant) || !requestGate.isCurrent(ticket, scope)) return;
+    if (!r.ok || r.data.deleted !== true) {
+      setNote(`删除「${name}」失败：${r.ok ? "服务端未确认删除" : r.message}`);
       refreshLibTools();
       return;
     }
     markKept(name);
     if (running && convId) {
-      void apiSend("/v1/agent-factory/inject", "POST", { conversation: convId, text: `我已从工具库删除工具「${name}」，请不要在后续设计中使用它。` });
+      const notifyResult = await apiSend<{ queued: boolean }>(tenant, "/v1/agent-factory/inject", "POST", { conversation: convId, text: `我已从工具库删除工具「${name}」，请不要在后续设计中使用它。` });
+      if (!isViewedTenant(tenant) || !requestGate.isCurrent(ticket, scope)) return;
+      if (!notifyResult.ok || notifyResult.data.queued !== true) setNote(`工具已删除，但未能通知运行中的大脑：${notifyResult.ok ? "服务端未确认消息已入队" : notifyResult.message}`);
     }
     refreshLibTools();
   };
@@ -453,14 +598,27 @@ export function BackgroundPanel({ tenant, domain, events, running, convId, viewi
   const [reportFormat, setReportFormat] = useState<"html" | "pdf" | "both">("both");
   const [reportFocus, setReportFocus] = useState("");
   const [reportBusy, setReportBusy] = useState(false);
+  useEffect(() => {
+    requestGate.begin("tool-mutation", { tenant, domain });
+    requestGate.begin("report-mutation", { tenant, domain });
+    setNote("");
+    setReadErrors({});
+    setReportBusy(false);
+    setShowReportForm(false);
+    setReportFocus("");
+    setOpenTaskId(null);
+  }, [domain, requestGate, tenant]);
   const startReport = async () => {
     if (!domain || reportBusy) return;
+    const scope = { tenant, domain };
+    const ticket = requestGate.begin("report-mutation", scope);
     setReportBusy(true);
     setNote("");
-    const r = await apiSend("/v1/agent-factory/report", "POST", { domain, format: reportFormat, focus: reportFocus.trim() || undefined });
+    const r = await apiSend<{ job: ReportJobRow }>(tenant, "/v1/agent-factory/report", "POST", { domain, format: reportFormat, focus: reportFocus.trim() || undefined });
+    if (!isViewedTenant(tenant) || !requestGate.isCurrent(ticket, scope)) return;
     setReportBusy(false);
-    if (!r.ok) {
-      setNote(`报告启动失败：${r.message ?? ""}`);
+    if (!r.ok || !r.data.job?.id || r.data.job.status !== "running") {
+      setNote(`报告启动失败：${r.ok ? "服务端未确认后台任务已运行" : r.message}`);
       return;
     }
     setReportFocus("");
@@ -471,9 +629,10 @@ export function BackgroundPanel({ tenant, domain, events, running, convId, viewi
   const downloadArtifact = async (a: { id: string; kind: string; label: string }, title?: string) => {
     setNote("");
     try {
-      const r = await fetch(`/v1/artifacts/${a.id}`, { credentials: "same-origin", headers: { ...tenantHeader() } });
+      const r = await fetch(`/v1/artifacts/${a.id}`, { credentials: "same-origin", headers: { ...tenantHeaders(tenant) } });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const blob = await r.blob();
+      if (blob.size === 0) throw new Error("服务端返回了空文件");
       const url = URL.createObjectURL(blob);
       const ext = a.kind.includes("pdf") ? "pdf" : a.kind.includes("html") ? "html" : "bin";
       const el = document.createElement("a");
@@ -484,14 +643,34 @@ export function BackgroundPanel({ tenant, domain, events, running, convId, viewi
       el.remove();
       setTimeout(() => URL.revokeObjectURL(url), 10_000);
     } catch (e) {
-      setNote(`下载失败：${(e as Error).message}`);
+      if (isViewedTenant(tenant)) setNote(`下载失败：${(e as Error).message}`);
     }
   };
 
   const clearFinishedJobs = async () => {
     const finished = bg.jobs.filter((j) => j.status !== "running");
     if (!finished.length) return;
-    await Promise.all(finished.map((j) => apiSend(`/v1/agent-factory/report/${j.id}`, "DELETE")));
+    setNote("");
+    const results = await Promise.all(finished.map(async (job) => ({
+      job,
+      result: await apiSend<{ deleted: boolean }>(tenant, `/v1/agent-factory/report/${encodeURIComponent(job.id)}`, "DELETE"),
+    })));
+    if (!isViewedTenant(tenant)) return;
+    const failures = results.filter(({ result }) => !result.ok || result.data.deleted !== true);
+    if (failures.length) {
+      setNote(`有 ${failures.length} 个报告未能清除：${failures.map(({ job, result }) => `${job.title ?? job.id}（${result.ok ? "服务端未确认删除" : result.message}）`).join("；")}`);
+    }
+    refreshBg();
+  };
+
+  const clearReportJob = async (job: ReportJobRow) => {
+    setNote("");
+    const result = await apiSend<{ deleted: boolean }>(tenant, `/v1/agent-factory/report/${encodeURIComponent(job.id)}`, "DELETE");
+    if (!isViewedTenant(tenant)) return;
+    if (!result.ok || result.data.deleted !== true) {
+      setNote(`清除报告「${job.title ?? job.id}」失败：${result.ok ? "服务端未确认删除" : result.message}`);
+      return;
+    }
     refreshBg();
   };
 
@@ -548,7 +727,10 @@ export function BackgroundPanel({ tenant, domain, events, running, convId, viewi
       </div>
 
       <div style={inline ? { padding: "12px 0 0", display: "flex", flexDirection: "column", gap: 8 } : { flex: 1, overflow: "auto", padding: 12, display: "flex", flexDirection: "column", gap: 8 }}>
-        {note && <div style={{ fontSize: 11, color: "var(--red)" }}>{note}</div>}
+        {note && <div role="alert" style={{ fontSize: 11, color: "var(--red)" }}>{note}</div>}
+        {Object.entries(readErrors).map(([surface, message]) => message ? (
+          <div key={surface} role="alert" style={{ fontSize: 11, color: "var(--red)" }}>{message}</div>
+        ) : null)}
 
         {/* 协作信号 */}
         {awaitingHint && (
@@ -562,7 +744,7 @@ export function BackgroundPanel({ tenant, domain, events, running, convId, viewi
         {/* 报告 quick form */}
         {showReportForm && (
           <div style={{ border: "1px solid var(--border)", borderRadius: 10, padding: "9px 11px", background: "var(--panel-2)", display: "flex", flexDirection: "column", gap: 7 }}>
-            <div style={{ fontSize: 11.5, color: "var(--text-2)" }}>为业务域「{domain || "—"}」生成 Ontology 分析报告（含确定性 SVG 图表）：</div>
+            <div style={{ fontSize: 11.5, color: "var(--text-2)" }}>为已连接本体「{domain || "—"}」生成 Ontology 分析报告（含确定性 SVG 图表）：</div>
             <div style={{ display: "flex", gap: 6 }}>
               {([["html", "HTML"], ["pdf", "PDF"], ["both", "双格式"]] as Array<["html" | "pdf" | "both", string]>).map(([k, l]) => (
                 <button key={k} onClick={() => setReportFormat(k)} style={{ fontSize: 11, padding: "3px 12px", borderRadius: 20, cursor: "pointer", border: `1px solid ${reportFormat === k ? "var(--signal)" : "var(--border)"}`, background: reportFormat === k ? "var(--panel-3)" : "transparent", color: reportFormat === k ? "var(--text)" : "var(--text-3)" }}>{l}</button>
@@ -575,6 +757,9 @@ export function BackgroundPanel({ tenant, domain, events, running, convId, viewi
 
         {/* ── 工作流阶段遥测（Workflow→Phase→Agent，参考 Claude 面板）—— 自门控:无阶段则不显示 ── */}
         <PhaseTimelineView events={events} />
+
+        {/* ── #CHECKLIST — harness 持有的验收清单（finish 尝试后出现;真实证据翻绿）── */}
+        <AcceptanceChecklistView events={events} />
 
         {/* ── 本会话任务（Harness / Agents / Sub-agents / Tools / Sandbox）—— 点卡片进入详情抽屉 ── */}
         {visibleTasks.length > 0 && (
@@ -614,10 +799,10 @@ export function BackgroundPanel({ tenant, domain, events, running, convId, viewi
                 </div>
                 <span aria-hidden style={{ color: "var(--text-4)", fontSize: 16, lineHeight: 1, alignSelf: "center", flexShrink: 0 }}>›</span>
               </div>
-              {askThis && <div style={{ fontSize: 11, color: "var(--amber)", paddingLeft: 16 }}>大脑刚创建了这个工具 —— 存入工具库供以后复用吗？</div>}
+              {askThis && <div style={{ fontSize: 11, color: "var(--amber)", paddingLeft: 16 }}>大脑已把这个工具真实写入工具库 —— 保留供以后复用，还是立即删除？</div>}
               {askThis && (
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap", paddingLeft: 16 }}>
-                  <button onClick={(e) => { e.stopPropagation(); acceptTool(toolName); }} style={{ ...linkBtn, border: "1px solid var(--green)", color: "var(--green)" }}>✓ 保留</button>
+                  <button onClick={(e) => { e.stopPropagation(); void acceptTool(toolName); }} style={{ ...linkBtn, border: "1px solid var(--green)", color: "var(--green)" }}>✓ 确认保留</button>
                   <button onClick={(e) => { e.stopPropagation(); void declineTool(toolName); }} style={linkBtn}>✗ 删除</button>
                 </div>
               )}
@@ -654,7 +839,7 @@ export function BackgroundPanel({ tenant, domain, events, running, convId, viewi
                     ⬇ {a.label} · {Math.max(1, Math.round(a.size / 1024))}KB
                   </button>
                 ))}
-                {st !== "running" && <button onClick={() => void apiSend(`/v1/agent-factory/report/${j.id}`, "DELETE").then(refreshBg)} style={linkBtn}>清除</button>}
+                {st !== "running" && <button onClick={() => void clearReportJob(j)} style={linkBtn}>清除</button>}
               </div>
             </div>
           );

@@ -8,12 +8,10 @@
  *   - useAgent(kebabId) — selected agent's manifest detail
  *   - useRuns({ limit: 200 }) — recent runs for stats + RunsTab
  *
- * Manifest fields (description, steps, typescript_code, ontology_instructions,
- * tool_use, model, tools, emits) are NOT yet surfaced by /v1/agents/:kebab —
- * the AgentDetail contract only ships id/name/title/actor/triggers/
- * triggeredEvents/actions/workflowSlug/workflowVersion. The detail tabs render
- * what's available and leave the rest blank rather than substitute mock data
- * (2026-05-26 product rule: production mode = zero mock).
+ * Every manifest/source field comes from the exact agent version referenced by
+ * a live deployment. The API marks identities without a live source via
+ * `sourceUnavailable`; the UI surfaces that state instead of manufacturing an
+ * empty manifest.
  */
 
 import { useMemo, useState } from "react";
@@ -28,6 +26,7 @@ import {
   Splitter,
   StatusDot,
   ViewHeader,
+  useToast,
 } from "@/app/portal/components";
 import { fmtAgo } from "@/lib/format";
 import {
@@ -44,63 +43,43 @@ import { useRuns, type RunListRow } from "@/lib/hooks/useRuns";
 import { useTenant } from "@/app/portal/lib/use-tenant";
 import { useI18n } from "@/app/portal/lib/preferences-context";
 import { AgentCodeTab } from "@/app/portal/components/agent-code/AgentCodeTab";
-import { AgentCodeEdit } from "@/app/portal/components/agent-code/edit-code";
 import {
   ConfigTab,
-  EditConfigTab,
   IOConfigTab,
   RunsTab,
   VersionsTab,
   type ViewAgent as AgentTabsViewAgent,
 } from "@/app/portal/components/agents/AgentTabs";
-import { DeployAgentModal } from "@/app/portal/components/agents/DeployAgentModal";
 import { RunWithInputModal } from "@/app/portal/components/agents/RunWithInputModal";
 import { ImportManifestModal } from "@/app/portal/components/import-manifest/ImportManifestModal";
-
-interface AgentStats {
-  runs: number;
-  errors: number;
-  lastRun: number;
-  tests: number;
-  lastTestRunId: string | null;
-  lastTestAt: number;
-}
-
-function emptyStats(): AgentStats {
-  return { runs: 0, errors: 0, lastRun: 0, tests: 0, lastTestRunId: null, lastTestAt: 0 };
-}
+import {
+  buildAgentStats,
+  type AgentStatsSnapshot,
+} from "@/lib/agent-stats";
 
 /**
- * AgentTabs was written against the SpaAgent shape — a denormalized object
- * with every manifest field (description, steps, tool_use, ...). The live
- * `/v1/agents/:kebab` (AgentDetail) is leaner: id/name/title/actor/
- * triggers/triggeredEvents/actions/workflowSlug/workflowVersion. This
- * adapter materializes a `ViewAgent` (the shape AgentTabs now expects) so
- * the read-only and edit tabs keep rendering; fields the api doesn't yet
- * surface come back empty rather than a synthetic placeholder.
+ * Normalize the deployed AgentDetail response for the shared tab components.
+ * Nullable source fields remain nullable all the way to the renderer.
  */
 type ViewAgent = AgentTabsViewAgent;
 
-function detailToViewAgent(
-  detail: AgentDetail,
-  list?: AgentListRow,
-): ViewAgent {
+function detailToViewAgent(detail: AgentDetail): ViewAgent {
   return {
     id: detail.kebabId,
     name: detail.name,
     title: detail.title ?? detail.name,
-    description: list?.description ?? "",
+    description: detail.description,
     actor: detail.actor,
-    stage: 0,
     triggers: detail.triggers,
     emits: detail.triggeredEvents,
     steps: detail.actions.map((a) => a.name),
-    tools: [],
-    model: "",
-    input_data: {},
-    ontology_instructions: "",
-    tool_use: [],
-    typescript_code: "",
+    input_data: detail.input_data,
+    ontology_instructions: detail.ontology_instructions,
+    tool_use: detail.tool_use,
+    typescript_code: detail.typescript_code,
+    workflowVersion: detail.workflowVersion,
+    sourceUnavailable: detail.sourceUnavailable,
+    deployedSource: detail.deployedSource,
   };
 }
 
@@ -118,41 +97,17 @@ export default function AgentDetailPage() {
   const [query, setQuery] = useState("");
   const [actorFilter, setActorFilter] = useState<"all" | "Agent" | "Human">("all");
   const [listW, setListW] = useState(440);
-  const [deployOpen, setDeployOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
 
   const stats = useMemo(() => {
-    // Bucket by name (the canonical join key the api uses on run rows) so
-    // the per-agent stats correctly aggregate the live `/v1/runs` payload.
-    const m = new Map<string, AgentStats>();
-    agents.forEach((a) => {
-      const s = emptyStats();
-      m.set(a.kebabId, s);
-      if (a.name) m.set(a.name, s);
-    });
-    runs.forEach((r) => {
-      const s = m.get(r.agentName ?? "");
-      if (!s) return;
-      const startedAt = r.startedAt ? Date.parse(r.startedAt) : 0;
-      s.runs += 1;
-      if (r.status === "failed") s.errors += 1;
-      if (startedAt > s.lastRun) s.lastRun = startedAt;
-      if (r.testRun) {
-        s.tests += 1;
-        if (startedAt > s.lastTestAt) {
-          s.lastTestAt = startedAt;
-          s.lastTestRunId = r.id;
-        }
-      }
-    });
-    return m;
+    return buildAgentStats(agents, runs);
   }, [agents, runs]);
 
   const filtered = agents.filter((a) => {
     if (actorFilter !== "all" && a.actor !== actorFilter) return false;
     if (
       query &&
-      !a.title.toLowerCase().includes(query.toLowerCase()) &&
+      !(a.title ?? a.name).toLowerCase().includes(query.toLowerCase()) &&
       !a.name.toLowerCase().includes(query.toLowerCase())
     ) {
       return false;
@@ -167,29 +122,54 @@ export default function AgentDetailPage() {
     router.push(`/portal/${tenant}/runs/${id}` as never);
   }
 
-  const listMatch = agents.find((a) => a.kebabId === selectedKebab);
   const agent = detailQuery.data
-    ? detailToViewAgent(detailQuery.data, listMatch)
+    ? detailToViewAgent(detailQuery.data)
     : null;
+  const countsReady = agentsQuery.data !== undefined && !agentsQuery.isError;
+  const countValue: string | number = countsReady
+    ? agents.length
+    : agentsQuery.isLoading
+      ? "…"
+      : "—";
+  const automatedValue: string | number = countsReady
+    ? agents.filter((item) => item.actor === "Agent").length
+    : countValue;
+  const humanValue: string | number = countsReady
+    ? agents.filter((item) => item.actor === "Human").length
+    : countValue;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
       <ViewHeader
         title={t("nav.agents")}
         subtitle={t("agentDetail.subtitle", {
-          count: agents.length,
-          automated: agents.filter((a) => a.actor === "Agent").length,
-          human: agents.filter((a) => a.actor === "Human").length,
+          count: countValue,
+          automated: automatedValue,
+          human: humanValue,
         })}
-        action={[
-          <Button key="upload" icon="upload" small onClick={() => setImportOpen(true)}>
+        action={
+          <Button icon="upload" small onClick={() => setImportOpen(true)}>
             {t("agentDetail.importManifest")}
-          </Button>,
-          <Button key="new" icon="plus" tone="primary" small onClick={() => setDeployOpen(true)}>
-            {t("agentDetail.deployAgent")}
-          </Button>,
-        ]}
+          </Button>
+        }
       />
+
+      {runsQuery.isError && (
+        <div
+          role="alert"
+          style={{
+            margin: "12px 16px 0",
+            padding: "9px 11px",
+            border: "1px solid color-mix(in srgb, var(--red) 45%, var(--border))",
+            borderRadius: 6,
+            color: "var(--red)",
+            background: "color-mix(in srgb, var(--red) 7%, transparent)",
+            fontSize: 12,
+          }}
+        >
+          {t("agents.statsUnavailable")}: {runsQuery.error.message}
+        </div>
+      )}
 
       <div style={{ flex: 1, display: "flex", flexDirection: "row", minHeight: 0 }}>
         {/* List aside */}
@@ -237,6 +217,7 @@ export default function AgentDetailPage() {
               <AgentsListCompact
                 agents={filtered}
                 stats={stats}
+                statsReady={agentsQuery.data !== undefined && !agentsQuery.isError}
                 selectedKebab={selectedKebab}
                 onPick={openAgent}
               />
@@ -257,8 +238,11 @@ export default function AgentDetailPage() {
           ) : (
             <AgentDetail
               agent={agent}
-              enabled={listMatch?.enabled ?? true}
+              enabled={detailQuery.data?.enabled ?? null}
+              agentKind={detailQuery.data?.kind ?? null}
               stats={stats.get(selectedKebab) ?? stats.get(agent?.name ?? "")}
+              statsReady={agentsQuery.data !== undefined && !agentsQuery.isError}
+              runSampleReady={runsQuery.data !== undefined && !runsQuery.isError}
               tenant={tenant}
               onOpenWorkflow={() => router.push(`/portal/${tenant}/workflows` as never)}
               onOpenRun={openRun}
@@ -268,7 +252,6 @@ export default function AgentDetailPage() {
         </div>
       </div>
 
-      {deployOpen && <DeployAgentModal onClose={() => setDeployOpen(false)} models={[]} />}
       {importOpen && <ImportManifestModal onClose={() => setImportOpen(false)} mode="agent" />}
     </div>
   );
@@ -277,18 +260,20 @@ export default function AgentDetailPage() {
 function AgentsListCompact({
   agents,
   stats,
+  statsReady,
   selectedKebab,
   onPick,
 }: {
   agents: AgentListRow[];
-  stats: Map<string, AgentStats>;
+  stats: Map<string, AgentStatsSnapshot>;
+  statsReady: boolean;
   selectedKebab: string;
   onPick: (kebabId: string) => void;
 }) {
   return (
     <div>
       {agents.map((a) => {
-        const s = stats.get(a.kebabId) ?? stats.get(a.name) ?? emptyStats();
+        const s = stats.get(a.kebabId) ?? stats.get(a.name);
         const active = a.kebabId === selectedKebab;
         return (
           <button
@@ -316,10 +301,14 @@ function AgentsListCompact({
                   fontFamily: "var(--mono)",
                 }}
               >
-                {s.runs}r{s.errors > 0 && <span style={{ color: "var(--red)" }}> · {s.errors}e</span>}
+                {statsReady ? (
+                  <>{s?.runs ?? 0}r{(s?.errors ?? 0) > 0 && <span style={{ color: "var(--red)" }}> · {s?.errors ?? 0}e</span>}</>
+                ) : "—"}
               </span>
             </div>
-            <div style={{ fontSize: 12.5, color: "var(--text)", fontWeight: 500 }}>{a.title}</div>
+            <div style={{ fontSize: 12.5, color: "var(--text)", fontWeight: 500 }}>
+              {a.title ?? a.name}
+            </div>
           </button>
         );
       })}
@@ -330,28 +319,34 @@ function AgentsListCompact({
 function AgentDetail({
   agent,
   enabled,
+  agentKind,
   stats,
+  statsReady,
+  runSampleReady,
   tenant,
   onOpenWorkflow,
   onOpenRun,
   allRuns,
 }: {
   agent: ViewAgent | null;
-  enabled: boolean;
-  stats: AgentStats | undefined;
+  enabled: boolean | null;
+  agentKind: "code" | "manifest" | null;
+  stats: AgentStatsSnapshot | undefined;
+  statsReady: boolean;
+  runSampleReady: boolean;
   tenant: string;
   onOpenWorkflow: () => void;
   onOpenRun: (id: string) => void;
   allRuns: RunListRow[];
 }) {
   const { t } = useI18n();
+  const toast = useToast();
   const router = useRouter();
   const invoke = useInvokeAgent();
   const setEnabled = useSetAgentEnabled();
   const rename = useRenameAgent();
   const del = useDeleteAgent();
   const [tab, setTab] = useState<"config" | "io" | "code" | "versions" | "runs">("config");
-  const [editing, setEditing] = useState(false);
   // "Run with input…" dialog. Decoupled from the default "Test run" path
   // so the operator can drop a real payload (resume + jd, candidate id,
   // etc.) without having to author it into the manifest's input_data
@@ -372,6 +367,7 @@ function AgentDetail({
     .slice(0, 10);
   const testRuns = recentRuns.filter((r) => r.testRun);
   const lastTest = testRuns[0];
+  const lastTestAt = lastTest?.startedAt ? Date.parse(lastTest.startedAt) : 0;
 
   async function handleTestRun() {
     if (invoke.isPending || testCooldown) return;
@@ -379,13 +375,19 @@ function AgentDetail({
       const data = await invoke.mutateAsync({
         name: agent!.name,
         testRun: true,
-        input: agent!.input_data ?? {},
+        input: agent!.input_data ?? undefined,
       });
       const id = data.runId ?? data.run_id;
-      if (id) onOpenRun(id);
+      if (!id) {
+        throw new Error(t("agentDetail.invokeMissingRun"));
+      }
+      onOpenRun(id);
     } catch (err) {
-      // Toast wiring lands later — log to console for now.
-      console.error("Test run failed", err);
+      toast({
+        tone: "red",
+        title: t("agentDetail.testRunFailed"),
+        description: err instanceof Error ? err.message : String(err),
+      });
     } finally {
       setTestCooldown(true);
       setTimeout(() => setTestCooldown(false), 2000);
@@ -407,7 +409,15 @@ function AgentDetail({
           <ActorTag actor={agent.actor} />
           <Badge tone="muted">{agent.id}</Badge>
           <span className="mono" style={{ fontSize: 11.5, color: "var(--text-3)" }}>{agent.name}</span>
-          {!enabled && <Badge tone="amber">{t("agentDetail.disabledBadge")}</Badge>}
+          {enabled === false && <Badge tone="amber">{t("agentDetail.disabledBadge")}</Badge>}
+          {enabled == null && <Badge tone="amber">{t("agentDetail.stateUnavailable")}</Badge>}
+          {agent.sourceUnavailable ? (
+            <Badge tone="red">{t("agentDetail.sourceUnavailableBadge")}</Badge>
+          ) : agent.workflowVersion ? (
+            <Badge tone="signal">
+              {t("agentDetail.deployedVersion", { version: agent.workflowVersion })}
+            </Badge>
+          ) : null}
           {lastTest && (
             <button
               onClick={() => onOpenRun(lastTest.id)}
@@ -427,94 +437,129 @@ function AgentDetail({
               }}
             >
               <StatusDot status={(lastTest.status as never) ?? "idle"} size={6} />
-              {t("agentDetail.testBadge")} · {fmtAgo(lastTest.startedAt ? Date.parse(lastTest.startedAt) : 0)}
+              {t("agentDetail.testBadge")} · {Number.isFinite(lastTestAt) && lastTestAt > 0 ? fmtAgo(lastTestAt) : "—"}
             </button>
           )}
           <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
             <Button small icon="external" tone="ghost" onClick={onOpenWorkflow}>
               {t("agentDetail.viewInGraph")}
             </Button>
-            {editing ? (
-              <>
-                <Button small tone="ghost" onClick={() => setEditing(false)}>
-                  {t("agentDetail.cancel")}
-                </Button>
-                <Button small icon="check" tone="primary" onClick={() => setEditing(false)}>
-                  {t("agentDetail.saveAndDeploy")}
-                </Button>
-              </>
-            ) : (
-              <>
-                <Button small icon="code" onClick={() => setEditing(true)}>
-                  {t("agentDetail.edit")}
-                </Button>
-                <Button
-                  small
-                  tone={enabled ? "ghost" : "primary"}
-                  icon={enabled ? "pause" : "play"}
-                  disabled={setEnabled.isPending}
-                  onClick={() =>
-                    setEnabled.mutate({ kebabId: agent!.id, enabled: !enabled })
-                  }
-                  title={
-                    enabled
-                      ? t("agentDetail.disableHint")
-                      : t("agentDetail.enableHint")
-                  }
-                >
-                  {setEnabled.isPending
-                    ? t("agentDetail.savingState")
-                    : enabled
-                      ? t("agentDetail.disable")
-                      : t("agentDetail.enable")}
-                </Button>
-                <Button
-                  small
-                  disabled={rename.isPending}
-                  onClick={() => {
-                    const next = window.prompt("重命名智能体（显示名）：", agent!.title);
-                    if (next && next.trim() && next.trim() !== agent!.title) rename.mutate({ kebabId: agent!.id, title: next.trim() });
-                  }}
-                  title="重命名（改显示名，不影响事件路由）"
-                >
-                  重命名
-                </Button>
-                <Button
-                  small
-                  icon="trash"
-                  tone="danger"
-                  disabled={del.isPending}
-                  onClick={() => {
-                    if (!window.confirm(`删除智能体「${agent!.title}」？\n若它有运行历史，将改为下线并移出服务集（可稍后彻底删除）。`)) return;
-                    del.mutate(
-                      { kebabId: agent!.id },
-                      {
-                        onSuccess: (r) => {
-                          if (r.deleted) router.push(`/portal/${tenant}/agents` as never);
-                          else window.alert(r.note ?? "已下线。");
-                        },
-                      },
-                    );
-                  }}
-                  title="从 Fleet 删除该智能体"
-                >
-                  {del.isPending ? "…" : "删除"}
-                </Button>
-                <Button
-                  small
-                  onClick={() => setRunInputOpen(true)}
-                  title={t("agentDetail.runWithInputHint")}
-                >
-                  {t("agentDetail.runWithInput")}
-                </Button>
+            <Button
+              small
+              tone={enabled === false ? "primary" : "ghost"}
+              icon={enabled === false ? "play" : "pause"}
+              disabled={
+                setEnabled.isPending || enabled == null || agent.sourceUnavailable
+              }
+              onClick={() =>
+                setEnabled.mutate(
+                  { kebabId: agent.id, enabled: !enabled },
+                  {
+                    onError: (error) =>
+                      toast({
+                        tone: "red",
+                        title: t("agentDetail.stateUpdateFailed"),
+                        description: error.message,
+                      }),
+                  },
+                )
+              }
+              title={
+                agent.sourceUnavailable
+                  ? t("agentDetail.sourceUnavailableHint")
+                  : enabled == null
+                  ? t("agentDetail.stateUnavailable")
+                  : enabled
+                    ? t("agentDetail.disableHint")
+                    : t("agentDetail.enableHint")
+              }
+            >
+              {setEnabled.isPending
+                ? t("agentDetail.savingState")
+                : agent.sourceUnavailable
+                  ? t("agentDetail.sourceUnavailableBadge")
+                  : enabled == null
+                  ? t("agentDetail.stateUnavailable")
+                  : enabled
+                    ? t("agentDetail.disable")
+                    : t("agentDetail.enable")}
+            </Button>
+            <Button
+              small
+              disabled={rename.isPending}
+              onClick={() => {
+                const next = window.prompt(t("agentDetail.renamePrompt"), agent.title);
+                if (next && next.trim() && next.trim() !== agent.title) {
+                  rename.mutate(
+                    { kebabId: agent.id, title: next.trim() },
+                    {
+                      onError: (error) =>
+                        toast({
+                          tone: "red",
+                          title: t("agentDetail.renameFailed"),
+                          description: error.message,
+                        }),
+                    },
+                  );
+                }
+              }}
+              title={t("agentDetail.renameHint")}
+            >
+              {t("agentDetail.rename")}
+            </Button>
+            <Button
+              small
+              icon="trash"
+              tone="danger"
+              disabled={del.isPending}
+              onClick={() => {
+                if (!window.confirm(t("agentDetail.deleteConfirm", { title: agent.title }))) return;
+                del.mutate(
+                  { kebabId: agent.id },
+                  {
+                    onSuccess: (result) => {
+                      if (result.deleted) {
+                        router.push(`/portal/${tenant}/agents` as never);
+                        return;
+                      }
+                      toast({
+                        tone: "amber",
+                        title: t("agentDetail.takenOffline"),
+                        description: result.note ?? t("agentDetail.takenOfflineHint"),
+                      });
+                    },
+                    onError: (error) =>
+                      toast({
+                        tone: "red",
+                        title: t("agentDetail.deleteFailed"),
+                        description: error.message,
+                      }),
+                  },
+                );
+              }}
+              title={t("agentDetail.deleteHint")}
+            >
+              {del.isPending ? "…" : t("agentDetail.delete")}
+            </Button>
+            <Button
+              small
+              onClick={() => setRunInputOpen(true)}
+              disabled={agent.sourceUnavailable}
+              title={t("agentDetail.runWithInputHint")}
+            >
+              {t("agentDetail.runWithInput")}
+            </Button>
+            {agentKind === "code" ? (
                 <Button
                   small
                   icon="run"
                   tone="primary"
                   onClick={handleTestRun}
-                  disabled={invoke.isPending || testCooldown}
+                  disabled={invoke.isPending || testCooldown || agent.sourceUnavailable}
                   title={
-                    invoke.isPending
+                    agent.sourceUnavailable
+                      ? t("agentDetail.sourceUnavailableHint")
+                      : invoke.isPending
                       ? t("agentDetail.running")
                       : testCooldown
                         ? t("agentDetail.cooldownHint")
@@ -523,8 +568,7 @@ function AgentDetail({
                 >
                   {invoke.isPending ? t("agentDetail.running") : t("agentDetail.testRun")}
                 </Button>
-              </>
-            )}
+            ) : null}
           </div>
         </div>
         <h2
@@ -546,9 +590,26 @@ function AgentDetail({
             lineHeight: 1.55,
           }}
         >
-          {agent.description}
+          {agent.description ?? t("agentDetail.noDescription")}
         </p>
       </header>
+
+      {agent.sourceUnavailable && (
+        <div
+          role="alert"
+          style={{
+            marginBottom: 16,
+            padding: "10px 12px",
+            border: "1px solid color-mix(in srgb, var(--red) 45%, var(--border))",
+            borderRadius: 6,
+            color: "var(--red)",
+            background: "color-mix(in srgb, var(--red) 7%, transparent)",
+            fontSize: 12,
+          }}
+        >
+          {t("agentDetail.sourceUnavailableHint")}
+        </div>
+      )}
 
       <div
         style={{
@@ -562,11 +623,11 @@ function AgentDetail({
           flexShrink: 0,
         }}
       >
-        <StatCellA label={t("agentDetail.statRuns24h")} value={stats?.runs ?? 0} />
+        <StatCellA label={t("agentDetail.statRuns24h")} value={statsReady ? (stats?.runs ?? 0) : "—"} />
         <StatCellA
           label={t("agentDetail.statErrors")}
-          value={stats?.errors ?? 0}
-          accent={(stats?.errors ?? 0) > 0 ? "var(--red)" : undefined}
+          value={statsReady ? (stats?.errors ?? 0) : "—"}
+          accent={statsReady && (stats?.errors ?? 0) > 0 ? "var(--red)" : undefined}
         />
         <StatCellA
           label={t("agentDetail.statP50Latency")}
@@ -574,6 +635,7 @@ function AgentDetail({
             // Compute P50 from real durationMs across this agent's runs
             // — replaces the hardcoded "2.4s" mock so every agent shows
             // its actual median duration (or "—" when no completed runs).
+            if (!runSampleReady) return "—";
             const durations = recentRuns
               .map((r) => r.durationMs ?? 0)
               .filter((d) => d > 0)
@@ -587,7 +649,7 @@ function AgentDetail({
         />
         <StatCellA
           label={t("agentDetail.statLastRun")}
-          value={stats?.lastRun && stats.lastRun > 0 ? fmtAgo(stats.lastRun) : "—"}
+          value={statsReady && stats?.lastRun && stats.lastRun > 0 ? fmtAgo(stats.lastRun) : "—"}
         />
       </div>
 
@@ -627,23 +689,9 @@ function AgentDetail({
           overflow: tab === "code" ? "hidden" : "auto",
         }}
       >
-        {tab === "config" && (editing ? <EditConfigTab agent={agent} models={[]} /> : <ConfigTab agent={agent} />)}
+        {tab === "config" && <ConfigTab agent={agent} />}
         {tab === "io" && <IOConfigTab agent={agent} />}
-        {tab === "code" &&
-          (editing ? (
-            <AgentCodeEdit
-              agent={{
-                actor: agent.actor,
-                name: agent.name,
-                typescript_code: agent.typescript_code,
-                input_data: agent.input_data,
-                ontology_instructions: agent.ontology_instructions,
-              }}
-              onClose={() => setEditing(false)}
-            />
-          ) : (
-            <AgentCodeTab agent={agent} />
-          ))}
+        {tab === "code" && <AgentCodeTab agent={agent} />}
         {tab === "versions" && <VersionsTab agent={agent} />}
         {tab === "runs" && <RunsTab runs={recentRuns} onOpenRun={onOpenRun} />}
       </div>
@@ -651,7 +699,7 @@ function AgentDetail({
         <RunWithInputModal
           agentName={agent.name}
           agentTitle={agent.title ?? agent.name}
-          defaultInput={agent.input_data}
+          defaultInput={agent.input_data ?? undefined}
           onClose={() => setRunInputOpen(false)}
           onSubmitted={(runId) => {
             // Fire-and-jump — keep the modal open so the operator can copy

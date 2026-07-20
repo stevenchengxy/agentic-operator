@@ -64,8 +64,7 @@
 
   /* ─── Density scale (P2-FE-20) ─────────────────────────────────────
    * Components multiply paddings / gaps / heights against
-   * calc(<value> * var(--density-mult)) where it matters. The hooks
-   * useDensity() helper returns the same scalar for JS-driven sizing.
+   * calc(<value> * var(--density-mult)) where it matters.
    *
    * default = 1 (untouched), compact = 0.85, comfortable = 1.18. */
   --density: 1;
@@ -218,8 +217,11 @@ a      { color: inherit; text-decoration: none; }
  * works for ≈98 % of the surface.
  */
 :focus-visible {
-  outline: 2px solid var(--signal);
-  outline-offset: 2px;
+  /* `!important` is intentional: several legacy inputs still carry an
+   * inline `outline: none`. Keyboard focus must win over those cosmetic
+   * declarations until the remaining inline styles are retired. */
+  outline: 2px solid var(--signal) !important;
+  outline-offset: 2px !important;
   border-radius: 4px;
 }
 /* `<a>` and inline buttons inside dense layouts (table rows, lists)
@@ -232,13 +234,13 @@ a:focus-visible,
 /* Remove the default browser focus ring everywhere a :focus-visible
  * style takes over — keeps the chrome tight while preserving
  * keyboard-only visibility. */
-button:focus,
-a:focus,
-[role="button"]:focus,
-[role="separator"]:focus,
-input:focus,
-textarea:focus,
-select:focus {
+button:focus:not(:focus-visible),
+a:focus:not(:focus-visible),
+[role="button"]:focus:not(:focus-visible),
+[role="separator"]:focus:not(:focus-visible),
+input:focus:not(:focus-visible),
+textarea:focus:not(:focus-visible),
+select:focus:not(:focus-visible) {
   outline: none;
 }
 

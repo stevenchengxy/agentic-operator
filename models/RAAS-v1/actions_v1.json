@@ -3238,7 +3238,7 @@
                 "order": "3",
                 "name": "evaluateWithModel",
                 "description": "使用招聘岗位配置的评估模型对候选人进行量化评分。按照各维度权重计算综合得分，判断是否达到及格线阈值，输出各维度分数明细和评分依据说明。",
-                "object_type": "tool",
+                "object_type": "logic",
                 "condition": "内容分析完成",
                 "rules": [
                     {

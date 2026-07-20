@@ -142,7 +142,12 @@ export function canonicalEventFields(ont: { events?: OntologyEvent[] } | null | 
   return new Map(
     events.map((e) => [
       e.name,
-      (e.payload?.event_data ?? []).map((f) => ({ field: f.name, type: f.type || "unknown", source: f.target_object ?? undefined })),
+      (e.payload?.event_data ?? []).map((f) => ({
+        field: f.name,
+        type: f.type || "unknown",
+        source: f.target_object ?? undefined,
+        ...(typeof f.required === "boolean" ? { required: f.required } : {}),
+      })),
     ]),
   );
 }

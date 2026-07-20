@@ -8,7 +8,7 @@
  */
 
 import { useState } from "react";
-import { Button, Empty, HelpTip } from "@/app/portal/components";
+import { Empty, HelpTip } from "@/app/portal/components";
 import { chip, Field, CodeBox } from "./atoms";
 import type { AgentCardData, AgentIO } from "./model";
 
@@ -39,8 +39,22 @@ function agentStatus(a: AgentCardData, degraded: Set<string>, io?: AgentIO): { l
   return { label: "未触发", color: "var(--text-3)" };
 }
 
-function AgentCard({ a, st, onShowCode, onRegenerate, onSelect }: { a: AgentCardData; st: { label: string; color: string }; onShowCode: (a: AgentCardData) => void; onRegenerate?: (actionName: string, supplement: string) => void; onSelect?: (slug: string) => void }) {
+function AgentCard({ a, st, onShowCode, onRegenerate, onSelect }: { a: AgentCardData; st: { label: string; color: string }; onShowCode: (a: AgentCardData) => void; onRegenerate?: (actionName: string, supplement: string) => void | Promise<void>; onSelect?: (slug: string) => void }) {
   const [view, setView] = useState<null | "prompt" | "code" | "logic">(null);
+  const [regenerating, setRegenerating] = useState(false);
+  const [regenerateError, setRegenerateError] = useState("");
+  const regenerate = async () => {
+    if (!onRegenerate || regenerating) return;
+    setRegenerating(true);
+    setRegenerateError("");
+    try {
+      await onRegenerate(a.actionName || a.slug, "");
+    } catch (cause) {
+      setRegenerateError(cause instanceof Error && cause.message ? cause.message : "重新生成请求失败");
+    } finally {
+      setRegenerating(false);
+    }
+  };
   const tab = (k: "prompt" | "code" | "logic", label: string, has: boolean) => (
     <button disabled={!has} onClick={() => setView((v) => (v === k ? null : k))} style={{ fontSize: 11, padding: "3px 10px", borderRadius: 14, cursor: has ? "pointer" : "default", border: `1px solid ${view === k ? "var(--signal)" : "var(--border)"}`, background: view === k ? "var(--panel-3)" : "transparent", color: has ? (view === k ? "var(--text)" : "var(--text-2)") : "var(--text-4)" }}>{label}</button>
   );
@@ -59,8 +73,9 @@ function AgentCard({ a, st, onShowCode, onRegenerate, onSelect }: { a: AgentCard
         {tab("prompt", "指令", !!a.systemPrompt)}
         {tab("code", `代码${a.codeSource === "ai" ? "✦AI亲写" : ""}`, !!a.code)}
         {tab("logic", "决策逻辑", !!a.decisionLogic)}
-        {onRegenerate && <button onClick={() => onRegenerate(a.actionName || a.slug, "")} style={{ marginLeft: "auto", fontSize: 11, color: "var(--signal)", background: "none", border: "none", cursor: "pointer" }}>↻ 重想</button>}
+        {onRegenerate && <button disabled={regenerating} onClick={() => void regenerate()} style={{ marginLeft: "auto", fontSize: 11, color: "var(--signal)", background: "none", border: "none", cursor: regenerating ? "wait" : "pointer", opacity: regenerating ? 0.6 : 1 }}>{regenerating ? "提交中…" : "↻ 重想"}</button>}
       </div>
+      {regenerateError && <div role="alert" style={{ marginTop: 6, color: "var(--red)", fontSize: 11.5 }}>{regenerateError}</div>}
       {view === "prompt" && a.systemPrompt && <div style={{ marginTop: 6 }}><Field label="system prompt（指令）" text={a.systemPrompt} mono /></div>}
       {view === "logic" && a.decisionLogic && <div style={{ marginTop: 6 }}><Field label="分支决策逻辑" text={a.decisionLogic} markdown /></div>}
       {view === "code" && a.code && <div style={{ marginTop: 6 }}><div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 3 }}><button onClick={() => onShowCode(a)} style={{ fontSize: 10.5, color: "var(--green)", background: "none", border: "none", cursor: "pointer" }}>全屏 ⛶</button></div><CodeBox code={a.code} /></div>}
@@ -68,7 +83,7 @@ function AgentCard({ a, st, onShowCode, onRegenerate, onSelect }: { a: AgentCard
   );
 }
 
-export function AgentCardList({ agents, degraded, ioByShort, onShowCode, onRegenerate, onSelect }: { agents: AgentCardData[]; degraded: Set<string>; ioByShort: Map<string, AgentIO>; onShowCode: (a: AgentCardData) => void; onRegenerate?: (actionName: string, supplement: string) => void; onSelect?: (slug: string) => void }) {
+export function AgentCardList({ agents, degraded, ioByShort, onShowCode, onRegenerate, onSelect }: { agents: AgentCardData[]; degraded: Set<string>; ioByShort: Map<string, AgentIO>; onShowCode: (a: AgentCardData) => void; onRegenerate?: (actionName: string, supplement: string) => void | Promise<void>; onSelect?: (slug: string) => void }) {
   if (!agents.length) return <Empty title={<>还没有智能体 <HelpTip>运行后，每个生成的 agent 会作为一张卡片出现：状态 + 事件图 + 指令/代码/决策逻辑，可逐张展开</HelpTip></>} />;
   return (
     <div>

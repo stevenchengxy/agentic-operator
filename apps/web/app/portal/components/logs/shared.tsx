@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * Shared scaffolding for the 4-facet Logs explorer tabs. Keeps the table
+ * Shared scaffolding for the Logs + observability explorer tabs. Keeps the table
  * chrome (scroll container, toolbar, header/cell styles, time formatting)
  * consistent across 操作 / 事件 / 运行 / 实时.
  */

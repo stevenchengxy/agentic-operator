@@ -63,9 +63,10 @@ Fresh-checkout verification:
    for native build.
 3. **`pnpm db:migrate`** — applies `0011_tenant_lifecycle.sql`. ALTER + CREATE
    INDEX + `_meta` UPDATE; non-destructive on an existing db.
-4. **`pnpm db:seed`** — idempotent. Seed admin (`ops@agentic.local`) is the
-   `actorUserId` for every tenant created via the API until P5-TEN-02 wires
-   the real auth-context user id.
+4. **`pnpm db:seed`** — idempotent. Requires explicit
+   `AGENTIC_BOOTSTRAP_ADMIN_EMAIL`, `AGENTIC_BOOTSTRAP_ADMIN_NAME`, and
+   `AGENTIC_BOOTSTRAP_ADMIN_PASSWORD`; provisions exactly that one real
+   superadmin and no sample identities.
 5. **`pnpm dev`** — web :3599, api :3501, inngest :8288. Set `AUTH_MODE=dev`
    in `apps/api/.env.local` so unauthenticated browser requests resolve to
    the `AGENTIC_DEV_TENANT` tenant.
@@ -334,23 +335,12 @@ if (idempotencyCache.size >= 256) {
 
 Defensive — not a hot path.
 
-### 5.3 `resolveOperatorUserId()`
+### 5.3 Authenticated operator identity
 
-```ts
-const SEED_ADMIN_EMAIL = "ops@agentic.local";
-
-function resolveOperatorUserId(): string | null {
-  const db = getDb();
-  const u = db.select({ id: users.id }).from(users)
-    .where(eq(users.email, SEED_ADMIN_EMAIL)).all()[0];
-  return u?.id ?? null;
-}
-```
-
-`req.auth` carries `{tenantId, tenantSlug, via}` but **not** a userId —
-`api_tokens` rows don't link to `users.id` yet. Every audit row's
-`actorUserId` is the seed admin id until P5-TEN-02. Documented at
-`apps/api/src/routes/v1/tenants.ts:110-116`.
+Tenant mutations use `requirePermission(...)` and pass `req.auth.userId`
+directly into the transaction for audit attribution and initial membership.
+The route never searches for, or substitutes, a bootstrap identity. A
+non-user bearer principal is represented honestly with a null actor.
 
 ### 5.4 Token mint
 
@@ -399,7 +389,7 @@ load.
    - `INSERT INTO tenant_budgets` (caps or NULL, counters zeroed,
      `period_start = now`).
    - `INSERT INTO memberships` `(operatorUserId, tenantId, 'admin')` with
-     `.onConflictDoNothing` (the seed admin already has memberships).
+     `.onConflictDoNothing` (the authenticated operator may already have a membership).
    - Starter:
      - `"hello"` → two `event_types` rows.
      - `copy-from:<slug>` → clones all `event_types`, `entity_types`, and
@@ -835,14 +825,9 @@ Concrete tests to add next, ordered by yield. Each lives under
 
 ## 11. Open issues / known limitations
 
-- **`actorUserId` is still the seed admin id.** Bearer tokens in
-  `api_tokens` do not link to a `users.id` row, so every audit log
-  entry's `actor_user_id` resolves through `resolveOperatorUserId()` to
-  the `ops@agentic.local` seed user. P5-TEN-02 work will add
-  `api_tokens.created_by_user_id` and have `requireAuth` populate
-  `req.auth.userId` from that column. When that lands, the route
-  handler's three `resolveOperatorUserId()` calls become
-  `req.auth.userId`.
+- **Actor attribution is principal-derived.** User sessions populate
+  `req.auth.userId`; non-user bearer principals remain null instead of being
+  attributed to an unrelated bootstrap administrator.
 - **Inngest re-register rebuilds ALL tenants.** `reregisterInngest`
   accepts `tenantSlug` but currently re-runs `rebuildTenantFns()` for
   every active tenant on every call. At small tenant counts this is

@@ -198,6 +198,46 @@ describe("TC-15: P1 API + DB", () => {
         .all();
       expect(sysRows.every((r) => r.tenantId === systemTenantId)).toBe(true);
     });
+
+    it("does not skip rows that share a cursor timestamp", async () => {
+      const db = getDb();
+      const at = new Date(Date.now() + 20_000);
+      const action = `test.cursor.${at.getTime()}`;
+      for (const suffix of ["a", "b", "c"]) {
+        db.insert(auditLog)
+          .values({
+            id: `aud-cursor-${at.getTime()}-${suffix}`,
+            tenantId: systemTenantId,
+            actorUserId: null,
+            action,
+            targetType: "synthetic",
+            targetId: suffix,
+            at,
+          })
+          .run();
+      }
+
+      const first = await env.fetch(
+        `/v1/audit?action=${encodeURIComponent(action)}&limit=2`,
+      );
+      const firstBody = (await first.json()) as {
+        data: { items: Array<{ id: string }>; nextCursor: string | null };
+      };
+      expect(firstBody.data.items).toHaveLength(2);
+      expect(firstBody.data.nextCursor).toBeTruthy();
+
+      const second = await env.fetch(
+        `/v1/audit?action=${encodeURIComponent(action)}&limit=2&cursor=${encodeURIComponent(firstBody.data.nextCursor!)}`,
+      );
+      const secondBody = (await second.json()) as {
+        data: { items: Array<{ id: string }> };
+      };
+      const ids = [
+        ...firstBody.data.items.map((row) => row.id),
+        ...secondBody.data.items.map((row) => row.id),
+      ];
+      expect(new Set(ids).size).toBe(3);
+    });
   });
 
   describe("P1-API-02: enable/disable audit hooks", () => {

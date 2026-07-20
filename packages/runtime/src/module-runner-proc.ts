@@ -19,7 +19,7 @@
 //                          to `eval`/`new Function` at runtime is refused. Opt out via allowCodeGeneration.
 //
 // Shares runGeneratedModule's `ModuleRunResult` shape, the FACTORY_EXEC_GENERATED kill switch, and the
-// `-sb` sandbox-tenant invariant. Never throws — every failure resolves a structured { ok:false, … }.
+// factory-issued ephemeral-sandbox invariant. Never throws — every failure resolves a structured { ok:false, … }.
 
 import { fork, type ChildProcess } from "node:child_process";
 import { createRequire } from "node:module";
@@ -27,6 +27,7 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ModuleRunResult } from "./module-runner";
+import { isSandboxTenant } from "./sandbox-mode";
 
 export type { ModuleRunResult } from "./module-runner";
 
@@ -101,28 +102,32 @@ export function scrubEnv(
 // resolved `typescript` (absolute path passed by the parent — the child's cwd is an empty temp dir with
 // no node_modules), compiles the module with `vm.compileFunction` (NOT new Function — blocked by
 // --disallow-code-generation-from-strings), picks an entry export, optionally invokes it, and posts a
-// JSON-serializable result. Non-allowlisted requires resolve to {} (no host module access by default).
+// JSON-serializable result. Non-allowlisted requires are rejected (no host module access by default).
 const BOOTSTRAP_SRC = `'use strict';
 const vm = require('node:vm');
-const safe = (v) => { try { return JSON.parse(JSON.stringify(v === undefined ? null : v)); } catch { return { __unserializable: true, preview: String(v).slice(0, 500) }; } };
+const serialize = (v) => {
+  try {
+    const json = JSON.stringify(v === undefined ? null : v);
+    if (json === undefined) throw new TypeError('result has no JSON representation');
+    return { ok: true, value: JSON.parse(json) };
+  } catch (e) {
+    return { ok: false, error: 'entry result is not JSON-serializable: ' + String(e && e.message || e).slice(0, 500) };
+  }
+};
 const done = (m) => { try { process.send(m, () => process.exit(0)); } catch { try { process.exit(0); } catch {} } };
 process.once('message', async (msg) => {
   try {
     const { code, tsPath, entryName, call, input, args, allowlist } = msg || {};
-    let js = code;
-    try {
-      if (tsPath) {
-        const ts = require(tsPath);
-        js = ts.transpileModule(code, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } }).outputText;
-      }
-    } catch (e) { /* not TS / no compiler → run source as-is (may already be JS) */ }
+    if (!tsPath) throw new Error('TypeScript compiler path is required');
+    const ts = require(tsPath);
+    const js = ts.transpileModule(code, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } }).outputText;
     const allow = new Set(allowlist || []);
     let captured = null;
     const defineAgent = (cfg) => { captured = cfg; return cfg; };
     const requireShim = (id) => {
       if (id === '@agentic/runtime') return { defineAgent };
-      if (allow.has(id)) { try { return require(id); } catch { return {}; } }
-      return {};
+      if (allow.has(id)) return require(id);
+      throw new Error("module '" + id + "' is not allowlisted");
     };
     const moduleObj = { exports: {} };
     // vm.compileFunction: build fn(require, exports, module, defineAgent){ <js> } WITHOUT eval/new Function.
@@ -140,7 +145,9 @@ process.once('message', async (msg) => {
     if (call) {
       if (typeof entry !== 'function') { done({ ok: false, error: 'no callable entry export found', exportNames }); return; }
       const out = Array.isArray(args) ? await entry.apply(null, args) : await entry(input);
-      done({ ok: true, called: true, exportName: name, exportNames, result: safe(out) });
+      const encoded = serialize(out);
+      if (!encoded.ok) { done({ ok: false, called: true, exportName: name, exportNames, error: encoded.error }); return; }
+      done({ ok: true, called: true, exportName: name, exportNames, result: encoded.value });
     } else {
       done({ ok: true, called: false, exportName: name, exportNames });
     }
@@ -159,13 +166,13 @@ export interface RunModuleProcOpts {
   input?: unknown;
   /** multi-arg call (overrides `input` when present). */
   args?: unknown[];
-  /** module ids the require-shim resolves to the REAL module (everything else → {}). */
+  /** module ids the require-shim resolves to the REAL module (everything else is rejected). */
   allowlist?: string[];
   /** wall-clock ceiling in ms (default 5000). Exceed → child SIGKILL'd, { timedOut:true }. */
   timeoutMs?: number;
   /** child heap cap in MB → --max-old-space-size (default 128). */
   memoryMb?: number;
-  /** isolation invariant: if set, MUST end in `-sb`. */
+  /** isolation invariant: if set, MUST be a recognized Agent Factory sandbox tenant. */
   tenantSlug?: string;
   /** extra env var names to pass through the scrub (still dropped if secret-shaped). */
   envAllowExtra?: string[];
@@ -176,8 +183,7 @@ export interface RunModuleProcOpts {
 
 // Resolve the `typescript` compiler entry from THIS module's location (packages/runtime has it as a
 // devDep). Passed to the child as an absolute path because the child's cwd is an empty temp dir with no
-// node_modules to walk. Best-effort: if it can't resolve, the child runs the code as-is (plain JS works;
-// TS-syntax modules then fail with a clean structured error rather than a throw).
+// node_modules to walk. Missing compiler resolution fails the run before the child is started.
 function resolveTypescriptPath(): string | undefined {
   try {
     return createRequire(import.meta.url).resolve("typescript");
@@ -195,6 +201,7 @@ export function runGeneratedModuleProcess(
 ): Promise<ModuleRunResult> {
   const started = Date.now();
   const done = (r: Omit<ModuleRunResult, "durationMs">): ModuleRunResult => ({
+    isolationTier: "process",
     ...r,
     durationMs: Date.now() - started,
   });
@@ -204,9 +211,9 @@ export function runGeneratedModuleProcess(
   }
   // Isolation invariant (mirrors codeact / worker runner): a real-tenant slug is refused up front, so this
   // runner can never be wired onto a non-sandbox tenant by accident.
-  if (opts.tenantSlug && !opts.tenantSlug.endsWith("-sb")) {
+  if (opts.tenantSlug && !isSandboxTenant(opts.tenantSlug)) {
     return Promise.resolve(
-      done({ ok: false, error: "隔离不变量：runGeneratedModuleProcess 仅允许 -sb 沙箱租户" }),
+      done({ ok: false, error: "隔离不变量：runGeneratedModuleProcess 仅允许 Agent Factory 临时沙箱租户" }),
     );
   }
   if (!code || code.trim().length < 1) {
@@ -216,6 +223,11 @@ export function runGeneratedModuleProcess(
   const timeoutMs = opts.timeoutMs ?? 5000;
   const memoryMb = opts.memoryMb ?? 128;
   const tsPath = resolveTypescriptPath();
+  if (!tsPath) {
+    return Promise.resolve(
+      done({ ok: false, error: "TypeScript compiler is unavailable; generated module was not executed" }),
+    );
+  }
 
   let tmpDir: string;
   let bootstrapPath: string;

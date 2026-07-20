@@ -9,6 +9,12 @@
  */
 
 import type { BrainEvent } from "@/lib/hooks/useBrainStream";
+import {
+  isAnswerCompletion,
+  isDeliveryCompletion,
+  normalizeFactoryCompletionKind,
+  type FactoryCompletionKind,
+} from "./model";
 
 export type SessionTaskKind = "harness" | "agent" | "subagent" | "tool" | "sandbox";
 export type SessionTaskStatus = "running" | "ok" | "error" | "idle";
@@ -59,6 +65,71 @@ export interface AgentDrill {
   io?: { triggerEvent?: string; outputEvent?: string; status?: string; input?: string; output?: string };
   /** 真实 emit 载荷违反下游契约（execution_fidelity）。 */
   fidelityFail?: boolean;
+  /** #CHECKLIST — harness 持有的该 agent 验收清单（acceptance 事件的 perAgent 投影；大脑无权改，
+   *  条目翻绿只能靠真实执行证据：注册/真跑/code_ran 回执/保真评分）。 */
+  checklist?: Array<{ key: string; label: string; pass: boolean; detail: string }>;
+}
+
+/** #CHECKLIST — 舰队级验收清单快照（最近一次 finish 尝试的 acceptance 事件）。 */
+export interface AcceptanceSnap {
+  allPass: boolean;
+  evidenceValid: boolean;
+  criteria: Array<{ key: string; label: string; pass: boolean; detail: string }>;
+  perAgent: Array<{ slug: string; short: string; pass: boolean; items: Array<{ key: string; label: string; pass: boolean; detail: string }> }>;
+}
+
+/** 取最近一次 acceptance 快照（未有 finish 尝试 → null）。纯函数，回放一致。 */
+export function deriveAcceptance(events: BrainEvent[]): AcceptanceSnap | null {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i]!;
+    if (e.t === "acceptance") {
+      const latestRealSandbox = events
+        .slice(0, i)
+        .reverse()
+        .find(
+          (event) =>
+            event.t === "sandbox" && !event.simulated,
+        );
+      const evidenceValid = Boolean(
+        latestRealSandbox &&
+          (latestRealSandbox.fullChainRan ||
+            latestRealSandbox.reachedSuccessTerminal),
+      );
+      const criteria = Array.isArray(e.criteria)
+        ? (e.criteria as AcceptanceSnap["criteria"])
+        : [];
+      const perAgent = Array.isArray(e.perAgent)
+        ? (e.perAgent as AcceptanceSnap["perAgent"])
+        : [];
+      return {
+        allPass: evidenceValid && Boolean(e.allPass),
+        evidenceValid,
+        criteria: evidenceValid
+          ? criteria
+          : [
+              {
+                key: "real_sandbox_evidence",
+                label: "真实沙箱执行证据",
+                pass: false,
+                detail: "legacy / invalid evidence：模拟或缺失的执行记录不能用于验收",
+              },
+              ...criteria.map((criterion) => ({
+                ...criterion,
+                pass: false,
+                detail: `${criterion.detail} · 无真实执行证据`,
+              })),
+            ],
+        perAgent: evidenceValid
+          ? perAgent
+          : perAgent.map((agent) => ({
+              ...agent,
+              pass: false,
+              items: agent.items.map((item) => ({ ...item, pass: false })),
+            })),
+      };
+    }
+  }
+  return null;
 }
 
 const s = (v: unknown): string => (v == null ? "" : String(v));
@@ -89,6 +160,7 @@ interface AgentAcc {
   refineCritiques: string[];
   fidelityFail?: boolean;
   io?: { triggerEvent?: string; outputEvent?: string; status?: string; input?: string; output?: string };
+  checklist?: Array<{ key: string; label: string; pass: boolean; detail: string }>;
 }
 
 /** Serialize a tool.call input ONCE (capped — inputs can carry base64 blobs) for agent matching. */
@@ -114,7 +186,9 @@ export function deriveSessionTasks(events: BrainEvent[], running: boolean): Sess
   let turns = 0;
   let tokens = 0;
   let refines = 0;
+  let hasRealSandboxSuccess = false;
   let doneStatus: string | null = null;
+  let doneCompletionKind: FactoryCompletionKind = "legacy_unknown";
   let sawError = false;
   let harnessLastIdx = 0;
   // #per-agent-think — attribution cursor: the slug of the agent currently being worked on. Moves
@@ -321,7 +395,11 @@ export function deriveSessionTasks(events: BrainEvent[], running: boolean): Sess
         flushThink();
         currentAgentSlug = null; // whole-chain deploy → harness scope
         harnessLastIdx = idx;
-        const ok = Boolean(e.fullChainRan) || Boolean(e.reachedSuccessTerminal);
+        const simulated = Boolean(e.simulated);
+        const ok =
+          !simulated &&
+          (Boolean(e.fullChainRan) || Boolean(e.reachedSuccessTerminal));
+        if (!simulated) hasRealSandboxSuccess = ok;
         const items: TaskTranscriptItem[] = [];
         const runs = (e.agentRuns as Array<Record<string, unknown>> | undefined) ?? [];
         // #R3 — execution-fidelity failures (agentShort list) → per-agent drill badge
@@ -332,10 +410,10 @@ export function deriveSessionTasks(events: BrainEvent[], running: boolean): Sess
             kind: "event",
             label: `${s(r.agentShort)} · ${s(r.status)}`,
             detail: clip(`${s(r.triggerEvent)} → ${s(r.outputEvent) || "（无产出事件）"}`, 110),
-            ok: s(r.status) !== "error",
+            ok: simulated ? false : s(r.status) !== "error",
           });
           const a = agentOf(s(r.agentShort)) ?? agentOf(s(r.agentSlug));
-          if (a) {
+          if (a && !simulated) {
             a.sandboxStatus = s(r.status);
             a.lastEventIdx = idx;
             a.transcript.push({ id: nid(), kind: "event", label: `沙箱 I/O · ${s(r.status)}`, detail: clip(`${s(r.triggerEvent)} → ${s(r.outputEvent)}`, 100), ok: s(r.status) !== "error" });
@@ -347,12 +425,12 @@ export function deriveSessionTasks(events: BrainEvent[], running: boolean): Sess
         }
         sandboxes.push({
           idx,
-          simulated: Boolean(e.simulated),
+          simulated,
           ok,
-          meta: `函数 ${s(e.functionsRegistered ?? 0)} · 跑 ${s(e.ran ?? 0)}${e.reachedSuccessTerminal ? " · 终点达成" : ""}`,
+          meta: `${simulated ? "legacy / invalid evidence · " : ""}函数 ${s(e.functionsRegistered ?? 0)} · 跑 ${s(e.ran ?? 0)}${!simulated && e.reachedSuccessTerminal ? " · 终点达成" : ""}`,
           items,
         });
-        harnessItems.push({ id: nid(), kind: "event", label: e.simulated ? "沙箱（模拟）部署" : "真沙箱部署", detail: `部署 ${s(e.functionsRegistered ?? 0)} · 跑 ${s(e.ran ?? 0)}`, ok });
+        harnessItems.push({ id: nid(), kind: "event", label: simulated ? "历史模拟记录 · 无效执行证据" : "真沙箱部署", detail: `部署 ${s(e.functionsRegistered ?? 0)} · 跑 ${s(e.ran ?? 0)}`, ok });
         break;
       }
       case "validation": {
@@ -391,6 +469,17 @@ export function deriveSessionTasks(events: BrainEvent[], running: boolean): Sess
         }
         break;
       }
+      case "group.start": {
+        // #SUBAGENT-GROUP — narrate a reasoning-driven group fan-out in the background panel.
+        flushThink();
+        currentAgentSlug = null;
+        harnessLastIdx = idx;
+        harnessItems.push({ id: nid(), kind: "event", label: `派生子智能体组「${s(e.label)}」`, detail: clip(`${Number(e.members ?? 0)} 个成员并行深挖`, 120) });
+        break;
+      }
+      case "group.done":
+        harnessItems.push({ id: nid(), kind: "event", label: `子智能体组「${s(e.label)}」完成`, detail: clip(`${Number(e.ok ?? 0)}/${Number(e.total ?? 0)} 成功`, 120), ok: Number(e.ok ?? 0) > 0 });
+        break;
       case "tool.created":
         flushThink();
         currentAgentSlug = null; // tool authoring → harness scope
@@ -407,6 +496,36 @@ export function deriveSessionTasks(events: BrainEvent[], running: boolean): Sess
       case "skill.created":
         harnessItems.push({ id: nid(), kind: "event", label: `造技能 ${s(e.name)}`, detail: clip(s(e.purpose), 80), ok: true });
         break;
+      case "acceptance": {
+        // #CHECKLIST — harness 持有的验收清单：finish 每次尝试都发一份快照。harness 卡记一条
+        // gate 事件；per-agent items 落到各 agent 的 drill（大脑无权改，翻绿=真实执行证据）。
+        currentAgentSlug = null;
+        const crit = Array.isArray(e.criteria)
+          ? (e.criteria as Array<{ label: string; pass: boolean }>).map(
+              (criterion) => ({
+                ...criterion,
+                pass: hasRealSandboxSuccess && criterion.pass,
+              }),
+            )
+          : [];
+        const failing = crit.filter((c) => !c.pass);
+        const acceptancePass = hasRealSandboxSuccess && Boolean(e.allPass);
+        harnessItems.push({ id: nid(), kind: "gate", label: acceptancePass ? "验收清单全绿 ✓" : `验收清单 ${crit.length - failing.length}/${crit.length}`, detail: !hasRealSandboxSuccess ? "无真实沙箱执行证据；历史模拟记录不能用于验收" : failing.length ? clip(failing.map((c) => c.label).join("；"), 140) : undefined, ok: acceptancePass });
+        for (const p of Array.isArray(e.perAgent) ? (e.perAgent as Array<Record<string, unknown>>) : []) {
+          const a = agentOf(s(p.slug)) ?? agentOf(s(p.short));
+          if (!a) continue;
+          a.checklist = Array.isArray(p.items)
+            ? (p.items as Array<{ key: string; label: string; pass: boolean; detail: string }>).map(
+                (item) => ({
+                  ...item,
+                  pass: hasRealSandboxSuccess && item.pass,
+                }),
+              )
+            : [];
+          a.lastEventIdx = idx;
+        }
+        break;
+      }
       case "strategy": {
         // #P4+ — AI 就某子问题自选的推理方法/组合(不默认 ReAct)。归给对应 agent(forAgent)或当前 agent,
         // 显示在它的卡上;无归属则进 harness。
@@ -419,6 +538,19 @@ export function deriveSessionTasks(events: BrainEvent[], running: boolean): Sess
         } else {
           harnessItems.push({ id: nid(), kind: "event", label: `推理方法：${chain}（${via}）`, detail: clip(s(e.rationale), 90) });
         }
+        break;
+      }
+      case "reasoning.step": {
+        // #REASONING-KERNEL — a reasoning method actually EXECUTED (not just declared): show the method +
+        // its real conclusion (combo → one per step, index/total). Under the agent it was for, else harness.
+        const strat = s(e.strategy) || "推理";
+        const stepN = Number(e.index ?? 0) + 1;
+        const totalN = Number(e.total ?? 1);
+        const label = `推理执行：${strat}${totalN > 1 ? `（${stepN}/${totalN}）` : ""}`;
+        const detail = clip(s(e.output), 160);
+        const target = agentOf(s(e.forAgent)) ?? (currentAgentSlug ? agents.get(currentAgentSlug) : undefined);
+        if (target) target.transcript.push({ id: nid(), kind: "event", label, detail });
+        else harnessItems.push({ id: nid(), kind: "event", label, detail });
         break;
       }
       case "compaction":
@@ -482,7 +614,18 @@ export function deriveSessionTasks(events: BrainEvent[], running: boolean): Sess
         flushThink();
         currentAgentSlug = null;
         doneStatus = s(e.status);
-        harnessItems.push({ id: nid(), kind: "event", label: `结束 · ${doneStatus}`, ok: doneStatus === "finished" });
+        doneCompletionKind = normalizeFactoryCompletionKind(e.completionKind);
+        if (doneStatus === "waiting_human") {
+          harnessItems.push({ id: nid(), kind: "gate", label: "等待人工回复", detail: "检查点已保存" });
+        } else if (isAnswerCompletion(doneStatus, doneCompletionKind)) {
+          harnessItems.push({ id: nid(), kind: "event", label: "回答完成 · 无交付/沙箱声明", ok: true });
+        } else if (isDeliveryCompletion(doneStatus, doneCompletionKind)) {
+          harnessItems.push({ id: nid(), kind: "event", label: hasRealSandboxSuccess ? "交付完成 · 真沙箱已通过" : "交付记录 · 缺少真实沙箱成功证据", ok: hasRealSandboxSuccess });
+        } else if (doneCompletionKind === "legacy_unknown") {
+          harnessItems.push({ id: nid(), kind: "event", label: "结束 · 完成类型未知" });
+        } else {
+          harnessItems.push({ id: nid(), kind: "event", label: `结束 · ${doneStatus}`, ok: false });
+        }
         break;
     }
   });
@@ -490,6 +633,9 @@ export function deriveSessionTasks(events: BrainEvent[], running: boolean): Sess
 
   const tasks: SessionTask[] = [];
   const lastIdx = events.length - 1;
+  const answerCompleted = isAnswerCompletion(doneStatus, doneCompletionKind);
+  const deliveryCompleted = isDeliveryCompletion(doneStatus, doneCompletionKind) && hasRealSandboxSuccess;
+  const ambiguousLegacyCompletion = doneStatus !== null && doneCompletionKind === "legacy_unknown";
 
   if (harnessItems.length) {
     tasks.push({
@@ -498,7 +644,7 @@ export function deriveSessionTasks(events: BrainEvent[], running: boolean): Sess
       typeLabel: "Harness · ReAct 主循环",
       title: "工厂大脑",
       meta: `${turns} 轮 · ${toolCalls} 次工具 · ${thinkBursts} 段推理${tokens ? ` · ${Math.round(tokens / 1000)}k tok` : ""}${refines ? ` · ${refines} 修订` : ""}`,
-      status: running ? "running" : sawError || (doneStatus && doneStatus !== "finished") ? "error" : doneStatus === "finished" ? "ok" : "ok",
+      status: running ? "running" : sawError ? "error" : doneStatus === "waiting_human" ? "idle" : answerCompleted || deliveryCompleted ? "ok" : ambiguousLegacyCompletion ? "idle" : doneStatus ? "error" : "ok",
       order: harnessLastIdx,
       transcript: harnessItems.slice(-240),
     });
@@ -533,6 +679,7 @@ export function deriveSessionTasks(events: BrainEvent[], running: boolean): Sess
         parentAgent: a.parentAgent,
         io: a.io,
         fidelityFail: a.fidelityFail,
+        checklist: a.checklist,
       },
     });
   }
@@ -570,7 +717,7 @@ export function deriveSessionTasks(events: BrainEvent[], running: boolean): Sess
     tasks.push({
       id: `sandbox-${i}`,
       kind: "sandbox",
-      typeLabel: sb.simulated ? "Sandbox · 模拟" : "Sandbox · 真实 Inngest",
+      typeLabel: sb.simulated ? "Sandbox · legacy / invalid evidence" : "Sandbox · 真实 Inngest",
       title: `沙箱部署 #${i + 1}`,
       meta: sb.meta,
       status: sb.ok ? "ok" : "error",

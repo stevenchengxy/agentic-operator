@@ -24,7 +24,7 @@
  * even by guessing slugs.
  */
 
-import { and, desc, eq, gt, sql } from "drizzle-orm";
+import { and, desc, eq, gt, isNull, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/sqlite-core";
 import {
   agents,
@@ -255,9 +255,15 @@ export async function fetchCausality(
           eq(eventTypes.name, events.name),
         ),
       )
-      .where(eq(events.id, id))
+      .where(
+        and(
+          eq(events.id, id),
+          eq(events.tenantId, tenantId),
+          isNull(events.deletedAt),
+        ),
+      )
       .all()[0];
-    if (!row || row.tenantId !== tenantId) return null;
+    if (!row) return null;
     const { tenantId: _t, ...rest } = row;
     return rest;
   };
@@ -288,7 +294,11 @@ export async function fetchCausality(
         .from(runs)
         .leftJoin(agents, eq(agents.id, runs.agentId))
         .where(
-          and(eq(runs.tenantId, tenantId), eq(runs.triggerEventId, eventId)),
+          and(
+            eq(runs.tenantId, tenantId),
+            eq(runs.triggerEventId, eventId),
+            isNull(runs.deletedAt),
+          ),
         )
         .orderBy(desc(runs.startedAt))
         .limit(CAUSALITY_FANOUT_CAP)
@@ -365,7 +375,13 @@ export async function getEventDetail(
         eq(eventTypes.name, events.name),
       ),
     )
-    .where(and(eq(events.id, eventId), eq(events.tenantId, tenantId)))
+    .where(
+      and(
+        eq(events.id, eventId),
+        eq(events.tenantId, tenantId),
+        isNull(events.deletedAt),
+      ),
+    )
     .all()[0];
   if (!row) return null;
 
@@ -380,7 +396,13 @@ export async function getEventDetail(
     })
     .from(runs)
     .leftJoin(consumerAgents, eq(consumerAgents.id, runs.agentId))
-    .where(eq(runs.triggerEventId, eventId))
+    .where(
+      and(
+        eq(runs.triggerEventId, eventId),
+        eq(runs.tenantId, tenantId),
+        isNull(runs.deletedAt),
+      ),
+    )
     .orderBy(desc(runs.startedAt))
     .all();
 

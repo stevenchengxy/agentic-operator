@@ -9,8 +9,7 @@
  * can be copy-pasted from the prototype with minimal modification.
  *
  * Cross-cutting plumbing:
- *   - design tokens         → `apps/web/styles/tokens.css` (P2-FE-02)
- *   - density hook + helper → `apps/web/app/portal/lib/density.ts` (P2-FE-20)
+ *   - design/density tokens → `apps/web/styles/tokens.css` (P2-FE-02/20)
  *   - tenant hook           → `apps/web/app/portal/lib/use-tenant.ts` (P2-FE-25)
  *   - formatters            → `apps/web/app/portal/lib/format.ts`
  *

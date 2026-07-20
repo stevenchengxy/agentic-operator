@@ -7,7 +7,8 @@
  */
 
 export function fmtAgo(ms: number): string {
-  const d = Date.now() - ms;
+  if (!Number.isFinite(ms) || ms <= 0) return "—";
+  const d = Math.max(0, Date.now() - ms);
   if (d < 60_000) return `${Math.max(1, Math.floor(d / 1000))}s ago`;
   if (d < 3_600_000) return `${Math.floor(d / 60_000)}m ago`;
   if (d < 86_400_000) return `${Math.floor(d / 3_600_000)}h ago`;

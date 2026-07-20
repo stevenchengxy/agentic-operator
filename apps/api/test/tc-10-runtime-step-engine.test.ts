@@ -42,10 +42,14 @@ const mockGateway = {
   chat: async (req: {
     messages: Array<{ role: string; content: string }>;
     model?: string;
+    jsonMode?: boolean;
   }) => {
     captured.push({ messages: req.messages, model: req.model });
+    const text = "echo: " + (req.messages.at(-1)?.content ?? "");
     return {
-      text: "echo: " + (req.messages.at(-1)?.content ?? ""),
+      // A prompt with `output` asks the gateway for JSON mode. Mirror a real
+      // provider by returning a JSON string value rather than raw prose.
+      text: req.jsonMode ? JSON.stringify(text) : text,
       provider: "mock" as const,
       model: "mock-model-v7",
       tokensIn: 10,

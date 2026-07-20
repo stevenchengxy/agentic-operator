@@ -9,6 +9,13 @@
 import { mkdir, appendFile, stat } from "node:fs/promises";
 import path from "node:path";
 
+// `stat()` followed by `appendFile()` is not an atomic pair.  Without a
+// per-file queue, concurrent appends can both observe the same size and
+// return identical payload refs even though only one record starts there.
+// Keep the queue process-local: a logs directory is instance-local unless a
+// deployment deliberately mounts it as shared storage.
+const appendQueues = new Map<string, Promise<void>>();
+
 function logRoot() {
   return process.env.AGENTIC_LOGS_DIR ?? "./logs";
 }
@@ -41,13 +48,26 @@ export async function appendToLedger(
   record: LedgerRecord,
 ): Promise<string> {
   const filePath = eventLedgerPath(tenantSlug);
-  await mkdir(path.dirname(filePath), { recursive: true });
-  let offset = 0;
+  const previous = appendQueues.get(filePath) ?? Promise.resolve();
+  const operation = previous.catch(() => undefined).then(async () => {
+    await mkdir(path.dirname(filePath), { recursive: true });
+    let offset = 0;
+    try {
+      offset = (await stat(filePath)).size;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    }
+    await appendFile(filePath, JSON.stringify(record) + "\n", "utf8");
+    return `${filePath}#${offset}`;
+  });
+  const tail = operation.then(
+    () => undefined,
+    () => undefined,
+  );
+  appendQueues.set(filePath, tail);
   try {
-    offset = (await stat(filePath)).size;
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    return await operation;
+  } finally {
+    if (appendQueues.get(filePath) === tail) appendQueues.delete(filePath);
   }
-  await appendFile(filePath, JSON.stringify(record) + "\n", "utf8");
-  return `${filePath}#${offset}`;
 }

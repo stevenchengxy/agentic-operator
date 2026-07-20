@@ -1,13 +1,13 @@
 # P4-CI-02 — Release pipeline.
 #
 # Triggers when a tag like `v1.0.0` is pushed. Builds + pushes the api
-# and web Docker images to the configured registry. The registry name
-# is left as `ghcr.io/PLACEHOLDER/agentic-operator` so the user can swap
-# in their org (GHCR/ECR/GAR) before the first cut. Image tags follow
-# the git tag (e.g. v1.0.0) plus `latest` for the default branch.
+# and web Docker images to the current repository owner's GHCR namespace.
+# Image tags follow the git tag (e.g. v1.0.0) plus `latest`.
 #
-# Out of scope: Helm chart publishing, SBOM, signing — track as v1.1
-# items once we have a deployment target.
+# Factory execution control/workload/gateway/candidate/executor images are a stricter release class: they
+# are published by digest, carry BuildKit provenance/SBOM, receive GitHub OIDC
+# signed provenance + SPDX attestations, and are verified before the release
+# manifest can be attached to the draft release.
 
 name: release
 
@@ -24,71 +24,249 @@ on:
 
 # Only one release builds at a time per tag; back-to-back tags queue.
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.tag || github.ref }}
   cancel-in-progress: false
 
 env:
   NODE_VERSION: "26"
-  PNPM_VERSION: "11.1.2"
-  # TODO(P4-OPS-02): replace `ghcr.io/PLACEHOLDER` with the real registry
-  # (e.g. `ghcr.io/anthropic` or your org's GHCR namespace) before first
-  # release cut. Once swapped, the GITHUB_TOKEN-issued credential below
-  # has write-package scope for GHCR by default.
-  REGISTRY: ghcr.io/PLACEHOLDER
+  PNPM_VERSION: "11.3.0"
+  REGISTRY: ghcr.io
   IMAGE_PREFIX: agentic
+  # Reviewed 2026-07-16. Dependabot/operations must update this digest through
+  # a normal code review; release never resolves the mutable 26-slim tag.
+  SANDBOX_NODE_BASE_IMAGE: docker.io/library/node@sha256:715e55e4b84e4bb0ff48e49b398a848f08e55daed8eb6a0ea1839ae53bc57583
 
 jobs:
   build-push:
     name: Build + push images
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 75
+    outputs:
+      release_tag: ${{ steps.tag.outputs.value }}
+      release_sha: ${{ steps.source.outputs.sha }}
+      sandbox_supply_chain_artifact: ${{ steps.sandbox-supply-chain-name.outputs.artifact_name }}
     permissions:
+      actions: write
       contents: read
+      id-token: write
+      attestations: write
       packages: write
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Resolve release tag
+      - name: Resolve release tag and checkout ref
         id: tag
         shell: bash
+        env:
+          REQUESTED_TAG: ${{ inputs.tag }}
         run: |
-          if [ -n "${{ inputs.tag }}" ]; then
-            echo "value=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          if [ -n "$REQUESTED_TAG" ]; then
+            release_tag="$REQUESTED_TAG"
+            release_ref="refs/tags/$REQUESTED_TAG"
           else
-            # github.ref_name is the tag for tag-push events.
-            echo "value=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+            release_tag="$GITHUB_REF_NAME"
+            release_ref="$GITHUB_REF"
           fi
+          if [[ ! "$release_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Release ref must be a numeric semantic vX.Y.Z tag."
+            exit 1
+          fi
+          git check-ref-format "refs/tags/$release_tag"
+          echo "value=$release_tag" >> "$GITHUB_OUTPUT"
+          echo "ref=$release_ref" >> "$GITHUB_OUTPUT"
 
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ steps.tag.outputs.ref }}
+
+      - name: Resolve exact release commit
+        id: source
+        shell: bash
+        env:
+          EXPECTED_RELEASE_REF: ${{ steps.tag.outputs.ref }}
+        run: |
+          release_sha="$(git rev-parse HEAD)"
+          if [[ ! "$release_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::The release ref did not resolve to one exact commit."
+            exit 1
+          fi
+          if [ "$GITHUB_REF" != "$EXPECTED_RELEASE_REF" ]; then
+            echo "::error::Attested releases must run from the exact tag ref. For workflow_dispatch, select the tag in the 'Use workflow from' picker; an input tag on a branch is not sufficient."
+            exit 1
+          fi
+          if [ "$release_sha" != "$GITHUB_SHA" ]; then
+            echo "::error::The checked-out tag moved or does not match the immutable workflow source SHA."
+            exit 1
+          fi
+          echo "sha=$release_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve image namespace
+        id: image
+        shell: bash
+        run: |
+          # OCI image names are lowercase even when a GitHub owner is not.
+          echo "namespace=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
         with:
           version: ${{ env.PNPM_VERSION }}
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
 
+      - name: Build isolated CodeAct image for promoted regression replay
+        id: regression-codeact-image
+        shell: bash
+        run: |
+          docker build --pull \
+            --file apps/api/Dockerfile \
+            --target codeact-candidate \
+            --build-arg "NODE_BASE_IMAGE=${SANDBOX_NODE_BASE_IMAGE}" \
+            --build-arg "AGENTIC_BUILD_ID=${{ steps.source.outputs.sha }}" \
+            --build-arg "AGENTIC_SOURCE_REPOSITORY=https://github.com/${GITHUB_REPOSITORY}" \
+            --tag "agentic-codeact-regression:${{ steps.source.outputs.sha }}" \
+            .
+          image_id="$(docker image inspect "agentic-codeact-regression:${{ steps.source.outputs.sha }}" --format '{{.Id}}')"
+          if [[ ! "$image_id" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "::error::Regression CodeAct image is not content-addressed."
+            exit 1
+          fi
+          echo "image_id=$image_id" >> "$GITHUB_OUTPUT"
+
+      - name: Dispatch a fresh trusted exporter for this release consumer
+        id: regression-export-request
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        env:
+          EXPORT_REF: ${{ steps.tag.outputs.value }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const crypto = require("node:crypto");
+            const nonce = crypto.randomBytes(32).toString("hex");
+            const attempt = String(process.env.GITHUB_RUN_ATTEMPT);
+            const runName = `factory-regression-export/${context.runId}/${attempt}/${nonce}`;
+            core.setSecret(nonce);
+            core.setOutput("nonce", nonce);
+            core.setOutput("run_name", runName);
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: "factory-regression-export.yml",
+              ref: process.env.EXPORT_REF,
+              inputs: {
+                consumer_workflow: ".github/workflows/release.yml",
+                consumer_run_id: String(context.runId),
+                consumer_run_attempt: attempt,
+                request_nonce: nonce,
+              },
+            });
+
+      # Release waits for the one exporter it just dispatched. A successful
+      # older run with the same commit can never satisfy this consumer nonce.
+      - name: Resolve exact promoted regression exporter
+        id: regression-bundle
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        env:
+          RELEASE_SHA: ${{ steps.source.outputs.sha }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const deadline = Date.now() + 18 * 60 * 1000;
+            const requestedRunName = `${{ steps.regression-export-request.outputs.run_name }}`;
+            while (Date.now() < deadline) {
+              const { data } = await github.rest.actions.listWorkflowRuns({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                workflow_id: "factory-regression-export.yml",
+                per_page: 100,
+              });
+              const exact = data.workflow_runs.filter((run) =>
+                run.head_sha === process.env.RELEASE_SHA &&
+                run.event === "workflow_dispatch" &&
+                run.display_title === requestedRunName &&
+                run.path === ".github/workflows/factory-regression-export.yml" &&
+                run.head_repository?.full_name === `${context.repo.owner}/${context.repo.repo}`
+              );
+              const passed = exact.find((run) => run.status === "completed" && run.conclusion === "success");
+              if (passed) {
+                core.setOutput("run_id", String(passed.id));
+                core.setOutput("run_attempt", String(passed.run_attempt));
+                core.setOutput("event", passed.event);
+                core.setOutput("artifact_name", `agent-factory-promoted-regressions-${process.env.RELEASE_SHA}`);
+                return;
+              }
+              const terminal = exact.find((run) => run.status === "completed" && run.conclusion !== "success");
+              if (terminal) throw new Error(`Exact Factory exporter run did not succeed (run ${terminal.id}).`);
+              await new Promise((resolve) => setTimeout(resolve, 15000));
+            }
+            throw new Error("Timed out waiting for the fresh release Factory exporter run.");
+
+      - name: Download immutable promoted regression data
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ steps.regression-bundle.outputs.artifact_name }}
+          path: ${{ runner.temp }}/agent-factory-promoted-regressions
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.regression-bundle.outputs.run_id }}
+
+      - name: Bind replay to the signed snapshot high-watermark
+        id: regression-checkpoint
+        shell: bash
+        env:
+          EXPORT_ROOT: ${{ runner.temp }}/agent-factory-promoted-regressions
+        run: |
+          node -e 'const fs=require("node:fs"); const path=require("node:path"); const value=JSON.parse(fs.readFileSync(path.join(process.env.EXPORT_ROOT,"factory-regression-export.json"),"utf8")); const state=value?.highWatermark?.stateHash; if (typeof state !== "string" || !/^factory-promotion-high-watermark:v1:[a-f0-9]{64}$/.test(state)) throw new Error("export manifest has no valid high-watermark state hash"); process.stdout.write(`state_hash=${state}\n`);' >> "$GITHUB_OUTPUT"
+
+      - name: Replay every committed Agent Factory promotion
+        env:
+          FACTORY_EXEC_TIER: container
+          FACTORY_CONTAINER_IMAGE: ${{ env.SANDBOX_NODE_BASE_IMAGE }}
+          FACTORY_EXEC_GENERATED: "1"
+          FACTORY_CODEACT_CANDIDATE_IMAGE: ${{ steps.regression-codeact-image.outputs.image_id }}
+          FACTORY_CODEACT_ALLOWED_IMAGE_DIGESTS: '["${{ steps.regression-codeact-image.outputs.image_id }}"]'
+          FACTORY_CODEACT_DOCKER_SOCKET: /var/run/docker.sock
+          FACTORY_REGRESSION_EXPORT_SIGNING_KEY: ${{ secrets.FACTORY_REGRESSION_EXPORT_SIGNING_KEY }}
+        run: >-
+          pnpm --filter @agentic/api replay:factory-regressions --
+          --data-root "${RUNNER_TEMP}/agent-factory-promoted-regressions"
+          --export-run-id "${{ steps.regression-bundle.outputs.run_id }}"
+          --export-run-attempt "${{ steps.regression-bundle.outputs.run_attempt }}"
+          --export-event "${{ steps.regression-bundle.outputs.event }}"
+          --expected-ref "${{ steps.tag.outputs.ref }}"
+          --expected-sha "${{ steps.source.outputs.sha }}"
+          --consumer-workflow ".github/workflows/release.yml"
+          --consumer-run-id "${{ github.run_id }}"
+          --consumer-run-attempt "${{ github.run_attempt }}"
+          --request-nonce "${{ steps.regression-export-request.outputs.nonce }}"
+          --expected-high-watermark-state-hash "${{ steps.regression-checkpoint.outputs.state_hash }}"
+
       # Optional sanity gate: re-run the full test suite + coverage on
       # the tagged commit. Catches the "release the wrong sha" foot-gun.
       - name: Verify tests + coverage on release commit
+        env:
+          NODE_ENV: test
+          LLM_DEFAULT_PROVIDER: mock
+          LLM_DEFAULT_MODEL: mock-model-v1
+          AGENTIC_BOOTSTRAP_ADMIN_EMAIL: release-ci-admin@agentic.invalid
+          AGENTIC_BOOTSTRAP_ADMIN_NAME: Release CI Administrator
         run: |
+          seed_password="$(openssl rand -hex 24)"
+          echo "::add-mask::$seed_password"
+          export AGENTIC_BOOTSTRAP_ADMIN_PASSWORD="$seed_password"
           pnpm db:migrate
           pnpm db:seed
           pnpm -r test:coverage
 
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Login to registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ${{ env.REGISTRY }}
-          # PLACEHOLDER registries don't authenticate; once the user swaps
-          # in a real ghcr.io/<org> path, this picks up the workflow's
-          # GITHUB_TOKEN. For non-GHCR registries (ECR, GAR, Docker Hub)
-          # swap in the corresponding `*-login-action` step.
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
@@ -104,39 +282,453 @@ jobs:
 
       - name: Build + push apps/api image
         if: steps.detect.outputs.api == 'yes'
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           file: apps/api/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}-api:${{ steps.tag.outputs.value }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}-api:latest
+            ${{ env.REGISTRY }}/${{ steps.image.outputs.namespace }}/${{ env.IMAGE_PREFIX }}-api:${{ steps.tag.outputs.value }}
+            ${{ env.REGISTRY }}/${{ steps.image.outputs.namespace }}/${{ env.IMAGE_PREFIX }}-api:latest
 
       - name: Build + push apps/web image
         if: steps.detect.outputs.web == 'yes'
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           file: apps/web/Dockerfile
+          build-args: |
+            AGENTIC_API_URL=http://api:3501
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}-web:${{ steps.tag.outputs.value }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}-web:latest
+            ${{ env.REGISTRY }}/${{ steps.image.outputs.namespace }}/${{ env.IMAGE_PREFIX }}-web:${{ steps.tag.outputs.value }}
+            ${{ env.REGISTRY }}/${{ steps.image.outputs.namespace }}/${{ env.IMAGE_PREFIX }}-web:latest
 
       - name: Build + push apps/inngest-worker image
         if: steps.detect.outputs.worker == 'yes'
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           file: apps/inngest-worker/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}-inngest-worker:${{ steps.tag.outputs.value }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}-inngest-worker:latest
+            ${{ env.REGISTRY }}/${{ steps.image.outputs.namespace }}/${{ env.IMAGE_PREFIX }}-inngest-worker:${{ steps.tag.outputs.value }}
+            ${{ env.REGISTRY }}/${{ steps.image.outputs.namespace }}/${{ env.IMAGE_PREFIX }}-inngest-worker:latest
+
+      # Generated-code execution images never deploy by tag. A single explicit
+      # production platform avoids attaching an amd64-only scan to a multi-arch
+      # index and calling it a complete SBOM. Add another independently scanned
+      # platform only when the deployment fleet actually requires it.
+      - name: Build + push Factory sandbox control image
+        id: sandbox-control-image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: apps/api/Dockerfile
+          target: sandbox-control
+          platforms: linux/amd64
+          push: true
+          pull: true
+          provenance: mode=max
+          sbom: true
+          build-args: |
+            NODE_BASE_IMAGE=${{ env.SANDBOX_NODE_BASE_IMAGE }}
+            AGENTIC_BUILD_ID=${{ steps.source.outputs.sha }}
+            AGENTIC_SOURCE_REPOSITORY=https://github.com/${{ github.repository }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ steps.image.outputs.namespace }}/${{ env.IMAGE_PREFIX }}-sandbox-control:${{ steps.tag.outputs.value }}
+            ${{ env.REGISTRY }}/${{ steps.image.outputs.namespace }}/${{ env.IMAGE_PREFIX }}-sandbox-control:${{ steps.source.outputs.sha }}
+
+      - name: Build + push Factory sandbox workload image
+        id: sandbox-workload-image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: apps/api/Dockerfile
+          target: sandbox-workload
+          platforms: linux/amd64
+          push: true
+          pull: true
+          provenance: mode=max
+          sbom: true
+          build-args: |
+            NODE_BASE_IMAGE=${{ env.SANDBOX_NODE_BASE_IMAGE }}
+            AGENTIC_BUILD_ID=${{ steps.source.outputs.sha }}
+            AGENTIC_SOURCE_REPOSITORY=https://github.com/${{ github.repository }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ steps.image.outputs.namespace }}/${{ env.IMAGE_PREFIX }}-sandbox-workload:${{ steps.tag.outputs.value }}
+            ${{ env.REGISTRY }}/${{ steps.image.outputs.namespace }}/${{ env.IMAGE_PREFIX }}-sandbox-workload:${{ steps.source.outputs.sha }}
+
+      - name: Build + push Factory sandbox broker gateway image
+        id: sandbox-gateway-image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: apps/api/Dockerfile
+          target: sandbox-broker-gateway
+          platforms: linux/amd64
+          push: true
+          pull: true
+          provenance: mode=max
+          sbom: true
+          build-args: |
+            NODE_BASE_IMAGE=${{ env.SANDBOX_NODE_BASE_IMAGE }}
+            AGENTIC_BUILD_ID=${{ steps.source.outputs.sha }}
+            AGENTIC_SOURCE_REPOSITORY=https://github.com/${{ github.repository }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ steps.image.outputs.namespace }}/${{ env.IMAGE_PREFIX }}-sandbox-gateway:${{ steps.tag.outputs.value }}
+            ${{ env.REGISTRY }}/${{ steps.image.outputs.namespace }}/${{ env.IMAGE_PREFIX }}-sandbox-gateway:${{ steps.source.outputs.sha }}
+
+      - name: Build + push Factory CodeAct candidate image
+        id: codeact-candidate-image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: apps/api/Dockerfile
+          target: codeact-candidate
+          platforms: linux/amd64
+          push: true
+          pull: true
+          provenance: mode=max
+          sbom: true
+          build-args: |
+            NODE_BASE_IMAGE=${{ env.SANDBOX_NODE_BASE_IMAGE }}
+            AGENTIC_BUILD_ID=${{ steps.source.outputs.sha }}
+            AGENTIC_SOURCE_REPOSITORY=https://github.com/${{ github.repository }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ steps.image.outputs.namespace }}/${{ env.IMAGE_PREFIX }}-codeact-candidate:${{ steps.tag.outputs.value }}
+            ${{ env.REGISTRY }}/${{ steps.image.outputs.namespace }}/${{ env.IMAGE_PREFIX }}-codeact-candidate:${{ steps.source.outputs.sha }}
+
+      - name: Build + push Factory production CodeAct executor image
+        id: production-codeact-executor-image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: apps/api/Dockerfile
+          target: production-codeact-executor
+          platforms: linux/amd64
+          push: true
+          pull: true
+          provenance: mode=max
+          sbom: true
+          build-args: |
+            NODE_BASE_IMAGE=${{ env.SANDBOX_NODE_BASE_IMAGE }}
+            AGENTIC_BUILD_ID=${{ steps.source.outputs.sha }}
+            AGENTIC_SOURCE_REPOSITORY=https://github.com/${{ github.repository }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ steps.image.outputs.namespace }}/${{ env.IMAGE_PREFIX }}-production-codeact-executor:${{ steps.tag.outputs.value }}
+            ${{ env.REGISTRY }}/${{ steps.image.outputs.namespace }}/${{ env.IMAGE_PREFIX }}-production-codeact-executor:${{ steps.source.outputs.sha }}
+
+      - name: Verify published production executor role and source labels
+        shell: bash
+        env:
+          EXECUTOR_REF: ${{ env.REGISTRY }}/${{ steps.image.outputs.namespace }}/${{ env.IMAGE_PREFIX }}-production-codeact-executor@${{ steps.production-codeact-executor-image.outputs.digest }}
+          EXPECTED_SOURCE: https://github.com/${{ github.repository }}
+        run: |
+          docker pull "$EXECUTOR_REF"
+          test "$(docker image inspect "$EXECUTOR_REF" --format '{{ index .Config.Labels "io.agentic.sandbox.role" }}')" = production-codeact-executor
+          test "$(docker image inspect "$EXECUTOR_REF" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" = "${{ steps.source.outputs.sha }}"
+          test "$(docker image inspect "$EXECUTOR_REF" --format '{{ index .Config.Labels "org.opencontainers.image.source" }}')" = "$EXPECTED_SOURCE"
+
+      - name: Prepare Factory sandbox supply-chain directory
+        shell: bash
+        run: mkdir -p "${RUNNER_TEMP}/factory-sandbox-supply-chain"
+
+      - name: Generate control image SPDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: ${{ env.REGISTRY }}/${{ steps.image.outputs.namespace }}/${{ env.IMAGE_PREFIX }}-sandbox-control@${{ steps.sandbox-control-image.outputs.digest }}
+          format: spdx-json
+          output-file: ${{ runner.temp }}/factory-sandbox-supply-chain/control.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+          registry-username: ${{ github.actor }}
+          registry-password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate workload image SPDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: ${{ env.REGISTRY }}/${{ steps.image.outputs.namespace }}/${{ env.IMAGE_PREFIX }}-sandbox-workload@${{ steps.sandbox-workload-image.outputs.digest }}
+          format: spdx-json
+          output-file: ${{ runner.temp }}/factory-sandbox-supply-chain/workload.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+          registry-username: ${{ github.actor }}
+          registry-password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate CodeAct candidate image SPDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: ${{ env.REGISTRY }}/${{ steps.image.outputs.namespace }}/${{ env.IMAGE_PREFIX }}-codeact-candidate@${{ steps.codeact-candidate-image.outputs.digest }}
+          format: spdx-json
+          output-file: ${{ runner.temp }}/factory-sandbox-supply-chain/candidate.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+          registry-username: ${{ github.actor }}
+          registry-password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate production CodeAct executor image SPDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: ${{ env.REGISTRY }}/${{ steps.image.outputs.namespace }}/${{ env.IMAGE_PREFIX }}-production-codeact-executor@${{ steps.production-codeact-executor-image.outputs.digest }}
+          format: spdx-json
+          output-file: ${{ runner.temp }}/factory-sandbox-supply-chain/executor.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+          registry-username: ${{ github.actor }}
+          registry-password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate sandbox gateway image SPDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: ${{ env.REGISTRY }}/${{ steps.image.outputs.namespace }}/${{ env.IMAGE_PREFIX }}-sandbox-gateway@${{ steps.sandbox-gateway-image.outputs.digest }}
+          format: spdx-json
+          output-file: ${{ runner.temp }}/factory-sandbox-supply-chain/gateway.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+          registry-username: ${{ github.actor }}
+          registry-password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Block release on critical control-image vulnerabilities
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7
+        with:
+          sbom: ${{ runner.temp }}/factory-sandbox-supply-chain/control.spdx.json
+          fail-build: true
+          severity-cutoff: critical
+          only-fixed: false
+          output-format: json
+          output-file: ${{ runner.temp }}/factory-sandbox-supply-chain/control.vulnerabilities.json
+          cache-db: true
+
+      - name: Block release on critical workload-image vulnerabilities
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7
+        with:
+          sbom: ${{ runner.temp }}/factory-sandbox-supply-chain/workload.spdx.json
+          fail-build: true
+          severity-cutoff: critical
+          only-fixed: false
+          output-format: json
+          output-file: ${{ runner.temp }}/factory-sandbox-supply-chain/workload.vulnerabilities.json
+          cache-db: true
+
+      - name: Block release on critical candidate-image vulnerabilities
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7
+        with:
+          sbom: ${{ runner.temp }}/factory-sandbox-supply-chain/candidate.spdx.json
+          fail-build: true
+          severity-cutoff: critical
+          only-fixed: false
+          output-format: json
+          output-file: ${{ runner.temp }}/factory-sandbox-supply-chain/candidate.vulnerabilities.json
+          cache-db: true
+
+      - name: Block release on critical production-executor-image vulnerabilities
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7
+        with:
+          sbom: ${{ runner.temp }}/factory-sandbox-supply-chain/executor.spdx.json
+          fail-build: true
+          severity-cutoff: critical
+          only-fixed: false
+          output-format: json
+          output-file: ${{ runner.temp }}/factory-sandbox-supply-chain/executor.vulnerabilities.json
+          cache-db: true
+
+      - name: Block release on critical gateway-image vulnerabilities
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7
+        with:
+          sbom: ${{ runner.temp }}/factory-sandbox-supply-chain/gateway.spdx.json
+          fail-build: true
+          severity-cutoff: critical
+          only-fixed: false
+          output-format: json
+          output-file: ${{ runner.temp }}/factory-sandbox-supply-chain/gateway.vulnerabilities.json
+          cache-db: true
+
+      - name: Attest control image provenance
+        id: attest-control-provenance
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ steps.image.outputs.namespace }}/${{ env.IMAGE_PREFIX }}-sandbox-control
+          subject-digest: ${{ steps.sandbox-control-image.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: Attest control image SPDX SBOM
+        id: attest-control-sbom
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ steps.image.outputs.namespace }}/${{ env.IMAGE_PREFIX }}-sandbox-control
+          subject-digest: ${{ steps.sandbox-control-image.outputs.digest }}
+          sbom-path: ${{ runner.temp }}/factory-sandbox-supply-chain/control.spdx.json
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: Attest workload image provenance
+        id: attest-workload-provenance
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ steps.image.outputs.namespace }}/${{ env.IMAGE_PREFIX }}-sandbox-workload
+          subject-digest: ${{ steps.sandbox-workload-image.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: Attest workload image SPDX SBOM
+        id: attest-workload-sbom
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ steps.image.outputs.namespace }}/${{ env.IMAGE_PREFIX }}-sandbox-workload
+          subject-digest: ${{ steps.sandbox-workload-image.outputs.digest }}
+          sbom-path: ${{ runner.temp }}/factory-sandbox-supply-chain/workload.spdx.json
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: Attest CodeAct candidate image provenance
+        id: attest-candidate-provenance
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ steps.image.outputs.namespace }}/${{ env.IMAGE_PREFIX }}-codeact-candidate
+          subject-digest: ${{ steps.codeact-candidate-image.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: Attest production CodeAct executor image provenance
+        id: attest-executor-provenance
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ steps.image.outputs.namespace }}/${{ env.IMAGE_PREFIX }}-production-codeact-executor
+          subject-digest: ${{ steps.production-codeact-executor-image.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: Attest sandbox gateway image provenance
+        id: attest-gateway-provenance
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ steps.image.outputs.namespace }}/${{ env.IMAGE_PREFIX }}-sandbox-gateway
+          subject-digest: ${{ steps.sandbox-gateway-image.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: Attest sandbox gateway image SPDX SBOM
+        id: attest-gateway-sbom
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ steps.image.outputs.namespace }}/${{ env.IMAGE_PREFIX }}-sandbox-gateway
+          subject-digest: ${{ steps.sandbox-gateway-image.outputs.digest }}
+          sbom-path: ${{ runner.temp }}/factory-sandbox-supply-chain/gateway.spdx.json
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: Attest CodeAct candidate image SPDX SBOM
+        id: attest-candidate-sbom
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ steps.image.outputs.namespace }}/${{ env.IMAGE_PREFIX }}-codeact-candidate
+          subject-digest: ${{ steps.codeact-candidate-image.outputs.digest }}
+          sbom-path: ${{ runner.temp }}/factory-sandbox-supply-chain/candidate.spdx.json
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: Attest production CodeAct executor image SPDX SBOM
+        id: attest-executor-sbom
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ steps.image.outputs.namespace }}/${{ env.IMAGE_PREFIX }}-production-codeact-executor
+          subject-digest: ${{ steps.production-codeact-executor-image.outputs.digest }}
+          sbom-path: ${{ runner.temp }}/factory-sandbox-supply-chain/executor.spdx.json
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: Create canonical digest-only sandbox release manifest
+        shell: bash
+        run: |
+          control_sbom_digest="sha256:$(sha256sum "${RUNNER_TEMP}/factory-sandbox-supply-chain/control.spdx.json" | cut -d' ' -f1)"
+          workload_sbom_digest="sha256:$(sha256sum "${RUNNER_TEMP}/factory-sandbox-supply-chain/workload.spdx.json" | cut -d' ' -f1)"
+          gateway_sbom_digest="sha256:$(sha256sum "${RUNNER_TEMP}/factory-sandbox-supply-chain/gateway.spdx.json" | cut -d' ' -f1)"
+          candidate_sbom_digest="sha256:$(sha256sum "${RUNNER_TEMP}/factory-sandbox-supply-chain/candidate.spdx.json" | cut -d' ' -f1)"
+          executor_sbom_digest="sha256:$(sha256sum "${RUNNER_TEMP}/factory-sandbox-supply-chain/executor.spdx.json" | cut -d' ' -f1)"
+          node scripts/factory-sandbox-release-manifest.mjs create \
+            --repository "${GITHUB_REPOSITORY}" \
+            --commit "${{ steps.source.outputs.sha }}" \
+            --release-tag "${{ steps.tag.outputs.value }}" \
+            --base-image "${{ env.SANDBOX_NODE_BASE_IMAGE }}" \
+            --platform linux/amd64 \
+            --control-name "${{ env.REGISTRY }}/${{ steps.image.outputs.namespace }}/${{ env.IMAGE_PREFIX }}-sandbox-control" \
+            --control-digest "${{ steps.sandbox-control-image.outputs.digest }}" \
+            --control-sbom-digest "$control_sbom_digest" \
+            --workload-name "${{ env.REGISTRY }}/${{ steps.image.outputs.namespace }}/${{ env.IMAGE_PREFIX }}-sandbox-workload" \
+            --workload-digest "${{ steps.sandbox-workload-image.outputs.digest }}" \
+            --workload-sbom-digest "$workload_sbom_digest" \
+            --gateway-name "${{ env.REGISTRY }}/${{ steps.image.outputs.namespace }}/${{ env.IMAGE_PREFIX }}-sandbox-gateway" \
+            --gateway-digest "${{ steps.sandbox-gateway-image.outputs.digest }}" \
+            --gateway-sbom-digest "$gateway_sbom_digest" \
+            --candidate-name "${{ env.REGISTRY }}/${{ steps.image.outputs.namespace }}/${{ env.IMAGE_PREFIX }}-codeact-candidate" \
+            --candidate-digest "${{ steps.codeact-candidate-image.outputs.digest }}" \
+            --candidate-sbom-digest "$candidate_sbom_digest" \
+            --executor-name "${{ env.REGISTRY }}/${{ steps.image.outputs.namespace }}/${{ env.IMAGE_PREFIX }}-production-codeact-executor" \
+            --executor-digest "${{ steps.production-codeact-executor-image.outputs.digest }}" \
+            --executor-sbom-digest "$executor_sbom_digest" \
+            --output "${RUNNER_TEMP}/factory-sandbox-supply-chain/agent-factory-sandbox-release.json"
+
+      - name: Attest digest-only sandbox release manifest
+        id: attest-sandbox-manifest
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-path: ${{ runner.temp }}/factory-sandbox-supply-chain/agent-factory-sandbox-release.json
+
+      - name: Verify signed provenance and SPDX attestations before release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CONTROL_REF: ${{ env.REGISTRY }}/${{ steps.image.outputs.namespace }}/${{ env.IMAGE_PREFIX }}-sandbox-control@${{ steps.sandbox-control-image.outputs.digest }}
+          WORKLOAD_REF: ${{ env.REGISTRY }}/${{ steps.image.outputs.namespace }}/${{ env.IMAGE_PREFIX }}-sandbox-workload@${{ steps.sandbox-workload-image.outputs.digest }}
+          GATEWAY_REF: ${{ env.REGISTRY }}/${{ steps.image.outputs.namespace }}/${{ env.IMAGE_PREFIX }}-sandbox-gateway@${{ steps.sandbox-gateway-image.outputs.digest }}
+          CANDIDATE_REF: ${{ env.REGISTRY }}/${{ steps.image.outputs.namespace }}/${{ env.IMAGE_PREFIX }}-codeact-candidate@${{ steps.codeact-candidate-image.outputs.digest }}
+          EXECUTOR_REF: ${{ env.REGISTRY }}/${{ steps.image.outputs.namespace }}/${{ env.IMAGE_PREFIX }}-production-codeact-executor@${{ steps.production-codeact-executor-image.outputs.digest }}
+        run: |
+          signer="${GITHUB_REPOSITORY}/.github/workflows/release.yml"
+          common=(--repo "$GITHUB_REPOSITORY" --signer-workflow "$signer" --source-digest "${{ steps.source.outputs.sha }}" --source-ref "$GITHUB_REF" --deny-self-hosted-runners)
+          gh attestation verify "${RUNNER_TEMP}/factory-sandbox-supply-chain/agent-factory-sandbox-release.json" "${common[@]}" --bundle "${{ steps.attest-sandbox-manifest.outputs.bundle-path }}" >/dev/null
+          gh attestation verify "oci://$CONTROL_REF" "${common[@]}" --bundle "${{ steps.attest-control-provenance.outputs.bundle-path }}" >/dev/null
+          gh attestation verify "oci://$CONTROL_REF" "${common[@]}" --predicate-type "https://spdx.dev/Document/v2.3" --bundle "${{ steps.attest-control-sbom.outputs.bundle-path }}" >/dev/null
+          gh attestation verify "oci://$WORKLOAD_REF" "${common[@]}" --bundle "${{ steps.attest-workload-provenance.outputs.bundle-path }}" >/dev/null
+          gh attestation verify "oci://$WORKLOAD_REF" "${common[@]}" --predicate-type "https://spdx.dev/Document/v2.3" --bundle "${{ steps.attest-workload-sbom.outputs.bundle-path }}" >/dev/null
+          gh attestation verify "oci://$GATEWAY_REF" "${common[@]}" --bundle "${{ steps.attest-gateway-provenance.outputs.bundle-path }}" >/dev/null
+          gh attestation verify "oci://$GATEWAY_REF" "${common[@]}" --predicate-type "https://spdx.dev/Document/v2.3" --bundle "${{ steps.attest-gateway-sbom.outputs.bundle-path }}" >/dev/null
+          gh attestation verify "oci://$CANDIDATE_REF" "${common[@]}" --bundle "${{ steps.attest-candidate-provenance.outputs.bundle-path }}" >/dev/null
+          gh attestation verify "oci://$CANDIDATE_REF" "${common[@]}" --predicate-type "https://spdx.dev/Document/v2.3" --bundle "${{ steps.attest-candidate-sbom.outputs.bundle-path }}" >/dev/null
+          gh attestation verify "oci://$EXECUTOR_REF" "${common[@]}" --bundle "${{ steps.attest-executor-provenance.outputs.bundle-path }}" >/dev/null
+          gh attestation verify "oci://$EXECUTOR_REF" "${common[@]}" --predicate-type "https://spdx.dev/Document/v2.3" --bundle "${{ steps.attest-executor-sbom.outputs.bundle-path }}" >/dev/null
+
+      - name: Collect offline attestation bundles and checksums
+        shell: bash
+        run: |
+          destination="${RUNNER_TEMP}/factory-sandbox-supply-chain"
+          cp "${{ steps.attest-control-provenance.outputs.bundle-path }}" "$destination/control.provenance.sigstore.json"
+          cp "${{ steps.attest-control-sbom.outputs.bundle-path }}" "$destination/control.sbom.sigstore.json"
+          cp "${{ steps.attest-workload-provenance.outputs.bundle-path }}" "$destination/workload.provenance.sigstore.json"
+          cp "${{ steps.attest-workload-sbom.outputs.bundle-path }}" "$destination/workload.sbom.sigstore.json"
+          cp "${{ steps.attest-gateway-provenance.outputs.bundle-path }}" "$destination/gateway.provenance.sigstore.json"
+          cp "${{ steps.attest-gateway-sbom.outputs.bundle-path }}" "$destination/gateway.sbom.sigstore.json"
+          cp "${{ steps.attest-candidate-provenance.outputs.bundle-path }}" "$destination/candidate.provenance.sigstore.json"
+          cp "${{ steps.attest-candidate-sbom.outputs.bundle-path }}" "$destination/candidate.sbom.sigstore.json"
+          cp "${{ steps.attest-executor-provenance.outputs.bundle-path }}" "$destination/executor.provenance.sigstore.json"
+          cp "${{ steps.attest-executor-sbom.outputs.bundle-path }}" "$destination/executor.sbom.sigstore.json"
+          cp "${{ steps.attest-sandbox-manifest.outputs.bundle-path }}" "$destination/release-manifest.provenance.sigstore.json"
+          cd "$destination"
+          sha256sum agent-factory-sandbox-release.json control.spdx.json workload.spdx.json gateway.spdx.json candidate.spdx.json executor.spdx.json control.vulnerabilities.json workload.vulnerabilities.json gateway.vulnerabilities.json candidate.vulnerabilities.json executor.vulnerabilities.json > SHA256SUMS
+
+      - name: Upload verified Factory sandbox supply chain
+        id: sandbox-supply-chain
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: factory-sandbox-supply-chain-${{ steps.tag.outputs.value }}
+          path: ${{ runner.temp }}/factory-sandbox-supply-chain
+          if-no-files-found: error
+          retention-days: 90
 
       - name: No Dockerfile warning
         if: |
@@ -147,6 +739,13 @@ jobs:
           echo "::error::No Dockerfiles found. P4-OPS-01/02/03 must land before tagging a release."
           exit 1
 
+      - name: Export Factory sandbox artifact name
+        id: sandbox-supply-chain-name
+        shell: bash
+        # The next job uses this deterministic name; exposing it as a job
+        # output keeps the release attachment dependency explicit.
+        run: echo "artifact_name=factory-sandbox-supply-chain-${{ steps.tag.outputs.value }}" >> "$GITHUB_OUTPUT"
+
   github-release:
     name: GitHub Release
     runs-on: ubuntu-latest
@@ -155,12 +754,27 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ needs['build-push'].outputs.release_tag }}
+      - name: Download verified Factory sandbox supply chain
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ needs['build-push'].outputs.sandbox_supply_chain_artifact }}
+          path: ${{ runner.temp }}/factory-sandbox-supply-chain
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           # `generate_release_notes` pulls commit subjects since the
           # previous tag; the user can edit the draft before publishing.
           generate_release_notes: true
           draft: true
-          name: ${{ github.ref_name }}
+          tag_name: ${{ needs['build-push'].outputs.release_tag }}
+          target_commitish: ${{ needs['build-push'].outputs.release_sha }}
+          name: ${{ needs['build-push'].outputs.release_tag }}
+          files: |
+            ${{ runner.temp }}/factory-sandbox-supply-chain/agent-factory-sandbox-release.json
+            ${{ runner.temp }}/factory-sandbox-supply-chain/SHA256SUMS
+            ${{ runner.temp }}/factory-sandbox-supply-chain/*.spdx.json
+            ${{ runner.temp }}/factory-sandbox-supply-chain/*.vulnerabilities.json
+            ${{ runner.temp }}/factory-sandbox-supply-chain/*.sigstore.json

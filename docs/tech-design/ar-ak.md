@@ -11,9 +11,9 @@ The Agent Kinds module is the **typology layer** of the runtime: it defines what
 
 ## 2. V1 state (citable)
 
-- **Code agents** (AR-AK-01) — `BaseAgent<TInput, TOutput>` abstract class at `packages/agent-runtime/src/base-agent.ts:35-108`. Subclasses override `buildMessages()` (line 61-64) and optionally `parseOutput()` (line 67-72), `getTools()` / `getToolHandlers()` (lines 78-89), `outputSchema` (line 58). The `run()` entry point is sealed (line 96-98) — it delegates to `executeAgentRun()` in `packages/agent-runtime/src/run-engine.ts`. Registration happens at module-load time via `agentRegistry.register(new MyAgent())` in `packages/agent-runtime/src/registry.ts`. The legacy mirror at `packages/agents/src/base-agent.ts:29-78` is still the API entry point — `apps/api/src/routes/v1/agent-invoke.ts:23` imports `agentRegistry` from `@agentic/agents`, not the newer `@agentic/agent-runtime`.
+- **Code agents** (AR-AK-01) — `packages/agents` is the single production implementation. `BaseAgent<TInput, TOutput>` exposes `buildMessages()`, optional `parseOutput()`, `getTools()` / `getToolHandlers()`, `outputSchema`, and `maxOutputTokens`. Its sealed `run()` delegates to `executeAgentRun()` in `packages/agents/src/run-engine.ts`, which owns multi-turn tool dispatch, structured-output repair, budget-scoped provider calls, persistence, cancellation, and streaming. Registration happens at module load through `packages/agents/src/registry.ts`.
 - **Manifest agents** (AR-AK-02) — `AgentSpec` parsed from `models/<slug>-vN/workflow*.json` at boot. The Zod schema (`packages/runtime/src/manifest.ts:28-67`) is `.passthrough()` after Phase 0 fixed the schema-drift bug, accepting the four new Phase-0 fields: `input_data`, `ontology_instructions`, `tool_use`, `typescript_code`. Registration: `bootstrapAll()` in `packages/runtime/src/bootstrap.ts` walks `models/*-v*/workflow*.json`, upserts the agent rows, and calls `registerAgent()` (`packages/runtime/src/register.ts:53-499`) per entry with non-empty `trigger[]`. Each entry becomes one Inngest function with `id = "${tenantSlug}.${agentName}"`, `concurrency = { limit: <cap>, key: "${tenantSlug}:" + event.data.subject }`, retries=3 (`register.ts:86-103`).
-- **System agents** (AR-AK-03) — informal tier; the canonical example is `TestAgent` at `data/system-agents/test-agent.ts:1-60` (`name="testAgent"`, `defaultProvider="mock"`, `defaultModel="mock-model-v1"`). It registers itself via `data/system-agents/index.ts:38` and is imported eagerly by `apps/api/src/bootstrap.ts`. The runtime treats it identically to any other code agent.
+- **System agents** (AR-AK-03) — informal tier; the canonical example is `TestAgent` in `packages/agents/src/system/test-agent.ts`. It has no mock/provider override: production uses the configured real gateway provider, with a 512-token output ceiling. `apps/api/src/bootstrap.ts` imports `@agentic/agents/system` once to register the roster.
 - **Tenant code agents** (AR-AK-04) — code agents delivered through the `agentic deploy` CLI path. The CLI tars up a project; `POST /v1/tenant-code` (`apps/api/src/routes/v1/tenant-code.ts`) unpacks, validates, dynamic-imports, atomic-renames into `data/tenants/<slug>/<version>/`, and updates the registry. The hot-reload contract is *capture at run start* — in-flight runs complete against the old code.
 
 ## 3. V1.1 changes
@@ -35,10 +35,10 @@ The Agent Kinds module is the **typology layer** of the runtime: it defines what
 **Tests:** `tc-tool-use-dispatch.test.ts` (new) — manifest with `tool_use:"customTool"`, assert tenant `customTool` handler is called, not the name-hint fallback. Add an assertion to TC-1 that bare-named actions still resolve via the registry.
 
 ### UC-V11-24 / AR-GAP-12 — Per-agent `defaultProviders` for failover
-**Site:** `packages/agent-runtime/src/base-agent.ts:43-45` (the `defaultProvider` / `defaultModel` singletons).
+**Site:** `packages/agents/src/base-agent.ts` (the `defaultProvider` / `defaultModel` singletons).
 **Bug:** Gateway failover (`packages/llm-gateway/src/gateway.ts:71-130`) iterates `req.providers[]`, but `BaseAgent.run()` only forwards `defaultProvider` (one entry, no array). P1-RT-06 added `AgentContext.providers?: ProviderId[]` forwarding, but the typical caller (the portal "Test run" button, the test agent) doesn't supply one.
 **Fix:** Add `readonly defaultProviders?: ProviderId[]` next to `defaultProvider` on the BaseAgent class. The run engine's `dispatch()` step reads it: `req.providers = ctx.providers ?? this.defaultProviders ?? (this.defaultProvider ? [this.defaultProvider] : undefined)`. The single-provider `defaultProvider` remains as a one-element convenience.
-**New types:** `defaultProviders?: ProviderId[]` on `BaseAgent`. Update `AgentContext` doc-string in `packages/agent-runtime/src/types.ts` to clarify precedence.
+**New types:** `defaultProviders?: ProviderId[]` on `BaseAgent`. Update `AgentContext` doc-string in `packages/agents/src/types.ts` to clarify precedence.
 **Migration:** None — single-provider agents keep the same behavior.
 **Tests:** `tc-failover-default-providers.test.ts` — agent with `defaultProviders=["anthropic","openai"]`, stub anthropic to throw `rate_limit` twice → openai → success; assert run completes ok and the steps row records `provider="openai"`.
 
@@ -79,7 +79,7 @@ abstract class BaseAgent<TInput=unknown, TOutput=string> {
 
 **Manifest-agent surface (declarative JSON):** `packages/runtime/src/manifest.ts:28-67` — `AgentSpec` Zod schema with `id`, `name`, `title?`, `description`, `actor[]`, `trigger[]`, `actions[]`, `triggered_event[]`, plus Phase-0 fields. `ActionSpec` discriminated union on `type` ∈ `{tool, logic, manual}` (with `condition`/`delay`/`subflow` reified as one of those three at write-time). `ToolActionSchema` gains `tool_use?: string` in V1.1.
 
-**Registry:** `packages/agent-runtime/src/registry.ts` exports `agentRegistry: { register, get, list, has }`. The legacy mirror at `packages/agents/src/registry.ts` is the API-side consumer until the migration to `@agentic/agent-runtime` lands.
+**Registry:** `packages/agents/src/registry.ts` exports the canonical `agentRegistry: { register, get, list, has }` consumed by the API and system roster.
 
 **Zod request bodies:** `InvokeAgentBody` in `packages/contracts/src/agents.ts` — `{ input?: unknown, provider?: ProviderId, model?: string, async?: boolean }`.
 

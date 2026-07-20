@@ -12,6 +12,7 @@
 
 import { Fragment, useMemo } from "react";
 import { Empty, HelpTip } from "@/app/portal/components";
+import { fmtNum } from "@/app/portal/lib/format";
 import type { AgentCardData, FactoryStageId, StageState } from "./model";
 
 // ── stage rail (compact, always-pinned progress) ──────────────────────────────────
@@ -45,7 +46,7 @@ export function StageRail({ stages, current, running, refineCount }: { stages: S
   );
 }
 
-// ── progress SPINE (full-width status band: 业务域 · 阶段+健康 · 成本 · 后台) ──────────────
+// ── progress SPINE (full-width status band: connected ontology · stages · cost · background) ──
 // One merged band that replaces the old right-pane StageRail + left-rail HealthStrip + budget
 // figure. Health checks fold onto their owning stage segment as colored pips (green=ok,
 // amber=待办/未过, dim=未开始); hover a pip for its label. Pure projection — same stages/checks
@@ -61,7 +62,7 @@ export function FactorySpine({
   refineCount: number;
   domainName: string;
   healthChecks: Array<{ ok: boolean | undefined; label: string }>;
-  budgetTokens: number;
+  budgetTokens: number | null;
   awaitingHint: string | null;
   onOpenBg: () => void;
 }) {
@@ -69,7 +70,7 @@ export function FactorySpine({
   return (
     <div style={{ display: "flex", alignItems: "stretch", gap: 12, minHeight: 46, padding: "0 14px", borderBottom: "1px solid var(--border)", background: "var(--panel-3)", flexShrink: 0 }}>
       <div title={domainName} style={{ display: "flex", alignItems: "center", gap: 7, alignSelf: "center", background: "var(--panel)", border: "1px solid var(--border)", borderRadius: 8, padding: "5px 10px", fontSize: 12, color: "var(--text-2)", whiteSpace: "nowrap", maxWidth: 210, minWidth: 0 }}>
-        🗂 <b style={{ color: "var(--text)", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis" }}>{domainName || "未选业务域"}</b>
+        🗂 本体 · <b style={{ color: "var(--text)", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis" }}>{domainName || "未连接"}</b>
       </div>
       <div style={{ flex: 1, display: "flex", alignItems: "center", gap: 2, minWidth: 0, overflow: "hidden" }}>
         {stages.map((s, i) => {
@@ -93,7 +94,7 @@ export function FactorySpine({
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 9, alignSelf: "center", flexShrink: 0 }}>
         {refineCount > 0 && <span title="修订回环" style={{ fontSize: 10.5, color: "var(--amber)", fontFamily: "var(--mono)" }}>↺ ×{refineCount}</span>}
-        {budgetTokens > 0 && <span title="本次运行的累计 token" style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-3)" }}>◷ {Math.round(budgetTokens / 1000)}k</span>}
+        {budgetTokens != null && <span title="本次运行的累计 token" style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-3)" }}>◷ {fmtNum(budgetTokens)} tok</span>}
         <button onClick={onOpenBg} title="后台任务" style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, color: "var(--text-2)", background: "var(--panel)", border: `1px solid ${awaitingHint ? "var(--amber)" : "var(--border)"}`, borderRadius: 20, padding: "4px 10px", cursor: "pointer" }}>
           后台{awaitingHint && <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--amber)" }} />}
         </button>

@@ -1,5 +1,20 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { runGeneratedCode, setRuntimeGateway, getRuntimeGateway } from "@agentic/runtime";
+import { codeActContainerTestOptions } from "./codeact-container-test-transport";
+
+const FACTORY_SANDBOX = {
+  tenantSlug: "af-sbx-c0f0aace-7e57c0de-123456789abc-sb",
+  tenantId: "ten-runtime-conformance-sandbox",
+  factoryExecutionScope: {
+    kind: "sandbox" as const,
+    target_domain_id: "Agents-generation",
+    candidate_fingerprint: "candidate:runtime-conformance",
+    attempt_id: "c0f0aace-7e57-4c0d-a123-123456789abc",
+  },
+};
+
+// Low-level executor-kernel fixture only. API/register tests own the durable
+// sandbox-attempt authorization boundary.
 
 // #REDESIGN P2 — the CodeAct (runtime) adapter provides the UNIFIED AgentRuntime socket: a generated
 // handler receives identity + reason/tool/emit/memory/invoke/spawn/log, uniform with the delivered
@@ -24,19 +39,31 @@ const CONFORM_CODE = [
 
 const fakeGateway = { async chat() { return { text: "{}" }; } } as unknown as Parameters<typeof setRuntimeGateway>[0];
 
-describe("#REDESIGN P2 — CodeAct adapter provides a valid AgentRuntime socket", () => {
+describe.sequential("#REDESIGN P2 — CodeAct adapter provides a valid AgentRuntime socket", () => {
   let prev: ReturnType<typeof getRuntimeGateway>;
-  beforeAll(() => { prev = getRuntimeGateway(); setRuntimeGateway(fakeGateway); });
-  afterAll(() => { setRuntimeGateway(prev); });
+  const previousGenerated = process.env.FACTORY_EXEC_GENERATED;
+  beforeAll(() => {
+    prev = getRuntimeGateway();
+    setRuntimeGateway(fakeGateway);
+    process.env.FACTORY_EXEC_GENERATED = "1";
+  });
+  afterAll(() => {
+    setRuntimeGateway(prev);
+    if (previousGenerated === undefined) delete process.env.FACTORY_EXEC_GENERATED;
+    else process.env.FACTORY_EXEC_GENERATED = previousGenerated;
+  });
 
   it("a generated handler receives the full unified ctx (identity + memory + capabilities)", async () => {
-    const r = await runGeneratedCode(CONFORM_CODE, { x: 1 }, { tenantSlug: "conform-sb" });
+    const r = await runGeneratedCode(CONFORM_CODE, { x: 1 }, {
+      ...FACTORY_SANDBOX,
+      ...codeActContainerTestOptions(),
+    });
     expect(r).not.toBeNull();
     expect(r!.data.hasSocket).toBe(true);
     expect(r!.data.memV).toBe(42);            // real in-process sandbox memory
     expect(r!.data.searchEmpty).toBe(true);   // honest empty (ephemeral scope isn't vector-indexed)
     expect(r!.data.agentName).toBe("codeact");
-    expect(r!.data.tenant).toBe("conform-sb");
+    expect(r!.data.tenant).toBe(FACTORY_SANDBOX.tenantSlug);
     expect(r!.data.corr).toBe("sandbox");
   });
 });

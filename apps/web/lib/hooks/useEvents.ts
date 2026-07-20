@@ -9,16 +9,8 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import type { UseQueryResult } from "@tanstack/react-query";
 import { EVENT_KEYS, COUNT_KEYS } from "./useStream";
+import { readApiData } from "@/lib/api-response";
 import { tenantHeader } from "./tenant-header";
-
-interface ApiOk<T> {
-  ok: true;
-  data: T;
-}
-interface ApiErr {
-  ok: false;
-  error: { code: string; message: string };
-}
 
 async function callV1<T>(path: string, init: RequestInit = {}): Promise<T> {
   const { headers: initHeaders, ...rest } = init;
@@ -31,11 +23,7 @@ async function callV1<T>(path: string, init: RequestInit = {}): Promise<T> {
       ...(initHeaders as Record<string, string> | undefined),
     },
   });
-  const body = (await res.json()) as ApiOk<T> | ApiErr;
-  if (!body.ok) {
-    throw new Error(`${path}: ${body.error.code} — ${body.error.message}`);
-  }
-  return body.data;
+  return readApiData<T>(res, path);
 }
 
 export interface EventListFilter {
@@ -141,6 +129,10 @@ export function useEvents(
       : EVENT_KEYS.list(),
     queryFn: () => callV1<EventRow[]>(`/v1/events${query}`),
     staleTime: 2_000,
+    // SSE invalidation is primary; polling keeps the ledger live when a proxy
+    // or browser temporarily drops the stream.
+    refetchInterval: 15_000,
+    refetchIntervalInBackground: false,
   });
 }
 
@@ -156,7 +148,7 @@ export function useEmitEvent() {
       callV1<{ event_id: string; name: string }>("/v1/events", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
+        body: JSON.stringify({ ...body, source: "operator" }),
       }),
     onSettled: () => {
       void client.invalidateQueries({ queryKey: EVENT_KEYS.all });

@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.6
+# syntax=mirror.gcr.io/docker/dockerfile:1.6@sha256:ac85f380a63b13dfcefa89046420e1781752bab202122f8f50032edf31be0021
 #
 # apps/web — Next.js 16 + React 19 standalone production build.
 #
@@ -12,13 +12,17 @@
 # `AGENTIC_API_URL` controls where rewrites point.
 #
 # Build:
-#   docker build -f apps/web/Dockerfile -t agentic-web:dev .
+#   docker build --build-arg AGENTIC_API_URL=http://api:3501 -f apps/web/Dockerfile -t agentic-web:dev .
 #
 # Run:
 #   docker run --rm -p 3599:3599 -e AGENTIC_API_URL=http://api:3501 agentic-web:dev
 
+# Supply-chain releases and the local production installer pass an exact
+# platform digest. The tag default remains only for ad-hoc developer builds.
+ARG NODE_BASE_IMAGE=node:26-slim
+
 # --- base ----------------------------------------------------------------
-FROM node:26-slim AS base
+FROM ${NODE_BASE_IMAGE} AS base
 ENV PNPM_HOME=/pnpm
 ENV PATH="$PNPM_HOME:$PATH"
 # python3/make/g++ are needed because the whole-workspace `pnpm install` builds
@@ -27,7 +31,7 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates tini python3 make g++ \
  && rm -rf /var/lib/apt/lists/*
 # node:26-slim does NOT ship corepack; install pnpm via npm.
-RUN npm install --global pnpm@11.1.2
+RUN npm install --global pnpm@11.3.0
 WORKDIR /app
 
 # --- build ---------------------------------------------------------------
@@ -39,7 +43,6 @@ COPY apps/web/package.json apps/web/tsconfig.json apps/web/
 COPY apps/cli/package.json apps/cli/tsconfig.json apps/cli/
 COPY packages packages
 COPY tenants tenants
-COPY data/system-agents/package.json data/system-agents/tsconfig.json data/system-agents/
 # Root `postinstall` runs scripts/ensure-native-modules.mjs during install.
 COPY scripts scripts
 COPY .npmrc ./
@@ -55,14 +58,19 @@ COPY packages packages
 
 # `next build` reads the same env at build time as `next dev`. Inject a
 # build-time API URL so rewrites compile in.
-ARG AGENTIC_API_URL=http://api:3501
+ARG AGENTIC_API_URL
 ENV AGENTIC_API_URL=${AGENTIC_API_URL}
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN pnpm --filter @agentic/web build
 
 # --- runtime -------------------------------------------------------------
-FROM node:26-slim AS runtime
+FROM ${NODE_BASE_IMAGE} AS runtime
+ARG AGENTIC_BUILD_ID=unverified-local-build
+ARG AGENTIC_SOURCE_REPOSITORY=local-worktree
+LABEL org.opencontainers.image.revision=$AGENTIC_BUILD_ID \
+      org.opencontainers.image.source=$AGENTIC_SOURCE_REPOSITORY \
+      io.agentic.sandbox.role=web
 ENV NODE_ENV=production
 ENV PORT=3599
 ENV HOSTNAME=0.0.0.0
@@ -83,8 +91,10 @@ COPY --from=build --chown=agentic:agentic /app/apps/web/public /app/apps/web/pub
 USER agentic
 EXPOSE 3599
 
+# Service-local liveness only. Rendering `/` may invoke API rewrites and would
+# create web → API readiness → host attestation → web bootstrap recursion.
 HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=3 \
-  CMD node -e "fetch('http://127.0.0.1:'+ (process.env.PORT||3599) +'/').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))" || exit 1
+  CMD node -e "const s=require('node:net').connect({host:'127.0.0.1',port:Number(process.env.PORT||3599)});s.setTimeout(4000);s.once('connect',()=>{s.end();process.exit(0)});s.once('timeout',()=>process.exit(1));s.once('error',()=>process.exit(1))" || exit 1
 
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["node", "apps/web/server.js"]

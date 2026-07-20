@@ -3,26 +3,24 @@
  *
  * Same rationale as app/livefeed/route.ts: the `/v1/:path*` rewrite in
  * next.config.mjs BUFFERS SSE bodies (EventSource would only get the handshake),
- * and EventSource can't set request headers. This route handler returns the upstream
- * ReadableStream verbatim (unbuffered) and translates `?tenant=` into the
- * `x-agentic-tenant` dev header. The factory params (domain/goal/conversation) ride
- * through as query string to the upstream brain stream.
+ * and EventSource can't set request headers. A separate JSON POST has already
+ * accepted the goal and returned a run id; this route forwards only that opaque id
+ * and translates `?tenant=` into the `x-agentic-tenant` header.
  */
 
 import type { NextRequest } from "next/server";
+import { serverApiUrl } from "@/lib/server-api-url";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-const API_URL = process.env.AGENTIC_API_URL ?? "http://localhost:3540";
+const API_URL = serverApiUrl();
 
 export async function GET(req: NextRequest): Promise<Response> {
   const sp = req.nextUrl.searchParams;
   const tenant = sp.get("tenant");
-  const domain = sp.get("domain") ?? "";
-  const goal = sp.get("goal") ?? "";
-  const conversation = sp.get("conversation") ?? "";
-  const run = sp.get("run") ?? ""; // reconnect to a live/finished background run
+  const run = sp.get("run")?.trim() ?? "";
+  if (!run) return new Response("run is required", { status: 400 });
 
   const headers: Record<string, string> = {
     accept: "text/event-stream",
@@ -31,13 +29,7 @@ export async function GET(req: NextRequest): Promise<Response> {
   if (tenant) headers["x-agentic-tenant"] = tenant;
 
   const upstreamUrl = new URL(`${API_URL}/v1/agent-factory/stream`);
-  if (run) {
-    upstreamUrl.searchParams.set("run", run);
-  } else {
-    upstreamUrl.searchParams.set("domain", domain);
-    upstreamUrl.searchParams.set("goal", goal);
-    if (conversation) upstreamUrl.searchParams.set("conversation", conversation);
-  }
+  upstreamUrl.searchParams.set("run", run);
 
   let upstream: Response;
   try {

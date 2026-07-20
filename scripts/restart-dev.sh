@@ -30,19 +30,26 @@ export NVM_DIR="$HOME/.nvm"
 [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
 nvm use 26 >/dev/null 2>&1 || true
 
-echo "[restart] killing stale agentic processes…"
-# Kill OUR concurrently/tsx/next by path so a stuck watcher can't survive.
-# pkill never matches its own pid, and these -f patterns can't match this
-# script's argv ("bash restart-dev.sh"), so there is no self-kill.
-pkill -9 -f "${ROOT}/node_modules/.pnpm/concurrently" 2>/dev/null || true
-pkill -9 -f "${ROOT}/apps/api/node_modules/.bin/../tsx" 2>/dev/null || true
-pkill -9 -f "${ROOT}/apps/web/node_modules/.bin/../next" 2>/dev/null || true
+# Codex's bundled Node runtime includes pnpm as a module, but does not always
+# expose a `pnpm` executable on PATH. Resolve a stable launcher before killing
+# the currently healthy stack so a restart cannot leave the workspace down.
+if command -v pnpm >/dev/null 2>&1; then
+  PNPM_LAUNCH=(pnpm)
+elif [ -n "${PNPM_HOME:-}" ] && [ -x "${PNPM_HOME}/pnpm" ]; then
+  PNPM_LAUNCH=("${PNPM_HOME}/pnpm")
+elif [ -x "${HOME}/Library/pnpm/pnpm" ]; then
+  PNPM_LAUNCH=("${HOME}/Library/pnpm/pnpm")
+elif [ -f "${HOME}/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/pnpm/bin/pnpm.mjs" ]; then
+  PNPM_LAUNCH=(node "${HOME}/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/pnpm/bin/pnpm.mjs")
+else
+  echo "[restart] pnpm was not found. Install pnpm or set PNPM_HOME, then retry." >&2
+  exit 127
+fi
 
-echo "[restart] freeing ports ${PORTS}…"
-lsof -ti:"${PORTS}" 2>/dev/null | xargs kill -9 2>/dev/null || true
-sleep 1
+echo "[restart] stopping the previous workspace stack…"
+bash scripts/stop-dev.sh
 
 echo "[restart] starting dev stack (web :${WEB_PORT} · api :${API_PORT} · inngest :8488)…"
 # `pnpm dev`'s predev re-runs ensure:native + frees the same ports, so this is
 # idempotent. exec so Ctrl-C goes straight to the stack.
-exec pnpm dev
+exec env AGENTIC_SKIP_PREDEV_STOP=1 "${PNPM_LAUNCH[@]}" dev

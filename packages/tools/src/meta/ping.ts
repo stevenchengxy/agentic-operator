@@ -9,10 +9,10 @@
  *   - Debug ctx.subject / ctx.event / ctx.lastResult propagation when
  *     a downstream tool isn't seeing what you expect.
  *
- * Originally born as RAAS's `pingProbe` tool (registered under the
- * action name `monitorAndFetchRequirement`). Promoted to a global
- * `meta.ping` 2026-05-27; the RAAS name + the original `pingProbe`
- * symbol are kept as back-compat aliases in the registry.
+ * Originally born as RAAS's `pingProbe` tool. Promoted to a global
+ * `meta.ping` 2026-05-27; the original `pingProbe` symbol remains a
+ * back-compat alias. Business-action names are deliberately not aliases:
+ * a missing real integration must fail closed instead of returning pong.
  */
 
 import { defineTool } from "@agentic/agent-kit";

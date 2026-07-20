@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 import { synthesizeMockExternalAgents, caseOutcomeFromRuns } from "./sandbox-harness";
 import { chainVerdictByKind } from "./verification";
 import type { GeneratedAgentSpec } from "./spec-types";
@@ -11,7 +11,19 @@ function spec(p: Partial<GeneratedAgentSpec> & { actionName: string; trigger: st
   } as GeneratedAgentSpec;
 }
 
+afterEach(() => vi.unstubAllEnvs());
+
 describe("synthesizeMockExternalAgents", () => {
+  it("is unavailable to a non-test process", () => {
+    vi.stubEnv("NODE_ENV", "production");
+    expect(() =>
+      synthesizeMockExternalAgents(
+        [spec({ actionName: "parser", trigger: ["EXTERNAL_INPUT"], emit: ["DONE"] })],
+        { domainId: "rec", firedEntries: ["KICKOFF"], terminals: ["DONE"] },
+      ),
+    ).toThrow(/test-only/);
+  });
+
   it("returns [] when there are no orphan trigger events", () => {
     const specs = [spec({ actionName: "a", trigger: ["E0"], emit: ["E1"] }), spec({ actionName: "b", trigger: ["E1"], emit: ["DONE"] })];
     expect(synthesizeMockExternalAgents(specs, { domainId: "rec", firedEntries: ["E0"], terminals: ["DONE"] })).toEqual([]);
@@ -46,6 +58,13 @@ describe("caseOutcomeFromRuns + chainVerdictByKind (live per-case attribution)",
     const o = caseOutcomeFromRuns("pass", [{ status: "ok", emittedEvent: "JD_GENERATED" }, { status: "ok", emittedEvent: "RESUME_PROCESSED" }], { successTerminals: success });
     expect(o.reachedSuccessTerminal).toBe(true);
     expect(chainVerdictByKind([o]).allPass).toBe(true);
+  });
+
+  it("checks an exact event for structured decision-table boundary cases", () => {
+    const ok = caseOutcomeFromRuns("edge", [{ status: "ok", emittedEvent: "MATCH_REVIEW" }], { successTerminals: [], expectedEvent: "MATCH_REVIEW" });
+    const bad = caseOutcomeFromRuns("edge", [{ status: "ok", emittedEvent: "MATCH_PASSED" }], { successTerminals: [], expectedEvent: "MATCH_REVIEW" });
+    expect(chainVerdictByKind([ok]).allPass).toBe(true);
+    expect(chainVerdictByKind([bad]).allPass).toBe(false);
   });
   it("reject case reaching a FAIL terminal (clean reject) → pass, not counted against success", () => {
     const o = caseOutcomeFromRuns("reject", [{ status: "ok", emittedEvent: "RESUME_LOCKED_CONFLICT" }], { successTerminals: success });

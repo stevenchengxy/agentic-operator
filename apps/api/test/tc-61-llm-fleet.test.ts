@@ -8,7 +8,7 @@
  *   PATCH  /v1/llm/fleet/:id          — partial update (alias, role, cap)
  *   DELETE /v1/llm/fleet/:id          — remove entry
  */
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vitest";
 import { existsSync, rmSync } from "node:fs";
 import path from "node:path";
 import { buildTestEnv, type TestEnv } from "./harness";
@@ -28,8 +28,25 @@ describe("TC-61: /v1/llm/fleet model-fleet CRUD", () => {
     env = await buildTestEnv();
   });
 
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
+      data: [
+        "anthropic/claude-sonnet-4-5",
+        "openai/gpt-4.1-mini",
+        "openai/gpt-5.4-mini-future",
+        "openai/gpt-oss-120b",
+        "google/gemini-3-flash-preview",
+        "deepseek/deepseek-v4-pro",
+        "deepseek/deepseek-v4-flash",
+        "minimax/minimax-m2.7",
+      ].map((id) => ({ id })),
+    }), { status: 200, headers: { "content-type": "application/json" } }));
+  });
+
   afterAll(async () => {
     if (existsSync(FLEET_PATH)) rmSync(FLEET_PATH);
+    vi.restoreAllMocks();
     delete process.env.AGENTIC_MODEL_FLEET_PATH;
     await env.cleanup();
   });
@@ -77,6 +94,7 @@ describe("TC-61: /v1/llm/fleet model-fleet CRUD", () => {
         dailyCapUsd: number;
         maxOutTokens: number;
         temperature: number;
+        availability: string;
       };
     };
     expect(body.ok).toBe(true);
@@ -87,6 +105,7 @@ describe("TC-61: /v1/llm/fleet model-fleet CRUD", () => {
     expect(body.data.dailyCapUsd).toBe(30);
     expect(body.data.maxOutTokens).toBe(2048);
     expect(body.data.temperature).toBe(0.2);
+    expect(body.data.availability).toBe("provider_confirmed");
   });
 
   it("POST /fleet honors alias, role, cap, params", async () => {
@@ -133,12 +152,7 @@ describe("TC-61: /v1/llm/fleet model-fleet CRUD", () => {
     expect(res.status).toBe(400);
   });
 
-  it("POST /fleet accepts any non-empty model name (live discovery is the source of truth)", async () => {
-    // The static catalog was historically a gate that rejected anything not
-    // in PROVIDER_MODEL_CATALOG, but the picker shows live-discovered models
-    // (OpenRouter alone returns ~360). A live model the catalog hasn't been
-    // updated for must still be addable. Bad names surface at invocation
-    // time when the upstream returns 404.
+  it("POST /fleet accepts a live-discovered id even when the static catalog is stale", async () => {
     const res = await env.fetch("/v1/llm/fleet", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -150,6 +164,39 @@ describe("TC-61: /v1/llm/fleet model-fleet CRUD", () => {
     expect(res.status).toBe(200);
     // Clean up so later tests still see only the two seeded entries.
     const body = (await res.json()) as { data: { id: string } };
+    await env.fetch(`/v1/llm/fleet/${body.data.id}`, { method: "DELETE" });
+  });
+
+  it("POST /fleet rejects a name absent from a discovery-capable provider", async () => {
+    const res = await env.fetch("/v1/llm/fleet", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        provider: "openrouter",
+        modelName: "made-up/not-reported",
+      }),
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({
+      error: { code: "model_not_available" },
+    });
+  });
+
+  it("persists unsupported-provider entries as explicitly unverified", async () => {
+    const res = await env.fetch("/v1/llm/fleet", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        provider: "azure",
+        modelName: "tenant-deployment-name",
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      data: { id: string; availability: string; availabilityCheckedAt: number | null };
+    };
+    expect(body.data.availability).toBe("unverified");
+    expect(body.data.availabilityCheckedAt).toBeNull();
     await env.fetch(`/v1/llm/fleet/${body.data.id}`, { method: "DELETE" });
   });
 
@@ -190,6 +237,36 @@ describe("TC-61: /v1/llm/fleet model-fleet CRUD", () => {
       body: JSON.stringify({ role: "invalid-role" }),
     });
     expect(bad.status).toBe(400);
+  });
+
+  it("rejects invalid numeric and no-op fleet mutations instead of auditing fake updates", async () => {
+    const list = (await (await env.fetch("/v1/llm/fleet")).json()) as {
+      data: Array<{ id: string; dailyCapUsd: number }>;
+    };
+    const id = list.data[0].id;
+    const beforeCap = list.data[0].dailyCapUsd;
+
+    for (const body of [
+      { dailyCapUsd: "not-a-number" },
+      { maxOutTokens: 0 },
+      { temperature: 3 },
+      {},
+      { ignoredField: true },
+    ]) {
+      const response = await env.fetch(`/v1/llm/fleet/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      expect(response.status).toBe(400);
+    }
+
+    const after = (await (await env.fetch("/v1/llm/fleet")).json()) as {
+      data: Array<{ id: string; dailyCapUsd: number }>;
+    };
+    expect(after.data.find((entry) => entry.id === id)?.dailyCapUsd).toBe(
+      beforeCap,
+    );
   });
 
   it("PATCH /fleet/:id 404 on unknown id", async () => {

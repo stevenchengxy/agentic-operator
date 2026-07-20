@@ -88,8 +88,9 @@ Every file pointer is absolute. Symbols are quoted verbatim. **Status** is hones
 - Tenant-level webhook secret rotation (UC-13).
 
 **Status:** implemented.
-**Open questions:**
-- `resolveOperatorUserId` (line 144) looks up `ops@agentic.local` hard-coded; once real auth lands, must come from `req.auth.userId`. Audit metadata `actor_user_id` will be null until then.
+**Actor identity:** the implemented route uses the authenticated
+`req.auth.userId` for membership grants and audit attribution. There is no
+hard-coded seed-account fallback.
 
 ---
 

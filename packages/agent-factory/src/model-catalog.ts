@@ -35,6 +35,16 @@ export async function fetchModelCatalog(
 ): Promise<string[] | null> {
   if (!opts.force && cache && Date.now() - cache.at < ttlMs(env)) return cache.ids;
   if (inflight) return inflight;
+  // Catalog discovery is optional.  A deployment with no gateway credential
+  // must simply skip the HTTP request; it should not be forced to choose a
+  // model merely to discover that no authenticated request can be made.
+  const configuredKey = (
+    env.FACTORY_GATEWAY_API_KEY ||
+    env.CUSTOM_LLM_API_KEY ||
+    env.OPENAI_API_KEY ||
+    ""
+  ).trim();
+  if (!configuredKey) return cache?.ids ?? null;
   const { baseURL, apiKey } = resolveFactoryGateway(env);
   if (!apiKey) return cache?.ids ?? null;
   const url = `${baseURL.replace(/\/+$/, "")}/models`;

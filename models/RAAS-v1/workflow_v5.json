@@ -6,7 +6,11 @@
     "actor": [
       "Agent"
     ],
-    "trigger": [],
+    "trigger": [
+      "SCHEDULED_SYNC"
+    ],
+    "cron_env": "RAAS_REQUIREMENTS_SYNC_CRON",
+    "cron_timezone_env": "RAAS_REQUIREMENTS_SYNC_TIMEZONE",
     "actions": [
       {
         "order": "1",
@@ -19,21 +23,40 @@
         "order": "2",
         "name": "checkDeduplicatedRequisition",
         "description": "利用【招聘岗位】中的“客户侧岗位唯一编号”和“客户侧岗位名称”进行系统查重。如果数据库中已存在对应记录，识别为需求变更；若不存在，识别为新需求。",
-        "type": "logic",
+        "type": "tool",
         "condition": "数据获取与解析成功"
       },
       {
         "order": "3",
         "name": "persistRequisitionData",
         "description": "根据查重结果执行数据库操作：若是新需求，则创建【外包招聘需求】和对应的【招聘岗位】对象；若是变更，则更新现有对象的“计划招聘总人数”或“截止日期”等字段，并记录变更日志。若是删除或关闭的需求，更新状态为终止。同步完成后生成执行报告，对失败或异常情况触发告警通知交付经理。",
-        "type": "logic",
+        "type": "tool",
         "condition": "查重逻辑执行完毕"
       }
     ],
     "triggered_event": [
       "REQUIREMENT_SYNCED"
     ],
-    "input_data": {}
+    "input_data": {},
+    "tool_use": [
+      {
+        "name": "monitorAndFetchRequirement",
+        "description": "从已配置的客户需求 API 拉取真实增量并校验版本化收据",
+        "config": {
+          "api_url_env": "RAAS_CLIENT_REQUIREMENTS_API_URL",
+          "token_env": "RAAS_CLIENT_REQUIREMENTS_API_TOKEN",
+          "auth_scheme": "bearer"
+        }
+      },
+      {
+        "name": "checkDeduplicatedRequisition",
+        "description": "使用租户 business_records 做确定性查重"
+      },
+      {
+        "name": "persistRequisitionData",
+        "description": "在一个事务中持久化已校验的需求批次"
+      }
+    ]
   },
   {
     "id": "2",
@@ -267,6 +290,7 @@
         "description": "RoboHire 简历解析",
         "config": {
           "api_key_env": "ROBOHIRE_API_KEY",
+          "base_url_env": "ROBOHIRE_API_BASE_URL",
           "timeout_ms": 300000
         }
       },
@@ -364,6 +388,7 @@
         "description": "RoboHire 简历-JD 匹配打分（需 {resume, jd}）",
         "config": {
           "api_key_env": "ROBOHIRE_API_KEY",
+          "base_url_env": "ROBOHIRE_API_BASE_URL",
           "timeout_ms": 300000
         }
       }
@@ -382,38 +407,52 @@
     "actions": [
       {
         "order": "1",
-        "name": "generateInterviewInvitation",
-        "description": "根据招聘岗位信息和候选人情况，生成个性化的面试邀请内容，包括面试说明、操作指引、面试时间要求（如需在X天内完成）、注意事项等。创建面试记录，生成唯一的面试链接。",
-        "type": "logic",
+        "name": "inviteCandidateApi",
+        "description": "调用 RoboHire /api/v1/invite-candidate 完成唯一一次真实面试邀请发送，并取得 success、login_url、qrcode_url、request_id 等真实回执。",
+        "type": "tool",
         "condition": "已收到匹配通过且需要面试的事件"
       },
       {
         "order": "2",
-        "name": "sendInvitationEmail",
-        "description": "将面试邀请邮件发送到候选人登记的联系邮箱，邮件内容包含面试链接、操作步骤说明、截止时间等。记录邮件发送状态，对发送失败的情况触发告警。",
+        "name": "records.upsert",
+        "description": "把 RoboHire 的真实发送回执作为 communication_log 追加写入 business_records；写库失败即终止，不发成功事件。",
         "type": "tool",
-        "condition": "面试邀请内容生成完成"
+        "condition": "RoboHire 邀请调用完成"
       },
       {
         "order": "3",
-        "name": "notifyRecruiter",
-        "description": "将面试邀约信息同步推送给对接的招聘专员，包含可复制的邀约话术和面试链接，便于招聘专员通过企业微信等即时通讯工具跟进候选人，提醒其完成面试，提高面试完成率。",
-        "type": "logic",
-        "condition": "邮件发送完成"
+        "name": "routeInterviewInvitation",
+        "description": "基于已持久化的 RoboHire 回执确定性路由：只有 success=true 才发 INTERVIEW_INVITATION_SENT；缺失、异常或 success=false 一律发 INTERVIEW_INVITATION_FAILED。不得调用 LLM，不得再次发送。",
+        "type": "tool",
+        "condition": "真实发送回执已持久化"
       }
     ],
     "triggered_event": [
-      "INTERVIEW_INVITATION_SENT"
+      "INTERVIEW_INVITATION_SENT",
+      "INTERVIEW_INVITATION_FAILED"
     ],
     "input_data": {},
     "tool_use": [
       {
         "name": "inviteCandidateApi",
-        "description": "RoboHire 生成面试邀请正文（仅生成，不投递）",
+        "description": "RoboHire 真实发送面试邀请并返回回执（唯一发送端）",
         "config": {
           "api_key_env": "ROBOHIRE_API_KEY",
+          "base_url_env": "ROBOHIRE_API_BASE_URL",
           "timeout_ms": 300000
         }
+      },
+      {
+        "name": "records.upsert",
+        "description": "追加持久化面试邀约发送回执",
+        "config": {
+          "record_type": "communication_log",
+          "append": true
+        }
+      },
+      {
+        "name": "routeInterviewInvitation",
+        "description": "确定性 SENT/FAILED 路由（无副作用）"
       }
     ]
   },
@@ -446,7 +485,7 @@
         "order": "3",
         "name": "evaluateWithModel",
         "description": "使用招聘岗位配置的评估模型对候选人进行量化评分。按照各维度权重计算综合得分，判断是否达到及格线阈值，输出各维度分数明细和评分依据说明。",
-        "type": "tool",
+        "type": "logic",
         "condition": "内容分析完成"
       },
       {
@@ -458,7 +497,8 @@
       }
     ],
     "triggered_event": [
-      "EVALUATION_PASSED"
+      "EVALUATION_PASSED",
+      "EVALUATION_FAILED"
     ],
     "input_data": {}
   },
@@ -574,6 +614,7 @@
       }
     ],
     "triggered_event": [
+      "APPLICATION_SUBMITTED",
       "SUBMISSION_FAILED"
     ],
     "input_data": {}

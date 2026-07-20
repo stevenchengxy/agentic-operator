@@ -13,16 +13,26 @@ import { Badge, Button, Empty, Panel, Td, Th } from "@/app/portal/components";
 import { RoleBadge } from "@/app/portal/components/settings/atoms";
 import { useI18n } from "@/app/portal/lib/preferences-context";
 import { useTenant } from "@/app/portal/lib/use-tenant";
-import { useCan } from "@/lib/hooks/useMe";
+import { useMe } from "@/lib/hooks/useMe";
 import { useMembers } from "@/lib/hooks/useAccess";
 import { fmtAgo } from "@/lib/format";
 
 export function PeopleSection() {
   const { t } = useI18n();
   const tenant = useTenant();
-  const can = useCan();
-  const canRead = can("members.read");
-  const { data: members, isLoading } = useMembers(canRead);
+  const me = useMe();
+  const canRead = me.data?.capabilities.includes("members.read") ?? false;
+  const {
+    data: members,
+    isLoading,
+    isError,
+    error,
+  } = useMembers(canRead);
+  const memberCount: string | number = me.isError || !me.data || !canRead || isError
+    ? "—"
+    : isLoading && !members
+      ? "…"
+      : (members?.length ?? 0);
 
   const accessHref = `/portal/${tenant}/access`;
 
@@ -54,7 +64,7 @@ export function PeopleSection() {
       </div>
 
       <Panel
-        title={t("people.membersCount", { count: members?.length ?? 0 })}
+        title={t("people.membersCount", { count: memberCount })}
         padded={false}
         action={
           <Button small icon="human" tone="primary" onClick={() => (window.location.href = accessHref)}>
@@ -65,9 +75,27 @@ export function PeopleSection() {
         <div style={{ padding: "10px 14px", borderBottom: "1px solid var(--border)", fontSize: 12, color: "var(--text-3)" }}>
           {t("people.managedNote")}
         </div>
-        {!canRead ? (
+        {me.isLoading && !me.data ? (
+          <div style={{ padding: 24 }}>
+            <Empty title={t("access.loading")} />
+          </div>
+        ) : me.isError ? (
+          <div style={{ padding: 24 }}>
+            <Empty
+              title={t("access.loadFailed")}
+              hint={me.error.message}
+            />
+          </div>
+        ) : !canRead ? (
           <div style={{ padding: 24 }}>
             <Empty title={t("people.adminsOnly")} />
+          </div>
+        ) : isError ? (
+          <div style={{ padding: 24 }}>
+            <Empty
+              title={t("access.loadFailed")}
+              hint={error instanceof Error ? error.message : t("access.apiUnreachable")}
+            />
           </div>
         ) : isLoading ? (
           <div style={{ padding: 24 }}>

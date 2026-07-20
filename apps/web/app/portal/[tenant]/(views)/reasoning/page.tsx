@@ -42,7 +42,7 @@ const STATUS_TO_DOT: Record<string, StatusName> = {
   waiting: "waiting",
   ok: "ok",
   failed: "failed",
-  cancelled: "paused",
+  cancelled: "cancelled",
 };
 
 export default function ReasoningPage() {
@@ -50,13 +50,27 @@ export default function ReasoningPage() {
   const { t } = useI18n();
   const [lens, setLens] = useState<"reasoning" | "audit">("reasoning");
   const [query, setQuery] = useState("");
+  const reasoningQuery = useReasoning({ limit: 80 });
+  const auditQuery = useRuleAudit({ limit: 80 });
+  const activeQuery = lens === "reasoning" ? reasoningQuery : auditQuery;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
       <ViewHeader
         title={t("reasoning.title")}
         subtitle={t("reasoning.subtitle")}
-        action={<LivePill label={t("reasoning.live")} />}
+        action={
+          <LivePill
+            label={
+              activeQuery.isError
+                ? t("reasoning.offline")
+                : activeQuery.isLoading
+                  ? t("reasoning.loading")
+                  : t("reasoning.live")
+            }
+            status={activeQuery.isError ? "offline" : activeQuery.isLoading ? "loading" : "live"}
+          />
+        }
       />
 
       <div
@@ -87,16 +101,34 @@ export default function ReasoningPage() {
 
       <div style={{ flex: 1, overflow: "auto", minHeight: 0, padding: "12px 14px" }}>
         {lens === "reasoning" ? (
-          <ReasoningFeed query={query} tenant={tenant} />
+          <ReasoningFeed
+            query={query}
+            tenant={tenant}
+            data={reasoningQuery.data ?? []}
+            isLoading={reasoningQuery.isLoading}
+            error={reasoningQuery.error}
+          />
         ) : (
-          <AuditFeed tenant={tenant} />
+          <AuditFeed
+            tenant={tenant}
+            data={auditQuery.data ?? []}
+            isLoading={auditQuery.isLoading}
+            error={auditQuery.error}
+          />
         )}
       </div>
     </div>
   );
 }
 
-function LivePill({ label }: { label: string }) {
+function LivePill({
+  label,
+  status,
+}: {
+  label: string;
+  status: "live" | "loading" | "offline";
+}) {
+  const color = status === "offline" ? "var(--red)" : status === "loading" ? "var(--amber)" : "var(--signal)";
   return (
     <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
       <span
@@ -104,9 +136,9 @@ function LivePill({ label }: { label: string }) {
           width: 7,
           height: 7,
           borderRadius: "50%",
-          background: "var(--signal)",
-          boxShadow: "0 0 0 0 var(--signal)",
-          animation: "pulse 1.8s infinite",
+          background: color,
+          boxShadow: status === "live" ? `0 0 0 0 ${color}` : "none",
+          animation: status === "live" ? "pulse 1.8s infinite" : "none",
         }}
       />
       <span style={{ fontSize: 11, color: "var(--text-3)", fontFamily: "var(--mono)" }}>
@@ -116,9 +148,20 @@ function LivePill({ label }: { label: string }) {
   );
 }
 
-function ReasoningFeed({ query, tenant }: { query: string; tenant: string }) {
+function ReasoningFeed({
+  query,
+  tenant,
+  data,
+  isLoading,
+  error,
+}: {
+  query: string;
+  tenant: string;
+  data: ReasoningTurn[];
+  isLoading: boolean;
+  error: Error | null;
+}) {
   const { t } = useI18n();
-  const { data = [], isLoading } = useReasoning({ limit: 80 });
 
   const filtered = useMemo(() => {
     if (!query) return data;
@@ -129,6 +172,8 @@ function ReasoningFeed({ query, tenant }: { query: string; tenant: string }) {
     );
   }, [data, query]);
 
+  if (error)
+    return <Empty title={t("reasoning.loadFailed")} hint={error.message} />;
   if (!isLoading && filtered.length === 0)
     return <Empty title={t("reasoning.empty")} hint={t("reasoning.emptyHint")} />;
 
@@ -235,10 +280,21 @@ function ReasoningCard({ turn, tenant }: { turn: ReasoningTurn; tenant: string }
   );
 }
 
-function AuditFeed({ tenant }: { tenant: string }) {
+function AuditFeed({
+  tenant,
+  data,
+  isLoading,
+  error,
+}: {
+  tenant: string;
+  data: RuleAuditRow[];
+  isLoading: boolean;
+  error: Error | null;
+}) {
   const { t } = useI18n();
-  const { data = [], isLoading } = useRuleAudit({ limit: 80 });
 
+  if (error)
+    return <Empty title={t("reasoning.loadFailed")} hint={error.message} />;
   if (!isLoading && data.length === 0)
     return <Empty title={t("reasoning.auditEmpty")} hint={t("reasoning.auditEmptyHint")} />;
 

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { runGeneratedModule } from "./module-runner";
+import { runGeneratedModule, GENERATED_CODE_ALLOWLIST } from "./module-runner";
 
 // #P0a — the load-bearing safety proof: an arbitrary generated module runs in a worker isolate that is
 // TIME- and MEMORY-bounded, so a runaway (sync loop, async hang, OOM) can never hang or crash the host.
@@ -60,12 +60,18 @@ describe("runGeneratedModule — isolated worker execution", () => {
     expect(r.timedOut).toBe(true);
   }, 8000);
 
-  it("reports failure (not crash) when an async entry suspends and the worker drains to a clean exit", async () => {
+  it("fails safely when an async entry suspends without backing work", async () => {
     const code = `export async function drain() { await new Promise(() => {}); return 1; }`;
     const r = await runGeneratedModule(code, { entryName: "drain", call: true, timeoutMs: 3000 });
     expect(r.ok).toBe(false);
-    expect(r.crashed).toBeUndefined(); // clean exit is not a crash
-    expect(r.error).toMatch(/未产出结果|空转退出/);
+    // Depending on Node's worker/message-port lifecycle, a bare pending
+    // promise either drains cleanly with no result or remains referenced until
+    // the hard deadline. Both are explicit failure terminals; neither may be
+    // translated into a successful placeholder result.
+    expect(r.crashed).toBeUndefined();
+    expect(
+      r.timedOut === true || /未产出结果|空转退出/.test(r.error ?? ""),
+    ).toBe(true);
   }, 8000);
 
   it("contains an out-of-memory allocation (crashes the worker, not the host)", async () => {
@@ -77,20 +83,120 @@ describe("runGeneratedModule — isolated worker execution", () => {
     expect(r.crashed === true || r.timedOut === true).toBe(true);
   }, 12000);
 
-  it("stubs non-allowlisted imports to {} (no host module access by default)", async () => {
+  it("rejects non-allowlisted imports instead of injecting a fake module", async () => {
     const code = `
       const fs = require("node:fs");
       export function probe() { return { hasReadFile: typeof fs.readFileSync }; }
     `;
     const r = await runGeneratedModule(code, { entryName: "probe", call: true, timeoutMs: 4000 });
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/not allowlisted/i);
+  });
+
+  it("resolves an allowlisted module for REAL (node:crypto createHash works)", async () => {
+    const code = `
+      import { createHash } from "node:crypto";
+      export function digest(input) { return { sha: createHash("sha256").update(input.s).digest("hex") }; }
+    `;
+    const r = await runGeneratedModule(code, {
+      entryName: "digest",
+      call: true,
+      input: { s: "abc" },
+      allowlist: [...GENERATED_CODE_ALLOWLIST],
+      timeoutMs: 4000,
+    });
     expect(r.ok).toBe(true);
-    expect(r.result).toEqual({ hasReadFile: "undefined" }); // fs was stubbed to {}
+    expect(r.called).toBe(true);
+    // Well-known sha256("abc") — proves the REAL node:crypto ran, not a {} stub.
+    expect(r.result).toEqual({ sha: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad" });
+  });
+
+  it("fails when an explicitly allowlisted dependency cannot be loaded", async () => {
+    const missing = "__agentic_dependency_that_does_not_exist__";
+    const code = `
+      const dep = require(${JSON.stringify(missing)});
+      export function probe() { return { loaded: typeof dep === "object" }; }
+    `;
+    const r = await runGeneratedModule(code, {
+      entryName: "probe",
+      call: true,
+      allowlist: [missing],
+      timeoutMs: 4_000,
+    });
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/Cannot find module|cannot be found/i);
+  });
+
+  it("does not translate an unserializable return value into an ok placeholder", async () => {
+    const code = `export function circular() { const out = {}; out.self = out; return out; }`;
+    const r = await runGeneratedModule(code, {
+      entryName: "circular",
+      call: true,
+      timeoutMs: 4_000,
+    });
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/not JSON-serializable/i);
+    expect(r.result).toBeUndefined();
+  });
+
+  it("keeps node:fs denied even WITH the curated allowlist (no I/O reach)", async () => {
+    const code = `
+      const fs = require("node:fs");
+      export function probe() { return { hasReadFile: typeof fs.readFileSync }; }
+    `;
+    const r = await runGeneratedModule(code, {
+      entryName: "probe",
+      call: true,
+      allowlist: [...GENERATED_CODE_ALLOWLIST],
+      timeoutMs: 4000,
+    });
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/not allowlisted/i);
+    // And the curated list itself never contains an I/O-capable module.
+    for (const banned of ["node:fs", "fs", "node:net", "net", "node:child_process", "child_process", "node:http", "http", "node:https", "https", "node:os", "os"]) {
+      expect(GENERATED_CODE_ALLOWLIST).not.toContain(banned);
+    }
+  });
+
+  it("fails SAFELY (structured error, host alive) before denied fs can be called", async () => {
+    const code = `
+      const fs = require("node:fs");
+      export function readEtc() { return fs.readFileSync("/etc/hosts", "utf8"); }
+    `;
+    const r = await runGeneratedModule(code, {
+      entryName: "readEtc",
+      call: true,
+      allowlist: [...GENERATED_CODE_ALLOWLIST],
+      timeoutMs: 4000,
+    });
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/not allowlisted/i); // reported as a structured error, never a host throw
   });
 
   it("refuses a non -sb tenant slug (isolation invariant)", async () => {
     const r = await runGeneratedModule(`export const x = 1;`, { tenantSlug: "raas" });
     expect(r.ok).toBe(false);
     expect(r.error).toMatch(/隔离不变量|-sb/);
+  });
+
+  it("does not treat an arbitrary production tenant ending in -sb as a sandbox", async () => {
+    const previous = process.env.NODE_ENV;
+    process.env.NODE_ENV = "production";
+    try {
+      const legacySuffix = await runGeneratedModule(`export const x = 1;`, {
+        tenantSlug: "customer-sb",
+      });
+      expect(legacySuffix.ok).toBe(false);
+      expect(legacySuffix.error).toMatch(/隔离不变量/);
+
+      const ephemeral = await runGeneratedModule(`export const x = 1;`, {
+        tenantSlug: "af-sbx-1234abcd-5678efab-123456789abc-sb",
+      });
+      expect(ephemeral.ok).toBe(true);
+    } finally {
+      if (previous === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = previous;
+    }
   });
 
   it("honors the FACTORY_EXEC_GENERATED=0 kill switch", async () => {

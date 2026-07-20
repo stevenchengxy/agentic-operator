@@ -20,7 +20,11 @@
 
 import { and, eq } from "drizzle-orm";
 import { agentMemoryLong, getDb } from "@agentic/db";
-import type { MemoryDriver, MemoryHit, MemorySearchScope } from "@agentic/agent-sdk";
+import type {
+  MemoryDriver,
+  MemoryHit,
+  MemorySearchScope,
+} from "@agentic/agent-sdk";
 
 const DIM = 256;
 
@@ -31,7 +35,8 @@ function tokenize(text: string): string[] {
   const cjkChars = s.match(/[一-鿿]/g) ?? [];
   const cjkRun = s.replace(/[^一-鿿]/g, "");
   const bigrams: string[] = [];
-  for (let i = 0; i < cjkRun.length - 1; i++) bigrams.push(cjkRun.slice(i, i + 2));
+  for (let i = 0; i < cjkRun.length - 1; i++)
+    bigrams.push(cjkRun.slice(i, i + 2));
   return [...words, ...cjkChars, ...bigrams];
 }
 
@@ -72,16 +77,15 @@ export function cosine(a: Float32Array, b: Float32Array): number {
 
 /** Flatten a stored JSON value to searchable text (keys + primitive values). */
 function valueText(valueJson: string): string {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(valueJson);
-  } catch {
-    return valueJson;
-  }
+  const parsed = JSON.parse(valueJson) as unknown;
   const out: string[] = [];
   const walk = (x: unknown) => {
     if (x == null) return;
-    if (typeof x === "string" || typeof x === "number" || typeof x === "boolean") {
+    if (
+      typeof x === "string" ||
+      typeof x === "number" ||
+      typeof x === "boolean"
+    ) {
       out.push(String(x));
     } else if (Array.isArray(x)) {
       for (const e of x) walk(e);
@@ -97,11 +101,7 @@ function valueText(valueJson: string): string {
 }
 
 function decodeValue(valueJson: string): unknown {
-  try {
-    return JSON.parse(valueJson);
-  } catch {
-    return valueJson;
-  }
+  return JSON.parse(valueJson) as unknown;
 }
 
 export type Embedder = (text: string) => Float32Array | Promise<Float32Array>;
@@ -119,20 +119,43 @@ export interface LocalVectorDriverOpts {
  * Build a real vector driver. Register it via `setMemoryDriver(createLocalVectorDriver())`
  * at app bootstrap; `ctx.memory.search()` then returns cosine-ranked hits.
  */
-export function createLocalVectorDriver(opts: LocalVectorDriverOpts = {}): MemoryDriver {
+export function createLocalVectorDriver(
+  opts: LocalVectorDriverOpts = {},
+): MemoryDriver {
   const embed: Embedder = opts.embed ?? localEmbed;
   const maxCandidates = opts.maxCandidates ?? 4000;
   const cacheSize = opts.cacheSize ?? 8000;
   const cache = new Map<string, Float32Array>();
 
   return {
-    async search(query: string, k: number, scope?: MemorySearchScope): Promise<MemoryHit[]> {
+    async embed(text: string): Promise<number[]> {
+      const vector = await embed(text);
+      if (
+        vector.length === 0 ||
+        Array.from(vector).some((value) => !Number.isFinite(value))
+      ) {
+        throw new Error("embedding backend returned an invalid vector");
+      }
+      return Array.from(vector);
+    },
+
+    async search(
+      query: string,
+      k: number,
+      scope?: MemorySearchScope,
+    ): Promise<MemoryHit[]> {
       const db = getDb();
       const conds = [];
-      if (scope?.tenantId) conds.push(eq(agentMemoryLong.tenantId, scope.tenantId));
-      if (scope?.agentName) conds.push(eq(agentMemoryLong.agentName, scope.agentName));
-      // NB: subject is NOT filtered — cross-subject recall within a (tenant, agent) is the point of
-      // semantic search; the ranking surfaces the relevant subject. Tenant isolation is preserved.
+      if (scope?.tenantId)
+        conds.push(eq(agentMemoryLong.tenantId, scope.tenantId));
+      if (scope?.agentName)
+        conds.push(eq(agentMemoryLong.agentName, scope.agentName));
+      if (scope?.subjectExact && scope.subject !== undefined) {
+        conds.push(eq(agentMemoryLong.subject, scope.subject));
+      }
+      // By default subject is not filtered — cross-subject recall within a
+      // (tenant, agent) is the point. Supervised stores such as Agent Factory
+      // opt into exact-subject isolation explicitly.
       const rows = db
         .select()
         .from(agentMemoryLong)
@@ -144,20 +167,70 @@ export function createLocalVectorDriver(opts: LocalVectorDriverOpts = {}): Memor
       if (!rows.length) return [];
 
       const qv = await embed(query);
+      if (
+        qv.length === 0 ||
+        Array.from(qv).some((value) => !Number.isFinite(value))
+      ) {
+        throw new Error("embedding backend returned an invalid query vector");
+      }
       const hits: MemoryHit[] = [];
       for (const r of rows) {
         const ck = `${r.tenantId}|${r.agentName}|${r.subject}|${r.key}|${+r.updatedAt}`;
         let rv = cache.get(ck);
+        if (
+          rv &&
+          (rv.length !== qv.length ||
+            Array.from(rv).some((value) => !Number.isFinite(value)))
+        ) {
+          cache.delete(ck);
+          rv = undefined;
+        }
         if (!rv && r.embeddingJson) {
           // #SCALE-MEM — pre-computed at put() time: no re-embedding of static values on every search.
           try {
             const arr = JSON.parse(r.embeddingJson) as number[];
-            if (Array.isArray(arr) && arr.length) rv = Float32Array.from(arr);
-          } catch { /* corrupt → recompute below */ }
+            if (
+              Array.isArray(arr) &&
+              arr.length === qv.length &&
+              arr.every(
+                (value) => typeof value === "number" && Number.isFinite(value),
+              )
+            ) {
+              rv = Float32Array.from(arr);
+            }
+          } catch {
+            /* corrupt → recompute below */
+          }
         }
         if (!rv) {
           rv = await embed(`${r.key} ${valueText(r.valueJson)}`);
+          if (
+            rv.length !== qv.length ||
+            Array.from(rv).some((value) => !Number.isFinite(value))
+          ) {
+            throw new Error(
+              `embedding backend returned an incompatible row vector for memory key '${r.key}'`,
+            );
+          }
           cache.set(ck, rv);
+          // Repair missing/corrupt/incompatible stored vectors immediately.
+          // Persisting the repair is part of search truth: otherwise every
+          // process would repeatedly rank the row from an untrusted vector.
+          db.update(agentMemoryLong)
+            .set({
+              embeddingJson: JSON.stringify(
+                Array.from(rv).map((value) => Math.round(value * 1e6) / 1e6),
+              ),
+            })
+            .where(
+              and(
+                eq(agentMemoryLong.tenantId, r.tenantId),
+                eq(agentMemoryLong.agentName, r.agentName),
+                eq(agentMemoryLong.subject, r.subject),
+                eq(agentMemoryLong.key, r.key),
+              ),
+            )
+            .run();
           if (cache.size > cacheSize) {
             const oldest = cache.keys().next().value;
             if (oldest !== undefined) cache.delete(oldest);
@@ -182,32 +255,85 @@ export function createLocalVectorDriver(opts: LocalVectorDriverOpts = {}): Memor
  * Env: MEMORY_EMBED_MODEL, MEMORY_EMBED_BASE_URL, MEMORY_EMBED_API_KEY (or reuses the factory
  * gateway's base/key when those specific ones are unset).
  */
-export function openaiEmbedder(env: Record<string, string | undefined> = process.env): Embedder | null {
-  const model = env.MEMORY_EMBED_MODEL;
+export function openaiEmbedder(
+  env: Record<string, string | undefined> = process.env,
+): Embedder | null {
+  const model = env.MEMORY_EMBED_MODEL?.trim();
   if (!model) return null;
-  const base = (env.MEMORY_EMBED_BASE_URL || env.LLM_GATEWAY_BASE_URL || env.OPENAI_BASE_URL || "").replace(/\/$/, "");
-  const key = env.MEMORY_EMBED_API_KEY || env.LLM_GATEWAY_API_KEY || env.OPENAI_API_KEY || "";
-  if (!base) return null;
-  return async (text: string): Promise<Float32Array> => {
-    try {
-      const res = await fetch(`${base}/embeddings`, {
-        method: "POST",
-        headers: { "content-type": "application/json", ...(key ? { authorization: `Bearer ${key}` } : {}) },
-        body: JSON.stringify({ model, input: text.slice(0, 8000) }),
-      });
-      if (!res.ok) return localEmbed(text);
-      const json = (await res.json()) as { data?: Array<{ embedding?: number[] }> };
-      const emb = json.data?.[0]?.embedding;
-      if (!emb?.length) return localEmbed(text);
-      // L2-normalize so cosine == dot product (parity with localEmbed).
-      const v = Float32Array.from(emb);
-      let n = 0;
-      for (let i = 0; i < v.length; i++) n += (v[i] ?? 0) * (v[i] ?? 0);
-      n = Math.sqrt(n) || 1;
-      for (let i = 0; i < v.length; i++) v[i] = (v[i] ?? 0) / n;
-      return v;
-    } catch {
-      return localEmbed(text);
+  const baseValue = (
+    env.MEMORY_EMBED_BASE_URL ||
+    env.LLM_GATEWAY_BASE_URL ||
+    env.OPENAI_BASE_URL ||
+    ""
+  )
+    .trim()
+    .replace(/\/+$/, "");
+  const key =
+    env.MEMORY_EMBED_API_KEY ||
+    env.LLM_GATEWAY_API_KEY ||
+    env.OPENAI_API_KEY ||
+    "";
+  if (!baseValue) {
+    throw new Error(
+      "MEMORY_EMBED_MODEL is configured but no embedding base URL is set",
+    );
+  }
+  let base: URL;
+  try {
+    base = new URL(baseValue);
+    if (base.protocol !== "http:" && base.protocol !== "https:") {
+      throw new Error("unsupported protocol");
     }
+  } catch {
+    throw new Error("MEMORY_EMBED_BASE_URL must be an absolute http(s) URL");
+  }
+  const timeoutMs = Number(env.MEMORY_EMBED_TIMEOUT_MS ?? 8_000);
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
+    throw new Error("MEMORY_EMBED_TIMEOUT_MS must be a positive integer");
+  }
+  const dimensionsRaw = env.MEMORY_EMBED_DIMENSIONS?.trim();
+  const dimensions = dimensionsRaw ? Number(dimensionsRaw) : null;
+  if (
+    dimensions !== null &&
+    (!Number.isSafeInteger(dimensions) || dimensions <= 0)
+  ) {
+    throw new Error("MEMORY_EMBED_DIMENSIONS must be a positive integer");
+  }
+  return async (text: string): Promise<Float32Array> => {
+    const res = await fetch(
+      `${base.toString().replace(/\/+$/, "")}/embeddings`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          ...(key ? { authorization: `Bearer ${key}` } : {}),
+        },
+        body: JSON.stringify({
+          model,
+          input: text.slice(0, 8000),
+          ...(dimensions !== null ? { dimensions } : {}),
+        }),
+        signal: AbortSignal.timeout(timeoutMs),
+      },
+    );
+    if (!res.ok) {
+      throw new Error(`embedding provider returned HTTP ${res.status}`);
+    }
+    const json = (await res.json()) as {
+      data?: Array<{ embedding?: number[] }>;
+    };
+    const emb = json.data?.[0]?.embedding;
+    if (!emb?.length || emb.some((value) => !Number.isFinite(value))) {
+      throw new Error("embedding provider returned no valid vector");
+    }
+    // L2-normalize so cosine == dot product (parity with localEmbed).
+    const v = Float32Array.from(emb);
+    let n = 0;
+    for (let i = 0; i < v.length; i++) n += (v[i] ?? 0) * (v[i] ?? 0);
+    n = Math.sqrt(n);
+    if (!Number.isFinite(n) || n === 0)
+      throw new Error("embedding provider returned a zero vector");
+    for (let i = 0; i < v.length; i++) v[i] = (v[i] ?? 0) / n;
+    return v;
   };
 }

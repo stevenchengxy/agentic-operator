@@ -75,9 +75,9 @@ export default defineConfig({
             stdout: "pipe",
             stderr: "pipe",
             env: {
-              // E2E mode: keep auth in dev-bypass so we can sign in via
-              // the seeded admin without needing a Resend account. The
-              // dev tenant is pinned to `raas` so manifest agents
+              // E2E is an explicitly test-only process. The CI-provided identity
+              // and mock model are therefore unreachable from development or
+              // production processes. The tenant is pinned to `raas` so manifest agents
               // (syncFromClientSystem, jdReview) are reachable via the
               // /v1/events ingest path. Code agents like `testAgent` are
               // invoked synchronously — the spec asserts on the invoke
@@ -86,9 +86,14 @@ export default defineConfig({
               // caller until a platform-admin layer lands).
               AUTH_MODE: "dev",
               AGENTIC_DEV_TENANT: "raas",
-              NODE_ENV: "development",
+              AGENTIC_DEV_USER_EMAIL:
+                process.env.AGENTIC_BOOTSTRAP_ADMIN_EMAIL ?? "",
+              NODE_ENV: "test",
               LLM_DEFAULT_PROVIDER: "mock",
               LLM_DEFAULT_MODEL: "mock-model-v1",
+              // E2E must prove the real per-tenant Inngest registration path.
+              // Unit tests use the explicit value "1" in apps/api/test/setup.
+              INNGEST_SYNC_DISABLED: "0",
               // The rate-limit plugin (P4-API-03) defaults to 100
               // req/min/tenant. The E2E suite makes ~50 requests per
               // spec across 6 specs back-to-back; disabling here keeps

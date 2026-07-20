@@ -13,46 +13,36 @@
  *   2. Insert tenants row
  *   3. Insert tenant_budgets defaults
  *   4. Insert membership (calling user → admin)
- *   5. Seed starter content (event_types, optional workflow stub)
- *   6. mkdir -p data/logs/<slug>/{runs,events}, data/tenants/<slug>, data/artifacts/<slug>
- *   7. Mint bootstrap api_token (returned plaintext ONCE)
- *   8. Audit row in same transaction
+ *   5. Mint bootstrap api_token (returned plaintext ONCE)
+ *   6. Audit row in the same transaction
+ *   7. Provision durable filesystem roots and register the tenant app
  *
  * Inngest re-registration happens AFTER the transaction commits so we never
- * register a tenant whose row failed to land. Existing tenant code in
- * data/tenants/<slug>/<version>/ is auto-picked-up by the dynamic loader on
- * next handler invocation; no immediate register is required for an empty
- * tenant.
+ * register a tenant whose row failed to land. Failure in either filesystem or
+ * registration provisioning compensates the committed database transaction.
  *
  * Slug rules: see TENANT_SLUG_REGEX + RESERVED_TENANT_SLUGS in
  * @agentic/contracts/tenants. Slug is immutable — PUT rejects any body
  * field other than name/subtitle/color (via `.strict()` on the Zod schema).
  *
- * Authorization (current milestone): every endpoint requires `requireAuth`.
- * The platform-admin gate (`isPlatformAdmin`) is a stub that always returns
- * false; for the milestone we allow any authenticated caller to create /
- * archive tenants. Production hardening (P5-TEN-02) tightens this to
- * platform admin only and adds role-based update gating.
+ * Authorization: platform-wide mutations require a superadmin permission;
+ * tenant reads/updates are membership-scoped. The authenticated user id is
+ * also the audit actor — no seeded-user fallback is used.
  */
 
 import path from "node:path";
 import fs from "node:fs/promises";
 import crypto from "node:crypto";
 import { createHash } from "node:crypto";
-import type { FastifyInstance, FastifyRequest } from "fastify";
+import type { FastifyInstance } from "fastify";
 import { and, eq, isNull } from "drizzle-orm";
 import {
   apiTokens,
   auditLog,
-  entityTypes,
-  eventTypes,
   getDb,
   memberships,
   tenantBudgets,
   tenants,
-  users,
-  workflows,
-  workflowVersions,
 } from "@agentic/db";
 import { makeId } from "@agentic/shared";
 import {
@@ -66,43 +56,37 @@ import {
 import { requireAuth } from "../../plugins/auth";
 import { requirePermission } from "../../plugins/rbac";
 import {
+  TenantLifecycleError,
+  transitionTenantLifecycle,
+} from "../../services/tenant-lifecycle";
+import {
   getTenantDetail,
   listTenantsWithCounts,
-  shapeTenantRow,
   tenantHasActiveWork,
-  tenantSlugExists,
 } from "../../queries/tenants";
-// P5-TEN-01 — the dynamic Inngest re-register hook may not exist in every
-// `reregisterInngest` lives in services/inngest-registry and now drives a real
-// rebuild (`bootstrapRuntime` exports `rebuildTenantFns` + seeds the mutable
-// serve handler). We still import it lazily and degrade to "next manifest
-// deploy will pick it up" rather than crashing the handler if the export is
-// missing — defensive against partial boots / future refactors.
-
-async function safeReregisterInngest(slug?: string): Promise<number | null> {
-  try {
-    const mod = await import("../../services/inngest-registry");
-    if (typeof mod.reregisterInngest !== "function") return null;
-    // Scoped to one tenant app when a slug is given (create / archive / restore
-    // only touch that tenant) — rebuilds + re-serves just `agentic-operator-
-    // <slug>`, never the whole fleet. No slug → full rebuild (legacy callers).
-    const out = await mod.reregisterInngest(
-      slug ? { tenantSlug: slug, scope: "tenant" } : { scope: "tenant" },
-    );
-    // Push the (new / now-empty) app to the Inngest server so its
-    // online/offline + functionCount reflects the change. Best-effort.
-    if (slug) {
-      try {
-        const sync = await import("../../services/inngest-sync");
-        await sync.syncTenantApp(slug);
-      } catch {
-        /* best-effort: the reconciler / next boot re-syncs */
-      }
-    }
-    return out.fnCount;
-  } catch {
-    return null;
+import {
+  claimIdempotency,
+  completeIdempotency,
+  idempotencyFingerprint,
+  readIdempotencyKey,
+  releaseIdempotency,
+} from "../../services/idempotency";
+// P5-TEN-01 — a tenant mutation is not complete until its rebuilt app has been
+// accepted by the real Inngest control plane. Never report a deferred success.
+async function reregisterInngestRequired(slug: string): Promise<number> {
+  const [{ reregisterInngest }, { syncTenantApp }] = await Promise.all([
+    import("../../services/inngest-registry"),
+    import("../../services/inngest-sync"),
+  ]);
+  const out = await reregisterInngest({ tenantSlug: slug, scope: "tenant" });
+  const sync = await syncTenantApp(slug);
+  if (!sync.ok) {
+    throw new Error(`Inngest app registration failed for ${slug}: ${sync.error ?? `HTTP ${sync.status ?? "unknown"}`}`);
   }
+  if (out.appFnCount === undefined) {
+    throw new Error(`Inngest registry did not return a scoped function count for ${slug}`);
+  }
+  return out.appFnCount;
 }
 
 /**
@@ -117,55 +101,17 @@ function tenantsCodeRoot(): string {
   return path.join(process.cwd(), "data", "tenants");
 }
 
-/**
- * Idempotency-Key cache. Bounded LRU keyed by `${tenantSlug}:${key}` so the
- * same operator retrying a 5xx never accidentally mints a second bootstrap
- * token. The cached value is the EXACT response body so retries see the same
- * plaintext token (else the first call's token is lost). 1-hour TTL is plenty
- * for the typical retry window without leaking memory.
- */
-interface CachedResponse {
-  body: unknown;
-  status: number;
-  at: number;
-}
-const IDEMPOTENCY_TTL_MS = 60 * 60 * 1000;
-const idempotencyCache = new Map<string, CachedResponse>();
-
-function cacheGet(key: string): CachedResponse | undefined {
-  const v = idempotencyCache.get(key);
-  if (!v) return undefined;
-  if (Date.now() - v.at > IDEMPOTENCY_TTL_MS) {
-    idempotencyCache.delete(key);
-    return undefined;
-  }
-  return v;
-}
-function cacheSet(key: string, value: CachedResponse) {
-  // Prune oldest entries if we exceed 256 — defensive, not a hot path.
-  if (idempotencyCache.size >= 256) {
-    const firstKey = idempotencyCache.keys().next().value;
-    if (firstKey) idempotencyCache.delete(firstKey);
-  }
-  idempotencyCache.set(key, value);
-}
-
-/**
- * The seed user from packages/db/src/seed.ts. We attach the new tenant's admin
- * membership to this user when the caller has no identity (dev mode / token
- * with no `created_by_user_id`). Future P5-TEN-02 work replaces this with the
- * actual user id from the auth context once the token-user link lands.
- */
-const SEED_ADMIN_EMAIL = "ops@agentic.local";
-
-function resolveOperatorUserId(): string | null {
-  const db = getDb();
-  const u = db
-    .select({ id: users.id })
-    .from(users)
-    .where(eq(users.email, SEED_ADMIN_EMAIL))
+function canReadTenant(
+  auth: ReturnType<typeof requireAuth>,
+  tenantId: string,
+): boolean {
+  if (auth.platformRole === "superadmin") return true;
+  if (!auth.userId) return auth.tenantId === tenantId;
+  return !!getDb()
+    .select({ userId: memberships.userId })
+    .from(memberships)
+    .where(and(eq(memberships.userId, auth.userId), eq(memberships.tenantId, tenantId)))
     .all()[0];
-  return u?.id ?? null;
 }
 
 /**
@@ -185,54 +131,88 @@ function mintBootstrapToken(): { plaintext: string; hash: string } {
 }
 
 /**
- * mkdir -p the per-tenant data directories. Idempotent. Catches errors so
- * a partial filesystem doesn't roll back the DB transaction (the DB is the
- * source of truth; directories materialize on first use anyway).
+ * mkdir -p the per-tenant data directories. Filesystem provisioning is part
+ * of tenant creation: a tenant is not reported as ready when its durable
+ * storage roots could not be created.
  */
-async function ensureTenantDirs(slug: string): Promise<string[]> {
+function tenantProvisionRoots(slug: string): string[] {
   const repoRoot = process.cwd();
   // Walk up to find the data/ directory the same way db/client.ts does.
   // For correctness we use process.env.AGENTIC_DATA_ROOT when set.
   const dataRoot =
     process.env.AGENTIC_DATA_ROOT ?? path.join(repoRoot, "data");
-  const dirs = [
-    path.join(dataRoot, "logs", slug, "runs"),
-    path.join(dataRoot, "logs", slug, "events"),
+  return [
+    path.join(dataRoot, "logs", slug),
     path.join(dataRoot, "artifacts", slug),
     path.join(tenantsCodeRoot(), slug),
   ];
-  for (const d of dirs) {
-    try {
-      await fs.mkdir(d, { recursive: true });
-    } catch (err) {
-      // Don't fail the request on FS errors — the dirs are recreated lazily
-      // by the writers. Log and move on.
-      console.warn(`[tenants] mkdir failed for ${d}:`, (err as Error).message);
-    }
-  }
-  return dirs;
 }
 
-/** Starter event type catalog applied when starter='hello'. */
-const HELLO_STARTER_EVENTS: Array<{
-  name: string;
-  category: string;
-  color: string;
-  description: string;
-}> = [
-  {
-    name: "TENANT_BOOTSTRAPPED",
-    category: "system",
-    color: "blue",
-    description: "Emitted once when the tenant is provisioned.",
-  },
-  {
-    name: "HELLO_WORLD",
-    category: "agent",
-    color: "green",
-    description: "Sample event for the starter workflow to react to.",
-  },
-];
+async function ensureTenantDirs(roots: string[]): Promise<void> {
+  await Promise.all([
+    fs.mkdir(path.join(roots[0]!, "runs"), { recursive: true }),
+    fs.mkdir(path.join(roots[0]!, "events"), { recursive: true }),
+    fs.mkdir(roots[1]!, { recursive: true }),
+    fs.mkdir(roots[2]!, { recursive: true }),
+  ]);
+}
+
+/**
+ * Creation spans SQLite, the filesystem, and the in-memory/Inngest registry.
+ * Compensate the committed SQLite transaction if a later provisioning step
+ * fails so a retry never encounters a tenant that was previously reported as
+ * failed but is actually half-created.
+ */
+async function rollbackProvisioning(
+  tenantId: string,
+  slug: string,
+  provisionedRoots: string[],
+  cause: unknown,
+): Promise<never> {
+  const original = cause instanceof Error ? cause : new Error(String(cause));
+  const cleanupErrors: Error[] = [];
+  let databaseRemoved = false;
+
+  try {
+    getDb().delete(tenants).where(eq(tenants.id, tenantId)).run();
+    databaseRemoved = true;
+  } catch (error) {
+    cleanupErrors.push(error instanceof Error ? error : new Error(String(error)));
+  }
+
+  if (databaseRemoved) {
+    try {
+      const [{ appIdForTenant }, { unregisterApp }] = await Promise.all([
+        import("@agentic/runtime"),
+        import("../../services/inngest-registry"),
+      ]);
+      unregisterApp(appIdForTenant(slug));
+    } catch (error) {
+      cleanupErrors.push(error instanceof Error ? error : new Error(String(error)));
+    }
+
+    const settled = await Promise.allSettled(
+      provisionedRoots.map((root) => fs.rm(root, { recursive: true, force: true })),
+    );
+    for (const result of settled) {
+      if (result.status === "rejected") {
+        cleanupErrors.push(
+          result.reason instanceof Error
+            ? result.reason
+            : new Error(String(result.reason)),
+        );
+      }
+    }
+  }
+
+  if (cleanupErrors.length > 0) {
+    throw new AggregateError(
+      [original, ...cleanupErrors],
+      `tenant ${slug} provisioning failed and compensation was incomplete`,
+    );
+  }
+  throw original;
+}
 
 interface CreateResult {
   body: {
@@ -242,15 +222,44 @@ interface CreateResult {
   status: 201;
 }
 
-async function performCreate(
-  req: FastifyRequest,
+interface TenantCreateOperation {
+  tenantId: string;
+  tokenId: string;
+  auditId: string;
+  createdAt: number;
+  tokenMaterial: { plaintext: string; hash: string } | null;
+  operatorUserId: string | null;
+  callerSlug: string;
+}
+
+function createOperation(
   body: TenantCreateBody,
   operatorUserId: string | null,
   callerSlug: string,
+): TenantCreateOperation {
+  return {
+    tenantId: makeId("ten"),
+    tokenId: makeId("tok"),
+    auditId: makeId("aud"),
+    createdAt: Date.now(),
+    tokenMaterial: body.mintToken ? mintBootstrapToken() : null,
+    operatorUserId,
+    callerSlug,
+  };
+}
+
+async function performCreate(
+  body: TenantCreateBody,
+  operation: TenantCreateOperation,
 ): Promise<CreateResult> {
   const db = getDb();
 
-  if (tenantSlugExists(body.slug)) {
+  const existing = db
+    .select({ id: tenants.id })
+    .from(tenants)
+    .where(eq(tenants.slug, body.slug))
+    .all()[0];
+  if (existing && existing.id !== operation.tenantId) {
     const err: Error & { statusCode?: number; code?: string } = new Error(
       `tenant slug "${body.slug}" already exists`,
     );
@@ -259,37 +268,20 @@ async function performCreate(
     throw err;
   }
 
-  let copyFromTenantId: string | null = null;
-  let copyFromSlug: string | null = null;
-  if (typeof body.starter === "string" && body.starter.startsWith("copy-from:")) {
-    copyFromSlug = body.starter.slice("copy-from:".length);
-    const src = db
-      .select()
-      .from(tenants)
-      .where(eq(tenants.slug, copyFromSlug))
-      .all()[0];
-    if (!src) {
-      const err: Error & { statusCode?: number; code?: string } = new Error(
-        `cannot copy from unknown tenant "${copyFromSlug}"`,
-      );
-      err.statusCode = 400;
-      err.code = "copy_source_unknown";
-      throw err;
-    }
-    copyFromTenantId = src.id;
-  }
+  const tenantId = operation.tenantId;
+  const now = new Date(operation.createdAt);
+  const tokenMaterial = operation.tokenMaterial;
+  const tokenId = operation.tokenId;
+  const auditId = operation.auditId;
+  const operatorUserId = operation.operatorUserId;
 
-  const tenantId = makeId("ten");
-  const now = new Date();
-  const tokenMaterial = body.mintToken ? mintBootstrapToken() : null;
-  const tokenId = makeId("tok");
-  const auditId = makeId("aud");
-
-  // Single transaction: tenant row + budget + membership + starter content
-  // + token + audit. If any step throws, none persist — slug is freed.
-  let seededEventTypes = 0;
-  db.transaction(() => {
-    db.insert(tenants)
+  // Single transaction: tenant row + budget + membership + token + audit. If
+  // any step throws, none persist and the slug remains available. Recovery of
+  // a durable idempotency claim may find this exact tenant already committed;
+  // in that case the transaction is known to have completed atomically and we
+  // resume only filesystem/broker provisioning with the original stable ids.
+  if (!existing) db.transaction((tx) => {
+    tx.insert(tenants)
       .values({
         id: tenantId,
         slug: body.slug,
@@ -301,7 +293,7 @@ async function performCreate(
       })
       .run();
 
-    db.insert(tenantBudgets)
+    tx.insert(tenantBudgets)
       .values({
         tenantId,
         monthlyTokenCap: body.budget?.monthlyTokenCap ?? null,
@@ -314,7 +306,7 @@ async function performCreate(
       .run();
 
     if (operatorUserId) {
-      db.insert(memberships)
+      tx.insert(memberships)
         .values({
           userId: operatorUserId,
           tenantId,
@@ -326,101 +318,8 @@ async function performCreate(
         .run();
     }
 
-    // Starter content. Note: `eventTypes` / `entityTypes` have only the
-    // (tenantId, name, category, color, description, payloadJson) / (…entityId,
-    // primaryKeyName, propertiesJson) shape in the HEAD schema — no
-    // createdAt/updatedAt timestamp columns. Keep inserts minimal.
-    if (body.starter === "hello") {
-      for (const e of HELLO_STARTER_EVENTS) {
-        db.insert(eventTypes)
-          .values({
-            tenantId,
-            name: e.name,
-            category: e.category,
-            color: e.color,
-            description: e.description,
-            payloadJson: null,
-          })
-          .run();
-        seededEventTypes++;
-      }
-    } else if (copyFromTenantId) {
-      const srcEvents = db
-        .select()
-        .from(eventTypes)
-        .where(eq(eventTypes.tenantId, copyFromTenantId))
-        .all();
-      for (const e of srcEvents) {
-        db.insert(eventTypes)
-          .values({
-            tenantId,
-            name: e.name,
-            category: e.category,
-            color: e.color,
-            description: e.description,
-            payloadJson: e.payloadJson,
-          })
-          .run();
-        seededEventTypes++;
-      }
-      const srcEntities = db
-        .select()
-        .from(entityTypes)
-        .where(eq(entityTypes.tenantId, copyFromTenantId))
-        .all();
-      for (const e of srcEntities) {
-        db.insert(entityTypes)
-          .values({
-            tenantId,
-            entityId: e.entityId,
-            name: e.name,
-            description: e.description,
-            primaryKeyName: e.primaryKeyName,
-            propertiesJson: e.propertiesJson,
-          })
-          .run();
-      }
-      // Clone the live workflow manifest (if any) as the new tenant's v1.
-      const srcWf = db
-        .select()
-        .from(workflows)
-        .where(eq(workflows.tenantId, copyFromTenantId))
-        .all()[0];
-      if (srcWf) {
-        const srcWfv = db
-          .select()
-          .from(workflowVersions)
-          .where(eq(workflowVersions.workflowId, srcWf.id))
-          .all();
-        if (srcWfv.length > 0) {
-          const newWfId = makeId("wf");
-          db.insert(workflows)
-            .values({
-              id: newWfId,
-              tenantId,
-              slug: srcWf.slug,
-              name: srcWf.name,
-              createdAt: now,
-            })
-            .run();
-          const head = srcWfv[srcWfv.length - 1]!;
-          db.insert(workflowVersions)
-            .values({
-              id: makeId("wfv"),
-              workflowId: newWfId,
-              version: "1.0.0",
-              manifestJson: head.manifestJson,
-              actionsJson: head.actionsJson,
-              createdAt: now,
-              createdBy: operatorUserId ?? null,
-            })
-            .run();
-        }
-      }
-    }
-
     if (tokenMaterial) {
-      db.insert(apiTokens)
+      tx.insert(apiTokens)
         .values({
           id: tokenId,
           tenantId,
@@ -432,7 +331,7 @@ async function performCreate(
         .run();
     }
 
-    db.insert(auditLog)
+    tx.insert(auditLog)
       .values({
         id: auditId,
         tenantId,
@@ -445,39 +344,24 @@ async function performCreate(
           slug: body.slug,
           name: body.name,
           starter: body.starter,
-          copy_from: copyFromSlug,
           mintToken: body.mintToken,
-          by_tenant: callerSlug,
-          seeded_event_types: seededEventTypes,
+          by_tenant: operation.callerSlug,
         } as never,
       })
       .run();
   });
 
-  // Outside the transaction: filesystem + Inngest re-register.
-  await ensureTenantDirs(body.slug);
-
-  // The new tenant has no manifest yet, so reregister is mostly a no-op,
-  // but call it so the dynamic loader picks up any pre-staged code dir.
-  // safeReregisterInngest() returns null when the hook isn't wired in this
-  // build — we still report success to the caller because the row is in.
-  const inngestFnCount = await safeReregisterInngest(body.slug);
-  if (inngestFnCount === null) {
-    req.log.debug?.("[tenants] reregister hook unavailable; deferred to next deploy");
+  const provisionedRoots = tenantProvisionRoots(body.slug);
+  let inngestFnCount: number;
+  let detail: Awaited<ReturnType<typeof getTenantDetail>>;
+  try {
+    await ensureTenantDirs(provisionedRoots);
+    inngestFnCount = await reregisterInngestRequired(body.slug);
+    detail = await getTenantDetail(body.slug, { forUserId: operatorUserId });
+    if (!detail) throw new Error(`tenant ${body.slug} disappeared after provisioning`);
+  } catch (error) {
+    return rollbackProvisioning(tenantId, body.slug, provisionedRoots, error);
   }
-
-  const detail = await getTenantDetail(body.slug, { forUserId: operatorUserId });
-
-  const starterSummary =
-    body.starter === "empty"
-      ? null
-      : body.starter === "hello"
-        ? { kind: "hello" as const, seededEventTypes }
-        : {
-            kind: "copy-from" as const,
-            seededEventTypes,
-            sourceSlug: copyFromSlug ?? undefined,
-          };
 
   const responseData = {
     tenant: detail,
@@ -490,7 +374,7 @@ async function performCreate(
           scopes: ["tenant:read", "tenant:write", "agents:invoke", "runs:read"],
         }
       : null,
-    starter: starterSummary,
+    starter: null,
     inngestFns: inngestFnCount,
   };
 
@@ -510,13 +394,13 @@ export async function tenantsRoutes(app: FastifyInstance): Promise<void> {
         req.query?.include_archived === "1" ||
         req.query?.include_archived === "true";
 
-      const operatorUserId = resolveOperatorUserId();
-      const items = await listTenantsWithCounts({
+      const allItems = await listTenantsWithCounts({
         includeArchived,
-        // Pre-platform-admin: in dev/op mode show every tenant. Once RBAC
-        // lands we filter by membership for non-admin callers.
-        forUserId: null,
+        forUserId: auth.platformRole === "superadmin" ? null : auth.userId,
       });
+      const items = auth.platformRole === "superadmin" || auth.userId
+        ? allItems
+        : allItems.filter((item) => item.slug === auth.tenantSlug);
 
       return reply.ok({
         items,
@@ -524,7 +408,7 @@ export async function tenantsRoutes(app: FastifyInstance): Promise<void> {
         viewer: {
           tenantId: auth.tenantId,
           tenantSlug: auth.tenantSlug,
-          userId: operatorUserId,
+          userId: auth.userId,
         },
       });
     },
@@ -538,15 +422,18 @@ export async function tenantsRoutes(app: FastifyInstance): Promise<void> {
   app.get<{ Params: { slug: string } }>(
     "/tenants/:slug/inngest-app",
     async (req, reply) => {
-      requireAuth(req);
+      const auth = requireAuth(req);
       const slug = req.params.slug;
       if (!TENANT_SLUG_REGEX.test(slug)) {
         return reply.fail("invalid_slug", `slug "${slug}" is malformed`, 400);
       }
-      const { appIdForTenant } = await import("@agentic/runtime");
+      const { appIdForTenant, tenantInngestConfigStatus } = await import("@agentic/runtime");
       const reg = await import("../../services/inngest-registry");
       const sync = await import("../../services/inngest-sync");
       const appId = appIdForTenant(slug);
+      const tenant = getDb().select().from(tenants).where(eq(tenants.slug, slug)).all()[0];
+      if (!tenant) return reply.fail("tenant_not_found", `no tenant with slug "${slug}"`, 404);
+      if (!canReadTenant(auth, tenant.id)) return reply.fail("forbidden", "not a member of this tenant", 403);
       const local = reg
         .listRegisteredApps()
         .find((a) => a.appId === appId);
@@ -557,14 +444,21 @@ export async function tenantsRoutes(app: FastifyInstance): Promise<void> {
           404,
         );
       }
-      const probe = await sync.probeApp(appId);
+      const probe = await sync.probeApp(appId, slug);
+      const config = tenantInngestConfigStatus(slug);
       return reply.ok({
         slug,
         appId,
         servePath: local.servePath,
-        serveOrigin: sync.serveOrigin(),
+        serveOrigin: config.serveOrigin,
         localFnCount: local.fnCount,
-        status: local.fnCount > 0 ? "online" : "offline",
+        status:
+          config.readiness === "blocked"
+            ? "blocked"
+            : local.fnCount > 0
+              ? "online"
+              : "offline",
+        config,
         inngest: probe,
       });
     },
@@ -572,13 +466,16 @@ export async function tenantsRoutes(app: FastifyInstance): Promise<void> {
 
   // ── GET /v1/tenants/:slug ──────────────────────────────────────────────
   app.get<{ Params: { slug: string } }>("/tenants/:slug", async (req, reply) => {
-    requireAuth(req);
+    const auth = requireAuth(req);
     const slug = req.params.slug;
     if (!TENANT_SLUG_REGEX.test(slug)) {
       return reply.fail("invalid_slug", `slug "${slug}" is malformed`, 400);
     }
-    const operatorUserId = resolveOperatorUserId();
-    const detail = await getTenantDetail(slug, { forUserId: operatorUserId });
+    const row = getDb().select().from(tenants).where(eq(tenants.slug, slug)).all()[0];
+    if (row && !canReadTenant(auth, row.id)) {
+      return reply.fail("forbidden", "not a member of this tenant", 403);
+    }
+    const detail = await getTenantDetail(slug, { forUserId: auth.userId });
     if (!detail) {
       return reply.fail("tenant_not_found", `no tenant with slug "${slug}"`, 404);
     }
@@ -601,23 +498,72 @@ export async function tenantsRoutes(app: FastifyInstance): Promise<void> {
       );
     }
 
-    const idemKey = req.headers["idempotency-key"];
-    const cacheKey =
-      typeof idemKey === "string" && idemKey.length > 0
-        ? `${auth.tenantSlug}:${idemKey}`
-        : null;
-    if (cacheKey) {
-      const cached = cacheGet(cacheKey);
-      if (cached) {
-        return reply.status(cached.status).send(cached.body);
+    const operatorUserId = auth.userId;
+    const scope = "tenants.create";
+    const fingerprint = idempotencyFingerprint(body);
+    let idemKey: string | null;
+    let operation = createOperation(body, operatorUserId, auth.tenantSlug);
+    let claimOwnerToken: string | null = null;
+    try {
+      idemKey = readIdempotencyKey(req);
+      if (idemKey) {
+        const claim = claimIdempotency<TenantCreateOperation>({
+          tenantId: auth.tenantId,
+          key: idemKey,
+          scope,
+          fingerprint,
+          operation,
+        });
+        if (claim.state === "replay") {
+          return reply.status(claim.response.status).send(claim.response.body);
+        }
+        if (claim.state === "pending") {
+          reply.header(
+            "retry-after",
+            String(Math.max(1, Math.ceil(claim.retryAfterMs / 1000))),
+          );
+          return reply.fail(
+            "idempotency_in_progress",
+            "an identical tenant creation is still in progress; retry with the same key",
+            409,
+          );
+        }
+        operation = claim.operation;
+        claimOwnerToken = claim.ownerToken;
       }
+    } catch (error) {
+      const known = error as Error & { statusCode?: number; code?: string };
+      if (known.statusCode && known.code) {
+        return reply.fail(known.code, known.message, known.statusCode);
+      }
+      throw error;
     }
 
-    const operatorUserId = resolveOperatorUserId();
     let result: CreateResult;
     try {
-      result = await performCreate(req, body, operatorUserId, auth.tenantSlug);
+      result = await performCreate(body, operation);
     } catch (err) {
+      if (idemKey && claimOwnerToken) {
+        try {
+          releaseIdempotency({
+            tenantId: auth.tenantId,
+            key: idemKey,
+            scope,
+            fingerprint,
+            ownerToken: claimOwnerToken,
+          });
+        } catch (releaseError) {
+          req.log.error(
+            { err: releaseError, slug: body.slug },
+            "tenant.create: failed operation claim could not be released",
+          );
+          return reply.fail(
+            "idempotency_release_failed",
+            "tenant creation failed and its durable retry claim could not be released",
+            503,
+          );
+        }
+      }
       const e = err as Error & { statusCode?: number; code?: string };
       if (e.statusCode && e.code) {
         return reply.fail(e.code, e.message, e.statusCode);
@@ -625,12 +571,41 @@ export async function tenantsRoutes(app: FastifyInstance): Promise<void> {
       throw err;
     }
 
-    if (cacheKey) {
-      cacheSet(cacheKey, {
-        body: result.body,
-        status: result.status,
-        at: Date.now(),
-      });
+    if (idemKey && claimOwnerToken) {
+      try {
+        completeIdempotency({
+          tenantId: auth.tenantId,
+          key: idemKey,
+          scope,
+          fingerprint,
+          ownerToken: claimOwnerToken,
+          response: { body: result.body, status: result.status },
+        });
+      } catch (error) {
+        req.log.error(
+          { err: error, slug: body.slug },
+          "tenant.create: side effects completed but idempotency completion failed",
+        );
+        try {
+          releaseIdempotency({
+            tenantId: auth.tenantId,
+            key: idemKey,
+            scope,
+            fingerprint,
+            ownerToken: claimOwnerToken,
+          });
+        } catch (releaseError) {
+          req.log.error(
+            { err: releaseError, slug: body.slug },
+            "tenant.create: incomplete idempotency claim could not be released",
+          );
+        }
+        return reply.fail(
+          "idempotency_store_failed",
+          "tenant was provisioned, but its durable retry response could not be finalized; retry with the same key",
+          503,
+        );
+      }
     }
 
     return reply.status(result.status).send(result.body);
@@ -683,7 +658,7 @@ export async function tenantsRoutes(app: FastifyInstance): Promise<void> {
           .values({
             id: makeId("aud"),
             tenantId: row.id,
-            actorUserId: resolveOperatorUserId(),
+            actorUserId: auth.userId,
             action: "tenant.update",
             targetType: "tenant",
             targetId: row.id,
@@ -702,7 +677,7 @@ export async function tenantsRoutes(app: FastifyInstance): Promise<void> {
       });
 
       const detail = await getTenantDetail(slug, {
-        forUserId: resolveOperatorUserId(),
+        forUserId: auth.userId,
       });
       return reply.ok(detail);
     },
@@ -758,35 +733,29 @@ export async function tenantsRoutes(app: FastifyInstance): Promise<void> {
         );
       }
 
-      const now = new Date();
-      db.transaction(() => {
-        db.update(tenants)
-          .set({ archivedAt: now, updatedAt: now })
-          .where(eq(tenants.id, row.id))
-          .run();
-        db.insert(auditLog)
-          .values({
-            id: makeId("aud"),
+      let changedAt: Date;
+      try {
+        ({ changedAt } = await transitionTenantLifecycle(
+          {
             tenantId: row.id,
-            actorUserId: resolveOperatorUserId(),
-            action: "tenant.archive",
-            targetType: "tenant",
-            targetId: row.id,
-            at: now,
-            metaJson: {
-              slug,
-              reason: body.reason ?? null,
-              by_tenant: auth.tenantSlug,
-            } as never,
-          })
-          .run();
-      });
-
-      await safeReregisterInngest(slug);
+            slug,
+            action: "archive",
+            actorUserId: auth.userId,
+            callerSlug: auth.tenantSlug,
+            reason: body.reason ?? null,
+          },
+          reregisterInngestRequired,
+        ));
+      } catch (error) {
+        if (error instanceof TenantLifecycleError) {
+          return reply.fail(error.code, error.message, error.statusCode);
+        }
+        throw error;
+      }
 
       return reply.ok({
         slug,
-        archivedAt: now.getTime(),
+        archivedAt: changedAt.getTime(),
       });
     },
   );
@@ -817,34 +786,27 @@ export async function tenantsRoutes(app: FastifyInstance): Promise<void> {
         );
       }
 
-      const now = new Date();
-      db.transaction(() => {
-        db.update(tenants)
-          .set({ archivedAt: null, updatedAt: now })
-          .where(eq(tenants.id, row.id))
-          .run();
-        db.insert(auditLog)
-          .values({
-            id: makeId("aud"),
+      try {
+        await transitionTenantLifecycle(
+          {
             tenantId: row.id,
-            actorUserId: resolveOperatorUserId(),
-            action: "tenant.restore",
-            targetType: "tenant",
-            targetId: row.id,
-            at: now,
-            metaJson: {
-              slug,
-              reason: body.reason ?? null,
-              by_tenant: auth.tenantSlug,
-            } as never,
-          })
-          .run();
-      });
-
-      await safeReregisterInngest(slug);
+            slug,
+            action: "restore",
+            actorUserId: auth.userId,
+            callerSlug: auth.tenantSlug,
+            reason: body.reason ?? null,
+          },
+          reregisterInngestRequired,
+        );
+      } catch (error) {
+        if (error instanceof TenantLifecycleError) {
+          return reply.fail(error.code, error.message, error.statusCode);
+        }
+        throw error;
+      }
 
       const detail = await getTenantDetail(slug, {
-        forUserId: resolveOperatorUserId(),
+        forUserId: auth.userId,
       });
       return reply.ok(detail);
     },

@@ -3,39 +3,33 @@
  *
  * Drives the browser through:
  *
- *   1. Navigate to /portal/raas/dashboard — should redirect to /sign-in
- *      (or auto-redirect back to /portal in dev mode).
- *   2. In dev mode, the sign-in page auto-redirects to /portal which
- *      lands on /portal/raas/dashboard. Assert the page renders the
- *      Dashboard view header.
+ *   1. Navigate to /portal/raas/dashboard — should redirect to /sign-in.
+ *   2. Sign in as the explicitly configured bootstrap admin through
+ *      `/v1/auth/login` and land on
+ *      `/portal/raas/dashboard`.
  *   3. From the same browser context, request /v1/agents via fetch and
  *      assert 200 with a JSON envelope — proves the session cookie is
  *      carried across the Next rewrite.
  *
- * The portal is a static SPA served from /portal/index.html via
- * next.config.mjs rewrite; navigation works regardless of which view
- * (dashboard / runs / events ...) is requested. We assert the nav
- * shell renders and the cookie roundtrips to apps/api correctly.
+ * The portal is the Next App Router application. We assert the nav shell
+ * renders and the cookie roundtrips to apps/api correctly.
  */
 
 import { test, expect } from "@playwright/test";
-import { API_BASE } from "./helpers";
+import { API_BASE, loginBootstrapAdmin } from "./helpers";
 
 test.describe("P4-TEST-04: auth flow E2E", () => {
   test("unauthenticated → sign-in → portal renders", async ({ page }) => {
-    // Land directly on the portal — the layout requires auth, so dev mode
-    // auto-mints a session via /sign-in's redirect.
-    await page.goto("/sign-in?return=/portal/raas/dashboard");
-    await page.waitForURL(/\/portal\//, { timeout: 15_000 });
+    await page.goto("/portal/raas/dashboard");
+    await page.waitForURL(/\/sign-in/, { timeout: 15_000 });
+    await loginBootstrapAdmin(page);
     expect(page.url()).toMatch(/\/portal\/raas\/dashboard|\/portal\//);
   });
 
   test("portal dashboard view renders the nav shell", async ({ page }) => {
-    await page.goto("/sign-in?return=/portal/raas/dashboard");
-    await page.waitForURL(/\/portal\//, { timeout: 15_000 });
+    await loginBootstrapAdmin(page);
     await page.goto("/portal/raas/dashboard");
-    // The static SPA mounts a `<nav>` element with the sidebar; that's the
-    // earliest stable selector available after Babel runs.
+    // The App Router shell mounts a `<nav>` element with the sidebar.
     await page.waitForSelector("nav", { timeout: 15_000 });
     // Title / brand mark should be present.
     const html = await page.content();
@@ -43,11 +37,9 @@ test.describe("P4-TEST-04: auth flow E2E", () => {
   });
 
   test("authenticated browser carries cookie to /v1/agents", async ({ page }) => {
-    await page.goto("/sign-in?return=/portal/raas/dashboard");
-    await page.waitForURL(/\/portal\//, { timeout: 15_000 });
+    await loginBootstrapAdmin(page);
 
-    // Make an in-page fetch so the dev cookie attached by the layout
-    // sign-in path rides on the same origin. The Next rewrite under
+    // Make an in-page fetch so the login cookie rides on the same origin. The Next rewrite under
     // /v1/* proxies to apps/api on :3540.
     const result = await page.evaluate(async () => {
       const res = await fetch("/v1/agents?kind=all", {

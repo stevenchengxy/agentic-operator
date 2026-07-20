@@ -63,6 +63,8 @@ describe("agentic init", () => {
     expect(tenantManifest.slug).toBe("alpha");
     expect(tenantManifest.version).toBe("v1");
     expect(tenantManifest.manifestPath).toBe("models/alpha-v1");
+    expect(tenantManifest.schemaVersion).toBe(1);
+    expect(tenantManifest.code).toEqual({ registry: "src/index.ts" });
 
     const pkg = JSON.parse(
       await readFile(path.join(result.tenantDir, "package.json"), "utf-8"),

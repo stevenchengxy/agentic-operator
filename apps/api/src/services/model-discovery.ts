@@ -8,8 +8,9 @@
  * this; the connectivity test still uses provider-test.ts.
  *
  * Providers that need SDK-level auth (Bedrock, Vertex) or per-deployment
- * config (Azure) report `source: "unsupported"` so the UI can fall back to
- * the hardcoded catalog or a free-text input.
+ * config (Azure) report `source: "unsupported"`; the UI may accept an
+ * explicitly unverified provider model id, but never presents a static row
+ * as provider-confirmed availability.
  */
 import type { ProviderId } from "@agentic/contracts";
 
@@ -47,11 +48,13 @@ async function fetchJson(
   const t = setTimeout(() => ac.abort(), TIMEOUT_MS);
   try {
     const res = await fetch(url, { ...init, signal: ac.signal });
-    let body: unknown = null;
+    let body: unknown;
     try {
       body = await res.json();
-    } catch {
-      // some upstreams return HTML error pages — ignore
+    } catch (error) {
+      throw new Error(`model catalog returned non-JSON content (HTTP ${res.status})`, {
+        cause: error,
+      });
     }
     return { status: res.status, body };
   } finally {
@@ -78,6 +81,20 @@ const OPENAI_COMPAT: Partial<Record<ProviderId, OpenAICompatConfig>> = {
   qwen: { baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1" },
 };
 
+/** Whether this provider has a real list-models implementation in this build.
+ * A temporary fetch/auth failure does not change capability: callers that
+ * require provider confirmation must fail closed rather than relabel it as an
+ * unsupported free-text provider. */
+export function supportsLiveModelDiscovery(provider: ProviderId): boolean {
+  return (
+    provider === "mock" ||
+    provider === "anthropic" ||
+    provider === "gemini" ||
+    provider === "custom" ||
+    OPENAI_COMPAT[provider] !== undefined
+  );
+}
+
 /**
  * OpenAI's /models returns `{ data: [{ id, owned_by, ... }, ...] }`.
  * OpenRouter extends it with `context_length`, `pricing`, `architecture`,
@@ -87,15 +104,19 @@ const OPENAI_COMPAT: Partial<Record<ProviderId, OpenAICompatConfig>> = {
  * back to the curated catalog for those rows.
  */
 function parseOpenAICompatBody(body: unknown): DiscoveredModel[] {
-  if (!body || typeof body !== "object") return [];
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw new TypeError("model catalog payload must be an object");
+  }
   const data = (body as Record<string, unknown>).data;
-  if (!Array.isArray(data)) return [];
+  if (!Array.isArray(data)) throw new TypeError("model catalog payload is missing data[]");
   const out: DiscoveredModel[] = [];
-  for (const item of data) {
-    if (!item || typeof item !== "object") continue;
+  for (const [index, item] of data.entries()) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new TypeError(`model catalog data[${index}] must be an object`);
+    }
     const obj = item as Record<string, unknown>;
-    const id = typeof obj.id === "string" ? obj.id : null;
-    if (!id) continue;
+    const id = typeof obj.id === "string" ? obj.id.trim() : "";
+    if (!id) throw new TypeError(`model catalog data[${index}].id is required`);
     const entry: DiscoveredModel = { id };
     const ctxRaw = obj.context_length;
     if (typeof ctxRaw === "number" && Number.isFinite(ctxRaw)) {
@@ -163,7 +184,7 @@ async function listOpenAICompat(
     return {
       source: "unsupported",
       models: [],
-      message: `Network error listing models: ${(err as Error).message}`,
+      message: `Live model discovery failed: ${(err as Error).message}`,
     };
   }
 }
@@ -174,14 +195,21 @@ async function listOpenAICompat(
  * value when the discovered id matches.
  */
 function parseAnthropicBody(body: unknown): DiscoveredModel[] {
-  if (!body || typeof body !== "object") return [];
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw new TypeError("Anthropic model catalog payload must be an object");
+  }
   const data = (body as Record<string, unknown>).data;
-  if (!Array.isArray(data)) return [];
+  if (!Array.isArray(data)) throw new TypeError("Anthropic model catalog payload is missing data[]");
   const out: DiscoveredModel[] = [];
-  for (const item of data) {
-    if (!item || typeof item !== "object") continue;
+  for (const [index, item] of data.entries()) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new TypeError(`Anthropic model catalog data[${index}] must be an object`);
+    }
     const id = (item as Record<string, unknown>).id;
-    if (typeof id === "string") out.push({ id });
+    if (typeof id !== "string" || !id.trim()) {
+      throw new TypeError(`Anthropic model catalog data[${index}].id is required`);
+    }
+    out.push({ id: id.trim() });
   }
   out.sort((a, b) => a.id.localeCompare(b.id));
   return out;
@@ -208,7 +236,7 @@ async function listAnthropic(apiKey: string): Promise<DiscoveryResult> {
     return {
       source: "unsupported",
       models: [],
-      message: `Network error listing models: ${(err as Error).message}`,
+      message: `Live model discovery failed: ${(err as Error).message}`,
     };
   }
 }
@@ -219,15 +247,21 @@ async function listAnthropic(apiKey: string): Promise<DiscoveryResult> {
  * match what the contracts catalog uses ("gemini-2.5-flash").
  */
 function parseGeminiBody(body: unknown): DiscoveredModel[] {
-  if (!body || typeof body !== "object") return [];
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw new TypeError("Gemini model catalog payload must be an object");
+  }
   const models = (body as Record<string, unknown>).models;
-  if (!Array.isArray(models)) return [];
+  if (!Array.isArray(models)) throw new TypeError("Gemini model catalog payload is missing models[]");
   const out: DiscoveredModel[] = [];
-  for (const item of models) {
-    if (!item || typeof item !== "object") continue;
+  for (const [index, item] of models.entries()) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new TypeError(`Gemini model catalog models[${index}] must be an object`);
+    }
     const obj = item as Record<string, unknown>;
     const rawName = obj.name;
-    if (typeof rawName !== "string") continue;
+    if (typeof rawName !== "string" || !rawName.trim()) {
+      throw new TypeError(`Gemini model catalog models[${index}].name is required`);
+    }
     const id = rawName.startsWith("models/") ? rawName.slice("models/".length) : rawName;
     const ctxRaw = obj.inputTokenLimit;
     const contextLength =
@@ -254,7 +288,7 @@ async function listGemini(apiKey: string): Promise<DiscoveryResult> {
     return {
       source: "unsupported",
       models: [],
-      message: `Network error listing models: ${(err as Error).message}`,
+      message: `Live model discovery failed: ${(err as Error).message}`,
     };
   }
 }
@@ -271,6 +305,13 @@ export async function listAvailableModels(
   const trimmed = (apiKey ?? "").trim();
 
   if (provider === "mock") {
+    if (process.env.NODE_ENV !== "test") {
+      return {
+        source: "unsupported",
+        models: [],
+        message: "The mock provider is available only inside NODE_ENV=test",
+      };
+    }
     return {
       source: "live",
       models: [{ id: "mock-model-v1", contextLength: 8192 }],
@@ -312,12 +353,32 @@ export async function listAvailableModels(
     return listGemini(trimmed);
   }
 
-  // azure / bedrock / vertex / custom: discovery needs per-deployment or
-  // SDK-level credentials that don't fit this generic flow. The UI falls
-  // back to the hardcoded catalog (or a free-text input for empty catalogs).
+  if (provider === "custom") {
+    const baseURL = (process.env.CUSTOM_LLM_BASE_URL ?? "").trim().replace(/\/+$/, "");
+    if (!baseURL) {
+      return {
+        source: "unsupported",
+        models: [],
+        message: "CUSTOM_LLM_BASE_URL is not configured",
+      };
+    }
+    if (!trimmed) {
+      return {
+        source: "unsupported",
+        models: [],
+        message: "No API key configured — add one to list live models",
+      };
+    }
+    return listOpenAICompat(trimmed, { baseURL });
+  }
+
+  // azure / bedrock / vertex: discovery needs per-deployment or
+  // SDK-level credentials that do not fit this generic flow. The UI exposes
+  // an explicitly unverified free-text model id instead of a fabricated
+  // "available" catalog.
   return {
     source: "unsupported",
     models: [],
-    message: `Live model discovery for ${provider} requires SDK-specific auth — see catalog or enter the model ID manually`,
+    message: `Live model discovery for ${provider} requires SDK-specific auth — enter the exact provider model ID manually`,
   };
 }

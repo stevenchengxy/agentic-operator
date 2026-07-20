@@ -4,7 +4,7 @@
 // an uploaded override of an existing id) wins.
 
 import type { OntologySource, DomainOntology } from "@agentic/agent-factory";
-import { FsUploadedOntologyStore, slugifyDomain } from "./uploaded-ontology-store";
+import { FsUploadedOntologyStore } from "./uploaded-ontology-store";
 
 /** TENANT-SCOPED uploaded-ontology source. `tenant` is required to surface anything — a missing
  *  tenant (an unscoped port) sees NO uploads (so the catalog can never leak another tenant's). */
@@ -16,7 +16,14 @@ export class UploadedOntologySource implements OntologySource {
 
   async listDomains() {
     if (!this.tenant) return [];
-    return (await this.store.list(this.tenant)).map((m) => ({ id: m.id, name: `${m.name}（上传）`, counts: m.counts }));
+    // Decorate idempotently. The stored name may already carry the marker (an
+    // earlier re-upload echoed the decorated display name back and persisted
+    // it); strip any trailing run before re-appending exactly one so the
+    // switcher/binding/goal-suggestions never show「…（上传）（上传）」.
+    return (await this.store.list(this.tenant)).map((m) => {
+      const base = m.name.replace(/(（上传）)+$/u, "").trimEnd();
+      return { id: m.id, name: `${base}（上传）`, counts: m.counts };
+    });
   }
 
   async fetchOntology(domainId: string): Promise<DomainOntology> {
@@ -27,7 +34,7 @@ export class UploadedOntologySource implements OntologySource {
 
   async fetchActionRules(domainId: string, actionName: string): Promise<unknown[]> {
     const o = this.tenant ? await this.store.get(this.tenant, domainId) : null;
-    if (!o) return [];
+    if (!o) throw new Error(`上传的本体里找不到业务域「${domainId}」，无法读取 action rules。`);
     const action = o.actions.find((a) => a.name === actionName || a.id === actionName);
     // Preferred: rules nested under the action's steps (same contract as ManifestOntologySource).
     const steps = (action as unknown as { action_steps?: Array<Record<string, unknown>> })?.action_steps;
@@ -40,7 +47,7 @@ export class UploadedOntologySource implements OntologySource {
   /** True if an uploaded bundle exists for this domain id (used for priority routing). */
   async has(domainId: string): Promise<boolean> {
     if (!this.tenant) return false;
-    return (await this.store.ids(this.tenant)).has(slugifyDomain(domainId));
+    return (await this.store.ids(this.tenant)).has(domainId);
   }
 }
 
@@ -51,20 +58,31 @@ export class UploadedFirstOntologySource implements OntologySource {
   constructor(
     private readonly uploaded: UploadedOntologySource,
     private readonly base: OntologySource,
+    /** A binding created by upload must not silently fall through to a same-id
+     * base ontology when its tenant file is missing/corrupt. */
+    private readonly strictUploadedDomainId?: string,
+    /** A binding created from the authoritative catalog must not be shadowed
+     * later by a tenant upload that happens to reuse the same id.  Binding
+     * provenance is part of ontology identity, not a source-priority hint. */
+    private readonly strictBaseDomainId?: string,
   ) {}
 
   async listDomains() {
-    const up = await this.uploaded.listDomains().catch(() => []);
-    const seen = new Set(up.map((d) => d.id.toLowerCase()));
-    const baseList = await this.base.listDomains().catch(() => []);
-    return [...up, ...baseList.filter((d) => !seen.has(d.id.toLowerCase()))];
+    const up = await this.uploaded.listDomains();
+    const seen = new Set(up.map((d) => d.id));
+    const baseList = await this.base.listDomains();
+    return [...up, ...baseList.filter((d) => !seen.has(d.id))];
   }
 
   async fetchOntology(domainId: string): Promise<DomainOntology> {
+    if (this.strictUploadedDomainId === domainId) return this.uploaded.fetchOntology(domainId);
+    if (this.strictBaseDomainId === domainId) return this.base.fetchOntology(domainId);
     return (await this.uploaded.has(domainId)) ? this.uploaded.fetchOntology(domainId) : this.base.fetchOntology(domainId);
   }
 
   async fetchActionRules(domainId: string, actionName: string): Promise<unknown[]> {
+    if (this.strictUploadedDomainId === domainId) return this.uploaded.fetchActionRules(domainId, actionName);
+    if (this.strictBaseDomainId === domainId) return this.base.fetchActionRules(domainId, actionName);
     return (await this.uploaded.has(domainId)) ? this.uploaded.fetchActionRules(domainId, actionName) : this.base.fetchActionRules(domainId, actionName);
   }
 }

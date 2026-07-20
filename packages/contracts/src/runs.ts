@@ -10,6 +10,28 @@ export const RunStatus = z.enum([
 ]);
 export type RunStatus = z.infer<typeof RunStatus>;
 
+export const CodeActAttestationStatus = z.enum([
+  "production_verified",
+  "sandbox_verified",
+  "sandbox_not_required",
+  "not_authorized",
+  "missing",
+  "mismatch",
+  "not_checked",
+]);
+export type CodeActAttestationStatus = z.infer<typeof CodeActAttestationStatus>;
+
+/** Runtime receipt columns shared by run and step detail rows. Optional keeps
+ * legacy fixtures compatible; the API query layer always returns them. */
+const CodeActReceiptFields = {
+  codeRan: z.boolean().nullable().optional(),
+  codeExecuted: z.boolean().nullable().optional(),
+  codeIsolation: z.enum(["worker_thread", "isolated_subprocess", "isolated_container"]).nullable().optional(),
+  codeSha256: z.string().regex(/^[a-f0-9]{64}$/).nullable().optional(),
+  codeAttestation: CodeActAttestationStatus.nullable().optional(),
+  codeExecutionFailure: z.string().nullable().optional(),
+} as const;
+
 export const StepType = z.enum([
   "tool",
   "logic",
@@ -17,6 +39,10 @@ export const StepType = z.enum([
   "condition",
   "delay",
   "subflow",
+  "invoke",
+  "foreach",
+  "emit",
+  "decision",
 ]);
 export const StepStatus = z.enum([
   "pending",
@@ -27,6 +53,7 @@ export const StepStatus = z.enum([
 ]);
 
 export const RunRow = z.object({
+  ...CodeActReceiptFields,
   id: z.string(),
   status: RunStatus,
   agentName: z.string(),
@@ -86,6 +113,7 @@ export const RunRow = z.object({
 export type RunRow = z.infer<typeof RunRow>;
 
 export const StepRow = z.object({
+  ...CodeActReceiptFields,
   id: z.string(),
   ord: z.number(),
   name: z.string(),

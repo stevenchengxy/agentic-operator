@@ -92,6 +92,7 @@ export function TextIn({
   suffix,
   prefix,
   ariaLabel,
+  disabled,
 }: {
   value: string;
   onChange?: (v: string) => void;
@@ -105,6 +106,7 @@ export function TextIn({
    * caller should pass the section field label here for screen readers.
    */
   ariaLabel?: string;
+  disabled?: boolean;
 }) {
   const { t } = useI18n();
   return (
@@ -132,6 +134,7 @@ export function TextIn({
       )}
       <input
         value={value}
+        disabled={disabled}
         onChange={(e) => onChange?.(e.target.value)}
         placeholder={placeholder}
         aria-label={ariaLabel ?? placeholder ?? t("settingsAtoms.textInput")}
@@ -144,6 +147,8 @@ export function TextIn({
           fontFamily: mono ? "var(--mono)" : "var(--sans)",
           fontSize: mono ? 12 : 12.5,
           minWidth: 0,
+          cursor: disabled ? "not-allowed" : undefined,
+          opacity: disabled ? 0.6 : 1,
         }}
       />
       {suffix && (
@@ -169,17 +174,20 @@ export function SelectIn({
   onChange,
   options,
   ariaLabel,
+  disabled,
 }: {
   value: string;
   onChange?: (v: string) => void;
   options: SelectOption[];
   /** P2-FE-24 — accessible name. Defaults to "Select" to silence axe. */
   ariaLabel?: string;
+  disabled?: boolean;
 }) {
   const { t } = useI18n();
   return (
     <select
       value={value}
+      disabled={disabled}
       onChange={(e) => onChange?.(e.target.value)}
       aria-label={ariaLabel ?? t("settingsAtoms.select")}
       style={{
@@ -191,7 +199,8 @@ export function SelectIn({
         fontSize: 12.5,
         fontFamily: "var(--sans)",
         outline: "none",
-        cursor: "pointer",
+        cursor: disabled ? "not-allowed" : "pointer",
+        opacity: disabled ? 0.6 : 1,
         appearance: "none",
         backgroundImage:
           "linear-gradient(45deg, transparent 50%, var(--text-3) 50%), linear-gradient(135deg, var(--text-3) 50%, transparent 50%)",
@@ -220,15 +229,19 @@ export function Toggle({
   value,
   onChange,
   ariaLabel,
+  disabled,
 }: {
   value: boolean;
   onChange?: (v: boolean) => void;
   /** P2-FE-24 — accessible name. Required for icon-only toggles. */
   ariaLabel?: string;
+  disabled?: boolean;
 }) {
   const { t } = useI18n();
   return (
     <button
+      type="button"
+      disabled={disabled}
       onClick={() => onChange?.(!value)}
       aria-label={ariaLabel ?? (value ? t("settingsAtoms.on") : t("settingsAtoms.off"))}
       style={{
@@ -238,7 +251,8 @@ export function Toggle({
         background: value ? "var(--signal)" : "var(--panel-3)",
         border: `1px solid ${value ? "var(--signal)" : "var(--border-2)"}`,
         position: "relative",
-        cursor: "pointer",
+        cursor: disabled ? "not-allowed" : "pointer",
+        opacity: disabled ? 0.6 : 1,
         transition: "background 0.12s",
       }}
       aria-pressed={value}

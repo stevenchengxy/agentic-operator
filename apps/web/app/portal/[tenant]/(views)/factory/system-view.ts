@@ -159,9 +159,24 @@ export function deriveSystemA(events: SysBrainEvent[], running: boolean): System
       }
       case "sandbox": {
         const rc = roles.get("sandbox")!;
-        rc.badges.codeact++; // 内部 CodeAct：沙箱驱动本身是系统 A 的代码执行面
-        rc.transcript.push({ id: nid(), kind: "code", label: e.simulated ? "沙箱（模拟）" : "真沙箱部署", detail: `部署 ${s(e.functionsRegistered ?? 0)} · 跑 ${s(e.ran ?? 0)}`, ok: Boolean(e.fullChainRan) });
-        if (!e.fullChainRan) roleErr.set("sandbox", true);
+        const simulated = Boolean(e.simulated);
+        const ok =
+          !simulated &&
+          (Boolean(e.fullChainRan) || Boolean(e.reachedSuccessTerminal));
+        // A historical simulated event is diagnostic data, not a CodeAct
+        // execution or successful sandbox capability.
+        if (!simulated) rc.badges.codeact++;
+        rc.transcript.push({
+          id: nid(),
+          kind: "code",
+          label: simulated
+            ? "历史模拟记录 · 无效执行证据"
+            : "真沙箱部署",
+          detail: `部署 ${s(e.functionsRegistered ?? 0)} · 跑 ${s(e.ran ?? 0)}`,
+          ok,
+        });
+        if (ok) roleErr.delete("sandbox");
+        else roleErr.set("sandbox", true);
         lastIdxOf.set("sandbox", idx);
         break;
       }

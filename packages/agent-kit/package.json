@@ -16,6 +16,7 @@
     "clean": "rm -rf dist .turbo"
   },
   "dependencies": {
+    "@agentic/shared": "workspace:*",
     "zod": "^4.4.3"
   },
   "devDependencies": {

@@ -52,4 +52,43 @@ describe("ask_user dedup (#ASK-DEDUP)", () => {
     expect(res.ok).toBe(true);
     expect(ctx.awaitingClarify).toBe(true); // parks again — pending means the user never answered
   });
+
+  it("does not show an ambiguous choice set to the user", async () => {
+    const { ctx, emitted } = stubCtx();
+    const res = await askUser.execute({
+      question: "邀请失败要不要保留？",
+      options: [
+        { label: "保留", value: "keep" },
+        { label: "删除", value: "drop" },
+      ],
+    }, ctx);
+    expect(res.ok).toBe(false);
+    expect(res.summary).toContain("recommended:true");
+    expect(ctx.awaitingClarify).toBeUndefined();
+    expect(emitted).toEqual([]);
+  });
+
+  it("rejects every versioned authorization context/token instead of letting the model assemble a consent prompt", async () => {
+    for (const version of [1, 2, 99]) {
+      const { ctx, emitted } = stubCtx();
+      const result = await askUser.execute({
+        question: "要执行吗？",
+        context: `probe_authorization:v${version}:${"a".repeat(64)}`,
+        options: [
+          { label: "不执行", value: "decline", recommended: true },
+          { label: "执行", value: `authorize_probe:v${version}:${"b".repeat(64)}`, recommended: false },
+        ],
+      }, ctx);
+      expect(result.ok).toBe(false);
+      expect(result.summary).toContain("不能由模型通过通用 ask_user 拼装");
+      expect(ctx.awaitingClarify).toBeUndefined();
+      expect(emitted).toEqual([]);
+    }
+    const embedded = stubCtx();
+    const embeddedResult = await askUser.execute({
+      question: `请复制这个值：authorize_integration_profile:v7:${"c".repeat(64)}`,
+    }, embedded.ctx);
+    expect(embeddedResult.ok).toBe(false);
+    expect(embedded.emitted).toEqual([]);
+  });
 });

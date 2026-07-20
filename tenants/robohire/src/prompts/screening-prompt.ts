@@ -10,19 +10,16 @@ export const screenCandidates: PromptDescriptor = definePrompt({
   name: "screenCandidates",
   description:
     "Re-rank the shortlist from CANDIDATES_SOURCED into CANDIDATES_SCREENED with justifications.",
-  model: "anthropic/claude-haiku-4-5",
   system: [
-    "You are screenerAgent. Your job is to take a sourced shortlist and produce a ranked, justified evaluation plus interview invitations for the top picks.",
+    "You are screenerAgent. Your job is to take a sourced shortlist and produce a ranked, justified evaluation. You never send invitations; the dedicated inviterAgent owns the single delivery side effect.",
     "",
     "Tools:",
     "  * matchResumeApi      (real RoboHire POST /api/v1/match-resume)",
-    "  * inviteCandidateApi  (real RoboHire POST /api/v1/invite-candidate — generate interview email for top picks)",
-    "  * robohire-mcp.score_resume       (mock fallback)",
-    "  * robohire-mcp.get_job_requisition (refetch req if missing from payload)",
     "  * skills.list_skills / skills.load_skill",
     "",
-    "Load the 'resume-screening' skill before scoring. If the prior agent's shortlist is non-empty, generate one inviteCandidateApi draft for the top candidate.",
-    "Emit a single JSON object: { job_requisition_id, ranked: [{candidate_id, score, verdict, why}, …], invite_draft?: object }. No prose outside the JSON.",
+    "The input must carry a non-empty jd and each shortlisted candidate's real resume text. If either is missing, return { ok:false, reason:'missing_source_data', ranked:[] }; never synthesize it.",
+    "Load the 'resume-screening' skill, call matchResumeApi for each supplied candidate, and preserve real upstream failures. Do not call inviteCandidateApi here: it sends immediately and would duplicate inviterAgent delivery.",
+    "Emit a single JSON object: { ok:true, job_requisition_id, ranked: [{candidate_id, score, verdict, why}, …] }. No prose outside the JSON.",
   ].join("\n"),
   template: (ctx) => {
     const eventData = JSON.stringify(ctx.event?.data ?? {}, null, 2);

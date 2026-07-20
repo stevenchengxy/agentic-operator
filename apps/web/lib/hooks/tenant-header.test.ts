@@ -30,7 +30,7 @@ describe("tenantFromPathname", () => {
     expect(tenantFromPathname("/sign-in")).toBeNull();
     expect(tenantFromPathname("/")).toBeNull();
     expect(tenantFromPathname("/v1/runs")).toBeNull();
-    expect(tenantFromPathname("/demo")).toBeNull();
+    expect(tenantFromPathname("/about")).toBeNull();
   });
 
   it("returns null for the bare /portal route (no tenant segment)", () => {

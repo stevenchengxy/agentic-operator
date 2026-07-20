@@ -20,15 +20,15 @@ import { makeDeepSeek } from "./deepseek";
 import { makeQwen } from "./qwen";
 import { makeAzure } from "./azure";
 import { makeCustom } from "./custom";
-import { makeBedrock } from "./bedrock";
-import { makeVertex } from "./vertex";
 
 export function registerAllProviders(
   gateway: LLMGateway,
   env: AdapterEnvSlice,
 ): void {
-  // Mock first so it's always available even if SDK packages fail to load.
-  gateway.registerProvider(makeMock());
+  // The deterministic echo adapter is test-only. Do not even expose it in
+  // listProviders() for a real process; that prevents per-request overrides
+  // from turning an otherwise real gateway into a synthetic one.
+  if (gateway.allowMock) gateway.registerProvider(makeMock());
   gateway.registerProvider(makeAnthropic(env));
   gateway.registerProvider(makeOpenAI(env));
   gateway.registerProvider(makeOpenRouter(env));
@@ -40,6 +40,4 @@ export function registerAllProviders(
   gateway.registerProvider(makeQwen(env));
   gateway.registerProvider(makeAzure(env));
   gateway.registerProvider(makeCustom(env));
-  gateway.registerProvider(makeBedrock());
-  gateway.registerProvider(makeVertex());
 }

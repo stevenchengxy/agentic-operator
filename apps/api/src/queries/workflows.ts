@@ -1,4 +1,4 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, isNull } from "drizzle-orm";
 import {
   agents,
   agentVersions,
@@ -114,7 +114,7 @@ export async function getDag(tenantSlug: string): Promise<{
   for (const r of db
     .select({ agentId: runs.agentId, startedAt: runs.startedAt })
     .from(runs)
-    .where(eq(runs.tenantId, tenant.id))
+    .where(and(eq(runs.tenantId, tenant.id), isNull(runs.deletedAt)))
     .all()) {
     if (r.startedAt && r.startedAt >= since) hotAgents.add(r.agentId);
     runCounts.set(r.agentId, (runCounts.get(r.agentId) ?? 0) + 1);
@@ -123,7 +123,7 @@ export async function getDag(tenantSlug: string): Promise<{
   for (const e of db
     .select({ name: events.name, receivedAt: events.receivedAt })
     .from(events)
-    .where(eq(events.tenantId, tenant.id))
+    .where(and(eq(events.tenantId, tenant.id), isNull(events.deletedAt)))
     .all()) {
     if (e.receivedAt && e.receivedAt >= since) hotEventNames.add(e.name);
   }

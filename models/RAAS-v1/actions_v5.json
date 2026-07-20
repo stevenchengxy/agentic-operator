@@ -25,35 +25,40 @@
         "type": "String",
         "description": "目标客户需求管理系统的唯一编号。用于定位需要监控和采集数据的客户系统实例。该值必须在系统中存在对应的Client_RMS_System记录且status为\"运行中\"。本Action依据此ID读取登录凭证和字段映射配置。",
         "source_object": "Client_RMS_System.client_rms_system_id",
-        "required": true
+        "required": true,
+        "binding_kind": "event"
       },
       {
         "name": "client_id",
         "type": "String",
         "description": "本次同步目标客户的唯一编号。用于限定采集范围和后续创建Job_Requisition_Specification时关联的客户主体。该值必须在系统中存在对应的Client记录。",
         "source_object": "Client.client_id",
-        "required": true
+        "required": true,
+        "binding_kind": "event"
       },
       {
         "name": "sync_frequency",
         "type": "String",
         "description": "数据同步频率配置。定义Agent监控客户系统的时间间隔(如\"实时\"或\"每天\")。来源于Client_RMS_System预配置。用于控制定时触发SCHEDULED_SYNC事件的节奏。",
-        "source_object": "Client_RMS_System.sync_frequency",
-        "required": true
+        "required": true,
+        "binding_kind": "config",
+        "binding_ref": "config://client_rms_system/sync_frequency"
       },
       {
         "name": "credentials",
         "type": "String",
         "description": "客户需求管理系统的登录凭证。包括账号密码或API Key等认证信息。用于Agent自动登录客户系统进行数据采集。该字段必须非空且凭证状态有效。",
-        "source_object": "Client_RMS_System.credentials",
-        "required": true
+        "required": true,
+        "binding_kind": "secret",
+        "binding_ref": "secret://client_rms_system/credentials"
       },
       {
         "name": "status_mapping_rules",
         "type": "String",
         "description": "客户系统字段与我方系统字段的映射规则配置。定义客户系统中需求编号/名称/人数/岗位类型/期望级别/到岗日期/工作城市/岗位职责/岗位要求等字段如何转换为Job_Requisition对应字段。该配置必须已完成维护。",
-        "source_object": "Client_RMS_System.status_mapping_rules",
-        "required": true
+        "required": true,
+        "binding_kind": "config",
+        "binding_ref": "config://client_rms_system/status_mapping_rules"
       }
     ],
     "outputs": [
@@ -287,15 +292,16 @@
         "name": "client_id",
         "type": "String",
         "description": "目标客户的唯一编号。用于关联新建的招聘需求至对应客户。",
-        "source_object": "Client.client_id",
-        "required": true
+        "required": true,
+        "binding_kind": "human_input"
       },
       {
         "name": "job_details",
         "type": "JSON",
         "description": "HSM手动填写的岗位信息，包括岗位名称/职责/要求/人数/城市/薪资范围等核心字段。",
         "source_object": "",
-        "required": true
+        "required": true,
+        "binding_kind": "human_input"
       }
     ],
     "outputs": [
@@ -418,14 +424,21 @@
         "type": "String",
         "description": "待分析的招聘岗位唯一编号。通过REQUIREMENT_SYNCED或REQUIREMENT_LOGGED事件携带。系统中必须存在对应的Job_Requisition记录且包含完整的job_requirement/job_responsibility等核心字段。本Action所有分析步骤均基于此ID定位目标岗位数据。",
         "source_object": "Job_Requisition.job_requisition_id",
-        "required": true
+        "required": true,
+        "binding_kind": "event"
       },
       {
         "name": "client_id",
         "type": "String",
         "description": "目标岗位所属客户的唯一编号。用于加载该客户的偏好设定(Client_Preference)/合同条款(HRO_Service_Contract)/历史需求等上下文数据。该值从Job_Requisition_Specification.client_id获取。系统中必须存在对应Client记录。",
         "source_object": "Job_Requisition_Specification.client_id",
-        "required": true
+        "required": true,
+        "binding_kind": "object_lookup",
+        "lookup_args": {
+          "job_requisition_id": "job_requisition_id"
+        },
+        "result_path": "client_id",
+        "integration_ref": "RAAS_System"
       }
     ],
     "outputs": [
@@ -711,14 +724,16 @@
         "type": "String",
         "description": "待澄清的招聘岗位唯一编号。通过ANALYSIS_COMPLETED事件携带。系统中必须存在对应的Job_Requisition记录且clarify_questions字段非空。本Action所有步骤基于此ID定位岗位数据和待澄清问题清单。",
         "source_object": "Job_Requisition.job_requisition_id",
-        "required": true
+        "required": true,
+        "binding_kind": "event"
       },
       {
         "name": "clarify_questions",
         "type": "List<String>",
         "description": "需求分析阶段输出的待澄清问题清单。每个问题包含具体的模糊点/缺失点/矛盾点描述。本Action基于此清单生成澄清材料包并驱动澄清流程。来源于analyzeRequirement步骤的输出且已写入Job_Requisition.clarify_questions字段。",
         "source_object": "Job_Requisition.clarify_questions",
-        "required": true
+        "required": true,
+        "binding_kind": "event"
       }
     ],
     "outputs": [
@@ -952,14 +967,16 @@
         "type": "String",
         "description": "待澄清的招聘岗位唯一编号。",
         "source_object": "Job_Requisition.job_requisition_id",
-        "required": true
+        "required": true,
+        "binding_kind": "event"
       },
       {
         "name": "clarify_questions",
         "type": "List<String>",
         "description": "需求分析阶段输出的待澄清问题清单。",
         "source_object": "Job_Requisition.clarify_questions",
-        "required": true
+        "required": true,
+        "binding_kind": "event"
       }
     ],
     "outputs": [
@@ -1064,14 +1081,21 @@
         "type": "String",
         "description": "已完成需求澄清的招聘岗位唯一编号。通过CLARIFICATION_READY事件携带。系统中必须存在对应Job_Requisition记录且结构化需求字段(must_have_skills/nice_to_have_skills/negative_requirement/job_responsibility/job_requirement)已完整填写。本Action基于此ID读取全部岗位数据生成JD。",
         "source_object": "Job_Requisition.job_requisition_id",
-        "required": true
+        "required": true,
+        "binding_kind": "event"
       },
       {
         "name": "client_id",
         "type": "String",
         "description": "目标客户唯一编号。用于查询客户名称信息以执行脱敏处理。用于查询该客户历史JD库执行聚合发布检测。该值从Job_Requisition_Specification.client_id获取。系统中必须存在对应Client记录。",
         "source_object": "Job_Requisition_Specification.client_id",
-        "required": true
+        "required": true,
+        "binding_kind": "object_lookup",
+        "lookup_args": {
+          "job_requisition_id": "job_requisition_id"
+        },
+        "result_path": "client_id",
+        "integration_ref": "RAAS_System"
       }
     ],
     "outputs": [
@@ -1254,7 +1278,8 @@
         "type": "String",
         "description": "待审核的岗位发布信息唯一编号。",
         "source_object": "Job_Posting.job_posting_id",
-        "required": true
+        "required": true,
+        "binding_kind": "event"
       }
     ],
     "outputs": [
@@ -1336,21 +1361,39 @@
         "type": "String",
         "description": "待分配招聘任务的招聘岗位唯一编号。通过JD_APPROVED事件携带。系统中必须存在对应的Job_Requisition记录且fill_difficulty字段已填写。本Action基于此ID读取岗位特征数据(岗位类型/难度等级/紧急程度/技能领域)执行招聘专员智能匹配。",
         "source_object": "Job_Requisition.job_requisition_id",
-        "required": true
+        "required": true,
+        "binding_kind": "object_lookup",
+        "lookup_args": {
+          "job_posting_id": "job_posting_id"
+        },
+        "result_path": "job_requisition_id",
+        "integration_ref": "RAAS_System"
       },
       {
         "name": "fill_difficulty",
         "type": "String",
         "description": "招聘岗位的难易度评估结果。来源于需求分析阶段的输出。值为\"低薪高配\"或\"市场稀缺\"或\"常规\"。系统基于此字段判定需求难度等级以决定优先分配给历史产能高还是当前负荷低的招聘专员。",
         "source_object": "Job_Requisition.fill_difficulty",
-        "required": true
+        "required": true,
+        "binding_kind": "object_lookup",
+        "lookup_args": {
+          "job_requisition_id": "job_requisition_id"
+        },
+        "result_path": "fill_difficulty",
+        "integration_ref": "RAAS_System"
       },
       {
         "name": "urgency_level",
         "type": "String",
         "description": "招聘岗位的紧急程度。系统基于此字段评估任务优先级。紧急程度越高的岗位越优先完成分配。",
         "source_object": "Job_Requisition.urgency_level",
-        "required": false
+        "required": false,
+        "binding_kind": "object_lookup",
+        "lookup_args": {
+          "job_requisition_id": "job_requisition_id"
+        },
+        "result_path": "urgency_level",
+        "integration_ref": "RAAS_System"
       }
     ],
     "outputs": [
@@ -1461,14 +1504,16 @@
         "type": "String",
         "description": "待发布的岗位发布信息唯一编号。通过TASK_ASSIGNED事件携带。系统中必须存在对应的Job_Posting记录且JD内容已审核通过。本Action基于此ID读取JD内容(title/responsibility/requirement/salary_range等)执行渠道发布。",
         "source_object": "Job_Posting.job_posting_id",
-        "required": true
+        "required": true,
+        "binding_kind": "event"
       },
       {
         "name": "target_channels",
         "type": "List<JSON>",
         "description": "目标发布渠道列表。每条记录包含sourcing_channel_id/channel_name及是否支持API对接。系统基于此列表决定自动发布还是生成手动发布任务。",
-        "source_object": "Sourcing_Channel.sourcing_channel_id",
-        "required": true
+        "required": true,
+        "binding_kind": "config",
+        "binding_ref": "config://sourcing_channels/target_publish_channels"
       }
     ],
     "outputs": [
@@ -1631,7 +1676,8 @@
         "type": "String",
         "description": "待发布的岗位发布信息唯一编号。",
         "source_object": "Job_Posting.job_posting_id",
-        "required": true
+        "required": true,
+        "binding_kind": "event"
       }
     ],
     "outputs": [
@@ -1709,7 +1755,8 @@
         "type": "String",
         "description": "已发布的岗位发布信息编号，用于定位目标渠道。",
         "source_object": "Job_Posting.job_posting_id",
-        "required": true
+        "required": true,
+        "binding_kind": "event"
       }
     ],
     "outputs": [
@@ -1787,21 +1834,29 @@
         "type": "String",
         "description": "已下载的简历文件在存储系统中的路径。通过RESUME_DOWNLOADED事件携带。文件必须存在且格式为PDF/Word等可解析格式。本Action所有步骤基于此文件执行解析/提取/校验操作。",
         "source_object": "Resume.file_path",
-        "required": true
+        "required": true,
+        "binding_kind": "event"
       },
       {
         "name": "job_requisition_id",
         "type": "String",
         "description": "该简历关联的招聘岗位唯一编号。用于建立候选人与招聘岗位的初步关联以及后续匹配流程的岗位定位。系统中必须存在对应的Job_Requisition记录。",
         "source_object": "Job_Requisition.job_requisition_id",
-        "required": true
+        "required": true,
+        "binding_kind": "event"
       },
       {
         "name": "recruiter_id",
         "type": "String",
         "description": "上传该简历的招聘专员唯一编号。用于确定简历归属关系和锁定操作人身份。",
         "source_object": "Employee.employee_id",
-        "required": true
+        "required": true,
+        "binding_kind": "object_lookup",
+        "lookup_args": {
+          "job_requisition_id": "job_requisition_id"
+        },
+        "result_path": "employee_id",
+        "integration_ref": "RAAS_System"
       }
     ],
     "outputs": [
@@ -2154,7 +2209,8 @@
         "type": "String",
         "description": "解析失败的简历唯一编号。",
         "source_object": "Resume.resume_id",
-        "required": true
+        "required": true,
+        "binding_kind": "event"
       }
     ],
     "outputs": [
@@ -2242,21 +2298,29 @@
         "type": "String",
         "description": "待匹配的候选人唯一编号。通过RESUME_PROCESSED事件携带。系统中必须存在对应的Candidate记录且状态不为\"已锁定冲突\"。本Action所有步骤基于此ID读取候选人的身份信息/学历/经验/状态/黑名单等数据执行匹配评估。",
         "source_object": "Candidate.candidate_id",
-        "required": true
+        "required": true,
+        "binding_kind": "event"
       },
       {
         "name": "resume_id",
         "type": "String",
         "description": "待匹配的候选人简历唯一编号。系统中必须存在对应的Resume记录且已完成结构化解析(work_experience/education_experience/skill_tags等字段非空)。本Action基于此ID读取简历的结构化数据执行硬性要求比对和加分项评估。",
         "source_object": "Resume.resume_id",
-        "required": true
+        "required": true,
+        "binding_kind": "event"
       },
       {
         "name": "job_requisition_ids",
         "type": "List<String>",
         "description": "候选人待匹配的招聘岗位编号列表。系统从有效岗位池中筛选出与候选人技能领域相关的岗位集合。每个岗位必须存在对应的Job_Requisition记录且hc_status不为\"已关闭\"。",
         "source_object": "Job_Requisition.job_requisition_id",
-        "required": true
+        "required": true,
+        "binding_kind": "object_lookup",
+        "lookup_args": {
+          "candidate_id": "candidate_id"
+        },
+        "result_path": "job_requisition_ids",
+        "integration_ref": "RAAS_System"
       }
     ],
     "outputs": [
@@ -2839,7 +2903,9 @@
     "triggered_event": [
       "MATCH_PASSED_NEED_INTERVIEW",
       "MATCH_PASSED_NO_INTERVIEW",
-      "MATCH_FAILED"
+      "MATCH_FAILED",
+      "CLIENT_RULES_PASSED",
+      "CLIENT_RULES_FAILED"
     ]
   },
   {
@@ -2869,21 +2935,34 @@
         "type": "String",
         "description": "待邀约内部面试的候选人唯一编号。通过MATCH_PASSED_NEED_INTERVIEW事件携带。系统中必须存在对应的Candidate记录且email字段非空(用于发送面试邀请邮件)。本Action基于此ID读取候选人联系方式和关联的招聘岗位信息生成面试邀请。",
         "source_object": "Candidate.candidate_id",
-        "required": true
+        "required": true,
+        "binding_kind": "event"
       },
       {
         "name": "job_requisition_id",
         "type": "String",
         "description": "候选人匹配通过的招聘岗位唯一编号。用于读取岗位信息(职位名称/面试要求等)生成个性化的面试邀请内容。系统中必须存在对应的Job_Requisition记录。",
         "source_object": "Job_Requisition.job_requisition_id",
-        "required": true
+        "required": true,
+        "binding_kind": "object_lookup",
+        "lookup_args": {
+          "candidate_id": "candidate_id"
+        },
+        "result_path": "job_requisition_id",
+        "integration_ref": "RAAS_System"
       },
       {
         "name": "application_id",
         "type": "String",
         "description": "候选人的职位投递申请唯一编号。用于关联面试记录(Interview_Record)至对应的申请流程。系统中必须存在对应的Application记录。",
         "source_object": "Application.application_id",
-        "required": true
+        "required": true,
+        "binding_kind": "object_lookup",
+        "lookup_args": {
+          "candidate_id": "candidate_id"
+        },
+        "result_path": "application_id",
+        "integration_ref": "RAAS_System"
       }
     ],
     "outputs": [
@@ -3066,7 +3145,8 @@
         "type": "String",
         "description": "面试记录唯一编号，包含面试链接。",
         "source_object": "Interview_Record.interview_record_id",
-        "required": true
+        "required": true,
+        "binding_kind": "event"
       }
     ],
     "outputs": [
@@ -3153,14 +3233,21 @@
         "type": "String",
         "description": "已完成的AI面试记录唯一编号。通过AI_INTERVIEW_COMPLETED事件携带。系统中必须存在对应的Interview_Record记录且recording_url非空。本Action基于此ID读取面试视频/语音转写/作答时长等全部面试数据执行评估。",
         "source_object": "Interview_Record.interview_record_id",
-        "required": true
+        "required": true,
+        "binding_kind": "event"
       },
       {
         "name": "application_id",
         "type": "String",
         "description": "面试关联的职位投递申请编号。用于定位候选人和招聘岗位信息。从Interview_Record.application_id获取。系统中必须存在对应Application记录。",
         "source_object": "Interview_Record.application_id",
-        "required": true
+        "required": true,
+        "binding_kind": "object_lookup",
+        "lookup_args": {
+          "interview_record_id": "interview_record_id"
+        },
+        "result_path": "application_id",
+        "integration_ref": "RAAS_System"
       }
     ],
     "outputs": [
@@ -3238,7 +3325,7 @@
         "order": "3",
         "name": "evaluateWithModel",
         "description": "使用招聘岗位配置的评估模型对候选人进行量化评分。按照各维度权重计算综合得分，判断是否达到及格线阈值，输出各维度分数明细和评分依据说明。",
-        "object_type": "tool",
+        "object_type": "logic",
         "condition": "内容分析完成",
         "rules": [
           {
@@ -3387,21 +3474,39 @@
         "type": "String",
         "description": "待优化的候选人简历唯一编号。通过事件携带。系统中必须存在对应的Resume记录且file_path非空。本Action基于此ID读取简历原始内容执行格式转换和关键词高亮。",
         "source_object": "Resume.resume_id",
-        "required": true
+        "required": true,
+        "binding_kind": "object_lookup",
+        "lookup_args": {
+          "candidate_id": "candidate_id"
+        },
+        "result_path": "resume_id",
+        "integration_ref": "RAAS_System"
       },
       {
         "name": "job_requisition_id",
         "type": "String",
         "description": "候选人关联的招聘岗位唯一编号。用于读取岗位的must_have_skills/nice_to_have_skills字段识别需要高亮的关键词。系统中必须存在对应的Job_Requisition记录。",
         "source_object": "Job_Requisition.job_requisition_id",
-        "required": true
+        "required": true,
+        "binding_kind": "object_lookup",
+        "lookup_args": {
+          "candidate_id": "candidate_id"
+        },
+        "result_path": "job_requisition_id",
+        "integration_ref": "RAAS_System"
       },
       {
         "name": "client_id",
         "type": "String",
         "description": "目标客户唯一编号。用于查询该客户对应的标准简历模板。从Job_Requisition_Specification.client_id获取。系统中必须存在该客户与简历模板的映射关系。",
         "source_object": "Client.client_id",
-        "required": true
+        "required": true,
+        "binding_kind": "object_lookup",
+        "lookup_args": {
+          "job_requisition_id": "job_requisition_id"
+        },
+        "result_path": "client_id",
+        "integration_ref": "RAAS_System"
       }
     ],
     "outputs": [
@@ -3545,28 +3650,38 @@
         "type": "String",
         "description": "待生成推荐包的候选人唯一编号。系统中必须存在对应Candidate记录且name/mobile/id_number/highest_acquired_degree等核心字段非空。本Action基于此ID读取候选人全部信息(身份/学历/工作经历/婚育状态等)用于推荐包各项校验和内容生成。",
         "source_object": "Candidate.candidate_id",
-        "required": true
+        "required": true,
+        "binding_kind": "event"
       },
       {
         "name": "resume_id",
         "type": "String",
         "description": "已优化的候选人简历唯一编号。通过RESUME_OPTIMIZED事件携带。系统中必须存在对应Resume记录且file_path指向优化后的PDF文件。本Action将此简历作为推荐包的核心组成部分。",
         "source_object": "Resume.resume_id",
-        "required": true
+        "required": true,
+        "binding_kind": "event"
       },
       {
         "name": "job_requisition_id",
         "type": "String",
         "description": "候选人关联的招聘岗位唯一编号。用于读取岗位要求(作品集需求/面试模式/语言要求等)执行推荐包完整性校验。用于确定目标客户和事业群以适用客户特定规则。",
         "source_object": "Job_Requisition.job_requisition_id",
-        "required": true
+        "required": true,
+        "binding_kind": "event"
       },
       {
         "name": "application_id",
         "type": "String",
         "description": "候选人的职位投递申请唯一编号。用于关联评估报告/面试记录等材料。用于写入推荐包关联信息。",
         "source_object": "Application.application_id",
-        "required": true
+        "required": true,
+        "binding_kind": "object_lookup",
+        "lookup_args": {
+          "candidate_id": "candidate_id",
+          "job_requisition_id": "job_requisition_id"
+        },
+        "result_path": "application_id",
+        "integration_ref": "RAAS_System"
       }
     ],
     "outputs": [
@@ -4046,14 +4161,16 @@
         "type": "String",
         "description": "待补全的推荐包唯一编号。",
         "source_object": "Recommendation_Material.recommendation_material_id",
-        "required": true
+        "required": true,
+        "binding_kind": "event"
       },
       {
         "name": "candidate_id",
         "type": "String",
         "description": "候选人唯一编号。",
         "source_object": "Candidate.candidate_id",
-        "required": true
+        "required": true,
+        "binding_kind": "event"
       }
     ],
     "outputs": [
@@ -4148,7 +4265,8 @@
         "type": "String",
         "description": "待审核的推荐包唯一编号。",
         "source_object": "Recommendation_Material.recommendation_material_id",
-        "required": true
+        "required": true,
+        "binding_kind": "event"
       }
     ],
     "outputs": [
@@ -4240,21 +4358,34 @@
         "type": "String",
         "description": "已审核通过的推荐包唯一编号。通过PACKAGE_APPROVED事件携带。系统中必须存在对应的Recommendation_Material记录且已通过HSM审核。本Action基于此ID读取推荐包全部材料执行客户系统提交。",
         "source_object": "Recommendation_Material.recommendation_material_id",
-        "required": true
+        "required": true,
+        "binding_kind": "event"
       },
       {
         "name": "job_requisition_id",
         "type": "String",
         "description": "目标招聘岗位唯一编号。用于确定目标客户系统和提交规则。用于读取岗位类别判断是否为设计类岗位。从Recommendation_Material关联的Job_Requisition获取。",
         "source_object": "Job_Requisition.job_requisition_id",
-        "required": true
+        "required": true,
+        "binding_kind": "object_lookup",
+        "lookup_args": {
+          "recommendation_material_id": "recommendation_material_id"
+        },
+        "result_path": "job_requisition_id",
+        "integration_ref": "RAAS_System"
       },
       {
         "name": "candidate_id",
         "type": "String",
         "description": "候选人唯一编号。用于读取候选人身份信息执行客户系统表单填写和占坑操作。",
         "source_object": "Candidate.candidate_id",
-        "required": true
+        "required": true,
+        "binding_kind": "object_lookup",
+        "lookup_args": {
+          "recommendation_material_id": "recommendation_material_id"
+        },
+        "result_path": "candidate_id",
+        "integration_ref": "RAAS_System"
       }
     ],
     "outputs": [

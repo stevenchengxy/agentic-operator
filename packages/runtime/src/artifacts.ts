@@ -11,7 +11,8 @@
  */
 
 import path from "node:path";
-import { mkdir, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 
 export function artifactsRoot(): string {
   return process.env.AGENTIC_ARTIFACTS_DIR ?? "./artifacts";
@@ -29,9 +30,26 @@ export async function writeArtifact(
   name: string,
   payload: unknown,
 ): Promise<string> {
+  if (!/^[A-Za-z0-9_-]{1,160}$/.test(runId)) {
+    throw new Error(`Invalid run id for artifact path: ${runId}`);
+  }
+  if (!/^[A-Za-z0-9_.-]{1,180}$/.test(name)) {
+    throw new Error(`Invalid artifact filename: ${name}`);
+  }
   const dir = path.join(artifactsRoot(), runId);
   await mkdir(dir, { recursive: true });
   const filePath = path.join(dir, name);
-  await writeFile(filePath, JSON.stringify(payload, null, 2), "utf8");
+  const serialized = JSON.stringify(payload, null, 2);
+  if (serialized === undefined) {
+    throw new TypeError(`Artifact '${name}' has no JSON representation`);
+  }
+  const tmpPath = `${filePath}.tmp-${process.pid}-${randomUUID()}`;
+  try {
+    await writeFile(tmpPath, serialized, "utf8");
+    await rename(tmpPath, filePath);
+  } catch (error) {
+    await rm(tmpPath, { force: true }).catch(() => undefined);
+    throw error;
+  }
   return filePath;
 }

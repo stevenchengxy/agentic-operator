@@ -31,8 +31,8 @@ export const McpServerConfigSchema = z.discriminatedUnion("transport", [
     cwd: z.string().optional(),
     /** Tools to surface; when omitted the runtime exposes ALL tools the server lists. */
     allowTools: z.array(z.string()).optional(),
-    /** When true, the runtime continues boot even if this server fails to connect. Default true. */
-    optional: z.boolean().default(true),
+    /** Explicit opt-out from fail-closed startup. Required by default. */
+    optional: z.boolean().default(false),
   }),
   z.object({
     name: z.string().min(1),
@@ -40,7 +40,7 @@ export const McpServerConfigSchema = z.discriminatedUnion("transport", [
     url: z.string().url(),
     headers: z.record(z.string(), z.string()).optional(),
     allowTools: z.array(z.string()).optional(),
-    optional: z.boolean().default(true),
+    optional: z.boolean().default(false),
   }),
 ]);
 
@@ -53,7 +53,11 @@ export type McpServerConfig = z.infer<typeof McpServerConfigSchema>;
  */
 export interface McpServerStatus {
   name: string;
+  /** Runtime tenant scope that owns this connection. */
+  scope?: string;
   transport: McpServerConfig["transport"];
+  /** Optional servers may degrade without making the whole API ready=false. */
+  optional?: boolean;
   connected: boolean;
   toolCount: number;
   connectedAt?: number;

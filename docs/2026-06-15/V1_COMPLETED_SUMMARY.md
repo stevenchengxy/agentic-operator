@@ -154,7 +154,7 @@ The 5 CPA-mandated must-land-before-customer items:
 |---|---|
 | `apps/web/app/_portal_legacy/` deleted | 49 dead files removed |
 | `.gitignore` extended | `apps/api/data/imports/`, `data/test-artifacts/`, `data/test-logs/`, `data/*.db.bak-*` |
-| `workflow_v2.json` + `workflow_v3.json` deleted | Both were 109-line truncated stubs that would have silently corrupted RAAS at next boot (loader picks highest-numbered file) |
+| `workflow_v2.json` + `workflow_v3.json` deleted | Both were truncated three-agent import fragments, not deployable workflow versions; their unreferenced `actions-v2.json` / `actions-v3.json` companions were removed too |
 | 8 `models/mi*-v1/` orphan dirs deleted | Stale e2e wizard runs — were cascading boot errors under the new `definePrompt` validator |
 | `models/workflow.schema.json` regenerated | Was stale; now byte-identical to current Zod (`buildWorkflowJsonSchema`) |
 | 27 RAAS `definePrompt` calls added | `tenants/raas/src/prompts/index.ts` (new file) — makes RAAS bootable under Option B |
@@ -199,7 +199,7 @@ The 5 CPA-mandated must-land-before-customer items:
 
 The orchestration prevented 3 dormant production hazards:
 
-1. **`workflow_v2/v3.json` stubs** — 109-line truncated RAAS subsets sitting in `models/RAAS-v1/`. The runtime's manifest loader picks the highest-numbered file, so leaving them would have silently replaced the canonical 788-line manifest at next boot. Caught by Wave 4 Cleanup engineer; both deleted.
+1. **`workflow_v2/v3.json` stubs** — truncated three-agent RAAS subsets sitting in `models/RAAS-v1/`. The runtime's manifest loader picks the highest-numbered file, so leaving them could silently replace a complete manifest. They are not rollback versions: a 2026-07-13 read-only deployment audit found every RAAS `workflow_versions` / `deployments` row contains the complete 14-agent graph, with no three-agent version referenced. The two fragments and their loader-invisible `actions-v2.json` / `actions-v3.json` companions were therefore deleted rather than preserved as misleading deployable history.
 
 2. **`cost_limit_exceeded` thrown but not typed** — Wave 4 backend's budget enforcement was throwing this error code, but the `LLMErrorCode` union never included it. Code shipping in a "works at runtime, fails at TypeScript" state. Caught + fixed in Wave 4.5.
 

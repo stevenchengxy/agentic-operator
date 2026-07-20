@@ -24,8 +24,9 @@
  *
  * Everything reads its limits from env:
  *
- *   AGENTIC_RATE_LIMIT_PER_MIN   default 100
- *   AGENTIC_RATE_LIMIT_DISABLED  truthy to disable entirely (tests)
+ *   AGENTIC_RATE_LIMIT_PER_MIN         mutation/default limit, default 100
+ *   AGENTIC_RATE_LIMIT_READS_PER_MIN   GET/HEAD limit, default max(600, 6x writes)
+ *   AGENTIC_RATE_LIMIT_DISABLED        truthy to disable entirely (tests)
  */
 
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
@@ -42,30 +43,47 @@ const buckets = new Map<string, Bucket>();
 
 function rateLimitKey(req: FastifyRequest): string {
   if (req.auth) return `tenant:${req.auth.tenantId}`;
-  const ip = req.headers["x-forwarded-for"]
-    ? String(req.headers["x-forwarded-for"]).split(",")[0]!.trim()
-    : (req.ip ?? "unknown");
-  return `ip:${ip}`;
+  // Fastify derives `req.ip` from the socket and applies `trustProxy` when the
+  // deployment explicitly enables it. Reading X-Forwarded-For directly here
+  // would let any unauthenticated caller mint a fresh rate-limit bucket by
+  // changing an untrusted header on every request.
+  return `ip:${req.ip ?? "unknown"}`;
 }
 
 function isHealthOrMetrics(url: string): boolean {
-  return url === "/health" || url === "/metrics";
+  return url === "/live" || url === "/health" || url === "/metrics";
 }
 
 function isInngest(url: string): boolean {
   return url === "/inngest" || url.startsWith("/inngest?");
 }
 
-function readLimit(): number {
-  const raw = process.env.AGENTIC_RATE_LIMIT_PER_MIN;
-  if (!raw) return 100;
+function isFactorySandboxModelProxy(url: string): boolean {
+  return url === "/internal/factory-sandbox/model/chat";
+}
+
+function isProductionCodeActRpc(url: string): boolean {
+  return url === "/internal/production-codeact/rpc";
+}
+
+function readLimit(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
   const parsed = Number(raw);
-  if (!Number.isFinite(parsed) || parsed <= 0) return 100;
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
   return Math.floor(parsed);
 }
 
+function isReadRequest(req: FastifyRequest): boolean {
+  return req.method === "GET" || req.method === "HEAD";
+}
+
 function rateLimitDisabled(): boolean {
-  if (process.env.NODE_ENV === "test") return true;
+  // Unit tests are isolated by default; a focused security test may opt in
+  // explicitly without weakening any production path.
+  if (process.env.NODE_ENV === "test") {
+    return process.env.AGENTIC_RATE_LIMIT_DISABLED !== "0";
+  }
   return process.env.AGENTIC_RATE_LIMIT_DISABLED === "1";
 }
 
@@ -74,6 +92,15 @@ function shouldSkipRateLimit(req: FastifyRequest): boolean {
   const url = req.routeOptions.url ?? req.url;
   if (isHealthOrMetrics(url)) return true;
   if (isInngest(url)) return true;
+  // This exact internal service route has stronger authentication plus
+  // attempt-bound atomic call/total-token quotas. The generic IP bucket would
+  // otherwise reject before its auditable grant ledger. No other /internal
+  // route receives this exemption.
+  if (isFactorySandboxModelProxy(url)) return true;
+  // The executor callback is HMAC + execution/identity/RPC-id bound and has
+  // its own per-execution cap. The generic IP bucket would reject legitimate
+  // long handlers before their auditable RPC ledger sees the request.
+  if (isProductionCodeActRpc(url)) return true;
   return false;
 }
 
@@ -112,7 +139,15 @@ function setSecurityHeaders(reply: FastifyReply): void {
 }
 
 export async function registerSecurity(app: FastifyInstance) {
-  const limit = readLimit();
+  const mutationLimit = readLimit("AGENTIC_RATE_LIMIT_PER_MIN", 100);
+  // A single portal view legitimately fans out to several read endpoints;
+  // sharing the mutation budget made normal tab inspection self-DOS at 100
+  // requests/minute. Keep write protection strict while giving authenticated
+  // dashboards a separately configurable read budget.
+  const readRequestLimit = readLimit(
+    "AGENTIC_RATE_LIMIT_READS_PER_MIN",
+    Math.max(600, mutationLimit * 6),
+  );
 
   // 1. Security headers on every response.
   app.addHook("onSend", async (_req, reply, payload) => {
@@ -143,7 +178,9 @@ export async function registerSecurity(app: FastifyInstance) {
   app.addHook("onRequest", async (req, reply) => {
     if (shouldSkipRateLimit(req)) return;
     const now = Date.now();
-    const key = rateLimitKey(req);
+    const read = isReadRequest(req);
+    const limit = read ? readRequestLimit : mutationLimit;
+    const key = `${rateLimitKey(req)}:${read ? "read" : "mutation"}`;
     const { allowed, remaining, resetAt } = reserveSlot(key, limit, now);
     reply.header("X-RateLimit-Limit", String(limit));
     reply.header("X-RateLimit-Remaining", String(remaining));

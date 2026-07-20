@@ -13,7 +13,6 @@ export const extractClaims: PromptDescriptor = definePrompt({
   name: "extractClaims",
   description:
     "Extract 3–7 consequential factual claims from a tagged article with confidence + verification queries.",
-  model: "anthropic/claude-haiku-4-5",
   system: [
     "You are claimExtractAgent. You receive a tagged article and produce a",
     "structured JSON object listing the most consequential claims an analyst",

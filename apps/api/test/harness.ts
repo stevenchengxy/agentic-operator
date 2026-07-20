@@ -1,5 +1,5 @@
 /**
- * Test harness — boots a Fastify instance for an entire test file.
+ * Test harness — boots one Fastify instance per isolated Vitest file context.
  *
  * Usage:
  *   const env = await buildTestEnv();
@@ -59,8 +59,8 @@ export async function buildTestEnv(): Promise<TestEnv> {
       });
     },
     cleanup: async () => {
-      // The Fastify instance is shared across files; closing it would break
-      // sibling tests. Defer close to process exit.
+      // Tests within this file share the instance. Defer close to process exit;
+      // a later isolated test file constructs and bootstraps its own instance.
     },
   };
 }

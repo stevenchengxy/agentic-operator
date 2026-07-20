@@ -9,7 +9,10 @@
     ".": "./src/index.ts",
     "./id": "./src/id.ts",
     "./sse": "./src/sse.ts",
-    "./types": "./src/types.ts"
+    "./types": "./src/types.ts",
+    "./cassette": "./src/cassette.ts",
+    "./invoke-contract": "./src/invoke-contract.ts",
+    "./write-probe-safety": "./src/write-probe-safety.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

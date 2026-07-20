@@ -12,6 +12,10 @@ import { fmtAgo } from "@/lib/format";
 import { useDag, useAgent, type DagAgent } from "@/lib/hooks/useAgents";
 import { useEvents, type EventRow } from "@/lib/hooks/useEvents";
 import { useI18n } from "@/app/portal/lib/preferences-context";
+import type {
+  DraftCounts,
+  WorkflowDraft,
+} from "@/app/portal/components/workflows/draft";
 
 /**
  * Catalog row built from the live `/v1/events` stream so the inspectors can
@@ -173,6 +177,19 @@ export function AgentInspector({
         </div>
         <Button small icon="x" tone="ghost" onClick={onClose} />
       </header>
+      {detailQuery.isError ? (
+        <div
+          role="alert"
+          style={{
+            padding: "8px 16px",
+            borderBottom: "1px solid var(--border)",
+            color: "var(--amber)",
+            fontSize: 11.5,
+          }}
+        >
+          {t("inspectors.agentDetailUnavailable")}: {detailQuery.error.message}
+        </div>
+      ) : null}
       {actionNames.length > 0 && (
         <Section title={t("inspectors.steps")}>
           <ol style={{ margin: 0, padding: 0, listStyle: "none" }}>
@@ -223,9 +240,6 @@ export function AgentInspector({
         <Button icon="external" onClick={onOpenFull} style={{ flex: 1 }}>
           {t("inspectors.openAgent")}
         </Button>
-        <Button icon="run" tone="primary">
-          {t("inspectors.testRun")}
-        </Button>
       </div>
     </div>
   );
@@ -256,7 +270,19 @@ export function EventInspector({
 
   const emitters = agents.filter((a) => a.emits.includes(eventName));
   const listeners = agents.filter((a) => a.triggers.includes(eventName));
-
+  const graphCount: string | number = dagQuery.isError
+    ? "—"
+    : dagQuery.isLoading && !dagQuery.data
+      ? "…"
+      : 0;
+  const recentCount: string | number = eventsQuery.isError
+    ? "—"
+    : eventsQuery.isLoading && !eventsQuery.data
+      ? "…"
+      : recent.length;
+  const loadErrors = [eventsQuery, catalogQuery, dagQuery]
+    .filter((query) => query.isError)
+    .map((query) => query.error.message);
   return (
     <div style={{ flex: 1, overflow: "auto", display: "flex", flexDirection: "column" }}>
       <header
@@ -274,13 +300,34 @@ export function EventInspector({
         </div>
         <Button small icon="x" tone="ghost" onClick={onClose} />
       </header>
-      <Section title={t("inspectors.emittedBy", { count: emitters.length })}>
+      {loadErrors.length > 0 ? (
+        <div
+          role="alert"
+          style={{
+            padding: "8px 16px",
+            borderBottom: "1px solid var(--border)",
+            color: "var(--amber)",
+            fontSize: 11.5,
+          }}
+        >
+          {t("inspectors.eventContextUnavailable")}: {loadErrors.join(" · ")}
+        </div>
+      ) : null}
+      <Section
+        title={t("inspectors.emittedBy", {
+          count: dagQuery.data ? emitters.length : graphCount,
+        })}
+      >
         <NodeList agents={emitters} onPick={onNavigateAgent} />
       </Section>
-      <Section title={t("inspectors.listenedBy", { count: listeners.length })}>
+      <Section
+        title={t("inspectors.listenedBy", {
+          count: dagQuery.data ? listeners.length : graphCount,
+        })}
+      >
         <NodeList agents={listeners} onPick={onNavigateAgent} />
       </Section>
-      <Section title={t("inspectors.recent", { count: recent.length })}>
+      <Section title={t("inspectors.recent", { count: recentCount })}>
         {recent.map((row: EventRow) => {
           const at = row.receivedAt ? Date.parse(row.receivedAt) : null;
           return (
@@ -336,7 +383,13 @@ function NodeList({ agents, onPick }: { agents: DagAgent[]; onPick: (id: string)
   );
 }
 
-export function EditDraftBanner() {
+export function EditDraftBanner({
+  counts,
+  savedAt,
+}: {
+  counts: DraftCounts;
+  savedAt: number | null;
+}) {
   const { t } = useI18n();
   return (
     <div
@@ -363,62 +416,20 @@ export function EditDraftBanner() {
         >
           {t("inspectors.editingDraft")}
         </span>
-        <span style={{ marginLeft: 12, color: "var(--text-2)" }}>{t("inspectors.draftDiffSummary", { added: 2, modified: 2, removed: 0 })}</span>
-        <span style={{ marginLeft: 12, color: "var(--text-3)", fontFamily: "var(--mono)" }}>{t("inspectors.autoSavedAgo", { ago: "12s" })}</span>
-      </div>
-      <div
-        style={{
-          marginLeft: "auto",
-          display: "flex",
-          gap: 8,
-          alignItems: "center",
-          fontSize: 11,
-          fontFamily: "var(--mono)",
-          color: "var(--text-3)",
-        }}
-      >
-        <KbdHint k="⌘" k2="Z" hint={t("inspectors.kbdUndo")} />
-        <KbdHint k="V" hint={t("inspectors.kbdSelect")} />
-        <KbdHint k="C" hint={t("inspectors.kbdConnect")} />
-        <KbdHint k="N" hint={t("inspectors.kbdAddNode")} />
+        <span style={{ marginLeft: 12, color: "var(--text-2)" }}>
+          {t("inspectors.draftDiffSummary", {
+            added: counts.added,
+            modified: counts.modified,
+            removed: counts.removed,
+          })}
+        </span>
+        {savedAt ? (
+          <span style={{ marginLeft: 12, color: "var(--text-3)", fontFamily: "var(--mono)" }}>
+            {new Date(savedAt).toLocaleString()}
+          </span>
+        ) : null}
       </div>
     </div>
-  );
-}
-
-function KbdHint({ k, k2, hint }: { k: string; k2?: string; hint: string }) {
-  return (
-    <span>
-      <KKey>{k}</KKey>
-      {k2 && (
-        <>
-          {" "}
-          <KKey>{k2}</KKey>
-        </>
-      )}{" "}
-      {hint}
-    </span>
-  );
-}
-
-function KKey({ children }: { children: ReactNode }) {
-  return (
-    <kbd
-      style={{
-        display: "inline-block",
-        padding: "1px 5px",
-        fontSize: 10,
-        fontFamily: "var(--mono)",
-        color: "var(--text-2)",
-        background: "var(--panel-2)",
-        border: "1px solid var(--border-2)",
-        borderBottom: "2px solid var(--border-2)",
-        borderRadius: 3,
-        lineHeight: 1.2,
-      }}
-    >
-      {children}
-    </kbd>
   );
 }
 
@@ -426,8 +437,6 @@ export function EditToolbar({ tool, setTool }: { tool: string; setTool: (t: stri
   const { t } = useI18n();
   const tools = [
     { id: "select", icon: "filter" as const, label: t("inspectors.toolSelect") },
-    { id: "connect", icon: "git" as const, label: t("inspectors.toolConnect") },
-    { id: "add", icon: "plus" as const, label: t("inspectors.toolAdd") },
   ];
   return (
     <div
@@ -461,50 +470,30 @@ export function EditToolbar({ tool, setTool }: { tool: string; setTool: (t: stri
             background: tool === tb.id ? "var(--signal)" : "transparent",
             color: tool === tb.id ? "var(--on-signal)" : "var(--text-2)",
             borderRadius: 4,
+            cursor: "pointer",
           }}
         >
           <Icon name={tb.icon} size={13} />
         </button>
       ))}
-      <div style={{ width: 1, background: "var(--border)", margin: "4px 4px" }} />
-      <button
-        title={t("inspectors.autoLayout")}
-        aria-label={t("inspectors.autoLayout")}
-        style={{
-          width: 32,
-          height: 32,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          color: "var(--text-2)",
-        }}
-      >
-        <Icon name="dashboard" size={13} />
-      </button>
-      <button
-        title={t("inspectors.zoomToFit")}
-        aria-label={t("inspectors.zoomToFit")}
-        style={{
-          width: 32,
-          height: 32,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          color: "var(--text-2)",
-        }}
-      >
-        <Icon name="external" size={13} />
-      </button>
     </div>
   );
 }
 
-export function DraftPalette() {
+export function DraftPalette({
+  tenant,
+  draft,
+}: {
+  tenant: string;
+  draft: WorkflowDraft;
+}) {
   const { t } = useI18n();
-  const presets = [
-    { kind: "Agent", title: t("inspectors.presetNewAgentTitle"), sub: t("inspectors.presetNewAgentSub"), color: "var(--signal)" },
-    { kind: "Human", title: t("inspectors.presetHumanTaskTitle"), sub: t("inspectors.presetHumanTaskSub"), color: "var(--violet)" },
-    { kind: "Agent", title: t("inspectors.presetTemplateTitle"), sub: "matchResume, etc.", color: "var(--text-3)" },
+  const changes = [
+    ...Array.from(draft.added).map((name) => ({ kind: "add" as const, name })),
+    ...Object.keys(draft.agents)
+      .filter((name) => !draft.added.has(name) && !draft.removed.has(name))
+      .map((name) => ({ kind: "mod" as const, name })),
+    ...Array.from(draft.removed).map((name) => ({ kind: "del" as const, name })),
   ];
   return (
     <div style={{ flex: 1, overflow: "auto", display: "flex", flexDirection: "column" }}>
@@ -522,41 +511,7 @@ export function DraftPalette() {
           {t("inspectors.editing")}
         </div>
         <div style={{ fontSize: 14, color: "var(--text)" }}>
-          raas <span style={{ color: "var(--amber)", fontFamily: "var(--mono)", fontSize: 11 }}>· {t("inspectors.draftUpper")}</span>
-        </div>
-      </div>
-
-      <div style={{ padding: "14px 16px", borderBottom: "1px solid var(--border)" }}>
-        <div
-          style={{
-            fontSize: 11,
-            fontFamily: "var(--mono)",
-            textTransform: "uppercase",
-            color: "var(--text-3)",
-            letterSpacing: "0.08em",
-            marginBottom: 8,
-          }}
-        >
-          {t("inspectors.dragOntoCanvas")}
-        </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          {presets.map((p, i) => (
-            <div
-              key={i}
-              draggable
-              style={{
-                padding: "8px 10px",
-                background: "var(--panel-2)",
-                border: "1px dashed var(--border-2)",
-                borderLeft: `3px solid ${p.color}`,
-                borderRadius: 4,
-                cursor: "grab",
-              }}
-            >
-              <div style={{ fontSize: 12, color: "var(--text)" }}>{p.title}</div>
-              <div style={{ fontSize: 10.5, color: "var(--text-3)" }}>{p.sub}</div>
-            </div>
-          ))}
+          {tenant} <span style={{ color: "var(--amber)", fontFamily: "var(--mono)", fontSize: 11 }}>· {t("inspectors.draftUpper")}</span>
         </div>
       </div>
 
@@ -574,30 +529,24 @@ export function DraftPalette() {
           {t("inspectors.pendingChanges")}
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 11.5 }}>
-          <DiffRow kind="mod" name="matchResume" hint="Bonus weights for WXG" />
-          <DiffRow kind="mod" name="analyzeRequirement" hint="Added market.lookup tool" />
-          <DiffRow kind="add" name="enrichCandidateLinkedIn" hint="New agent · stage 4" />
-          <DiffRow kind="add" name="generateRecommendationPackage" hint="Wired to evaluateInterview" />
+          {changes.length === 0 ? (
+            <span style={{ color: "var(--text-3)" }}>—</span>
+          ) : (
+            changes.map((change) => (
+              <DiffRow
+                key={`${change.kind}:${change.name}`}
+                kind={change.kind}
+                name={change.name}
+              />
+            ))
+          )}
         </div>
-      </div>
-
-      <div
-        style={{
-          padding: "14px 16px",
-          marginTop: "auto",
-          borderTop: "1px solid var(--border)",
-          fontSize: 11.5,
-          color: "var(--text-3)",
-          lineHeight: 1.55,
-        }}
-      >
-        <Icon name="check" size={11} style={{ color: "var(--green)" }} /> {t("inspectors.graphValid", { cycles: 0, orphans: 0 })}
       </div>
     </div>
   );
 }
 
-function DiffRow({ kind, name, hint }: { kind: "add" | "del" | "mod"; name: string; hint: string }) {
+function DiffRow({ kind, name }: { kind: "add" | "del" | "mod"; name: string }) {
   const tone = kind === "add" ? "var(--green)" : kind === "del" ? "var(--red)" : "var(--amber)";
   const sigil = kind === "add" ? "+" : kind === "del" ? "−" : "~";
   return (
@@ -614,7 +563,6 @@ function DiffRow({ kind, name, hint }: { kind: "add" | "del" | "mod"; name: stri
     >
       <span className="mono" style={{ color: tone, width: 12, fontWeight: 700 }}>{sigil}</span>
       <span className="mono" style={{ color: "var(--text-2)", fontSize: 11.5 }}>{name}</span>
-      <span style={{ marginLeft: "auto", color: "var(--text-3)", fontSize: 10.5 }}>{hint}</span>
     </div>
   );
 }

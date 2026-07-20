@@ -20,7 +20,7 @@
  */
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { RunStreamEvent, type RunStreamEvent as StreamEvent } from "@agentic/contracts";
 
@@ -37,47 +37,91 @@ export interface UseStreamOptions {
    * tweaks-panel inspector. Cache invalidation still happens internally.
    */
   onEvent?: (event: StreamEvent) => void;
+  /** Transport lifecycle for connection-aware surfaces such as Live terminal. */
+  onStatusChange?: (status: StreamConnectionState) => void;
 }
 
+export type StreamConnectionState =
+  | "connecting"
+  | "connected"
+  | "reconnecting"
+  | "closed";
+
 const MAX_BACKOFF_MS = 30_000;
+
+/** Preserve the last durable SSE id when this hook creates a new EventSource.
+ * Native EventSource only carries Last-Event-ID while it owns the reconnect;
+ * our explicit backoff closes that instance, so the cursor must travel in the
+ * proxy URL and be translated back into a header server-side. */
+export function streamPathWithCursor(path: string, lastEventId: string): string {
+  if (!lastEventId) return path;
+  const absolute = /^https?:\/\//i.test(path);
+  const url = new URL(path, "http://agentic.local");
+  url.searchParams.set("lastEventId", lastEventId);
+  return absolute ? url.toString() : `${url.pathname}${url.search}${url.hash}`;
+}
 
 export function useStream(opts: UseStreamOptions = {}): void {
   const queryClient = useQueryClient();
   const path = opts.path ?? "/v1/stream";
   const reconnect = opts.reconnect ?? true;
+  const onEventRef = useRef(opts.onEvent);
+  const onStatusChangeRef = useRef(opts.onStatusChange);
+
+  useEffect(() => {
+    onEventRef.current = opts.onEvent;
+    onStatusChangeRef.current = opts.onStatusChange;
+  }, [opts.onEvent, opts.onStatusChange]);
 
   useEffect(() => {
     let es: EventSource | null = null;
     let attempt = 0;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    let lastEventId = "";
 
     function connect() {
       if (cancelled) return;
+      onStatusChangeRef.current?.(attempt > 0 ? "reconnecting" : "connecting");
       // EventSource defaults to credentialed same-origin requests; the
       // browser sends the session cookie automatically through Next's
       // /v1/* rewrite to apps/api.
-      es = new EventSource(path, { withCredentials: true });
+      es = new EventSource(streamPathWithCursor(path, lastEventId), {
+        withCredentials: true,
+      });
 
       es.onopen = () => {
         attempt = 0;
+        onStatusChangeRef.current?.("connected");
       };
 
       es.onmessage = (msg) => {
-        const parsed = RunStreamEvent.safeParse(JSON.parse(msg.data));
+        if (msg.lastEventId) lastEventId = msg.lastEventId;
+        let payload: unknown;
+        try {
+          payload = JSON.parse(msg.data);
+        } catch (error) {
+          console.warn("[useStream] dropping non-JSON event", error);
+          return;
+        }
+        const parsed = RunStreamEvent.safeParse(payload);
         if (!parsed.success) {
           console.warn("[useStream] dropping malformed event", parsed.error);
           return;
         }
         dispatch(parsed.data, queryClient);
-        opts.onEvent?.(parsed.data);
+        onEventRef.current?.(parsed.data);
       };
 
       es.onerror = () => {
         if (es) es.close();
         es = null;
-        if (!reconnect || cancelled) return;
+        if (!reconnect || cancelled) {
+          onStatusChangeRef.current?.("closed");
+          return;
+        }
         attempt += 1;
+        onStatusChangeRef.current?.("reconnecting");
         const delay = Math.min(MAX_BACKOFF_MS, 500 * 2 ** Math.min(attempt, 6));
         timer = setTimeout(connect, delay);
       };
@@ -88,8 +132,8 @@ export function useStream(opts: UseStreamOptions = {}): void {
       cancelled = true;
       if (timer) clearTimeout(timer);
       if (es) es.close();
+      onStatusChangeRef.current?.("closed");
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [path, reconnect, queryClient]);
 }
 
@@ -132,17 +176,34 @@ export const DEPLOYMENT_KEYS = {
   list: ["deployments", "list"] as const,
 };
 
+export const USAGE_KEYS = {
+  all: ["usage"] as const,
+};
+
+export const AUDIT_KEYS = {
+  all: ["audit"] as const,
+};
+
+export const OBSERVABILITY_KEYS = {
+  all: ["observability"] as const,
+};
+
 import type { QueryClient } from "@tanstack/react-query";
 
 export function dispatch(event: StreamEvent, client: QueryClient): void {
   switch (event.type) {
     case "run.started":
     case "run.failed":
+    case "run.cancelled":
     case "run.completed": {
       // The list views all show status; counts shows running runs.
       void client.invalidateQueries({ queryKey: RUN_KEYS.all });
       void client.invalidateQueries({ queryKey: COUNT_KEYS.tenant });
       void client.invalidateQueries({ queryKey: RUN_KEYS.detail(event.runId) });
+      // Token/cost totals and per-agent/model series are persisted on run
+      // lifecycle changes. Prefix invalidation refreshes every selected range.
+      void client.invalidateQueries({ queryKey: USAGE_KEYS.all });
+      void client.invalidateQueries({ queryKey: OBSERVABILITY_KEYS.all });
       // Per-agent throughput changes as runs start/finish. Prefix-match
       // invalidates every window variant ("1h"/"24h"/"7d").
       void client.invalidateQueries({ queryKey: ["workflows", "throughput"] as const });
@@ -159,6 +220,7 @@ export function dispatch(event: StreamEvent, client: QueryClient): void {
     case "event.emitted": {
       void client.invalidateQueries({ queryKey: EVENT_KEYS.all });
       void client.invalidateQueries({ queryKey: COUNT_KEYS.tenant });
+      void client.invalidateQueries({ queryKey: OBSERVABILITY_KEYS.all });
       break;
     }
     case "task.created":
@@ -172,6 +234,29 @@ export function dispatch(event: StreamEvent, client: QueryClient): void {
       // the table immediately. The toast itself is fired by the chrome
       // (see chrome.tsx onEvent handler), which has access to useToast().
       void client.invalidateQueries({ queryKey: DEPLOYMENT_KEYS.list });
+      // Deployments can add or replace live agents. Keep both the agents page
+      // and the sidebar's canonical count projection in sync with that write.
+      void client.invalidateQueries({ queryKey: AGENT_KEYS.all });
+      void client.invalidateQueries({ queryKey: COUNT_KEYS.tenant });
+      break;
+    }
+    case "audit.recorded": {
+      void client.invalidateQueries({ queryKey: AUDIT_KEYS.all });
+      void client.invalidateQueries({ queryKey: OBSERVABILITY_KEYS.all });
+      break;
+    }
+    case "llm.call.completed": {
+      void client.invalidateQueries({ queryKey: USAGE_KEYS.all });
+      void client.invalidateQueries({ queryKey: OBSERVABILITY_KEYS.all });
+      break;
+    }
+    case "tool.call.completed": {
+      void client.invalidateQueries({ queryKey: RUN_KEYS.detail(event.runId) });
+      void client.invalidateQueries({ queryKey: OBSERVABILITY_KEYS.all });
+      break;
+    }
+    case "log.line": {
+      // Consumed directly by terminal subscribers; no query-backed surface.
       break;
     }
   }

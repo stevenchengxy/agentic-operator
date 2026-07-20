@@ -1,108 +1,159 @@
 "use client";
 
-/**
- * Settings → Billing / Cost caps. Will link to /v1/budgets when wired.
- */
+/** Settings → Billing / cost caps, backed by the current tenant's durable
+ * `/v1/budgets` row. Cap editing lives on the detailed usage route so this
+ * summary never mixes live spend with fixture invoices or sample tenants. */
 
-import { Badge, Button, Panel } from "@/app/portal/components";
-import { Field, TextIn } from "@/app/portal/components/settings/atoms";
+import { useRouter } from "next/navigation";
+import { Badge, Button, Empty, Panel } from "@/app/portal/components";
 import { useI18n } from "@/app/portal/lib/preferences-context";
+import { useTenant } from "@/app/portal/lib/use-tenant";
+import { fmtNum } from "@/app/portal/lib/format";
+import { useBudget } from "@/lib/hooks/useUsage";
 
-const PER_TENANT_BUDGETS = [
-  { tenant: "RAAS", spend30d: 1924, cap: 4000 },
-  { tenant: "SupportFlow", spend30d: 318, cap: 1000 },
-  { tenant: "FinanceClose", spend30d: 42, cap: 500 },
-];
+function fmtUsd(cents: number): string {
+  return `$${(cents / 100).toFixed(2)}`;
+}
+
+function percent(used: number, cap: number | null): number | null {
+  return cap != null && cap > 0 ? Math.min(100, (used / cap) * 100) : null;
+}
 
 export function BillingSection() {
   const { t } = useI18n();
+  const tenant = useTenant();
+  const router = useRouter();
+  const budget = useBudget();
+
+  if (budget.isLoading && !budget.data) {
+    return <Empty title={t("billing.loading")} hint="" />;
+  }
+  if (budget.isError || !budget.data) {
+    return (
+      <Empty
+        title={t("billing.loadFailed")}
+        hint={budget.error instanceof Error ? budget.error.message : ""}
+      />
+    );
+  }
+
+  const row = budget.data;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-      <Panel
-        title={t("billing.plan")}
-        padded
-        action={
-          <Button small icon="external" tone="ghost">
-            {t("billing.openInvoice")}
-          </Button>
-        }
-      >
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 0 }}>
-          <BudgetCell label={t("billing.plan")} value="Team" sub="$420 / mo base" />
-          <BudgetCell label={t("billing.thisCycle")} value="$2,284" sub="May 1 → May 31" />
-          <BudgetCell label={t("billing.projection")} value="$3,140" sub={t("billing.projectionSub")} />
-        </div>
-      </Panel>
-
       <Panel
         title={t("billing.costCaps")}
         subtitle={t("billing.costCapsSubtitle")}
         padded={false}
-      >
-        {PER_TENANT_BUDGETS.map((b, i) => {
-          const pct = (b.spend30d / b.cap) * 100;
-          return (
-            <div
-              key={b.tenant}
-              style={{
-                padding: "12px 14px",
-                borderBottom: i < PER_TENANT_BUDGETS.length - 1 ? "1px solid var(--border)" : "none",
-              }}
+        action={
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <Badge tone="green">{t("billing.liveSource")}</Badge>
+            <Button
+              small
+              icon="external"
+              tone="ghost"
+              onClick={() =>
+                router.push(`/portal/${tenant}/settings/usage` as never)
+              }
             >
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 8,
-                  marginBottom: 6,
-                }}
-              >
-                <span style={{ fontSize: 13, color: "var(--text)" }}>{b.tenant}</span>
-                <Badge tone={pct >= 80 ? "amber" : "muted"}>
-                  ${b.spend30d.toLocaleString()} / ${b.cap.toLocaleString()}
-                </Badge>
-                <Button small tone="ghost" style={{ marginLeft: "auto" }}>
-                  {t("billing.edit")}
-                </Button>
-              </div>
-              <div
-                style={{
-                  height: 6,
-                  background: "var(--panel-2)",
-                  border: "1px solid var(--border)",
-                  borderRadius: 3,
-                  overflow: "hidden",
-                }}
-              >
-                <div
-                  style={{
-                    width: `${Math.min(100, pct)}%`,
-                    height: "100%",
-                    background:
-                      pct >= 90 ? "var(--red)" : pct >= 70 ? "var(--amber)" : "var(--signal)",
-                  }}
-                />
-              </div>
-            </div>
-          );
-        })}
-      </Panel>
-
-      <Panel title={t("billing.contact")} padded>
-        <Field label={t("billing.email")}>
-          <TextIn value="billing@agentic.local" />
-        </Field>
-        <Field label={t("billing.vatTaxId")}>
-          <TextIn value="" placeholder={t("billing.vatPlaceholder")} mono />
-        </Field>
+              {t("billing.openUsage")}
+            </Button>
+          </div>
+        }
+      >
+        {!row.costComplete ? (
+          <div
+            role="note"
+            style={{
+              margin: "12px 16px 0",
+              padding: "8px 10px",
+              border:
+                "1px solid color-mix(in srgb, var(--amber) 35%, var(--border))",
+              borderRadius: 6,
+              color: "var(--amber)",
+              background:
+                "color-mix(in srgb, var(--amber) 7%, transparent)",
+              fontSize: 11,
+            }}
+          >
+            {t("billing.costIncomplete", {
+              n: fmtNum(row.unpricedTokens),
+            })}
+          </div>
+        ) : null}
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))",
+            borderBottom: "1px solid var(--border)",
+          }}
+        >
+          <BudgetCell label={t("billing.tenant")} value={tenant} mono />
+          <BudgetCell
+            label={t("billing.tokensUsed")}
+            value={fmtNum(row.usedTokensMonth)}
+            mono
+          />
+          <BudgetCell
+            label={t("billing.tokensReserved")}
+            value={fmtNum(row.reservedTokens)}
+            mono
+          />
+          <BudgetCell
+            label={t("billing.estimatedSpend")}
+            value={`${row.costComplete ? "" : "≥"}${fmtUsd(row.usedUsdMonth)}`}
+            mono
+          />
+          <BudgetCell
+            label={t("billing.spendReserved")}
+            value={fmtUsd(row.reservedUsdCents)}
+            mono
+          />
+          <BudgetCell
+            label={t("billing.activeReservations")}
+            value={fmtNum(row.activeReservations)}
+            mono
+          />
+          <BudgetCell
+            label={t("billing.periodStart")}
+            value={new Date(row.periodStart).toLocaleDateString()}
+            mono
+          />
+        </div>
+        <div style={{ padding: "14px 16px", display: "grid", gap: 14 }}>
+          <BudgetProgress
+            label={t("billing.tokenCap")}
+            used={row.usedTokensMonth}
+            reserved={row.reservedTokens}
+            cap={row.monthlyTokenCap}
+            format={fmtNum}
+            unlimited={t("billing.unlimited")}
+          />
+          <BudgetProgress
+            label={t("billing.usdCap")}
+            used={row.usedUsdMonth}
+            reserved={row.reservedUsdCents}
+            cap={row.monthlyUsdCap}
+            format={fmtUsd}
+            unlimited={t("billing.unlimited")}
+            minimum={!row.costComplete}
+          />
+        </div>
       </Panel>
     </div>
   );
 }
 
-function BudgetCell({ label, value, sub }: { label: string; value: string; sub?: string }) {
+function BudgetCell({
+  label,
+  value,
+  mono,
+}: {
+  label: string;
+  value: string;
+  mono?: boolean;
+}) {
   return (
-    <div style={{ padding: "10px 14px", borderRight: "1px solid var(--border)" }}>
+    <div style={{ padding: "13px 16px", borderRight: "1px solid var(--border)" }}>
       <div
         style={{
           fontSize: 10,
@@ -116,17 +167,59 @@ function BudgetCell({ label, value, sub }: { label: string; value: string; sub?:
       </div>
       <div
         style={{
-          marginTop: 4,
+          marginTop: 5,
           fontSize: 18,
-          fontFamily: "var(--mono)",
+          fontFamily: mono ? "var(--mono)" : "var(--sans)",
           color: "var(--text)",
         }}
       >
         {value}
       </div>
-      {sub && (
-        <div style={{ marginTop: 2, fontSize: 11, color: "var(--text-3)" }}>{sub}</div>
-      )}
+    </div>
+  );
+}
+
+function BudgetProgress({
+  label,
+  used,
+  reserved,
+  cap,
+  format,
+  unlimited,
+  minimum = false,
+}: {
+  label: string;
+  used: number;
+  reserved: number;
+  cap: number | null;
+  format: (value: number) => string;
+  unlimited: string;
+  minimum?: boolean;
+}) {
+  const { t } = useI18n();
+  const committed = used + reserved;
+  const pct = percent(committed, cap);
+  return (
+    <div style={{ display: "grid", gridTemplateColumns: "150px 1fr auto", gap: 12, alignItems: "center" }}>
+      <span style={{ fontSize: 11.5, color: "var(--text-2)" }}>{label}</span>
+      <div style={{ height: 7, borderRadius: 99, overflow: "hidden", background: "var(--bg-2)" }}>
+        <div
+          style={{
+            width: pct == null ? 0 : `${pct}%`,
+            height: "100%",
+            background:
+              pct != null && pct >= 90
+                ? "var(--red)"
+                : pct != null && pct >= 70
+                  ? "var(--amber)"
+                  : "var(--signal)",
+          }}
+        />
+      </div>
+      <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-2)" }}>
+        {minimum ? "≥" : ""}{format(used)}{reserved > 0 ? ` + ${format(reserved)} ${t("billing.reservedSuffix")}` : ""} / {cap == null ? unlimited : format(cap)}
+        {pct == null ? "" : ` · ${minimum ? "≥" : ""}${pct.toFixed(0)}%`}
+      </span>
     </div>
   );
 }

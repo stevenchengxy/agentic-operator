@@ -7,8 +7,7 @@
  * The PUT endpoint is the editor's save path. It Zod-parses the incoming
  * manifest with `WorkflowManifestSchema`, writes the result as the next
  * versioned file in `models/<slug>-v<N+1>/workflow_v<N+1>.json`, and calls
- * `reregisterInngest()` to hot-swap the live function set without an api
- * restart.
+ * rebuilds the local registry and synchronizes the tenant app with Inngest.
  *
  * Versioning: each save creates a new sibling directory `<slug>-v<N+1>` so
  * older versions remain on disk for rollback. Inngest functions for this
@@ -16,7 +15,8 @@
  */
 
 import type { FastifyInstance } from "fastify";
-import { readdir, readFile, mkdir, writeFile, stat } from "node:fs/promises";
+import { readdir, readFile, mkdir, open, rename, rm, stat } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import {
   WorkflowManifestSchema,
@@ -24,10 +24,10 @@ import {
   CURRENT_SCHEMA_VERSION,
   buildWorkflowJsonSchema,
 } from "@agentic/runtime";
-import { requireAuth } from "../../plugins/auth";
 import { requirePermission } from "../../plugins/rbac";
 import { writeAudit } from "../../plugins/audit";
 import { reregisterInngest } from "../../services/inngest-registry";
+import { syncTenantApp } from "../../services/inngest-sync";
 
 /**
  * Cache the JSON Schema build: it's pure and depends only on the Zod
@@ -62,8 +62,9 @@ async function findTenantDirs(slug: string): Promise<
   let entries: string[];
   try {
     entries = await readdir(root);
-  } catch {
-    return [];
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new Error(`models root does not exist: ${root}`, { cause: error });
+    throw error;
   }
   const matches: Array<{ folder: string; version: number; absDir: string }> = [];
   for (const folder of entries) {
@@ -72,8 +73,9 @@ async function findTenantDirs(slug: string): Promise<
     let isDir = false;
     try {
       isDir = (await stat(abs)).isDirectory();
-    } catch {
-      continue;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      throw error;
     }
     if (!isDir) continue;
     if (tenantSlugFromFolder(folder) !== slug) continue;
@@ -91,12 +93,7 @@ async function findTenantDirs(slug: string): Promise<
  * treated as v1.
  */
 async function pickNextWorkflowFilename(dir: string): Promise<{ filename: string; nextVersion: number }> {
-  let files: string[] = [];
-  try {
-    files = await readdir(dir);
-  } catch {
-    files = [];
-  }
+  const files = await readdir(dir);
   let max = 0;
   for (const f of files) {
     const m = f.match(/^workflow(?:_v(\d+))?\.json$/i);
@@ -106,6 +103,43 @@ async function pickNextWorkflowFilename(dir: string): Promise<{ filename: string
   }
   const next = max + 1;
   return { filename: `workflow_v${next}.json`, nextVersion: next };
+}
+
+/** Atomically replace a workflow file after forcing its bytes to stable storage. */
+async function writeWorkflowFile(targetPath: string, text: string): Promise<void> {
+  const tmp = `${targetPath}.${randomUUID()}.tmp`;
+  let handle: Awaited<ReturnType<typeof open>> | null = null;
+  try {
+    handle = await open(tmp, "wx", 0o600);
+    await handle.writeFile(text, "utf8");
+    await handle.sync();
+    await handle.close();
+    handle = null;
+    await rename(tmp, targetPath);
+  } catch (error) {
+    if (handle) await handle.close().catch(() => undefined);
+    await rm(tmp, { force: true }).catch(() => undefined);
+    throw error;
+  }
+}
+
+async function reserveNextWorkflowFilename(
+  dir: string,
+): Promise<{ filename: string; nextVersion: number; path: string }> {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const picked = await pickNextWorkflowFilename(dir);
+    const candidate = path.join(dir, picked.filename);
+    try {
+      const reservation = await open(candidate, "wx", 0o600);
+      await reservation.close();
+      return { ...picked, path: candidate };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") continue;
+      await rm(candidate, { force: true }).catch(() => undefined);
+      throw error;
+    }
+  }
+  throw new Error("could not reserve a unique workflow version after 8 attempts");
 }
 
 /**
@@ -258,6 +292,8 @@ export async function workflowRoutes(app: FastifyInstance) {
     // Resolve the target filename + version based on mode.
     let filename: string;
     let savedVersion: number;
+    let reservedNewPath: string | null = null;
+    let previousText: string | null = null;
     if (mode === "overwrite") {
       const targetFile = body.target_file;
       if (!targetFile || typeof targetFile !== "string") {
@@ -279,7 +315,7 @@ export async function workflowRoutes(app: FastifyInstance) {
       }
       // Verify the file already exists in the tenant dir — overwrite is
       // only for files we previously served. New files must use new_version.
-      const existing: string[] = await readdir(active.absDir).catch(() => [] as string[]);
+      const existing = await readdir(active.absDir);
       if (!existing.includes(targetFile)) {
         return reply.fail(
           "not_found",
@@ -289,10 +325,12 @@ export async function workflowRoutes(app: FastifyInstance) {
       }
       filename = targetFile;
       savedVersion = m[1] ? Number(m[1]) : 1;
+      previousText = await readFile(path.join(active.absDir, targetFile), "utf8");
     } else {
-      const picked = await pickNextWorkflowFilename(active.absDir);
+      const picked = await reserveNextWorkflowFilename(active.absDir);
       filename = picked.filename;
       savedVersion = picked.nextVersion;
+      reservedNewPath = picked.path;
     }
     const targetPath = path.join(active.absDir, filename);
 
@@ -301,21 +339,85 @@ export async function workflowRoutes(app: FastifyInstance) {
       parsed.data as ReadonlyArray<Record<string, unknown>>,
     );
     await mkdir(active.absDir, { recursive: true });
-    await writeFile(targetPath, text, "utf8");
-
-    // Hot-swap Inngest functions for this tenant. Failure here is logged
-    // but doesn't block the save — the file is on disk and the next api
-    // restart will pick it up.
-    let fnCount = -1;
     try {
-      const r = await reregisterInngest({ tenantSlug: slug, scope: "tenant" });
-      fnCount = r.fnCount;
-    } catch (err) {
-      req.log.warn({ err }, "workflow save: inngest re-register skipped");
+      await writeWorkflowFile(targetPath, text);
+      reservedNewPath = null;
+    } catch (error) {
+      if (reservedNewPath) await rm(reservedNewPath, { force: true }).catch(() => undefined);
+      throw error;
     }
+
+    // A save is not complete until the real tenant app has been rebuilt and
+    // synchronized with Inngest. Returning success for "disk only" left the
+    // editor showing a version the runtime was not executing.
+    let registered: Awaited<ReturnType<typeof reregisterInngest>>;
+    try {
+      registered = await reregisterInngest({ tenantSlug: slug, scope: "tenant" });
+      const sync = await syncTenantApp(slug, {
+        info: (message) => req.log.info({ tenantSlug: slug }, message),
+        warn: (message) => req.log.warn({ tenantSlug: slug }, message),
+      });
+      if (!sync.ok) {
+        throw new Error(
+          `Inngest rejected tenant app sync${sync.status ? ` (${sync.status})` : ""}: ${sync.error ?? "unknown error"}`,
+        );
+      }
+    } catch (error) {
+      let rollbackError: unknown = null;
+      try {
+        if (mode === "new_version") {
+          await rm(targetPath, { force: true });
+        } else if (previousText !== null) {
+          await writeWorkflowFile(targetPath, previousText);
+        }
+        // Rebuild the in-process registry from the restored source. The
+        // broker may still be unavailable, but a second failure is retained
+        // in the surfaced aggregate instead of being swallowed.
+        await reregisterInngest({ tenantSlug: slug, scope: "tenant" });
+        const rollbackSync = await syncTenantApp(slug, {
+          info: (message) => req.log.info({ tenantSlug: slug, rollback: true }, message),
+          warn: (message) => req.log.warn({ tenantSlug: slug, rollback: true }, message),
+        });
+        if (!rollbackSync.ok) {
+          throw new Error(
+            `restored workflow could not be synchronized with Inngest${rollbackSync.status ? ` (${rollbackSync.status})` : ""}: ${rollbackSync.error ?? "unknown error"}`,
+          );
+        }
+      } catch (rollbackFailure) {
+        rollbackError = rollbackFailure;
+      }
+      req.log.error(
+        { err: error, rollbackErr: rollbackError, file: targetPath },
+        "workflow save failed to synchronize; source rollback attempted",
+      );
+      writeAudit({
+        tenantId: auth.tenantId,
+        actorUserId: auth.userId ?? undefined,
+        action: "workflow.save.failed",
+        targetType: "workflow",
+        targetId: filename,
+        meta: {
+          mode,
+          error: String((error as Error)?.message ?? error).slice(0, 500),
+          rollback_ok: rollbackError === null,
+          rollback_error: rollbackError
+            ? String((rollbackError as Error)?.message ?? rollbackError).slice(0, 500)
+            : null,
+        },
+      });
+      if (rollbackError) {
+        throw new AggregateError(
+          [error, rollbackError],
+          "workflow save and runtime rollback both failed",
+        );
+      }
+      throw error;
+    }
+    const fnCount = registered.appFnCount ?? registered.fnCount;
 
     writeAudit({
       tenantId: auth.tenantId,
+      actorUserId: auth.userId ?? undefined,
       action: "workflow.save",
       targetType: "workflow",
       targetId: filename,

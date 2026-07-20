@@ -1,0 +1,2162 @@
+{
+  "metadata": {
+    "version_number": 1,
+    "created_at": "2026-07-14T00:00:00.000Z",
+    "created_by": "claude+yuhancheng",
+    "source": "旧 AO objects_v0_1_016(45 对象)中与六函数相关的 18 个 + as-built 逆向新增 7 个(澄清记录/上传件/规则审计/邀约单/GoHire/对象存储/Allmeta)",
+    "description": "招聘域 6-agent 流水线数据对象。修正: Candidate_Match_Result.job_position_id→job_requisition_id(对齐代码与事件契约),并补 match_status/match_reason(partner 主表列)。type=system 的对象描述外部平台及其调用语义。",
+    "last_updated": "2026-07-14"
+  },
+  "payload": [
+    {
+      "id": "Job_Requisition",
+      "name": "招聘岗位",
+      "description": "外包招聘需求下的具体岗位定义，包含职责、要求、地点、薪资、HC、面试方式等，用于简历匹配与流程执行。",
+      "type": "data",
+      "relationship_description": "【招聘岗位 (Job_Requisition)】属于【外包招聘需求 (Job_Requisition_Specification)】，并引用了【标准岗位 (Standard_Job_Role)】来确立职级。它是【职位投递申请 (Application)】的目标，拥有与之匹配的【候选人 (Candidate)】列表，并绑定了【候选人综合评估模型 (Evaluation_Model)】作为选拔标准。",
+      "primary_key": "job_requisition_id",
+      "properties": [
+        {
+          "name": "job_requisition_id",
+          "type": "String",
+          "description": "招聘岗位的唯一编号"
+        },
+        {
+          "name": "job_requisition_specification_id",
+          "type": "String",
+          "description": "招聘岗位所属的外包招聘需求编号",
+          "is_foreign_key": true,
+          "references": "Job_Requisition_Specification"
+        },
+        {
+          "name": "csi_department_id",
+          "type": "String",
+          "description": "招聘岗位负责招聘的中软国际部门编号",
+          "is_foreign_key": true,
+          "references": "CSI_Department"
+        },
+        {
+          "name": "client_department_id",
+          "type": "String",
+          "description": "招聘岗位所属的客户部门编号",
+          "is_foreign_key": true,
+          "references": "Client_Department"
+        },
+        {
+          "name": "standard_job_role_id",
+          "type": "String",
+          "description": "招聘岗位关联的公司内部标准岗位编号",
+          "is_foreign_key": true,
+          "references": "Standard_Job_Role"
+        },
+        {
+          "name": "evaluation_model_id",
+          "type": "String",
+          "description": "对招聘岗位的候选人进行综合评估的模型编号，用于计算人岗匹配度",
+          "is_foreign_key": true,
+          "references": "Evaluation_Model"
+        },
+        {
+          "name": "client_job_id",
+          "type": "String",
+          "description": "招聘岗位在客户侧的岗位唯一编号"
+        },
+        {
+          "name": "client_job_temp_id",
+          "type": "String",
+          "description": "招聘岗位在客户侧的临时岗位编号，用于记录线下开拓的需求，当客户岗位尚未正式发布生成编号时，用于上传简历的临时岗位编号"
+        },
+        {
+          "name": "client_job_title",
+          "type": "String",
+          "description": "招聘岗位在客户侧的岗位名称，即合同结算岗位名称"
+        },
+        {
+          "name": "client_job_type",
+          "type": "String",
+          "description": "招聘岗位在客户侧的岗位类型，比如财务专员，数据运营"
+        },
+        {
+          "name": "job_responsibility",
+          "type": "String",
+          "description": "招聘岗位的职责详细说明，描述候选人入职后的工作职责"
+        },
+        {
+          "name": "job_requirement",
+          "type": "String",
+          "description": "招聘岗位的对候选人原始要求的自然语言描述"
+        },
+        {
+          "name": "job_type",
+          "type": "String",
+          "description": "招聘岗位的类型，比如产品运营、软件测试等"
+        },
+        {
+          "name": "recruitment_type",
+          "type": "String",
+          "description": "招聘岗位的招聘类型，比如社会全职、应届校园招聘、实习招聘、兼职招聘等"
+        },
+        {
+          "name": "work_years",
+          "type": "Integer",
+          "description": "招聘岗位的工作年限要求，比如3年、5年、10年等"
+        },
+        {
+          "name": "gender",
+          "type": "String",
+          "description": "招聘岗位的性别要求，比如男、女、不限等"
+        },
+        {
+          "name": "age_range",
+          "type": "String",
+          "description": "招聘岗位的年龄范围要求，比如25-30岁、40岁以内等"
+        },
+        {
+          "name": "degree_requirement",
+          "type": "String",
+          "description": "招聘岗位的最低学位要求，比如本科、硕士、博士等"
+        },
+        {
+          "name": "education_requirement",
+          "type": "String",
+          "description": "招聘岗位的学历性质要求，比如全日制、非全日制、成人教育等"
+        },
+        {
+          "name": "city",
+          "type": "String",
+          "description": "招聘岗位的办公所在城市"
+        },
+        {
+          "name": "work_address",
+          "type": "List<String>",
+          "description": "招聘岗位的办公地址"
+        },
+        {
+          "name": "salary_range",
+          "type": "String",
+          "description": "招聘岗位对外发布的薪资范围，比如1-1.5万/月等"
+        },
+        {
+          "name": "must_have_skills",
+          "type": "List<String>",
+          "description": "招聘岗位要求候选人必须具备的技能，例如：熟悉Java、有MySQL数据库经验等"
+        },
+        {
+          "name": "nice_to_have_skills",
+          "type": "List<String>",
+          "description": "招聘岗位筛选候选人的加分项，例如：博士学历优先、有海外工作经历优先等"
+        },
+        {
+          "name": "language_requirements",
+          "type": "String",
+          "description": "招聘岗位对候选人的语言能力要求，例如：英语流利、日语N1等"
+        },
+        {
+          "name": "negative_requirement",
+          "type": "String",
+          "description": "对候选人的负向要求，比如：不能有不良嗜好等"
+        },
+        {
+          "name": "headcount",
+          "type": "Integer",
+          "description": "招聘岗位计划招聘的总人数"
+        },
+        {
+          "name": "hc_status",
+          "type": "String",
+          "description": "招聘岗位的招聘人数状态，比如已满、未满等"
+        },
+        {
+          "name": "fill_difficulty",
+          "type": "String",
+          "description": "招聘岗位的招聘难度，比如容易、一般、困难等"
+        },
+        {
+          "name": "urgency_level",
+          "type": "String",
+          "description": "招聘岗位的紧急程度，比如紧急、一般、不紧急等"
+        },
+        {
+          "name": "open_date",
+          "type": "Date",
+          "description": "招聘岗位开始招聘的日期"
+        },
+        {
+          "name": "required_arrival_date",
+          "type": "Date",
+          "description": "招聘岗位要求候选人到岗的日期"
+        },
+        {
+          "name": "work_schedule_type",
+          "type": "String",
+          "description": "招聘岗位的工作班制类型，比如：白班、夜班、三班倒等"
+        },
+        {
+          "name": "require_foreigner",
+          "type": "Boolean",
+          "description": "招聘岗位是否要求候选人要有外籍身份"
+        },
+        {
+          "name": "clarify_questions",
+          "type": "List<String>",
+          "description": "对招聘岗位进行需求澄清的问题清单"
+        },
+        {
+          "name": "recruitment_strategies",
+          "type": "String",
+          "description": "对招聘岗位进行分析后的招聘策略"
+        },
+        {
+          "name": "interview_mode",
+          "type": "String",
+          "description": "招聘岗位的面试方式，比如：现场面试、视频面试、电话面试等"
+        },
+        {
+          "name": "interview_process",
+          "type": "String",
+          "description": "对招聘岗位的候选人进行面试的流程，比如：1.首轮技术面试；2.二轮技术面试；3.HR面试"
+        },
+        {
+          "name": "expected_level",
+          "type": "String",
+          "description": "招聘岗位的期望级别"
+        }
+      ]
+    },
+    {
+      "id": "Job_Requisition_Specification",
+      "name": "外包招聘需求",
+      "description": "客户单位提出的外包招聘需求计划，定义需求起止、优先级、独家/竞品数量等，并关联合同与具体岗位明细，是招聘流程起点。",
+      "type": "data",
+      "relationship_description": "【外包招聘需求 (Job_Requisition_Specification)】属于【客户单位 (Client)】发出，并受到【人力资源外包服务合同 (HRO_Service_Contract)】里财务条款的约束。它拥有多个具体的【招聘岗位 (Job_Requisition)】，是【人力资源外包服务商 (HRO_Service_Provider)】开始招聘的依据。",
+      "primary_key": "job_requisition_specification_id",
+      "properties": [
+        {
+          "name": "job_requisition_specification_id",
+          "type": "String",
+          "description": "外包招聘需求的唯一编号"
+        },
+        {
+          "name": "hro_service_contract_id",
+          "type": "String",
+          "description": "与外包招聘需求关联的人力资源外包服务合同的编号，定义了该需求的合同条款",
+          "is_foreign_key": true,
+          "references": "HRO_Service_Contract"
+        },
+        {
+          "name": "client_id",
+          "type": "String",
+          "description": "外包招聘需求所属的甲方客户的编号",
+          "is_foreign_key": true,
+          "references": "Client"
+        },
+        {
+          "name": "start_date",
+          "type": "Date",
+          "description": "外包招聘需求开始日期"
+        },
+        {
+          "name": "deadline",
+          "type": "Date",
+          "description": "外包招聘需求客户期望的全部岗位招聘完成的截至日期"
+        },
+        {
+          "name": "create_time",
+          "type": "Timestamp",
+          "description": "外包招聘需求创建时间"
+        },
+        {
+          "name": "create_by",
+          "type": "String",
+          "description": "外包招聘需求创建人"
+        },
+        {
+          "name": "sd_org_name",
+          "type": "String",
+          "description": "外包招聘需求交付服务的组织名称"
+        },
+        {
+          "name": "hsm_employee_id",
+          "type": "String",
+          "description": "外包招聘需求交付服务的负责人",
+          "is_foreign_key": true,
+          "references": "Employee"
+        },
+        {
+          "name": "recruiter_employee_id",
+          "type": "String",
+          "description": "外包招聘需求招聘的负责人",
+          "is_foreign_key": true,
+          "references": "Employee"
+        },
+        {
+          "name": "priority",
+          "type": "String",
+          "description": "外包招聘需求优先级，比如紧急、重要、一般等"
+        },
+        {
+          "name": "is_exclusive",
+          "type": "Boolean",
+          "description": "外包招聘需求是否只用一家供应商来提供招聘服务"
+        },
+        {
+          "name": "number_of_competitors",
+          "type": "Integer",
+          "description": "为该外包招聘需求提供招聘服务的竞争对手数量"
+        },
+        {
+          "name": "status",
+          "type": "String",
+          "description": "外包招聘需求的生命周期状态，比如未启动、进行中、挂起、终止、已完成"
+        },
+        {
+          "name": "completion_time",
+          "type": "Timestamp",
+          "description": "外包招聘需求截止到招聘需求挂起、终止或已完成的实际日期"
+        }
+      ]
+    },
+    {
+      "id": "Job_Posting",
+      "name": "岗位发布信息",
+      "description": "面向外部渠道发布的岗位信息，基于招聘岗位生成，记录发布标题、职责、要求、渠道、发布时间与状态。",
+      "type": "data",
+      "relationship_description": "【岗位发布信息 (Job_Posting)】属于一个或多个【招聘岗位 (Job_Requisition)】，并引用【渠道来源 (Sourcing_Channel)】作为发布渠道，获取【候选人 (Candidate)】的【候选人简历 (Resume)】。",
+      "primary_key": "job_posting_id",
+      "properties": [
+        {
+          "name": "job_posting_id",
+          "type": "String",
+          "description": "岗位发布信息的唯一编号"
+        },
+        {
+          "name": "job_requisition_id",
+          "type": "List<String>",
+          "description": "岗位发布信息所属的招聘岗位编号清单，可能包括多个招聘岗位",
+          "is_foreign_key": true,
+          "references": "Job_Requisition"
+        },
+        {
+          "name": "sourcing_channel_id",
+          "type": "List<String>",
+          "description": "岗位发布信息发布的渠道编号清单，可能包括多个渠道",
+          "is_foreign_key": true,
+          "references": "Sourcing_Channel"
+        },
+        {
+          "name": "recruiter_employee_id",
+          "type": "String",
+          "description": "负责该岗位发布信息进行招聘的招聘专员编号",
+          "is_foreign_key": true,
+          "references": "Employee"
+        },
+        {
+          "name": "title",
+          "type": "String",
+          "description": "岗位发布信息的岗位名称"
+        },
+        {
+          "name": "responsibility",
+          "type": "String",
+          "description": "岗位发布信息的岗位职责"
+        },
+        {
+          "name": "requirement",
+          "type": "String",
+          "description": "岗位发布信息的岗位要求"
+        },
+        {
+          "name": "key_words",
+          "type": "List<String>",
+          "description": "岗位发布信息的岗位关键词列表"
+        },
+        {
+          "name": "type",
+          "type": "String",
+          "description": "岗位发布信息的岗位类型,比如产品运营、软件测试等"
+        },
+        {
+          "name": "recruitment_type",
+          "type": "String",
+          "description": "岗位发布信息的岗位招聘类型,比如社会全职、应届校园招聘、实习招聘、兼职招聘等"
+        },
+        {
+          "name": "work_years",
+          "type": "Integer",
+          "description": "岗位发布信息的岗位工作年限要求,比如3年、5年、10年等"
+        },
+        {
+          "name": "age_range",
+          "type": "String",
+          "description": "岗位发布信息的岗位年龄范围要求,比如25-30岁、40岁以内等"
+        },
+        {
+          "name": "degree_requirement",
+          "type": "String",
+          "description": "岗位发布信息的岗位最低学位要求,比如本科、硕士、博士等"
+        },
+        {
+          "name": "education_requirement",
+          "type": "String",
+          "description": "岗位发布信息的岗位学历性质要求,比如全日制、非全日制、成人教育等"
+        },
+        {
+          "name": "city",
+          "type": "List<String>",
+          "description": "岗位发布信息的岗位办公所在城市"
+        },
+        {
+          "name": "work_address",
+          "type": "List<String>",
+          "description": "岗位发布信息的岗位办公地址"
+        },
+        {
+          "name": "salary_range",
+          "type": "String",
+          "description": "岗位发布信息的岗位薪资范围,比如1-1.5万/月等"
+        },
+        {
+          "name": "publish_time",
+          "type": "Timestamp",
+          "description": "岗位发布信息的发布时间"
+        },
+        {
+          "name": "publish_status",
+          "type": "String",
+          "description": "岗位发布信息的发布状态,比如：已发布、已下线等"
+        }
+      ]
+    },
+    {
+      "id": "Candidate",
+      "name": "候选人",
+      "description": "候选人主档，记录身份信息、联系方式、学历/经验、来源渠道、状态及锁定/黑名单相关信息。",
+      "type": "data",
+      "relationship_description": "【候选人 (Candidate)】拥有【候选人求职期望 (Candidate_Expectation)】与【候选人简历 (Resume)】。通过投递【招聘岗位 (Job_Requisition)】生成【职位投递申请 (Application)】。他是所有业务评价的主体。",
+      "primary_key": "candidate_id",
+      "properties": [
+        {
+          "name": "candidate_id",
+          "type": "String",
+          "description": "候选人在系统中的编号"
+        },
+        {
+          "name": "employee_id",
+          "type": "String",
+          "description": "跟进该候选人的招聘专员编号",
+          "is_foreign_key": true,
+          "references": "Employee"
+        },
+        {
+          "name": "is_locked",
+          "type": "Boolean",
+          "description": "候选人是否处于锁定状态，锁定原因包括：内推渠道锁定、系统锁定等"
+        },
+        {
+          "name": "lock_start_time",
+          "type": "Timestamp",
+          "description": "候选人处于锁定状态的开始时间"
+        },
+        {
+          "name": "referrer_employee_id",
+          "type": "String",
+          "description": "如果该候选人为内部推荐，对应推荐该候选人的员工编号，否则为空",
+          "is_foreign_key": true,
+          "references": "Employee"
+        },
+        {
+          "name": "id_number",
+          "type": "String",
+          "description": "候选人的身份证号"
+        },
+        {
+          "name": "name",
+          "type": "String",
+          "description": "候选人姓名"
+        },
+        {
+          "name": "nationality",
+          "type": "String",
+          "description": "候选人国籍"
+        },
+        {
+          "name": "gender",
+          "type": "String",
+          "description": "候选人性别"
+        },
+        {
+          "name": "birth_date",
+          "type": "Date",
+          "description": "候选人出生日期"
+        },
+        {
+          "name": "phone",
+          "type": "String",
+          "description": "候选人手机号码"
+        },
+        {
+          "name": "email",
+          "type": "String",
+          "description": "候选人电子邮箱地址"
+        },
+        {
+          "name": "address",
+          "type": "String",
+          "description": "候选人当前的住址"
+        },
+        {
+          "name": "highest_acquired_degree",
+          "type": "String",
+          "description": "候选人目前已获得的最高学历"
+        },
+        {
+          "name": "unified_enrollment",
+          "type": "Boolean",
+          "description": "候选人是否为统招全日制学历（区分成教/自考）"
+        },
+        {
+          "name": "work_years",
+          "type": "Float",
+          "description": "候选人从首次参加工作至今的总年数"
+        },
+        {
+          "name": "flight_risk_level",
+          "type": "String",
+          "description": "候选人爽约（已答应面试或入职却不出现）的风险评估等级"
+        },
+        {
+          "name": "max_salary_limit",
+          "type": "Float",
+          "description": "基于历史薪资及模型计算的建议该候选人最高入职薪资上限"
+        },
+        {
+          "name": "status",
+          "type": "String",
+          "description": "候选人的活跃状态，如：在职、离职中、积极求职"
+        },
+        {
+          "name": "state",
+          "type": "String",
+          "description": "候选人在招聘流水线中的当前位置，如：已推客户、终面中"
+        },
+        {
+          "name": "blacklist_status",
+          "type": "Boolean",
+          "description": "候选人当前是否处于禁止聘用名单中"
+        },
+        {
+          "name": "marital_status",
+          "type": "String",
+          "description": "候选人的婚育情况，如：未婚、已婚未育、已婚已育等"
+        },
+        {
+          "name": "conflict_of_interest_declaration",
+          "type": "String",
+          "description": "候选人的利益冲突声明，如：和公司员工有亲属关系、和公司有利益关系等"
+        },
+        {
+          "name": "conflict_clearance_deadline",
+          "type": "Date",
+          "description": "候选人的利益冲突清除的截止日期"
+        },
+        {
+          "name": "gap_reason",
+          "type": "String",
+          "description": "候选人空窗期原因解释说明"
+        },
+        {
+          "name": "previous_level",
+          "type": "String",
+          "description": "候选人上一份工作的职级"
+        },
+        {
+          "name": "expected_degree",
+          "type": "String",
+          "description": "候选人状态为在读的预期最高学历，以支撑校招、实习业务场景"
+        },
+        {
+          "name": "expected_graduation_date",
+          "type": "Date",
+          "description": "候选人状态为在读时的预期毕业日期"
+        },
+        {
+          "name": "github",
+          "type": "String",
+          "description": "候选人开发的开源项目地址"
+        },
+        {
+          "name": "ethnicity",
+          "type": "String",
+          "description": "候选人的名族"
+        },
+        {
+          "name": "native_place",
+          "type": "String",
+          "description": "候选人的籍贯"
+        }
+      ]
+    },
+    {
+      "id": "Resume",
+      "name": "候选人简历",
+      "description": "候选人简历的结构化记录，包含经历、技能标签、附件与原始/优化标识，用于评估与推荐。",
+      "type": "data",
+      "relationship_description": "【候选人简历 (Resume)】归属于【候选人 (Candidate)】，来自特定的【渠道来源 (Sourcing_Channel)】。可关联多个【招聘岗位 (Job_Requisition)】。它是构成【推荐评估材料 (Recommendation_Material)】的核心组件，其内容直接影响客户方的初筛通过率。",
+      "primary_key": "resume_id",
+      "properties": [
+        {
+          "name": "resume_id",
+          "type": "String",
+          "description": "简历编号"
+        },
+        {
+          "name": "candidate_id",
+          "type": "String",
+          "description": "简历所属候选人编号",
+          "is_foreign_key": true,
+          "references": "Candidate"
+        },
+        {
+          "name": "job_requisition_id",
+          "type": "List<String>",
+          "description": "简历投递过的职位编号列表,1:n关系，1份简历可能投递过1个或多个职位",
+          "is_foreign_key": true,
+          "references": "Job_Requisition"
+        },
+        {
+          "name": "sourcing_channel_id",
+          "type": "String",
+          "description": "简历来源的渠道编号",
+          "is_foreign_key": true,
+          "references": "Sourcing_Channel"
+        },
+        {
+          "name": "experience",
+          "type": "String",
+          "description": "简历的详细工作履历及职责描述"
+        },
+        {
+          "name": "projects",
+          "type": "String",
+          "description": "简历中参与过的核心项目背景、担任的角色及产出"
+        },
+        {
+          "name": "education",
+          "type": "String",
+          "description": "简历中的教育经历，包括学校名称、求学开始和结束时间、专业、学历等"
+        },
+        {
+          "name": "languages",
+          "type": "String",
+          "description": "简历中的语言技能"
+        },
+        {
+          "name": "file_path",
+          "type": "String",
+          "description": "简历原始文件（PDF/Word）在存储系统中的路径"
+        },
+        {
+          "name": "is_original",
+          "type": "Boolean",
+          "description": "简历是候选人直接提供的原始件，还是顾问优化后的版本"
+        },
+        {
+          "name": "skills",
+          "type": "List<String>",
+          "description": "简历中提取出的核心技能关键词标签"
+        },
+        {
+          "name": "highlight_keywords",
+          "type": "String",
+          "description": "简历中加亮标记的关键信息"
+        },
+        {
+          "name": "recommendation_reason",
+          "type": "String",
+          "description": "招聘专员撰写的推荐原因"
+        },
+        {
+          "name": "project_description_validity",
+          "type": "String",
+          "description": "简历的项目真实性验证标记"
+        },
+        {
+          "name": "certifications",
+          "type": "String",
+          "description": "候选人获得的证书，比如：PMP、ACP、ACP-PMI等"
+        },
+        {
+          "name": "portfolio",
+          "type": "String",
+          "description": "候选人的作品集附件或链接地址"
+        },
+        {
+          "name": "language",
+          "type": "String",
+          "description": "该简历的语言类型，如中文、英文"
+        },
+        {
+          "name": "employee_id",
+          "type": "String",
+          "description": "下载该简历的招聘人员或者内部推荐该简历的员工编号",
+          "is_foreign_key": true,
+          "references": "Employee"
+        },
+        {
+          "name": "created_time",
+          "type": "Timestamp",
+          "description": "该简历在简历库的录入时间"
+        },
+        {
+          "name": "updated_time",
+          "type": "Timestamp",
+          "description": "该版本简历的更新时间"
+        },
+        {
+          "name": "publications",
+          "type": "String",
+          "description": "该简历候选人已发表的作品"
+        },
+        {
+          "name": "patents",
+          "type": "String",
+          "description": "该简历候选人发表的专利"
+        },
+        {
+          "name": "awards",
+          "type": "String",
+          "description": "该简历候选人获得的奖项"
+        },
+        {
+          "name": "summary",
+          "type": "String",
+          "description": "该简历候选人的自我总结"
+        }
+      ]
+    },
+    {
+      "id": "Application",
+      "name": "职位投递申请",
+      "description": "职位投递申请记录，连接候选人与招聘岗位，跟踪流程阶段、状态、关键时间与结果。",
+      "type": "data",
+      "relationship_description": "【职位投递申请 (Application)】连接了【候选人 (Candidate)】和【招聘岗位 (Job_Requisition)】。它像个文件夹，下面关联【面试记录 (Interview_Record)】、【评估报告 (Evaluation_Report)】、【背景调查报告 (Background_Check)】、【录用通知书 (Job_Offer)】和【沟通跟进日志 (Communication_Log)】，所有过程都记在这里。",
+      "primary_key": "application_id",
+      "properties": [
+        {
+          "name": "application_id",
+          "type": "String",
+          "description": "申请记录唯一编号"
+        },
+        {
+          "name": "client_id",
+          "type": "String",
+          "description": "该职位投递申请所属的客户单位编号",
+          "is_foreign_key": true,
+          "references": "Client"
+        },
+        {
+          "name": "job_requisition_id",
+          "type": "String",
+          "description": "该职位投递申请所属的招聘岗位编号",
+          "is_foreign_key": true,
+          "references": "Job_Requisition"
+        },
+        {
+          "name": "candidate_id",
+          "type": "String",
+          "description": "该职位投递申请所属的候选人编号",
+          "is_foreign_key": true,
+          "references": "Candidate"
+        },
+        {
+          "name": "resume_id",
+          "type": "String",
+          "description": "该职位投递申请所上传的简历编号",
+          "is_foreign_key": true,
+          "references": "Resume"
+        },
+        {
+          "name": "recruiter_employee_id",
+          "type": "String",
+          "description": "负责该职位投递申请的招聘专员编号",
+          "is_foreign_key": true,
+          "references": "Employee"
+        },
+        {
+          "name": "status",
+          "type": "String",
+          "description": "该职位投递申请的流转环节状态，例如待处理、已面试、已录用、已淘汰等"
+        },
+        {
+          "name": "stage",
+          "type": "String",
+          "description": "职位投递申请的流程阶段，在哪个大阶段，例如初筛、面试、背景调查、录用等"
+        },
+        {
+          "name": "matching_score",
+          "type": "Integer",
+          "description": "职位投递中简历和职位的匹配度分数"
+        },
+        {
+          "name": "process_sla",
+          "type": "Timestamp",
+          "description": "职位投递申请流程处理的时限，例如3天初筛、7天面试、15天背景调查等"
+        },
+        {
+          "name": "push_timestamp",
+          "type": "Timestamp",
+          "description": "职位投递申请中简历推送给客户的时间"
+        },
+        {
+          "name": "duplicate_check_result",
+          "type": "String",
+          "description": "职位投递申请中候选人信息查重结果，例如是否重复投递"
+        },
+        {
+          "name": "original_level",
+          "type": "String",
+          "description": "职位投递申请中，候选人通过面试后，客户方对该候选人的原始定级，例如：T3、T4等"
+        },
+        {
+          "name": "supplier_suggested_level",
+          "type": "String",
+          "description": "职位投递申请中，服务提供方对该候选人的建议定级，例如：T3、T4等"
+        },
+        {
+          "name": "negotiated_level",
+          "type": "String",
+          "description": "职位投递申请中，候选人通过面试后，服务提供方和客户方协商后的定级，例如：T3、T4等"
+        },
+        {
+          "name": "compliance_credential",
+          "type": "String",
+          "description": "该职位投递申请的合规性凭证，例如：特定客户离职不满6个月的免责邮件、机要室不投诉邮件等"
+        },
+        {
+          "name": "approved_onboard_date",
+          "type": "Timestamp",
+          "description": "该职位投递申请通过OA审批流时填写的入职日期"
+        },
+        {
+          "name": "actual_onboard_date",
+          "type": "Timestamp",
+          "description": "该职位投递申请的候选人实际入职的日期"
+        },
+        {
+          "name": "sla_deadline",
+          "type": "Timestamp",
+          "description": "职位投递申请的自动下架时间"
+        },
+        {
+          "name": "portfolio_attachment",
+          "type": "String",
+          "description": "职位投递申请的作品集附件或链接"
+        },
+        {
+          "name": "notes",
+          "type": "String",
+          "description": "职位投递申请的备注说明,例如空档期原因等"
+        },
+        {
+          "name": "has_referral_bonus",
+          "type": "Boolean",
+          "description": "该职位投递是否有推荐奖金"
+        }
+      ]
+    },
+    {
+      "id": "Interview_Record",
+      "name": "内部面试和客户侧面试过程记录",
+      "description": "单次面试过程记录，包含面试类型、轮次、时间、方式、记录内容与结果。",
+      "type": "data",
+      "relationship_description": "【面试记录 (Interview_Record)】记录了【内部员工 (Employee)】或客户那边的【关键干系人 (Stakeholder)】是怎么面试【候选人 (Candidate)】的。它包含在某个具体的【职位投递申请 (Application)】里，面试过程是按【面试策略 (Interview_Model)】执行的。",
+      "primary_key": "interview_record_id",
+      "properties": [
+        {
+          "name": "interview_record_id",
+          "type": "String",
+          "description": "面试记录唯一编号"
+        },
+        {
+          "name": "interview_model_id",
+          "type": "String",
+          "description": "该面试记录所使用的面试模型编号",
+          "is_foreign_key": true,
+          "references": "Interview_Model"
+        },
+        {
+          "name": "application_id",
+          "type": "String",
+          "description": "该面试所属的职位投递申请编号",
+          "is_foreign_key": true,
+          "references": "Application"
+        },
+        {
+          "name": "interviewer_employee_id",
+          "type": "String",
+          "description": "该面试的面试官编号",
+          "is_foreign_key": true,
+          "references": "Employee"
+        },
+        {
+          "name": "interview_type",
+          "type": "String",
+          "description": "该面试的类型，是我司面试还是客户面试"
+        },
+        {
+          "name": "interview_round",
+          "type": "String",
+          "description": "该面试的轮次，例如一面、二面、三面等"
+        },
+        {
+          "name": "start_time",
+          "type": "Timestamp",
+          "description": "该面试的实际开始时间"
+        },
+        {
+          "name": "end_time",
+          "type": "Timestamp",
+          "description": "该面试的实际结束时间"
+        },
+        {
+          "name": "duration_minutes",
+          "type": "Integer",
+          "description": "该面试的有效时长"
+        },
+        {
+          "name": "interview_mode",
+          "type": "String",
+          "description": "面试的形式，是技术面还是综合面还是视频面"
+        },
+        {
+          "name": "recording_url",
+          "type": "String",
+          "description": "该面试过程的录音录像记录的URL地址"
+        },
+        {
+          "name": "raw_interview_notes",
+          "type": "String",
+          "description": "该面试过程的原始手记内容"
+        },
+        {
+          "name": "candidate_behavior_notes",
+          "type": "String",
+          "description": "该面试过程的候选人的表现记录"
+        },
+        {
+          "name": "tech_gaps_identified",
+          "type": "List<String>",
+          "description": "该面试过程中识别出的候选人的技术盲区"
+        },
+        {
+          "name": "golden_30_call_status",
+          "type": "Boolean",
+          "description": "是否完成面后回访"
+        },
+        {
+          "name": "interview_result",
+          "type": "String",
+          "description": "该面试的最终结果，是否通过面试"
+        }
+      ]
+    },
+    {
+      "id": "Communication_Log",
+      "name": "沟通跟进日志",
+      "description": "沟通跟进日志，记录沟通双方、方式、内容摘要与时间，用于过程追踪。",
+      "type": "data",
+      "relationship_description": "【沟通跟进日志 (Communication_Log)】在具体的某个【职位投递申请 (Application)】记录下。记录了【内部员工 (Employee)】和【候选人 (Candidate)】，以及和客户那边【关键干系人 (Stakeholder)】的所有互动。",
+      "primary_key": "communication_log_id",
+      "properties": [
+        {
+          "name": "communication_log_id",
+          "type": "String",
+          "description": "日志唯一编号"
+        },
+        {
+          "name": "application_id",
+          "type": "String",
+          "description": "该沟通消息关联的投递申请编号",
+          "is_foreign_key": true,
+          "references": "Application"
+        },
+        {
+          "name": "message_sender",
+          "type": "String",
+          "description": "该沟通消息的发送方"
+        },
+        {
+          "name": "message_receiver",
+          "type": "String",
+          "description": "该沟通消息的接收方"
+        },
+        {
+          "name": "interaction_type",
+          "type": "String",
+          "description": "沟通类型，是电话还是微信等"
+        },
+        {
+          "name": "message_content",
+          "type": "String",
+          "description": "沟通的具体内容"
+        },
+        {
+          "name": "content_summary",
+          "type": "String",
+          "description": "沟通的简要总结"
+        },
+        {
+          "name": "timestamp",
+          "type": "Timestamp",
+          "description": "沟通发生的时间"
+        }
+      ]
+    },
+    {
+      "id": "Client",
+      "name": "客户单位",
+      "description": "客户单位主档，记录基础信息、入职与合规规则、偏好配置及供应商考核要求。",
+      "type": "data",
+      "relationship_description": "【客户单位 (Client)】作为业务数据的源头，包含【客户部门 (Client_Department)】和【关键干系人 (Stakeholder)】。它负责发布【外包招聘需求 (Job_Requisition_Specification)】并签署【人力资源外包服务合同 (HRO_Service_Contract)】。【职级费率配置 (Job_Grade_Rate)】决定了客户招聘岗位的职级费率定义，【客户偏好设定 (Client_Preference)】决定了该【客户单位 (Client)】的招聘偏好。",
+      "primary_key": "client_id",
+      "properties": [
+        {
+          "name": "client_id",
+          "type": "String",
+          "description": "客户唯一编号"
+        },
+        {
+          "name": "client_name",
+          "type": "String",
+          "description": "客户的单位名称"
+        },
+        {
+          "name": "address",
+          "type": "String",
+          "description": "客户单位详细地址"
+        },
+        {
+          "name": "industry_category",
+          "type": "String",
+          "description": "客户单位所属行业类别，例如互联网、金融等"
+        },
+        {
+          "name": "submission_materials",
+          "type": "List<String>",
+          "description": "客户单位要求的、服务提供商在提交候选人申请时需提交的材料列表"
+        },
+        {
+          "name": "entry_day_rules",
+          "type": "List<String>",
+          "description": "客户单位规定允许办理入职的具体日期，例如每周一、三、五"
+        },
+        {
+          "name": "technical_stack_preference",
+          "type": "String",
+          "description": "客户倾向使用的技术栈，例如Java、Springboot"
+        },
+        {
+          "name": "job_grade_rate_id",
+          "type": "List<String>",
+          "description": "该客户对应的职级费率表",
+          "is_foreign_key": true,
+          "references": "Job_Grade_Rate"
+        },
+        {
+          "name": "welfare_policy",
+          "type": "String",
+          "description": "该客户通用的福利待遇政策"
+        },
+        {
+          "name": "total_competitors",
+          "type": "Integer",
+          "description": "同时为该客户提供招聘服务的供应商总数"
+        },
+        {
+          "name": "compliance_policy",
+          "type": "String",
+          "description": "招聘过程中该客户规定需遵守的合规条款"
+        },
+        {
+          "name": "resume_template",
+          "type": "String",
+          "description": "该客户通用的简历模板"
+        }
+      ]
+    },
+    {
+      "id": "Client_Department",
+      "name": "客户部门",
+      "description": "客户内部产生用人需求的部门信息，包含负责人、用人规则、红线及使用系统。",
+      "type": "data",
+      "relationship_description": "【客户部门 (Client_Department)】归属于【客户单位 (Client)】，是【关键干系人 (Stakeholder)】所在的组织。它通过关联\n【客户部门偏好设定 (Client_Department_Preference)】影响候选人匹配分数，其决策效率直接影响【职位投递申请 (Application)】的达成情况。",
+      "primary_key": "client_department_id",
+      "properties": [
+        {
+          "name": "client_department_id",
+          "type": "String",
+          "description": "客户部门唯一编号"
+        },
+        {
+          "name": "client_id",
+          "type": "String",
+          "description": "该部门所属的客户单位",
+          "is_foreign_key": true,
+          "references": "Client"
+        },
+        {
+          "name": "dept_name",
+          "type": "String",
+          "description": "该部门的名称"
+        },
+        {
+          "name": "description",
+          "type": "String",
+          "description": "该部门的职能描述"
+        },
+        {
+          "name": "head_name",
+          "type": "String",
+          "description": "该部门负责人姓名"
+        },
+        {
+          "name": "head_contact",
+          "type": "String",
+          "description": "该部门负责人联系方式"
+        },
+        {
+          "name": "specific_hiring_rules",
+          "type": "String",
+          "description": "该部门特有的招聘流程规则"
+        },
+        {
+          "name": "red_line_policy",
+          "type": "String",
+          "description": "该部门的招聘底线"
+        }
+      ]
+    },
+    {
+      "id": "Employee",
+      "name": "内部员工",
+      "description": "服务商内部员工，例如招聘专员、交付经理等，记录姓名、角色、联系方式、部门与在岗状态。",
+      "type": "data",
+      "relationship_description": "【内部员工 (Employee)】是【人力资源外包服务商 (HRO_Service_Provider)】的一员。负责挖掘和维护【候选人 (Candidate)】，是【职位投递申请 (Application)】的具体负责人。其工作记录保存在【沟通跟进日志 (Communication_Log)】中，负责管理与跟进【录用通知书 (Job_Offer)】。",
+      "primary_key": "employee_id",
+      "properties": [
+        {
+          "name": "employee_id",
+          "type": "String",
+          "description": "员工唯一编号"
+        },
+        {
+          "name": "csi_department_id",
+          "type": "String",
+          "description": "员工所属部门唯一编号",
+          "is_foreign_key": true,
+          "references": "CSI_Department"
+        },
+        {
+          "name": "name",
+          "type": "String",
+          "description": "员工姓名"
+        },
+        {
+          "name": "roles",
+          "type": "List<String>",
+          "description": "员工角色"
+        },
+        {
+          "name": "phone",
+          "type": "String",
+          "description": "员工手机号码"
+        },
+        {
+          "name": "email",
+          "type": "String",
+          "description": "员工邮箱地址"
+        },
+        {
+          "name": "job_title",
+          "type": "String",
+          "description": "员工职位名称"
+        },
+        {
+          "name": "is_active",
+          "type": "Boolean",
+          "description": "该员工当前是否在职"
+        },
+        {
+          "name": "shift_time",
+          "type": "String",
+          "description": "该员工的工作班次时间"
+        },
+        {
+          "name": "supervisor_employee_id",
+          "type": "String",
+          "description": "员工的上机管理者编号",
+          "is_foreign_key": true,
+          "references": "Employee"
+        }
+      ]
+    },
+    {
+      "id": "Sourcing_Channel",
+      "name": "渠道来源",
+      "description": "候选人来源渠道定义，用于统计与分析渠道效果。",
+      "type": "data",
+      "relationship_description": "【渠道来源 (Sourcing_Channel)】会标记在【候选人 (Candidate)】和【潜在人选 (Prospect)】身上。招聘专员【内部员工 (Employee)】在这些地方岗位找人，数据用来分析哪个渠道效果好。",
+      "primary_key": "sourcing_channel_id",
+      "properties": [
+        {
+          "name": "sourcing_channel_id",
+          "type": "String",
+          "description": "渠道的唯一编号"
+        },
+        {
+          "name": "channel_name",
+          "type": "String",
+          "description": "渠道的名称"
+        }
+      ]
+    },
+    {
+      "id": "Blacklist",
+      "name": "黑名单记录",
+      "description": "黑名单记录，标识需锁定的候选人及锁定原因、期限，并关联客户/部门/岗位。",
+      "type": "data",
+      "relationship_description": "【黑名单记录 (Blacklist)】记录了某个【候选人 (Candidate)】被禁止向特定【客户单位 (Client)】或其下属的【客户部门 (Client_Department)】投递的约束关系。若该禁令针对具体岗位，则同时关联对应的【招聘岗位 (Job_Requisition)】。当系统检测到存在有效的黑名单记录时，将自动阻断该候选人对相应范围内的【职位投递申请 (Application)】的创建操作。",
+      "primary_key": "blacklist_id",
+      "properties": [
+        {
+          "name": "blacklist_id",
+          "type": "String",
+          "description": "黑名单记录编号"
+        },
+        {
+          "name": "candidate_id",
+          "type": "String",
+          "description": "该黑名单记录所属的候选人编号",
+          "is_foreign_key": true,
+          "references": "Candidate"
+        },
+        {
+          "name": "client_id",
+          "type": "String",
+          "description": "该黑名单记录所属的客户单位编号",
+          "is_foreign_key": true,
+          "references": "Client"
+        },
+        {
+          "name": "client_department_id",
+          "type": "String",
+          "description": "该黑名单记录所属的部门编号",
+          "is_foreign_key": true,
+          "references": "Client_Department"
+        },
+        {
+          "name": "job_requisition_id",
+          "type": "String",
+          "description": "该黑名单记录所属的招聘岗位编号",
+          "is_foreign_key": true,
+          "references": "Job_Requisition"
+        },
+        {
+          "name": "lock_reason",
+          "type": "String",
+          "description": "该黑名单记录的锁定原因描述"
+        },
+        {
+          "name": "lock_duration",
+          "type": "Integer",
+          "description": "该黑名单记录的锁定时长（月）"
+        }
+      ]
+    },
+    {
+      "id": "Compliance_Document",
+      "name": "合规证明材料",
+      "description": "合规证明材料记录，存储文件类型、链接、核验状态与备注，用于流程合规。",
+      "type": "data",
+      "relationship_description": "【合规证明材料 (Compliance_Document)】属于【候选人 (Candidate)】或特定的【职位投递申请 (Application)】。【审批申请单 (Approval_Request)】通常引用它作为证据（如提供免责邮件才能发起白名单审批）。",
+      "primary_key": "compliance_document_id",
+      "properties": [
+        {
+          "name": "compliance_document_id",
+          "type": "String",
+          "description": "合规证明材料的唯一编号"
+        },
+        {
+          "name": "application_id",
+          "type": "String",
+          "description": "合规证明材料关联的职位投递申请编号",
+          "is_foreign_key": true,
+          "references": "Application"
+        },
+        {
+          "name": "candidate_id",
+          "type": "String",
+          "description": "合规证明材料关联的候选人编号",
+          "is_foreign_key": true,
+          "references": "Candidate"
+        },
+        {
+          "name": "document_type",
+          "type": "String",
+          "description": "合规证明材料类型，例如：三甲医院体检证明、机要室不投诉邮件、竞业限制免责邮件、离职证明、无犯罪记录证明、学历备案证明、岗位信息安全保密承诺函"
+        },
+        {
+          "name": "file_url",
+          "type": "String",
+          "description": "合规证明材料文件的存储地址或邮件截图链接"
+        },
+        {
+          "name": "verification_status",
+          "type": "String",
+          "description": "合规证明材料的核验状态：待核验、有效、无效/伪造"
+        },
+        {
+          "name": "verifier_employee_id",
+          "type": "String",
+          "description": "合规证明材料核验人编号",
+          "is_foreign_key": true,
+          "references": "Employee"
+        },
+        {
+          "name": "issue_date",
+          "type": "Date",
+          "description": "合规证明材料的开具日期"
+        },
+        {
+          "name": "notes",
+          "type": "String",
+          "description": "关于材料的补充说明，如邮件的发件人、医院名称等"
+        },
+        {
+          "name": "compliance_exam_score",
+          "type": "Float",
+          "description": "合规性考试分数"
+        }
+      ]
+    },
+    {
+      "id": "Candidate_Match_Result",
+      "name": "候选人匹配结果",
+      "description": "候选人与岗位的匹配结果记录。一行两段生命周期: 规则检查段写 rule_check_*(PK 约定 cmr_<candidate>_<jr>),匹配段同 PK 合并写 overall_*(不互相覆盖);partner Postgres 侧以 match_status/match_reason 呈现。",
+      "type": "data",
+      "relationship_description": "【候选人匹配结果 (Candidate_Match_Result)】是【候选人 (Candidate)】对某个【客户 (Client)】的【工作岗位 (Job_Requisition)】的匹配结果的详细信息。",
+      "primary_key": "candidate_match_result_id",
+      "properties": [
+        {
+          "name": "candidate_match_result_id",
+          "type": "String",
+          "description": "候选人匹配结果的唯一编号"
+        },
+        {
+          "name": "client_id",
+          "type": "String",
+          "description": "候选人匹配结果所属的客户编号",
+          "is_foreign_key": true,
+          "references": "Client"
+        },
+        {
+          "name": "candidate_id",
+          "type": "String",
+          "description": "候选人匹配结果对应的候选人编号",
+          "is_foreign_key": true,
+          "references": "Candidate"
+        },
+        {
+          "name": "job_requisition_id",
+          "type": "String",
+          "description": "候选人匹配结果对应的招聘岗位编号(修正: 旧本体误名 job_position_id,代码与事件契约均为 job_requisition_id)",
+          "is_foreign_key": true,
+          "references": "Job_Requisition"
+        },
+        {
+          "name": "overall_match_score",
+          "type": "Float",
+          "description": "候选人匹配综合分数"
+        },
+        {
+          "name": "overall_fit_verdict",
+          "type": "String",
+          "description": "候选人匹配综合判定"
+        },
+        {
+          "name": "overall_fit_summary",
+          "type": "String",
+          "description": "候选人匹配综合评估"
+        },
+        {
+          "name": "overall_match_grade",
+          "type": "String",
+          "description": "候选人匹配综合等级"
+        },
+        {
+          "name": "rule_check_result",
+          "type": "String",
+          "description": "简历匹配的规则检查结果"
+        },
+        {
+          "name": "rule_check_reason",
+          "type": "String",
+          "description": "简历匹配的规则检查结果解释"
+        },
+        {
+          "name": "job_posting_id",
+          "type": "String",
+          "description": "关联岗位发布编号(缺失时服务端按 JR 解析)",
+          "is_foreign_key": true,
+          "references": "Job_Posting"
+        },
+        {
+          "name": "match_status",
+          "type": "String",
+          "description": "partner 主表匹配状态(通过/未通过;partner-pg 无 rule_check_* 列,规则失败映射到此列)"
+        },
+        {
+          "name": "match_reason",
+          "type": "String",
+          "description": "partner 主表匹配原因(规则失败=mandatory 阻断原因拼接)"
+        },
+        {
+          "name": "source",
+          "type": "String",
+          "description": "来源标记(如 need_interview)"
+        },
+        {
+          "name": "created_by",
+          "type": "String",
+          "description": "写入方标识(ai_engine / ai_engine.ruleCheck)"
+        }
+      ]
+    },
+    {
+      "id": "Candidate_Identity_Result",
+      "name": "候选人身份检查结果",
+      "description": "简历处理后对候选人三级去重（手机号 / 姓名+邮箱 / 六字段）的判定结果：是否与系统已有候选人为同一人、命中哪一级规则、指向的已有候选人、是否需人工复核。对应规则 9-15。",
+      "type": "data",
+      "primary_key": "candidate_identity_result_id",
+      "relationship_description": "【候选人身份检查结果 (Candidate_Identity_Result)】是对一份【候选人简历 (Resume)】解析出的【候选人 (Candidate)】执行同一人判定后产生的结论；命中重复时通过 same_as_candidate_id 指向系统中已有的【候选人 (Candidate)】。",
+      "properties": [
+        {
+          "name": "candidate_identity_result_id",
+          "type": "String",
+          "description": "候选人身份检查结果的唯一编号"
+        },
+        {
+          "name": "candidate_id",
+          "type": "String",
+          "description": "本次被判定的候选人编号",
+          "is_foreign_key": true,
+          "references": "Candidate"
+        },
+        {
+          "name": "resume_id",
+          "type": "String",
+          "description": "触发本次判定的候选人简历编号",
+          "is_foreign_key": true,
+          "references": "Resume"
+        },
+        {
+          "name": "same_person",
+          "type": "Boolean",
+          "description": "是否判定为与系统中已有候选人为同一人"
+        },
+        {
+          "name": "same_as_candidate_id",
+          "type": "String",
+          "description": "判定为同一人时所指向的系统中已有候选人编号；非重复时为空",
+          "is_foreign_key": true,
+          "references": "Candidate"
+        },
+        {
+          "name": "matched_rule_id",
+          "type": "String",
+          "description": "命中的同一人判定子规则标识（IDENTITY-1 手机号 / IDENTITY-2 姓名+邮箱 / IDENTITY-3 六字段，派生自 9-15）；无匹配为空"
+        },
+        {
+          "name": "dedup_action",
+          "type": "String",
+          "description": "去重动作：auto-merged（强命中已挂老档）/ new-candidate（新建）/ pending-review（弱信号待复核）/ conflict（库内多重复待人工合并）"
+        },
+        {
+          "name": "needs_review",
+          "type": "Boolean",
+          "description": "是否为弱信号匹配需人工复核（IDENTITY-3 六字段命中时为真）"
+        },
+        {
+          "name": "decision_reason",
+          "type": "String",
+          "description": "判定依据说明，如 'phone:exact✓' 或 'name:fuzzy-ai✓ · email:exact✓'"
+        },
+        {
+          "name": "checked_at",
+          "type": "Timestamp",
+          "description": "本次身份判定执行时间"
+        }
+      ]
+    },
+    {
+      "id": "Internal_Recruitment_System",
+      "name": "内部招聘系统",
+      "description": "供应商内部用于管理招聘全流程的系统，包含岗位管理、简历管理、面试记录、Offer管理等模块。",
+      "type": "system",
+      "relationship_description": "【内部招聘系统 (Internal_Recruitment_System)】归属于【人力资源外包服务商 (HRO_Service_Provider)】，由【内部员工 (Employee)】使用，管理【候选人 (Candidate)】、【简历 (Resume)】、【职位投递申请 (Application)】、【面试记录 (Interview_Record)】等核心数据，并对接【入场管理系统 (Entrance_Management_System)】实现与入场状态的同步。",
+      "primary_key": "internal_recruitment_system_id",
+      "properties": [
+        {
+          "name": "internal_recruitment_system_id",
+          "type": "String",
+          "description": "内部招聘系统唯一编号"
+        },
+        {
+          "name": "name",
+          "type": "String",
+          "description": "系统名称"
+        },
+        {
+          "name": "hro_service_provider_id",
+          "type": "String",
+          "description": "系统归属的人力资源外包服务商编号",
+          "is_foreign_key": true,
+          "references": "HRO_Service_Provider"
+        },
+        {
+          "name": "description",
+          "type": "String",
+          "description": "系统的详细功能描述，说明该系统在业务中的作用和主要功能"
+        },
+        {
+          "name": "module_scope",
+          "type": "List<String>",
+          "description": "系统模块范围，例如岗位管理、简历管理、面试记录、Offer管理等"
+        },
+        {
+          "name": "sourcing_channel_id",
+          "type": "List<String>",
+          "description": "已对接的候选人来源渠道编号列表",
+          "is_foreign_key": true,
+          "references": "Sourcing_Channel"
+        },
+        {
+          "name": "entrance_management_system_id",
+          "type": "String",
+          "description": "对接的入场管理系统编号",
+          "is_foreign_key": true,
+          "references": "Entrance_Management_System"
+        },
+        {
+          "name": "access_url",
+          "type": "String",
+          "description": "系统的访问地址或入口URL"
+        },
+        {
+          "name": "credential_type",
+          "type": "String",
+          "description": "系统登录的凭证类型，例如：账号密码、API Key、SSO单点登录等"
+        },
+        {
+          "name": "credentials",
+          "type": "String",
+          "description": "系统登录的凭证，例如：账号密码、API Key等"
+        },
+        {
+          "name": "api_endpoint",
+          "type": "String",
+          "description": "系统提供的API接口地址，用于系统间数据集成"
+        },
+        {
+          "name": "integration_protocol",
+          "type": "String",
+          "description": "系统集成时使用的通信协议或方式，例如：RESTful API、SOAP、文件导入导出（Excel/CSV）、邮件通知等"
+        },
+        {
+          "name": "contact_person",
+          "type": "String",
+          "description": "系统的系统管理员或技术支持联系人"
+        },
+        {
+          "name": "contact_info",
+          "type": "String",
+          "description": "系统的系统管理员或技术支持联系方式"
+        },
+        {
+          "name": "status",
+          "type": "String",
+          "description": "系统的当前运行状态，例如：运行中、维护中、已下线、待上线"
+        },
+        {
+          "name": "version",
+          "type": "String",
+          "description": "业务系统的当前版本号"
+        },
+        {
+          "name": "notes",
+          "type": "String",
+          "description": "业务系统的补充说明，例如：特殊操作备注、已知限制、客户侧操作规范等"
+        }
+      ]
+    },
+    {
+      "id": "RAAS_System",
+      "name": "RAAS系统",
+      "description": "Recruitment Agent Automation System（RAAS）平台系统，用于承接多客户招聘服务，统一管理需求、交付、看板与SLA，并提供多系统集成与数据报表能力。",
+      "type": "system",
+      "relationship_description": "【RAAS系统 (RAAS_System)】归属于【人力资源外包服务商 (HRO_Service_Provider)】，面向多个【客户单位 (Client)】提供招聘服务，汇聚【外包招聘需求 (Job_Requisition_Specification)】、【招聘岗位 (Job_Requisition)】与【职位投递申请 (Application)】的数据，并与【内部招聘系统 (Internal_Recruitment_System)】进行状态与数据同步，主要供【内部员工 (Employee)】使用。",
+      "primary_key": "raas_system_id",
+      "properties": [
+        {
+          "name": "raas_system_id",
+          "type": "String",
+          "description": "RAAS系统唯一编号"
+        },
+        {
+          "name": "name",
+          "type": "String",
+          "description": "系统名称"
+        },
+        {
+          "name": "hro_service_provider_id",
+          "type": "String",
+          "description": "系统归属的人力资源外包服务商编号",
+          "is_foreign_key": true,
+          "references": "HRO_Service_Provider"
+        },
+        {
+          "name": "client_ids",
+          "type": "List<String>",
+          "description": "已接入的客户单位编号列表",
+          "is_foreign_key": true,
+          "references": "Client"
+        },
+        {
+          "name": "description",
+          "type": "String",
+          "description": "系统的详细功能描述，说明该系统在业务中的作用和主要功能"
+        },
+        {
+          "name": "service_scope",
+          "type": "List<String>",
+          "description": "服务范围，例如需求承接、招聘过程看板"
+        },
+        {
+          "name": "sla_definition",
+          "type": "String",
+          "description": "SLA与交付指标说明"
+        },
+        {
+          "name": "access_url",
+          "type": "String",
+          "description": "系统的访问地址或入口URL"
+        },
+        {
+          "name": "credential_type",
+          "type": "String",
+          "description": "系统登录的凭证类型，例如：账号密码、API Key、SSO单点登录等"
+        },
+        {
+          "name": "credentials",
+          "type": "String",
+          "description": "系统登录的凭证，例如：账号密码、API Key等"
+        },
+        {
+          "name": "api_endpoint",
+          "type": "String",
+          "description": "系统提供的API接口地址，用于系统间数据集成"
+        },
+        {
+          "name": "integration_protocol",
+          "type": "String",
+          "description": "系统集成时使用的通信协议或方式，例如：RESTful API、SOAP、文件导入导出（Excel/CSV）、邮件通知等"
+        },
+        {
+          "name": "data_sync_scope",
+          "type": "List<String>",
+          "description": "与其他系统同步的数据范围，例如需求、岗位、面试安排或入场进度"
+        },
+        {
+          "name": "contact_person",
+          "type": "String",
+          "description": "系统的系统管理员或技术支持联系人"
+        },
+        {
+          "name": "contact_info",
+          "type": "String",
+          "description": "系统的系统管理员或技术支持联系方式"
+        },
+        {
+          "name": "status",
+          "type": "String",
+          "description": "系统的当前运行状态，例如：运行中、维护中、已下线、待上线"
+        },
+        {
+          "name": "version",
+          "type": "String",
+          "description": "业务系统的当前版本号"
+        }
+      ]
+    },
+    {
+      "id": "Requirement_Clarification_Record",
+      "name": "需求澄清记录",
+      "description": "HSM 与客户确认后录入的需求澄清内容。createJD 拼 prompt 时置于原始长文本之前(客户确认过的最权威补充,防 4000 字符截断丢失);读取失败不阻断 JD 生成。由人工动作 confirmRequirementClarification 创建。",
+      "type": "data",
+      "relationship_description": "【需求澄清记录 (Requirement_Clarification_Record)】是对【外包招聘需求 (Job_Requisition)】的澄清补充,由内部员工与客户确认后录入。",
+      "primary_key": "clarification_record_id",
+      "properties": [
+        {
+          "name": "clarification_record_id",
+          "type": "String",
+          "description": "澄清记录唯一编号"
+        },
+        {
+          "name": "job_requisition_id",
+          "type": "String",
+          "description": "所属招聘需求编号",
+          "is_foreign_key": true,
+          "references": "Job_Requisition"
+        },
+        {
+          "name": "clarification_type",
+          "type": "String",
+          "description": "澄清类型"
+        },
+        {
+          "name": "content",
+          "type": "String",
+          "description": "澄清内容(JD 须据此调整)"
+        },
+        {
+          "name": "clarifier_name",
+          "type": "String",
+          "description": "澄清录入人姓名"
+        },
+        {
+          "name": "client_clarifier_name",
+          "type": "String",
+          "description": "客户侧确认人姓名"
+        },
+        {
+          "name": "clarified_at",
+          "type": "Date",
+          "description": "澄清确认时间"
+        }
+      ]
+    },
+    {
+      "id": "Resume_Upload",
+      "name": "简历上传件",
+      "description": "一次简历上传的 transport 元数据与处理状态机(pending→processed/failed)。upload_id 是解析→规则→匹配全链路锚点,MATCH_* 事件必须原样回传供 RAAS 反查;失败必须落终态(禁止无限 pending)。由人工动作 resumeCollection 创建。",
+      "type": "data",
+      "relationship_description": "【简历上传件 (Resume_Upload)】记录一次【候选人简历 (Resume)】文件进入对象存储的传输与处理状态,由【内部员工 (Employee)】上传或渠道自动采集。",
+      "primary_key": "upload_id",
+      "properties": [
+        {
+          "name": "upload_id",
+          "type": "String",
+          "description": "上传唯一编号(全链路锚点)"
+        },
+        {
+          "name": "bucket",
+          "type": "String",
+          "description": "对象存储桶"
+        },
+        {
+          "name": "object_key",
+          "type": "String",
+          "description": "对象存储键(与 bucket 一起做 Resume 去重)"
+        },
+        {
+          "name": "etag",
+          "type": "String",
+          "description": "文件 etag(可空;AO 以原始字节 MD5 兜底作 dedup key)"
+        },
+        {
+          "name": "filename",
+          "type": "String",
+          "description": "原始文件名"
+        },
+        {
+          "name": "mime_type",
+          "type": "String",
+          "description": "声明 MIME(不可信,以 magic bytes 为准)"
+        },
+        {
+          "name": "size",
+          "type": "Int",
+          "description": "文件字节数"
+        },
+        {
+          "name": "status",
+          "type": "String",
+          "description": "处理状态: pending / processed / failed(终态)"
+        },
+        {
+          "name": "failure_reason",
+          "type": "String",
+          "description": "失败原因(解析不可用/落库失败等)"
+        },
+        {
+          "name": "employee_id",
+          "type": "String",
+          "description": "上传者工号",
+          "is_foreign_key": true,
+          "references": "Employee"
+        },
+        {
+          "name": "locked_by_employee_id",
+          "type": "String",
+          "description": "RMHR 锁持有人工号(归属权威)",
+          "is_foreign_key": true,
+          "references": "Employee"
+        },
+        {
+          "name": "client_id",
+          "type": "String",
+          "description": "客户编号",
+          "is_foreign_key": true,
+          "references": "Client"
+        },
+        {
+          "name": "job_requisition_id",
+          "type": "String",
+          "description": "上传关联单岗位(路径 A)",
+          "is_foreign_key": true,
+          "references": "Job_Requisition"
+        },
+        {
+          "name": "sourcing_channel_id",
+          "type": "String",
+          "description": "来源渠道",
+          "is_foreign_key": true,
+          "references": "Sourcing_Channel"
+        },
+        {
+          "name": "received_at",
+          "type": "Datetime",
+          "description": "事件接收时间"
+        }
+      ]
+    },
+    {
+      "id": "Rule_Check_Audit",
+      "name": "规则检查审计",
+      "description": "一次(候选人×岗位)规则检查的完整可追溯记录: 判定结论+逐规则 flag+LLM 证据+规则来源快照。强制持久化闸: 审计写失败必须抛错重试,任何下游写入/事件都发生在审计落库之后。基础设施故障写 PARKED 行(decision=FAIL 但带 infra fail_reason,不计入通过/未通过,不产生任何业务拒绝)。稳定 audit_id=hash(执行身份+锚点+岗位),重试幂等 upsert。",
+      "type": "data",
+      "relationship_description": "【规则检查审计 (Rule_Check_Audit)】记录【候选人 (Candidate)】在【外包招聘需求 (Job_Requisition)】上一次规则检查的全过程证据,并派生【候选人匹配结果 (Candidate_Match_Result)】的 rule_check_* 字段。",
+      "primary_key": "audit_id",
+      "properties": [
+        {
+          "name": "audit_id",
+          "type": "String",
+          "description": "审计唯一编号(kind+执行身份+锚点哈希,重试幂等)"
+        },
+        {
+          "name": "run_id",
+          "type": "String",
+          "description": "运行编号"
+        },
+        {
+          "name": "trace_id",
+          "type": "String",
+          "description": "跨系统追踪编号"
+        },
+        {
+          "name": "upload_id",
+          "type": "String",
+          "description": "上传锚点",
+          "is_foreign_key": true,
+          "references": "Resume_Upload"
+        },
+        {
+          "name": "candidate_id",
+          "type": "String",
+          "description": "候选人编号",
+          "is_foreign_key": true,
+          "references": "Candidate"
+        },
+        {
+          "name": "resume_id",
+          "type": "String",
+          "description": "简历编号",
+          "is_foreign_key": true,
+          "references": "Resume"
+        },
+        {
+          "name": "job_requisition_id",
+          "type": "String",
+          "description": "岗位编号",
+          "is_foreign_key": true,
+          "references": "Job_Requisition"
+        },
+        {
+          "name": "decision",
+          "type": "String",
+          "description": "最终决策: PASS / FAIL(fail-closed 二态;PARKED 行为 FAIL+infra fail_reason)"
+        },
+        {
+          "name": "llm_decision",
+          "type": "String",
+          "description": "LLM 原始决策(折叠前)"
+        },
+        {
+          "name": "failure_reasons",
+          "type": "String",
+          "description": "业务失败原因列表(JSON;仅 mandatory 阻断)"
+        },
+        {
+          "name": "fail_reason",
+          "type": "String",
+          "description": "非业务失败原因(infra: llm-call-error/gateway-unavailable/…;非空=停靠行)"
+        },
+        {
+          "name": "rules_evaluated",
+          "type": "Int",
+          "description": "实际评估规则数"
+        },
+        {
+          "name": "rules_total_in_ontology",
+          "type": "Int",
+          "description": "候选规则全集数(rule_provenance 总数,含被排除)"
+        },
+        {
+          "name": "rule_source",
+          "type": "String",
+          "description": "规则来源: ontology-api / json-fallback"
+        },
+        {
+          "name": "rule_provenance",
+          "type": "String",
+          "description": "候选规则全集快照(JSON,含选中/排除依据)"
+        },
+        {
+          "name": "llm_model",
+          "type": "String",
+          "description": "判定模型"
+        },
+        {
+          "name": "llm_duration_ms",
+          "type": "Int",
+          "description": "LLM 耗时毫秒"
+        },
+        {
+          "name": "llm_round_trips",
+          "type": "Int",
+          "description": "LLM 工具轮次"
+        },
+        {
+          "name": "llm_prompt_tokens",
+          "type": "Int",
+          "description": "prompt tokens"
+        },
+        {
+          "name": "llm_completion_tokens",
+          "type": "Int",
+          "description": "completion tokens"
+        },
+        {
+          "name": "system_prompt",
+          "type": "String",
+          "description": "系统提示词快照"
+        },
+        {
+          "name": "user_prompt",
+          "type": "String",
+          "description": "用户提示词快照"
+        },
+        {
+          "name": "llm_raw_text",
+          "type": "String",
+          "description": "LLM 原始输出"
+        },
+        {
+          "name": "parsed_resume_json",
+          "type": "String",
+          "description": "判定时简历快照(JSON)"
+        },
+        {
+          "name": "job_requisition_json",
+          "type": "String",
+          "description": "判定时岗位快照(JSON)"
+        },
+        {
+          "name": "parent_audit_id",
+          "type": "String",
+          "description": "重放父审计编号(replay 链)",
+          "is_foreign_key": true,
+          "references": "Rule_Check_Audit"
+        }
+      ]
+    },
+    {
+      "id": "Interview_Invitation",
+      "name": "面试邀约单",
+      "description": "RAAS 侧面试邀约生命周期行: 人工审批动作 approveInterviewInvitation 通过后先 INSERT(status=requested)再发 INTERVIEW_INVITATION_REQUESTED;AO 邀约成功后按 correlation_id UPDATE(status=sent+GoHire 回执+gohire_invite_log 1:1 原文)。UPDATE 天然幂等;命中 0 行时 AO 软失败,RAAS 凭 _SENT 事件 payload 自行 reconcile。",
+      "type": "data",
+      "relationship_description": "【面试邀约单 (Interview_Invitation)】跟踪【候选人 (Candidate)】在【外包招聘需求 (Job_Requisition)】上一次 AI 面试邀请从审批发起到送达的状态,送达后关联【内部面试和客户侧面试过程记录 (Interview_Record)】。",
+      "primary_key": "correlation_id",
+      "properties": [
+        {
+          "name": "correlation_id",
+          "type": "String",
+          "description": "跨服务关联键(RAAS 生成;AO 回写与 _SENT join 均凭此)"
+        },
+        {
+          "name": "candidate_id",
+          "type": "String",
+          "description": "候选人编号",
+          "is_foreign_key": true,
+          "references": "Candidate"
+        },
+        {
+          "name": "job_requisition_id",
+          "type": "String",
+          "description": "岗位编号",
+          "is_foreign_key": true,
+          "references": "Job_Requisition"
+        },
+        {
+          "name": "application_id",
+          "type": "String",
+          "description": "投递申请编号",
+          "is_foreign_key": true,
+          "references": "Application"
+        },
+        {
+          "name": "recruiter_id",
+          "type": "String",
+          "description": "发起招聘者工号",
+          "is_foreign_key": true,
+          "references": "Employee"
+        },
+        {
+          "name": "status",
+          "type": "String",
+          "description": "状态机: requested → sent / failed"
+        },
+        {
+          "name": "trigger_source",
+          "type": "String",
+          "description": "触发来源: manual_candidate_card / hsm_auto / bulk_invite"
+        },
+        {
+          "name": "requested_at",
+          "type": "Datetime",
+          "description": "发起时间"
+        },
+        {
+          "name": "sent_at",
+          "type": "Datetime",
+          "description": "送达时间"
+        },
+        {
+          "name": "login_url",
+          "type": "String",
+          "description": "候选人 AI 面试入口(GoHire 签发)"
+        },
+        {
+          "name": "qrcode_url",
+          "type": "String",
+          "description": "面试入口二维码"
+        },
+        {
+          "name": "gohire_user_id",
+          "type": "String",
+          "description": "GoHire 用户编号"
+        },
+        {
+          "name": "request_introduction_id",
+          "type": "String",
+          "description": "GoHire 请求编号"
+        },
+        {
+          "name": "gohire_invite_log",
+          "type": "String",
+          "description": "GoHire 响应原文 1:1 stringify(不重排不挑字段,事故取证)"
+        }
+      ]
+    },
+    {
+      "id": "GoHire_System",
+      "name": "GoHire智能招聘服务",
+      "description": "外部 AI 招聘能力供应商(gohire.top)。四个端点按业务顺序: ①/api/v1/jobs/generate-jd(JD 生成,free-text prompt) ②/api/v1/parse-resume(简历解析,multipart file 字段仅 PDF,拒绝 JSON) ③/match-resume(匹配评分,{resume,jd} 纯文本;真实分嵌套 data.data.overallMatchScore.score 需归一化) ④/api/v1/invite-candidate(AI 视频面试邀约,该端点即完成发送,GoHire 签发 login_url)。故障语义: 4xx/配额=终态不重试;5xx/网络=可恢复停靠;2xx+success=false=上游业务拒绝;UNPARSEABLE=文档内容问题非供应商降级。命名说明: GoHire(gohire.top)是唯一可调通的现网供应商,历史名 RoboHire;API 契约保持 RoboHire 兼容(/api/v1/*),因此错误码枚举(ROBOHIRE_4XX/ROBOHIRE_QUOTA/ROBOHIRE_5XX)与事件字段(robohire_request_id/robohire_resume_id/robohire_job_id)为工具实际产出的线上契约字面值,保持不变;工具库全局注册名 parseResumeApi/matchResumeApi/inviteCandidateApi/generateJdApi 均新增 gohire.* 别名。",
+      "type": "system",
+      "relationship_description": "【GoHire智能招聘服务 (GoHire_System)】为 createJD/processResume/matchResume/inviteInternalInterview 四个 action 提供 AI 能力,产出写入【岗位发布信息 (Job_Posting)】【候选人简历 (Resume)】【候选人匹配结果 (Candidate_Match_Result)】【内部面试和客户侧面试过程记录 (Interview_Record)】。",
+      "primary_key": "gohire_system_id",
+      "properties": [
+        {
+          "name": "gohire_system_id",
+          "type": "String",
+          "description": "系统标识"
+        },
+        {
+          "name": "base_url",
+          "type": "String",
+          "description": "服务地址(env: GOHIRE_API_BASE_URL,兼容 ROBOHIRE_API_BASE_URL)"
+        },
+        {
+          "name": "auth",
+          "type": "String",
+          "description": "Bearer 鉴权(env: GOHIRE_API_KEY,兼容 ROBOHIRE_API_KEY)"
+        },
+        {
+          "name": "capabilities",
+          "type": "List<String>",
+          "description": "jd.generate / resume.parse / resume.match / interview.invite"
+        }
+      ]
+    },
+    {
+      "id": "Object_Storage_System",
+      "name": "简历对象存储",
+      "description": "简历文件对象存储(生产=RAAS MinIO,新 AO 本地=租户收件箱 data/resumes/<tenant>/inbox)。按 bucket/object_key 取原始字节;NoSuchKey/404=不可重试失败。写入方=RAAS(人工上传动作 resumeCollection),读取方=AO processResume。",
+      "type": "system",
+      "relationship_description": "【简历对象存储 (Object_Storage_System)】保存【简历上传件 (Resume_Upload)】指向的原始文件字节,是 processResume 的取件来源。",
+      "primary_key": "object_storage_system_id",
+      "properties": [
+        {
+          "name": "object_storage_system_id",
+          "type": "String",
+          "description": "系统标识"
+        },
+        {
+          "name": "bucket",
+          "type": "String",
+          "description": "存储桶"
+        },
+        {
+          "name": "endpoint",
+          "type": "String",
+          "description": "存储服务地址"
+        }
+      ]
+    },
+    {
+      "id": "Allmeta_Ontology_System",
+      "name": "Allmeta本体库",
+      "description": "本体与实例图库(Neo4j via Allmeta Studio API)。双角色: ①读——规则检查动态拉取现行规则(rules-test 选择器)与实时图查询核验; ②写——业务实例幂等镜像(Job_Requisition/Job_Posting/Candidate/Resume/Candidate_Match_Result/Interview_Record/Communication_Log),镜像写失败一律软失败仅告警,partner Postgres 才是真相源。",
+      "type": "system",
+      "relationship_description": "【Allmeta本体库 (Allmeta_Ontology_System)】承载招聘域本体(对象/事件/action/规则)与业务实例镜像,供规则推理实时读图、供蓝图闭环审计。",
+      "primary_key": "allmeta_system_id",
+      "properties": [
+        {
+          "name": "allmeta_system_id",
+          "type": "String",
+          "description": "系统标识"
+        },
+        {
+          "name": "base_url",
+          "type": "String",
+          "description": "Allmeta Studio API 地址"
+        },
+        {
+          "name": "domain_id",
+          "type": "String",
+          "description": "招聘域标识(zhaopin-v1)"
+        }
+      ]
+    }
+  ]
+}

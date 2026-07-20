@@ -1,0 +1,499 @@
+# Standalone Agent Factory sandbox execution plane for an independent Linux
+# VM/node. This file intentionally has no primary API/web service, no primary
+# network and no primary named volume. It also publishes no host port: add the
+# loopback-only ingress overlay after a TLS reverse proxy has been provisioned.
+
+name: "${EXTERNAL_SANDBOX_COMPOSE_PROJECT:?set a unique external sandbox project name}"
+
+services:
+  sandbox-runner:
+    image: "${EXTERNAL_SANDBOX_CONTROL_IMAGE:?pin sandbox-control by repository@sha256 digest}"
+    pull_policy: "${EXTERNAL_SANDBOX_IMAGE_PULL_POLICY:-never}"
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: "${EXTERNAL_SANDBOX_RUNNER_PIDS_LIMIT:-256}"
+    mem_limit: "${EXTERNAL_SANDBOX_RUNNER_MEMORY_LIMIT:-768m}"
+    cpus: "${EXTERNAL_SANDBOX_RUNNER_CPUS:-1.0}"
+    expose: ["3560"]
+    entrypoint:
+      - /usr/bin/tini
+      - --
+      - /bin/sh
+      - /opt/agentic/remote-runner-entrypoint.sh
+    command:
+      - node
+      - --import
+      - tsx
+      - src/sandbox-runner.ts
+    environment:
+      NODE_ENV: production
+      AGENTIC_PROCESS_ROLE: sandbox-runner-control
+      SANDBOX_RUNNER_ROLE: control
+      HOST: 0.0.0.0
+      PORT: "3560"
+      # This value is not operator-selectable. The entrypoint independently
+      # proves that the mounted VM id is the reviewed remote host and differs
+      # from the primary host before the runner process starts.
+      SANDBOX_RUNNER_ACTUAL_ISOLATION_TIER: remote_vm
+      EXTERNAL_SANDBOX_EXPECTED_HOST_ID_SHA256: "${EXTERNAL_SANDBOX_EXPECTED_HOST_ID_SHA256:?record the remote VM machine-id hash}"
+      EXTERNAL_SANDBOX_PRIMARY_HOST_ID_SHA256: "${EXTERNAL_SANDBOX_PRIMARY_HOST_ID_SHA256:?record the primary host machine-id hash}"
+      EXTERNAL_SANDBOX_HOST_ID_FILE: /run/agentic/host-machine-id
+      EXTERNAL_SANDBOX_WORKLOAD_IMAGE_IDENTITY: "${EXTERNAL_SANDBOX_WORKLOAD_IMAGE:?pin sandbox-workload by repository@sha256 digest}"
+      SANDBOX_RUNNER_ID: "${EXTERNAL_SANDBOX_RUNNER_ID:?set the independently reviewed runner id}"
+      SANDBOX_RUNNER_KEY_ID: "${EXTERNAL_SANDBOX_KEY_ID:?set the versioned HMAC key id}"
+      SANDBOX_RUNNER_BUILD_ID: "${EXTERNAL_SANDBOX_RUNNER_BUILD_ID:?set the immutable runner build id}"
+      SANDBOX_RUNNER_RUNTIME_IMAGE_DIGEST: "${EXTERNAL_SANDBOX_RUNTIME_IMAGE_DIGEST:?set the attested sha256 runtime image id}"
+      SANDBOX_RUNNER_REQUEST_HMAC: ""
+      SANDBOX_RUNNER_REQUEST_HMAC_FILE: /run/secrets/shared-with-primary/request-hmac
+      SANDBOX_RUNNER_RESULT_HMAC: ""
+      SANDBOX_RUNNER_RESULT_HMAC_FILE: /run/secrets/shared-with-primary/result-hmac
+      SANDBOX_RUNNER_RECEIPT_HMAC: ""
+      SANDBOX_RUNNER_RECEIPT_HMAC_FILE: /run/secrets/shared-with-primary/receipt-hmac
+      SANDBOX_WORKLOAD_URL: http://sandbox-workload:3561
+      SANDBOX_WORKLOAD_TOKEN: ""
+      SANDBOX_WORKLOAD_TOKEN_FILE: /run/secrets/remote-only/workload-token
+      SANDBOX_CANCEL_FENCE_HMAC: ""
+      SANDBOX_CANCEL_FENCE_HMAC_FILE: /run/secrets/remote-only/cancel-fence-hmac
+      SANDBOX_INNGEST_BASE_URL: http://sandbox-broker-gateway:3562
+      SANDBOX_INNGEST_APP_PREFIX: "${EXTERNAL_SANDBOX_APP_PREFIX:?set a unique sandbox app prefix}"
+      SANDBOX_INNGEST_DELETE_TOKEN: ""
+      SANDBOX_INNGEST_DELETE_TOKEN_FILE: /run/secrets/remote-only/workload-token
+      SANDBOX_INNGEST_CONTROL_BEARER: ""
+      SANDBOX_INNGEST_CONTROL_BEARER_FILE: /run/secrets/remote-only/control-bearer
+      DATABASE_URL: file:/sandbox/control/sandbox-control.db
+      AGENTIC_DATA_DIR: /sandbox/control
+      AGENTIC_DATA_ROOT: /sandbox/control
+      AGENTIC_LOGS_DIR: /sandbox/control/logs
+      AGENTIC_ARTIFACTS_DIR: /sandbox/control/artifacts
+      SANDBOX_RUNNER_EGRESS_MODE: deny_all
+      SANDBOX_RUNNER_JOB_TTL_MS: "${EXTERNAL_SANDBOX_JOB_TTL_MS:-1080000}"
+      SANDBOX_RUNNER_REAPER_MS: "${EXTERNAL_SANDBOX_REAPER_MS:-60000}"
+      FACTORY_EXEC_GENERATED: "0"
+      FACTORY_CODEACT_CANDIDATE_IMAGE: ""
+      FACTORY_CODEACT_ALLOWED_IMAGE_DIGESTS: ""
+      FACTORY_CODEACT_DOCKER_SOCKET: ""
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=256m,mode=1777
+    volumes:
+      - external-sandbox-control:/sandbox/control
+      - type: bind
+        source: ./remote-runner-entrypoint.sh
+        target: /opt/agentic/remote-runner-entrypoint.sh
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${EXTERNAL_SANDBOX_HOST_ID_SOURCE_FILE:-/etc/machine-id}"
+        target: /run/agentic/host-machine-id
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${EXTERNAL_SANDBOX_SECRET_ROOT:?set the absolute remote secret root}/shared-with-primary/request-hmac"
+        target: /run/secrets/shared-with-primary/request-hmac
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${EXTERNAL_SANDBOX_SECRET_ROOT:?set the absolute remote secret root}/shared-with-primary/result-hmac"
+        target: /run/secrets/shared-with-primary/result-hmac
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${EXTERNAL_SANDBOX_SECRET_ROOT:?set the absolute remote secret root}/shared-with-primary/receipt-hmac"
+        target: /run/secrets/shared-with-primary/receipt-hmac
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${EXTERNAL_SANDBOX_SECRET_ROOT:?set the absolute remote secret root}/remote-only/workload-token"
+        target: /run/secrets/remote-only/workload-token
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${EXTERNAL_SANDBOX_SECRET_ROOT:?set the absolute remote secret root}/remote-only/control-bearer"
+        target: /run/secrets/remote-only/control-bearer
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${EXTERNAL_SANDBOX_SECRET_ROOT:?set the absolute remote secret root}/remote-only/cancel-fence-hmac"
+        target: /run/secrets/remote-only/cancel-fence-hmac
+        read_only: true
+        bind:
+          create_host_path: false
+    group_add:
+      - "${EXTERNAL_SANDBOX_SECRET_GID:?set the dedicated host secret-reader group id}"
+    networks:
+      - external-sandbox-execution
+    depends_on:
+      sandbox-broker-gateway:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "const fs=require('node:fs');const t=fs.readFileSync('/run/secrets/remote-only/workload-token','utf8').trim();fetch('http://127.0.0.1:3560/internal/health/delete-control',{headers:{authorization:'Bearer '+t}}).then(async r=>{const b=r.ok?await r.json():null;if(!b||b.schema!=='agent-factory-sandbox-delete-control-readiness/v1'||b.ready!==true)process.exit(1)}).catch(()=>process.exit(1))"
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 4
+    stop_grace_period: 45s
+
+  sandbox-workload:
+    image: "${EXTERNAL_SANDBOX_WORKLOAD_IMAGE:?pin sandbox-workload by repository@sha256 digest}"
+    pull_policy: "${EXTERNAL_SANDBOX_IMAGE_PULL_POLICY:-never}"
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: "${EXTERNAL_SANDBOX_WORKLOAD_PIDS_LIMIT:-256}"
+    mem_limit: "${EXTERNAL_SANDBOX_WORKLOAD_MEMORY_LIMIT:-2g}"
+    cpus: "${EXTERNAL_SANDBOX_WORKLOAD_CPUS:-2.0}"
+    expose: ["3561"]
+    environment:
+      NODE_ENV: production
+      AGENTIC_PROCESS_ROLE: sandbox-runner-workload
+      AGENTIC_BUILD_ID: "${EXTERNAL_SANDBOX_RUNNER_BUILD_ID:?set the immutable runner build id}"
+      SANDBOX_RUNNER_ROLE: workload
+      HOST: 0.0.0.0
+      PORT: "3561"
+      SANDBOX_RUNNER_WORKLOAD_PORT: "3561"
+      SANDBOX_WORKLOAD_TOKEN: ""
+      SANDBOX_WORKLOAD_TOKEN_FILE: /run/secrets/remote-only/workload-token
+      SANDBOX_CANCEL_FENCE_HMAC: ""
+      SANDBOX_CANCEL_FENCE_HMAC_FILE: /run/secrets/remote-only/cancel-fence-hmac
+      SANDBOX_CANCEL_FENCE_MAX_ENTRIES: "${EXTERNAL_SANDBOX_CANCEL_FENCE_MAX_ENTRIES:-10000}"
+      DATABASE_URL: file:/sandbox/db/sandbox-workload.db
+      AGENTIC_DATA_DIR: /sandbox/data
+      AGENTIC_DATA_ROOT: /sandbox/data
+      AGENTIC_MODELS_DIR: /sandbox/models
+      AGENTIC_IMPORTS_DIR: /sandbox/models/.imports
+      AGENTIC_LOGS_DIR: /sandbox/data/logs
+      AGENTIC_ARTIFACTS_DIR: /sandbox/data/artifacts
+      AGENTIC_TENANTS_DIR: /sandbox/data/tenants
+      SANDBOX_RUNNER_EGRESS_MODE: deny_all
+      FACTORY_SANDBOX_ATTEMPT_LEASE_MS: "${EXTERNAL_SANDBOX_ATTEMPT_LEASE_MS:-180000}"
+      FACTORY_SANDBOX_ATTEMPT_HEARTBEAT_MS: "${EXTERNAL_SANDBOX_ATTEMPT_HEARTBEAT_MS:-30000}"
+      FACTORY_SANDBOX_DELETE_VERIFY_MS: "${EXTERNAL_SANDBOX_DELETE_VERIFY_MS:-8000}"
+      FACTORY_SANDBOX_REAPER_MS: "${EXTERNAL_SANDBOX_REAPER_MS:-60000}"
+      FACTORY_EXEC_GENERATED: "1"
+      FACTORY_CODEACT_CANDIDATE_IMAGE: "${EXTERNAL_SANDBOX_CANDIDATE_IMAGE:?pin codeact-candidate by repository@sha256 digest}"
+      FACTORY_CODEACT_ALLOWED_IMAGE_DIGESTS: "${EXTERNAL_SANDBOX_CANDIDATE_IMAGE_ALLOWLIST:?set an exact one-item JSON allowlist}"
+      FACTORY_CODEACT_DOCKER_SOCKET: /var/run/docker.sock
+      # The remote VM never resolves a primary Compose service name. This must
+      # be the primary API's externally routable, certificate-verified HTTPS
+      # model-proxy origin. Host firewall policy must allow only this origin.
+      SANDBOX_MODEL_PROXY_ORIGIN: "${EXTERNAL_SANDBOX_MODEL_PROXY_ORIGIN:?set the primary model proxy HTTPS origin}"
+      SANDBOX_MODEL_PROXY_HTTP_ALLOWED_HOSTS: ""
+      SANDBOX_MODEL_PROXY_TOKEN: ""
+      SANDBOX_MODEL_PROXY_TOKEN_FILE: /run/secrets/shared-with-primary/model-proxy-token
+      SANDBOX_INTERNAL_CONTROL_ORIGIN: http://sandbox-runner:3560
+      INNGEST_SANDBOX_CONFIG_REFS: '{"eventKeyEnv":"SANDBOX_INNGEST_EVENT_KEY","signingKeyEnv":"SANDBOX_INNGEST_SIGNING_KEY","serveOriginEnv":"SANDBOX_INNGEST_WORKLOAD_SERVE_ORIGIN","baseUrlEnv":"SANDBOX_INNGEST_BASE_URL","appPrefixEnv":"SANDBOX_INNGEST_APP_PREFIX","devModeEnv":"SANDBOX_INNGEST_DEV_MODE","controlBearerEnv":"SANDBOX_INNGEST_CONTROL_BEARER","cleanupMode":"custom_delete_control","deleteControlUrlEnv":"SANDBOX_INNGEST_DELETE_URL","deleteControlTokenEnv":"SANDBOX_INNGEST_DELETE_TOKEN"}'
+      SANDBOX_INNGEST_DEV_MODE: "0"
+      SANDBOX_INNGEST_EVENT_KEY: ""
+      SANDBOX_INNGEST_EVENT_KEY_FILE: /run/secrets/remote-only/event-key
+      SANDBOX_INNGEST_SIGNING_KEY: ""
+      SANDBOX_INNGEST_SIGNING_KEY_FILE: /run/secrets/remote-only/signing-key
+      SANDBOX_INNGEST_BASE_URL: http://sandbox-broker-gateway:3562
+      SANDBOX_INNGEST_WORKLOAD_SERVE_ORIGIN: http://sandbox-broker-gateway:3562
+      SANDBOX_INNGEST_APP_PREFIX: "${EXTERNAL_SANDBOX_APP_PREFIX:?set a unique sandbox app prefix}"
+      SANDBOX_INNGEST_DELETE_URL: http://sandbox-runner:3560/internal/inngest/apps/{appId}
+      SANDBOX_INNGEST_DELETE_TOKEN: ""
+      SANDBOX_INNGEST_DELETE_TOKEN_FILE: /run/secrets/remote-only/workload-token
+      SANDBOX_INNGEST_CONTROL_BEARER: ""
+      SANDBOX_INNGEST_CONTROL_BEARER_FILE: /run/secrets/remote-only/control-bearer
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=256m,mode=1777
+    volumes:
+      - external-sandbox-db:/sandbox/db
+      - external-sandbox-models:/sandbox/models
+      - external-sandbox-data:/sandbox/data
+      - type: bind
+        source: "${EXTERNAL_SANDBOX_DOCKER_SOCKET_PATH:-/var/run/docker.sock}"
+        target: /var/run/docker.sock
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${EXTERNAL_SANDBOX_SECRET_ROOT:?set the absolute remote secret root}/remote-only/workload-token"
+        target: /run/secrets/remote-only/workload-token
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${EXTERNAL_SANDBOX_SECRET_ROOT:?set the absolute remote secret root}/remote-only/control-bearer"
+        target: /run/secrets/remote-only/control-bearer
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${EXTERNAL_SANDBOX_SECRET_ROOT:?set the absolute remote secret root}/shared-with-primary/model-proxy-token"
+        target: /run/secrets/shared-with-primary/model-proxy-token
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${EXTERNAL_SANDBOX_SECRET_ROOT:?set the absolute remote secret root}/remote-only/cancel-fence-hmac"
+        target: /run/secrets/remote-only/cancel-fence-hmac
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${EXTERNAL_SANDBOX_SECRET_ROOT:?set the absolute remote secret root}/remote-only/event-key"
+        target: /run/secrets/remote-only/event-key
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${EXTERNAL_SANDBOX_SECRET_ROOT:?set the absolute remote secret root}/remote-only/signing-key"
+        target: /run/secrets/remote-only/signing-key
+        read_only: true
+        bind:
+          create_host_path: false
+    group_add:
+      - "${EXTERNAL_SANDBOX_SECRET_GID:?set the dedicated host secret-reader group id}"
+      - "${EXTERNAL_SANDBOX_DOCKER_SOCKET_GID:?set the remote Docker socket group id}"
+    networks:
+      - external-sandbox-execution
+      # This is the only non-internal network. Enforce an independent host/VPC
+      # egress allowlist for the exact HTTPS model proxy origin.
+      - external-sandbox-model-egress
+    depends_on:
+      sandbox-broker-gateway:
+        condition: service_healthy
+      sandbox-runner:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "const fs=require('node:fs');const t=fs.readFileSync('/run/secrets/remote-only/workload-token','utf8').trim();fetch('http://127.0.0.1:3561/health',{headers:{authorization:'Bearer '+t}}).then(r=>{if(r.status!==200)process.exit(1)}).catch(()=>process.exit(1))"
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 4
+    stop_grace_period: 45s
+
+  sandbox-broker-gateway:
+    image: "${EXTERNAL_SANDBOX_GATEWAY_IMAGE:?pin sandbox-broker-gateway by repository@sha256 digest}"
+    pull_policy: "${EXTERNAL_SANDBOX_IMAGE_PULL_POLICY:-never}"
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 128
+    mem_limit: 256m
+    cpus: "0.5"
+    expose: ["3562"]
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: "3562"
+      AGENTIC_DATA_ROOT: /sandbox/gateway
+      SANDBOX_BROKER_UPSTREAM_ORIGIN: http://sandbox-inngest:8288
+      SANDBOX_WORKLOAD_UPSTREAM_ORIGIN: http://sandbox-workload:3561
+      SANDBOX_INNGEST_CONTROL_BEARER: ""
+      SANDBOX_INNGEST_CONTROL_BEARER_FILE: /run/secrets/remote-only/control-bearer
+      SANDBOX_GATEWAY_TOMBSTONE_HMAC: ""
+      SANDBOX_GATEWAY_TOMBSTONE_HMAC_FILE: /run/secrets/remote-only/gateway-tombstone-hmac
+      SANDBOX_GATEWAY_TOMBSTONE_MAX_ENTRIES: "${EXTERNAL_SANDBOX_GATEWAY_TOMBSTONE_MAX_ENTRIES:-10000}"
+      SANDBOX_INNGEST_APP_PREFIX: "${EXTERNAL_SANDBOX_APP_PREFIX:?set a unique sandbox app prefix}"
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
+    volumes:
+      - external-sandbox-gateway:/sandbox/gateway
+      - type: bind
+        source: "${EXTERNAL_SANDBOX_SECRET_ROOT:?set the absolute remote secret root}/remote-only/control-bearer"
+        target: /run/secrets/remote-only/control-bearer
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${EXTERNAL_SANDBOX_SECRET_ROOT:?set the absolute remote secret root}/remote-only/gateway-tombstone-hmac"
+        target: /run/secrets/remote-only/gateway-tombstone-hmac
+        read_only: true
+        bind:
+          create_host_path: false
+    group_add:
+      - "${EXTERNAL_SANDBOX_SECRET_GID:?set the dedicated host secret-reader group id}"
+    networks:
+      - external-sandbox-execution
+      - external-sandbox-broker-backend
+    depends_on:
+      sandbox-inngest:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "const fs=require('node:fs');const t=fs.readFileSync('/run/secrets/remote-only/control-bearer','utf8').trim();fetch('http://127.0.0.1:3562/health',{headers:{authorization:'Bearer '+t}}).then(r=>{if(r.status!==200)process.exit(1)}).catch(()=>process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      start_period: 20s
+      retries: 6
+
+  sandbox-inngest:
+    image: "${EXTERNAL_SANDBOX_INNGEST_IMAGE:?pin durable Inngest by repository@sha256 digest}"
+    pull_policy: "${EXTERNAL_SANDBOX_IMAGE_PULL_POLICY:-never}"
+    restart: unless-stopped
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    environment:
+      INNGEST_EVENT_KEYS_FILE: /run/secrets/remote-only/event-key
+      INNGEST_SIGNING_KEY_FILE: /run/secrets/remote-only/signing-key
+      INNGEST_POSTGRES_PASSWORD_FILE: /run/secrets/remote-only/postgres-password
+      INNGEST_REDIS_PASSWORD_FILE: /run/secrets/remote-only/redis-password
+      INNGEST_POSTGRES_HOST: sandbox-inngest-postgres
+      INNGEST_REDIS_HOST: sandbox-inngest-redis
+      INNGEST_EXPERIMENTAL_PROM_METRICS: "1"
+    entrypoint:
+      - /bin/sh
+      - /opt/agentic/inngest-start.sh
+    command: []
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=128m,mode=1777
+    volumes:
+      - type: bind
+        source: ../compose/inngest-start.sh
+        target: /opt/agentic/inngest-start.sh
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${EXTERNAL_SANDBOX_SECRET_ROOT:?set the absolute remote secret root}/remote-only/event-key"
+        target: /run/secrets/remote-only/event-key
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${EXTERNAL_SANDBOX_SECRET_ROOT:?set the absolute remote secret root}/remote-only/signing-key"
+        target: /run/secrets/remote-only/signing-key
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${EXTERNAL_SANDBOX_SECRET_ROOT:?set the absolute remote secret root}/remote-only/postgres-password"
+        target: /run/secrets/remote-only/postgres-password
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${EXTERNAL_SANDBOX_SECRET_ROOT:?set the absolute remote secret root}/remote-only/redis-password"
+        target: /run/secrets/remote-only/redis-password
+        read_only: true
+        bind:
+          create_host_path: false
+    group_add:
+      - "${EXTERNAL_SANDBOX_SECRET_GID:?set the dedicated host secret-reader group id}"
+    networks:
+      - external-sandbox-broker-backend
+    depends_on:
+      sandbox-inngest-postgres:
+        condition: service_healthy
+      sandbox-inngest-redis:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, inngest, alpha, doctor, healthcheck]
+      interval: 15s
+      timeout: 8s
+      start_period: 45s
+      retries: 5
+
+  sandbox-inngest-postgres:
+    image: "${EXTERNAL_SANDBOX_POSTGRES_IMAGE:?pin PostgreSQL by repository@sha256 digest}"
+    pull_policy: "${EXTERNAL_SANDBOX_IMAGE_PULL_POLICY:-never}"
+    restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+    environment:
+      POSTGRES_DB: inngest
+      POSTGRES_USER: inngest
+      POSTGRES_PASSWORD_FILE: /run/secrets/remote-only/postgres-password
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - external-sandbox-postgres:/var/lib/postgresql/data
+      - type: bind
+        source: "${EXTERNAL_SANDBOX_SECRET_ROOT:?set the absolute remote secret root}/remote-only/postgres-password"
+        target: /run/secrets/remote-only/postgres-password
+        read_only: true
+        bind:
+          create_host_path: false
+    group_add:
+      - "${EXTERNAL_SANDBOX_SECRET_GID:?set the dedicated host secret-reader group id}"
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=128m,mode=1777
+      - /var/run/postgresql:rw,nosuid,nodev,size=16m,mode=3775
+    networks:
+      - external-sandbox-broker-backend
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U inngest -d inngest]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  sandbox-inngest-redis:
+    image: "${EXTERNAL_SANDBOX_REDIS_IMAGE:?pin Redis by repository@sha256 digest}"
+    pull_policy: "${EXTERNAL_SANDBOX_IMAGE_PULL_POLICY:-never}"
+    restart: unless-stopped
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --aclfile
+      - /run/secrets/remote-only/redis-acl
+    volumes:
+      - external-sandbox-redis:/data
+      - type: bind
+        source: "${EXTERNAL_SANDBOX_SECRET_ROOT:?set the absolute remote secret root}/remote-only/redis-acl"
+        target: /run/secrets/remote-only/redis-acl
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${EXTERNAL_SANDBOX_SECRET_ROOT:?set the absolute remote secret root}/remote-only/redis-password"
+        target: /run/secrets/remote-only/redis-password
+        read_only: true
+        bind:
+          create_host_path: false
+    group_add:
+      - "${EXTERNAL_SANDBOX_SECRET_GID:?set the dedicated host secret-reader group id}"
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=64m,mode=1777
+    networks:
+      - external-sandbox-broker-backend
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - redis-cli --no-auth-warning -a "$$(cat /run/secrets/remote-only/redis-password)" ping | grep -qx PONG
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+volumes:
+  external-sandbox-control:
+  external-sandbox-db:
+  external-sandbox-models:
+  external-sandbox-data:
+  external-sandbox-gateway:
+  external-sandbox-postgres:
+  external-sandbox-redis:
+
+networks:
+  external-sandbox-execution:
+    driver: bridge
+    internal: true
+  external-sandbox-broker-backend:
+    driver: bridge
+    internal: true
+  external-sandbox-model-egress:
+    driver: bridge

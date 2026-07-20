@@ -102,13 +102,17 @@ export async function adminUsersRoutes(app: FastifyInstance): Promise<void> {
     };
     if (body.platformRole !== undefined) patch.platformRole = body.platformRole;
     if (body.status !== undefined) patch.status = body.status;
-    db.update(users).set(patch).where(eq(users.id, userId)).run();
-
-    writeAudit(ctx, {
-      action: "platform.user.update",
-      targetType: "user",
-      targetId: userId,
-      meta: { ...body },
+    db.transaction(() => {
+      const updated = db.update(users).set(patch).where(eq(users.id, userId)).run() as {
+        changes?: number;
+      };
+      if ((updated.changes ?? 0) !== 1) throw new Error(`user ${userId} changed during update`);
+      writeAudit(ctx, {
+        action: "platform.user.update",
+        targetType: "user",
+        targetId: userId,
+        meta: { ...body },
+      });
     });
     return reply.ok({ items: listUsers() });
   });
@@ -133,28 +137,34 @@ export async function adminUsersRoutes(app: FastifyInstance): Promise<void> {
         .from(memberships)
         .where(and(eq(memberships.userId, userId), eq(memberships.tenantId, t.id)))
         .all()[0];
-      if (existing) {
-        db.update(memberships)
-          .set({ role: body.role })
-          .where(and(eq(memberships.userId, userId), eq(memberships.tenantId, t.id)))
-          .run();
-      } else {
-        db.insert(memberships)
-          .values({
-            userId,
-            tenantId: t.id,
-            role: body.role,
-            createdAt: new Date(),
-            createdBy: ctx.userId ?? null,
-          })
-          .run();
-      }
-      writeAudit(ctx, {
-        action: "platform.membership.write",
-        targetType: "user",
-        targetId: userId,
-        tenantId: t.id,
-        meta: { tenant: body.tenantSlug, role: body.role },
+      db.transaction(() => {
+        if (existing) {
+          const updated = db
+            .update(memberships)
+            .set({ role: body.role })
+            .where(and(eq(memberships.userId, userId), eq(memberships.tenantId, t.id)))
+            .run() as { changes?: number };
+          if ((updated.changes ?? 0) !== 1) {
+            throw new Error(`membership ${userId}/${body.tenantSlug} changed during update`);
+          }
+        } else {
+          db.insert(memberships)
+            .values({
+              userId,
+              tenantId: t.id,
+              role: body.role,
+              createdAt: new Date(),
+              createdBy: ctx.userId ?? null,
+            })
+            .run();
+        }
+        writeAudit(ctx, {
+          action: "platform.membership.write",
+          targetType: "user",
+          targetId: userId,
+          tenantId: t.id,
+          meta: { tenant: body.tenantSlug, role: body.role },
+        });
       });
       return reply.ok({ items: listUsers() });
     },
@@ -167,17 +177,33 @@ export async function adminUsersRoutes(app: FastifyInstance): Promise<void> {
       const ctx = requireSuperadmin(req);
       const { userId, slug } = req.params;
       const db = getDb();
+      const target = db.select({ id: users.id }).from(users).where(eq(users.id, userId)).all()[0];
+      if (!target) return reply.fail("user_not_found", "no such user", 404);
       const t = db.select().from(tenants).where(eq(tenants.slug, slug)).all()[0];
       if (!t) return reply.fail("tenant_not_found", `no tenant "${slug}"`, 404);
-      db.delete(memberships)
+      const existing = db
+        .select({ userId: memberships.userId })
+        .from(memberships)
         .where(and(eq(memberships.userId, userId), eq(memberships.tenantId, t.id)))
-        .run();
-      writeAudit(ctx, {
-        action: "platform.membership.remove",
-        targetType: "user",
-        targetId: userId,
-        tenantId: t.id,
-        meta: { tenant: slug },
+        .all()[0];
+      if (!existing) {
+        return reply.fail("membership_not_found", `user is not a member of tenant "${slug}"`, 404);
+      }
+      db.transaction(() => {
+        const removed = db
+          .delete(memberships)
+          .where(and(eq(memberships.userId, userId), eq(memberships.tenantId, t.id)))
+          .run() as { changes?: number };
+        if ((removed.changes ?? 0) !== 1) {
+          throw new Error(`membership ${userId}/${slug} changed during removal`);
+        }
+        writeAudit(ctx, {
+          action: "platform.membership.remove",
+          targetType: "user",
+          targetId: userId,
+          tenantId: t.id,
+          meta: { tenant: slug },
+        });
       });
       return reply.ok({ items: listUsers() });
     },
@@ -210,14 +236,14 @@ export async function adminUsersRoutes(app: FastifyInstance): Promise<void> {
       db.update(auditLog).set({ actorUserId: null }).where(eq(auditLog.actorUserId, userId)).run();
       db.update(memberships).set({ createdBy: null }).where(eq(memberships.createdBy, userId)).run();
       db.delete(memberships).where(eq(memberships.userId, userId)).run();
-      db.delete(users).where(eq(users.id, userId)).run();
-    });
-
-    writeAudit(ctx, {
-      action: "platform.user.delete",
-      targetType: "user",
-      targetId: userId,
-      meta: { email: target.email },
+      const removed = db.delete(users).where(eq(users.id, userId)).run() as { changes?: number };
+      if ((removed.changes ?? 0) !== 1) throw new Error(`user ${userId} changed during removal`);
+      writeAudit(ctx, {
+        action: "platform.user.delete",
+        targetType: "user",
+        targetId: userId,
+        meta: { email: target.email },
+      });
     });
     return reply.ok({ items: listUsers() });
   });

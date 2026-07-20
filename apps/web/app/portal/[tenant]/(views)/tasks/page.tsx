@@ -11,21 +11,25 @@
  * bootstrap snapshot.
  */
 
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   ActorTag,
   Badge,
   Button,
   Empty,
   Icon,
-  Kbd,
   Panel,
   ViewHeader,
   FilterChip,
 } from "@/app/portal/components";
 import { fmtAgo } from "@/app/portal/lib/format";
 import { useI18n } from "@/app/portal/lib/preferences-context";
-import { useTasks, type TaskRow as ApiTaskRow } from "@/lib/hooks/useTasks";
+import {
+  useResolveTask,
+  useTasks,
+  type TaskRow as ApiTaskRow,
+} from "@/lib/hooks/useTasks";
 import { useDag, type DagAgent } from "@/lib/hooks/useAgents";
 
 // Local narrow types for the task records the page renders.
@@ -38,21 +42,77 @@ interface TaskItem {
   createdAt: number | null;
   awaitingFrom: string | null;
   payload: Record<string, unknown>;
+  payloadAvailable: boolean;
+}
+
+interface HumanInputDescriptor {
+  kind: "human_input";
+  field: string;
+  type: string;
+  required: boolean;
+  prompt: string;
+}
+
+function humanInputDescriptor(payload: Record<string, unknown>): HumanInputDescriptor | null {
+  const value = payload.inputBinding;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const row = value as Record<string, unknown>;
+  if (
+    row.kind !== "human_input"
+    || typeof row.field !== "string"
+    || typeof row.type !== "string"
+    || typeof row.required !== "boolean"
+    || typeof row.prompt !== "string"
+  ) return null;
+  return row as unknown as HumanInputDescriptor;
+}
+
+function humanInputType(type: string): "string" | "number" | "integer" | "boolean" | "json" {
+  const normalized = type.trim().toLowerCase().replace(/\s+/g, "");
+  if (["number", "float", "double", "decimal", "numeric"].includes(normalized)) return "number";
+  if (["integer", "int", "int32", "int64", "long"].includes(normalized)) return "integer";
+  if (["boolean", "bool"].includes(normalized)) return "boolean";
+  if (/\[\]$/.test(normalized) || /^(array|list|set|object|record|map|json)/.test(normalized)) return "json";
+  return "string";
+}
+
+function parseHumanInputValue(descriptor: HumanInputDescriptor, raw: string): unknown {
+  const kind = humanInputType(descriptor.type);
+  if (kind === "boolean") return raw === "true" ? true : raw === "false" ? false : undefined;
+  if (kind === "number" || kind === "integer") {
+    if (!raw.trim()) return undefined;
+    const value = Number(raw);
+    if (!Number.isFinite(value) || (kind === "integer" && !Number.isSafeInteger(value))) {
+      throw new Error(`「${descriptor.field}」不是有效的 ${descriptor.type}`);
+    }
+    return value;
+  }
+  if (kind === "json") {
+    if (!raw.trim()) return undefined;
+    return JSON.parse(raw) as unknown;
+  }
+  return raw.trim() ? raw : undefined;
 }
 
 function fromApi(t: ApiTaskRow): TaskItem {
   const createdAt = t.createdAt ? Date.parse(t.createdAt) : null;
-  const payload =
-    (t.payloadJson as Record<string, unknown> | null | undefined) ?? {};
+  const payloadAvailable =
+    typeof t.payloadJson === "object" &&
+    t.payloadJson !== null &&
+    !Array.isArray(t.payloadJson);
+  const payload = payloadAvailable
+    ? (t.payloadJson as Record<string, unknown>)
+    : {};
   return {
     id: t.id,
     type: t.type,
     title: t.title,
-    priority: t.priority ?? "med",
+    priority: t.priority === "medium" ? "med" : (t.priority ?? "unknown"),
     status: t.status,
     createdAt: Number.isFinite(createdAt) ? createdAt : null,
     awaitingFrom: t.awaitingRole,
     payload,
+    payloadAvailable,
   };
 }
 
@@ -61,27 +121,54 @@ export default function TasksPage() {
   // cache invalidation. DAG carries triggers/emits per agent so the task
   // detail can render "will emit on approve" / "downstream listeners".
   const { t } = useI18n();
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const tasksQuery = useTasks();
   const dagQuery = useDag();
   const apiTasks = tasksQuery.data ?? [];
   const dagAgents = dagQuery.data?.agents ?? [];
 
   const tasks = useMemo<TaskItem[]>(
-    () => apiTasks.map(fromApi),
+    // This route is an inbox, not task history. Resolved/snoozed rows remain
+    // available through the API, but must not continue to count as pending or
+    // remain actionable after a decision succeeds.
+    () => apiTasks.filter((task) => task.status === "open").map(fromApi),
     [apiTasks],
   );
+  const tasksReady = tasksQuery.data !== undefined && !tasksQuery.isError;
+  const countValue: string | number = tasksReady
+    ? tasks.length
+    : tasksQuery.isLoading
+      ? "…"
+      : "—";
+  const highValue: string | number = tasksReady
+    ? tasks.filter((task) => task.priority === "high").length
+    : countValue;
 
   const [filter, setFilter] = useState<"all" | "high" | "med" | "low">("all");
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const selectedActualId = selectedId ?? tasks[0]?.id ?? null;
-  const selected = useMemo(
-    () => tasks.find((t) => t.id === selectedActualId) ?? null,
-    [tasks, selectedActualId],
-  );
 
   const filtered = useMemo(
     () => tasks.filter((t) => (filter === "all" ? true : t.priority === filter)),
     [tasks, filter],
+  );
+  const requestedId = searchParams.get("selected");
+  const selectedActualId =
+    (requestedId && filtered.some((task) => task.id === requestedId)
+      ? requestedId
+      : filtered[0]?.id) ?? null;
+  const selected = useMemo(
+    () => filtered.find((task) => task.id === selectedActualId) ?? null,
+    [filtered, selectedActualId],
+  );
+
+  const selectTask = useCallback(
+    (id: string) => {
+      const next = new URLSearchParams(searchParams.toString());
+      next.set("selected", id);
+      router.replace(`${pathname}?${next.toString()}` as never, { scroll: false });
+    },
+    [pathname, router, searchParams],
   );
 
   return (
@@ -89,11 +176,29 @@ export default function TasksPage() {
       <ViewHeader
         title={t("nav.tasks")}
         subtitle={t("tasks.subtitle", {
-          pending: tasks.length,
-          high: tasks.filter((t) => t.priority === "high").length,
+          pending: countValue,
+          high: highValue,
         })}
-        badge={<Badge tone="amber">{t("tasks.openBadge", { count: tasks.length })}</Badge>}
+        badge={
+          <Badge tone={tasksQuery.isError ? "red" : tasksReady ? "amber" : "muted"}>
+            {t("tasks.openBadge", { count: countValue })}
+          </Badge>
+        }
       />
+
+      {dagQuery.isError ? (
+        <div
+          role="alert"
+          style={{
+            padding: "9px 16px",
+            borderBottom: "1px solid var(--border)",
+            color: "var(--amber)",
+            fontSize: 12,
+          }}
+        >
+          {t("tasks.workflowContextUnavailable")}: {dagQuery.error.message}
+        </div>
+      ) : null}
 
       <div
         style={{
@@ -148,16 +253,33 @@ export default function TasksPage() {
                   key={t.id}
                   task={t}
                   active={selectedActualId === t.id}
-                  onClick={() => setSelectedId(t.id)}
+                  onClick={() => selectTask(t.id)}
                 />
               ))
             )}
           </div>
         </aside>
 
-        <div style={{ overflow: "auto", minHeight: 0 }}>
-          {selected ? (
-            <TaskDetail task={selected} agents={dagAgents} />
+          <div style={{ overflow: "auto", minHeight: 0 }}>
+          {tasksQuery.isError ? (
+            <Empty
+              title={t("tasks.loadErrorTitle")}
+              hint={tasksQuery.error.message}
+            />
+          ) : tasksQuery.isLoading && !tasksQuery.data ? (
+            <Empty title={t("tasks.loadingTitle")} hint="" />
+          ) : selected ? (
+            <TaskDetail
+              task={selected}
+              agents={dagAgents}
+              workflowStatus={
+                dagQuery.isError
+                  ? "error"
+                  : dagQuery.isLoading && !dagQuery.data
+                    ? "loading"
+                    : "ready"
+              }
+            />
           ) : (
             <Empty title={t("tasks.inboxZeroTitle")} hint={t("tasks.inboxZeroHint")} />
           )}
@@ -249,20 +371,96 @@ function TaskRow({
 function TaskDetail({
   task,
   agents,
+  workflowStatus,
 }: {
   task: TaskItem;
   agents: DagAgent[];
+  workflowStatus: "loading" | "ready" | "error";
 }) {
   const { t } = useI18n();
+  const resolveTask = useResolveTask();
+  const [decisionError, setDecisionError] = useState<string | null>(null);
+  const [clarificationAnswers, setClarificationAnswers] = useState<string[]>([]);
+  const [humanInputAnswer, setHumanInputAnswer] = useState("");
+  const inputDescriptor = humanInputDescriptor(task.payload);
   // /v1/tasks payload doesn't carry an agent reference today; surface the
   // closest match by `awaitingRole` (if a Human agent with that title
   // exists). Otherwise the panel falls back to the literal role string.
+  const taskAgentName =
+    typeof task.payload.agentName === "string" ? task.payload.agentName : null;
   const agent =
     agents.find(
       (a) =>
-        a.actor === "Human" &&
-        (a.title === task.awaitingFrom || a.name === task.awaitingFrom),
+        a.name === taskAgentName ||
+        a.title === taskAgentName ||
+        a.title === task.awaitingFrom ||
+        a.name === task.awaitingFrom,
     ) ?? null;
+
+  useEffect(() => {
+    setDecisionError(null);
+    setClarificationAnswers([]);
+    setHumanInputAnswer("");
+  }, [task.id]);
+
+  const resolve = useCallback(
+    async (decision: "approve" | "reject") => {
+      setDecisionError(null);
+      try {
+        const questions = Array.isArray(task.payload.questions)
+          ? task.payload.questions.filter(
+              (question): question is string => typeof question === "string",
+            )
+          : [];
+        let payload: unknown =
+          decision === "approve" && task.type === "requirementReClarification"
+            ? {
+                answers: questions.map((question, index) => ({
+                  question,
+                  answer: clarificationAnswers[index]?.trim() ?? "",
+                })),
+              }
+            : undefined;
+        if (decision === "approve" && inputDescriptor) {
+          const value = parseHumanInputValue(inputDescriptor, humanInputAnswer);
+          if (inputDescriptor.required && value === undefined) {
+            throw new Error(t("tasks.humanInputRequired"));
+          }
+          payload = { value };
+        }
+        await resolveTask.mutateAsync({ id: task.id, decision, payload });
+      } catch (error) {
+        setDecisionError(
+          error instanceof Error ? error.message : t("tasks.resolveFailed"),
+        );
+      }
+    },
+    [clarificationAnswers, humanInputAnswer, inputDescriptor, resolveTask, task.id, task.payload.questions, task.type, t],
+  );
+
+  const clarificationQuestions = Array.isArray(task.payload.questions)
+    ? task.payload.questions.filter(
+        (question): question is string => typeof question === "string",
+      )
+    : [];
+  const clarificationIncomplete =
+    task.type === "requirementReClarification" &&
+    (clarificationQuestions.length === 0 ||
+      clarificationQuestions.some(
+        (_question, index) => !clarificationAnswers[index]?.trim(),
+      ));
+  const humanInputIncomplete = Boolean(
+    inputDescriptor?.required && !humanInputAnswer.trim(),
+  );
+
+  if (!task.payloadAvailable) {
+    return (
+      <Empty
+        title={t("tasks.payloadUnavailable")}
+        hint={t("tasks.payloadUnavailableHint", { id: task.id })}
+      />
+    );
+  }
 
   return (
     <div style={{ padding: 24, maxWidth: 920 }}>
@@ -323,7 +521,17 @@ function TaskDetail({
         <ResumeFixPayload payload={task.payload} />
       )}
       {task.type === "requirementReClarification" && (
-        <ClarificationPayload payload={task.payload} />
+        <ClarificationPayload
+          payload={task.payload}
+          answers={clarificationAnswers}
+          onAnswer={(index, answer) =>
+            setClarificationAnswers((current) => {
+              const next = [...current];
+              next[index] = answer;
+              return next;
+            })
+          }
+        />
       )}
       {task.type === "packageSupplement" && (
         <SupplementPayload payload={task.payload} />
@@ -331,6 +539,21 @@ function TaskDetail({
       {task.type === "manualPublish" && (
         <ManualPublishPayload payload={task.payload} />
       )}
+      {inputDescriptor && (
+        <HumanInputPayload
+          descriptor={inputDescriptor}
+          value={humanInputAnswer}
+          onChange={setHumanInputAnswer}
+        />
+      )}
+      {![
+        "jdReview",
+        "packageReview",
+        "resumeFix",
+        "requirementReClarification",
+        "packageSupplement",
+        "manualPublish",
+      ].includes(task.type) && !inputDescriptor && <GenericTaskPayload payload={task.payload} />}
 
       {/* Decision actions */}
       <div
@@ -355,28 +578,48 @@ function TaskDetail({
           {t("tasks.decide")}
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <Button tone="primary" icon="check">
+          <Button
+            tone="primary"
+            icon="check"
+            onClick={() => void resolve("approve")}
+            disabled={resolveTask.isPending || clarificationIncomplete || humanInputIncomplete}
+            title={clarificationIncomplete ? t("tasks.answerRequired") : humanInputIncomplete ? t("tasks.humanInputRequired") : undefined}
+          >
             {decisionLabel(task.type, "primary", t)}
           </Button>
           {decisionLabel(task.type, "secondary", t) && (
-            <Button>{decisionLabel(task.type, "secondary", t)}</Button>
+            <Button
+              tone="danger"
+              onClick={() => void resolve("reject")}
+              disabled={resolveTask.isPending}
+            >
+              {decisionLabel(task.type, "secondary", t)}
+            </Button>
           )}
-          <Button tone="ghost">{t("tasks.snooze")}</Button>
-          <span
-            style={{
-              marginLeft: "auto",
-              fontSize: 11,
-              color: "var(--text-3)",
-            }}
-          >
-            <Kbd>⌘</Kbd> <Kbd>↵</Kbd> {t("tasks.approve")} · <Kbd>⌘</Kbd>{" "}
-            <Kbd>R</Kbd> {t("tasks.reject")}
-          </span>
         </div>
+        {decisionError ? (
+          <div
+            role="alert"
+            style={{ marginTop: 10, fontSize: 11.5, color: "var(--red)" }}
+          >
+            {decisionError}
+          </div>
+        ) : null}
       </div>
 
       {/* Run context */}
       <Panel title={t("tasks.workflowContext")} padded style={{ marginTop: 16 }}>
+        {workflowStatus !== "ready" ? (
+          <Empty
+            title={
+              workflowStatus === "loading"
+                ? t("tasks.workflowContextLoading")
+                : t("tasks.workflowContextUnavailable")
+            }
+            hint=""
+          />
+        ) : (
+          <>
         <div
           style={{
             display: "flex",
@@ -405,6 +648,8 @@ function TaskDetail({
             return Array.from(listeners).join(", ") || "—";
           })()}
         </div>
+          </>
+        )}
       </Panel>
     </div>
   );
@@ -431,7 +676,7 @@ function decisionLabel(
     },
     resumeFix: {
       primary: t("tasks.decision.resumeFix.primary"),
-      secondary: t("tasks.decision.resumeFix.secondary"),
+      secondary: null,
     },
     requirementReClarification: {
       primary: t("tasks.decision.requirementReClarification.primary"),
@@ -444,6 +689,10 @@ function decisionLabel(
     manualPublish: {
       primary: t("tasks.decision.manualPublish.primary"),
       secondary: null,
+    },
+    agentInput: {
+      primary: t("tasks.decision.agentInput.primary"),
+      secondary: t("tasks.decision.agentInput.secondary"),
     },
   };
   return (
@@ -467,6 +716,12 @@ function JDReviewPayload({
     salary?: string;
     responsibilities?: string[];
     requirements?: string[];
+    version?: string;
+    agentName?: string;
+    actionName?: string;
+    description?: string;
+    subject?: string;
+    condition?: string;
   };
   return (
     <div
@@ -479,7 +734,7 @@ function JDReviewPayload({
       <Panel
         title={t("tasks.generatedJd")}
         padded
-        action={<Badge tone="muted">draft v3</Badge>}
+        action={p.version ? <Badge tone="muted">{p.version}</Badge> : undefined}
       >
         <div
           style={{
@@ -517,7 +772,7 @@ function JDReviewPayload({
             <KV label={t("tasks.level")} value={p.level ?? "—"} mono />
             <KV label={t("tasks.city")} value={p.city ?? "—"} />
             <KV label={t("tasks.salary")} value={p.salary ?? "—"} />
-            <KV label={t("tasks.status")} value={<Badge tone="signal">DRAFT</Badge>} />
+            <KV label={t("tasks.status")} value={<Badge tone="signal">OPEN</Badge>} />
           </div>
           <SectionList
             label={t("tasks.responsibilities")}
@@ -527,52 +782,11 @@ function JDReviewPayload({
         </div>
       </Panel>
       <Panel title={t("tasks.agentReasoning")} padded>
-        <div
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            gap: 10,
-            fontSize: 12,
-            color: "var(--text-2)",
-            lineHeight: 1.6,
-          }}
-        >
-          <p style={{ margin: 0 }}>
-            {t("tasks.draftedFrom")}{" "}
-            <span className="mono" style={{ color: "var(--text)" }}>
-              REQ
-            </span>{" "}
-            {t("tasks.afterClarificationTemplate")}{" "}
-            <span className="mono" style={{ color: "var(--text)" }}>
-              jd-tencent-wxg-v3
-            </span>{" "}
-            {t("tasks.applied")}
-          </p>
-          <p style={{ margin: 0 }}>
-            {t("tasks.topKeywords")}{" "}
-            <span className="mono" style={{ color: "var(--accent-text)" }}>
-              backend, java, go, messaging, distributed-systems
-            </span>
-            .
-          </p>
-          <p style={{ margin: 0 }}>
-            {t("tasks.salaryConfirmed")}
-          </p>
-          <div
-            style={{
-              marginTop: 6,
-              padding: 10,
-              background: "var(--panel-2)",
-              border: "1px dashed var(--border-2)",
-              borderRadius: 4,
-              fontSize: 11.5,
-            }}
-          >
-            <strong style={{ color: "var(--amber)" }}>{t("tasks.headsUp")}</strong>
-            <span style={{ color: "var(--text-2)" }}>
-              {t("tasks.reqReopenedWarning")}
-            </span>
-          </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <KV label={t("tasks.agent")} value={p.agentName ?? "—"} mono />
+          <KV label={t("tasks.action")} value={p.actionName ?? "—"} mono />
+          <KV label={t("tasks.subject")} value={p.subject ?? "—"} mono />
+          <KV label={t("tasks.reason")} value={p.description ?? p.condition ?? "—"} />
         </div>
       </Panel>
     </div>
@@ -590,6 +804,11 @@ function PackagePayload({
     matchScore?: number;
     missingItems?: string[];
     highlights?: string[];
+    target?: string;
+    method?: string;
+    dryRun?: boolean;
+    willEmit?: string;
+    attachments?: string[];
   };
   return (
     <div
@@ -635,17 +854,9 @@ function PackagePayload({
           />
           <SectionList label={t("tasks.highlights")} items={p.highlights ?? []} />
         </div>
-        <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
-          <Button small icon="external">
-            Resume.pdf
-          </Button>
-          <Button small icon="external">
-            {t("tasks.interviewClip")}
-          </Button>
-          <Button small icon="external">
-            {t("tasks.evalReport")}
-          </Button>
-        </div>
+        {(p.attachments?.length ?? 0) > 0 ? (
+          <SectionList label={t("tasks.attachments")} items={p.attachments ?? []} />
+        ) : null}
       </Panel>
       <Panel title={t("tasks.submissionPreview")} padded>
         <div
@@ -657,15 +868,21 @@ function PackagePayload({
             color: "var(--text)",
           }}
         >
-          <KV label={t("tasks.target")} value="Tencent ATS · WXG queue" />
-          <KV label={t("tasks.method")} value={t("tasks.apiAutoSubmit")} />
+          <KV label={t("tasks.target")} value={p.target ?? "—"} />
+          <KV label={t("tasks.method")} value={p.method ?? "—"} />
           <KV
-            label={t("tasks.mockDryRun")}
-            value={<Badge tone="green">{t("tasks.dryRunOk")}</Badge>}
+            label={t("tasks.preflightCheck")}
+            value={
+              p.dryRun == null ? "—" : (
+                <Badge tone={p.dryRun ? "green" : "muted"}>
+                  {p.dryRun ? t("tasks.preflightPassed") : t("tasks.preflightNotPassed")}
+                </Badge>
+              )
+            }
           />
           <KV
             label={t("tasks.willEmit")}
-            value={<Badge tone="green">APPLICATION_SUBMITTED</Badge>}
+            value={p.willEmit ? <Badge tone="green">{p.willEmit}</Badge> : "—"}
           />
         </div>
       </Panel>
@@ -713,12 +930,6 @@ function ResumeFixPayload({
             {p.error ?? t("tasks.unknownError")}
           </div>
         </div>
-        <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
-          <Button small icon="upload">
-            {t("tasks.reuploadPdf")}
-          </Button>
-          <Button small>{t("tasks.editParsedFields")}</Button>
-        </div>
       </div>
     </Panel>
   );
@@ -726,8 +937,12 @@ function ResumeFixPayload({
 
 function ClarificationPayload({
   payload,
+  answers,
+  onAnswer,
 }: {
   payload: Record<string, unknown>;
+  answers: string[];
+  onAnswer: (index: number, answer: string) => void;
 }) {
   const { t } = useI18n();
   const p = payload as { questions?: string[] };
@@ -753,6 +968,8 @@ function ClarificationPayload({
           >
             {q}
             <input
+              value={answers[i] ?? ""}
+              onChange={(event) => onAnswer(i, event.target.value)}
               placeholder={t("tasks.answerPlaceholder")}
               style={{
                 display: "block",
@@ -808,9 +1025,6 @@ function SupplementPayload({
             >
               {m}
             </span>
-            <Button small style={{ marginLeft: "auto" }}>
-              {t("tasks.attach")}
-            </Button>
           </div>
         ))}
       </div>
@@ -845,11 +1059,99 @@ function ManualPublishPayload({
       >
         {t("tasks.manualPublishInstructions")}
       </div>
-      <div style={{ marginTop: 10, display: "flex", gap: 8 }}>
-        <Button small icon="external" tone="primary">
-          {t("tasks.openHelperPage")}
-        </Button>
-      </div>
+    </Panel>
+  );
+}
+
+function HumanInputPayload({
+  descriptor,
+  value,
+  onChange,
+}: {
+  descriptor: HumanInputDescriptor;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const { t } = useI18n();
+  const kind = humanInputType(descriptor.type);
+  const sharedStyle = {
+    width: "100%",
+    boxSizing: "border-box" as const,
+    padding: "9px 10px",
+    border: "1px solid var(--border-2)",
+    borderRadius: 5,
+    background: "var(--bg-2)",
+    color: "var(--text)",
+    fontFamily: kind === "json" ? "var(--mono)" : "inherit",
+    fontSize: 13,
+  };
+  return (
+    <Panel title={t("tasks.humanInputTitle")} padded>
+      <label htmlFor={`human-input-${descriptor.field}`} style={{ display: "block" }}>
+        <div style={{ fontSize: 13, lineHeight: 1.5, color: "var(--text)", marginBottom: 8 }}>
+          {descriptor.prompt}
+        </div>
+        <div className="mono" style={{ fontSize: 10.5, color: "var(--text-3)", marginBottom: 6 }}>
+          {descriptor.field} · {descriptor.type}{descriptor.required ? ` · ${t("tasks.humanInputRequiredBadge")}` : ""}
+        </div>
+        {kind === "boolean" ? (
+          <select
+            id={`human-input-${descriptor.field}`}
+            value={value}
+            onChange={(event) => onChange(event.target.value)}
+            style={sharedStyle}
+          >
+            <option value="">{t("tasks.humanInputChoose")}</option>
+            <option value="true">{t("tasks.humanInputYes")}</option>
+            <option value="false">{t("tasks.humanInputNo")}</option>
+          </select>
+        ) : kind === "number" || kind === "integer" ? (
+          <input
+            id={`human-input-${descriptor.field}`}
+            type="number"
+            step={kind === "integer" ? 1 : "any"}
+            value={value}
+            onChange={(event) => onChange(event.target.value)}
+            placeholder={t("tasks.humanInputPlaceholder")}
+            style={sharedStyle}
+          />
+        ) : (
+          <textarea
+            id={`human-input-${descriptor.field}`}
+            rows={kind === "json" ? 7 : 3}
+            value={value}
+            onChange={(event) => onChange(event.target.value)}
+            placeholder={kind === "json" ? t("tasks.humanInputJsonPlaceholder") : t("tasks.humanInputPlaceholder")}
+            style={{ ...sharedStyle, resize: "vertical" }}
+          />
+        )}
+      </label>
+    </Panel>
+  );
+}
+
+function GenericTaskPayload({ payload }: { payload: Record<string, unknown> }) {
+  const { t } = useI18n();
+  return (
+    <Panel title={t("tasks.taskPayload")} padded>
+      <pre
+        style={{
+          margin: 0,
+          padding: 12,
+          maxHeight: 360,
+          overflow: "auto",
+          borderRadius: 5,
+          background: "var(--bg-2)",
+          color: "var(--text-2)",
+          fontFamily: "var(--mono)",
+          fontSize: 11.5,
+          lineHeight: 1.6,
+          whiteSpace: "pre-wrap",
+          wordBreak: "break-word",
+        }}
+      >
+        {JSON.stringify(payload, null, 2)}
+      </pre>
     </Panel>
   );
 }

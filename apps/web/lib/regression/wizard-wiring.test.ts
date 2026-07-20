@@ -32,7 +32,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const REPO_ROOT = resolve(__dirname, "..", "..");
@@ -121,26 +121,22 @@ describe("regression: production wizard wiring", () => {
     });
   });
 
-  describe("chrome — must read live tenants, not the static fixture", () => {
+  describe("chrome — must read live tenants with no static fallback", () => {
     const src = read("app/portal/components/shell/chrome.tsx");
 
     it("calls useTenants()", () => {
       expect(/\buseTenants\s*\(/.test(src)).toBe(true);
     });
 
-    it("does not exclusively use the static TENANTS fixture", () => {
-      // It's fine to import TENANTS as a fallback. What matters is that
-      // useTenants() is also wired in. The previous bug was the file
-      // ONLY using TENANTS.map(...). If useTenants is present (asserted
-      // above) and TENANTS appears only as a fallback, we're good.
-      const fixtureMap = /\bTENANTS\s*\.\s*map\b/;
-      const useTenants = /\buseTenants\s*\(/;
-      if (fixtureMap.test(src)) {
-        expect(
-          useTenants.test(src),
-          "chrome.tsx uses TENANTS.map but no useTenants() — the sidebar is stuck on the static fixture",
-        ).toBe(true);
-      }
+    it("contains no static TENANTS fixture or fallback import", () => {
+      expect(
+        /\bTENANTS\b|(?:@\/|\.\.\/)lib\/tenants/.test(src),
+        "chrome.tsx must fail visibly when the tenants API is unavailable, not render static tenant data",
+      ).toBe(false);
+      expect(
+        existsSync(resolve(REPO_ROOT, "lib/tenants.ts")),
+        "lib/tenants.ts is dead static runtime data and must not be reintroduced",
+      ).toBe(false);
     });
   });
 

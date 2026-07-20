@@ -1,7 +1,7 @@
 /**
  * matchResumeApi — wraps POST {base}/match-resume on the real RoboHire.io
  * API. Endpoint name is hyphenated per the live catalogue (`GET /` on
- * api.robohire.io returns the canonical list).
+ * The configured upstream returns the canonical list.
  *
  * Args are tolerant of two common shapes the upstream supports:
  *   - structured: `{ resume, jd }` (both plain-text strings — preferred)
@@ -18,7 +18,10 @@
  *     verdict: string | null,            // "Strong Match" | … | null
  *     hiringRecommendation: string | null,
  *     summary: string | null,
- *     raw: <full upstream body>          // for the detailed breakdown
+ *     data: <unwrapped upstream analysis>,
+ *     requestId: string | null,
+ *     savedAs: string | null,
+ *     raw: <unwrapped upstream analysis> // backwards-compatible alias
  *   }
  *
  * Per-tenant config (manifest `tool_use[].config`): see rest-helper.ts.
@@ -32,8 +35,14 @@ import { rhFetch } from "./rest-helper";
 interface MatchResumeBody {
   match_results?: unknown;
   overall_status?: string;
+  matchScore?: number;
   match_score?: number;
-  overallMatchScore?: { score?: number };
+  overall_match_score?: number;
+  score?: number;
+  overallMatchScore?: { score?: number } | number;
+  recommendation?: string;
+  verdict?: string;
+  summary?: string;
   overallFit?: {
     verdict?: string;
     hiringRecommendation?: string;
@@ -42,20 +51,37 @@ interface MatchResumeBody {
   [k: string]: unknown;
 }
 
+function firstString(...values: unknown[]): string | null {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return null;
+}
+
+function firstFiniteNumber(...values: unknown[]): number | null {
+  for (const value of values) {
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+  }
+  return null;
+}
+
 export const matchResumeApi = defineTool({
   name: "matchResumeApi",
   description:
     "Call RoboHire.io POST /api/v1/match-resume to score a resume against a job description. " +
     "REQUIRED FIELDS: { resume: string, jd: string } — both plain-text full-body strings " +
     "(NOT field references, NOT URLs unless you've already fetched them). " +
-    "Returns a normalised envelope { matchScore, verdict, hiringRecommendation, summary, raw }.",
+    "Returns a normalised envelope { matchScore, verdict, hiringRecommendation, summary, data, requestId, savedAs, raw }.",
   output: z.record(z.string(), z.unknown()),
   async handler(ctx) {
     const raw = (ctx.event?.data ?? {}) as Record<string, unknown>;
     const body: Record<string, unknown> = { ...raw };
     if (!body.resume) {
       body.resume =
-        raw.resume_text ?? raw.candidate_resume ?? raw.resume_body ?? raw.candidateResume;
+        raw.resume_text ??
+        raw.candidate_resume ??
+        raw.resume_body ??
+        raw.candidateResume;
     }
     if (!body.jd) {
       body.jd =
@@ -66,9 +92,20 @@ export const matchResumeApi = defineTool({
         "matchResumeApi: required string fields `resume` and `jd` missing — provide both as plain-text full bodies.",
       );
     }
+    // Candidate's OWN job-seeking expectations (期望职位/城市/薪资/工作模式) — the
+    // ontology's Candidate_Expectation. RoboHire accepts them as a free-form
+    // `candidatePreferences` string; empty/absent means score on resume-vs-JD
+    // facts only (the pre-fix behaviour).
+    const preferencesRaw =
+      raw.candidatePreferences ?? raw.candidate_preferences;
+    const candidatePreferences =
+      typeof preferencesRaw === "string" && preferencesRaw.trim()
+        ? preferencesRaw.trim()
+        : null;
     const res = await rhFetch<MatchResumeBody>(ctx, "POST", "/match-resume", {
       resume: body.resume,
       jd: body.jd,
+      ...(candidatePreferences ? { candidatePreferences } : {}),
     });
     if (!res.ok) {
       throw new Error(
@@ -85,21 +122,39 @@ export const matchResumeApi = defineTool({
     // the flat shape too in case a future endpoint stops wrapping.
     const envelope = (res.data ?? {}) as Record<string, unknown>;
     const upstream = (
-      envelope.data && typeof envelope.data === "object" ? envelope.data : envelope
+      envelope.data && typeof envelope.data === "object"
+        ? envelope.data
+        : envelope
     ) as MatchResumeBody & { score?: number; verdict?: string };
 
-    // Score can appear as `overallMatchScore.score` OR a flat top-level
-    // `score`; verdict/recommendation live under `overallFit`. Coalesce.
-    const matchScore =
-      upstream.overallMatchScore?.score ??
-      (typeof upstream.score === "number" ? upstream.score : null);
+    // RoboHire has returned both its detailed Shape-D response and a compact
+    // response over time. Preserve the detailed body verbatim while exposing
+    // one stable score/summary surface for deterministic routing.
+    const overallMatchScore = upstream.overallMatchScore;
+    const matchScore = firstFiniteNumber(
+      typeof overallMatchScore === "object"
+        ? overallMatchScore?.score
+        : overallMatchScore,
+      upstream.matchScore,
+      upstream.match_score,
+      upstream.overall_match_score,
+      upstream.score,
+    );
     const normalized = {
       matchScore,
       verdict: upstream.overallFit?.verdict ?? upstream.verdict ?? null,
-      hiringRecommendation: upstream.overallFit?.hiringRecommendation ?? null,
-      summary: upstream.overallFit?.summary ?? null,
-      // Hand the LLM the UNWRAPPED analysis so the batch-match prompt's
-      // `raw.resumeAnalysis.keyAchievements` path resolves correctly.
+      hiringRecommendation:
+        upstream.overallFit?.hiringRecommendation ??
+        upstream.recommendation ??
+        null,
+      summary: upstream.overallFit?.summary ?? upstream.summary ?? null,
+      // Match the old function's event contract: `data` is the exact,
+      // unwrapped RoboHire analysis and the request metadata stays alongside
+      // it for persistence, tracing and the legacy Inngest projection.
+      data: upstream,
+      requestId: firstString(envelope.requestId, envelope.request_id),
+      savedAs: firstString(envelope.savedAs, envelope.saved_as),
+      // Keep the existing alias so non-RAAS consumers do not break.
       raw: upstream,
     };
 

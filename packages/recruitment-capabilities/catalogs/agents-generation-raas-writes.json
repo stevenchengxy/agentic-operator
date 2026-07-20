@@ -1,0 +1,98 @@
+{
+  "requirement.patchFields": {
+    "sql": "UPDATE job_requisition SET must_have_skills = COALESCE($2::jsonb, must_have_skills), nice_to_have_skills = COALESCE($3::jsonb, nice_to_have_skills), negative_requirement = COALESCE(NULLIF($4, ''), negative_requirement), language_requirements = COALESCE(NULLIF($5, ''), language_requirements), expected_level = COALESCE(NULLIF($6, ''), expected_level), degree_requirement = COALESCE(NULLIF($7, ''), degree_requirement), education_requirement = COALESCE(NULLIF($8, ''), education_requirement), work_years = COALESCE($9::integer, work_years), interview_mode = COALESCE(NULLIF($10, ''), interview_mode), recruitment_type = COALESCE(NULLIF($11, ''), recruitment_type), qualifications = COALESCE(NULLIF($12, ''), qualifications), hard_requirements = COALESCE(NULLIF($13, ''), hard_requirements), nice_to_have = COALESCE(NULLIF($14, ''), nice_to_have), interview_requirements = COALESCE(NULLIF($15, ''), interview_requirements), evaluation_rules = COALESCE(NULLIF($16, ''), evaluation_rules), benefits = COALESCE(NULLIF($17, ''), benefits), headcount = COALESCE($18::integer, headcount), updated_at = NOW() WHERE job_requisition_id = $1 RETURNING job_requisition_id",
+    "params": ["job_requisition_id", "must_have_skills", "nice_to_have_skills", "negative_requirement", "language_requirements", "expected_level", "degree_requirement", "education_requirement", "work_years", "interview_mode", "recruitment_type", "qualifications", "hard_requirements", "nice_to_have", "interview_requirements", "evaluation_rules", "benefits", "headcount"],
+    "mode": "write",
+    "max_rows": 1
+  },
+  "requirementSpec.transitionStatus": {
+    "sql": "UPDATE job_requisition_specification SET status = $3, updated_at = NOW() WHERE job_requisition_specification_id = $1 AND status = $2 RETURNING job_requisition_specification_id, status",
+    "params": ["job_requisition_specification_id", "expected_current_status", "next_status"],
+    "mode": "write",
+    "max_rows": 1
+  },
+  "jobPosting.insert": {
+    "sql": "INSERT INTO job_posting ( job_posting_id, job_requisition_id, client_id, posting_title, posting_description, search_keywords, status, publish_status, created_at, updated_at ) VALUES ($1, $2, $3, $4, $5, $6::text[], $7, $8, NOW(), NOW()) RETURNING job_posting_id",
+    "params": ["job_posting_id", "job_requisition_id", "client_id", "posting_title", "posting_description", "search_keywords", "status", "publish_status"],
+    "mode": "write",
+    "max_rows": 1
+  },
+  "jobPosting.update": {
+    "sql": "UPDATE job_posting SET posting_title = $2, posting_description = $3, search_keywords = $4::text[], publish_status = $5, updated_at = NOW() WHERE job_posting_id = $1 RETURNING job_posting_id",
+    "params": ["job_posting_id", "posting_title", "posting_description", "search_keywords", "publish_status"],
+    "mode": "write",
+    "max_rows": 1
+  },
+  "candidate.insert": {
+    "sql": "INSERT INTO candidate ( candidate_id, name, mobile, mobile_normalized, email, skills, languages, employee_id, sourcing_channel_id, data_source, status, created_at, updated_at ) VALUES ( $1, $2, $3, $4, $5, $6::text[], $7::text[], $8, $9, $10, $11, NOW(), NOW() ) RETURNING candidate_id",
+    "params": ["candidate_id", "name", "mobile", "mobile_normalized", "email", "skills", "languages", "employee_id", "sourcing_channel_id", "data_source", "status"],
+    "mode": "write",
+    "max_rows": 1
+  },
+  "candidate.updateMerge": {
+    "sql": "UPDATE candidate SET name = COALESCE(NULLIF($2, ''), name), mobile = COALESCE(NULLIF($3, ''), mobile), mobile_normalized = COALESCE($4, mobile_normalized), email = COALESCE(NULLIF($5, ''), email), skills = CASE WHEN cardinality($6::text[]) > 0 THEN $6::text[] ELSE skills END, languages = CASE WHEN cardinality($7::text[]) > 0 THEN $7::text[] ELSE languages END, employee_id = COALESCE(NULLIF($8, ''), employee_id), sourcing_channel_id = COALESCE(NULLIF($9, ''), sourcing_channel_id), updated_at = NOW() WHERE candidate_id = $1 RETURNING candidate_id",
+    "params": ["candidate_id", "name", "mobile", "mobile_normalized", "email", "skills", "languages", "employee_id", "sourcing_channel_id"],
+    "mode": "write",
+    "max_rows": 1
+  },
+  "candidate.updateOverwrite": {
+    "sql": "UPDATE candidate SET name = $2, mobile = $3, mobile_normalized = $4, email = $5, skills = $6::text[], languages = $7::text[], employee_id = $8, sourcing_channel_id = $9, updated_at = NOW() WHERE candidate_id = $1 RETURNING candidate_id",
+    "params": ["candidate_id", "name", "mobile", "mobile_normalized", "email", "skills", "languages", "employee_id", "sourcing_channel_id"],
+    "mode": "write",
+    "max_rows": 1
+  },
+  "resume.insert": {
+    "sql": "INSERT INTO resume ( resume_id, candidate_id, file_name, file_size, bucket_name, object_key, raw_parse_result, parsed_content, summary, skills_extracted, languages, certifications, work_history, education_history, project_history, uploaded_by, parse_status, uploaded_at, created_at, updated_at ) VALUES ( $1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10::text[], $11::text[], $12::text[], $13::jsonb, $14::jsonb, $15::jsonb, $16, $17, NOW(), NOW(), NOW() ) RETURNING resume_id",
+    "params": ["resume_id", "candidate_id", "file_name", "file_size", "bucket_name", "object_key", "raw_parse_result", "parsed_content", "summary", "skills_extracted", "languages", "certifications", "work_history", "education_history", "project_history", "uploaded_by", "parse_status"],
+    "mode": "write",
+    "max_rows": 1
+  },
+  "resume.updateMerge": {
+    "sql": "UPDATE resume SET raw_parse_result = COALESCE($2::jsonb, raw_parse_result), parsed_content = COALESCE(NULLIF($3, ''), parsed_content), summary = COALESCE(NULLIF($4, ''), summary), skills_extracted = CASE WHEN cardinality($5::text[]) > 0 THEN $5::text[] ELSE skills_extracted END, languages = CASE WHEN cardinality($6::text[]) > 0 THEN $6::text[] ELSE languages END, certifications = CASE WHEN cardinality($7::text[]) > 0 THEN $7::text[] ELSE certifications END, work_history = COALESCE($8::jsonb, work_history), education_history = COALESCE($9::jsonb, education_history), project_history = COALESCE($10::jsonb, project_history), parse_status = COALESCE(NULLIF($11, ''), parse_status), parse_error = $12, updated_at = NOW() WHERE resume_id = $1 RETURNING resume_id",
+    "params": ["resume_id", "raw_parse_result", "parsed_content", "summary", "skills_extracted", "languages", "certifications", "work_history", "education_history", "project_history", "parse_status", "parse_error"],
+    "mode": "write",
+    "max_rows": 1
+  },
+  "resume.updateOverwrite": {
+    "sql": "UPDATE resume SET raw_parse_result = $2::jsonb, parsed_content = $3, summary = $4, skills_extracted = $5::text[], languages = $6::text[], certifications = $7::text[], work_history = $8::jsonb, education_history = $9::jsonb, project_history = $10::jsonb, parse_status = $11, parse_error = $12, updated_at = NOW() WHERE resume_id = $1 RETURNING resume_id",
+    "params": ["resume_id", "raw_parse_result", "parsed_content", "summary", "skills_extracted", "languages", "certifications", "work_history", "education_history", "project_history", "parse_status", "parse_error"],
+    "mode": "write",
+    "max_rows": 1
+  },
+  "resumeUpload.markCompleted": {
+    "sql": "UPDATE resume_upload_runtime SET status = 'completed', candidate_id = $1, resume_id = $2, error_message = NULL, updated_at = NOW() WHERE upload_id = $3 RETURNING upload_id",
+    "params": ["candidate_id", "resume_id", "upload_id"],
+    "mode": "write",
+    "max_rows": 1
+  },
+  "resumeUpload.markFailed": {
+    "sql": "UPDATE resume_upload_runtime SET status = 'failed', error_message = $2, updated_at = NOW() WHERE upload_id = $1 RETURNING upload_id",
+    "params": ["upload_id", "error_message"],
+    "mode": "write",
+    "max_rows": 1
+  },
+  "matchResult.insert": {
+    "sql": "INSERT INTO candidate_match_result ( candidate_match_result_id, candidate_id, job_requisition_id, job_posting_id, match_score, match_reason, match_status, dimension_scores, core_tags, experience_years, created_by, created_at, updated_at ) VALUES ( $1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10, $11, NOW(), NOW() ) RETURNING candidate_match_result_id",
+    "params": ["candidate_match_result_id", "candidate_id", "job_requisition_id", "job_posting_id", "match_score", "match_reason", "match_status", "dimension_scores", "core_tags", "experience_years", "created_by"],
+    "mode": "write",
+    "max_rows": 1
+  },
+  "matchResult.update": {
+    "sql": "UPDATE candidate_match_result SET job_posting_id = $2, match_score = $3, match_reason = $4, match_status = $5, dimension_scores = $6::jsonb, core_tags = $7::jsonb, experience_years = $8, updated_at = NOW() WHERE candidate_match_result_id = $1 RETURNING candidate_match_result_id",
+    "params": ["candidate_match_result_id", "job_posting_id", "match_score", "match_reason", "match_status", "dimension_scores", "core_tags", "experience_years"],
+    "mode": "write",
+    "max_rows": 1
+  },
+  "invitation.markSent": {
+    "sql": "UPDATE interview_invitation SET status = 'sent', login_url = $2, qrcode_url = $3, gohire_user_id = $4, request_introduction_id = $5, gohire_invite_log = $6, sent_at = NOW(), updated_at = NOW() WHERE correlation_id = $1 RETURNING interview_invitation_id, application_id",
+    "params": ["correlation_id", "login_url", "qrcode_url", "gohire_user_id", "request_introduction_id", "gohire_invite_log"],
+    "mode": "write",
+    "max_rows": 1
+  },
+  "invitation.markFailed": {
+    "sql": "UPDATE interview_invitation SET status = 'failed', error_message = $2, failed_at = NOW(), updated_at = NOW() WHERE correlation_id = $1 RETURNING interview_invitation_id",
+    "params": ["correlation_id", "error_message"],
+    "mode": "write",
+    "max_rows": 1
+  }
+}

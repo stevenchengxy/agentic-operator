@@ -8,56 +8,278 @@
  *   1. "Configured models" — the tenant's fleet from `/v1/llm/fleet`. Role
  *      is editable inline (PATCH), entries can be removed (DELETE).
  *   2. "Browse models" — pick a provider, see live models from its /models
- *      endpoint (merged with the static catalog for metadata), checkbox the
+ *      endpoint (catalog metadata only enriches matching live ids), checkbox the
  *      ones to add. Models already in the fleet are dimmed.
  *
- * Providers without live discovery (bedrock/vertex/custom/azure) show the
- * catalog list, or — for the empty-catalog ones — a free-text input.
+ * Providers without live discovery show an explicit free-text input; static
+ * catalog entries are never presented as provider-confirmed availability.
  */
 
-import { useMemo, useState } from "react";
-import { Badge, Button, Icon, Panel, Td, Th } from "@/app/portal/components";
+import { Fragment, useMemo, useState } from "react";
+import { Badge, Button, Icon, Panel, Td, Th, useToast } from "@/app/portal/components";
 import { Field, SelectIn, TextIn } from "@/app/portal/components/settings/atoms";
 import { useI18n } from "@/app/portal/lib/preferences-context";
 import {
   useAddFleetEntry,
   useAvailableModels,
+  useDeleteProviderKey,
   useDeleteFleetEntry,
   useFleet,
+  useModelProviders,
+  useProviderKeys,
+  useSaveProviderKey,
+  useTestProviderKey,
   useUpdateFleetEntry,
   type AvailableModel,
   type FleetEntry,
   type FleetRole,
+  type ProviderInfo,
 } from "@/lib/hooks/useModelFleet";
-
-const PROVIDERS = [
-  "anthropic",
-  "openai",
-  "openrouter",
-  "gemini",
-  "groq",
-  "together",
-  "mistral",
-  "deepseek",
-  "qwen",
-  "azure",
-  "bedrock",
-  "vertex",
-  "custom",
-  "mock",
-] as const;
 
 const FLEET_ROLES: FleetRole[] = ["primary", "fallback", "shadow"];
 
 export function ModelsSection() {
   const fleet = useFleet();
+  const providers = useModelProviders();
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-      <ConfiguredFleetPanel fleet={fleet.data ?? []} loading={fleet.isLoading} />
-      <BrowseModelsPanel />
-      <FallbackChainPanel fleet={fleet.data ?? []} />
+      <ProviderCredentialsPanel
+        providers={providers.data ?? []}
+        loading={providers.isLoading}
+        error={providers.error}
+      />
+      <ConfiguredFleetPanel
+        fleet={fleet.data ?? []}
+        loading={fleet.isLoading}
+        error={fleet.error}
+      />
+      <BrowseModelsPanel
+        providers={providers.data ?? []}
+        providersLoading={providers.isLoading}
+        providersError={providers.error}
+      />
+      {!fleet.error ? <FallbackChainPanel fleet={fleet.data ?? []} /> : null}
     </div>
+  );
+}
+
+// ─── Workspace provider credentials ──────────────────────────────────────
+
+function ProviderCredentialsPanel({
+  providers,
+  loading,
+  error,
+}: {
+  providers: ProviderInfo[];
+  loading: boolean;
+  error: Error | null;
+}) {
+  const { t } = useI18n();
+  const keys = useProviderKeys();
+  const saveKey = useSaveProviderKey();
+  const deleteKey = useDeleteProviderKey();
+  const testKey = useTestProviderKey();
+  const toast = useToast();
+  const [editing, setEditing] = useState<string | null>(null);
+  const [candidate, setCandidate] = useState("");
+  const [feedback, setFeedback] = useState<{ ok: boolean; message: string } | null>(null);
+  const keyByProvider = useMemo(
+    () => new Map((keys.data ?? []).map((key) => [key.provider, key])),
+    [keys.data],
+  );
+
+  function beginEdit(provider: string) {
+    setEditing(provider);
+    setCandidate("");
+    setFeedback(null);
+  }
+
+  async function test(provider: string) {
+    setFeedback(null);
+    try {
+      const result = await testKey.mutateAsync({ provider, apiKey: candidate || undefined });
+      setFeedback({ ok: result.ok, message: result.message });
+    } catch (cause) {
+      setFeedback({ ok: false, message: cause instanceof Error ? cause.message : String(cause) });
+    }
+  }
+
+  async function save(provider: string) {
+    setFeedback(null);
+    try {
+      const result = await saveKey.mutateAsync({ provider, apiKey: candidate.trim() });
+      setCandidate("");
+      setFeedback({ ok: true, message: t("models.keySaved", { key: result.keyMasked ?? "—" }) });
+    } catch (cause) {
+      setFeedback({ ok: false, message: cause instanceof Error ? cause.message : String(cause) });
+    }
+  }
+
+  async function revoke(provider: string, providerName: string) {
+    if (!window.confirm(t("models.revokeKeyConfirm", { provider: providerName }))) return;
+    setFeedback(null);
+    try {
+      const result = await deleteKey.mutateAsync(provider);
+      setEditing((current) => current === provider ? null : current);
+      setCandidate("");
+      toast({
+        tone: "green",
+        title: result.effective.hasKey
+          ? t("models.keyVaultRevokedEnvActive", { provider: providerName })
+          : t("models.keyRevoked", { provider: providerName }),
+      });
+    } catch (cause) {
+      toast({
+        tone: "red",
+        title: t("models.revokeKeyFailed", {
+          provider: providerName,
+          error: cause instanceof Error ? cause.message : String(cause),
+        }),
+      });
+    }
+  }
+
+  return (
+    <Panel
+      title={t("models.credentialsTitle")}
+      subtitle={t("models.credentialsWorkspaceOnly")}
+      padded={false}
+    >
+      {(error || keys.error) && (
+        <div role="alert" style={{ padding: 14, color: "var(--red)", fontSize: 12 }}>
+          {t("models.providersLoadFailed")}: {(error ?? keys.error)?.message}
+        </div>
+      )}
+      {!error && !keys.error && (
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+          <thead>
+            <tr style={{ borderBottom: "1px solid var(--border)" }}>
+              <Th>{t("models.colProvider")}</Th>
+              <Th>{t("models.keyStatus")}</Th>
+              <Th>{t("models.keySource")}</Th>
+              <Th>{t("models.keyUpdated")}</Th>
+              <Th />
+            </tr>
+          </thead>
+          <tbody>
+            {(loading || keys.isLoading) && (
+              <tr><Td colSpan={5}>{t("models.loadingProviders")}</Td></tr>
+            )}
+            {!loading && !keys.isLoading && providers.length === 0 && (
+              <tr><Td colSpan={5}>{t("models.noRuntimeProviders")}</Td></tr>
+            )}
+            {providers.map((provider) => {
+              const meta = keyByProvider.get(provider.id);
+              const configured = meta?.hasKey ?? provider.hasKey;
+              const isEditing = editing === provider.id;
+              return (
+                <Fragment key={provider.id}>
+                  <tr style={{ borderBottom: isEditing ? "none" : "1px solid var(--border)" }}>
+                    <Td>
+                      <span style={{ color: "var(--text)" }}>{provider.name}</span>{" "}
+                      <span className="mono" style={{ color: "var(--text-3)", fontSize: 10.5 }}>{provider.id}</span>
+                    </Td>
+                    <Td>
+                      <Badge tone={configured ? "green" : "muted"}>
+                        {configured
+                          ? meta?.keyMasked ?? t("models.keyConfigured")
+                          : t("models.keyMissing")}
+                      </Badge>
+                    </Td>
+                    <Td>
+                      <span className="mono" style={{ color: "var(--text-2)", fontSize: 11 }}>
+                        {meta?.source ?? (configured ? "runtime" : "none")} · {meta?.scope ?? "workspace"}
+                      </span>
+                    </Td>
+                    <Td>
+                      <span style={{ color: "var(--text-3)", fontSize: 11 }}>
+                        {meta?.setAt ? new Date(meta.setAt).toLocaleString() : "—"}
+                      </span>
+                    </Td>
+                    <Td style={{ textAlign: "right" }}>
+                      <span style={{ display: "inline-flex", gap: 6, alignItems: "center", justifyContent: "flex-end" }}>
+                        {configured && meta?.source === "env" && (
+                          <span
+                            title={t("models.envKeyRemovalHint")}
+                            style={{ color: "var(--text-3)", fontSize: 10.5 }}
+                          >
+                            {t("models.managedByEnvironment")}
+                          </span>
+                        )}
+                        {configured && meta?.source === "vault" && (
+                          <Button
+                            small
+                            tone="danger"
+                            onClick={() => void revoke(provider.id, provider.name)}
+                            disabled={deleteKey.isPending}
+                          >
+                            {deleteKey.isPending && deleteKey.variables === provider.id
+                              ? t("models.revokingKey")
+                              : t("models.revokeKey")}
+                          </Button>
+                        )}
+                        <Button small tone="ghost" onClick={() => isEditing ? setEditing(null) : beginEdit(provider.id)}>
+                          {isEditing ? t("models.cancelKeyEdit") : configured ? t("models.rotateKey") : t("models.configureKey")}
+                        </Button>
+                      </span>
+                    </Td>
+                  </tr>
+                  {isEditing && (
+                    <tr style={{ borderBottom: "1px solid var(--border)" }}>
+                      <Td colSpan={5} style={{ padding: "10px 14px" }}>
+                        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                          <input
+                            type="password"
+                            value={candidate}
+                            onChange={(event) => setCandidate(event.target.value)}
+                            placeholder={configured ? t("models.newKeyPlaceholder") : t("models.keyPlaceholder")}
+                            aria-label={t("models.keyForProvider", { provider: provider.name })}
+                            autoComplete="new-password"
+                            style={{
+                              flex: 1,
+                              minWidth: 180,
+                              padding: "7px 9px",
+                              color: "var(--text)",
+                              background: "var(--panel-2)",
+                              border: "1px solid var(--border-2)",
+                              borderRadius: 5,
+                              fontFamily: "var(--mono)",
+                              fontSize: 12,
+                            }}
+                          />
+                          <Button
+                            small
+                            tone="ghost"
+                            onClick={() => void test(provider.id)}
+                            disabled={testKey.isPending || (!candidate.trim() && !configured)}
+                          >
+                            {testKey.isPending ? t("models.testingKey") : t("models.testKey")}
+                          </Button>
+                          <Button
+                            small
+                            tone="primary"
+                            onClick={() => void save(provider.id)}
+                            disabled={saveKey.isPending || candidate.trim().length < 8}
+                          >
+                            {saveKey.isPending ? t("models.savingKey") : t("models.saveWorkspaceKey")}
+                          </Button>
+                        </div>
+                        {feedback && (
+                          <div role="status" style={{ marginTop: 8, color: feedback.ok ? "var(--green)" : "var(--red)", fontSize: 11.5 }}>
+                            {feedback.message}
+                          </div>
+                        )}
+                      </Td>
+                    </tr>
+                  )}
+                </Fragment>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+    </Panel>
   );
 }
 
@@ -66,17 +288,25 @@ export function ModelsSection() {
 function ConfiguredFleetPanel({
   fleet,
   loading,
+  error,
 }: {
   fleet: FleetEntry[];
   loading: boolean;
+  error: Error | null;
 }) {
   const { t } = useI18n();
+  const toast = useToast();
   const updateMut = useUpdateFleetEntry();
   const deleteMut = useDeleteFleetEntry();
+  const fleetCount: string | number = error
+    ? "—"
+    : loading && fleet.length === 0
+      ? "…"
+      : fleet.length;
 
   return (
     <Panel
-      title={`${t("models.configuredTitle")} · ${fleet.length}`}
+      title={`${t("models.configuredTitle")} · ${fleetCount}`}
       subtitle={t("models.configuredSubtitle")}
       padded={false}
     >
@@ -85,6 +315,7 @@ function ConfiguredFleetPanel({
           <tr style={{ borderBottom: "1px solid var(--border)" }}>
             <Th>{t("models.colModel")}</Th>
             <Th>{t("models.colProvider")}</Th>
+            <Th>{t("models.colAvailability")}</Th>
             <Th>{t("models.colAlias")}</Th>
             <Th>{t("models.colRole")}</Th>
             <Th>{t("models.colDailyCap")}</Th>
@@ -92,16 +323,23 @@ function ConfiguredFleetPanel({
           </tr>
         </thead>
         <tbody>
+          {error && (
+            <tr>
+              <Td colSpan={7} style={{ color: "var(--red)", padding: 14 }}>
+                {t("models.fleetLoadFailed")}: {error.message}
+              </Td>
+            </tr>
+          )}
           {loading && (
             <tr>
-              <Td colSpan={6} style={{ color: "var(--text-3)", padding: 14 }}>
+              <Td colSpan={7} style={{ color: "var(--text-3)", padding: 14 }}>
                 {t("models.loadingFleet")}
               </Td>
             </tr>
           )}
-          {!loading && fleet.length === 0 && (
+          {!error && !loading && fleet.length === 0 && (
             <tr>
-              <Td colSpan={6} style={{ color: "var(--text-3)", padding: 14 }}>
+              <Td colSpan={7} style={{ color: "var(--text-3)", padding: 14 }}>
                 {t("models.noneConfigured")}
               </Td>
             </tr>
@@ -117,6 +355,25 @@ function ConfiguredFleetPanel({
                 <Badge tone="muted">{m.provider}</Badge>
               </Td>
               <Td>
+                <span
+                  title={m.availabilityMessage ?? undefined}
+                  style={{ display: "inline-flex", flexDirection: "column", gap: 3 }}
+                >
+                  <Badge tone={m.availability === "provider_confirmed" ? "green" : "amber"}>
+                    {m.availability === "provider_confirmed"
+                      ? t("models.availabilityConfirmed")
+                      : t("models.availabilityUnverified")}
+                  </Badge>
+                  {m.availabilityCheckedAt && (
+                    <span style={{ color: "var(--text-4)", fontSize: 9.5 }}>
+                      {t("models.availabilityChecked", {
+                        time: new Date(m.availabilityCheckedAt).toLocaleString(),
+                      })}
+                    </span>
+                  )}
+                </span>
+              </Td>
+              <Td>
                 <span className="mono" style={{ color: "var(--text-2)" }}>
                   {m.alias}
                 </span>
@@ -125,10 +382,20 @@ function ConfiguredFleetPanel({
                 <select
                   value={m.role}
                   onChange={(e) =>
-                    updateMut.mutate({
-                      id: m.id,
-                      patch: { role: e.target.value as FleetRole },
-                    })
+                    updateMut.mutate(
+                      {
+                        id: m.id,
+                        patch: { role: e.target.value as FleetRole },
+                      },
+                      {
+                        onError: (cause) =>
+                          toast({
+                            tone: "red",
+                            title: t("models.updateFailed"),
+                            description: cause.message,
+                          }),
+                      },
+                    )
                   }
                   disabled={updateMut.isPending}
                   aria-label={t("models.roleForAria", { name: m.modelName })}
@@ -182,9 +449,20 @@ function ConfiguredFleetPanel({
 
 // ─── Browse models from provider ──────────────────────────────────────────
 
-function BrowseModelsPanel() {
+function BrowseModelsPanel({
+  providers,
+  providersLoading,
+  providersError,
+}: {
+  providers: ProviderInfo[];
+  providersLoading: boolean;
+  providersError: Error | null;
+}) {
   const { t } = useI18n();
-  const [provider, setProvider] = useState<string>("anthropic");
+  const [pickedProvider, setPickedProvider] = useState<string>("");
+  const provider = providers.some((candidate) => candidate.id === pickedProvider)
+    ? pickedProvider
+    : providers[0]?.id ?? "";
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [freeText, setFreeText] = useState("");
   const available = useAvailableModels(provider);
@@ -193,7 +471,7 @@ function BrowseModelsPanel() {
   // Reset checkbox state when the provider changes — selections from one
   // provider don't make sense against a different /models list.
   function pickProvider(next: string) {
-    setProvider(next);
+    setPickedProvider(next);
     setSelected(new Set());
     setFreeText("");
   }
@@ -209,16 +487,18 @@ function BrowseModelsPanel() {
 
   async function addSelected() {
     const ids = [...selected];
-    setSelected(new Set());
+    const failed = new Set<string>();
     // Fire mutations sequentially so duplicate-alias errors from one don't
     // race the next; the fleet hook invalidates the list on each settle.
     for (const id of ids) {
       try {
         await addMut.mutateAsync({ provider, modelName: id });
       } catch (err) {
+        failed.add(id);
         alert(t("models.addFailed", { id, error: (err as Error).message }));
       }
     }
+    setSelected(failed);
   }
 
   async function addFreeText() {
@@ -235,7 +515,8 @@ function BrowseModelsPanel() {
   const models = available.data?.models ?? [];
   const source = available.data?.source ?? null;
   const message = available.data?.message ?? null;
-  const isEmptyCatalog = !available.isLoading && models.length === 0;
+  const isEmptyCatalog =
+    !available.isLoading && !available.isError && models.length === 0;
   const addableCount = useMemo(
     () => [...selected].filter((id) => !modelInFleet(models, id)).length,
     [selected, models],
@@ -253,7 +534,8 @@ function BrowseModelsPanel() {
             <SelectIn
               value={provider}
               onChange={pickProvider}
-              options={PROVIDERS as unknown as string[]}
+              options={providers.map((item) => ({ value: item.id, label: item.name }))}
+              disabled={providersLoading || providers.length === 0}
             />
           </Field>
           <div style={{ flex: 1 }} />
@@ -261,19 +543,31 @@ function BrowseModelsPanel() {
             small
             tone="ghost"
             onClick={() => available.refetch()}
-            disabled={available.isFetching}
+            disabled={available.isFetching || !provider}
           >
             <Icon name="replay" size={11} />{" "}
             {available.isFetching ? t("models.refreshing") : t("models.refresh")}
           </Button>
         </div>
 
-        <SourceBanner
-          loading={available.isLoading}
-          source={source}
-          message={message}
-          modelCount={models.length}
-        />
+        {providersError && (
+          <Banner tone="warn">
+            <Icon name="alert" size={11} /> {t("models.providersLoadFailed")}: {providersError.message}
+          </Banner>
+        )}
+
+        {available.isError ? (
+          <Banner tone="warn">
+            <Icon name="alert" size={11} /> {t("models.modelListFailed")}: {available.error.message}
+          </Banner>
+        ) : (
+          <SourceBanner
+            loading={available.isLoading}
+            source={source}
+            message={message}
+            modelCount={models.length}
+          />
+        )}
 
         {available.isLoading && (
           <div style={{ padding: 14, color: "var(--text-3)", fontSize: 12.5 }}>
@@ -281,7 +575,7 @@ function BrowseModelsPanel() {
           </div>
         )}
 
-        {!available.isLoading && isEmptyCatalog && (
+        {isEmptyCatalog && source === "unsupported" && (
           <FreeTextAdd
             provider={provider}
             value={freeText}
@@ -291,7 +585,13 @@ function BrowseModelsPanel() {
           />
         )}
 
-        {!available.isLoading && models.length > 0 && (
+        {isEmptyCatalog && source === "live" ? (
+          <div style={{ padding: 14, color: "var(--text-3)", fontSize: 12.5 }}>
+            {t("models.noModelsFound")}
+          </div>
+        ) : null}
+
+        {!available.isLoading && !available.isError && models.length > 0 && (
           <>
             <div style={{ maxHeight: 360, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 4 }}>
               <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
@@ -582,6 +882,11 @@ function FallbackChainPanel({ fleet }: { fleet: FleetEntry[] }) {
               {m.alias}
             </span>
             <Badge tone="muted">{m.provider}</Badge>
+            <Badge tone={m.availability === "provider_confirmed" ? "green" : "amber"}>
+              {m.availability === "provider_confirmed"
+                ? t("models.availabilityConfirmed")
+                : t("models.availabilityUnverified")}
+            </Badge>
             <Badge tone={m.role === "primary" ? "signal" : "muted"}>{t(`models.role_${m.role}`)}</Badge>
           </div>
         ))}

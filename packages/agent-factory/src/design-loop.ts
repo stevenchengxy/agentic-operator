@@ -9,25 +9,23 @@
  * 内部精修 gateway-gated + env 可关（FACTORY_DESIGN_INNER_LOOP=0）+ 失败兜底原稿——绝不比现在差。
  */
 
+import { isGeneratedToolExecutionPolicy } from "./tool-execution-policy";
+export { isGeneratedToolExecutionPolicy as isReviewedToolExecutionPolicy } from "./tool-execution-policy";
+
 export interface DesignIssue {
   /** 稳定编码，供测试/UI 归类。#OPEN-VOCAB：已知码给测试/UI 锚点，新码可开放追加。 */
-  code: "branch_uncovered" | "rule_leak" | "ungrounded_event" | "shallow_logic" | "no_tool" | "side_effect_no_compensation" | "missing_role_name" | (string & {});
+  code: "branch_uncovered" | "rule_leak" | "ungrounded_event" | "shallow_logic" | "side_effect_no_compensation" | "missing_role_name" | (string & {});
   /** hard = 外层几乎必然打回；soft = 提示。hard 才触发内部精修。 */
   hard: boolean;
   message: string;
   fix: string;
 }
 
-/** #SAGA — 外部副作用类工具判定：这些动作发生后【外部世界已经变了】（邮件已发、JD 已挂出、
- *  记录已写进别人系统），硬失败时需要补偿事件去撤销/对账（Saga 模式，SagaLLM/PVLDB 2025）。
- *  只读类（fs.read、ontology.*、meta/viz/report）不算。保守词表：宁可漏报（只是软警告），
- *  不误报纯读工具。 */
-export function isSideEffectfulTool(name: string): boolean {
-  const n = (name ?? "").trim();
-  if (!n) return false;
-  if (/^(ontology|meta|viz|report|logic)\./.test(n)) return false;
-  if (/^fs\./.test(n)) return /write|save|archive/i.test(n);
-  return /mail|notify|invite|publish|submit|send|post|create|cancel|http\.fetch/i.test(n);
+/** #SAGA — decide exclusively from a reviewed policy triple. Missing/invalid
+ * policy is rejected by generation before this compensation check runs. */
+export function requiresAttemptGrantPolicy(policy: unknown): boolean {
+  return isGeneratedToolExecutionPolicy(policy)
+    && (policy as { sandboxPolicy?: unknown }).sandboxPolicy === "requires_attempt_grant";
 }
 
 export interface DesignDraft {
@@ -42,7 +40,7 @@ export interface DesignDraft {
   ruleLeak: boolean;
   /** 由 design_agent 预算好传入（prompt 里出现本体没有的事件名）。 */
   ungroundedEvents: string[];
-  /** #SAGA — 绑定了外部副作用类工具（isSideEffectfulTool 命中任一）。 */
+  /** #SAGA — 绑定了需要 attempt grant 的外部写工具。 */
   sideEffectful?: boolean;
   /** #SAGA — 已声明补偿事件（spec.compensationEvent）。 */
   hasCompensation?: boolean;
@@ -75,12 +73,7 @@ export function designSelfCheck(d: DesignDraft): { issues: DesignIssue[]; hardCo
     issues.push({ code: "shallow_logic", hard: false, message: "decision_logic 过于简略，可能没覆盖成功/失败/拦截各分支", fix: "把每个分支的触发条件、emit 的事件、异常兜底都写清楚" });
   }
 
-  // ⑤ 没绑任何工具（design_agent 另有 provisioning 信号，这里只作自检可见性）。
-  if (d.toolCount === 0 && !d.hitl) {
-    issues.push({ code: "no_tool", hard: false, message: "没绑到任何工具", fix: "search_tools 搜 / create_tool 造 / ask_user 补，或确认这是纯逻辑 agent" });
-  }
-
-  // ⑥ #SAGA — 有外部副作用却没有补偿事件：硬失败后外部世界已经变了（邀约已发/JD 已挂出），
+  // ⑤ #SAGA — 有外部副作用却没有补偿事件：硬失败后外部世界已经变了（邀约已发/JD 已挂出），
   //    没有 compensation_event 就没有撤销/对账信号。软警告（不是每个副作用都必须补偿——由
   //    大脑按业务判断），但必须被看见。
   if (d.sideEffectful && !d.hasCompensation && !d.hitl) {

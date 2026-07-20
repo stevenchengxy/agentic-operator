@@ -423,6 +423,11 @@
           "name": "publish_status",
           "type": "String",
           "description": "岗位发布信息的发布状态,比如：已发布、已下线等"
+        },
+        {
+          "name": "recruiter_id",
+          "type": "String",
+          "description": "补全：被 Action assignRecruitTasks side_effects.data_changes 引用（合成）"
         }
       ]
     },
@@ -913,6 +918,26 @@
           "name": "expected_graduation_date",
           "type": "Date",
           "description": "候选人状态为在读时的预期毕业日期"
+        },
+        {
+          "name": "client_rules_check_status",
+          "type": "String",
+          "description": "补全：被 Event CLIENT_RULES_PASSED/CLIENT_RULES_FAILED state_mutations 引用（合成）"
+        },
+        {
+          "name": "client_rules_checked_at",
+          "type": "Timestamp",
+          "description": "补全：被 Event CLIENT_RULES_PASSED/CLIENT_RULES_FAILED state_mutations 引用（合成）"
+        },
+        {
+          "name": "client_rules_failure_reasons",
+          "type": "List<String>",
+          "description": "补全：被 Event CLIENT_RULES_FAILED state_mutations 引用（合成）"
+        },
+        {
+          "name": "recommend_user_id",
+          "type": "String",
+          "description": "补全：被 Action processResume side_effects.data_changes 引用（合成）"
         }
       ]
     },
@@ -1583,6 +1608,11 @@
           "name": "has_referral_bonus",
           "type": "Boolean",
           "description": "该职位投递是否有推荐奖金"
+        },
+        {
+          "name": "recruiter_id",
+          "type": "String",
+          "description": "补全：被 Action processResume side_effects.data_changes 引用（合成）"
         }
       ]
     },

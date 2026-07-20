@@ -14,8 +14,9 @@
 
 import { describe, it, expect, beforeAll } from "vitest";
 import path from "node:path";
-import { readFile, stat } from "node:fs/promises";
-import { and, eq } from "drizzle-orm";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { and, desc, eq } from "drizzle-orm";
 import {
   agents,
   agentVersions,
@@ -32,6 +33,8 @@ import {
 import { makeId } from "@agentic/shared";
 import { createHash } from "node:crypto";
 import { buildTestEnv, type TestEnv } from "./harness";
+import { reregisterInngest } from "../src/services/inngest-registry";
+import { __test as manifestImportTest } from "../src/services/manifest-import";
 
 const FIXTURES = path.resolve(__dirname, "fixtures", "manifests");
 
@@ -101,6 +104,20 @@ describe("manifest-import: commit mode", () => {
         ),
       )
       .run();
+  });
+
+  it("honours the explicit durable import-staging root", () => {
+    const previous = process.env.AGENTIC_IMPORTS_DIR;
+    const configured = path.join(tmpdir(), "agentic-models", ".imports");
+    try {
+      process.env.AGENTIC_IMPORTS_DIR = configured;
+      expect(path.resolve(manifestImportTest.importsRoot())).toBe(
+        path.resolve(configured),
+      );
+    } finally {
+      if (previous === undefined) delete process.env.AGENTIC_IMPORTS_DIR;
+      else process.env.AGENTIC_IMPORTS_DIR = previous;
+    }
   });
 
   it("cold commit of happy-v2 inserts a live deployment and writes a file", async () => {
@@ -356,12 +373,12 @@ describe("manifest-import: commit mode", () => {
   });
 
   // Regression: a `skip` resolution on an agent-level structural blocker
-  // used to be a no-op in `applyResolutions`, so the re-lint at commit time
-  // reproduced the orphan_actor / broken_subflow block and the deploy was
-  // refused with the bare "commit refused" line. The fix drops the agent
-  // at `agents[N]` whenever the resolution path matches that prefix,
-  // matching the wizard's "Skip agent · don't import" chip semantics.
-  it("skip resolution on agents[N] drops the agent and commit succeeds", async () => {
+  // drops that agent, but the remaining manifest is still not deployable when
+  // its logic action has no real tenant prompt. The database/file phase used
+  // to commit before runtime bootstrap discovered that error, leaving the
+  // invalid head live and poisoning every later boot. A failed activation must
+  // now restore the exact last-good live deployment and its runtime registry.
+  it("runtime-invalid resolved manifest restores the last-good deployment", async () => {
     const workflow = await loadFixture("orphan-plus-happy.json");
 
     // Sanity: a raw commit (no resolutions) is refused with orphan_actor.
@@ -382,7 +399,62 @@ describe("manifest-import: commit mode", () => {
     expect(refusedBody.ok).toBe(false);
     expect(refusedBody.error?.code).toBe("blocking_issues");
 
-    // With a `skip` resolution at agents[0].tool_use the commit should land.
+    const db = getDb();
+    const priorLive = db
+      .select()
+      .from(deployments)
+      .where(
+        and(
+          eq(deployments.tenantId, tenantId),
+          eq(deployments.target, "workflow"),
+          eq(deployments.status, "live"),
+        ),
+      )
+      .all()[0]!;
+    expect(priorLive.filePath).toBeTruthy();
+    const modelDir = path.dirname(priorLive.filePath!);
+    const filesBefore = (await readdir(modelDir)).sort();
+    const deploymentIdsBefore = new Set(
+      db
+        .select({ id: deployments.id })
+        .from(deployments)
+        .where(
+          and(
+            eq(deployments.tenantId, tenantId),
+            eq(deployments.target, "workflow"),
+          ),
+        )
+        .all()
+        .map((row) => row.id),
+    );
+    const wf = db
+      .select()
+      .from(workflows)
+      .where(
+        and(
+          eq(workflows.tenantId, tenantId),
+          eq(workflows.slug, "__system-default"),
+        ),
+      )
+      .all()[0]!;
+    const agentsBefore = db
+      .select()
+      .from(agents)
+      .where(eq(agents.workflowId, wf.id))
+      .all();
+    const listenersBefore = agentsBefore
+      .flatMap((agent) =>
+        db
+          .select()
+          .from(eventListeners)
+          .where(eq(eventListeners.agentId, agent.id))
+          .all(),
+      )
+      .map((row) => `${row.agentId}:${row.eventName}`)
+      .sort();
+
+    // The skip resolution itself is honoured, then strict runtime bootstrap
+    // rejects the surviving prompt-less logic action.
     const res = await env.fetch(`/v1/tenants/${slug}/manifest-import`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -395,24 +467,368 @@ describe("manifest-import: commit mode", () => {
         ],
       }),
     });
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as CommitEnvelope;
-    expect(body.ok).toBe(true);
+    expect(res.status).toBe(500);
 
-    // Only the non-orphan agent should land in agent_versions for this wfv.
-    const db = getDb();
-    const wfvId = body.data!.workflow_version_id;
-    const agvRows = db
-      .select({ agentId: agentVersions.agentId })
-      .from(agentVersions)
-      .where(eq(agentVersions.workflowVersionId, wfvId))
+    const liveAfter = db
+      .select()
+      .from(deployments)
+      .where(
+        and(
+          eq(deployments.tenantId, tenantId),
+          eq(deployments.target, "workflow"),
+          eq(deployments.status, "live"),
+        ),
+      )
       .all();
-    expect(agvRows).toHaveLength(1);
-    const survivor = db
-      .select({ kebabId: agents.kebabId })
+    expect(liveAfter).toHaveLength(1);
+    expect(liveAfter[0]).toMatchObject({
+      id: priorLive.id,
+      versionId: priorLive.versionId,
+      filePath: priorLive.filePath,
+      status: "live",
+    });
+    expect((await readdir(modelDir)).sort()).toEqual(filesBefore);
+
+    const newDeployments = db
+      .select()
+      .from(deployments)
+      .where(
+        and(
+          eq(deployments.tenantId, tenantId),
+          eq(deployments.target, "workflow"),
+        ),
+      )
+      .all()
+      .filter((row) => !deploymentIdsBefore.has(row.id));
+    expect(newDeployments).toHaveLength(1);
+    expect(newDeployments[0]).toMatchObject({
+      status: "rolled_back",
+      filePath: null,
+    });
+
+    const agentsAfter = db
+      .select()
       .from(agents)
-      .where(eq(agents.id, agvRows[0]!.agentId))
+      .where(eq(agents.workflowId, wf.id))
+      .all();
+    for (const prior of agentsBefore) {
+      expect(agentsAfter.find((agent) => agent.id === prior.id)).toEqual(prior);
+    }
+    for (const created of agentsAfter.filter(
+      (agent) => !agentsBefore.some((prior) => prior.id === agent.id),
+    )) {
+      expect(created.enabled).toBe(false);
+      expect(
+        db
+          .select()
+          .from(eventListeners)
+          .where(eq(eventListeners.agentId, created.id))
+          .all(),
+      ).toHaveLength(0);
+    }
+    const listenersAfter = agentsAfter
+      .flatMap((agent) =>
+        db
+          .select()
+          .from(eventListeners)
+          .where(eq(eventListeners.agentId, agent.id))
+          .all(),
+      )
+      .map((row) => `${row.agentId}:${row.eventName}`)
+      .sort();
+    expect(listenersAfter).toEqual(listenersBefore);
+
+    const failureAudit = db
+      .select()
+      .from(auditLog)
+      .where(
+        and(
+          eq(auditLog.tenantId, tenantId),
+          eq(auditLog.action, "manifest.import.fail_swap"),
+        ),
+      )
+      .orderBy(desc(auditLog.at))
       .all()[0]!;
-    expect(survivor.kebabId).toBe("agent-ok");
+    expect(failureAudit.targetId).toBe(newDeployments[0]!.id);
+    expect(failureAudit.metaJson).toMatchObject({
+      recovery_complete: true,
+      artifact_cleanup_ok: true,
+      database_restore_ok: true,
+      local_registry_restore_ok: true,
+      broker_restore_ok: true,
+    });
+    expect(
+      db
+        .select()
+        .from(auditLog)
+        .where(
+          and(
+            eq(auditLog.action, "manifest.import.commit"),
+            eq(auditLog.targetId, newDeployments[0]!.id),
+          ),
+        )
+        .all(),
+    ).toHaveLength(0);
+
+    // A fresh rebuild against the restored disk head proves this failure did
+    // not merely fix the SQL status while leaving boot poisoned.
+    await expect(
+      reregisterInngest({ tenantSlug: slug, scope: "tenant" }),
+    ).resolves.toMatchObject({ scope: "tenant" });
+  });
+
+  it("broker rejection keeps the restored DB and file head even when recovery sync also fails", async () => {
+    const workflow = (await loadFixture("happy-v2.json")) as {
+      agents: Array<Record<string, unknown>>;
+    };
+
+    const db = getDb();
+    const priorLive = db
+      .select()
+      .from(deployments)
+      .where(
+        and(
+          eq(deployments.tenantId, tenantId),
+          eq(deployments.target, "workflow"),
+          eq(deployments.status, "live"),
+        ),
+      )
+      .all()[0]!;
+
+    // Exercise the wizard promotion branch, including its hardest collision:
+    // validating content identical to the live manifest creates a pending WFV;
+    // phase 3 redirects at the existing auto-<hash> WFV and deletes that
+    // pending WFV. Compensation must recreate both pending rows exactly.
+    const validation = await env.fetch(
+      `/v1/tenants/${slug}/manifest-import`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ mode: "validate", workflow }),
+      },
+    );
+    expect(validation.status).toBe(200);
+    const validationBody = (await validation.json()) as {
+      ok: boolean;
+      data: { deployment_id: string; workflow_version_id: string };
+    };
+    const pendingBefore = db
+      .select()
+      .from(deployments)
+      .where(eq(deployments.id, validationBody.data.deployment_id))
+      .all()[0]!;
+    const pendingWfvBefore = db
+      .select()
+      .from(workflowVersions)
+      .where(eq(workflowVersions.id, validationBody.data.workflow_version_id))
+      .all()[0]!;
+    expect(pendingBefore.status).toBe("pending");
+    expect(pendingWfvBefore.version).toBe(
+      `pending-${validationBody.data.deployment_id}`,
+    );
+
+    const modelDir = path.dirname(priorLive.filePath!);
+    const filesBefore = (await readdir(modelDir)).sort();
+    const idsBefore = new Set(
+      db
+        .select({ id: deployments.id })
+        .from(deployments)
+        .where(
+          and(
+            eq(deployments.tenantId, tenantId),
+            eq(deployments.target, "workflow"),
+          ),
+        )
+        .all()
+        .map((row) => row.id),
+    );
+
+    const oldDisabled = process.env.INNGEST_SYNC_DISABLED;
+    const oldOrigin = process.env.INNGEST_SERVE_ORIGIN;
+    process.env.INNGEST_SYNC_DISABLED = "0";
+    process.env.INNGEST_SERVE_ORIGIN = "http://127.0.0.1:1";
+    let res: Response;
+    try {
+      res = await env.fetch(`/v1/tenants/${slug}/manifest-import`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          mode: "commit",
+          workflow,
+          deployment_id: validationBody.data.deployment_id,
+          confirm_overwrite: true,
+        }),
+      });
+    } finally {
+      if (oldDisabled === undefined) delete process.env.INNGEST_SYNC_DISABLED;
+      else process.env.INNGEST_SYNC_DISABLED = oldDisabled;
+      if (oldOrigin === undefined) delete process.env.INNGEST_SERVE_ORIGIN;
+      else process.env.INNGEST_SERVE_ORIGIN = oldOrigin;
+    }
+    expect(res!.status).toBe(500);
+
+    const liveAfter = db
+      .select()
+      .from(deployments)
+      .where(
+        and(
+          eq(deployments.tenantId, tenantId),
+          eq(deployments.target, "workflow"),
+          eq(deployments.status, "live"),
+        ),
+      )
+      .all();
+    expect(liveAfter).toHaveLength(1);
+    expect(liveAfter[0]).toMatchObject({
+      id: priorLive.id,
+      versionId: priorLive.versionId,
+      filePath: priorLive.filePath,
+    });
+    expect((await readdir(modelDir)).sort()).toEqual(filesBefore);
+    const deploymentsAfter = db
+      .select()
+      .from(deployments)
+      .where(
+        and(
+          eq(deployments.tenantId, tenantId),
+          eq(deployments.target, "workflow"),
+        ),
+      )
+      .all();
+    expect(deploymentsAfter.filter((row) => !idsBefore.has(row.id))).toHaveLength(0);
+    expect(
+      deploymentsAfter.find((row) => row.id === pendingBefore.id),
+    ).toEqual(pendingBefore);
+    expect(
+      db
+        .select()
+        .from(workflowVersions)
+        .where(eq(workflowVersions.id, pendingWfvBefore.id))
+        .all()[0],
+    ).toEqual(pendingWfvBefore);
+
+    const failureAudit = db
+      .select()
+      .from(auditLog)
+      .where(
+        and(
+          eq(auditLog.tenantId, tenantId),
+          eq(auditLog.action, "manifest.import.fail_swap"),
+        ),
+      )
+      .orderBy(desc(auditLog.at))
+      .all()[0]!;
+    expect(failureAudit.targetId).toBe(pendingBefore.id);
+    expect(failureAudit.metaJson).toMatchObject({
+      recovery_complete: false,
+      artifact_cleanup_ok: true,
+      database_restore_ok: true,
+      local_registry_restore_ok: true,
+      broker_restore_ok: false,
+    });
+
+    // Restoring test-mode broker suppression and rebuilding must still work;
+    // the failed recovery PUT did not reverse the DB/file compensation.
+    await expect(
+      reregisterInngest({ tenantSlug: slug, scope: "tenant" }),
+    ).resolves.toMatchObject({ scope: "tenant" });
+  });
+
+  it("filesystem activation failure never leaves the rejected manifest live", async () => {
+    const isolatedSlug = `rename-failure-${makeId("ten").slice(-8)}`;
+    const { tenantId: isolatedTenantId } = seedTenantWithToken(isolatedSlug);
+    const workflow = await loadFixture("happy-v2.json");
+    const tempRoot = await mkdtemp(path.join(tmpdir(), "agentic-manifest-rename-"));
+    const modelsDir = path.join(tempRoot, "models");
+    const importsDir = path.join(tempRoot, "imports");
+    const blockedTenantModelPath = path.join(modelsDir, `${isolatedSlug}-v1`);
+    await mkdir(modelsDir, { recursive: true });
+    await mkdir(importsDir, { recursive: true });
+    // A non-directory at the exact tenant model path makes the phase-4 mkdir
+    // fail deterministically on every supported filesystem.
+    await writeFile(blockedTenantModelPath, "pre-existing non-directory\n", "utf8");
+
+    const oldModelsDir = process.env.AGENTIC_MODELS_DIR;
+    const oldImportsDir = process.env.AGENTIC_IMPORTS_DIR;
+    // The manifest can be staged, but its durable model destination cannot be
+    // reserved. This exercises the phase-3 -> phase-4 compensation boundary.
+    process.env.AGENTIC_MODELS_DIR = modelsDir;
+    process.env.AGENTIC_IMPORTS_DIR = importsDir;
+    let response: Response;
+    try {
+      response = await env.fetch(
+        `/v1/tenants/${isolatedSlug}/manifest-import`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-agentic-tenant": isolatedSlug,
+          },
+          body: JSON.stringify({
+            mode: "commit",
+            workflow,
+            confirm_overwrite: true,
+          }),
+        },
+      );
+    } finally {
+      if (oldModelsDir === undefined) delete process.env.AGENTIC_MODELS_DIR;
+      else process.env.AGENTIC_MODELS_DIR = oldModelsDir;
+      if (oldImportsDir === undefined) delete process.env.AGENTIC_IMPORTS_DIR;
+      else process.env.AGENTIC_IMPORTS_DIR = oldImportsDir;
+    }
+
+    expect(response!.status).toBe(500);
+    const db = getDb();
+    const tenantDeployments = db
+      .select()
+      .from(deployments)
+      .where(
+        and(
+          eq(deployments.tenantId, isolatedTenantId),
+          eq(deployments.target, "workflow"),
+        ),
+      )
+      .all();
+    expect(tenantDeployments).toHaveLength(1);
+    expect(tenantDeployments[0]).toMatchObject({
+      status: "rolled_back",
+      filePath: null,
+    });
+    expect(tenantDeployments.some((row) => row.status === "live")).toBe(false);
+    expect(await readFile(blockedTenantModelPath, "utf8")).toBe(
+      "pre-existing non-directory\n",
+    );
+    expect(await readdir(importsDir)).toEqual([]);
+
+    const failureAudit = db
+      .select()
+      .from(auditLog)
+      .where(
+        and(
+          eq(auditLog.tenantId, isolatedTenantId),
+          eq(auditLog.action, "manifest.import.fail_rename"),
+        ),
+      )
+      .orderBy(desc(auditLog.at))
+      .all()[0]!;
+    expect(failureAudit.metaJson).toMatchObject({
+      recovery_complete: true,
+      database_restore_ok: true,
+    });
+    expect(
+      db
+        .select()
+        .from(auditLog)
+        .where(
+          and(
+            eq(auditLog.action, "manifest.import.commit"),
+            eq(auditLog.targetId, tenantDeployments[0]!.id),
+          ),
+        )
+        .all(),
+    ).toHaveLength(0);
+
+    await rm(tempRoot, { recursive: true, force: true });
   });
 });

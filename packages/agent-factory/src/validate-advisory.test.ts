@@ -4,7 +4,7 @@ import type { BrainCtx, BrainEvent } from "./brain-types";
 
 // #NATIVE（设计期契约降级）— 锁定语义：契约缺口/类型问题是【高置信提醒】，不翻 validate 的
 // ok、不阻断推进；真正的行为裁判是沙箱保真（execution_fidelity 验收判据）。结构性问题
-// （覆盖缺口/事件图不闭合/无工具）仍然翻 ok——那些是"链根本不可能跑"的确定性事实。
+// （覆盖缺口/事件图不闭合/显式降级壳/未解析工具）仍然翻 ok。零工具纯逻辑不是缺陷。
 
 const validate = FACTORY_TOOLS.find((t) => t.name === "validate_graph")!;
 
@@ -55,5 +55,16 @@ describe("validate_graph — 契约提醒不阻断（#NATIVE）", () => {
     const r = await validate.execute({}, ctx);
     expect(r.ok).toBe(false);
     expect(String(r.summary)).toContain("缺少 agent 的动作");
+  });
+
+  it("闭合的零工具纯逻辑 agent 仍可通过，显式降级壳不可通过", async () => {
+    const pure = spec({ actionName: "A", trigger: ["E_IN"], emit: ["E_OUT"], tools: [] });
+    const { ctx } = ctxWith([pure]);
+    expect((await validate.execute({}, ctx)).ok).toBe(true);
+
+    (ctx.specs[0] as unknown as { degraded?: boolean }).degraded = true;
+    const degraded = await validate.execute({}, ctx);
+    expect(degraded.ok).toBe(false);
+    expect(String(degraded.summary)).toContain("降级壳");
   });
 });

@@ -16,6 +16,7 @@ import {
   getDb,
   runs,
   tenants,
+  workflows,
 } from "@agentic/db";
 import { buildTestEnv, type TestEnv } from "./harness";
 
@@ -82,30 +83,32 @@ describe("TC-5: monitoring + deployment audit reuse", () => {
     const testAgentRow = db
       .select()
       .from(agents)
-      .where(eq(agents.kebabId, "testAgent"))
+      .innerJoin(workflows, eq(workflows.id, agents.workflowId))
+      .where(
+        and(
+          eq(agents.kebabId, "testAgent"),
+          eq(workflows.tenantId, systemTenant!.id),
+          eq(workflows.slug, "__system"),
+        ),
+      )
       .all()[0];
     expect(testAgentRow).toBeDefined();
-
-    const avRow = db
-      .select()
-      .from(agentVersions)
-      .where(eq(agentVersions.agentId, testAgentRow!.id))
-      .orderBy(desc(agentVersions.id))
-      .all()[0];
-    expect(avRow).toBeDefined();
 
     const depRow = db
       .select()
       .from(deployments)
+      .innerJoin(agentVersions, eq(agentVersions.id, deployments.versionId))
       .where(
         and(
+          eq(deployments.tenantId, systemTenant!.id),
           eq(deployments.target, "code_agent"),
-          eq(deployments.versionId, avRow!.id),
+          eq(deployments.status, "live"),
+          eq(agentVersions.agentId, testAgentRow!.agents.id),
         ),
       )
       .all()[0];
     expect(depRow).toBeDefined();
-    expect(depRow!.status).toBe("live");
+    expect(depRow!.deployments.status).toBe("live");
   });
 
   it("the run is reachable via the recent-runs query for testAgent", () => {

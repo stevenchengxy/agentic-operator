@@ -16,8 +16,8 @@
 //
 // TS is transpiled on the HOST (which has the compiler); the container only runs the compiled JS via
 // vm.compileFunction, so no toolchain is needed inside. Shares ModuleRunResult, the FACTORY_EXEC_GENERATED
-// kill switch, and the -sb invariant. Never throws. When Docker is unavailable it FALLS BACK to the child-
-// process runner (runGeneratedModuleProcess) unless fallback:false — so callers get the best available tier.
+// kill switch, and the -sb invariant. Never throws. A caller may explicitly opt into the weaker child-
+// process tier with fallback:true; the default fails when Docker is unavailable.
 
 import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
@@ -26,6 +26,7 @@ import { join } from "node:path";
 import { createRequire } from "node:module";
 import type { ModuleRunResult } from "./module-runner";
 import { runGeneratedModuleProcess, type RunModuleProcOpts } from "./module-runner-proc";
+import { isSandboxTenant } from "./sandbox-mode";
 
 export type { ModuleRunResult } from "./module-runner";
 
@@ -48,22 +49,30 @@ export function dockerAvailable(): boolean {
 /** test hook — reset the cached probe. */
 export function _resetDockerProbe(): void { _dockerOk = null; }
 
-// The in-container bootstrap: reads /work/payload.json (compiled JS + params), runs it behind a stubbing
+// The in-container bootstrap: reads /work/payload.json (compiled JS + params), runs it behind a deny-by-default
 // require-shim via vm.compileFunction (NOT new Function — denied by the node flag), picks an entry export,
 // optionally invokes it, and prints the result on a SENTINEL line to stdout (the only channel out of the
-// container). Non-allowlisted requires → {} (and inside --network none, real modules can't reach anything).
+// container). Non-allowlisted requires are rejected.
 const CONTAINER_BOOTSTRAP = `'use strict';
 const vm = require('node:vm');
 const fs = require('node:fs');
 const emit = (m) => { try { process.stdout.write("\\n" + ${JSON.stringify(RESULT_SENTINEL)} + JSON.stringify(m) + "\\n"); } catch (e) {} };
-const safe = (v) => { try { return JSON.parse(JSON.stringify(v === undefined ? null : v)); } catch (e) { return { __unserializable: true, preview: String(v).slice(0, 500) }; } };
+const serialize = (v) => {
+  try {
+    const json = JSON.stringify(v === undefined ? null : v);
+    if (json === undefined) throw new TypeError('result has no JSON representation');
+    return { ok: true, value: JSON.parse(json) };
+  } catch (e) {
+    return { ok: false, error: 'entry result is not JSON-serializable: ' + String(e && e.message || e).slice(0, 500) };
+  }
+};
 (async () => {
   try {
     const p = JSON.parse(fs.readFileSync('/work/payload.json', 'utf8'));
     const allow = new Set(p.allowlist || []);
     let captured = null;
     const defineAgent = (cfg) => { captured = cfg; return cfg; };
-    const requireShim = (id) => { if (id === '@agentic/runtime') return { defineAgent }; if (allow.has(id)) { try { return require(id); } catch (e) { return {}; } } return {}; };
+    const requireShim = (id) => { if (id === '@agentic/runtime') return { defineAgent }; if (allow.has(id)) return require(id); throw new Error("module '" + id + "' is not allowlisted"); };
     const moduleObj = { exports: {} };
     const factory = vm.compileFunction(p.js, ['require','exports','module','defineAgent'], { filename: '__generated__.js' });
     factory(requireShim, moduleObj.exports, moduleObj, defineAgent);
@@ -76,7 +85,9 @@ const safe = (v) => { try { return JSON.parse(JSON.stringify(v === undefined ? n
     if (p.call) {
       if (typeof entry !== 'function') { emit({ ok:false, error:'no callable entry export found', exportNames }); return; }
       const out = Array.isArray(p.args) ? await entry.apply(null, p.args) : await entry(p.input);
-      emit({ ok:true, called:true, exportName:name, exportNames, result: safe(out) });
+      const encoded = serialize(out);
+      if (!encoded.ok) { emit({ ok:false, called:true, exportName:name, exportNames, error:encoded.error }); return; }
+      emit({ ok:true, called:true, exportName:name, exportNames, result: encoded.value });
     } else { emit({ ok:true, called:false, exportName:name, exportNames }); }
   } catch (e) { emit({ ok:false, error: String(e && e.message || e).slice(0, 800) }); }
 })();
@@ -87,33 +98,33 @@ export interface RunModuleContainerOpts extends RunModuleProcOpts {
   image?: string;
   /** CPU cap (default 1). */
   cpus?: number;
-  /** when Docker is unavailable, fall back to the child-process runner (default true). */
+  /** explicitly allow a weaker child-process tier when Docker is unavailable (default false). */
   fallback?: boolean;
 }
 
 function transpileOnHost(code: string): string {
-  try {
-    const ts = createRequire(import.meta.url)("typescript") as typeof import("typescript");
-    return ts.transpileModule(code, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } }).outputText;
-  } catch {
-    return code; // not TS / no compiler → assume already-JS
-  }
+  const ts = createRequire(import.meta.url)("typescript") as typeof import("typescript");
+  return ts.transpileModule(code, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } }).outputText;
 }
 
-/** Run an arbitrary generated module inside a locked-down Docker container. Never throws. Falls back to the
- *  child-process runner when Docker is unavailable (unless fallback:false). */
+/** Run an arbitrary generated module inside a locked-down Docker container. Never throws. A weaker
+ *  child-process fallback is used only when the caller explicitly sets fallback:true. */
 export function runGeneratedModuleContainer(code: string, opts: RunModuleContainerOpts = {}): Promise<ModuleRunResult> {
   const started = Date.now();
-  const done = (r: Omit<ModuleRunResult, "durationMs">): ModuleRunResult => ({ ...r, durationMs: Date.now() - started });
+  const done = (r: Omit<ModuleRunResult, "durationMs">): ModuleRunResult => ({ isolationTier: "container", ...r, durationMs: Date.now() - started });
 
   if (process.env.FACTORY_EXEC_GENERATED === "0") return Promise.resolve(done({ ok: false, error: "FACTORY_EXEC_GENERATED=0（生成代码执行已禁用）" }));
-  if (opts.tenantSlug && !opts.tenantSlug.endsWith("-sb")) return Promise.resolve(done({ ok: false, error: "隔离不变量：runGeneratedModuleContainer 仅允许 -sb 沙箱租户" }));
+  if (opts.tenantSlug && !isSandboxTenant(opts.tenantSlug)) return Promise.resolve(done({ ok: false, error: "隔离不变量：runGeneratedModuleContainer 仅允许 Agent Factory 临时沙箱租户" }));
   if (!code || code.trim().length < 1) return Promise.resolve(done({ ok: false, error: "空代码" }));
 
   if (!dockerAvailable()) {
-    if (opts.fallback === false) return Promise.resolve(done({ ok: false, error: "Docker 不可用(daemon 未运行/未安装),且 fallback:false" }));
+    if (opts.fallback !== true) return Promise.resolve(done({ ok: false, error: "Docker 不可用(daemon 未运行/未安装)；未执行容器任务" }));
     // Degrade to the next-strongest tier (child process + scrubbed env).
-    return runGeneratedModuleProcess(code, opts).then((r) => ({ ...r, error: r.ok ? r.error : `[docker 不可用→回退子进程] ${r.error ?? ""}`.trim() }));
+    return runGeneratedModuleProcess(code, opts).then((r) => ({
+      ...r,
+      requestedIsolationTier: "container",
+      error: r.ok ? r.error : `[docker 不可用→回退子进程] ${r.error ?? ""}`.trim(),
+    }));
   }
 
   const timeoutMs = opts.timeoutMs ?? 15000; // container startup is slower — a larger default than the worker/proc runners
@@ -156,6 +167,7 @@ export function runGeneratedModuleContainer(code: string, opts: RunModuleContain
     let settled = false;
     let out = "";
     let errTail = "";
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const cleanup = () => { try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* disposable */ } };
     const killContainer = () => { try { spawn("docker", ["kill", name], { stdio: "ignore" }).on("error", () => {}); } catch { /* best-effort */ } };
     const parseResult = (): Record<string, unknown> | null => {
@@ -182,7 +194,7 @@ export function runGeneratedModuleContainer(code: string, opts: RunModuleContain
     child.stdout?.on("data", (d: Buffer) => { out += d.toString(); if (out.length > 1_000_000) out = out.slice(-500_000); });
     child.stderr?.on("data", (d: Buffer) => { if (errTail.length < 2000) errTail += d.toString(); });
 
-    const timer = setTimeout(() => { killContainer(); finish({ ok: false, timedOut: true, error: `容器执行超时（>${timeoutMs}ms）——已 docker kill` }); }, timeoutMs);
+    timer = setTimeout(() => { killContainer(); finish({ ok: false, timedOut: true, error: `容器执行超时（>${timeoutMs}ms）——已 docker kill` }); }, timeoutMs);
     timer.unref?.();
 
     child.once("error", (err: Error) => { killContainer(); finish({ ok: false, error: `docker 进程错误：${String(err?.message ?? err).slice(0, 300)}` }); });

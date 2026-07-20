@@ -6,7 +6,7 @@
  * Phase 1:
  *
  *   agentic init <slug>            — scaffold data/tenants/<slug>/ (P1-CLI-01)
- *   agentic deploy [path]          — typecheck + POST /v1/agents (P1-CLI-02)
+ *   agentic deploy [path]          — typecheck + deploy code and manifest (P1-CLI-02)
  *   agentic logs <run-id> [--tail] — fetch /v1/runs/:id/logs (P1-CLI-03)
  *   agentic events tail            — SSE subscribe /v1/stream  (P1-CLI-04)
  *
@@ -94,7 +94,7 @@ Usage:
 
 Commands:
   init <slug>                 Scaffold a tenant project at data/tenants/<slug>/
-  deploy [path]               Typecheck + POST manifest to /v1/agents
+  deploy [path]               Typecheck + deploy tenant code and manifest
   logs <run-id> [--tail]      Stream /v1/runs/:id/logs to stdout
   events tail                 Subscribe to /v1/stream and pretty-print
 

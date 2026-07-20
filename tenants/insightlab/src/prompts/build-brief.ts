@@ -13,7 +13,6 @@ export const buildBrief: PromptDescriptor = definePrompt({
   name: "buildBrief",
   description:
     "Assemble a self-contained HTML analyst brief from CLAIMS_EXTRACTED and persist via writeBriefToDisk.",
-  model: "anthropic/claude-haiku-4-5",
   system: [
     "You are briefAgent. Your job is to assemble a single self-contained HTML",
     "brief from the upstream tagging + claim payload and persist it to disk.",

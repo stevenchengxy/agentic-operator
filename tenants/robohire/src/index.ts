@@ -7,10 +7,6 @@
  *                       Live surface (probed 2026-05-24): /api/v1/match-resume,
  *                       /parse-resume, /parse-jd, /invite-candidate,
  *                       /evaluate-interview, /health, /stats.
- *   - MCP servers      (mock stdio server under `mcp-server/`) — surfaces
- *                       `robohire-mcp.search_candidates`, `.score_resume`,
- *                       `.get_job_requisition` as tools the LLM can call.
- *                       Used as fallback when the real REST API is offline.
  *   - Skills           (markdown under `skills/`) — progressively-disclosed
  *                       procedural knowledge for sourcing, screening, interview
  *                       planning.
@@ -54,25 +50,11 @@ const prompts: TenantRegistry["prompts"] = {
   generateInvite,
 };
 
-// MCP server config — the runtime spawns the bin via stdio and exposes
-// every advertised tool as `robohire-mcp.<tool>`. Optional=true so a
-// missing tsx or transient stdio error doesn't block boot.
-const mcpServers: TenantRegistry["mcpServers"] = [
-  {
-    name: "robohire-mcp",
-    transport: "stdio",
-    command: "node",
-    args: [join(here, "..", "mcp-server", "bin.mjs")],
-    env: {},
-    optional: true,
-  },
-];
-
 // Boot-time scan of the skills directory. Returns metadata-only descriptors;
 // SKILL.md bodies are loaded on demand by the `skills.load_skill` tool.
 const skills = loadSkillsFromDirectory(join(here, "skills"));
 
-const registry: TenantRegistry = { tools, prompts, mcpServers, skills };
+const registry: TenantRegistry = { tools, prompts, skills };
 export default registry;
 
 /**

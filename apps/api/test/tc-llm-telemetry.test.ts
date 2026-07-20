@@ -1,6 +1,9 @@
 import { describe, it, expect } from "vitest";
 import type { LlmCallRecord } from "@agentic/agent-factory";
-import { writeLlmCall } from "../src/services/agent-factory/llm-telemetry";
+import {
+  getLlmTelemetryStatus,
+  writeLlmCall,
+} from "../src/services/agent-factory/llm-telemetry";
 import { getDb, llmCalls, eq } from "@agentic/db";
 
 // #P0-3 — raw LLM telemetry is persisted to the llm_calls table (was ephemeral in-memory streaming).
@@ -26,6 +29,10 @@ describe("#P0-3 llm_calls telemetry persistence", () => {
     expect(row.latencyMs).toBe(812);
     expect(row.ok).toBe(true);
     expect(row.purpose).toBe("review");
+    expect(getLlmTelemetryStatus()).toMatchObject({
+      ok: true,
+      consecutiveFailures: 0,
+    });
   });
 
   it("records a failed call (ok=false + failureReason) too", () => {

@@ -2,9 +2,10 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { FsAgentDraftStore } from "../src/services/agent-factory/agent-draft-store";
+import { DraftVersionConflictError, FsAgentDraftStore } from "../src/services/agent-factory/agent-draft-store";
 import { testGeneratedFunction } from "../src/services/agent-factory/function-tester-run";
 import { validateAgentCode, type GeneratedAgentSpec } from "@agentic/agent-factory";
+import { makeToolCassetteEntry } from "@agentic/shared/cassette";
 
 // #P1b — 生成→落盘可部署 .ts→读回→真跑。证明:一次完成的工厂运行会把【可下载的 function 代码】
 // (inngest.createFunction 形态)持久化,而且这份持久化的代码本身能在隔离里真跑通并发出事件。
@@ -68,15 +69,62 @@ describe("TC-P1b: 落盘可部署 .ts 交付物 + 真跑", () => {
     await store.save("raas-v1", [spec()]);
     const code = await store.getCode("raas-v1", "raas-process-resume");
     // 直接把落盘的代码喂给 Tester(经 harness)——证明交付物真跑,不是只编译过
-    const { verdict } = await testGeneratedFunction(spec(), { testEvent: { data: { payload: { upload_id: "u1" } } }, expectEmits: ["RESUME_PROCESSED"] });
-    expect(verdict.pass).toBe(true);
+    const { verdict } = await testGeneratedFunction(spec(), {
+      code: code!,
+      // Generic functions consume canonical event.data. Legacy `payload`
+      // envelopes belong in a tenant adapter, not in the generated handler.
+      testEvent: { data: { upload_id: "u1" } },
+      expectEmits: ["RESUME_PROCESSED"],
+      fixture: {
+        toolCassettes: {
+          parseResumeApi: {
+            version: 1,
+            tool: { name: "parseResumeApi", definitionHash: "def-1" },
+            evidence: { recordedAt: new Date(0).toISOString(), mode: "signed-fixture" },
+            entries: [makeToolCassetteEntry({
+              toolName: "parseResumeApi",
+              args: { upload_id: "u1", results: {} },
+              status: 200,
+              body: { name: "张三" },
+            })],
+          },
+        },
+        reasonResult: { pass: true, ok: true, emit: "RESUME_PROCESSED" },
+      },
+    });
+    expect(verdict.pass, JSON.stringify(verdict)).toBe(true);
     expect(code).toContain("RESUME_PROCESSED");
   }, 20000);
 
-  it("delete() 连带清掉 .ts", async () => {
+  it("delete() 只隐藏当前投影，历史不可变版本仍可审计和回放", async () => {
     const store = new FsAgentDraftStore();
     await store.save("raas-v1", [spec({ slug: "to-delete" })]);
+    const versionId = (await store.listVersions("raas-v1"))[0]!.versionId;
+    const exactBefore = await store.getCode("raas-v1", "to-delete", versionId);
     expect(await store.delete("raas-v1", "to-delete")).toBe(true);
     expect(await store.getCode("raas-v1", "to-delete")).toBeNull();
+    expect((await store.list("raas-v1")).some((draft) => draft.slug === "to-delete")).toBe(false);
+    expect(await store.getCode("raas-v1", "to-delete", versionId)).toBe(exactBefore);
+    expect((await store.getVersion("raas-v1", versionId)).map((draft) => draft.slug)).toContain("to-delete");
+    expect((await store.listVersions("raas-v1")).map((version) => version.versionId)).toContain(versionId);
+
+    await store.save("raas-v1", [spec({ slug: "to-delete", systemPrompt: "重新生成后的当前版本。" })]);
+    expect(await store.getCode("raas-v1", "to-delete")).not.toBeNull();
+    expect(await store.getCode("raas-v1", "to-delete", versionId)).toBe(exactBefore);
+  });
+
+  it("PATCH 采用 latest CAS，拒绝旧页面覆盖新版本，也不允许只改 tools 半套契约", async () => {
+    const store = new FsAgentDraftStore();
+    await store.save("raas-v1", [spec({ slug: "cas-agent" })]);
+    const base = (await store.listVersions("raas-v1"))[0]!.versionId;
+    const next = await store.createPatchedVersion("raas-v1", base, "cas-agent", {
+      set: { systemPrompt: "第一位审查者的修改。" },
+    });
+    await expect(store.createPatchedVersion("raas-v1", base, "cas-agent", {
+      set: { systemPrompt: "来自旧页面的覆盖。" },
+    })).rejects.toBeInstanceOf(DraftVersionConflictError);
+    await expect(store.createPatchedVersion("raas-v1", next.versionId, "cas-agent", {
+      set: { tools: ["another.tool"] },
+    })).rejects.toThrow(/immutable or unknown/);
   });
 });

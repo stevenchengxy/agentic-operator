@@ -1,7 +1,8 @@
-// Live-runthrough harness helpers (pure, testable). Used by the api ManifestSandboxDeployer to:
-//  (1) auto-synthesize MOCK external-platform agents so a chain with external handoffs still runs
-//      end-to-end in the isolated sandbox (the brain's create_mock_agent, but automatic), and
-//  (2) turn per-subject run observations into a CaseRunOutcome for chainVerdictByKind (verification.ts),
+// Live-runthrough harness helpers. Production deployers use externalInputEvents() to identify which
+// external inputs still need explicit approved test cases; they never synthesize platform behavior
+// or fabricate payloads. The mock synthesizer remains solely for
+// isolated unit-test fixtures. The remaining helpers turn per-subject run observations into a
+// CaseRunOutcome for chainVerdictByKind (verification.ts),
 //      so a reject case that correctly reaches a FAIL terminal counts as a PASS.
 
 import type { GeneratedAgentSpec } from "./spec-types";
@@ -26,10 +27,9 @@ export interface MockSynthOpts {
  *  mock agent that fires on the upstream handoff (a dangling internal emit) — or the fired entries
  *  when there's no handoff — and emits the orphan trigger, closing the chain. Mock slugs contain
  *  "-mock-" so acceptanceReport excludes them from the real-deliverable count. */
-/** #REDESIGN P1b — the external-INPUT events a chain depends on: consumed by an internal agent but
- *  produced by neither an internal agent nor a fired entry (an external platform would send them).
- *  Instead of a MOCK producer agent, the deployer FIRES these directly as real entries (zero mock),
- *  so the chain closes on real events. Same set synthesizeMockExternalAgents used to stub. */
+/** The external-INPUT events a chain depends on: consumed by an internal agent but produced by
+ * neither an internal agent nor an explicitly supplied entry case (an external platform would send
+ * them). In production this set is a fail-closed coverage gap, never an instruction to invent data. */
 export function externalInputEvents(specs: GeneratedAgentSpec[], opts: MockSynthOpts): string[] {
   const produced = new Set(specs.flatMap((s) => s.emit ?? []).filter(Boolean));
   const consumed = new Set(specs.flatMap((s) => s.trigger ?? []).filter(Boolean));
@@ -38,6 +38,11 @@ export function externalInputEvents(specs: GeneratedAgentSpec[], opts: MockSynth
 }
 
 export function synthesizeMockExternalAgents(specs: GeneratedAgentSpec[], opts: MockSynthOpts): GeneratedAgentSpec[] {
+  if (process.env.NODE_ENV !== "test") {
+    throw new Error(
+      "synthesizeMockExternalAgents is test-only; production sandboxes must use real external inputs/integrations",
+    );
+  }
   const produced = new Set(specs.flatMap((s) => s.emit ?? []).filter(Boolean));
   const consumed = new Set(specs.flatMap((s) => s.trigger ?? []).filter(Boolean));
   const fired = new Set(opts.firedEntries ?? []);
@@ -92,6 +97,8 @@ export interface CaseRunOutcomeShape {
   reachedFailTerminal: boolean;
   crashed: boolean;
   degraded?: boolean;
+  expectedEvent?: string;
+  expectedEventMatched?: boolean;
 }
 
 // Aligned with the deployer: RUN_FAILED matches a run STATUS; FAILISH matches a fail-terminal EVENT
@@ -105,7 +112,7 @@ const FAILISH_EVENT_RE = /FAIL|REJECT|ERROR|CONFLICT|DENIED|FAILED/i;
 export function caseOutcomeFromRuns(
   kind: "pass" | "reject" | "edge" | "fault",
   runs: ObservedRun[],
-  opts: { successTerminals: string[]; degraded?: boolean },
+  opts: { successTerminals: string[]; degraded?: boolean; expectedEvent?: string },
 ): CaseRunOutcomeShape {
   const success = new Set(opts.successTerminals);
   const crashed = runs.length === 0;
@@ -113,5 +120,14 @@ export function caseOutcomeFromRuns(
   const reachedFailTerminal = runs.some(
     (r) => RUN_FAILED_RE.test(r.status) || (r.emittedEvent != null && FAILISH_EVENT_RE.test(r.emittedEvent)),
   );
-  return { kind, reachedSuccessTerminal, reachedFailTerminal, crashed, degraded: opts.degraded };
+  return {
+    kind,
+    reachedSuccessTerminal,
+    reachedFailTerminal,
+    crashed,
+    degraded: opts.degraded,
+    ...(opts.expectedEvent
+      ? { expectedEvent: opts.expectedEvent, expectedEventMatched: runs.some((run) => run.emittedEvent === opts.expectedEvent) }
+      : {}),
+  };
 }

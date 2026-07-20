@@ -9,10 +9,12 @@
 import Anthropic from "@anthropic-ai/sdk";
 import {
   flattenContentToText,
+  type ChatContentBlock,
   type ChatMessage,
   type ChatRequest,
   type ChatResponse,
   type ProviderAdapter,
+  type ToolCall,
 } from "../types";
 import { LLMError, classifyHttpError } from "../errors";
 
@@ -34,6 +36,54 @@ function partitionSystem(messages: ChatMessage[]): { system: string | undefined;
     system: systemParts.length > 0 ? systemParts.join("\n\n") : undefined,
     rest,
   };
+}
+
+function encodeToolName(name: string): string {
+  return name.replace(/\./g, "__");
+}
+
+function decodeToolName(name: string): string {
+  return name.replace(/__/g, ".");
+}
+
+function mapContentBlocks(
+  role: ChatMessage["role"],
+  content: ChatContentBlock[],
+): Anthropic.Messages.ContentBlockParam[] {
+  const out: Anthropic.Messages.ContentBlockParam[] = [];
+  for (const block of content) {
+    if (block.type === "text") {
+      out.push({ type: "text", text: block.text });
+    } else if (block.type === "tool_use" && role === "assistant") {
+      out.push({
+        type: "tool_use",
+        id: block.id,
+        name: encodeToolName(block.name),
+        input: block.input,
+      });
+    } else if (block.type === "tool_result" && role === "tool") {
+      out.push({
+        type: "tool_result",
+        tool_use_id: block.tool_use_id,
+        content: block.content,
+        is_error: block.is_error,
+      });
+    }
+  }
+  return out;
+}
+
+function mapMessages(messages: ChatMessage[]): Anthropic.Messages.MessageParam[] {
+  const out: Anthropic.Messages.MessageParam[] = [];
+  for (const message of messages) {
+    if (message.role === "system") continue;
+    const role: "user" | "assistant" = message.role === "assistant" ? "assistant" : "user";
+    const content = typeof message.content === "string"
+      ? message.content
+      : mapContentBlocks(message.role, message.content);
+    out.push({ role, content });
+  }
+  return out;
 }
 
 function mapStopReason(r: string | null | undefined): ChatResponse["finishReason"] {
@@ -95,10 +145,19 @@ export function createAnthropicAdapter(config: AnthropicAdapterConfig): Provider
             temperature: req.temperature,
             stop_sequences: req.stop,
             system,
-            messages: rest.map((m) => ({
-              role: m.role === "assistant" ? "assistant" : "user",
-              content: flattenContentToText(m.content),
-            })),
+            messages: mapMessages(rest),
+            ...(req.tools && req.tools.length > 0
+              ? {
+                  tools: req.tools.map((tool) => ({
+                    name: encodeToolName(tool.name),
+                    description: tool.description,
+                    input_schema: {
+                      type: "object" as const,
+                      ...tool.input_schema,
+                    },
+                  })),
+                }
+              : {}),
           },
           {
             signal: req.signal,
@@ -109,6 +168,16 @@ export function createAnthropicAdapter(config: AnthropicAdapterConfig): Provider
           .filter((b): b is Anthropic.TextBlock => b.type === "text")
           .map((b) => b.text);
         const text = textBlocks.join("");
+        const toolCalls: ToolCall[] = response.content
+          .filter((b): b is Anthropic.ToolUseBlock => b.type === "tool_use")
+          .map((b) => ({
+            id: b.id,
+            name: decodeToolName(b.name),
+            input:
+              b.input && typeof b.input === "object" && !Array.isArray(b.input)
+                ? (b.input as Record<string, unknown>)
+                : { value: b.input },
+          }));
 
         return {
           text,
@@ -118,6 +187,7 @@ export function createAnthropicAdapter(config: AnthropicAdapterConfig): Provider
           tokensOut: response.usage.output_tokens,
           finishReason: mapStopReason(response.stop_reason),
           latencyMs: Date.now() - start,
+          toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
           raw: response,
         };
       } catch (err) {

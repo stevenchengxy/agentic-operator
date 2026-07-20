@@ -82,8 +82,7 @@ describe.runIf(available)("pgvector memory driver (live container)", () => {
     getDb().insert(tenants).values({ id: tenantId, slug: `pgvec-${tenantId.slice(-6)}`, name: "pgvec e2e" }).run();
     const handle = createMemoryHandle({ tenantId, agentName: "pgvec-e2e", subject: "cand-1", runId: "run-pgvec-e2e" });
     await handle.put("interview-pref", { note: "候选人偏好下午面试,时区 UTC+8" }, "subject");
-    // mirror is fire-and-forget — give it a beat, then confirm the row landed in pg
-    await new Promise((r) => setTimeout(r, 150));
+    // put() only resolves after the pgvector mirror acknowledges the row.
     const { rows } = await sql.query(`SELECT count(*)::int AS n FROM ${T} WHERE key='interview-pref'`);
     expect(rows[0]!.n).toBe(1);
 
@@ -91,7 +90,6 @@ describe.runIf(available)("pgvector memory driver (live container)", () => {
     expect(hits.some((h) => (h.meta as { key: string }).key === "interview-pref")).toBe(true);
 
     await handle.delete("interview-pref", "subject");
-    await new Promise((r) => setTimeout(r, 150));
     const after = await sql.query(`SELECT count(*)::int AS n FROM ${T} WHERE key='interview-pref'`);
     expect(after.rows[0]!.n).toBe(0);
   });

@@ -24,6 +24,7 @@ import {
   ViewHeader,
   SearchInput,
   FilterChip,
+  useToast,
   type StatusName,
 } from "@/app/portal/components";
 import { fmtAgo, fmtDur } from "@/app/portal/lib/format";
@@ -36,6 +37,7 @@ import {
   useBulkDeleteRuns,
   type RunListRow,
 } from "@/lib/hooks/useRuns";
+import { useCounts } from "@/lib/hooks/useAgents";
 
 const STATUS_TO_DOT: Record<string, StatusName> = {
   running: "running",
@@ -43,7 +45,7 @@ const STATUS_TO_DOT: Record<string, StatusName> = {
   waiting: "waiting",
   ok: "ok",
   failed: "failed",
-  cancelled: "paused",
+  cancelled: "cancelled",
   paused: "paused",
   idle: "idle",
 };
@@ -53,6 +55,7 @@ const PAGE_SIZE = 25;
 export default function RunsPage() {
   const tenant = useTenant();
   const { t } = useI18n();
+  const toast = useToast();
 
   const [statusFilter, setStatusFilter] = useState<
     "all" | "running" | "ok" | "failed"
@@ -73,40 +76,68 @@ export default function RunsPage() {
     setPage(1);
   }, [statusFilter, query, binMode]);
 
-  const { data, isFetching } = useRunsPaged({
+  const { data, isFetching, isError, isPlaceholderData, error } = useRunsPaged({
     status: binMode ? "all" : statusFilter,
     q: query || undefined,
     page,
     pageSize: PAGE_SIZE,
     deleted: binMode,
   });
+  const countsQuery = useCounts();
 
-  const rows = data?.rows ?? [];
-  const total = data?.total ?? 0;
+  const dataReady = data !== undefined && !isPlaceholderData && !isError;
+  const rows = dataReady ? data.rows : [];
+  const total = dataReady ? data.total : 0;
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-  const activeCount = rows.filter((r) => r.status === "running").length;
+  const countValue: string | number = dataReady
+    ? total
+    : isFetching
+      ? "…"
+      : "—";
+  const activeValue: string | number = countsQuery.isError
+    ? "—"
+    : countsQuery.data
+      ? countsQuery.data.runningRuns
+      : "…";
 
   const deleteRun = useDeleteRun();
   const restoreRun = useRestoreRun();
   const bulk = useBulkDeleteRuns();
   const busy = deleteRun.isPending || restoreRun.isPending || bulk.isPending;
+  const reportMutationError = (operation: string) => (cause: Error) =>
+    toast({
+      tone: "red",
+      title: operation,
+      description: cause.message,
+    });
 
   function cleanOldest() {
     if (window.confirm(t("runs.confirmCleanOldest", { n: 100 })))
-      bulk.mutate({ scope: "oldest", n: 100 });
+      bulk.mutate(
+        { scope: "oldest", n: 100 },
+        { onError: reportMutationError(t("runs.cleanOldestFailed")) },
+      );
   }
   function clearAll() {
-    if (window.confirm(t("runs.confirmClearAll"))) bulk.mutate({ scope: "all" });
+    if (window.confirm(t("runs.confirmClearAll")))
+      bulk.mutate(
+        { scope: "all" },
+        { onError: reportMutationError(t("runs.clearAllFailed")) },
+      );
   }
   function purgeBin() {
-    if (window.confirm(t("runs.confirmPurge"))) bulk.mutate({ scope: "purge" });
+    if (window.confirm(t("runs.confirmPurge")))
+      bulk.mutate(
+        { scope: "purge" },
+        { onError: reportMutationError(t("runs.purgeFailed")) },
+      );
   }
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
       <ViewHeader
         title={t("nav.runs")}
-        subtitle={t("runs.summary", { count: total, active: activeCount })}
+        subtitle={t("runs.summary", { count: countValue, active: activeValue })}
         action={
           <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
             {/* Records ↔ recycle-bin lens toggle */}
@@ -129,15 +160,15 @@ export default function RunsPage() {
             </div>
             <span style={{ width: 1, height: 18, background: "var(--border)" }} />
             {binMode ? (
-              <Button small tone="danger" onClick={purgeBin} disabled={busy || total === 0}>
+              <Button small tone="danger" onClick={purgeBin} disabled={busy || !dataReady || total === 0}>
                 {t("runs.purgeBin")}
               </Button>
             ) : (
               <>
-                <Button small onClick={cleanOldest} disabled={busy}>
+                <Button small onClick={cleanOldest} disabled={busy || !dataReady || total === 0}>
                   {t("runs.cleanOldest")}
                 </Button>
-                <Button small tone="danger" onClick={clearAll} disabled={busy}>
+                <Button small tone="danger" onClick={clearAll} disabled={busy || !dataReady || total === 0}>
                   {t("runs.clearAll")}
                 </Button>
               </>
@@ -207,7 +238,14 @@ export default function RunsPage() {
           )}
 
           <div style={{ flex: 1, overflow: "auto" }}>
-            {rows.length === 0 ? (
+            {isError ? (
+              <Empty
+                title={t("runs.loadFailed")}
+                hint={error instanceof Error ? error.message : t("runs.loadFailedHint")}
+              />
+            ) : isFetching && !dataReady ? (
+              <Empty title={t("runs.loading")} hint="" />
+            ) : rows.length === 0 ? (
               <Empty
                 title={binMode ? t("runs.binEmptyTitle") : t("runs.emptyTitle")}
                 hint={binMode ? t("runs.binEmptyHint") : t("runs.emptyHint")}
@@ -219,8 +257,16 @@ export default function RunsPage() {
                   row={r}
                   tenant={tenant}
                   binMode={binMode}
-                  onDelete={() => deleteRun.mutate(r.id)}
-                  onRestore={() => restoreRun.mutate(r.id)}
+                  onDelete={() =>
+                    deleteRun.mutate(r.id, {
+                      onError: reportMutationError(t("runs.deleteFailed")),
+                    })
+                  }
+                  onRestore={() =>
+                    restoreRun.mutate(r.id, {
+                      onError: reportMutationError(t("runs.restoreFailed")),
+                    })
+                  }
                 />
               ))
             )}
@@ -245,7 +291,11 @@ export default function RunsPage() {
                 opacity: isFetching ? 0.5 : 1,
               }}
             >
-              {t("runs.pageOf", { page, pages, total })}
+              {t("runs.pageOf", {
+                page: dataReady ? page : "—",
+                pages: dataReady ? pages : "—",
+                total: countValue,
+              })}
             </span>
             <div style={{ display: "flex", gap: 4 }}>
               <Button
@@ -253,14 +303,14 @@ export default function RunsPage() {
                 icon="chevron-left"
                 ariaLabel={t("runs.prevPage")}
                 onClick={() => setPage((p) => Math.max(1, p - 1))}
-                disabled={page <= 1}
+                disabled={!dataReady || page <= 1}
               />
               <Button
                 small
                 icon="chevron-right"
                 ariaLabel={t("runs.nextPage")}
                 onClick={() => setPage((p) => Math.min(pages, p + 1))}
-                disabled={page >= pages}
+                disabled={!dataReady || page >= pages}
               />
             </div>
           </div>

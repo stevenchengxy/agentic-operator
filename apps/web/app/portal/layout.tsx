@@ -6,8 +6,9 @@
  * TopBar). Tenant resolution lives one level deeper (`[tenant]/layout.tsx`)
  * because Sidebar reads `useTenant()` from the URL.
  *
- * Auth gate: this layout calls into `lib/auth/session.ts` to check the
- * signed session cookie. Anonymous visitors are redirected to /sign-in.
+ * Auth gate: this layout calls into `lib/auth/session.ts`, which forwards the
+ * opaque session cookie to the API's canonical verifier. Anonymous visitors
+ * are redirected to /sign-in.
  *
  * The `<html>` element keeps `data-theme` and `data-density` defaults; the
  * Tweaks panel mutates them at runtime via `useTweaks` (which also persists

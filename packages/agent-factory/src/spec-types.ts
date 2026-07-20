@@ -5,6 +5,10 @@
 // Ported verbatim from the OLD repo's lib/agent-factory-gen/types.ts (pure types,
 // zero imports) as part of the M1 migration into @agentic/agent-factory.
 
+import type { IntegrationRequirement, IntegrationToolBinding } from "./integration-binding";
+import type { OntologyInputBindingKind } from "./ontology-types";
+import type { DecisionTable } from "@agentic/shared";
+
 export interface GeneratedStep {
   name: string;
   description: string;
@@ -17,17 +21,72 @@ export interface GeneratedStep {
 // register.ts), giving a generated agent the per-step durability + branching + soft-fail of a
 // hand-written production agent. When a spec carries no `plan`, the deploy falls back to the
 // legacy single-logic action (back-compat).
-export type PlanStepKind = "tool" | "logic" | "condition" | "invoke";
+export type PlanStepKind = "tool" | "logic" | "condition" | "invoke" | "foreach" | "emit";
+
+export type ErrorPolicyAction = "park" | "retry" | "terminal" | "continue";
+export interface ErrorPolicyOutcome {
+  /** Fallback value used only by `continue`. May also be inherited from PlanStep.defaultResult. */
+  defaultResult?: unknown;
+  /** Select a declared downstream event for this error class. */
+  emitEvent?: string;
+  emitPayload?: Record<string, unknown>;
+  /** Suppress the runtime's historical implicit/default terminal emit. */
+  suppressEmit?: boolean;
+}
+export type ErrorPolicyRule =
+  | ({ when: string; do: ErrorPolicyAction } & ErrorPolicyOutcome)
+  | ({ default: ErrorPolicyAction } & ErrorPolicyOutcome);
+
+/** JSON-only value used by deterministic plan templates. `undefined`, bigint,
+ * functions and class instances are deliberately not representable. */
+export type PlanJsonValue =
+  | null
+  | boolean
+  | number
+  | string
+  | PlanJsonValue[]
+  | { [key: string]: PlanJsonValue };
+
+/** One explicitly-authored tool argument. A value is either selected from the
+ * current safe execution scope, or is an unmistakable static JSON constant.
+ * Bare strings are never interpreted as paths (or constants), so the factory
+ * cannot guess from a tool parameter name. */
+export type PlanToolArgument =
+  | { from: string; required?: boolean }
+  | { const: PlanJsonValue };
+
+/** Deterministic projection of a tool's raw return value into named plan data.
+ * Paths are rooted at `result` (for example `result.candidate.id`). */
+export interface PlanResultMap {
+  fields: Record<string, string>;
+  /** Preserve the complete tool return under the reserved `_raw` field. */
+  includeRaw?: boolean;
+}
+
 export interface PlanStep {
   /** stable, human-readable id for this step (used as the manifest action name for logic steps) */
   stepId: string;
   kind: PlanStepKind;
   /** registry tool name — required for kind:"tool" (becomes the action name so it resolves) */
   tool?: string;
+  /** Exact arguments passed to a tool. Every value must be an explicit safe
+   * path reference or an explicit JSON constant. When absent, legacy plans
+   * retain their historical whole-context behaviour and are marked as such by
+   * validation/rendering. */
+  toolArguments?: Record<string, PlanToolArgument>;
+  /** Map the raw tool return into stable named fields. Missing source paths
+   * fail closed; no parameter/result name inference is performed. */
+  resultMap?: PlanResultMap;
   /** boolean expression evaluated against lastResult/event — for kind:"condition" */
   condition?: string;
   /** target agent name / fn id — for kind:"invoke" (synchronous sub-agent) */
   invoke?: string;
+  /** Static fields sent to the invoked sub-agent. */
+  invokeInput?: Record<string, unknown>;
+  /** Forward the merged output of prior steps. Defaults true for generated invoke steps. */
+  forwardLastResult?: boolean;
+  /** Also expose every named step output as `_results` to the child. */
+  forwardResults?: boolean;
   /** prior stepIds that gate this one: skip when a depended-on condition was false / step skipped */
   dependsOn?: string[];
   /** dotted path (event.data / subject) whose value is appended to the Inngest step id, so a
@@ -36,10 +95,31 @@ export interface PlanStep {
   /** failure policy: "terminal" fails the run, "soft" logs + continues with defaultResult,
    *  "park" retries (Inngest). Default "terminal". */
   onError?: "terminal" | "soft" | "park";
+  /** Ordered first-match error classifier. When present it supersedes the
+   * legacy onError label and is projected to manifest `on_error[]`. */
+  errorPolicy?: ErrorPolicyRule[];
   /** the value lastResult takes when a soft step fails / invoke soft-fails */
   defaultResult?: unknown;
-  /** timeout in seconds — for kind:"invoke" */
+  /** wall-clock timeout in seconds for this action/container */
   timeoutS?: number;
+  /** Collection path for kind:"foreach". Uses the same safe named-result dialect as
+   * conditions (`results.fetch.items`, `input.resumes`, `lastResult.rows`). */
+  itemsFrom?: string;
+  /** Local name bound to the current foreach item. Defaults to `item`. */
+  itemAs?: string;
+  /** Stable key path relative to the current item (for example `resume_id`). Required for
+   * production foreach plans so replay ids do not depend on array position. */
+  itemKeyFrom?: string;
+  /** Recursive sequential foreach body. Each nested foreach contributes its own
+   * stable business key; invoke is allowed and inherits the full durable
+   * timeout/error-policy contract. Manual/subflow lifecycle steps stay outside. */
+  body?: PlanStep[];
+  /** Event name for kind:"emit". It must be declared by the agent's `emit[]` allow-list. */
+  emitEvent?: string;
+  /** Optional safe path selecting the emitted payload. Defaults to the local lastResult. */
+  emitPayloadFrom?: string;
+  /** Optional static payload merged over the selected payload. */
+  emitPayload?: Record<string, unknown>;
   description?: string;
 }
 
@@ -90,11 +170,86 @@ export interface HitlGate {
   body: string;
 }
 
+/** A compiled, executable Action-input binding.  The factory deliberately
+ * keeps this separate from `inputSchema`: the schema says what a business
+ * value is, while this record says where the runtime is allowed to obtain it.
+ * Secret/config bindings carry references only; their values never enter an
+ * artifact, event payload, prompt, or generated source file. */
+export type GeneratedInputBinding =
+  | {
+      field: string;
+      type: string;
+      required: boolean;
+      kind: "event";
+      eventPath: string;
+      /** Optional subset of Action.trigger for which this binding is active.
+       * This is the executable form of Allmeta inputs[].source_event. */
+      sourceEvents?: string[];
+      sourceObject?: string;
+    }
+  | {
+      field: string;
+      type: string;
+      required: boolean;
+      kind: "object_lookup";
+      sourceObject: string;
+      tool: string;
+      arguments: Record<string, string>;
+      resultPath: string;
+      /** Other input fields that must be acquired before this lookup. */
+      dependsOn?: string[];
+    }
+  | {
+      field: string;
+      type: string;
+      required: boolean;
+      kind: "secret" | "config";
+      /** Opaque, non-secret reference. The runtime never dereferences it into
+       * business input; the registered tool receives configuration through its
+       * reviewed tool_use config. */
+      reference: string;
+    }
+  | {
+      field: string;
+      type: string;
+      required: boolean;
+      kind: "human_input";
+      prompt: string;
+    }
+  | {
+      field: string;
+      type: string;
+      required: boolean;
+      kind: "step_output";
+      sourceStep: string;
+      sourceOutput: string;
+    };
+
+/** Compile-time exhaustiveness helper used by consumers that accept ontology
+ * binding-kind strings before they become a `GeneratedInputBinding`. */
+export type GeneratedInputBindingKind = GeneratedInputBinding["kind"] & OntologyInputBindingKind;
+
 /** How the executor sequences this agent's tools.
  *  - "parallel": run all tool-bound steps up-front, then decide once (default).
  *  - "sequential-react": reason→pick one tool→observe→repeat→emit (ReAct), for
  *    agents whose tool ordering is data-dependent. */
 export type ToolFlow = "parallel" | "sequential-react";
+
+/** Reviewed runtime side-effect class for an exact tool name.  The sandbox
+ * never derives this from naming conventions; missing entries fail closed. */
+export type GeneratedToolSideEffect = "read" | "write" | "dual" | "call";
+
+/** Exact reviewed execution semantics copied from the current tool registry.
+ * These fields, not `toolSideEffects`, drive sandbox authorization. */
+export interface GeneratedToolExecutionPolicy {
+  operation: "read" | "compute" | "write" | "read_write";
+  effectScope: "none" | "sandbox_local" | "external";
+  sandboxPolicy:
+    | "pure"
+    | "sandbox_local"
+    | "live_external"
+    | "requires_attempt_grant";
+}
 
 export interface GeneratedAgentSpec {
   /** stable selection id = ontology action name (PK) */
@@ -113,8 +268,35 @@ export interface GeneratedAgentSpec {
   emit: string[];
   /** registry tool names — the generation-time scoped toolbox */
   tools: string[];
+  /** Exact side-effect metadata captured from the selected registry/profile.
+   * Every generated tool must have an entry before deployment. */
+  toolSideEffects?: Record<string, GeneratedToolSideEffect>;
+  /** Reviewed policy snapshot for every selected tool. Missing/unknown policy
+   * blocks generation and sandbox dispatch; names and HTTP verbs are never
+   * interpreted as authority. */
+  toolPolicies?: Record<string, GeneratedToolExecutionPolicy>;
+  /** Non-secret per-tool runtime configuration. Secret values are never stored;
+   * credentials are referenced by environment-variable name (`*_env`). */
+  toolConfigs?: Record<string, Record<string, unknown>>;
+  /** Separate sandbox-only endpoint/credential/test-namespace config. Never
+   * copied into a production manifest. */
+  sandboxToolConfigs?: Record<string, Record<string, unknown>>;
+  /** Human-confirmed profile provenance for toolConfigs. Runtime receives the
+   * immutable expanded config; review retains which profile supplied it. */
+  toolProfileRefs?: Record<string, string>;
+  /** Human-confirmed sandbox profile provenance. */
+  sandboxToolProfileRefs?: Record<string, string>;
   /** tool_use[] entries that didn't resolve to a registry tool (human review) */
   unresolvedTools: string[];
+  /** Machine-readable external-system requirements derived from
+   * `action.integration.systems[]`. Keeping them on the generated artifact makes
+   * integration evidence reviewable and prevents a descriptive ontology block
+   * from disappearing after design time. */
+  integrationRequirements?: IntegrationRequirement[];
+  /** Exact capability/config/probe resolution for every integration requirement.
+   * Acceptance only treats `resolved` bindings to a selected tool as complete;
+   * missing configuration or probe evidence remains a delivery blocker. */
+  integrationBindings?: IntegrationToolBinding[];
   /** target_objects */
   objects: string[];
   /** R5 — per-DataObject read/write intent, grounded in the ontology: `reads` are the trigger
@@ -130,6 +312,10 @@ export interface GeneratedAgentSpec {
   designReasoning?: string;
   toolRationale?: string;
   decisionLogic?: string;
+  /** Machine-checkable business routing. Runtime evaluates these tables as
+   * data (first-match rows + explicit missing/default outcomes); prose remains
+   * explanatory only. */
+  decisionTables?: DecisionTable[];
   steps: GeneratedStep[];
   /** Phase 1 — structured ordered plan; projected into one manifest action per step. */
   plan?: PlanStep[];
@@ -156,6 +342,9 @@ export interface GeneratedAgentSpec {
   /** AI-authored input schema — the trigger event payload fields this agent
    *  consumes, grounded in the ontology DataObjects' properties. */
   inputSchema?: IoField[];
+  /** Executable provenance for every ontology Action input. Generation fails
+   * closed when a required input cannot be compiled to one of these records. */
+  inputBindings?: GeneratedInputBinding[];
   /** AI-authored output schema — the outcome event payload fields it emits. */
   outputSchema?: IoField[];
   /** how `generatedCode` was produced: "ai" = the LLM wrote the .ts (codegen_agent);
@@ -163,7 +352,7 @@ export interface GeneratedAgentSpec {
   codeSource?: "ai" | "render";
   /** R7 — CodeAct stance. FALSE (default) = the runtime executes this agent DECLARATIVELY via
    *  the manifest action[] (systemPrompt + tools); `generatedCode` is a readable reference
-   *  scaffold, NOT executed (matches the RAAS-v1 standard, which is also 100% spec-driven).
+   *  scaffold, NOT executed; runtime behavior remains fully spec-driven.
    *  TRUE = opt-in "true CodeAct": the runtime transpiles + runs the AI-authored handler
    *  instead of action[] dispatch (the executed path is deferred — flag reserved for it). */
   codeExecuted?: boolean;
@@ -190,6 +379,8 @@ export interface IoField {
   field: string;
   type: string;
   description?: string;
+  /** false means the field is validated only when present. */
+  required?: boolean;
   /** the DataObject.property this field maps to (e.g. "Candidate.candidate_id"). */
   source?: string;
 }
@@ -204,7 +395,8 @@ export interface ValidationReport {
   hallucinatedTools: string[];
   /** unresolved tool_use[] entries across all agents */
   unresolvedTools: string[];
-  /** agents that ended up with zero bound tools (would do no work) */
+  /** Legacy diagnostic only: agents with zero bound tools. Tool-free compute,
+   * routing, validation, and event/runtime-backed specs may be fully valid. */
   emptyToolAgents: string[];
   /** agents with empty system prompts */
   emptyPrompts: string[];

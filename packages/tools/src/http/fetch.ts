@@ -22,8 +22,7 @@
  *     auth_query_name?:  string,
  *     allow_methods?:   ("GET"|"POST"|"PUT"|"PATCH"|"DELETE")[],
  *                                         // safety allow-list; default any
- *     allow_host?:      string | string[],
- *                                         // safety allow-list; default any
+ *     allow_host?:      string | string[], // additional hosts beyond base_url
  *   }
  *
  * LLM-provided args:
@@ -41,15 +40,16 @@
  *
  * Errors:
  *   - Throws on network failure / timeout / unparseable URL.
- *   - Returns `{ status: 4xx/5xx, ok: false, body }` for non-2xx; the LLM
- *     can branch on `ok` to decide whether to retry. This is intentionally
- *     different from `parseResumeApi` which throws on 4xx — generic clients
- *     should let the model see error bodies so it can self-correct.
+ *   - Throws on non-2xx and includes a bounded response-body diagnostic. The
+ *     LLM tool loop receives that as a real tool error and can self-correct;
+ *     a declarative `type: "tool"` step also fails instead of letting a 4xx/5xx
+ *     response mark the workflow run successful.
  */
 
 import type { ToolContext } from "@agentic/agent-kit";
 import { defineTool } from "@agentic/agent-kit";
 import { z } from "zod";
+import { assertPublicUrl, safeFetch } from "../declarative/ssrf";
 
 type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 const ALL_METHODS: HttpMethod[] = ["GET", "POST", "PUT", "PATCH", "DELETE"];
@@ -83,18 +83,16 @@ function resolveApiKey(cfg: HttpFetchConfig): string | null {
 function buildUrl(cfg: HttpFetchConfig, path: string, query?: Record<string, unknown>): URL {
   const base = (cfg.base_url ?? "").replace(/\/$/, "");
   const absoluteIncoming = /^https?:\/\//i.test(path);
+  if (!absoluteIncoming && !base) {
+    throw new Error("http.fetch: config.base_url is required for relative paths.");
+  }
   const composed = absoluteIncoming ? path : `${base}${path.startsWith("/") ? path : `/${path}`}`;
   if (composed.length === 0) {
     throw new Error(
       "http.fetch: no URL — set tool_use[].config.base_url or pass an absolute path.",
     );
   }
-  let url: URL;
-  try {
-    url = new URL(composed);
-  } catch {
-    throw new Error(`http.fetch: invalid URL '${composed}'.`);
-  }
+  const url = assertPublicUrl(composed);
   if (query) {
     for (const [k, v] of Object.entries(query)) {
       if (v == null) continue;
@@ -104,12 +102,29 @@ function buildUrl(cfg: HttpFetchConfig, path: string, query?: Record<string, unk
   return url;
 }
 
-function assertHostAllowed(url: URL, cfg: HttpFetchConfig): void {
-  if (!cfg.allow_host) return;
-  const allow = Array.isArray(cfg.allow_host) ? cfg.allow_host : [cfg.allow_host];
-  if (!allow.includes(url.hostname)) {
+function normalizedHost(raw: string): string {
+  const value = raw.trim().toLowerCase();
+  if (!value) throw new Error("http.fetch: allow_host contains an empty host.");
+  const parsed = assertPublicUrl(/^https?:\/\//i.test(value) ? value : `https://${value}`);
+  return parsed.hostname.toLowerCase();
+}
+
+function allowedHosts(cfg: HttpFetchConfig): Set<string> {
+  const allow = new Set<string>();
+  if (cfg.base_url?.trim()) allow.add(assertPublicUrl(cfg.base_url.trim()).hostname.toLowerCase());
+  const extra = cfg.allow_host
+    ? Array.isArray(cfg.allow_host)
+      ? cfg.allow_host
+      : [cfg.allow_host]
+    : [];
+  for (const host of extra) allow.add(normalizedHost(host));
+  return allow;
+}
+
+function assertHostAllowed(url: URL, allow: Set<string>): void {
+  if (!allow.has(url.hostname.toLowerCase())) {
     throw new Error(
-      `http.fetch: host '${url.hostname}' not in allow_host (${allow.join(", ")}).`,
+      `http.fetch: host '${url.hostname}' is not allowed; configure it as base_url or explicit allow_host (${[...allow].join(", ") || "none"}).`,
     );
   }
 }
@@ -154,8 +169,8 @@ export const httpFetchTool = defineTool({
     "Generic JSON HTTP client. Pass { method, path, body?, query?, headers? }. " +
     "The base URL, auth scheme, default headers, timeout, method/host allow-lists, and " +
     "per-tenant API key are bound in the manifest's tool_use[].config block. " +
-    "Returns { status, ok, headers, body }. 4xx/5xx return with ok:false (does NOT throw) " +
-    "so the LLM can self-correct from the error body.",
+    "Returns { status, ok, headers, body } for 2xx. 4xx/5xx throw a bounded error so " +
+    "both direct workflow steps and LLM tool loops observe a real failure.",
   output: z.object({
     status: z.number().int(),
     ok: z.boolean(),
@@ -186,7 +201,8 @@ export const httpFetchTool = defineTool({
     }
 
     const url = buildUrl(cfg, path, (args.query ?? undefined) as Record<string, unknown> | undefined);
-    assertHostAllowed(url, cfg);
+    const hostAllowlist = allowedHosts(cfg);
+    assertHostAllowed(url, hostAllowlist);
     const headers = buildHeaders(
       cfg,
       (args.headers ?? undefined) as Record<string, string> | undefined,
@@ -211,12 +227,12 @@ export const httpFetchTool = defineTool({
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     let res: Response;
     try {
-      res = await fetch(url.toString(), {
+      res = await safeFetch(url.toString(), {
         method,
         headers,
         body,
         signal: controller.signal,
-      });
+      }, fetch, 3, (redirectUrl) => assertHostAllowed(redirectUrl, hostAllowlist));
     } catch (err) {
       throw new Error(
         `http.fetch: ${method} ${url.toString()} — ${err instanceof Error ? err.message : String(err)}`,
@@ -240,6 +256,22 @@ export const httpFetchTool = defineTool({
     res.headers.forEach((v, k) => {
       headerObj[k] = v;
     });
+
+    if (!res.ok) {
+      const diagnostic =
+        typeof parsed === "string"
+          ? parsed
+          : (() => {
+              try {
+                return JSON.stringify(parsed);
+              } catch {
+                return "[unserializable response body]";
+              }
+            })();
+      throw new Error(
+        `http.fetch: ${method} ${url.toString()} returned HTTP ${res.status}: ${diagnostic.slice(0, 500)}`,
+      );
+    }
 
     return {
       data: {

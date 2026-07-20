@@ -17,7 +17,7 @@ describe("#P2.5-Tester harnessTsModuleForTest — 把交付形态变成可跑测
   it("剥掉真 import,注入 mock inngest,追加 __run 入口", () => {
     const h = harnessTsModuleForTest(renderTsFunctionModule(spec()));
     expect(h).toContain("__inngest.createFunction");
-    expect(h).toContain("export async function __run(event)");
+    expect(h).toContain("export async function __run(event, opts)");
     // 真 import 被移除(inngest client),但注释 import 可留
     expect(h).not.toMatch(/^\s*import\s.+from\s+['"]@\/server/m);
     expect(h).not.toMatch(/^\s*import\s.+from\s+['"]@\/lib/m);
@@ -59,6 +59,48 @@ describe("#P2.5-Tester gradeFunctionTest — 验收判据", () => {
     expect(miss.emittedExpected).toBe(false);
     expect(miss.pass).toBe(false);
     expect(miss.reasons.join()).toContain("未出现");
+  });
+  it("单一确定事件默认精确校验，额外事件和禁用事件都会失败", () => {
+    const extra = gradeFunctionTest(
+      { ok: true, result: { ran: true, emitNames: ["RESUME_PROCESSED", "INTERVIEW_INVITATION_REQUESTED"], emits: [{ name: "RESUME_PROCESSED", data: {} }, { name: "INTERVIEW_INVITATION_REQUESTED", data: {} }] } },
+      { expectEmits: ["RESUME_PROCESSED"] },
+    );
+    expect(extra.pass).toBe(false);
+    expect(extra.unexpectedEmits).toEqual(["INTERVIEW_INVITATION_REQUESTED"]);
+
+    const forbidden = gradeFunctionTest(
+      { ok: true, result: { ran: true, emitNames: ["RESUME_PROCESSED", "RESUME_FAILED"], emits: [{ name: "RESUME_PROCESSED", data: {} }, { name: "RESUME_FAILED", data: {} }] } },
+      { expectEmits: ["RESUME_PROCESSED", "RESUME_FAILED"], assertions: { exactEmits: false, forbiddenEmits: ["RESUME_FAILED"] } },
+    );
+    expect(forbidden.pass).toBe(false);
+    expect(forbidden.forbiddenEmitsObserved).toEqual(["RESUME_FAILED"]);
+  });
+  it("校验 emit payload、工具参数/次数、handler 状态和 durable step 结果", () => {
+    const observed = {
+      ran: true,
+      result: { ok: true, candidate_id: "c-1" },
+      state: { "run:lock": "held" },
+      emitNames: ["RESUME_PROCESSED"],
+      emits: [{ name: "RESUME_PROCESSED", data: { candidate_id: "c-1", score: 88 } }],
+      toolCalls: [{ name: "parseResumeApi", args: { upload_id: "u-1", results: {} } }],
+      runSteps: [{ id: "parse", result: { candidate_id: "c-1" } }],
+    };
+    const assertions = {
+      emits: [{ event: "RESUME_PROCESSED", count: 1, payload: { requiredPaths: ["candidate_id", "score"], types: { score: "number" as const }, partial: { candidate_id: "c-1" } } }],
+      toolCalls: [{ tool: "parseResumeApi", count: 1, args: { partial: { upload_id: "u-1" } } }],
+      result: { partial: { ok: true, candidate_id: "c-1" } },
+      state: { partial: { "run:lock": "held" } },
+      stepResults: [{ stepId: "parse", count: 1, result: { requiredPaths: ["candidate_id"] } }],
+    };
+    expect(gradeFunctionTest({ ok: true, result: observed }, { expectEmits: ["RESUME_PROCESSED"], assertions }).pass).toBe(true);
+
+    const bad = gradeFunctionTest({ ok: true, result: observed }, {
+      expectEmits: ["RESUME_PROCESSED"],
+      assertions: { ...assertions, toolCalls: [{ tool: "parseResumeApi", count: 2 }], emits: [{ event: "RESUME_PROCESSED", payload: { requiredPaths: ["interview_url"] } }] },
+    });
+    expect(bad.pass).toBe(false);
+    expect(bad.assertionFailures.join(" ")).toContain("实际 1 次");
+    expect(bad.assertionFailures.join(" ")).toContain("interview_url");
   });
   it("handler 抛错(ran:false) → fail 且带原因", () => {
     const v = gradeFunctionTest({ ok: true, result: { ran: false, error: "boom" } });

@@ -19,6 +19,8 @@
  * when called from the `isMain` entrypoint).
  */
 
+import { appendFileSync, mkdirSync } from "node:fs";
+import { resolve } from "node:path";
 import type { FastifyInstance } from "fastify";
 
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -58,6 +60,14 @@ export function installGracefulShutdown(
     shuttingDown = true;
 
     app.log.info({ signal, gracePeriodMs }, "graceful shutdown initiated");
+    // #FATAL-LOG — durable trace of WHICH signal ended the process. Under `tsx watch` the terminal
+    // scrolls away (or belongs to another session); a silent restart loop is indistinguishable from a
+    // crash loop without this file. Best-effort sync append; must never delay the drain.
+    try {
+      const dataRoot = resolve(process.cwd(), process.env.AGENTIC_DATA_ROOT?.trim() || "../../data");
+      mkdirSync(dataRoot, { recursive: true });
+      appendFileSync(resolve(dataRoot, "api-fatal.log"), `\n[${new Date().toISOString()}] signal ${signal} received (pid ${process.pid}) — graceful shutdown\n`);
+    } catch { /* best-effort */ }
 
     // Hard deadline — if app.close() hangs (slow plugin, stuck request) we
     // still exit so the orchestrator's kill -9 doesn't have to.

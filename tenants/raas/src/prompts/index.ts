@@ -31,30 +31,13 @@ function ctxBundle(ctx: ToolContext): string {
   if (ctx.lastResult !== undefined) {
     parts.push(`Previous step output: ${JSON.stringify(ctx.lastResult, null, 2)}`);
   }
+  if (ctx.results && Object.keys(ctx.results).length > 0) {
+    parts.push(`Completed step outputs: ${JSON.stringify(ctx.results, null, 2)}`);
+  }
   return parts.join("\n");
 }
 
 // ── syncFromClientSystem ─────────────────────────────────────────────────────
-
-export const checkDeduplicatedRequisition = definePrompt({
-  name: "checkDeduplicatedRequisition",
-  description:
-    "Deduplicate inbound recruiting requisitions against existing records.",
-  system:
-    "You are a recruiting-operations assistant. Inspect a client recruiting requisition and decide whether it is a NEW requisition, an UPDATE to an existing one, or a TERMINATION. Use the client_role_unique_id and client_role_name fields to match.",
-  template: (ctx) =>
-    `Determine whether this requisition is new, an update, or terminated.\n\n${ctxBundle(ctx)}\n\nReturn JSON: { "decision": "new" | "update" | "terminate", "matched_requisition_id": string | null, "reason": string }.`,
-});
-
-export const persistRequisitionData = definePrompt({
-  name: "persistRequisitionData",
-  description:
-    "Plan the database writes that persist or update a recruiting requisition.",
-  system:
-    "You are a recruiting-operations data steward. Given a dedup decision, decide which fields to write to the recruiting_requirement and recruiting_role records, and what change-log entry to emit.",
-  template: (ctx) =>
-    `Plan persistence actions for this requisition.\n\n${ctxBundle(ctx)}\n\nReturn JSON: { "writes": [...], "change_log": string, "failed_items": [...] }.`,
-});
 
 // ── analyzeRequirement ───────────────────────────────────────────────────────
 
@@ -282,35 +265,6 @@ export const decideMatchOutcome = definePrompt({
     `}`,
 });
 
-// ── inviteInternalInterview ──────────────────────────────────────────────────
-
-// Migrated from the old InterviewInviter content-assembly. Output field names
-// are fixed so the next action (sendInvitationEmail) can deliver them.
-export const generateInterviewInvitation = definePrompt({
-  name: "generateInterviewInvitation",
-  description:
-    "Compose a personalized interview invitation (recipient + subject + body) for delivery.",
-  system:
-    "你是面试协调助理。为通过匹配的候选人撰写个性化的面试邀请。" +
-    "可调用 inviteCandidateApi 生成邀请正文初稿（仅生成、不投递）再润色。" +
-    "邀请需包含：称呼、岗位与公司、面试形式（线上 / 线下 / AI 面试）、时间窗口与截止日期、参与方式或链接占位、以及礼貌的确认请求。" +
-    "语气专业友好；从上下文提取候选人邮箱或手机号作为收件人；不要编造未提供的时间或地点（缺失则用占位并注明需确认）。",
-  template: (ctx) =>
-    `撰写面试邀请。\n\n${ctxBundle(ctx)}\n\n` +
-    `只返回 JSON（字段名固定，供下一步投递读取）：\n` +
-    `{ "to": string, "subject": string, "body": string, "deadline_days": number, "invite_link_placeholder": string }`,
-});
-
-export const notifyRecruiter = definePrompt({
-  name: "notifyRecruiter",
-  description:
-    "Generate a recruiter-facing handoff message for the interview invite.",
-  system:
-    "You are a recruiter-ops assistant. Compose a short message the recruiter can forward via WeCom to the candidate, including a copy-paste script and the interview link.",
-  template: (ctx) =>
-    `Compose recruiter-facing handoff.\n\n${ctxBundle(ctx)}\n\nReturn JSON: { "recruiter_id": string, "wecom_message": string, "interview_link": string }.`,
-});
-
 // ── evaluateInterview ────────────────────────────────────────────────────────
 
 export const receiveInterviewResult = definePrompt({
@@ -333,14 +287,26 @@ export const analyzeInterviewResult = definePrompt({
     `Analyze interview content.\n\n${ctxBundle(ctx)}\n\nReturn JSON: { "scores": { "domain": number, "problem_solving": number, "communication": number, "reasoning": number }, "key_signals": string[], "concerns": string[] }.`,
 });
 
+export const evaluateWithModel = definePrompt({
+  name: "evaluateWithModel",
+  description:
+    "Apply the supplied evaluation weights and threshold to the real interview-analysis scores.",
+  system:
+    "You are a quantitative interview evaluator. Use only the dimension scores, weights, and pass threshold present in the live context. Do not invent a missing model configuration. If weights or threshold are absent, return configuration_complete:false and explain what is missing; never silently pass.",
+  template: (ctx) =>
+    `Apply the configured evaluation model to the interview analysis.\n\n${ctxBundle(ctx)}\n\n` +
+    `Return JSON: { "configuration_complete": boolean, "dimension_scores": Record<string, number>, "weights": Record<string, number>, "weighted_total": number | null, "pass_threshold": number | null, "passed": boolean, "missing_configuration": string[], "rationale": string }. ` +
+    `passed must be false whenever configuration_complete is false.`,
+});
+
 export const generateEvaluationReport = definePrompt({
   name: "generateEvaluationReport",
   description:
     "Produce the final interview evaluation report with a recommendation.",
   system:
-    "You are an interview-report writer. Produce a complete evaluation: overall score, per-dimension scores, highlights, strengths, concerns, risks (stability, fit), and a final recommendation.",
+    "You are an interview-report writer. Produce a complete evaluation from the actual scoring result. Route EVALUATION_PASSED only when the scoring step has configuration_complete:true and passed:true; every missing/failed/ambiguous score routes EVALUATION_FAILED.",
   template: (ctx) =>
-    `Write the evaluation report.\n\n${ctxBundle(ctx)}\n\nReturn JSON: { "overall_score": number, "dimensions": Record<string, number>, "highlights": string[], "strengths": string[], "concerns": string[], "risks": string[], "recommendation": "recommend" | "hold" | "reject" }.`,
+    `Write the evaluation report.\n\n${ctxBundle(ctx)}\n\nReturn JSON: { "_emit": "EVALUATION_PASSED" | "EVALUATION_FAILED", "overall_score": number | null, "dimensions": Record<string, number>, "highlights": string[], "strengths": string[], "concerns": string[], "risks": string[], "recommendation": "recommend" | "hold" | "reject", "decision_reason": string }.`,
 });
 
 // ── refineResume ─────────────────────────────────────────────────────────────
@@ -392,9 +358,9 @@ export const generateFinalPackage = definePrompt({
   description:
     "Compose the final submission package document.",
   system:
-    "You are a submission-package writer. Assemble the final document by combining all artifacts (cover, refined resume, evaluation report, compliance proofs) into a single ready-to-submit bundle.",
+    "You are a submission-package writer. Assemble only artifacts that are present in the completed-step evidence. If completeness failed or any required material is missing, do not claim a ready package and route PACKAGE_MISSING_INFO.",
   template: (ctx) =>
-    `Assemble the final package.\n\n${ctxBundle(ctx)}\n\nReturn JSON: { "package_id": string, "sections": [{ "section": string, "content_ref": string }], "ready_for_submission": boolean }.`,
+    `Assemble the final package.\n\n${ctxBundle(ctx)}\n\nReturn JSON: { "_emit": "PACKAGE_GENERATED" | "PACKAGE_MISSING_INFO", "package_id": string | null, "sections": [{ "section": string, "content_ref": string }], "ready_for_submission": boolean, "missing_items": string[] }. A package_id may be returned only when ready_for_submission is true.`,
 });
 
 // ── submitToClientPortal ─────────────────────────────────────────────────────
@@ -404,9 +370,9 @@ export const prepareSubmissionData = definePrompt({
   description:
     "Map the submission package into the client portal's expected payload shape.",
   system:
-    "You are a client-portal integration adapter. Map our internal package fields to the client system's expected JSON / form fields. Emit a payload that satisfies the target schema.",
+    "You are a client-portal integration adapter. Map our internal package fields to the client system's expected JSON/form fields. Determine API versus manual mode only from explicit integration metadata in the input; if no evidence exists, use unknown rather than guessing.",
   template: (ctx) =>
-    `Prepare submission payload.\n\n${ctxBundle(ctx)}\n\nReturn JSON: { "client_system": string, "payload": Record<string, unknown>, "field_mapping": Record<string, string> }.`,
+    `Prepare submission payload.\n\n${ctxBundle(ctx)}\n\nReturn JSON: { "client_system": string, "submission_mode": "api" | "manual" | "unknown", "client_api_supported": boolean | null, "mode_evidence": string | null, "payload": Record<string, unknown>, "field_mapping": Record<string, string> }.`,
 });
 
 export const handleSubmissionResult = definePrompt({
@@ -414,9 +380,9 @@ export const handleSubmissionResult = definePrompt({
   description:
     "Classify a client-portal submission result and decide next step.",
   system:
-    "You are a submission-results triager. On success, record the client-side application id; on failure, classify (format error → retry, system error → human handoff, rule rejection → notify delivery manager).",
+    "You are a submission-results triager. APPLICATION_SUBMITTED requires the preceding tool receipt to contain submitted:true and success:true. Manual tasks, missing receipts, ambiguous responses, and failures must route SUBMISSION_FAILED.",
   template: (ctx) =>
-    `Triage submission result.\n\n${ctxBundle(ctx)}\n\nReturn JSON: { "outcome": "success" | "retry" | "human_handoff" | "delivery_manager", "application_id": string | null, "error_class": string | null, "next_step": string }.`,
+    `Triage submission result.\n\n${ctxBundle(ctx)}\n\nReturn JSON: { "_emit": "APPLICATION_SUBMITTED" | "SUBMISSION_FAILED", "outcome": "success" | "retry" | "human_handoff" | "delivery_manager", "application_id": string | null, "error_class": string | null, "next_step": string }.`,
 });
 
 // ── registry export ──────────────────────────────────────────────────────────
@@ -427,9 +393,6 @@ export const handleSubmissionResult = definePrompt({
  * logic actions and looks them up here.
  */
 export const raasPrompts: Record<string, PromptDescriptor> = {
-  // syncFromClientSystem
-  checkDeduplicatedRequisition,
-  persistRequisitionData,
   // analyzeRequirement
   assessFeasibilityAndDifficulty,
   generateClarificationAndStrategy,
@@ -451,12 +414,10 @@ export const raasPrompts: Record<string, PromptDescriptor> = {
   matchHardRequirements,
   evaluateBonusAndCheckReflux,
   decideMatchOutcome,
-  // inviteInternalInterview
-  generateInterviewInvitation,
-  notifyRecruiter,
   // evaluateInterview
   receiveInterviewResult,
   analyzeInterviewResult,
+  evaluateWithModel,
   generateEvaluationReport,
   // refineResume
   selectTemplateAndFormat,

@@ -1,0 +1,133 @@
+{
+  "domainId": "Agents-generation",
+  "version": "v0_4_000",
+  "payloadDigest": "sha256:87618d277b249e93c3cba7e69b306677a29d02ca78fb473551d7cfd4f00b4856",
+  "counts": {
+    "objects": 49,
+    "rules": 66,
+    "actions": 16,
+    "agentActions": 6,
+    "humanActions": 10,
+    "actionSteps": 83,
+    "events": 17,
+    "policyScopes": 6,
+    "links": 614
+  },
+  "reviewedDecisions": [
+    "createJD subscribes REQUIREMENT_LOGGED, CLARIFICATION_READY and JD_REJECTED",
+    "invitation approval topology remains MATCH_PASSED_NEED_INTERVIEW -> REQUESTED -> SENT|FAILED",
+    "MATCH_PASSED_NO_INTERVIEW is removed because no production branch emits it",
+    "the new user-supplied Rule text replaces conflicting live prose",
+    "ambiguous rules outside the six-Agent executable slice retain needs_human_confirmation",
+    "match threshold is stored in Job_Requisition and passed through Events; runtime must not contain a numeric fallback",
+    "Agents-generation binds domain-neutral facts.query through reviewed integration metadata, then evaluates live Ontology rules; legacy tenant candidate/routing decisions are not executable capabilities",
+    "external database and Allmeta writes are separate generic profile-bound steps with mandatory live/write probes"
+  ],
+  "deferredHumanSemantics": [
+    {
+      "id": "2-5",
+      "name": "招聘职位类别与年框合同检查确认",
+      "unresolvedSemantics": [
+        "当前只有业务正文，未提供完整机器可执行条件/证据契约"
+      ]
+    },
+    {
+      "id": "8-3",
+      "name": "PCG候选人手机号、身份证获取",
+      "unresolvedSemantics": [
+        "当前只有业务正文，未提供完整机器可执行条件/证据契约"
+      ]
+    },
+    {
+      "id": "8-12",
+      "name": "内部背调人工确认",
+      "unresolvedSemantics": [
+        "当前只有业务正文，未提供完整机器可执行条件/证据契约"
+      ]
+    },
+    {
+      "id": "8-17",
+      "name": "字节正编员工回流过滤逻辑",
+      "unresolvedSemantics": [
+        "当前只有业务正文，未提供完整机器可执行条件/证据契约"
+      ]
+    },
+    {
+      "id": "9-2",
+      "name": "候选人身份证号前置获取",
+      "unresolvedSemantics": [
+        "当前只有业务正文，未提供完整机器可执行条件/证据契约"
+      ]
+    },
+    {
+      "id": "10-19",
+      "name": "通用黑名单检验规则-被动释放人员特殊审批",
+      "unresolvedSemantics": [
+        "当前只有业务正文，未提供完整机器可执行条件/证据契约"
+      ]
+    },
+    {
+      "id": "10-20",
+      "name": "通用黑名单检验规则-EHS风险人员特殊审批",
+      "unresolvedSemantics": [
+        "当前只有业务正文，未提供完整机器可执行条件/证据契约"
+      ]
+    },
+    {
+      "id": "10-50",
+      "name": "字节正编员工回流报备逻辑",
+      "unresolvedSemantics": [
+        "当前只有业务正文，未提供完整机器可执行条件/证据契约"
+      ]
+    },
+    {
+      "id": "15-45",
+      "name": "腾讯亲属关系回避规则",
+      "unresolvedSemantics": [
+        "当前只有业务正文，未提供完整机器可执行条件/证据契约"
+      ]
+    },
+    {
+      "id": "17-4",
+      "name": "特殊白名单申请规则",
+      "unresolvedSemantics": [
+        "当前只有业务正文，未提供完整机器可执行条件/证据契约"
+      ]
+    },
+    {
+      "id": "28-3",
+      "name": "Offer发放双系统校验",
+      "unresolvedSemantics": [
+        "当前只有业务正文，未提供完整机器可执行条件/证据契约"
+      ]
+    },
+    {
+      "id": "28-4",
+      "name": "Offer发放双系统校验",
+      "unresolvedSemantics": [
+        "当前只有业务正文，未提供完整机器可执行条件/证据契约"
+      ]
+    },
+    {
+      "id": "30-4",
+      "name": "综合测评等级判定与红线规则",
+      "unresolvedSemantics": [
+        "区间 40–60 是否包含上界 60 尚未定义"
+      ]
+    }
+  ],
+  "sourceDigests": {
+    "actions_v0_2_001": "sha256:9a8db9ef101f781b9ba7a116e14535107420d6ea944c92bd69bf483aacd250c6",
+    "objects_v0_2_001": "sha256:08778d42494209a486a711675b51b2fea639117c8675289910d876c769ebcd74",
+    "rules_v0_2_001": "sha256:5699c6b3e2c33f5349e3316d929543c57078b2d4f0175bc876ca3cbdf8abd47d",
+    "live_rules_before_release": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+  },
+  "releaseGrounding": {
+    "schema": "agents-generation-release-grounding/v1",
+    "allmetaRulesRead": false,
+    "liveRuleCount": 0,
+    "liveRuleDigest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+    "mode": "offline_scaffold_test",
+    "releasable": false
+  }
+}

@@ -36,7 +36,17 @@ test.describe.configure({ mode: "default" });
 
 test.describe("axe-core sweep", () => {
   test.beforeEach(async ({ page }) => {
+    const email = process.env.AGENTIC_BOOTSTRAP_ADMIN_EMAIL?.trim();
+    const password = process.env.AGENTIC_BOOTSTRAP_ADMIN_PASSWORD;
+    if (!email || !password) {
+      throw new Error(
+        "AGENTIC_BOOTSTRAP_ADMIN_EMAIL and AGENTIC_BOOTSTRAP_ADMIN_PASSWORD are required for accessibility tests",
+      );
+    }
     await page.goto("/sign-in?return=/portal/raas/dashboard");
+    await page.getByLabel(/email|邮箱/i).fill(email);
+    await page.getByLabel(/password|密码/i).fill(password);
+    await page.locator('button[type="submit"]').click();
     await page.waitForURL(/\/portal\//, { timeout: 30_000 });
   });
 

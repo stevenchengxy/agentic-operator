@@ -13,7 +13,13 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import type { AgentSpec } from "@agentic/runtime";
+import {
+  AgentSchema,
+  functionRetries,
+  registerAgent,
+  type AgentSpec,
+  type RegisterContext,
+} from "@agentic/runtime";
 import path from "node:path";
 
 // Inline derivations of the contracts — same logic as register.ts, kept here
@@ -60,6 +66,55 @@ describe("TC-12: register.ts helpers", () => {
           ],
         }),
       ).toBe(10);
+    });
+  });
+
+  describe("agent-level retries (manifest → createFunction)", () => {
+    const parseAgent = (over: Record<string, unknown> = {}) =>
+      AgentSchema.parse({
+        id: "t-retry-1",
+        name: "retryProbe",
+        actor: ["Agent"],
+        trigger: ["thing.happened"],
+        actions: [{ order: "1", name: "a", description: "", type: "tool" }],
+        triggered_event: [],
+        ...over,
+      });
+    const ctx: RegisterContext = {
+      tenantId: "ten-tc12-retries",
+      tenantSlug: "tc12-retries",
+      workflowVersionId: "wfv-tc12-retries",
+    };
+
+    it("AgentSchema accepts an integer retries 0–10 and rejects out-of-range", () => {
+      expect(parseAgent({ retries: 1 }).retries).toBe(1);
+      expect(parseAgent({ retries: 0 }).retries).toBe(0);
+      expect(parseAgent({ retries: 10 }).retries).toBe(10);
+      expect(parseAgent({}).retries).toBeUndefined();
+      expect(() => parseAgent({ retries: 11 })).toThrow();
+      expect(() => parseAgent({ retries: -1 })).toThrow();
+      expect(() => parseAgent({ retries: 2.5 })).toThrow();
+    });
+
+    it("functionRetries: manifest value wins; absence defaults to 3", () => {
+      expect(functionRetries(parseAgent({ retries: 1 }))).toBe(1);
+      expect(functionRetries(parseAgent({ retries: 0 }))).toBe(0);
+      expect(functionRetries(parseAgent({}))).toBe(3);
+      // defensive clamp for values that bypassed schema validation
+      expect(functionRetries({ retries: 50 } as Pick<AgentSpec, "retries">)).toBe(10);
+    });
+
+    it("registerAgent stamps manifest retries onto the Inngest function config (1 → 1, absent → 3)", () => {
+      const readRetries = (fn: unknown): number | undefined =>
+        (fn as { opts: { retries?: number } }).opts.retries;
+
+      const fnOne = registerAgent(parseAgent({ retries: 1 }), ctx);
+      expect(fnOne).not.toBeNull();
+      expect(readRetries(fnOne)).toBe(1);
+
+      const fnDefault = registerAgent(parseAgent({ name: "retryProbeDefault" }), ctx);
+      expect(fnDefault).not.toBeNull();
+      expect(readRetries(fnDefault)).toBe(3);
     });
   });
 

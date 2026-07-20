@@ -1,21 +1,19 @@
 /**
  * TC-51 — POST /v1/tenants Idempotency-Key behavior (P5-TEN-01).
  *
- * The in-memory LRU at `apps/api/src/routes/v1/tenants.ts` caches the response
- * body and status for one hour per `(tenantSlug, idempotencyKey)` tuple. This
- * test verifies:
+ * A SQLite pending claim stores the stable tenant/token/audit ids before the
+ * first side effect, then stores the exact response. This test verifies:
  *
  *   1. Two POSTs with the same Idempotency-Key produce IDENTICAL responses
  *      (same token plaintext — critical so the operator's retry never loses
  *      the bootstrap token to a "second time you get null" footgun).
- *   2. The SAME key with DIFFERENT bodies still returns the cached body — the
- *      cache is keyed on the idempotency tuple, not the body hash, mirroring
- *      Stripe's behavior. (We accept this; an alternative would be to refuse
- *      conflicting bodies, but that's a follow-up.)
+ *   2. The SAME key with a DIFFERENT body is rejected instead of replaying a
+ *      response created for different input.
  *   3. Without an Idempotency-Key, the second POST gets a fresh 409 because
  *      the slug now exists.
  */
 
+import { createHash } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq, like } from "drizzle-orm";
 import {
@@ -23,12 +21,18 @@ import {
   auditLog,
   eventTypes,
   getDb,
+  idempotencyKeys,
   tenantBudgets,
   tenants,
 } from "@agentic/db";
 import { buildTestEnv, type TestEnv } from "./harness";
 
 const SUFFIX = `t51${Date.now().toString(36)}`.toLowerCase().slice(0, 12);
+const USED_KEYS = new Set<string>();
+
+function storedKey(key: string): string {
+  return `v2:tenants.create:${createHash("sha256").update(key).digest("hex")}`;
+}
 
 describe("TC-51: Idempotency-Key on POST /v1/tenants", () => {
   let env: TestEnv;
@@ -39,6 +43,11 @@ describe("TC-51: Idempotency-Key on POST /v1/tenants", () => {
 
   afterAll(() => {
     const db = getDb();
+    for (const key of USED_KEYS) {
+      db.delete(idempotencyKeys)
+        .where(eq(idempotencyKeys.key, storedKey(key)))
+        .run();
+    }
     const rows = db
       .select()
       .from(tenants)
@@ -76,6 +85,18 @@ describe("TC-51: Idempotency-Key on POST /v1/tenants", () => {
     expect(body2.data.tenant.id).toBe(body1.data.tenant.id);
     expect(body2.data.token.plaintext).toBe(body1.data.token.plaintext);
 
+    const durable = getDb()
+      .select({ responseJson: idempotencyKeys.responseJson })
+      .from(idempotencyKeys)
+      .where(eq(idempotencyKeys.key, storedKey(key)))
+      .all()[0];
+    expect(durable).toBeDefined();
+    expect(JSON.parse(durable!.responseJson)).toMatchObject({
+      __agentic_idempotency: 2,
+      state: "complete",
+      response: { status: 201 },
+    });
+
     // DB invariant: exactly one row, exactly one token, exactly one audit
     // entry — proves the second call returned the cache, not a second insert.
     const db = getDb();
@@ -97,6 +118,45 @@ describe("TC-51: Idempotency-Key on POST /v1/tenants", () => {
       .where(eq(auditLog.tenantId, tenantRow[0]!.id))
       .all();
     expect(audits).toHaveLength(1);
+  });
+
+  it("same key with different input is a 409 conflict", async () => {
+    const key = `idem-key-${SUFFIX}-conflict`;
+    const firstSlug = `idem-${SUFFIX}-e`;
+    const secondSlug = `idem-${SUFFIX}-f`;
+    const first = await postTenant(env, key, {
+      slug: firstSlug,
+      name: "Original request",
+      starter: "empty",
+      mintToken: false,
+    });
+    expect(first.ok).toBe(true);
+
+    const response = await env.fetch("/v1/tenants", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": key,
+      },
+      body: JSON.stringify({
+        slug: secondSlug,
+        name: "Different request",
+        starter: "empty",
+        mintToken: false,
+      }),
+    });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({
+      ok: false,
+      error: { code: "idempotency_key_reused" },
+    });
+    expect(
+      getDb()
+        .select()
+        .from(tenants)
+        .where(eq(tenants.slug, secondSlug))
+        .all(),
+    ).toHaveLength(0);
   });
 
   it("no key → second POST gets fresh 409 slug_taken", async () => {
@@ -157,6 +217,7 @@ async function postTenant(
 ): Promise<{ ok: boolean; data: never; error?: never }> {
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (idempotencyKey) headers["idempotency-key"] = idempotencyKey;
+  if (idempotencyKey) USED_KEYS.add(idempotencyKey);
   const res = await env.fetch("/v1/tenants", {
     method: "POST",
     headers,

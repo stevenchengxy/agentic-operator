@@ -1,0 +1,68 @@
+{
+  "requirement.load": {
+    "sql": "SELECT row_to_json(r.*) AS requirement_json, row_to_json(s.*) AS specification_json FROM job_requisition r LEFT JOIN job_requisition_specification s ON s.job_requisition_specification_id = r.job_requisition_specification_id WHERE r.job_requisition_id = $1 LIMIT 1",
+    "params": ["job_requisition_id"],
+    "mode": "read",
+    "max_rows": 1
+  },
+  "requirement.clarifications": {
+    "sql": "SELECT clarified_at, content, clarifier_name, client_clarifier_name, clarification_type FROM requirement_clarification_record WHERE job_requisition_id = $1 ORDER BY clarified_at ASC",
+    "params": ["job_requisition_id"],
+    "mode": "read",
+    "max_rows": 200
+  },
+  "requirement.resolveAnchor": {
+    "sql": "SELECT r.job_requisition_id FROM job_requisition r LEFT JOIN job_posting p ON p.job_requisition_id = r.job_requisition_id WHERE p.job_posting_id = $1 OR r.job_requisition_id = $1 ORDER BY CASE WHEN p.job_posting_id = $1 THEN 0 ELSE 1 END LIMIT 1",
+    "params": ["entity_id"],
+    "mode": "read",
+    "max_rows": 1
+  },
+  "ruleContext.requirement": {
+    "sql": "SELECT row_to_json(r.*) AS requirement_json, row_to_json(s.*) AS specification_json, row_to_json(cl.*) AS client_json, row_to_json(cd.*) AS department_json FROM job_requisition r LEFT JOIN job_requisition_specification s ON s.job_requisition_specification_id = r.job_requisition_specification_id LEFT JOIN client cl ON cl.client_id = COALESCE(r.client_id, s.client_id) LEFT JOIN client_department cd ON cd.client_department_id = r.client_department_id WHERE r.job_requisition_id = $1 LIMIT 1",
+    "params": ["job_requisition_id"],
+    "mode": "read",
+    "max_rows": 1
+  },
+  "ruleContext.candidate": {
+    "sql": "SELECT row_to_json(c.*) AS candidate_json FROM candidate c WHERE c.candidate_id = $1 LIMIT 1",
+    "params": ["candidate_id"],
+    "mode": "read",
+    "max_rows": 1
+  },
+  "ruleContext.latestResume": {
+    "sql": "SELECT row_to_json(r.*) AS resume_json FROM resume r WHERE r.candidate_id = $1 ORDER BY r.updated_at DESC LIMIT 1",
+    "params": ["candidate_id"],
+    "mode": "read",
+    "max_rows": 1
+  },
+  "ruleContext.applicationHistory": {
+    "sql": "SELECT application_id, client_id, job_requisition_id, candidate_id, resume_id, status, stage, matching_score, push_timestamp, rejection_reason, abandon_reason, compliance_credential, COALESCE(push_timestamp, updated_at, created_at) AS occurred_at FROM application WHERE candidate_id = $1 ORDER BY COALESCE(push_timestamp, updated_at, created_at) DESC",
+    "params": ["candidate_id"],
+    "mode": "read",
+    "max_rows": 500
+  },
+  "ruleContext.activeBlacklist": {
+    "sql": "SELECT blacklist_id, candidate_id, client_id, client_department_id, job_requisition_id, lock_reason, lock_duration_months, expires_at, source, active, created_at FROM blacklist WHERE candidate_id = $1 AND active = TRUE ORDER BY created_at DESC",
+    "params": ["candidate_id"],
+    "mode": "read",
+    "max_rows": 200
+  },
+  "ruleContext.interviews": {
+    "sql": "SELECT ir.interview_record_id, ir.application_id, ir.interview_type, ir.interview_round, ir.start_time, ir.end_time, ir.interview_result, ir.raw_interview_notes, a.job_requisition_id, a.status AS application_status FROM interview_record ir JOIN application a ON a.application_id = ir.application_id WHERE a.candidate_id = $1 ORDER BY COALESCE(ir.end_time, ir.start_time, ir.updated_at) DESC",
+    "params": ["candidate_id"],
+    "mode": "read",
+    "max_rows": 200
+  },
+  "candidateIdentity.byMobileSuffix": {
+    "sql": "SELECT candidate_id, name, mobile, mobile_normalized, email, employee_id FROM candidate WHERE RIGHT( regexp_replace(COALESCE(mobile_normalized, ''), '[^0-9]', '', 'g'), $2::integer ) = $1 OR RIGHT( regexp_replace(COALESCE(mobile, ''), '[^0-9]', '', 'g'), $2::integer ) = $1",
+    "params": ["mobile_suffix", "suffix_length"],
+    "mode": "read",
+    "max_rows": 50
+  },
+  "candidateIdentity.byEmail": {
+    "sql": "SELECT candidate_id, name, mobile, mobile_normalized, email, employee_id FROM candidate WHERE lower(btrim(email)) = $1",
+    "params": ["email_normalized"],
+    "mode": "read",
+    "max_rows": 50
+  }
+}

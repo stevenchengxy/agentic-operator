@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.6
+# syntax=mirror.gcr.io/docker/dockerfile:1.6@sha256:ac85f380a63b13dfcefa89046420e1781752bab202122f8f50032edf31be0021
 #
 # Inngest worker — P4-OPS-03.
 #
@@ -32,6 +32,12 @@
 #     --no-discovery
 
 FROM inngest/inngest:latest
+
+COPY --chmod=755 apps/inngest-worker/docker-entrypoint.sh \
+  /usr/local/bin/agentic-inngest-entrypoint
+
+ENTRYPOINT ["/usr/local/bin/agentic-inngest-entrypoint"]
+CMD ["inngest"]
 
 # The published Inngest image already runs as a non-root user `inngest`
 # (uid 1001) and EXPOSEs 8288 / 8289 / 8290. Don't override either —

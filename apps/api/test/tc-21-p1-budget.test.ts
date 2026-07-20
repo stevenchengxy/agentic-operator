@@ -77,7 +77,9 @@ describe("TC-16: budget hook (P1-LLM-05)", () => {
     db.insert(tenantBudgets)
       .values({
         tenantId: tenantA,
-        monthlyTokenCap: 100,
+        // The gateway reserves two complete envelopes because a timed-out
+        // first provider call can still be billed before its retry.
+        monthlyTokenCap: 250,
         monthlyUsdCap: null,
         usedTokensMonth: 0,
         usedUsdMonth: 0,
@@ -119,6 +121,7 @@ describe("TC-16: budget hook (P1-LLM-05)", () => {
     const res = await gateway.chat({
       messages: [{ role: "user", content: "hi" }],
       tenantId: tenantA,
+      maxTokens: 10,
     });
     expect(res.text).toBe("mock response");
     const row = getDb()
@@ -136,6 +139,7 @@ describe("TC-16: budget hook (P1-LLM-05)", () => {
       await gateway.chat({
         messages: [{ role: "user", content: "hi" }],
         tenantId: tenantB,
+        maxTokens: 10,
       });
     } catch (err) {
       thrown = err;
@@ -151,6 +155,7 @@ describe("TC-16: budget hook (P1-LLM-05)", () => {
       await gateway.chat({
         messages: [{ role: "user", content: "hi" }],
         tenantId: tenantUsd,
+        maxTokens: 10,
       });
     } catch (err) {
       thrown = err;

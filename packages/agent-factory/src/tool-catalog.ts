@@ -10,6 +10,7 @@
 // staying robust when the catalog is empty (picks pass through as-is, marked).
 
 import type { DomainOntology, OntologyAction } from "./ontology-types";
+import type { GeneratedToolExecutionPolicy } from "./spec-types";
 
 /** Every distinct tool name the domain's actions declare — the grounding catalog. */
 export function buildToolCatalog(ontology: DomainOntology): string[] {
@@ -59,10 +60,121 @@ export interface RealTool {
   aliases?: string[];
   configKeys?: string[];
   category?: string;
+  sideEffect?: "read" | "write" | "dual" | "call";
+  /** Reviewed execution policy. Optional at this port boundary only so stale
+   * persisted adapters can be surfaced and repaired; selection fails closed
+   * when any field is absent. */
+  operation?: GeneratedToolExecutionPolicy["operation"];
+  effectScope?: GeneratedToolExecutionPolicy["effectScope"];
+  sandboxPolicy?: GeneratedToolExecutionPolicy["sandboxPolicy"];
+  /** #KEY-GAP — global fallback env name(s) this tool REQUIRES for its credential (mirrors the
+   *  catalog's `credentialEnv`). Empty/undefined = no required credential. Used by
+   *  `detectMissingToolCredentials` so the brain can ask_user when a BOUND tool's key isn't set. */
+  credentialEnv?: string[];
   /** #SCALE-TOOLS — empirical sandbox success rate (0..1) from tool_stats; undefined = no data yet. */
   successRate?: number;
   /** total sandbox invocations behind successRate (demotion needs >=3 to avoid noise). */
   invoked?: number;
+  /** Explicit machine-readable integration coverage. Semantic similarity may
+   * recommend a tool, but only these declarations can satisfy an Ontology
+   * integration requirement. */
+  capabilities?: ToolCapabilityDescriptor[];
+  /** Latest live/schema probe status for the current tool definition. */
+  probeStatus?: "verified" | "required" | "failed";
+  /** Definition hash carried by the most recent successful probe. */
+  definitionHash?: string;
+  /** All definition/config hashes with currently valid probe receipts. A
+   * single registry tool can be selected with more than one tenant config. */
+  verifiedDefinitionHashes?: string[];
+  /** Exact hashes whose receipt is an unexpired API-attested live probe.
+   * This is the only hash set eligible to satisfy a production-stage gate. */
+  productionVerifiedDefinitionHashes?: string[];
+  /** Representative mode for display/diagnostics only. Exact stage gates use
+   * the hash sets above and the corresponding receipt/cassette attestation. */
+  probeEvidenceMode?: "live-probe" | "signed-fixture" | "runtime-record";
+  /** Human-confirmed, tenant/domain-scoped non-secret configs. Values may name
+   * server env vars but never contain the env values themselves. */
+  integrationProfiles?: import("./integration-profile").IntegrationProfile[];
+  /** Present for persisted declarative adapters so binding can prove that
+   * probe evidence matches the exact definition + selected runtime config. */
+  declarativeDefinition?: {
+    name: string;
+    method: string;
+    urlTemplate: string;
+    headers?: Record<string, string>;
+    bodyTemplate?: string;
+    sideEffect: string;
+    operation?: GeneratedToolExecutionPolicy["operation"];
+    effectScope?: GeneratedToolExecutionPolicy["effectScope"];
+    sandboxPolicy?: GeneratedToolExecutionPolicy["sandboxPolicy"];
+    requestSpec?: Record<string, unknown>;
+    responseSpec?: Record<string, unknown>;
+    examples?: Array<Record<string, unknown>>;
+    paramsSchema?: Record<string, unknown>;
+    returnsSchema?: Record<string, unknown>;
+    capabilities?: ToolCapabilityDescriptor[];
+    probeSafety?: import("@agentic/shared").WriteProbeSafetyContract;
+  };
+  /** Immutable registry metadata used to bind a global-tool probe receipt to
+   * the exact adapter/schema/config selected by this spec. */
+  catalogDefinition?: import("./declarative-tool-hash").CatalogToolDefinition;
+}
+
+export interface ToolCapabilityDescriptor {
+  systems: string[];
+  /** For systems:["*"], exact integration-profile config key containing the
+   * concrete Ontology system identity. */
+  systemConfigKey?: string;
+  kinds: string[];
+  roles: string[];
+  operations?: string[];
+  objectTypes?: string[];
+  /** External side effects commonly require a live or signed-fixture probe. */
+  probeRequired?: boolean;
+}
+
+/** #KEY-GAP (flexible, non-hardcoded credential detection) — given the tool names a generated agent
+ *  has BOUND and the real registry, report which bound tools declare a REQUIRED credential env
+ *  (`credentialEnv`) that is NOT satisfied in `env`. Fully generic: it reads each tool's OWN
+ *  self-declared `credentialEnv` and checks the environment — no tool name is ever special-cased. A
+ *  credential is "satisfied" if ANY of its declared env names is present + non-empty. The factory
+ *  feeds the result to the brain, which REASONS about it and may `ask_user` to recommend the operator
+ *  configure the key — it is never auto-filled and never hardcoded. */
+export interface MissingCredential { tool: string; missingEnv: string[]; }
+export function detectMissingToolCredentials(
+  boundToolNames: string[],
+  realTools: RealTool[],
+  env: Record<string, string | undefined> = process.env,
+  toolConfigs: Record<string, Record<string, unknown>> = {},
+): MissingCredential[] {
+  const byName = new Map<string, RealTool>();
+  for (const t of realTools) {
+    byName.set(t.name, t);
+    for (const a of t.aliases ?? []) if (!byName.has(a)) byName.set(a, t);
+  }
+  const seen = new Set<string>();
+  const out: MissingCredential[] = [];
+  for (const name of boundToolNames) {
+    const rt = byName.get(name);
+    const configuredEnvRefs: string[] = [];
+    const collect = (value: unknown): void => {
+      if (Array.isArray(value)) {
+        value.forEach(collect);
+        return;
+      }
+      if (!value || typeof value !== "object") return;
+      for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+        if (/_env$/i.test(key) && typeof item === "string") configuredEnvRefs.push(item);
+        collect(item);
+      }
+    };
+    collect(toolConfigs[rt?.name ?? name] ?? {});
+    const envs = [...new Set([...(rt?.credentialEnv ?? []), ...configuredEnvRefs])];
+    if (!rt || !envs.length || seen.has(rt.name)) continue; // no required credential / already reported
+    const satisfied = configuredEnvRefs.some((e) => (env[e] ?? "").trim() !== "") || (rt.credentialEnv ?? []).some((e) => (env[e] ?? "").trim() !== "");
+    if (!satisfied) { out.push({ tool: rt.name, missingEnv: envs }); seen.add(rt.name); }
+  }
+  return out;
 }
 
 /** #C — semantic ranking (restored from old AO): score each REAL tool by token-overlap of the
@@ -76,6 +188,17 @@ export function rankRealTools(action: OntologyAction, realTools: RealTool[], lim
   // >=3 invocations) drops out of recommendations even if it matches semantically.
   const demoted = new Set(realTools.filter((t) => (t.invoked ?? 0) >= 3 && (t.successRate ?? 1) < 0.7).map((t) => t.name));
   const objToks = new Set((action.target_objects ?? []).flatMap((o) => [...tokens(String(o))]));
+  // Tool need is often declared in execution metadata rather than in the action name. Fold
+  // action_steps/integration/side_effects into semantic discovery so a generic action label does
+  // not hide its declared storage and external-system boundaries. Recommendations stay
+  // ontology-driven instead of growing per-domain name maps.
+  const executionContext = [
+    action.description ?? "",
+    JSON.stringify(action.action_steps ?? []),
+    JSON.stringify(action.integration ?? {}),
+    JSON.stringify(action.side_effects ?? {}),
+  ].join(" ");
+  const contextToks = tokens(executionContext);
   const scored = realTools
     .filter((t) => !demoted.has(t.name))
     .map((t) => {
@@ -85,6 +208,7 @@ export function rankRealTools(action: OntologyAction, realTools: RealTool[], lim
       let score = 0;
       for (const tk of actToks) { if (nameToks.has(tk)) score += 3; else if (sumToks.has(tk)) score += 1; }
       for (const tk of objToks) { if (nameToks.has(tk)) score += 2; else if (sumToks.has(tk)) score += 1; }
+      for (const tk of contextToks) { if (nameToks.has(tk)) score += 2; else if (sumToks.has(tk)) score += 1; }
       return { name: t.name, score };
     })
     .filter((x) => x.score > 0)
@@ -99,17 +223,13 @@ export function suggestToolsForAction(action: OntologyAction, realTools: RealToo
   return [...new Set([...(action.tool_use ?? []).filter(Boolean), ...rankRealTools(action, realTools)])];
 }
 
-// Side-effect class derived from a tool's name/category (the catalog carries no explicit field) —
-// mirrors the tool-library page so a search filter agrees with what the FDE sees in the UI.
-const READ_RE = /read|parse|get|list|fetch|health|match|search|describe|inspect|lookup|query|load|probe/i;
-const WRITE_RE = /write|create|invite|send|post|delete|update|save|append|put|upload|emit|publish|sync/i;
-export function toolSideEffect(t: { name: string; category?: string }): "read" | "write" | "dual" | "call" {
-  const s = `${t.name} ${t.category ?? ""}`;
-  const r = READ_RE.test(s), w = WRITE_RE.test(s);
-  if (r && w) return "dual";
-  if (w) return "write";
-  if (r) return "read";
-  return "call";
+// Authority never comes from a name/category regex. `parse`, `sync` and
+// `match` are routinely either read-only or mutating depending on the real
+// adapter; guessing here can silently bypass write-probe and approval gates.
+export function toolSideEffect(
+  tool: Pick<RealTool, "sideEffect">,
+): "read" | "write" | "dual" | "call" | "unknown" {
+  return tool.sideEffect ?? "unknown";
 }
 
 export interface ToolSearchHit { name: string; summary?: string; category?: string; configKeys: string[]; sideEffect: string; score: number; }

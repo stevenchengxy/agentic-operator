@@ -10,8 +10,10 @@
 
 import { useState } from "react";
 import { Button, Markdown } from "@/app/portal/components";
-import { chip, Field, CodeBox } from "./atoms";
+import { chip, Field } from "./atoms";
 import type { AgentCardData, AgentIO } from "./model";
+import type { SessionTask } from "./workers";
+import { TaskTranscript } from "./background-panel";
 
 // ── per-agent mini event-flow ──────────────────────────────────────────────────────
 function MiniAgentSvg({ agent }: { agent: AgentCardData }) {
@@ -68,28 +70,72 @@ function VersionHistory({ versions, onShowCode }: { versions: AgentCardData[]; o
 }
 
 // ── supplement + regenerate ────────────────────────────────────────────────────────
-function RegenerateBox({ actionName, onRegenerate }: { actionName: string; onRegenerate: (actionName: string, supplement: string) => void }) {
+function RegenerateBox({ actionName, onRegenerate }: { actionName: string; onRegenerate: (actionName: string, supplement: string) => void | Promise<void> }) {
   const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const submit = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      await onRegenerate(actionName, text.trim());
+      setText("");
+    } catch (cause) {
+      setError(cause instanceof Error && cause.message ? cause.message : "重新生成请求失败");
+    } finally {
+      setBusy(false);
+    }
+  };
   return (
     <div style={{ border: "1px solid var(--border)", borderRadius: 10, padding: 12, background: "var(--panel-2)" }}>
       <div style={{ fontSize: 11, color: "var(--text-3)", fontFamily: "var(--mono)", textTransform: "uppercase", marginBottom: 6 }}>补充信息 · 重新生成</div>
       <textarea value={text} onChange={(e) => setText(e.target.value)} rows={2} placeholder="补充背景 / 要求 / 修正（如：这个外部 API 的返回字段是 …），大脑会只重做这一个 agent。" style={{ width: "100%", resize: "none", fontSize: 12, padding: "7px 9px", background: "var(--panel)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 8, fontFamily: "var(--sans)" }} />
       <div style={{ marginTop: 8 }}>
-        <Button icon="replay" tone="primary" onClick={() => { onRegenerate(actionName, text.trim()); setText(""); }}>重新生成这个 agent</Button>
+        <Button icon="replay" tone="primary" disabled={busy} onClick={() => void submit()}>{busy ? "提交中…" : "重新生成这个 agent"}</Button>
       </div>
+      {error && <div role="alert" style={{ marginTop: 7, color: "var(--red)", fontSize: 11.5 }}>{error}</div>}
+    </div>
+  );
+}
+
+// ── per-agent reasoning stream (#per-agent-think) ──────────────────────────────────
+/** The agent's OWN process timeline — the harness reasoning/kernel steps/tool calls that were
+ *  attributed to this agent (forAgent), same projection the background panel uses. This is the
+ *  "点开卡片看它内部推理流程" surface: strategy chosen, each executed reasoning method, each
+ *  tool call with ✓/✗ — not just the final design artifacts. */
+function ReasoningStream({ task }: { task: SessionTask }) {
+  const [open, setOpen] = useState(true);
+  const steps = task.transcript.length;
+  if (!steps) return null;
+  const strategy = task.drill?.strategy;
+  return (
+    <div style={{ border: "1px solid var(--border)", borderRadius: 10, background: "var(--panel-2)", overflow: "hidden" }}>
+      <button onClick={() => setOpen((o) => !o)} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "9px 12px", background: "none", border: "none", cursor: "pointer", color: "var(--text-2)" }}>
+        <span style={{ fontSize: 11, fontFamily: "var(--mono)", textTransform: "uppercase", letterSpacing: "0.04em" }}>内部推理流（{steps} 步）</span>
+        {strategy && chip(`推理方法 ${strategy}`, "var(--violet)")}
+        <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--signal)" }}>{open ? "收起" : "展开"}</span>
+      </button>
+      {open && (
+        <div style={{ borderTop: "1px solid var(--border)", padding: "4px 10px", maxHeight: 340, overflowY: "auto" }}>
+          <TaskTranscript task={task} />
+        </div>
+      )}
     </div>
   );
 }
 
 // ── the inspector ──────────────────────────────────────────────────────────────────
-export function AgentInspector({ agent, io, score, versions, onBack, onShowCode, onRegenerate }: {
+export function AgentInspector({ agent, io, score, versions, task, onBack, onShowCode, onRegenerate }: {
   agent: AgentCardData;
   io?: AgentIO;
   score?: { delta: number; next: number; regression: boolean };
   versions?: AgentCardData[];
+  /** 该 agent 的会话过程任务（deriveSessionTasks 投影）——内部推理流的数据源。 */
+  task?: SessionTask;
   onBack: () => void;
   onShowCode: (a: AgentCardData) => void;
-  onRegenerate?: (actionName: string, supplement: string) => void;
+  onRegenerate?: (actionName: string, supplement: string) => void | Promise<void>;
 }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -119,6 +165,8 @@ export function AgentInspector({ agent, io, score, versions, onBack, onShowCode,
           {agent.systemPrompt && <Field label="system prompt（指令）" text={agent.systemPrompt} mono />}
         </div>
       )}
+
+      {task && <ReasoningStream task={task} />}
 
       {versions && <VersionHistory versions={versions} onShowCode={onShowCode} />}
 

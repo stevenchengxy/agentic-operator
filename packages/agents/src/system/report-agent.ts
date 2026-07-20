@@ -57,31 +57,86 @@ export function extractHtmlDocument(text: string): string {
     const htmlStart = t.search(/<html[\s>]/i);
     if (htmlStart >= 0) t = `<!DOCTYPE html>\n${t.slice(htmlStart)}`;
   }
+  const documentEnd = t.search(/<\/html\s*>/i);
+  if (documentEnd >= 0) {
+    const closing = t.slice(documentEnd).match(/^<\/html\s*>/i)?.[0];
+    if (closing) t = t.slice(0, documentEnd + closing.length);
+  }
   return t;
 }
 
+export class ReportOutputError extends Error {
+  constructor(message: string) {
+    super(`Invalid report output: ${message}`);
+    this.name = "ReportOutputError";
+  }
+}
+
+/** Enforce the delivery contract before a run can be marked successful. */
+export function assertCompleteHtmlDocument(html: string): void {
+  const normalized = html.trim();
+  const required: Array<[RegExp, string]> = [
+    [/^<!doctype\s+html(?:\s[^>]*)?>/i, "missing <!DOCTYPE html>"],
+    [
+      /<html(?:\s[^>]*)?>[\s\S]*<\/html\s*>$/i,
+      "missing complete <html> document",
+    ],
+    [/<head(?:\s[^>]*)?>[\s\S]*<\/head\s*>/i, "missing complete <head>"],
+    [/<body(?:\s[^>]*)?>[\s\S]*<\/body\s*>/i, "missing complete <body>"],
+  ];
+  for (const [pattern, message] of required) {
+    if (!pattern.test(normalized)) throw new ReportOutputError(message);
+  }
+
+  // The prompt promises a self-contained artifact. A remote script, image,
+  // iframe, stylesheet, or CSS URL makes the stored report depend on mutable
+  // external state and must not be accepted as a completed deliverable.
+  const externalResource =
+    /<(?:script|img|iframe|source|video|audio|link)\b[^>]*(?:src|href)\s*=\s*["']\s*(?:https?:)?\/\//i;
+  const externalCssUrl = /url\(\s*["']?\s*(?:https?:)?\/\//i;
+  if (externalResource.test(normalized) || externalCssUrl.test(normalized)) {
+    throw new ReportOutputError("external resources are not allowed");
+  }
+}
+
 const escAttr = (s: string): string =>
-  s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 
 /** Substitute {{CHART:id}} placeholders; unplaced charts are appended before </body>.
  *  Replacements are FUNCTIONS throughout — SVG bodies routinely contain `$&`/`$'`-style
  *  sequences (escaped labels), which a string replacement would expand as match patterns
  *  and silently corrupt the delivered document. */
-export function substituteCharts(html: string, charts: ReportChart[] | undefined): string {
+export function substituteCharts(
+  html: string,
+  charts: ReportChart[] | undefined,
+): string {
   if (!charts?.length) return html.replace(/\{\{CHART:[^}]+\}\}/g, "");
   let out = html;
   const unplaced: ReportChart[] = [];
   for (const c of charts) {
-    const marker = new RegExp(`\\{\\{CHART:${c.id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\}\\}`, "g");
+    const marker = new RegExp(
+      `\\{\\{CHART:${c.id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\}\\}`,
+      "g",
+    );
     if (marker.test(out)) out = out.replace(marker, () => c.svg);
     else unplaced.push(c);
   }
   out = out.replace(/\{\{CHART:[^}]+\}\}/g, ""); // unknown ids → drop, never leak markers
   if (unplaced.length) {
     const block = unplaced
-      .map((c) => `<figure style="margin:24px 0"><figcaption style="font-weight:600;margin-bottom:8px">${escAttr(c.title)}</figcaption>${c.svg}</figure>`)
+      .map(
+        (c) =>
+          `<figure style="margin:24px 0"><figcaption style="font-weight:600;margin-bottom:8px">${escAttr(c.title)}</figcaption>${c.svg}</figure>`,
+      )
       .join("\n");
-    out = out.includes("</body>") ? out.replace("</body>", () => `${block}\n</body>`) : `${out}\n${block}`;
+    out = out.includes("</body>")
+      ? out.replace("</body>", () => `${block}\n</body>`)
+      : `${out}\n${block}`;
   }
   return out;
 }
@@ -106,6 +161,7 @@ const SVG_SKILLS = `
 3. 并发结构以 analysis.eventGraph.fanOuts 为准：一个事件有多个消费者 = 并行支线，不得叙述成串行漏斗。
 4. 断链判断以 analysis.suggestedBridges（终态↔入口的命名重合候选）与每个终态的 verdictHint 为起点做业务解读；hint 只是启发，你可以给出不同判断，但必须给理由。
 5. 规则章节：全量统计只用 analysis.ruleAnalysis（total / levelDistribution / clusters / perAction / unmodeledStages）；明细引用 rulesSample 时**必须注明采样范围**（见 rulesSampleNote）。若 linkageMethod 是 text-heuristic，必须注明"本体未提供规则→动作的显式关联，以下为启发式对应"，不得把关联缺失说成"动作缺规则"。
+6. 工具化解读以 data.toolBinding 为准（若存在）：layered=true 时，"动作未绑定工具"**必须**按其 note 的口径解读——本体层按分层设计不声明工具，绑定发生在 Agent 工厂设计期（从 registryTools 个注册工具中语义匹配、缺凭证走 ask_user）；应表述为【设计期待办】，**禁止**称为"重大缺口 / 落地缺口 / 平台缺陷"或据此扣自动化分。layered=false 时按 gaps.agentActionsWithoutTools 正常分析真实缺口。
 
 ## 分析深度要求（这是报告的核心——绝不能只做"清单摘要"）
 报告至少包含这些章节：
@@ -114,51 +170,74 @@ const SVG_SKILLS = `
 3. **事件链完整性（断点分析）**：先用一张完整表格列出 analysis.eventGraph.events 中全部「终态或外部交接」与「外部入口」事件（名称/类别/生产者/消费者/判断），再重点深挖 suggestedBridges——这些是"本应衔接却断开"的最强候选（如共享命名 token 的终态→入口对），逐个判断是"真断点需补衔接动作"还是"合理的外部系统边界"，并给出修复建议。
 4. **规则与合规覆盖**：基于 ruleAnalysis.clusters 讲规则在业务阶段上的分布（哪些阶段规则最密、mandatory 占比），基于 perAction + linkageMethod 讲动作侧覆盖，基于 unmodeledStages 指出"规则覆盖面 > 动作建模面"的部分（这些阶段有规则但本体没有对应动作——通常是建模缺口而非规则缺口）。引用 3-5 条代表性规则（规则名+编号来自 rulesSample）说明把关作用。
 5. **数据模型分析**：objectTouch——核心数据对象是什么、在流程中如何流转；用 {{CHART:actor-donut}} 说明人工 vs 自动化的分工。
-6. **自动化与工具化程度**：{{CHART:action-bar}} + gaps.agentActionsWithoutTools——哪些动作还没绑定工具（自动化缺口），结合每个动作的职责说需要什么类型的工具。
+6. **自动化与工具化程度**：{{CHART:action-bar}} + gaps.agentActionsWithoutTools——哪些动作还没绑定工具，结合每个动作的职责说需要什么类型的工具。口径遵守契约第 6 条：data.toolBinding.layered=true 时这是【设计期待办】（工厂生成时绑定），不是缺陷；此时仍应给出建设性建议——按每个动作的职责推荐它适合从注册表绑定哪类工具。
 7. **风险与改进建议**：按优先级（高/中/低，用 <span class="badge"> 标色）给出可执行建议，每条必须对应上面发现的一个具体问题（引用具体事件/动作/规则名）。
 8. **附录**：动作清单表（名称/执行者/触发/产出/工具）+ 事件分类清单。
 
 每个图表旁必须有 2-4 句解读（"这说明…/这里的风险是…"）；每个章节要有真正的分析判断，不能只是把数据翻译成中文句子。宁可深入分析 5 个关键点，也不要浮光掠影地过 20 个。
 `.trim();
 
+/**
+ * The report's [system, user] messages — the SINGLE source of the deep-analysis prompt (SVG_SKILLS +
+ * grounding contract + section spec). Exported so the Agent Factory's report-jobs can drive its
+ * factory-gateway path (writeViaFactory) with the EXACT same analytical prompt instead of a thinner
+ * hand-rolled one — both narrative paths then reason at the same depth. `extraInstruction` appends a
+ * targeted correction block on a grounding-verify retry.
+ */
+export function buildReportMessages(
+  input: ReportInput,
+  extraInstruction?: string,
+): ChatMessage[] {
+  const lang = input.language ?? "zh-CN";
+  const chartList = (input.charts ?? [])
+    .map((c) => `- id: ${c.id} — ${c.title}`)
+    .join("\n");
+  const dataBlock =
+    input.data === undefined
+      ? "（无结构化数据 —— 基于 subject 与常识做定性分析，明确标注这是定性判断）"
+      : JSON.stringify(input.data, null, 2).slice(0, 60_000);
+  return [
+    {
+      role: "system",
+      content: `你是资深行业分析师 + 信息设计师。你产出可以直接交付客户的 HTML 分析报告（之后可能被打印成 PDF）。\n报告语言：${lang}。\n\n${SVG_SKILLS}\n\n输出要求：只输出 HTML 文档本身，不要任何解释或 markdown 代码围栏。`,
+    },
+    {
+      role: "user",
+      content: [
+        `# 报告主题\n${input.title ?? ""}\n${input.subject}`,
+        input.focus ? `# 分析重点\n${input.focus}` : "",
+        chartList
+          ? `# 可用的预渲染图表（用 {{CHART:id}} 占位引用，每个至少用一次）\n${chartList}`
+          : "",
+        `# 结构化数据\n\`\`\`json\n${dataBlock}\n\`\`\``,
+        extraInstruction ? `\n${extraInstruction}` : "",
+      ]
+        .filter(Boolean)
+        .join("\n\n"),
+    },
+  ];
+}
+
 export class ReportAgent extends BaseAgent<ReportInput, ReportOutput> {
   readonly name = "reportGenerator";
   readonly description =
     "Analysis-report author: renders a subject + structured data into a complete self-contained HTML report (charts via deterministic placeholders), printable to PDF.";
+  override readonly scope = "system" as const;
+  override readonly runScope = "caller" as const;
 
   protected override buildMessages(input: ReportInput): ChatMessage[] {
-    const lang = input.language ?? "zh-CN";
-    const chartList = (input.charts ?? [])
-      .map((c) => `- id: ${c.id} — ${c.title}`)
-      .join("\n");
-    const dataBlock =
-      input.data === undefined
-        ? "（无结构化数据 —— 基于 subject 与常识做定性分析，明确标注这是定性判断）"
-        : JSON.stringify(input.data, null, 2).slice(0, 60_000);
-    return [
-      {
-        role: "system",
-        content: `你是资深行业分析师 + 信息设计师。你产出可以直接交付客户的 HTML 分析报告（之后可能被打印成 PDF）。\n报告语言：${lang}。\n\n${SVG_SKILLS}\n\n输出要求：只输出 HTML 文档本身，不要任何解释或 markdown 代码围栏。`,
-      },
-      {
-        role: "user",
-        content: [
-          `# 报告主题\n${input.title ?? ""}\n${input.subject}`,
-          input.focus ? `# 分析重点\n${input.focus}` : "",
-          chartList ? `# 可用的预渲染图表（用 {{CHART:id}} 占位引用，每个至少用一次）\n${chartList}` : "",
-          `# 结构化数据\n\`\`\`json\n${dataBlock}\n\`\`\``,
-        ]
-          .filter(Boolean)
-          .join("\n\n"),
-      },
-    ];
+    return buildReportMessages(input);
   }
 
   protected override parseOutput(text: string): ReportOutput {
     const html = extractHtmlDocument(text);
+    assertCompleteHtmlDocument(html);
     const m = html.match(/<title>([^<]*)<\/title>/i);
     const h1 = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
-    const title = (m?.[1] ?? h1?.[1]?.replace(/<[^>]+>/g, "") ?? "分析报告").trim() || "分析报告";
+    const title = (m?.[1] ?? h1?.[1]?.replace(/<[^>]+>/g, "") ?? "").trim();
+    if (!title) {
+      throw new ReportOutputError("a non-empty <title> or <h1> is required");
+    }
     return { title, html };
   }
 }

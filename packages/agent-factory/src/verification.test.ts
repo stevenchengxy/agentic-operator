@@ -91,11 +91,14 @@ describe("verificationPolicy", () => {
     const p = verificationPolicy({ NODE_ENV: "test" });
     expect(p).toMatchObject({ realModel: false, toolMode: "mock" });
   });
-  it("FACTORY_SANDBOX_REAL_MODEL=0 forces mock model even in production", () => {
-    expect(verificationPolicy({ FACTORY_SANDBOX_REAL_MODEL: "0" }).realModel).toBe(false);
+  it("production posture is REAL-only: REAL_MODEL=0 is ignored (mock model can never grade production)", () => {
+    expect(verificationPolicy({ FACTORY_SANDBOX_REAL_MODEL: "0" }).realModel).toBe(true);
   });
-  it("honors explicit opt-ins", () => {
+  it("production COERCES synthetic tool modes (mock/replay) to gated — never promote on synthetic evidence; live passes through", () => {
     const p = verificationPolicy({ FACTORY_SANDBOX_REAL_MODEL: "1", FACTORY_SANDBOX_TOOL_MODE: "replay", FACTORY_SANDBOX_BUDGET_TOKENS: "500000" });
-    expect(p).toMatchObject({ realModel: true, toolMode: "replay", budgetTokens: 500000 });
+    expect(p).toMatchObject({ realModel: true, toolMode: "gated", budgetTokens: 500000 });
+    expect(verificationPolicy({ FACTORY_SANDBOX_TOOL_MODE: "live" }).toolMode).toBe("live");
+    // In tests replay stays honored (deterministic CI can replay cassettes).
+    expect(verificationPolicy({ NODE_ENV: "test", FACTORY_SANDBOX_TOOL_MODE: "replay" }).toolMode).toBe("replay");
   });
 });

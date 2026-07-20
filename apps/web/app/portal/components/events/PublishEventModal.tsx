@@ -6,13 +6,12 @@
  * Production parity for the SPA-prototype Event Tester. Fires a single
  * `POST /v1/events` so the operator can kick off a workflow without
  * leaving the portal or composing a curl by hand. The two on-disk paths
- * (CLI / SPA `/demo`) keep working — this is purely additive.
+ * (CLI clients) keep working — this is purely additive.
  *
  * Form shape:
  *   1. Event name        — dropdown from `/v1/events/catalog` (with a
  *                          "custom" free-text fallback for ad-hoc names).
- *   2. Subject           — text input, auto-seeded `REQ-<6hex>` so the
- *                          operator can hit submit without typing.
+ *   2. Subject           — required real correlation/business identifier.
  *   3. Payload           — typed inputs derived from the selected catalog
  *                          entry's `fields[]` (name + type). When no
  *                          fields are declared, falls back to a JSON
@@ -63,14 +62,6 @@ interface PublishEventModalProps {
   initialName?: string;
 }
 
-function makeDefaultSubject(): string {
-  const hex = Math.floor(Math.random() * 0xffffff)
-    .toString(16)
-    .padStart(6, "0")
-    .toUpperCase();
-  return `REQ-${hex}`;
-}
-
 /**
  * Map the catalog's loose `type` strings ("String" / "Boolean" / "Number"
  * / "Integer" / "Datetime" / "Array<X>" / "Object" / …) onto an input
@@ -117,7 +108,7 @@ export function PublishEventModal({
 
   const [eventName, setEventName] = useState<string>(initialName ?? "");
   const [customName, setCustomName] = useState<string>("");
-  const [subject, setSubject] = useState<string>(makeDefaultSubject());
+  const [subject, setSubject] = useState<string>("");
   /** name → raw string value from the typed inputs. */
   const [fieldValues, setFieldValues] = useState<Record<string, string>>({});
   const [rawMode, setRawMode] = useState(false);
@@ -247,6 +238,10 @@ export function PublishEventModal({
       setServerError(t("publishEventModal.errNameRequired"));
       return;
     }
+    if (!subject.trim()) {
+      setServerError(t("publishEventModal.errSubjectRequired"));
+      return;
+    }
     const built = buildPayload();
     if (!built.ok) {
       setParseError(built.error);
@@ -257,7 +252,7 @@ export function PublishEventModal({
     try {
       const res = await emit.mutateAsync({
         name: finalName,
-        subject: subject.trim() || undefined,
+        subject: subject.trim(),
         payload: built.payload,
       });
       setSubmitted({ id: res.event_id, name: res.name, at: Date.now() });
@@ -383,12 +378,13 @@ export function PublishEventModal({
           </Field>
 
           {/* Subject */}
-          <Field label={t("publishEventModal.fieldSubject")} hint={t("publishEventModal.subjectHint")}>
+          <Field label={t("publishEventModal.fieldSubject")} hint={t("publishEventModal.subjectHint")} required>
             <input
               type="text"
               value={subject}
               onChange={(e) => setSubject(e.target.value)}
-              placeholder="REQ-…"
+              placeholder={t("publishEventModal.subjectPlaceholder")}
+              required
               style={inputStyle}
             />
           </Field>
@@ -602,7 +598,7 @@ export function PublishEventModal({
             icon="run"
             tone="primary"
             onClick={handleSubmit}
-            disabled={emit.isPending || !finalName}
+            disabled={emit.isPending || !finalName || !subject.trim()}
           >
             {emit.isPending
               ? t("publishEventModal.publishing")

@@ -12,6 +12,14 @@ beforeAll(() => {
 });
 
 describe("#P6 runGeneratedModuleContainer — gates + fallback (no Docker needed)", () => {
+  it("does not silently downgrade when Docker is unavailable", async () => {
+    if (HAS_DOCKER) return;
+    const r = await runGeneratedModuleContainer("export const x=1;");
+    expect(r.ok).toBe(false);
+    expect(r.isolationTier).toBe("container");
+    expect(r.requestedIsolationTier).toBeUndefined();
+    expect(r.error).toMatch(/Docker.*不可用/);
+  });
   it("refuses a non -sb tenant (isolation invariant)", async () => {
     const r = await runGeneratedModuleContainer("export const x=1;", { tenantSlug: "raas", fallback: false });
     expect(r.ok).toBe(false);
@@ -59,6 +67,17 @@ d("#P6 runGeneratedModuleContainer — real container execution (Docker present)
     expect((r.result as { rh: unknown }).rh).toBeNull();
     expect((r.result as { llm: unknown }).llm).toBeNull();
   }, 45000);
+
+  it("reports an unserializable return value as failure", async () => {
+    const code = `export function circular() { const out = {}; out.self = out; return out; }`;
+    const r = await runGeneratedModuleContainer(code, {
+      entryName: "circular",
+      call: true,
+      timeoutMs: 30_000,
+    });
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/not JSON-serializable/i);
+  }, 45_000);
 
   it("a synchronous infinite loop is contained + killed by the wall-clock (host survives)", async () => {
     const code = `export function boom() { while (true) {} }`;

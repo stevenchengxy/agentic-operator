@@ -9,7 +9,10 @@
 
 import { describe, it, expect } from "vitest";
 import { compileGraph } from "@agentic/agent-factory";
-import { chainVerdict } from "../src/services/agent-factory/sandbox-deployer";
+import {
+  chainVerdict,
+  explicitlyDegradedAgents,
+} from "../src/services/agent-factory/sandbox-deployer";
 
 type S = { slug: string; actionName: string; trigger: string[]; emit: string[] };
 const spec = (p: S) =>
@@ -19,6 +22,29 @@ const actionsOf = (specs: S[]) =>
 const graphOf = (specs: S[]) => compileGraph(actionsOf(specs), { domainId: "D" });
 
 describe("TC-97: chainVerdict (#D 跑通 redefinition)", () => {
+  it("does not degrade a proven tool-free function; only an explicit fallback shell", () => {
+    const pureFunction = spec({
+      slug: "pure",
+      actionName: "normalizePayload",
+      trigger: ["RAW_RECEIVED"],
+      emit: ["NORMALIZED"],
+    }) as unknown as { tools: string[]; hitl: boolean; degraded?: boolean; short: string };
+    pureFunction.tools = [];
+
+    const fallbackShell = spec({
+      slug: "shell",
+      actionName: "unresolvedIntegration",
+      trigger: ["NORMALIZED"],
+      emit: ["DONE"],
+    }) as unknown as { tools: string[]; hitl: boolean; degraded?: boolean; short: string };
+    fallbackShell.tools = ["resolved-tool"];
+    fallbackShell.degraded = true;
+
+    expect(explicitlyDegradedAgents([pureFunction, fallbackShell] as never)).toEqual([
+      "unresolvedIntegration",
+    ]);
+  });
+
   it("counts an external-handoff emit as a legitimate success terminal (createJD → JD_GENERATED → external)", () => {
     const specs: S[] = [
       { slug: "a", actionName: "intake", trigger: ["RESUME_UPLOADED"], emit: ["RESUME_PROCESSED"] },

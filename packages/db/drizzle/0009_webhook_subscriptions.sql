@@ -9,9 +9,9 @@
 -- window inside the route handler; we don't persist replay state in this
 -- table — keep the row clean for ops introspection.
 --
--- `secret_encrypted` is intentionally stored as text so a future KMS-style
--- envelope can wrap the raw HMAC key. v1 ships it as a base64-encoded shared
--- secret (no KMS); operators rotate it via UPDATE.
+-- `secret_encrypted` stores a versioned AES-256-GCM envelope. The ciphertext
+-- is authenticated against tenant_id + source and cannot be used directly as
+-- an HMAC key. Plaintext/legacy values fail closed at ingestion.
 --
 -- A partial unique constraint on (tenant_id, source) WHERE enabled = 1 keeps
 -- a single live subscription per source per tenant; disabled rows are kept

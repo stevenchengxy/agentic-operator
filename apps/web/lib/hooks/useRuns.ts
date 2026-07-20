@@ -15,17 +15,9 @@ import {
   keepPreviousData,
 } from "@tanstack/react-query";
 import type { UseQueryResult } from "@tanstack/react-query";
+import { readApiData } from "@/lib/api-response";
 import { RUN_KEYS, COUNT_KEYS } from "./useStream";
 import { tenantHeader } from "./tenant-header";
-
-interface ApiOk<T> {
-  ok: true;
-  data: T;
-}
-interface ApiErr {
-  ok: false;
-  error: { code: string; message: string };
-}
 
 async function callV1<T>(path: string, init: RequestInit = {}): Promise<T> {
   const { headers: initHeaders, ...rest } = init;
@@ -38,11 +30,7 @@ async function callV1<T>(path: string, init: RequestInit = {}): Promise<T> {
       ...(initHeaders as Record<string, string> | undefined),
     },
   });
-  const body = (await res.json()) as ApiOk<T> | ApiErr;
-  if (!body.ok) {
-    throw new Error(`${path}: ${body.error.code} — ${body.error.message}`);
-  }
-  return body.data;
+  return readApiData<T>(res, path);
 }
 
 export interface RunListFilter {
@@ -57,6 +45,26 @@ export interface RunListFilter {
   parentRunId?: string;
 }
 
+export type CodeActAttestationStatus =
+  | "production_verified"
+  | "sandbox_verified"
+  | "sandbox_not_required"
+  | "not_authorized"
+  | "missing"
+  | "mismatch"
+  | "not_checked";
+
+/** Runtime-authored CodeAct receipt columns. Absence/null means the runtime
+ * emitted no receipt; it must not be inferred from deployed agent metadata. */
+export interface CodeActReceiptFields {
+  codeRan?: boolean | null;
+  codeExecuted?: boolean | null;
+  codeIsolation?: "worker_thread" | "isolated_subprocess" | "isolated_container" | null;
+  codeSha256?: string | null;
+  codeAttestation?: CodeActAttestationStatus | null;
+  codeExecutionFailure?: string | null;
+}
+
 function buildQuery(filter: RunListFilter | undefined): string {
   if (!filter) return "";
   const sp = new URLSearchParams();
@@ -69,13 +77,16 @@ function buildQuery(filter: RunListFilter | undefined): string {
   return s ? `?${s}` : "";
 }
 
-export interface RunListRow {
+export interface RunListRow extends CodeActReceiptFields {
   id: string;
   status: string;
   agentName: string;
   agentTitle: string | null;
   subject: string | null;
   triggerEvent: string | null;
+  /** Name of the event emitted by this run. The list endpoint hydrates this
+   *  so observability views can prove producer → consumer relationships. */
+  emittedEvent?: string | null;
   startedAt: string | null;
   endedAt: string | null;
   durationMs: number | null;
@@ -90,7 +101,6 @@ export interface RunListRow {
   /** P2-FE-18 — TEST RUN badge driver. */
   testRun?: boolean;
   error?: string | null;
-  emittedEvent?: string | null;
   /** Correlation id linking this run to others in the same workflow chain. */
   correlationId?: string | null;
   /** Run-detail only: real trigger-event payload (input) + emitted-event
@@ -109,6 +119,9 @@ export function useRuns(
       : RUN_KEYS.list(),
     queryFn: () => callV1<RunListRow[]>(`/v1/runs${query}`),
     staleTime: 2_000,
+    // SSE invalidation is primary; polling is a bounded resilience fallback.
+    refetchInterval: 15_000,
+    refetchIntervalInBackground: false,
   });
 }
 
@@ -261,7 +274,7 @@ export function useGenerateRunSummary() {
   });
 }
 
-export interface StepRow {
+export interface StepRow extends CodeActReceiptFields {
   id: string;
   ord: number;
   name: string;

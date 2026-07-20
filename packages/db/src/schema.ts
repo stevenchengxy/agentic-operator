@@ -129,7 +129,10 @@ export const workflows = sqliteTable(
       .default(now),
   },
   (t) => ({
-    tenantSlugUq: uniqueIndex("workflows_tenant_slug_uq").on(t.tenantId, t.slug),
+    tenantSlugUq: uniqueIndex("workflows_tenant_slug_uq").on(
+      t.tenantId,
+      t.slug,
+    ),
     tenantIdx: index("workflows_tenant_idx").on(t.tenantId),
   }),
 );
@@ -223,9 +226,7 @@ export const agents = sqliteTable(
     kind: text("kind", { enum: ["manifest", "code"] })
       .notNull()
       .default("manifest"),
-    enabled: integer("enabled", { mode: "boolean" })
-      .notNull()
-      .default(true),
+    enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
     // P0-DB-01: temporal columns (migration 0003_temporal_columns.sql).
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
     updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
@@ -339,10 +340,26 @@ export const runs = sqliteTable(
     tokensOut: integer("tokens_out"),
     model: text("model"),
     emittedEventId: text("emitted_event_id"),
-    /** #REDESIGN P1 — execution receipt: did this agent's GENERATED CODE actually run (true) vs fall
-     *  back to the declarative/prompt path (false)? Null = declarative agent (no code to run). The
-     *  finish gate requires every codeExecuted agent to have a run with code_ran=true. */
+    /** Runtime receipt: the isolated generated handler completed successfully.
+     * Null means no CodeAct receipt; false is a real preflight/worker failure. */
     codeRan: integer("code_ran", { mode: "boolean" }),
+    /** Runtime receipt fields. Populated only from the structured CodeAct
+     * isolation result, never from manifest `codeExecuted` configuration. */
+    codeExecuted: integer("code_executed", { mode: "boolean" }),
+    codeIsolation: text("code_isolation", { enum: ["worker_thread", "isolated_subprocess", "isolated_container"] }),
+    codeSha256: text("code_sha256"),
+    codeAttestation: text("code_attestation_status", {
+      enum: [
+        "production_verified",
+        "sandbox_verified",
+        "sandbox_not_required",
+        "not_authorized",
+        "missing",
+        "mismatch",
+        "not_checked",
+      ],
+    }),
+    codeExecutionFailure: text("code_execution_failure"),
     errorMessage: text("error_message"),
     logPath: text("log_path"),
     correlationId: text("correlation_id").notNull(),
@@ -382,7 +399,18 @@ export const steps = sqliteTable(
     ord: integer("ord").notNull(),
     name: text("name").notNull(),
     type: text("type", {
-      enum: ["tool", "logic", "manual", "condition", "delay", "subflow"],
+      enum: [
+        "tool",
+        "logic",
+        "manual",
+        "condition",
+        "delay",
+        "subflow",
+        "invoke",
+        "foreach",
+        "emit",
+        "decision",
+      ],
     }).notNull(),
     status: text("status", {
       enum: ["pending", "running", "ok", "failed", "skipped"],
@@ -397,6 +425,23 @@ export const steps = sqliteTable(
     model: text("model"),
     tokensIn: integer("tokens_in"),
     tokensOut: integer("tokens_out"),
+    /** Exact per-step CodeAct runtime receipt; null for declarative steps. */
+    codeRan: integer("code_ran", { mode: "boolean" }),
+    codeExecuted: integer("code_executed", { mode: "boolean" }),
+    codeIsolation: text("code_isolation", { enum: ["worker_thread", "isolated_subprocess", "isolated_container"] }),
+    codeSha256: text("code_sha256"),
+    codeAttestation: text("code_attestation_status", {
+      enum: [
+        "production_verified",
+        "sandbox_verified",
+        "sandbox_not_required",
+        "not_authorized",
+        "missing",
+        "mismatch",
+        "not_checked",
+      ],
+    }),
+    codeExecutionFailure: text("code_execution_failure"),
     /**
      * Execution attempt count. Inngest retries a failed `step.run` body in
      * place; the runtime upserts by (run_id, ord) and bumps this so the run
@@ -498,6 +543,16 @@ export const tasks = sqliteTable(
       .notNull()
       .references(() => tenants.id, { onDelete: "cascade" }),
     runId: text("run_id").references(() => runs.id, { onDelete: "cascade" }),
+    /** Durable causal link to the business event that created the owning run. */
+    originEventId: text("origin_event_id").references(() => events.id, {
+      onDelete: "set null",
+    }),
+    /** Preserved even when an ingress path has no local events row. */
+    originEventName: text("origin_event_name"),
+    /** Exact manual step parked in Inngest's waitForEvent. */
+    waitStepId: text("wait_step_id").references(() => steps.id, {
+      onDelete: "set null",
+    }),
     type: text("type").notNull(),
     title: text("title").notNull(),
     awaitingRole: text("awaiting_role"),
@@ -505,7 +560,9 @@ export const tasks = sqliteTable(
     priority: text("priority", { enum: ["low", "medium", "high"] })
       .notNull()
       .default("medium"),
-    status: text("status", { enum: ["open", "resolved", "snoozed"] })
+    status: text("status", {
+      enum: ["open", "resolving", "resolved", "snoozed", "failed"],
+    })
       .notNull()
       .default("open"),
     createdAt: integer("created_at", { mode: "timestamp_ms" })
@@ -515,12 +572,34 @@ export const tasks = sqliteTable(
     resolvedBy: text("resolved_by").references(() => users.id),
     payloadJson: text("payload_json", { mode: "json" }),
     resolutionJson: text("resolution_json", { mode: "json" }),
+    /** Stable across transport retries; duplicate resume events carry this marker. */
+    resumeMarker: text("resume_marker"),
+    resumeState: text("resume_state", {
+      enum: ["pending", "dispatching", "dispatched", "acknowledged", "failed"],
+    })
+      .notNull()
+      .default("pending"),
+    resumeAttempts: integer("resume_attempts").notNull().default(0),
+    resolutionRequestKey: text("resolution_request_key"),
+    resolutionRequestedAt: integer("resolution_requested_at", {
+      mode: "timestamp_ms",
+    }),
+    resumeDispatchedAt: integer("resume_dispatched_at", {
+      mode: "timestamp_ms",
+    }),
+    resumeAcknowledgedAt: integer("resume_acknowledged_at", {
+      mode: "timestamp_ms",
+    }),
+    resumeError: text("resume_error"),
     /** P1-API-04b — soft-delete tombstone. */
     deletedAt: integer("deleted_at", { mode: "timestamp_ms" }),
   },
   (t) => ({
     tenantStatusIdx: index("tasks_tenant_status_idx").on(t.tenantId, t.status),
     runIdx: index("tasks_run_idx").on(t.runId),
+    resumeMarkerUq: uniqueIndex("tasks_resume_marker_uq").on(t.resumeMarker),
+    resumeStateIdx: index("tasks_resume_state_idx").on(t.resumeState),
+    waitStepIdx: index("tasks_wait_step_idx").on(t.waitStepId),
     deletedAtIdx: index("tasks_deleted_at_idx").on(t.deletedAt),
   }),
 );
@@ -550,7 +629,7 @@ export const artifacts = sqliteTable(
 );
 
 // Durable business entities (candidate / resume / job_posting /
-// candidate_match_result / communication_log) — the new-arch-native replacement
+// candidate_match_result / candidate_identity_result / communication_log) — the new-arch-native replacement
 // for the old AO's Neo4j / RAAS-Postgres instance write-back. Deliberately NOT
 // under `artifacts` (whose run_id FK cascade-deletes with its run) nor
 // `agent_memory_long` (a private per-agent KV): business entities must OUTLIVE
@@ -571,8 +650,12 @@ export const businessRecords = sqliteTable(
     runId: text("run_id"),
     sourceAgent: text("source_agent"),
     dataJson: text("data_json", { mode: "json" }).notNull(),
-    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().default(now),
-    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull().default(now),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
   },
   (t) => ({
     identityUq: uniqueIndex("business_records_identity_uq").on(
@@ -580,9 +663,18 @@ export const businessRecords = sqliteTable(
       t.recordType,
       t.recordKey,
     ),
-    typeIdx: index("business_records_type_idx").on(t.tenantId, t.recordType, t.updatedAt),
-    candidateIdx: index("business_records_candidate_idx").on(t.tenantId, t.candidateId),
-    correlationIdx: index("business_records_correlation_idx").on(t.correlationId),
+    typeIdx: index("business_records_type_idx").on(
+      t.tenantId,
+      t.recordType,
+      t.updatedAt,
+    ),
+    candidateIdx: index("business_records_candidate_idx").on(
+      t.tenantId,
+      t.candidateId,
+    ),
+    correlationIdx: index("business_records_correlation_idx").on(
+      t.correlationId,
+    ),
   }),
 );
 
@@ -683,6 +775,43 @@ export const tenantBudgets = sqliteTable("tenant_budgets", {
     .default(now),
 });
 
+/** In-flight LLM budget reservations. Actual counters remain on
+ * tenant_budgets; these rows make pre-call capacity checks atomic across
+ * concurrent API processes and survive crashes until their lease expires. */
+export const llmBudgetReservations = sqliteTable(
+  "llm_budget_reservations",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    provider: text("provider").notNull(),
+    model: text("model").notNull(),
+    reservedTokens: integer("reserved_tokens").notNull(),
+    reservedUsdCents: integer("reserved_usd_cents").notNull(),
+    status: text("status", {
+      enum: ["active", "settled", "released", "expired"],
+    })
+      .notNull()
+      .default("active"),
+    actualTokens: integer("actual_tokens"),
+    actualUsdCents: integer("actual_usd_cents"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+    expiresAt: integer("expires_at", { mode: "timestamp_ms" }).notNull(),
+    settledAt: integer("settled_at", { mode: "timestamp_ms" }),
+    outcome: text("outcome"),
+  },
+  (t) => ({
+    tenantStatusIdx: index("llm_budget_reservations_tenant_status_idx").on(
+      t.tenantId,
+      t.status,
+    ),
+    expiresIdx: index("llm_budget_reservations_expires_idx").on(t.expiresAt),
+  }),
+);
+
 // ─── Schema metadata (P1-DB-02) ─────────────────────────────────────────────
 
 export const meta = sqliteTable("_meta", {
@@ -703,6 +832,7 @@ export const webhookSubscriptions = sqliteTable(
       .notNull()
       .references(() => tenants.id, { onDelete: "cascade" }),
     source: text("source").notNull(),
+    /** Versioned AES-256-GCM envelope bound to tenantId + source. */
     secretEncrypted: text("secret_encrypted").notNull(),
     signingAlgo: text("signing_algo").notNull().default("hmac-sha256"),
     enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
@@ -817,6 +947,39 @@ export const idempotencyKeys = sqliteTable(
   }),
 );
 
+/**
+ * Cross-process operation leases.
+ *
+ * A primary-keyed resource name is a real SQLite arbitration point shared by
+ * every API process. Factory mutexes and tenant lifecycle transitions use a
+ * fixed resource key; detached Factory work uses a unique key per job and is
+ * queried by `(tenant_id, kind)`. `expires_at` makes crashed owners recoverable
+ * while live owners renew their lease from the API process.
+ */
+export const operationLeases = sqliteTable(
+  "operation_leases",
+  {
+    resourceKey: text("resource_key").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    ownerToken: text("owner_token").notNull(),
+    kind: text("kind").notNull(),
+    workId: text("work_id"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+    expiresAt: integer("expires_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (t) => ({
+    tenantKindIdx: index("operation_leases_tenant_kind_idx").on(
+      t.tenantId,
+      t.kind,
+    ),
+    expiresAtIdx: index("operation_leases_expires_at_idx").on(t.expiresAt),
+  }),
+);
+
 // ─── Relations (used by Drizzle's relational queries) ───────────────────────
 
 export const tenantsRelations = relations(tenants, ({ many }) => ({
@@ -892,18 +1055,55 @@ export const eventsRelations = relations(events, ({ one }) => ({
 // message resumes mid-build) + per-domain failure/success reflections (so the next
 // run starts wiser). Backs the ConversationStore + ReflectionWriter ports.
 
+/** Authoritative runtime Domain (tenant) ↔ ontology Domain binding. */
+export const factoryDomainBindings = sqliteTable(
+  "factory_domain_bindings",
+  {
+    tenantId: text("tenant_id")
+      .primaryKey()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    ontologyDomainId: text("ontology_domain_id").notNull(),
+    ontologyDomainName: text("ontology_domain_name"),
+    source: text("source", { enum: ["explicit", "auto", "upload"] })
+      .notNull()
+      .default("explicit"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+  },
+  (t) => ({
+    ontologyIdx: index("factory_domain_bindings_ontology_idx").on(
+      t.ontologyDomainId,
+    ),
+  }),
+);
+
 export const factoryConversations = sqliteTable(
   "factory_conversations",
   {
     id: text("id").primaryKey(),
+    tenantId: text("tenant_id").references(() => tenants.id, {
+      onDelete: "cascade",
+    }),
     domain: text("domain").notNull(),
     messagesJson: text("messages_json", { mode: "json" }).notNull(),
     ctxJson: text("ctx_json", { mode: "json" }),
-    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().default(now),
-    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull().default(now),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
   },
   (t) => ({
     domainIdx: index("factory_conversations_domain_idx").on(t.domain),
+    tenantDomainIdx: index("factory_conversations_tenant_domain_idx").on(
+      t.tenantId,
+      t.domain,
+    ),
   }),
 );
 
@@ -911,15 +1111,72 @@ export const factoryReflections = sqliteTable(
   "factory_reflections",
   {
     id: text("id").primaryKey(),
+    tenantId: text("tenant_id").references(() => tenants.id, {
+      onDelete: "cascade",
+    }),
     domain: text("domain").notNull(),
     kind: text("kind").notNull(), // failure | success | caveat
     summary: text("summary").notNull(),
     rootCause: text("root_cause"),
     lesson: text("lesson").notNull(),
-    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().default(now),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
   },
   (t) => ({
     domainIdx: index("factory_reflections_domain_idx").on(t.domain),
+    tenantDomainIdx: index("factory_reflections_tenant_domain_idx").on(
+      t.tenantId,
+      t.domain,
+    ),
+  }),
+);
+
+/** Human-confirmed factory memory.  It is intentionally distinct from
+ * `agent_memory_long`: the latter is maintained by an LLM consolidation
+ * policy, while rows here retain provenance/pinning and may only be mutated
+ * through an authenticated human path or a HITL gate carrying a human reply. */
+export const factoryHumanMemories = sqliteTable(
+  "factory_human_memories",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    domain: text("domain").notNull(),
+    questionKey: text("question_key").notNull(),
+    kind: text("kind", {
+      enum: ["clarify", "boundary", "test_approval", "directive"],
+    }).notNull(),
+    question: text("question").notNull(),
+    answer: text("answer").notNull(),
+    context: text("context"),
+    source: text("source", { enum: ["human"] })
+      .notNull()
+      .default("human"),
+    conversationId: text("conversation_id"),
+    confirmed: integer("confirmed", { mode: "boolean" })
+      .notNull()
+      .default(true),
+    pinned: integer("pinned", { mode: "boolean" }).notNull().default(false),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+  },
+  (t) => ({
+    tenantDomainQuestionUq: uniqueIndex(
+      "factory_human_memories_tenant_domain_question_uq",
+    ).on(t.tenantId, t.domain, t.questionKey),
+    tenantDomainIdx: index("factory_human_memories_tenant_domain_idx").on(
+      t.tenantId,
+      t.domain,
+    ),
+    conversationIdx: index("factory_human_memories_conversation_idx").on(
+      t.conversationId,
+    ),
   }),
 );
 
@@ -933,6 +1190,9 @@ export const llmCalls = sqliteTable(
   {
     id: text("id").primaryKey(),
     tenantId: text("tenant_id"),
+    /** Durable runtime attribution. Null only for non-run calls and legacy
+     * telemetry written before migration 0039. */
+    runId: text("run_id").references(() => runs.id, { onDelete: "set null" }),
     domain: text("domain"),
     /** the brain conversation / run this call belongs to. */
     conversationId: text("conversation_id"),
@@ -949,12 +1209,21 @@ export const llmCalls = sqliteTable(
     /** approx token counts (chars/4) when exact usage isn't returned by the streaming path. */
     approxTokensIn: integer("approx_tokens_in"),
     approxTokensOut: integer("approx_tokens_out"),
+    /** How the token values were obtained. A null value means the historic
+     * row predates explicit measurement provenance and must not be presented
+     * as exact provider usage. */
+    tokenSource: text("token_source", {
+      enum: ["provider", "estimated_chars"],
+    }),
     latencyMs: integer("latency_ms"),
     ok: integer("ok", { mode: "boolean" }),
     failureReason: text("failure_reason"),
-    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().default(now),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
   },
   (t) => ({
+    runIdx: index("llm_calls_run_idx").on(t.runId),
     domainIdx: index("llm_calls_domain_idx").on(t.domain),
     convIdx: index("llm_calls_conversation_idx").on(t.conversationId),
     modelIdx: index("llm_calls_served_model_idx").on(t.servedModel),
@@ -988,16 +1257,36 @@ export const eventStore = sqliteTable(
   }),
 );
 
-// #SCALE-TOOLS — per-tool sandbox effectiveness (invoked/succeeded). Feeds ranking demotion: a tool
-// that keeps failing in real sandbox runs stops being recommended (empirical, not just semantic).
+// #SCALE-TOOLS — per-tool sandbox effectiveness (invoked/succeeded). A score is
+// owned by runtime tenant + ontology domain; otherwise one customer's failures
+// silently demote the same tool for every other tenant/domain.
 export const toolStats = sqliteTable(
   "tool_stats",
   {
-    toolName: text("tool_name").primaryKey(),
+    id: text("id").primaryKey(),
+    scopeKey: text("scope_key").notNull(), // tenant id | shared | legacy quarantine
+    domainKey: text("domain_key").notNull().default(""),
+    tenantId: text("tenant_id").references(() => tenants.id, {
+      onDelete: "cascade",
+    }),
+    toolName: text("tool_name").notNull(),
     invoked: integer("invoked").notNull().default(0),
     succeeded: integer("succeeded").notNull().default(0),
-    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull().default(now),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
   },
+  (t) => ({
+    scopeDomainToolUq: uniqueIndex("tool_stats_scope_domain_tool_uq").on(
+      t.scopeKey,
+      t.domainKey,
+      t.toolName,
+    ),
+    tenantDomainIdx: index("tool_stats_tenant_domain_idx").on(
+      t.tenantId,
+      t.domainKey,
+    ),
+  }),
 );
 
 // #P1-6 — denormalized acceptance verdicts, one row per criterion per run. Acceptance was computed
@@ -1013,7 +1302,9 @@ export const acceptanceScores = sqliteTable(
     label: text("label"),
     pass: integer("pass", { mode: "boolean" }).notNull(),
     detail: text("detail"),
-    computedAt: integer("computed_at", { mode: "timestamp_ms" }).notNull().default(now),
+    computedAt: integer("computed_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
   },
   (t) => ({
     runIdx: index("acceptance_scores_run_idx").on(t.runId),
@@ -1038,18 +1329,24 @@ export const factoryRuns = sqliteTable(
       .references(() => tenants.id, { onDelete: "cascade" }),
     domain: text("domain").notNull(),
     goal: text("goal").notNull(),
-    status: text("status").notNull(), // finished | budget_exhausted | turns_exhausted | errored | incomplete | running
+    status: text("status").notNull(), // running | waiting_human | done | failed | error | aborted
     tokensUsed: integer("tokens_used").notNull().default(0),
     turns: integer("turns").notNull().default(0),
     agentsCount: integer("agents_count").notNull().default(0),
-    reachedTerminal: integer("reached_terminal", { mode: "boolean" }).notNull().default(false),
+    reachedTerminal: integer("reached_terminal", { mode: "boolean" })
+      .notNull()
+      .default(false),
     errorMessage: text("error_message"),
     transcriptJson: text("transcript_json", { mode: "json" }),
     // Soft delete (0021): the 历史运行 trash/clear sets this; listRuns hides non-null rows and a
     // reconnect to a soft-deleted run replays a tombstone. Recoverable via restoreRun.
     deletedAt: integer("deleted_at", { mode: "timestamp_ms" }),
-    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().default(now),
-    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull().default(now),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
   },
   (t) => ({
     domainIdx: index("factory_runs_domain_idx").on(t.domain, t.createdAt),
@@ -1060,7 +1357,16 @@ export const factoryRuns = sqliteTable(
 export const factorySkills = sqliteTable(
   "factory_skills",
   {
-    slug: text("slug").primaryKey(),
+    id: text("id").primaryKey(),
+    scopeKey: text("scope_key").notNull(), // tenant id | shared | legacy quarantine
+    /** Non-null conflict key for ontology identity. `domain` remains nullable so
+     * null can keep its public meaning (tenant/global general); SQLite UNIQUE
+     * treats NULL values as distinct, so it cannot safely be used directly. */
+    domainKey: text("domain_key").notNull().default(""),
+    slug: text("slug").notNull(),
+    tenantId: text("tenant_id").references(() => tenants.id, {
+      onDelete: "cascade",
+    }),
     name: text("name").notNull(),
     purpose: text("purpose").notNull(),
     promptFragment: text("prompt_fragment").notNull().default(""),
@@ -1070,34 +1376,494 @@ export const factorySkills = sqliteTable(
     useCount: integer("use_count").notNull().default(0),
     evalCount: integer("eval_count").notNull().default(0),
     successCount: integer("success_count").notNull().default(0),
-    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().default(now),
-    updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull().default(now),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
   },
   (t) => ({
+    scopeDomainSlugUq: uniqueIndex("factory_skills_scope_domain_slug_uq").on(
+      t.scopeKey,
+      t.domainKey,
+      t.slug,
+    ),
     domainIdx: index("factory_skills_domain_idx").on(t.domain),
+    tenantDomainIdx: index("factory_skills_tenant_domain_idx").on(
+      t.tenantId,
+      t.domain,
+    ),
+  }),
+);
+
+// #KNOW-PACK (P1-A) — persisted domain analysis packs: understand_ontology's expensive deep read
+// (the ontologyUnderstanding digest + coverage + perspective-lens account), keyed by
+// (tenant, domain, ontology CONTENT hash) so a NEW session on an unchanged ontology reuses it
+// instantly instead of re-burning a 1-3 minute deep read. Invalidation is implicit: a lookup by
+// the current hash simply misses when the ontology changed. save() prunes to the newest N sigs
+// per (tenant, domain). Deliberately NOT in db:wipe-runtime — accumulated knowledge, not traffic.
+export const factoryDomainInsights = sqliteTable(
+  "factory_domain_insights",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    domain: text("domain").notNull(),
+    /** ontologyContentHash of the POST-HEAL working ontology — must match the sig
+     * understand_ontology stamps (curUnderstandSig), never read_ontology's pre-heal counts#hash. */
+    ontologySig: text("ontology_sig").notNull(),
+    mode: text("mode", { enum: ["shallow", "deep"] }).notNull(), // skeleton is never persisted
+    /** ctx.ontologyUnderstanding verbatim (≤10k chars, same cap as the ctx field). */
+    digest: text("digest").notNull(),
+    coverageJson: text("coverage_json", { mode: "json" }),
+    /** ctx.ontologyPerspectives verbatim — restored on load so the pack stays lens-aware
+     * for the #PERSPECTIVES-FIDELITY cache gate. */
+    perspectivesJson: text("perspectives_json", { mode: "json" }),
+    ambiguityCount: integer("ambiguity_count").notNull().default(0),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+  },
+  (t) => ({
+    tenantDomainSigUq: uniqueIndex("factory_domain_insights_tenant_domain_sig_uq").on(
+      t.tenantId,
+      t.domain,
+      t.ontologySig,
+    ),
+    tenantDomainIdx: index("factory_domain_insights_tenant_domain_idx").on(
+      t.tenantId,
+      t.domain,
+    ),
   }),
 );
 
 export const factoryTools = sqliteTable(
   "factory_tools",
   {
-    name: text("name").primaryKey(),
+    id: text("id").primaryKey(),
+    scopeKey: text("scope_key").notNull(), // tenant id | shared | legacy quarantine
+    /** See factorySkills.domainKey: prevents a rebind from overwriting the
+     * previous ontology's same-named tool while keeping null-domain tools
+     * explicitly general. */
+    domainKey: text("domain_key").notNull().default(""),
+    name: text("name").notNull(),
+    tenantId: text("tenant_id").references(() => tenants.id, {
+      onDelete: "cascade",
+    }),
     description: text("description").notNull().default(""),
     method: text("method").notNull().default("GET"),
     urlTemplate: text("url_template").notNull().default(""),
     headers: text("headers", { mode: "json" }),
     bodyTemplate: text("body_template"),
-    sideEffect: text("side_effect").notNull().default("read"),
+    // 0038: executable, AI-authored HTTP contracts. Keep these structured
+    // manifests separate from the legacy body template so multipart encoding,
+    // response normalization/assertions and grounded examples round-trip.
+    requestSpec: text("request_spec", { mode: "json" }),
+    responseSpec: text("response_spec", { mode: "json" }),
+    examples: text("examples", { mode: "json" }),
+    // No read default: omitted policy metadata must fail at insert/runtime
+    // boundaries instead of silently upgrading an unknown tool to live-read.
+    sideEffect: text("side_effect").notNull(),
+    // 0048: precise reviewed execution policy. These remain nullable at the
+    // storage layer solely to quarantine historical rows without inventing a
+    // migration default. Every save/load/runtime boundary rejects null.
+    operation: text("operation"),
+    effectScope: text("effect_scope"),
+    sandboxPolicy: text("sandbox_policy"),
     domain: text("domain"),
     // R6 (0022): typed I/O contracts — the tool's args + return shape (also the egress contract
     // for an external-platform handoff), so the step-engine can validate and agents agree on shapes.
     paramsSchema: text("params_schema", { mode: "json" }),
     returnsSchema: text("returns_schema", { mode: "json" }),
+    capabilities: text("capabilities", { mode: "json" }),
+    probeStatus: text("probe_status").notNull().default("required"),
+    definitionHash: text("definition_hash"),
+    probeEvidence: text("probe_evidence", { mode: "json" }),
+    verifiedAt: integer("verified_at", { mode: "timestamp_ms" }),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+  },
+  (t) => ({
+    scopeDomainNameUq: uniqueIndex("factory_tools_scope_domain_name_uq").on(
+      t.scopeKey,
+      t.domainKey,
+      t.name,
+    ),
+    domainIdx: index("factory_tools_domain_idx").on(t.domain),
+    tenantDomainIdx: index("factory_tools_tenant_domain_idx").on(
+      t.tenantId,
+      t.domain,
+    ),
+  }),
+);
+
+/** Durable lifecycle ledger for one nonce-bearing Agent Factory sandbox app.
+ * The row is inserted in the same local transaction as the ephemeral tenant,
+ * before manifest commit can register anything remotely. Terminal rows remain
+ * as audit evidence; only cloned tool rows are physically deleted. */
+export const factorySandboxAttempts = sqliteTable(
+  "factory_sandbox_attempts",
+  {
+    id: text("id").primaryKey(),
+    ownerTenantId: text("owner_tenant_id").notNull(),
+    ownerTenantSlug: text("owner_tenant_slug").notNull(),
+    targetDomainId: text("target_domain_id").notNull(),
+    candidateFingerprint: text("candidate_fingerprint").notNull(),
+    sandboxTenantId: text("sandbox_tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "restrict" }),
+    sandboxTenantSlug: text("sandbox_tenant_slug").notNull(),
+    appId: text("app_id").notNull(),
+    status: text("status", {
+      enum: [
+        "prepared",
+        "registering",
+        "active",
+        "cleanup_pending",
+        "cleanup_failed",
+        "cleanup_verified",
+      ],
+    }).notNull(),
+    remoteMayExist: integer("remote_may_exist", { mode: "boolean" })
+      .notNull()
+      .default(false),
+    toolSnapshotHash: text("tool_snapshot_hash"),
+    toolSnapshotCount: integer("tool_snapshot_count").notNull().default(0),
+    leaseOwner: text("lease_owner").notNull(),
+    /** Per-claim unguessable capability. Process identity alone is not enough:
+     * a stale async continuation in the same process must also be fenced. */
+    leaseToken: text("lease_token").notNull(),
+    /** Monotonic fencing epoch. Cleanup claim increments this atomically, so
+     * every earlier owner/token remains permanently unable to mutate state. */
+    fenceGeneration: integer("fence_generation").notNull().default(1),
+    leaseExpiresAt: integer("lease_expires_at", { mode: "timestamp_ms" }).notNull(),
+    cleanupReceipt: text("cleanup_receipt", { mode: "json" }),
+    cleanupError: text("cleanup_error"),
+    runDrainStatus: text("run_drain_status", {
+      enum: ["not_started", "cancelling", "verified", "failed"],
+    }).notNull().default("not_started"),
+    runDrainReceipt: text("run_drain_receipt", { mode: "json" }),
+    runDrainError: text("run_drain_error"),
+    runDrainStartedAt: integer("run_drain_started_at", { mode: "timestamp_ms" }),
+    runDrainCompletedAt: integer("run_drain_completed_at", { mode: "timestamp_ms" }),
+    cleanupStartedAt: integer("cleanup_started_at", { mode: "timestamp_ms" }),
+    cleanedAt: integer("cleaned_at", { mode: "timestamp_ms" }),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+  },
+  (t) => ({
+    appUq: uniqueIndex("factory_sandbox_attempts_app_uq").on(t.appId),
+    slugUq: uniqueIndex("factory_sandbox_attempts_slug_uq").on(t.sandboxTenantSlug),
+    statusLeaseIdx: index("factory_sandbox_attempts_status_lease_idx").on(t.status, t.leaseExpiresAt),
+    ownerFenceIdx: index("factory_sandbox_attempts_owner_fence_idx").on(
+      t.id,
+      t.leaseOwner,
+      t.leaseToken,
+      t.fenceGeneration,
+    ),
+    ownerDomainIdx: index("factory_sandbox_attempts_owner_domain_idx").on(t.ownerTenantId, t.targetDomainId),
+  }),
+);
+
+/** Content-addressed provenance for a temporary declarative-tool clone. The
+ * clone itself is a tenant-owned factory_tools row, so runtime resolution can
+ * use its normal path without reading the production/shared source row. Both
+ * this row and the cloned factory_tools row are physically deleted at teardown. */
+export const factorySandboxToolSnapshots = sqliteTable(
+  "factory_sandbox_tool_snapshots",
+  {
+    id: text("id").primaryKey(),
+    attemptId: text("attempt_id")
+      .notNull()
+      .references(() => factorySandboxAttempts.id, { onDelete: "cascade" }),
+    sandboxTenantId: text("sandbox_tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "restrict" }),
+    sandboxToolId: text("sandbox_tool_id")
+      .notNull()
+      .references(() => factoryTools.id, { onDelete: "cascade" }),
+    toolName: text("tool_name").notNull(),
+    sourceToolId: text("source_tool_id").notNull(),
+    sourceScopeKey: text("source_scope_key").notNull(),
+    sourceDefinitionHash: text("source_definition_hash").notNull(),
+    configHash: text("config_hash").notNull(),
+    domainHash: text("domain_hash").notNull(),
+    snapshotHash: text("snapshot_hash").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+  },
+  (t) => ({
+    attemptToolUq: uniqueIndex("factory_sandbox_tool_snapshots_attempt_tool_uq").on(t.attemptId, t.toolName),
+    sandboxToolUq: uniqueIndex("factory_sandbox_tool_snapshots_sandbox_tool_uq").on(t.sandboxToolId),
+    snapshotIdx: index("factory_sandbox_tool_snapshots_hash_idx").on(t.snapshotHash),
+  }),
+);
+
+/** Short-lived, cross-process authorization for semantic model calls made by
+ * the trusted external sandbox workload. The workload presents only the
+ * attempt/bundle identity plus a service token; provider credentials remain
+ * in the primary API. Calls are atomically consumed and the grant is revoked
+ * as soon as the remote job settles. */
+export const factorySandboxModelGrants = sqliteTable(
+  "factory_sandbox_model_grants",
+  {
+    attemptId: text("attempt_id").primaryKey(),
+    bundleHash: text("bundle_hash").notNull(),
+    tenantId: text("tenant_id").notNull(),
+    tenantSlug: text("tenant_slug").notNull(),
+    status: text("status", { enum: ["active", "revoked"] }).notNull().default("active"),
+    maxCalls: integer("max_calls").notNull(),
+    calls: integer("calls").notNull().default(0),
+    /** Hard aggregate total-token envelope for this remote verification.
+     * Each admitted call atomically reserves a conservative input-token upper
+     * bound plus max output before the provider is contacted. Reservations
+     * are deliberately not refunded so crashes cannot reopen spend capacity. */
+    maxTotalTokens: integer("max_total_tokens").notNull(),
+    reservedTotalTokens: integer("reserved_total_tokens").notNull().default(0),
+    /** Provider-reported usage, retained separately from the conservative
+     * reservation envelope for audit/attribution. */
+    measuredInputTokens: integer("measured_input_tokens").notNull().default(0),
+    measuredOutputTokens: integer("measured_output_tokens").notNull().default(0),
+    unmeasuredUsageCalls: integer("unmeasured_usage_calls").notNull().default(0),
+    expiresAt: integer("expires_at", { mode: "timestamp_ms" }).notNull(),
     createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().default(now),
     updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull().default(now),
   },
   (t) => ({
-    domainIdx: index("factory_tools_domain_idx").on(t.domain),
+    activeExpiryIdx: index("factory_sandbox_model_grants_active_expiry_idx").on(t.status, t.expiresAt),
+    tenantIdx: index("factory_sandbox_model_grants_tenant_idx").on(t.tenantId, t.tenantSlug),
+  }),
+);
+
+/** Per-call, secret-free provider usage backing the aggregate evidence copied
+ * into the signed sandbox result. Prompts, responses and provider raw payloads
+ * are never stored here. */
+export const factorySandboxModelCallUsage = sqliteTable(
+  "factory_sandbox_model_call_usage",
+  {
+    id: text("id").primaryKey(),
+    attemptId: text("attempt_id")
+      .notNull()
+      .references(() => factorySandboxModelGrants.attemptId, { onDelete: "cascade" }),
+    bundleHash: text("bundle_hash").notNull(),
+    callOrdinal: integer("call_ordinal"),
+    status: text("status", { enum: ["succeeded", "failed", "rejected"] }).notNull(),
+    agentRef: text("agent_ref").notNull(),
+    reasonCode: text("reason_code"),
+    provider: text("provider"),
+    model: text("model"),
+    tokensIn: integer("tokens_in"),
+    tokensOut: integer("tokens_out"),
+    totalTokens: integer("total_tokens"),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+    completedAt: integer("completed_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (t) => ({
+    attemptOrdinalUq: uniqueIndex("factory_sandbox_model_call_usage_attempt_ordinal_uq").on(
+      t.attemptId,
+      t.callOrdinal,
+    ),
+    attemptBundleIdx: index("factory_sandbox_model_call_usage_attempt_bundle_idx").on(
+      t.attemptId,
+      t.bundleHash,
+    ),
+  }),
+);
+
+/** Definition/config-bound probe receipts for global, tenant-native and
+ * persisted declarative tools. factory_tools retains one representative row
+ * for backwards-compatible display only; exact binding and promotion always
+ * resolve evidence from this tenant+Ontology+tool+definition hash store. */
+export const factoryToolProbes = sqliteTable(
+  "factory_tool_probes",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    domainKey: text("domain_key").notNull().default(""),
+    toolName: text("tool_name").notNull(),
+    status: text("status").notNull().default("required"),
+    definitionHash: text("definition_hash").notNull(),
+    schemaHash: text("schema_hash"),
+    evidence: text("evidence", { mode: "json" }),
+    verifiedAt: integer("verified_at", { mode: "timestamp_ms" }),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+  },
+  (t) => ({
+    scopeToolDefinitionUq: uniqueIndex("factory_tool_probes_scope_tool_definition_uq").on(
+      t.tenantId,
+      t.domainKey,
+      t.toolName,
+      t.definitionHash,
+    ),
+    tenantDomainIdx: index("factory_tool_probes_tenant_domain_idx").on(
+      t.tenantId,
+      t.domainKey,
+    ),
+  }),
+);
+
+/** Human-confirmed, non-secret runtime integration config. Secret material is
+ * never stored here: `*_env` values are environment variable names only. */
+export const factoryIntegrationProfiles = sqliteTable(
+  "factory_integration_profiles",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    domainKey: text("domain_key").notNull().default(""),
+    toolName: text("tool_name").notNull(),
+    profileKey: text("profile_key").notNull(),
+    environment: text("environment", { enum: ["sandbox", "production"] }).notNull().default("production"),
+    configJson: text("config_json", { mode: "json" }).notNull(),
+    confirmedBy: text("confirmed_by").notNull(),
+    toolDefinitionDigest: text("tool_definition_digest").notNull().default(""),
+    configDigest: text("config_digest").notNull().default(""),
+    authorizationProtocolVersion: integer("authorization_protocol_version").notNull().default(0),
+    confirmedAt: integer("confirmed_at", { mode: "timestamp_ms" }).notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+  },
+  (t) => ({
+    scopeKeyUq: uniqueIndex("factory_integration_profiles_scope_key_uq").on(
+      t.tenantId,
+      t.domainKey,
+      t.toolName,
+      t.profileKey,
+      t.environment,
+    ),
+    tenantDomainIdx: index("factory_integration_profiles_tenant_domain_idx").on(
+      t.tenantId,
+      t.domainKey,
+    ),
+  }),
+);
+
+/** Server-issued, exact and one-shot human authorization challenges. The raw
+ * token is never persisted—only its digest. Consumption and actor attribution
+ * occur in one DB transaction before any authorized I/O begins. */
+export const factoryAuthorizationChallenges = sqliteTable(
+  "factory_authorization_challenges",
+  {
+    id: text("id").primaryKey(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    domainKey: text("domain_key").notNull(),
+    kind: text("kind").notNull(),
+    protocolVersion: integer("protocol_version").notNull(),
+    digest: text("digest").notNull(),
+    subjectDigest: text("subject_digest").notNull(),
+    tokenDigest: text("token_digest").notNull(),
+    question: text("question").notNull(),
+    context: text("context").notNull(),
+    optionsJson: text("options_json", { mode: "json" }).notNull(),
+    runId: text("run_id").notNull(),
+    conversationId: text("conversation_id").notNull(),
+    expiresAt: integer("expires_at", { mode: "timestamp_ms" }).notNull(),
+    answeredBy: text("answered_by"),
+    answeredAt: integer("answered_at", { mode: "timestamp_ms" }),
+    consumedAt: integer("consumed_at", { mode: "timestamp_ms" }),
+    createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull().default(now),
+  },
+  (t) => ({
+    scopeDigestUq: uniqueIndex("factory_authorization_challenges_scope_digest_uq").on(
+      t.tenantId,
+      t.domainKey,
+      t.kind,
+      t.digest,
+    ),
+    conversationIdx: index("factory_authorization_challenges_conversation_idx").on(
+      t.tenantId,
+      t.domainKey,
+      t.conversationId,
+    ),
+  }),
+);
+
+/** Durable authorization for one exact generated production Agent. The table
+ * keeps its original CodeAct name for migration compatibility; declarative
+ * rows store their exact agent-manifest hash in `codeSha256`, while CodeAct
+ * rows store the exact handler hash. Rows are inserted only by Factory
+ * promotion in the same transaction as the workflow deployment. */
+export const factoryCodeActAuthorizations = sqliteTable(
+  "factory_codeact_authorizations",
+  {
+    id: text("id").primaryKey(),
+    promotionId: text("promotion_id").notNull(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    tenantSlug: text("tenant_slug").notNull(),
+    domainId: text("domain_id").notNull(),
+    agentSlug: text("agent_slug").notNull(),
+    promotionVersionId: text("promotion_version_id").notNull(),
+    regressionSuiteFingerprint: text("regression_suite_fingerprint").notNull(),
+    codeSha256: text("code_sha256").notNull(),
+    agentManifestSha256: text("agent_manifest_sha256").notNull(),
+    workflowManifestSha256: text("workflow_manifest_sha256").notNull(),
+    deploymentId: text("deployment_id")
+      .notNull()
+      .references(() => deployments.id, { onDelete: "cascade" }),
+    workflowVersionId: text("workflow_version_id")
+      .notNull()
+      .references(() => workflowVersions.id, { onDelete: "cascade" }),
+    reviewReceiptId: text("review_receipt_id").notNull(),
+    reviewSelectionHash: text("review_selection_hash").notNull(),
+    regressionArtifact: text("regression_artifact").notNull(),
+    promotionRecordHash: text("promotion_record_hash").notNull(),
+    activationPromotionId: text("activation_promotion_id").notNull(),
+    activationDomainId: text("activation_domain_id").notNull(),
+    activationVersionId: text("activation_version_id").notNull(),
+    activationReviewReceiptId: text("activation_review_receipt_id").notNull(),
+    activationReviewSelectionHash: text(
+      "activation_review_selection_hash",
+    ).notNull(),
+    activationPromotionRecordHash: text(
+      "activation_promotion_record_hash",
+    ).notNull(),
+    status: text("status", { enum: ["committed"] })
+      .notNull()
+      .default("committed"),
+    committedAt: integer("committed_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+  },
+  (t) => ({
+    deploymentAgentUq: uniqueIndex(
+      "factory_codeact_authorizations_deployment_agent_uq",
+    ).on(
+      t.deploymentId,
+      t.agentSlug,
+    ),
+    tenantAgentIdx: index(
+      "factory_codeact_authorizations_tenant_agent_idx",
+    ).on(t.tenantId, t.agentSlug),
+    deploymentIdx: index("factory_codeact_authorizations_deployment_idx").on(
+      t.deploymentId,
+    ),
   }),
 );
 
@@ -1124,16 +1890,27 @@ export const schema = {
   eventTypes,
   entityTypes,
   tenantBudgets,
+  llmBudgetReservations,
   meta,
   webhookSubscriptions,
   agentMemoryShort,
   agentMemoryLong,
   idempotencyKeys,
+  operationLeases,
+  factoryDomainBindings,
   factoryConversations,
   factoryReflections,
   factoryRuns,
   factorySkills,
   factoryTools,
+  factorySandboxAttempts,
+  factorySandboxToolSnapshots,
+  factorySandboxModelGrants,
+  factorySandboxModelCallUsage,
+  factoryToolProbes,
+  factoryIntegrationProfiles,
+  factoryAuthorizationChallenges,
+  factoryCodeActAuthorizations,
   tenantsRelations,
   workflowsRelations,
   workflowVersionsRelations,

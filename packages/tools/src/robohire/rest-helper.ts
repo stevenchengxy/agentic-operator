@@ -1,78 +1,79 @@
 /**
- * Shared HTTP wrapper for the real RoboHire.io REST API. Lives in
+ * Shared HTTP wrapper for the configured real RoboHire-compatible REST API. Lives in
  * @agentic/tools so every tenant gets the same fetch behaviour without
  * re-implementing retry, auth, and timeout. Originally born in
  * `@tenants/robohire` before tools were promoted to the global registry.
  *
- * Auth / endpoint resolution order (highest precedence first):
- *   1. ToolContext.config — per-tenant binding via the workflow manifest:
- *      `tool_use[]: [{ name: "parseResumeApi", config: {
- *           api_key_env: "TENANT_X_RH_KEY", base_url: "...", timeout_ms: 60000
- *      }}]`
- *      `api_key`     — literal API key (rare; useful for local override)
- *      `api_key_env` — name of the env var to read the key from
- *      `base_url`    — overrides ROBOHIRE_BASE_URL
- *      `timeout_ms`  — overrides ROBOHIRE_TIMEOUT_MS
- *   2. Global env: ROBOHIRE_API_KEY, ROBOHIRE_BASE_URL, ROBOHIRE_TIMEOUT_MS
- *
- * The two-level scheme means one tenant can use the production key while
- * another points at a staging key, without restarting the api process or
- * juggling per-process env files.
+ * Auth and endpoint are always explicit environment references supplied by a
+ * confirmed integration profile. Literal credentials/URLs and hardcoded
+ * endpoint fallbacks are forbidden:
+ *   { api_key_env: "ROBOHIRE_API_KEY",
+ *     base_url_env: "ROBOHIRE_API_BASE_URL", timeout_ms: 60000 }
  */
 
 import type { ToolContext } from "@agentic/agent-kit";
 
-/** Per-call config the manifest may pass through. All fields optional. */
+/** Non-secret profile config. Environment *values* never enter this object. */
 export interface RoboHireToolConfig {
-  api_key?: string;
   api_key_env?: string;
-  base_url?: string;
+  base_url_env?: string;
   timeout_ms?: number;
 }
+
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
 
 function readConfig(ctx: ToolContext): RoboHireToolConfig {
   const c = ctx.config as Record<string, unknown> | undefined;
   if (!c || typeof c !== "object") return {};
+  for (const literal of ["api_key", "base_url", "token", "authorization", "password", "secret"]) {
+    if (literal in c) {
+      throw new Error(`RoboHire literal config '${literal}' is forbidden; use api_key_env/base_url_env.`);
+    }
+  }
   const out: RoboHireToolConfig = {};
-  if (typeof c.api_key === "string") out.api_key = c.api_key;
   if (typeof c.api_key_env === "string") out.api_key_env = c.api_key_env;
-  if (typeof c.base_url === "string") out.base_url = c.base_url;
+  if (typeof c.base_url_env === "string") out.base_url_env = c.base_url_env;
   if (typeof c.timeout_ms === "number") out.timeout_ms = c.timeout_ms;
   return out;
 }
 
+function requiredEnvReference(name: string | undefined, label: string): string {
+  const envName = name?.trim() ?? "";
+  if (!ENV_NAME.test(envName)) {
+    throw new Error(`RoboHire ${label} must be an explicit valid environment variable name.`);
+  }
+  const value = (process.env[envName] ?? "").trim();
+  if (!value) throw new Error(`RoboHire environment reference ${envName} is not configured.`);
+  return value;
+}
+
 export function rhBaseUrl(ctx: ToolContext): string {
   const c = readConfig(ctx);
-  const fromConfig = (c.base_url ?? "").trim();
-  if (fromConfig.length > 0) return fromConfig.replace(/\/$/, "");
-  // Accept either env name (ROBOHIRE_BASE_URL or ROBOHIRE_API_BASE_URL). Default is the gohire.top
-  // host (RoboHire-compatible, serves the same /api/v1/* endpoints).
-  const fromEnv = (process.env.ROBOHIRE_BASE_URL ?? process.env.ROBOHIRE_API_BASE_URL ?? "").trim();
-  return fromEnv.length > 0
-    ? fromEnv.replace(/\/$/, "")
-    : "https://api.gohire.top/api/v1";
+  const value = requiredEnvReference(c.base_url_env, "base_url_env");
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new Error(`RoboHire base URL environment reference ${c.base_url_env} is not a valid absolute URL.`);
+  }
+  if (!new Set(["http:", "https:"]).has(parsed.protocol) || parsed.username || parsed.password) {
+    throw new Error(`RoboHire base URL environment reference ${c.base_url_env} must be an http(s) URL without credentials.`);
+  }
+  return value.replace(/\/$/, "");
 }
 
 export function rhAuthToken(ctx: ToolContext): string {
   const c = readConfig(ctx);
-  if (c.api_key && c.api_key.trim().length > 0) return c.api_key.trim();
-  if (c.api_key_env) {
-    const v = (process.env[c.api_key_env] ?? "").trim();
-    if (v.length > 0) return v;
-  }
-  const v = (process.env.ROBOHIRE_API_KEY ?? "").trim();
-  if (v.length > 0) return v;
-  throw new Error(
-    "RoboHire credential not set. Either bind a per-tenant key via the manifest " +
-      "`tool_use[].config.api_key_env`, or export ROBOHIRE_API_KEY before starting the api.",
-  );
+  return requiredEnvReference(c.api_key_env, "api_key_env");
 }
 
 export function rhTimeoutMs(ctx: ToolContext): number {
   const c = readConfig(ctx);
-  if (typeof c.timeout_ms === "number" && c.timeout_ms > 0) return c.timeout_ms;
-  const n = Number(process.env.ROBOHIRE_TIMEOUT_MS ?? "30000");
-  return Number.isFinite(n) && n > 0 ? n : 30_000;
+  if (c.timeout_ms === undefined) return 30_000;
+  if (!Number.isFinite(c.timeout_ms) || c.timeout_ms <= 0) {
+    throw new Error("RoboHire timeout_ms must be a positive finite number.");
+  }
+  return c.timeout_ms;
 }
 
 export interface RoboHireResponse<T> {

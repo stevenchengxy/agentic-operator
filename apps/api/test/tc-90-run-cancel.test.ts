@@ -83,6 +83,19 @@ function captureInngest(): { calls: InngestCapture[]; restore: () => void } {
   };
 }
 
+function rejectInngest(): { restore: () => void } {
+  const proto = Object.getPrototypeOf(inngest) as { send: typeof inngest.send };
+  const original = proto.send;
+  proto.send = (async () => {
+    throw new Error("broker unavailable (intentional test failure)");
+  }) as typeof inngest.send;
+  return {
+    restore: () => {
+      proto.send = original;
+    },
+  };
+}
+
 // Per-suite slug suffix so the fixture rows don't collide with prior
 // runs against the dev DB.
 const SUFFIX = `t90${Date.now().toString(36)}`.toLowerCase().slice(-8);
@@ -278,6 +291,54 @@ describe("TC-90: POST /v1/runs/:id/cancel", () => {
       } finally {
         cap.restore();
       }
+    });
+
+    it("fails closed and leaves the run active when Inngest rejects the signal", async () => {
+      const runId = seedRun({
+        tenantId: tenantAId,
+        agentId: manifestAgentId,
+        status: "running",
+      });
+      const rejection = rejectInngest();
+      try {
+        const res = await env.fetch(`/v1/runs/${runId}/cancel`, {
+          method: "POST",
+        });
+        expect(res.status).toBe(502);
+        const body = (await res.json()) as EnvelopeErr;
+        expect(body.error.code).toBe("cancel_signal_failed");
+      } finally {
+        rejection.restore();
+      }
+
+      const db = getDb();
+      const row = db.select().from(runs).where(eq(runs.id, runId)).all()[0];
+      expect(row?.status).toBe("running");
+      expect(row?.endedAt).toBeNull();
+      expect(
+        db
+          .select()
+          .from(auditLog)
+          .where(
+            and(
+              eq(auditLog.targetId, runId),
+              eq(auditLog.action, "run.cancel"),
+            ),
+          )
+          .all(),
+      ).toHaveLength(0);
+      expect(
+        db
+          .select()
+          .from(auditLog)
+          .where(
+            and(
+              eq(auditLog.targetId, runId),
+              eq(auditLog.action, "run.cancel.failed"),
+            ),
+          )
+          .all(),
+      ).toHaveLength(1);
     });
   });
 

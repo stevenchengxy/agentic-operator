@@ -6,12 +6,10 @@
  * same operation without depending on the system `sqlite3` CLI being
  * installed — useful inside the slim Docker runtime image.
  *
- * Strategy: open the live DB read/write, run `VACUUM INTO 'target'`,
- * verify the snapshot contains schema rows, then sweep old backups
- * past the retention window. `VACUUM INTO` is the canonical SQLite
- * online-backup primitive — it writes a consistent point-in-time
- * snapshot under the shared lock, leaving readers + writers unblocked
- * (writes queue briefly while the snapshot is sequenced).
+ * Strategy: the CLI launcher first acquires the canonical writer lease, then
+ * opens the DB, runs `VACUUM INTO 'target'`, verifies the snapshot contains
+ * schema rows, and sweeps backups past the retention window. Function callers
+ * inside the supervised API reuse that already-authorized writer process.
  *
  * Restore drill is documented in `docs/RUNBOOK.md §7`.
  */
@@ -40,6 +38,16 @@ export interface BackupResult {
 }
 
 const DEFAULT_RETENTION_DAYS = 14;
+
+function configuredRetentionDays(): number {
+  const raw = process.env.BACKUP_RETENTION_DAYS?.trim();
+  if (!raw) return DEFAULT_RETENTION_DAYS;
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new Error("BACKUP_RETENTION_DAYS must be a positive integer");
+  }
+  return value;
+}
 
 function defaultBackupDir(): string {
   const dataDir = process.env.AGENTIC_DATA_DIR ?? "./data";
@@ -119,7 +127,7 @@ const isMain =
   process.argv[1] === fileURLToPath(import.meta.url);
 if (isMain) {
   try {
-    const res = backupDatabase();
+    const res = backupDatabase({ retentionDays: configuredRetentionDays() });
     console.log(
       `[db:backup] ok target=${res.target} size=${res.sizeBytes} pruned=${res.removed.length}`,
     );

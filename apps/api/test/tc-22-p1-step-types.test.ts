@@ -58,10 +58,9 @@ describe("TC-17: P1 step types + retention", () => {
               type: "subflow",
               subflow: "downstreamAgent",
               subflow_input: { foo: "bar" },
-              timeout_s: 60,
             },
           ],
-          triggered_event: ["DONE"],
+          triggered_event: ["downstreamAgent", "DONE"],
         },
       ];
       const parsed = WorkflowManifestSchema.parse(fixture);
@@ -117,8 +116,7 @@ describe("TC-17: P1 step types + retention", () => {
       expect(data.evaluated).toBe(true);
     });
 
-    it("delay step actually sleeps for ~delay_ms", async () => {
-      const start = Date.now();
+    it("delay step refuses a non-durable ad-hoc timer", async () => {
       const out = await runAction({
         ctx: baseCtx as never,
         action: {
@@ -129,13 +127,12 @@ describe("TC-17: P1 step types + retention", () => {
           delay_ms: 100,
         } as never,
       });
-      const elapsed = Date.now() - start;
-      expect(out.ok).toBe(true);
+      expect(out.ok).toBe(false);
       expect(out.type).toBe("delay");
-      expect(elapsed).toBeGreaterThanOrEqual(95);
+      expect(out.data).toMatchObject({ error: "delay_requires_durable_runtime" });
     });
 
-    it("subflow step returns the placeholder shape (register.ts owns the real fork)", async () => {
+    it("subflow step refuses an ad-hoc fork (register.ts owns durable persistence + send)", async () => {
       const out = await runAction({
         ctx: baseCtx as never,
         action: {
@@ -146,9 +143,10 @@ describe("TC-17: P1 step types + retention", () => {
           subflow: "anotherAgent",
         } as never,
       });
-      expect(out.ok).toBe(true);
+      expect(out.ok).toBe(false);
       expect(out.type).toBe("subflow");
-      const data = out.data as { subflow: string | null };
+      const data = out.data as { error: string; subflow: string | null };
+      expect(data.error).toBe("subflow_requires_durable_runtime");
       expect(data.subflow).toBe("anotherAgent");
     });
   });

@@ -1,319 +1,1037 @@
-// #G — TRUE CodeAct: execute the AI-WRITTEN agent handler in the sandbox (not a re-interpretation
-// of the spec). The Agent Factory's codegen_agent makes the brain hand-write each agent as
-// `export const xAgent = defineAgent({ ..., async handler(input, ctx) { ... } })`, TS-compiler
-// validated. Historically that code was NEVER run — the sandbox ran the declarative spec. This
-// closes that gap (ported from the old AO's load-generated.ts): transpile the code, supply
-// `defineAgent` + a controlled `ctx`, and run the real handler so "跑通" means the deployable code
-// ran.
-//
-// SAFETY (this executes LLM-written code):
-//   · OFF when FACTORY_EXEC_GENERATED=0 (kill switch).
-//   · ONLY runs for the isolated `-sb` SANDBOX tenant (opts.tenantSlug must end in "-sb") — so a
-//     promoted-to-production agent NEVER executes LLM code on a real tenant (it falls back to the
-//     declarative path). This is the load-bearing isolation invariant.
-//   · `require("@agentic/runtime")` resolves to the capturing `defineAgent`; every other import
-//     resolves to {} (harmless). `ctx.tool(s)` run DRY-RUN (mock) — no real external side effects.
-//   · any compile/load/run failure → returns null → the caller falls back to the default generated
-//     prompt path, so a bad codegen can never brick the sandbox.
+/**
+ * Execute an Agent-Factory generated `defineAgent` handler through the
+ * one-shot container isolation kernel.
+ *
+ * The host owns every stateful capability. Generated code receives a real
+ * AgentRuntime-shaped socket, but reason/tool/memory/invoke/spawn cross an
+ * explicit RPC bridge; the handler itself never runs on the host event loop.
+ * Production execution is denied unless the caller supplies an opt-in flag
+ * and an exact SHA-256 attestation for the code bytes being executed.
+ */
 
+import { createHash } from "node:crypto";
+import type { MemoryHandle, SpawnResult } from "@agentic/agent-sdk";
+import {
+  globalToolExecutionPolicy,
+  globalToolRegistry,
+  isToolExecutionPolicy,
+  toolExecutionPoliciesEqual,
+  type ToolExecutionPolicy,
+} from "@agentic/tools";
+import {
+  codeActExecutionGate,
+  type CodeActRpcMethod,
+} from "./codeact-worker";
+import {
+  executeCodeActContainer,
+  type CodeActContainerExecutionEvidence,
+  type CodeActContainerFailure,
+  type CodeActDockerTransport,
+} from "./codeact-container";
+import {
+  executeProductionCodeActRemote,
+  productionCodeActRemoteEnabled,
+} from "./codeact-remote";
 import { getRuntimeGateway } from "./llm-host";
-import { globalToolRegistry } from "@agentic/tools";
-import type { AgentRuntime, MemoryHandle } from "@agentic/agent-sdk";
-import { sandboxToolMode, sandboxToolStub, cassetteLookup, toolDispatchDecision, gatedWriteMarker } from "./sandbox-mode";
+import {
+  cassetteLookup,
+  factorySandboxDispatchDecision,
+  gatedToolMarker,
+  isSandboxTenant,
+  recordFactorySandboxLocalDispatch,
+  replayFactorySandboxTool,
+  sandboxToolMode,
+  sandboxToolStub,
+  toolDispatchDecision,
+  type FactorySandboxDispatchReceipt,
+  type FactorySandboxExecutionScope,
+  type FactorySandboxReplayRef,
+} from "./sandbox-mode";
+import type { CodeActAttestationStatus } from "./codeact-receipt";
 
 type Emit = { event: string; payload: Record<string, unknown> };
-interface AgentDef { handler: (input: unknown, ctx: unknown) => unknown; systemPrompt?: string }
+type SpawnedSubAgent = {
+  task: string;
+  code: string;
+  ok?: boolean;
+  durationMs?: number;
+  depth?: number;
+};
 
-// T3 — tool dispatch for the CodeAct path, mode-aware (FACTORY_SANDBOX_TOOL_MODE):
-//   mock (default) → representative stub (no real external side effect)
-//   replay         → recorded cassette for (tenant, tool, args); miss → stub
-//   live           → call the REAL global tool handler against sandbox-scoped creds
-async function runSandboxTool(name: string, tenantSlug: string | undefined, args: unknown): Promise<unknown> {
-  const decision = toolDispatchDecision(name, sandboxToolMode());
-  if (decision === "gate") return gatedWriteMarker(name, args); // external write gated (real payload recorded, not fired)
-  if (decision === "live") {
-    const t = globalToolRegistry.get(name);
-    if (t) {
-      try {
-        const r = await t.handler({ agentName: "codeact", actionName: name, correlationId: "sandbox", tenantSlug: tenantSlug ?? "", event: { name: "codeact", data: (args ?? {}) as Record<string, unknown> } } as never);
-        return (r as { data?: unknown })?.data ?? r;
-      } catch (e) {
-        return { __error: (e as Error).message };
-      }
-    }
-    return sandboxToolStub(name); // no such tool registered → representative stub
-  }
-  if (decision === "replay" && tenantSlug) {
-    const hit = await cassetteLookup(tenantSlug, name, args);
-    if (hit !== undefined) return hit;
-  }
-  return sandboxToolStub(name);
-}
-
-// #NEST — recursive harness: a RUNNING agent can spawn a SUB-AGENT by generating its handler code
-// on the fly and running it (recursively through runGeneratedCode). Depth-capped so a runaway
-// self-spawn can't blow the stack; inherits the same `-sb` sandbox isolation as its parent (the
-// generated sub-agent code only executes in the sandbox tenant). This is the "agents have their own
-// harness + can generate sub-agents" layer — for PRODUCTION-deployable sub-agents the factory
-// promotes a discovered decomposition into real functions wired via `type:"invoke"` (register.ts).
 const MAX_SUBAGENT_DEPTH = Number(process.env.FACTORY_SUBAGENT_MAX_DEPTH) || 2;
-// #REDESIGN P3 — review budget: how many generate→lint→run attempts a spawned sub-agent gets.
 const SPAWN_REVIEW_TRIES = Number(process.env.FACTORY_SPAWN_REVIEW_TRIES) || 2;
 
-// #REDESIGN P3 + FU2 — SECURITY LINT for a spawned sub-agent's code (runtime-local; mirrors the
-// factory's lintGeneratedToolCode, which lives in agent-factory and can't be imported here without a
-// cycle). AST-based: parse with the TS compiler and inspect import/require/call/new nodes, so a
-// dangerous host API can't slip past behind concatenation or a shadowed identifier the way a raw-text
-// scan could. The regex below is a FALLBACK for when typescript can't load / the snippet won't parse.
-// The `-sb` isolation invariant is the load-bearing guard; this is defence-in-depth + a review signal.
-const DANGEROUS_API = /\b(child_process|require\(['"]fs['"]\)|require\(['"]net['"]\)|require\(['"]http['"]\)|require\(['"]https['"]\)|require\(['"]dns['"]\)|require\(['"]os['"]\)|import\s+[^;]*['"](?:fs|net|http|https|dns|os|child_process)['"]|process\.(exit|kill|binding)|eval\(|new\s+Function\(|globalThis\.|__proto__|constructor\s*\[)/;
-const FORBIDDEN_SPAWN_MODULES = new Set(["child_process", "fs", "net", "dgram", "tls", "http", "https", "http2", "dns", "vm", "worker_threads", "cluster", "os", "inspector", "v8", "repl", "module", "process"]);
-function normSpawnModule(spec: string): string {
-  let s = spec.trim();
-  if (s.startsWith("node:")) s = s.slice(5);
-  return s.split("/")[0] ?? s; // fs/promises → fs
+const DANGEROUS_API =
+  /\b(child_process|require\(['"]fs['"]\)|require\(['"]net['"]\)|require\(['"]http['"]\)|require\(['"]https['"]\)|require\(['"]dns['"]\)|require\(['"]os['"]\)|import\s+[^;]*['"](?:fs|net|http|https|dns|os|child_process)['"]|process\.(exit|kill|binding)|eval\(|new\s+Function\(|globalThis\.|__proto__|constructor\s*\[)/;
+const FORBIDDEN_SPAWN_MODULES = new Set([
+  "child_process",
+  "fs",
+  "net",
+  "dgram",
+  "tls",
+  "http",
+  "https",
+  "http2",
+  "dns",
+  "vm",
+  "worker_threads",
+  "cluster",
+  "os",
+  "inspector",
+  "v8",
+  "repl",
+  "module",
+  "process",
+]);
+
+function normalizeModuleSpecifier(specifier: string): string {
+  let normalized = specifier.trim();
+  if (normalized.startsWith("node:")) normalized = normalized.slice(5);
+  return normalized.split("/")[0] ?? normalized;
 }
-async function lintSpawnCode(code: string): Promise<{ ok: boolean; violations: string[] }> {
+
+async function lintSpawnCode(
+  code: string,
+): Promise<{ ok: boolean; violations: string[] }> {
   const violations: string[] = [];
-  let ast: string[] | null = null;
+  let astViolations: string[] | null = null;
   try {
-    // #W1-10 — a hung typescript import (module-resolution stall) must not hang the whole spawn:
-    // race it against a 5s timeout; on timeout fall through to the regex floor.
     const ts = await Promise.race([
       import("typescript"),
-      new Promise<never>((_, rej) => setTimeout(() => rej(new Error("ts import timeout")), 5000).unref?.()),
+      new Promise<never>((_, reject) => {
+        const timer = setTimeout(
+          () => reject(new Error("typescript import timeout")),
+          5_000,
+        );
+        timer.unref?.();
+      }),
     ]);
-    const sf = ts.createSourceFile("__spawn__.ts", code, ts.ScriptTarget.ES2022, true, ts.ScriptKind.TS);
+    const source = ts.createSourceFile(
+      "__spawn__.ts",
+      code,
+      ts.ScriptTarget.ES2022,
+      true,
+      ts.ScriptKind.TS,
+    );
     const found = new Set<string>();
-    const chk = (spec: string) => { const b = normSpawnModule(spec); if (FORBIDDEN_SPAWN_MODULES.has(b)) found.add(`危险模块 ${b}`); };
-    const visit = (n: import("typescript").Node): void => {
-      if (ts.isImportDeclaration(n) && ts.isStringLiteral(n.moduleSpecifier)) chk(n.moduleSpecifier.text);
-      else if (ts.isImportEqualsDeclaration(n) && ts.isExternalModuleReference(n.moduleReference) && n.moduleReference.expression && ts.isStringLiteral(n.moduleReference.expression)) chk(n.moduleReference.expression.text);
-      else if (ts.isCallExpression(n)) {
-        const ex = n.expression; const a0 = n.arguments[0];
-        if (ts.isIdentifier(ex) && ex.text === "require") { if (a0 && ts.isStringLiteral(a0)) chk(a0.text); else found.add("动态 require()"); }
-        else if (ex.kind === ts.SyntaxKind.ImportKeyword) { if (a0 && ts.isStringLiteral(a0)) chk(a0.text); else found.add("动态 import()"); }
-        else if (ts.isIdentifier(ex) && ex.text === "eval") found.add("eval()");
-        else if (ts.isIdentifier(ex) && ex.text === "Function") found.add("Function()");
-        else if (ts.isPropertyAccessExpression(ex) && ts.isIdentifier(ex.expression) && ex.expression.text === "process" && ["exit", "kill", "abort", "binding", "dlopen"].includes(ex.name.text)) found.add(`process.${ex.name.text}`);
-      }
-      else if (ts.isNewExpression(n) && ts.isIdentifier(n.expression) && n.expression.text === "Function") found.add("new Function()");
-      else if (ts.isPropertyAccessExpression(n) && n.name.text === "__proto__") found.add("__proto__ 访问");
-      ts.forEachChild(n, visit);
+    const checkModule = (specifier: string) => {
+      const base = normalizeModuleSpecifier(specifier);
+      if (FORBIDDEN_SPAWN_MODULES.has(base)) found.add(`危险模块 ${base}`);
     };
-    visit(sf);
-    ast = [...found];
-  } catch { ast = null; }
-  if (ast !== null) { for (const v of ast) violations.push(`危险 API：${v}`); }
-  else { const m = code.match(DANGEROUS_API); if (m) violations.push(`危险 API：${m[0].slice(0, 40)}`); }
-  if (!/defineAgent|handler\s*\(/.test(code)) violations.push("没有 defineAgent/handler 结构");
-  // #AUDIT-FIX(P0b) — a synchronous infinite loop locks the event loop and CANNOT be preempted by the
-  // async handler timeout (which only bounds awaits). Reject the obvious unbounded-sync-loop shapes up
-  // front (mirrors inline-codeact.ts); the P0a worker_thread runner is the definitive backstop.
-  if (/while\s*\(\s*(?:true|1)\s*\)|for\s*\(\s*;\s*;\s*\)/.test(code)) violations.push("疑似无界同步循环（while(true)/for(;;)）——请写有界循环");
+    const visit = (node: import("typescript").Node): void => {
+      if (
+        ts.isImportDeclaration(node) &&
+        ts.isStringLiteral(node.moduleSpecifier)
+      ) {
+        checkModule(node.moduleSpecifier.text);
+      } else if (
+        ts.isImportEqualsDeclaration(node) &&
+        ts.isExternalModuleReference(node.moduleReference) &&
+        node.moduleReference.expression &&
+        ts.isStringLiteral(node.moduleReference.expression)
+      ) {
+        checkModule(node.moduleReference.expression.text);
+      } else if (ts.isCallExpression(node)) {
+        const expression = node.expression;
+        const first = node.arguments[0];
+        if (ts.isIdentifier(expression) && expression.text === "require") {
+          if (first && ts.isStringLiteral(first)) checkModule(first.text);
+          else found.add("动态 require()");
+        } else if (expression.kind === ts.SyntaxKind.ImportKeyword) {
+          if (first && ts.isStringLiteral(first)) checkModule(first.text);
+          else found.add("动态 import()");
+        } else if (ts.isIdentifier(expression) && expression.text === "eval") {
+          found.add("eval()");
+        } else if (
+          ts.isIdentifier(expression) &&
+          expression.text === "Function"
+        ) {
+          found.add("Function()");
+        } else if (
+          ts.isPropertyAccessExpression(expression) &&
+          ts.isIdentifier(expression.expression) &&
+          expression.expression.text === "process" &&
+          ["exit", "kill", "abort", "binding", "dlopen"].includes(
+            expression.name.text,
+          )
+        ) {
+          found.add(`process.${expression.name.text}`);
+        }
+      } else if (
+        ts.isNewExpression(node) &&
+        ts.isIdentifier(node.expression) &&
+        node.expression.text === "Function"
+      ) {
+        found.add("new Function()");
+      } else if (
+        ts.isPropertyAccessExpression(node) &&
+        node.name.text === "__proto__"
+      ) {
+        found.add("__proto__ 访问");
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+    astViolations = [...found];
+  } catch {
+    astViolations = null;
+  }
+
+  if (astViolations) {
+    for (const violation of astViolations)
+      violations.push(`危险 API：${violation}`);
+  } else {
+    const match = code.match(DANGEROUS_API);
+    if (match) violations.push(`危险 API：${match[0].slice(0, 40)}`);
+  }
+  if (!/defineAgent|handler\s*\(/.test(code))
+    violations.push("没有 defineAgent/handler 结构");
   return { ok: violations.length === 0, violations };
 }
 
 async function generateSubAgentCode(
   task: string,
-  gateway: ReturnType<typeof getRuntimeGateway>,
-  opts: { tools?: string[]; tenantSlug?: string },
+  options: {
+    tools?: string[];
+    tenantSlug?: string;
+    tenantId?: string;
+    agentName?: string;
+    runId?: string;
+  },
 ): Promise<string | null> {
+  const gateway = getRuntimeGateway();
   if (!gateway || !task.trim()) return null;
-  const sys =
-    "你为一个【正在运行的 agent】生成一个【子 agent】的 TypeScript 处理器，帮它完成一个子任务。只输出一个完整的 defineAgent 代码块：\n" +
-    'export const subAgent = defineAgent({ name: "sub", async handler(input, ctx) { /* 用 ctx.reason(systemPrompt, input) 做判断；ctx.tool(name, args) 调工具；ctx.emit(event, payload) 产出；return 一个结果对象 */ return { ok: true }; } });\n' +
-    "只输出代码，不要解释、不要 markdown 围栏之外的任何文字。";
-  const user = `子任务：${task}\n可用工具：${(opts.tools ?? []).join("、") || "（以 ctx.reason 推理为主）"}`;
-  const r = await gateway
-    .chat({ messages: [{ role: "system", content: sys }, { role: "user", content: user }], tenantSlug: opts.tenantSlug })
-    .catch(() => null);
-  if (!r) return null;
-  const fenced = r.text.match(/```(?:ts|typescript)?\s*\n([\s\S]*?)```/);
-  const code = (fenced ? fenced[1] : r.text) ?? "";
+  if (!options.tenantId) {
+    throw new Error(
+      "CodeAct sub-agent generation requires tenantId for budget enforcement",
+    );
+  }
+  const system =
+    "你为一个正在运行的 agent 生成一个子 agent TypeScript 处理器。" +
+    "只输出完整 defineAgent 代码；可使用 ctx.reason、ctx.tool、ctx.emit，最后返回对象。";
+  const user = `子任务：${task}\n可用工具：${options.tools?.join("、") || "（以 ctx.reason 为主）"}`;
+  const response = await gateway.chat({
+    messages: [
+      { role: "system", content: system },
+      { role: "user", content: user },
+    ],
+    tenantSlug: options.tenantSlug,
+    tenantId: options.tenantId,
+    runId: options.runId,
+    purpose: `agent:${options.agentName ?? "codeact"}/codeact:spawn`,
+  });
+  const fenced = response.text.match(/```(?:ts|typescript)?\s*\n([\s\S]*?)```/);
+  const code = (fenced ? fenced[1] : response.text) ?? "";
   return code.includes("defineAgent") ? code : null;
 }
 
-/** Execute a generated agent's AI-written handler. Returns its result data (+ chosen emit event) and
- *  the emitted events, or null on any failure (caller falls back). Never throws. */
+async function runSandboxTool(
+  name: string,
+  tenantSlug: string | undefined,
+  args: unknown,
+  declaredPolicy: ToolExecutionPolicy | undefined,
+  sandboxProfileVerified: boolean,
+  hostRuntimeKind: "live" | "fixture",
+  factoryExecutionScope: FactorySandboxExecutionScope | { kind: "production" } | undefined,
+  factoryReplayRef: FactorySandboxReplayRef | undefined,
+  recordDispatch: (dispatch: GeneratedCodeToolDispatch) => void,
+  liveHandler?: (name: string, args?: unknown) => Promise<unknown>,
+): Promise<unknown> {
+  const catalogPolicy = globalToolExecutionPolicy(name);
+  if (catalogPolicy && declaredPolicy && !toolExecutionPoliciesEqual(catalogPolicy, declaredPolicy)) {
+    throw new Error(
+      `tool '${name}' execution policy conflicts with current reviewed registry metadata`,
+    );
+  }
+  const reviewedPolicy = catalogPolicy ?? declaredPolicy;
+  if (!isToolExecutionPolicy(reviewedPolicy)) {
+    throw new Error(`tool '${name}' is missing valid reviewed execution_policy metadata`);
+  }
+  if (hostRuntimeKind === "fixture") {
+    if (!liveHandler) throw new Error(`fixture tool '${name}' has no host fixture binding`);
+    recordDispatch({ tool: name, kind: "fixture" });
+    return liveHandler(name, args);
+  }
+  const factoryDecision = factorySandboxDispatchDecision(
+    reviewedPolicy,
+    tenantSlug,
+    factoryExecutionScope,
+  );
+  const decision = factoryDecision ?? toolDispatchDecision(
+    reviewedPolicy,
+    sandboxToolMode(),
+    { sandboxProfileVerified },
+  );
+  if (decision === "reject") {
+    throw new Error(`tool '${name}' is missing valid reviewed execution_policy metadata`);
+  }
+  if (factoryDecision === "replay") {
+    if (!tenantSlug || !factoryExecutionScope || factoryExecutionScope.kind !== "sandbox") {
+      throw new Error(`factory sandbox replay scope is missing for CodeAct tool '${name}'`);
+    }
+    const replay = await replayFactorySandboxTool({
+      scope: factoryExecutionScope,
+      tenantSlug,
+      toolName: name,
+      toolArgs: args,
+      policy: reviewedPolicy,
+      replayRef: factoryReplayRef,
+    });
+    recordDispatch({ tool: name, kind: "replay", receipt: replay.receipt });
+    return replay.body;
+  }
+  if (decision === "gate_profile") {
+    recordDispatch({ tool: name, kind: "gated_profile" });
+    return gatedToolMarker(name, args, "sandbox_profile");
+  }
+  if (decision === "gate_grant") {
+    recordDispatch({ tool: name, kind: "gated_grant" });
+    return gatedToolMarker(name, args, "requires_attempt_grant");
+  }
+  if (decision === "live") {
+    if (factoryDecision === "live") {
+      if (!tenantSlug || !factoryExecutionScope || factoryExecutionScope.kind !== "sandbox") {
+        throw new Error(`factory sandbox local scope is missing for CodeAct tool '${name}'`);
+      }
+      const receipt = await recordFactorySandboxLocalDispatch({
+        scope: factoryExecutionScope,
+        tenantSlug,
+        toolName: name,
+        toolArgs: args,
+        policy: reviewedPolicy,
+      });
+      recordDispatch({ tool: name, kind: "sandbox_local", receipt });
+    } else {
+      recordDispatch({ tool: name, kind: "live" });
+    }
+    if (liveHandler) return liveHandler(name, args);
+    const tool = globalToolRegistry.get(name);
+    if (!tool) throw new Error(`CodeAct tool '${name}' is not registered`);
+    const response = await tool.handler({
+      agentName: "codeact",
+      actionName: name,
+      correlationId: "sandbox",
+      tenantSlug: tenantSlug ?? "",
+      event: {
+        name: "codeact",
+        data:
+          args && typeof args === "object" && !Array.isArray(args)
+            ? (args as Record<string, unknown>)
+            : { value: args },
+      },
+    } as never);
+    return (response as { data?: unknown })?.data ?? response;
+  }
+  if (decision === "replay" && tenantSlug) {
+    recordDispatch({ tool: name, kind: "replay" });
+    const replay = await cassetteLookup(tenantSlug, name, args);
+    if (replay !== undefined) return replay;
+    throw new Error(`No replay cassette exists for CodeAct tool '${name}'`);
+  }
+  if (decision === "stub") {
+    recordDispatch({ tool: name, kind: "stub" });
+    return sandboxToolStub(name);
+  }
+  throw new Error(
+    `CodeAct tool '${name}' cannot run without a tenant replay scope`,
+  );
+}
+
+/** Host-side capabilities reachable through worker RPC. */
+export interface GeneratedCodeHostRuntime {
+  reason?(systemPrompt: string, input: unknown): Promise<unknown>;
+  tool?(name: string, args?: unknown): Promise<unknown>;
+  invoke?(
+    agentRef: string,
+    input?: unknown,
+    options?: { timeoutMs?: number },
+  ): Promise<unknown>;
+  spawn?(
+    task: string,
+    input?: unknown,
+    options?: { tools?: string[] },
+  ): Promise<SpawnResult>;
+  log?(level: "info" | "warn" | "error", message: string, data?: unknown): void;
+}
+
+/** Non-sandbox execution requires both fields and an exact digest match. */
+export interface GeneratedCodeProductionPolicy {
+  allowProduction?: boolean;
+  expectedCodeSha256?: string;
+  /** Immutable promotion provenance bound into the remote executor request. */
+  promotionVersionId?: string;
+  regressionSuiteFingerprint?: string;
+}
+
+export interface RunGeneratedCodeOptions {
+  systemPrompt?: string;
+  tenantSlug?: string;
+  /** Internal tenant id paired with tenantSlug. Required whenever the default
+   * CodeAct host invokes the LLM so budget and telemetry scope cannot be bypassed. */
+  tenantId?: string;
+  agentName?: string;
+  correlationId?: string;
+  subject?: string;
+  memory?: MemoryHandle;
+  runId?: string;
+  timeoutMs?: number;
+  memoryMb?: number;
+  production?: GeneratedCodeProductionPolicy;
+  hostRuntime?: GeneratedCodeHostRuntime;
+  /** Server-owned host classification. `fixture` is for exact regression
+   * artifacts: it invokes the supplied deterministic host adapter but records
+   * the call as fixture evidence, never as a live integration. */
+  hostRuntimeKind?: "live" | "fixture";
+  /** Trusted caller purpose. Regression replay may use fixture RPC while the
+   * exact code still runs on the production remote container plane. */
+  executionPurpose?: "runtime" | "regression_replay";
+  /** Immutable tool capability set copied from the reviewed manifest/spec.
+   * Generated code is denied by default when this field is absent or empty;
+   * callers must never derive it from code-controlled spawn/tool arguments. */
+  allowedTools?: readonly string[];
+  /** Side-effect metadata paired with allowedTools. Unknown entries fail
+   * closed at the sandbox boundary. */
+  toolPolicies?: Readonly<Record<string, ToolExecutionPolicy>>;
+  /** Tool names whose config provenance is an independent sandbox profile.
+   * This list is supplied by the host from immutable manifest metadata. */
+  sandboxProfileVerifiedTools?: readonly string[];
+  /** Exact nonce-attempt identity and its per-tool cassette hashes. These are
+   * ignored for production and mandatory for external Factory sandbox calls. */
+  factoryExecutionScope?: FactorySandboxExecutionScope | { kind: "production" };
+  factoryToolReplayRefs?: Readonly<Record<string, FactorySandboxReplayRef>>;
+  /** Internal recursion depth for reviewed sandbox sub-agents. */
+  _depth?: number;
+  /** Trusted executor injection seam for focused tests. Production callers do
+   * not set this and use the workload's Docker socket transport. */
+  containerTransport?: CodeActDockerTransport;
+  /** Server-owned exact candidate image override. Normal deployments resolve
+   * FACTORY_CODEACT_CANDIDATE_IMAGE instead. */
+  candidateImage?: string;
+}
+
+export type GeneratedCodeFailure =
+  | "execution_disabled"
+  | "isolation_not_allowed"
+  | "empty_code"
+  | "production_not_authorized"
+  | "attestation_missing"
+  | "attestation_mismatch"
+  | "memory_required"
+  | CodeActContainerFailure;
+
+export interface GeneratedCodeToolDispatch {
+  tool: string;
+  kind: "live" | "fixture" | "replay" | "stub" | "gated_profile" | "gated_grant" | "sandbox_local";
+  receipt?: FactorySandboxDispatchReceipt;
+}
+
+interface GeneratedCodeTelemetry {
+  isolation: "isolated_container";
+  codeSha256: string;
+  durationMs: number;
+  productionAttested: boolean;
+  /** True only after Docker started the one-shot container for these bytes. */
+  executorStarted: boolean;
+  /** Exit/removal evidence authored by the trusted container executor. */
+  containerEvidence?: CodeActContainerExecutionEvidence;
+  /** Exact result of the runtime attestation gate. */
+  attestation: CodeActAttestationStatus;
+  /** Host-observed tool boundary classifications for evidence grading. */
+  toolDispatches: GeneratedCodeToolDispatch[];
+}
+
+export type GeneratedCodeExecutionResult =
+  | (GeneratedCodeTelemetry & {
+      ok: true;
+      data: Record<string, unknown>;
+      emitted: Emit[];
+      spawnedSubAgents?: SpawnedSubAgent[];
+    })
+  | (GeneratedCodeTelemetry & {
+      ok: false;
+      failure: GeneratedCodeFailure;
+      error: string;
+      timedOut?: boolean;
+      crashed?: boolean;
+    });
+
+function codeDigest(code: string): string {
+  return createHash("sha256").update(code, "utf8").digest("hex");
+}
+
+function asFinitePositive(
+  value: number | undefined,
+  fallback: number,
+  minimum: number,
+): number {
+  return Number.isFinite(value) && (value ?? 0) >= minimum
+    ? Math.floor(value!)
+    : fallback;
+}
+
+/**
+ * Structured generated-code execution API used by the step engine. Every
+ * denial and worker/RPC failure retains a concrete reason and telemetry.
+ */
+export async function runGeneratedCodeIsolated(
+  code: string,
+  input: Record<string, unknown>,
+  options: RunGeneratedCodeOptions = {},
+): Promise<GeneratedCodeExecutionResult> {
+  const started = Date.now();
+  const codeSha256 = codeDigest(code ?? "");
+  const tenantSlug = options.tenantSlug ?? "";
+  const sandbox = !tenantSlug || isSandboxTenant(tenantSlug);
+  const toolDispatches: GeneratedCodeToolDispatch[] = [];
+  const initialAttestation: CodeActAttestationStatus = sandbox
+    ? "sandbox_not_required"
+    : "not_checked";
+  const base = (
+    attestation: CodeActAttestationStatus,
+    executorStarted = false,
+    durationMs = Date.now() - started,
+    containerEvidence?: CodeActContainerExecutionEvidence,
+  ): GeneratedCodeTelemetry => ({
+    isolation: "isolated_container",
+    codeSha256,
+    durationMs,
+    productionAttested: attestation === "production_verified",
+    executorStarted,
+    ...(containerEvidence ? { containerEvidence } : {}),
+    attestation,
+    toolDispatches: [...toolDispatches],
+  });
+  const deny = (
+    failure: GeneratedCodeFailure,
+    error: string,
+    attestation: CodeActAttestationStatus = initialAttestation,
+  ): GeneratedCodeExecutionResult => ({
+    ok: false,
+    failure,
+    error,
+    ...base(attestation),
+  });
+
+  // This call path is hard-wired to the one-shot container implementation.
+  // The legacy worker/vm helper remains available only as a permanently
+  // non-promotable diagnostic and can never reach this attestation path.
+  const remoteProduction = !sandbox && productionCodeActRemoteEnabled();
+  if (
+    !sandbox
+    && options.hostRuntimeKind === "fixture"
+    && options.executionPurpose !== "regression_replay"
+  ) {
+    return deny(
+      "production_not_authorized",
+      "fixture host runtime is sandbox/regression-only",
+      "not_authorized",
+    );
+  }
+  if (!code || code.trim().length < 20) {
+    return deny("empty_code", "generated agent code is empty or too short");
+  }
+
+  const expected = options.production?.expectedCodeSha256?.trim().toLowerCase();
+  if (!sandbox) {
+    if (options.production?.allowProduction !== true) {
+      return deny(
+        "production_not_authorized",
+        "production generated-code execution requires allowProduction=true",
+        "not_authorized",
+      );
+    }
+    if (!expected || !/^[a-f0-9]{64}$/.test(expected)) {
+      return deny(
+        "attestation_missing",
+        "production generated-code execution requires expectedCodeSha256",
+        "missing",
+      );
+    }
+    if (expected !== codeSha256) {
+      return deny(
+        "attestation_mismatch",
+        `generated-code SHA-256 mismatch (expected ${expected}, actual ${codeSha256})`,
+        "mismatch",
+      );
+    }
+  } else if (expected && expected !== codeSha256) {
+    // Optional sandbox attestations remain meaningful: once supplied they
+    // cannot silently point at different bytes.
+    return deny(
+      "attestation_mismatch",
+      `generated-code SHA-256 mismatch (expected ${expected}, actual ${codeSha256})`,
+      "mismatch",
+    );
+  }
+  const verifiedAttestation: CodeActAttestationStatus = sandbox
+    ? expected
+      ? "sandbox_verified"
+      : "sandbox_not_required"
+    : "production_verified";
+
+  // Evaluate immutable production authorization before infrastructure
+  // readiness. Otherwise an unattested legacy manifest is misleadingly
+  // reported as a temporary executor outage and may be retried forever.
+  if (!remoteProduction) {
+    const executionGate = codeActExecutionGate("isolated_container");
+    if (!executionGate.allowed) {
+      return deny(
+        executionGate.failure,
+        executionGate.reason,
+        "not_authorized",
+      );
+    }
+  }
+
+  if (process.env.NODE_ENV !== "test" && !options.memory) {
+    return deny(
+      "memory_required",
+      "durable memory is required outside isolated unit tests",
+      verifiedAttestation,
+    );
+  }
+
+  const ephemeral = new Map<string, unknown>();
+  const memory: MemoryHandle = options.memory ?? {
+    async get<T = unknown>(key: string, scope = "run"): Promise<T | null> {
+      const composite = `${scope}:${key}`;
+      return ephemeral.has(composite) ? (ephemeral.get(composite) as T) : null;
+    },
+    async put<T = unknown>(
+      key: string,
+      value: T,
+      scope = "run",
+    ): Promise<void> {
+      ephemeral.set(`${scope}:${key}`, value);
+    },
+    async delete(key: string, scope = "run"): Promise<void> {
+      ephemeral.delete(`${scope}:${key}`);
+    },
+    async search(): Promise<never[]> {
+      return [];
+    },
+  };
+
+  const spawnedSubAgents: SpawnedSubAgent[] = [];
+  const bubbledEmits: Emit[] = [];
+  const allowedTools = new Set(
+    (options.allowedTools ?? []).map((name) => name.trim()).filter(Boolean),
+  );
+  const assertToolAllowed = (name: string): void => {
+    if (allowedTools.has(name)) return;
+    const declared = [...allowedTools].sort();
+    throw new Error(
+      `[generated_tool_not_declared] 生成 Agent「${options.agentName ?? "codeact"}」请求了未在不可变 manifest/spec 中声明并配置的工具「${name}」；已拒绝执行。允许工具：${declared.length ? declared.join("、") : "（无）"}`,
+    );
+  };
+
+  const spawn = async (
+    task: string,
+    spawnInput?: unknown,
+    spawnOptions?: { tools?: string[] },
+  ): Promise<SpawnResult> => {
+    if (!sandbox) {
+      return {
+        ok: false,
+        error:
+          "spawn is not enabled for attested production handlers; use invoke",
+      };
+    }
+    const depth = options._depth ?? 0;
+    if (depth >= MAX_SUBAGENT_DEPTH) {
+      return {
+        ok: false,
+        error: `达到子 agent 最大嵌套深度(${MAX_SUBAGENT_DEPTH})`,
+      };
+    }
+
+    const childAllowedTools = [
+      ...new Set(
+        (spawnOptions?.tools ?? []).map((name) => name.trim()).filter(Boolean),
+      ),
+    ];
+    const escalated = childAllowedTools.filter(
+      (name) => !allowedTools.has(name),
+    );
+    if (escalated.length) {
+      return {
+        ok: false,
+        error: `[generated_tool_not_declared] 子 Agent 请求了父 Agent 未获审查的工具：${escalated.join("、")}`,
+      };
+    }
+    // A custom host is still behind the parent's immutable capability set;
+    // it is an execution adapter, not an authorization boundary.
+    if (options.hostRuntime?.spawn) {
+      return options.hostRuntime.spawn(task, spawnInput, {
+        ...spawnOptions,
+        tools: childAllowedTools,
+      });
+    }
+
+    let generated: string | null = null;
+    let lastIssue = "";
+    let lastCode = "";
+    for (let attempt = 0; attempt < SPAWN_REVIEW_TRIES; attempt++) {
+      const feedback = lastIssue
+        ? `\n\n【上一次生成（已驳回）】：\n${lastCode.slice(0, 1_500)}\n【驳回原因】：${lastIssue}\n请针对性修正。`
+        : "";
+      try {
+        const candidate = await generateSubAgentCode(
+          `${String(task ?? "")}${feedback}`,
+          {
+            tools: spawnOptions?.tools,
+            tenantSlug,
+            tenantId: options.tenantId,
+            agentName: options.agentName,
+            runId: options.runId,
+          },
+        );
+        if (!candidate) {
+          lastIssue = "代码生成返回了无效 handler";
+          continue;
+        }
+        lastCode = candidate;
+        const lint = await lintSpawnCode(candidate);
+        if (!lint.ok) {
+          lastIssue = lint.violations.join("；");
+          continue;
+        }
+        generated = candidate;
+        break;
+      } catch (error) {
+        lastIssue = `代码生成失败：${String((error as Error)?.message ?? error).slice(0, 200)}`;
+      }
+    }
+    if (!generated)
+      return { ok: false, error: `子 agent 未通过审查（${lastIssue}）` };
+
+    const spawnStarted = Date.now();
+    const entry: SpawnedSubAgent = {
+      task: String(task ?? ""),
+      code: generated,
+      depth: depth + 1,
+    };
+    spawnedSubAgents.push(entry);
+    const child = await runGeneratedCodeIsolated(
+      generated,
+      (spawnInput ?? input) as Record<string, unknown>,
+      {
+        ...options,
+        production: undefined,
+        allowedTools: childAllowedTools,
+        toolPolicies: Object.fromEntries(
+          childAllowedTools
+            .map((name) => [name, options.toolPolicies?.[name]] as const)
+            .filter((entry): entry is readonly [string, ToolExecutionPolicy] => !!entry[1]),
+        ),
+        sandboxProfileVerifiedTools: childAllowedTools.filter((name) =>
+          options.sandboxProfileVerifiedTools?.includes(name)),
+        _depth: depth + 1,
+      },
+    );
+    entry.ok = child.ok;
+    entry.durationMs = Date.now() - spawnStarted;
+
+    if (options.runId) {
+      // A parent run id turns spawn trace persistence into required evidence.
+      const { getDb, steps } = await import("@agentic/db");
+      const { makeId } = await import("@agentic/shared");
+      getDb()
+        .insert(steps)
+        .values({
+          id: makeId("stp"),
+          runId: options.runId,
+          ord: 900 + spawnedSubAgents.length,
+          name: `spawn:${entry.task.slice(0, 60)}`,
+          type: "subflow",
+          status: child.ok ? "ok" : "failed",
+          startedAt: new Date(spawnStarted),
+          endedAt: new Date(),
+          durationMs: entry.durationMs,
+        })
+        .run();
+    }
+
+    if (!child.ok) return { ok: false, error: child.error, code: generated };
+    bubbledEmits.push(...child.emitted);
+    spawnedSubAgents.push(...(child.spawnedSubAgents ?? []));
+    return {
+      ok: true,
+      data: child.data,
+      emitted: child.emitted,
+      code: generated,
+    };
+  };
+
+  const hostRuntime = options.hostRuntime;
+  const onRpc = async (
+    method: CodeActRpcMethod,
+    args: unknown[],
+  ): Promise<unknown> => {
+    switch (method) {
+      case "reason": {
+        const systemPrompt =
+          typeof args[0] === "string" ? args[0] : (options.systemPrompt ?? "");
+        const reasonInput = args[1];
+        if (hostRuntime?.reason)
+          return hostRuntime.reason(systemPrompt, reasonInput);
+        const gateway = getRuntimeGateway();
+        if (!gateway) throw new Error("LLM gateway is not configured");
+        if (!options.tenantId) {
+          throw new Error(
+            "CodeAct LLM reasoning requires tenantId for budget enforcement",
+          );
+        }
+        const response = await gateway.chat({
+          messages: [
+            {
+              role: "system",
+              content: systemPrompt || options.systemPrompt || "",
+            },
+            { role: "user", content: JSON.stringify(reasonInput ?? {}) },
+          ],
+          tenantSlug: options.tenantSlug,
+          tenantId: options.tenantId,
+          runId: options.runId,
+          purpose: `agent:${options.agentName ?? "codeact"}/codeact:reason`,
+        });
+        try {
+          return JSON.parse(response.text) as unknown;
+        } catch {
+          return {
+            ok: false,
+            _reasonFailed: true,
+            error: "llm_unstructured_response",
+            rawText: response.text.slice(0, 500),
+          };
+        }
+      }
+      case "tool": {
+        const name = args[0];
+        if (typeof name !== "string" || !name.trim())
+          throw new Error("tool name is required");
+        assertToolAllowed(name);
+        const toolInput = args[1] ?? input;
+        if (!sandbox) {
+          if (hostRuntime?.tool) return hostRuntime.tool(name, toolInput);
+          throw new Error(`production tool '${name}' has no host binding`);
+        }
+        return runSandboxTool(
+          name,
+          options.tenantSlug,
+          toolInput,
+          options.toolPolicies?.[name],
+          options.sandboxProfileVerifiedTools?.includes(name) === true,
+          options.hostRuntimeKind ?? "live",
+          options.factoryExecutionScope,
+          options.factoryToolReplayRefs?.[name],
+          (dispatch) => toolDispatches.push(dispatch),
+          hostRuntime?.tool,
+        );
+      }
+      case "memory.get":
+        return memory.get(String(args[0] ?? ""), args[1] as never);
+      case "memory.put":
+        await memory.put(String(args[0] ?? ""), args[1], args[2] as never);
+        return null;
+      case "memory.delete":
+        await memory.delete(String(args[0] ?? ""), args[1] as never);
+        return null;
+      case "memory.search":
+        return memory.search(String(args[0] ?? ""), Number(args[1] ?? 5));
+      case "invoke": {
+        const agentRef = args[0];
+        if (typeof agentRef !== "string" || !agentRef.trim())
+          throw new Error("invoke agentRef is required");
+        const invokeOptions =
+          args[2] && typeof args[2] === "object" && !Array.isArray(args[2])
+            ? (args[2] as { timeoutMs?: unknown })
+            : {};
+        if (
+          invokeOptions.timeoutMs !== undefined &&
+          (typeof invokeOptions.timeoutMs !== "number" ||
+            !Number.isFinite(invokeOptions.timeoutMs) ||
+            invokeOptions.timeoutMs <= 0)
+        ) {
+          throw new Error("invoke timeoutMs must be a positive finite number");
+        }
+        const timeoutMs = invokeOptions.timeoutMs as number | undefined;
+        const operation = async (): Promise<unknown> => {
+          if (hostRuntime?.invoke)
+            return hostRuntime.invoke(agentRef, args[1], { timeoutMs });
+          if (!sandbox)
+            throw new Error(
+              `production invoke '${agentRef}' has no durable host binding`,
+            );
+          const child = await spawn(`执行 ${agentRef}`, args[1] ?? input);
+          if (!child.ok)
+            throw new Error(child.error ?? `invoke '${agentRef}' failed`);
+          return child.data;
+        };
+        if (timeoutMs === undefined) return operation();
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          return await Promise.race([
+            operation(),
+            new Promise<never>((_resolve, reject) => {
+              timer = setTimeout(
+                () => reject(new Error(`invoke '${agentRef}' exceeded timeout (${timeoutMs}ms)`)),
+                timeoutMs,
+              );
+              timer.unref?.();
+            }),
+          ]);
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
+      }
+      case "spawn":
+        return spawn(
+          String(args[0] ?? ""),
+          args[1],
+          args[2] as { tools?: string[] } | undefined,
+        );
+    }
+  };
+
+  const timeoutMs = asFinitePositive(
+    options.timeoutMs ?? Number(process.env.FACTORY_CODEACT_TIMEOUT_MS),
+    120_000,
+    50,
+  );
+  const memoryMb = asFinitePositive(
+    options.memoryMb ?? Number(process.env.FACTORY_CODEACT_MEMORY_MB),
+    128,
+    16,
+  );
+  const executionOptions = {
+    timeoutMs,
+    memoryMb,
+    cpus: Number(process.env.FACTORY_CODEACT_CPUS) || 1,
+    pidsLimit: Number(process.env.FACTORY_CODEACT_PIDS_LIMIT) || 64,
+    onRpc,
+  };
+  const container = remoteProduction
+    ? await executeProductionCodeActRemote({
+        code,
+        data: input,
+        ...executionOptions,
+        identity: {
+          tenantId: options.tenantId ?? "",
+          tenantSlug,
+          runId: options.runId ?? "",
+          agentName: options.agentName ?? "codeact",
+          correlationId: options.correlationId ?? "",
+          subject: options.subject
+            ?? (typeof input._subject === "string" ? input._subject : undefined),
+          promotionVersionId: options.production?.promotionVersionId ?? "",
+          regressionSuiteFingerprint:
+            options.production?.regressionSuiteFingerprint ?? "",
+          codeSha256,
+        },
+      })
+    : await executeCodeActContainer(code, input, {
+        ...executionOptions,
+        image: options.candidateImage,
+        attemptId: options.factoryExecutionScope?.kind === "sandbox"
+          ? options.factoryExecutionScope.attempt_id
+          : undefined,
+        identity: {
+          agentName: options.agentName ?? "codeact",
+          tenantSlug,
+          correlationId:
+            options.correlationId ?? (sandbox ? "sandbox" : "production"),
+          subject:
+            options.subject ??
+            (typeof input._subject === "string" ? input._subject : undefined),
+        },
+        transport: options.containerTransport,
+        onLog(level, message, data) {
+          if (hostRuntime?.log) {
+            hostRuntime.log(level, message, data);
+            return;
+          }
+          try {
+            (console[level] ?? console.log)(
+              `[codeact:${options.agentName ?? "generated"}] ${message}`,
+              data ?? "",
+            );
+          } catch {
+            /* observability is best-effort */
+          }
+        },
+      });
+
+  if (!container.ok) {
+    return {
+      ok: false,
+      failure: container.failure,
+      error: container.error,
+      timedOut: container.timedOut,
+      crashed: container.crashed,
+      ...base(
+        verifiedAttestation,
+        container.executorStarted,
+        container.durationMs,
+        container.evidence,
+      ),
+    };
+  }
+  const emitted = [...container.emitted, ...bubbledEmits];
+  const data = emitted[0]
+    ? { ...container.result, _emit: emitted[0].event }
+    : container.result;
+  return {
+    ok: true,
+    data,
+    emitted,
+    ...(spawnedSubAgents.length ? { spawnedSubAgents } : {}),
+    ...base(
+      verifiedAttestation,
+      true,
+      container.durationMs,
+      container.evidence,
+    ),
+  };
+}
+
+/**
+ * Backward-compatible sandbox API. The step engine uses the structured API;
+ * direct callers still receive success-or-null, with every failure logged.
+ */
 export async function runGeneratedCode(
   code: string,
   input: Record<string, unknown>,
-  opts: { systemPrompt?: string; tenantSlug?: string; _depth?: number; memory?: MemoryHandle; runId?: string } = {},
-): Promise<{ data: Record<string, unknown>; emitted: Emit[]; spawnedSubAgents?: Array<{ task: string; code: string }> } | null> {
-  if (process.env.FACTORY_EXEC_GENERATED === "0") return null;
-  // ISOLATION INVARIANT: LLM-written code runs ONLY in the `-sb` sandbox tenant. A promoted agent
-  // on a real tenant has a non-sandbox slug → returns null → falls back to the declarative path.
-  if (opts.tenantSlug && !opts.tenantSlug.endsWith("-sb")) return null;
-  if (!code || code.trim().length < 60) return null;
-  try {
-    const ts = await import("typescript");
-    const js = ts.transpileModule(code, {
-      compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },
-    }).outputText;
-
-    let captured: AgentDef | null = null;
-    const defineAgent = (cfg: AgentDef) => { captured = cfg; return cfg; };
-    // codegen_agent instructs the LLM to write a full .ts (import → export), so the transpiled
-    // CommonJS does `require("@agentic/runtime").defineAgent` — resolve THAT to the capturing fn;
-    // import-less code uses the scope-injected `defineAgent` directly. Any other import → {}.
-    const requireShim = (id: string): unknown => (id === "@agentic/runtime" ? { defineAgent } : {});
-    const moduleObj = { exports: {} as Record<string, unknown> };
-    // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
-    const factory = new Function("require", "exports", "module", "defineAgent", js) as (
-      r: (id: string) => unknown, e: Record<string, unknown>, m: { exports: Record<string, unknown> }, d: (c: AgentDef) => AgentDef,
-    ) => void;
-    factory(requireShim, moduleObj.exports, moduleObj, defineAgent);
-
-    const def: AgentDef | null =
-      captured ?? (Object.values(moduleObj.exports).find((v) => v && typeof v === "object" && typeof (v as AgentDef).handler === "function") as AgentDef | undefined) ?? null;
-    if (!def || typeof def.handler !== "function") return null;
-
-    const emitted: Emit[] = [];
-    // #NEST promotion capture — every sub-agent this run spawns (its task + generated code) so the
-    // factory can PROMOTE a useful one into a deployable spec via design_subagent({ code }).
-    const spawnedSubAgents: Array<{ task: string; code: string }> = [];
-    const gateway = getRuntimeGateway();
-    // #REDESIGN P2/FU1 — memory. The DELIVERED adapter (register.ts) injects the REAL durable
-    // MemoryHandle (createMemoryHandle) via opts.memory, so generated code running under Inngest gets
-    // persistent get/put/delete + vector search — this is the one durable capability that's legal
-    // inside a `step.run` body (a plain DB op, not a `step.*` primitive). When none is injected (pure
-    // runtime tier / tests) we fall back to an ephemeral in-process handle: get/put/delete for the run,
-    // vector search returns [] (that scope isn't vector-indexed — honest empty, not a stub).
-    const _sbMem = new Map<string, unknown>();
-    const sandboxMemory: MemoryHandle = opts.memory ?? {
-      async get<T = unknown>(key: string): Promise<T | null> { return (_sbMem.has(key) ? (_sbMem.get(key) as T) : null); },
-      async put<T = unknown>(key: string, value: T): Promise<void> { _sbMem.set(key, value); },
-      async delete(key: string): Promise<void> { _sbMem.delete(key); },
-      async search(): Promise<never[]> { return []; },
-    };
-    // #REDESIGN P2 — the CodeAct ctx conforms to the UNIFIED AgentRuntime socket (same shape the
-    // delivered Inngest adapter provides), so a generated agent's handler is tier-agnostic.
-    const agentCtx: AgentRuntime = {
-      agentName: "codeact",
-      tenantSlug: opts.tenantSlug ?? "",
-      correlationId: "sandbox",
-      subject: typeof (input as { _subject?: unknown })?._subject === "string" ? (input as { _subject?: string })._subject : undefined,
-      memory: sandboxMemory,
-      log: (level, msg, data) => { try { (console[level] ?? console.log)(`[codeact] ${msg}`, data ?? ""); } catch { /* best-effort */ } },
-      // the agent's decision core — its own system prompt over the event input.
-      // #AUDIT-FIX(H0 fail-open) — 决策核心失败绝不能翻译成"通过"：无网关/调用失败时返回
-      // 【不含 ok:true】且带 _reasonFailed 标记的对象——生成代码的 `decision.ok/decision.pass`
-      // 判断自然走失败分支（fail-close，与规则闸语义一致），且日志留痕。旧行为（静默 {ok:true}）
-      // 会把一次 LLM 故障当成"规则全部通过"发出成功事件。
-      reason: async (sp: string, inp: unknown) => {
-        if (!gateway) {
-          try { console.warn("[codeact] reason() 无 LLM 网关——按失败处理（fail-close），不伪造通过"); } catch { /* best-effort */ }
-          return { ok: false, _reasonFailed: true, error: "llm_gateway_missing" };
-        }
-        let failure = "";
-        const r = await gateway
-          .chat({ messages: [{ role: "system", content: sp || opts.systemPrompt || "" }, { role: "user", content: JSON.stringify(inp ?? {}) }], tenantSlug: opts.tenantSlug })
-          .catch((e) => { failure = String((e as Error)?.message ?? e).slice(0, 200); return null; });
-        if (!r) {
-          try { console.warn(`[codeact] reason() LLM 调用失败——按失败处理（fail-close）：${failure}`); } catch { /* best-effort */ }
-          return { ok: false, _reasonFailed: true, error: failure || "llm_call_failed" };
-        }
-        try { return JSON.parse(r.text); } catch { return { text: r.text, ok: true }; }
-      },
-      emit: (event: string, payload: Record<string, unknown> = {}) => { emitted.push({ event, payload }); },
-      tools: { run: (name: string, toolArgs?: unknown) => runSandboxTool(name, opts.tenantSlug, toolArgs ?? input) },
-      tool: (name: string, toolArgs?: unknown) => runSandboxTool(name, opts.tenantSlug, toolArgs ?? input),
-      // #NEST — the running agent's own harness: spawn a SUB-AGENT for a subtask by generating its
-      // handler code and running it recursively. Depth-capped; sub-agent's emits bubble up to the
-      // parent's emitted[]. Returns { ok, data?, emitted?, error? } — never throws.
-      spawn: async (task: string, subInput?: unknown, subOpts?: { tools?: string[] }) => {
-        const depth = opts._depth ?? 0;
-        if (depth >= MAX_SUBAGENT_DEPTH) return { ok: false, error: `达到子 agent 最大嵌套深度(${MAX_SUBAGENT_DEPTH})` };
-        // #REDESIGN P3 — REVIEW LOOP: generate → security-lint → (run = dynamic probe). Retry with the
-        // lint feedback if the code is unsafe, up to a budget, before the parent relies on the sub-agent.
-        let subCode: string | null = null;
-        let lastIssue = "";
-        let lastGen = "";
-        for (let attempt = 0; attempt < SPAWN_REVIEW_TRIES; attempt++) {
-          // Feed BACK the rejected code + the reason so the retry actually IMPROVES it (not an
-          // identical stateless re-roll).
-          const feedback = lastIssue ? `\n\n【上一次生成（已驳回）】：\n${lastGen.slice(0, 1500)}\n【驳回原因】：${lastIssue}\n请针对性修正后重写。` : "";
-          const gen = await generateSubAgentCode(String(task ?? "") + feedback, gateway, { tools: subOpts?.tools, tenantSlug: opts.tenantSlug }).catch(() => null);
-          if (!gen) { lastIssue = "代码生成失败"; continue; }
-          lastGen = gen;
-          const lint = await lintSpawnCode(gen);
-          if (!lint.ok) { lastIssue = lint.violations.join("；"); continue; }
-          subCode = gen;
-          break;
-        }
-        if (!subCode) return { ok: false, error: `子 agent 未通过审查（${lastIssue}）` };
-        // G5 独立观测（lite）：spawn 的任务/深度/时长/结果随 spawnedSubAgents 链上浮（工厂
-        // inspect 与晋升路径都读它）+ 一条进程日志——不再是父 transcript 里的黑盒。
-        const spawnStarted = Date.now();
-        const entry: { task: string; code: string; ok?: boolean; durationMs?: number; depth?: number } = { task: String(task ?? ""), code: subCode, depth: depth + 1 };
-        spawnedSubAgents.push(entry); // captured for promotion
-        const r = await runGeneratedCode(subCode, (subInput ?? input) as Record<string, unknown>, { ...opts, _depth: depth + 1 });
-        entry.ok = !!r;
-        entry.durationMs = Date.now() - spawnStarted;
-        try {
-          console.info(`[codeact-spawn] tenant=${opts.tenantSlug ?? "?"} depth=${depth + 1} ok=${entry.ok} ms=${entry.durationMs} task=${entry.task.slice(0, 80)}`);
-        } catch { /* logging best-effort */ }
-        // G5 独立观测（完整版）：spawn 落一条父运行的 steps 行（type=subflow, name=spawn:…）——
-        // 运行详情页直接可见每次派生的任务/时长/结果，不再只活在父 transcript 里。best-effort。
-        if (opts.runId) {
-          try {
-            const { getDb, steps } = await import("@agentic/db");
-            const { makeId } = await import("@agentic/shared");
-            getDb()
-              .insert(steps)
-              .values({
-                id: makeId("stp"),
-                runId: opts.runId,
-                ord: 900 + spawnedSubAgents.length,
-                name: `spawn:${entry.task.slice(0, 60)}`,
-                type: "subflow",
-                status: entry.ok ? "ok" : "failed",
-                startedAt: new Date(spawnStarted),
-                endedAt: new Date(),
-                durationMs: entry.durationMs,
-              })
-              .run();
-          } catch { /* observability best-effort — never break the spawn */ }
-        }
-        if (!r) return { ok: false, error: "子 agent 运行失败（已回退）" };
-        for (const e of r.emitted) emitted.push(e); // sub-agent emits bubble up to the parent chain
-        for (const s of r.spawnedSubAgents ?? []) spawnedSubAgents.push(s); // nested spawns bubble up too
-        return { ok: true, data: r.data, emitted: r.emitted, code: subCode };
-      },
-      // #REDESIGN P2 — on the RUNTIME tier, invoking another agent maps to a spawn (there's no durable
-      // Inngest step.invoke in the ephemeral sandbox); returns the sub-agent's data (or null on fail).
-      invoke: async (agentRef: string, inp?: unknown) => {
-        const r = await agentCtx.spawn(`执行 ${agentRef}`, inp ?? input);
-        return r.ok ? r.data : null;
-      },
-    };
-
-    // #AUDIT-FIX(P0b NOMOCK-adjacent) — HARD async timeout on the AI-written handler. Historically
-    // `await def.handler(...)` had NO wall-clock bound (a hung await — e.g. a never-resolving external
-    // call or an accidental infinite async chain — would stall the run indefinitely). Race it against a
-    // timeout so a runaway handler is abandoned and the caller falls back to the declarative path.
-    // NOTE: this bounds ASYNC hangs (I/O, awaits, LLM stalls); a purely SYNCHRONOUS hot loop
-    // (`while(true){}`) still locks this event loop — that is caught earlier by the lint sync-loop
-    // heuristic and, definitively, by the P0a worker_thread runner (runGeneratedModule). Full
-    // event-loop-safe isolation is P0a's job; this is the in-process floor.
-    const handlerTimeoutMs = Number(process.env.FACTORY_CODEACT_TIMEOUT_MS) || 120_000;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const result = await Promise.race([
-      Promise.resolve(def.handler(input, agentCtx)),
-      new Promise<never>((_, rej) => {
-        timer = setTimeout(() => rej(new Error(`生成代码 handler 执行超时（>${handlerTimeoutMs}ms）——已放弃，回退声明式路径`)), handlerTimeoutMs);
-        timer.unref?.();
-      }),
-    ]).finally(() => { if (timer) clearTimeout(timer); });
-    const base = result && typeof result === "object" ? (result as Record<string, unknown>) : { result };
-    // `_emit` lets register.ts's branch-emit (selectEmittedEvent) honor the handler's chosen event.
-    const data = emitted[0] ? { ...base, _emit: emitted[0].event } : base;
-    return spawnedSubAgents.length ? { data, emitted, spawnedSubAgents } : { data, emitted };
-  } catch (e) {
-    // #AUDIT-FIX(M13) — 生成代码运行异常曾被整个吞掉（系统里不存在"为什么没真跑"的诊断）。
-    // 保留回退语义（返回 null → 声明式路径），但把根因留痕：console + 返回值无处可带时至少日志。
-    try { console.warn(`[codeact] 生成代码执行失败，回退声明式路径：${String((e as Error)?.message ?? e).slice(0, 300)}`); } catch { /* best-effort */ }
-    return null; // fall back to the default generated path
+  options: RunGeneratedCodeOptions = {},
+): Promise<{
+  data: Record<string, unknown>;
+  emitted: Emit[];
+  spawnedSubAgents?: SpawnedSubAgent[];
+  isolation: "isolated_container";
+  codeSha256: string;
+  durationMs: number;
+  productionAttested: boolean;
+} | null> {
+  const result = await runGeneratedCodeIsolated(code, input, options);
+  if (!result.ok) {
+    try {
+      console.warn(
+        `[codeact:${result.failure}] ${result.error} (sha256=${result.codeSha256}, isolation=${result.isolation})`,
+      );
+    } catch {
+      /* logging is best-effort */
+    }
+    return null;
   }
+  return {
+    data: result.data,
+    emitted: result.emitted,
+    ...(result.spawnedSubAgents
+      ? { spawnedSubAgents: result.spawnedSubAgents }
+      : {}),
+    isolation: result.isolation,
+    codeSha256: result.codeSha256,
+    durationMs: result.durationMs,
+    productionAttested: result.productionAttested,
+  };
 }

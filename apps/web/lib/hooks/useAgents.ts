@@ -11,16 +11,8 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import type { UseQueryResult } from "@tanstack/react-query";
 import { AGENT_KEYS, COUNT_KEYS } from "./useStream";
+import { readApiData } from "@/lib/api-response";
 import { tenantHeader } from "./tenant-header";
-
-interface ApiOk<T> {
-  ok: true;
-  data: T;
-}
-interface ApiErr {
-  ok: false;
-  error: { code: string; message: string };
-}
 
 async function callV1<T>(path: string, init: RequestInit = {}): Promise<T> {
   const { headers: initHeaders, ...rest } = init;
@@ -33,18 +25,14 @@ async function callV1<T>(path: string, init: RequestInit = {}): Promise<T> {
       ...(initHeaders as Record<string, string> | undefined),
     },
   });
-  const body = (await res.json()) as ApiOk<T> | ApiErr;
-  if (!body.ok) {
-    throw new Error(`${path}: ${body.error.code} — ${body.error.message}`);
-  }
-  return body.data;
+  return readApiData<T>(res, path);
 }
 
 export interface AgentListRow {
   id: string;
   kebabId: string;
   name: string;
-  title: string;
+  title: string | null;
   description: string | null;
   actor: "Agent" | "Human";
   kind: "code" | "manifest";
@@ -58,13 +46,52 @@ export interface AgentDetail {
   id: string;
   kebabId: string;
   name: string;
-  title: string;
+  title: string | null;
+  description: string | null;
   actor: "Agent" | "Human";
+  kind: "code" | "manifest";
+  enabled: boolean;
   triggers: string[];
   triggeredEvents: string[];
-  actions: Array<{ order: string; name: string; type: string; description?: string }>;
+  actions: Array<{
+    order: string;
+    name: string;
+    type:
+      | "tool"
+      | "logic"
+      | "manual"
+      | "condition"
+      | "delay"
+      | "subflow"
+      | "invoke"
+      | "foreach"
+      | "emit";
+    description?: string;
+    condition?: string;
+    task_type?: string;
+    [key: string]: unknown;
+  }>;
   workflowSlug: string;
-  workflowVersion: string;
+  workflowVersion: string | null;
+  input_data: Record<string, unknown> | null;
+  ontology_instructions: string | null;
+  tool_use: Array<{
+    name: string;
+    description?: string;
+    input_schema?: unknown;
+    config?: Record<string, unknown>;
+    [key: string]: unknown;
+  }> | null;
+  typescript_code: string | null;
+  sourceUnavailable: boolean;
+  deployedSource: {
+    deploymentId: string;
+    deploymentTarget: "workflow" | "agent" | "code_agent";
+    deployedAt: string;
+    agentVersionId: string;
+    workflowVersionId: string;
+    storage: "agent_versions.manifest_json";
+  } | null;
   recentRuns: Array<{
     id: string;
     status: string;
@@ -72,6 +99,11 @@ export interface AgentDetail {
     startedAt: string | null;
     durationMs: number | null;
   }>;
+}
+
+/** Imperative detail read used by the workflow editor's safe round-trip. */
+export function fetchAgentDetail(kebab: string): Promise<AgentDetail> {
+  return callV1<AgentDetail>(`/v1/agents/${encodeURIComponent(kebab)}`);
 }
 
 export interface TenantCounts {
@@ -117,7 +149,7 @@ export function useAgent(kebab: string | null | undefined): UseQueryResult<Agent
     queryKey: kebab
       ? AGENT_KEYS.detail(kebab)
       : (["agents", "detail", "__none__"] as const),
-    queryFn: () => callV1<AgentDetail>(`/v1/agents/${encodeURIComponent(kebab!)}`),
+    queryFn: () => fetchAgentDetail(kebab!),
     enabled: Boolean(kebab),
   });
 }
@@ -227,6 +259,7 @@ export function useDeleteAgent() {
       ),
     onSettled: () => {
       void client.invalidateQueries({ queryKey: AGENT_KEYS.list });
+      void client.invalidateQueries({ queryKey: COUNT_KEYS.tenant });
     },
   });
 }
@@ -254,12 +287,18 @@ export function useInvokeAgent() {
         runId?: string;
         run_id?: string;
         result?: unknown;
+        output?: unknown;
         status?: string;
         kind?: "code" | "manifest";
         eventId?: string;
         eventName?: string;
         subject?: string;
         correlationId?: string;
+        provider?: string;
+        model?: string;
+        tokensIn?: number | null;
+        tokensOut?: number | null;
+        durationMs?: number;
       }>(path, {
         method: "POST",
         headers: { "Content-Type": "application/json" },

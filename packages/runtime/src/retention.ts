@@ -31,6 +31,7 @@
 import { events, idempotencyKeys, runs, tasks, getDb } from "@agentic/db";
 import { and, isNull, lt, sql } from "drizzle-orm";
 import { inngest } from "./client";
+import { validateCronExpression } from "./scheduler";
 
 export interface RetentionResult {
   events: { tombstoned: number };
@@ -105,7 +106,9 @@ export async function runRetentionSweep(): Promise<RetentionResult> {
           db
             .update(events)
             .set({ deletedAt: now })
-            .where(and(isNull(events.deletedAt), lt(events.receivedAt, cutoffDate)))
+            .where(
+              and(isNull(events.deletedAt), lt(events.receivedAt, cutoffDate)),
+            )
             .run().changes ?? 0,
         );
 
@@ -123,14 +126,17 @@ export async function runRetentionSweep(): Promise<RetentionResult> {
               and(
                 isNull(runs.deletedAt),
                 sql`${runs.endedAt} IS NOT NULL`,
-                lt(runs.endedAt, new Date(ranAt - runDays * 24 * 60 * 60 * 1000)),
+                lt(
+                  runs.endedAt,
+                  new Date(ranAt - runDays * 24 * 60 * 60 * 1000),
+                ),
               ),
             )
             .run().changes ?? 0,
         );
 
-  // tasks: created_at < cutoff AND status != 'open' (don't tombstone open
-  // tasks — they're awaiting human action).
+  // tasks: never tombstone OPEN or RESOLVING rows. A decision is not terminal
+  // until the parked Inngest wait has durably acknowledged its resume marker.
   const tasksChanges =
     days === 0
       ? 0
@@ -142,7 +148,7 @@ export async function runRetentionSweep(): Promise<RetentionResult> {
               and(
                 isNull(tasks.deletedAt),
                 lt(tasks.createdAt, cutoffDate),
-                sql`${tasks.status} != 'open'`,
+                sql`${tasks.status} NOT IN ('open', 'resolving')`,
               ),
             )
             .run().changes ?? 0,
@@ -181,22 +187,64 @@ function purgeExpiredIdempotency(nowMs: number): number {
  * Inngest scheduled function. Registered alongside agent functions in
  * `apps/api/src/bootstrap.ts` so it ships in the same Inngest worker.
  *
- * Cron: 30 03 * * *  →  every day at 03:30 UTC. Off-peak for typical
- * Western workloads.
+ * Cron defaults to 0 3 * * * and is controlled by AGENTIC_SYSTEM_CRON.
+ * AGENTIC_SYSTEM_CRON_DISABLED=1 removes the function from the system app.
  */
 import type { InngestFunction } from "inngest";
 
-export const retentionSweepFn: InngestFunction.Any = inngest.createFunction(
-  {
-    id: "agentic.retention.sweep",
-    name: "Retention sweep (P1-API-04b)",
-    triggers: [{ cron: "30 3 * * *" }],
-  },
-  async () => {
-    const result = await runRetentionSweep();
-    console.log(
-      `[retention] sweep: events=${result.events.tombstoned} runs=${result.runs.tombstoned} tasks=${result.tasks.tombstoned} idempotency_keys=${result.idempotencyKeys.purged} (events/tasks cutoff ${result.retentionDays}d, runs cutoff ${result.runRetentionDays === 0 ? "off — permanent" : `${result.runRetentionDays}d`})`,
-    );
-    return result;
-  },
+const DEFAULT_SYSTEM_CRON = "0 3 * * *";
+
+export interface SystemCronConfig {
+  disabled: boolean;
+  cron: string | null;
+}
+
+export function resolveSystemCronConfig(
+  env: Record<string, string | undefined> = process.env,
+): SystemCronConfig {
+  const disabledRaw = env.AGENTIC_SYSTEM_CRON_DISABLED?.trim() ?? "";
+  if (disabledRaw && disabledRaw !== "0" && disabledRaw !== "1") {
+    throw new Error("AGENTIC_SYSTEM_CRON_DISABLED must be 0 or 1");
+  }
+  if (disabledRaw === "1") return { disabled: true, cron: null };
+  const cron = env.AGENTIC_SYSTEM_CRON?.trim() || DEFAULT_SYSTEM_CRON;
+  const validated = validateCronExpression(cron);
+  if (!validated.valid) {
+    throw new Error(`AGENTIC_SYSTEM_CRON is invalid: ${validated.reason}`);
+  }
+  return { disabled: false, cron };
+}
+
+function createRetentionSweepFn(cron: string): InngestFunction.Any {
+  return inngest.createFunction(
+    {
+      id: "agentic.retention.sweep",
+      name: "Retention sweep (P1-API-04b)",
+      triggers: [{ cron }],
+    },
+    async () => {
+      const result = await runRetentionSweep();
+      console.log(
+        `[retention] sweep: events=${result.events.tombstoned} runs=${result.runs.tombstoned} tasks=${result.tasks.tombstoned} idempotency_keys=${result.idempotencyKeys.purged} (events/tasks cutoff ${result.retentionDays}d, runs cutoff ${result.runRetentionDays === 0 ? "off — permanent" : `${result.runRetentionDays}d`})`,
+      );
+      return result;
+    },
+  );
+}
+
+const initialSystemCron = resolveSystemCronConfig();
+
+/** Compatibility export for callers that inspect the function directly.
+ * bootstrap uses retentionSweepFunctions(), which is what enforces disable. */
+export const retentionSweepFn: InngestFunction.Any = createRetentionSweepFn(
+  initialSystemCron.cron ?? DEFAULT_SYSTEM_CRON,
 );
+
+export function retentionSweepFunctions(
+  env: Record<string, string | undefined> = process.env,
+): InngestFunction.Any[] {
+  const config = resolveSystemCronConfig(env);
+  if (config.disabled || !config.cron) return [];
+  if (config.cron === initialSystemCron.cron) return [retentionSweepFn];
+  return [createRetentionSweepFn(config.cron)];
+}

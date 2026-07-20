@@ -4,11 +4,9 @@
  * Hotfix — dashboard render hang (`/portal/hello/dashboard`).
  *
  * Every `/v1/*` fetch on the client side runs through this helper so the api
- * scopes the response to the tenant the user is *looking* at, not the slug
- * pinned in `AGENTIC_DEV_TENANT`. Without this header the dashboard for
- * tenant `hello` shows raas's runs/events/tasks — the URL says `hello`, the
- * sidebar shows `hello`, but every `/v1/*` call resolves to whichever slug
- * the env var pins (default `raas`).
+ * scopes the response to the tenant the user is *looking* at. Without this
+ * header, the authenticated session's last tenant could disagree with the
+ * current URL until the next navigation.
  *
  * Since P6-AUTH the api honors this header in production too, but it is NOT a
  * trust vector: the header only selects WHICH tenant the request acts on; the
@@ -37,8 +35,7 @@ export function tenantFromPathname(pathname: string): string | null {
 /**
  * Build a headers fragment carrying the URL-derived tenant slug. Returns
  * `{}` when not in a browser or when the URL isn't a `/portal/<slug>/...`
- * path — that keeps the api on its dev fallback (`AGENTIC_DEV_TENANT`) for
- * non-portal pages.
+ * path; non-portal callers must pass their scope explicitly.
  */
 export function tenantHeader(): Record<string, string> {
   if (typeof window === "undefined") return {};

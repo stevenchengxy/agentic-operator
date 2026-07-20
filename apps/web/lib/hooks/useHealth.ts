@@ -37,12 +37,15 @@ export interface HealthReport {
     logsDir?: string;
     freeBytes?: number;
   };
-  /**
-   * 2026-05-26 — AGENTIC_DEMO_MODE flag. Surfaced so the sidebar can render
-   * a lime "DEMO" pill near the logo. Optional because older api builds
-   * (without this field) still parse cleanly; treat undefined as false.
-   */
-  demoMode?: boolean;
+  schedules?: {
+    ok: boolean;
+    configured: number;
+    disabled: number;
+    unconfigured: number;
+    configuredAgents: string[];
+    disabledAgents: string[];
+    unconfiguredAgents: string[];
+  };
 }
 
 export const HEALTH_KEYS = {
@@ -65,7 +68,31 @@ async function fetchHealth(): Promise<HealthReport> {
   if (res.status !== 200 && res.status !== 503) {
     throw new Error(`/health: HTTP ${res.status}`);
   }
-  return (await res.json()) as HealthReport;
+  let body: unknown;
+  try {
+    body = await res.json();
+  } catch {
+    throw new Error(`/health: HTTP ${res.status} returned invalid JSON`);
+  }
+  if (!isHealthReport(body)) {
+    throw new Error(`/health: HTTP ${res.status} returned an invalid health report`);
+  }
+  return body;
+}
+
+function isHealthReport(value: unknown): value is HealthReport {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const report = value as Record<string, unknown>;
+  if (typeof report.ok !== "boolean") return false;
+  return ["inngest", "sqlite", "disk"].every((key) => {
+    const subsystem = report[key];
+    return (
+      subsystem !== null &&
+      typeof subsystem === "object" &&
+      !Array.isArray(subsystem) &&
+      typeof (subsystem as Record<string, unknown>).ok === "boolean"
+    );
+  });
 }
 
 export function useHealth(): UseQueryResult<HealthReport> {

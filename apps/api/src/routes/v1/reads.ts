@@ -4,8 +4,7 @@
  */
 
 import type { FastifyInstance } from "fastify";
-import { requireAuth } from "../../plugins/auth";
-import { requirePermission } from "../../plugins/rbac";
+import { can, requirePermission } from "../../plugins/rbac";
 import { getTenantCounts } from "../../queries/counts";
 import { getDag } from "../../queries/workflows";
 import { getThroughput } from "../../queries/throughput";
@@ -25,11 +24,20 @@ export async function readsRoutes(app: FastifyInstance) {
   });
 
   // Backfill for the live terminal — recent lifecycle reconstructed from the
-  // persisted runs/steps/events/tasks as RunStreamEvent[] (chronological).
+  // database plus exact runtime file logs as RunStreamEvent[] (chronological).
   app.get("/activity", async (req, reply) => {
     const auth = requirePermission(req, "events.read");
     const limit = (req.query as { limit?: string } | undefined)?.limit;
-    return reply.ok(await getRecentActivity(auth.tenantSlug, limit));
+    return reply.ok(
+      await getRecentActivity(auth.tenantSlug, limit, {
+        includeAudit: can(auth, "audit.read"),
+        includeFileLogs: can(auth, "runs.read"),
+        includeRuns: can(auth, "runs.read"),
+        includeTasks: can(auth, "tasks.read"),
+        includeUsage: can(auth, "usage.read"),
+        includeDeployments: can(auth, "deployments.read"),
+      }),
+    );
   });
 
   app.get("/workflows/dag", async (req, reply) => {

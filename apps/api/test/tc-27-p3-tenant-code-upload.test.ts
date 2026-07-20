@@ -66,6 +66,9 @@ function buildSingleFileTar(name: string, content: string): Buffer {
 }
 
 const FIXTURE_DIR = path.join(os.tmpdir(), "agentic-tc27-tenants-");
+const VERSION_SUFFIX = `${process.pid}-${Date.now().toString(36)}`;
+const VERSION_ONE = `0.1.0-${VERSION_SUFFIX}`;
+const VERSION_TWO = `0.2.0-${VERSION_SUFFIX}`;
 let tmpRoot: string;
 const ORIG_TENANTS_DIR = process.env.AGENTIC_TENANTS_DIR;
 const ORIG_DEV_TENANT = process.env.AGENTIC_DEV_TENANT;
@@ -74,6 +77,34 @@ beforeAll(async () => {
   tmpRoot = await fs.mkdtemp(FIXTURE_DIR);
   process.env.AGENTIC_TENANTS_DIR = tmpRoot;
   process.env.AGENTIC_DEV_TENANT = "raas";
+  const { buildTestEnv } = await import("./harness");
+  await buildTestEnv();
+  const { getDb, deployments, tenants, workflows } =
+    await import("@agentic/db");
+  const db = getDb();
+  const tenant = db
+    .select()
+    .from(tenants)
+    .where(eq(tenants.slug, "raas"))
+    .all()[0]!;
+  db.transaction((tx) => {
+    tx.delete(deployments)
+      .where(
+        and(
+          eq(deployments.tenantId, tenant.id),
+          eq(deployments.target, "tenant_code"),
+        ),
+      )
+      .run();
+    tx.delete(workflows)
+      .where(
+        and(
+          eq(workflows.tenantId, tenant.id),
+          eq(workflows.slug, "__tenant_code__"),
+        ),
+      )
+      .run();
+  });
 });
 
 afterAll(async () => {
@@ -85,10 +116,68 @@ afterAll(async () => {
 });
 
 describe("TC-27: P3-API-01 + P3-API-02 tenant code upload + rollback", () => {
+  it("rejects malformed base64 and traversal archives without touching disk", async () => {
+    const { buildTestEnv } = await import("./harness");
+    const env = await buildTestEnv();
+
+    const malformed = await env.fetch("/v1/tenants/raas/code", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        version: "invalid-base64",
+        tarballBase64: "%%%%",
+      }),
+    });
+    expect(malformed.status).toBe(400);
+    expect(await malformed.json()).toMatchObject({
+      ok: false,
+      error: { code: "tarball_invalid" },
+    });
+
+    const traversalTar = buildSingleFileTar("../agentic.json", "{}");
+    const traversal = await env.fetch("/v1/tenants/raas/code", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        version: "invalid-traversal",
+        tarballBase64: (await gzip(traversalTar)).toString("base64"),
+      }),
+    });
+    expect(traversal.status).toBe(400);
+    expect(await traversal.json()).toMatchObject({
+      ok: false,
+      error: { code: "tarball_invalid" },
+    });
+    await expect(
+      fs.stat(path.join(tmpRoot, "raas", "invalid-traversal")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+
+    const wrongSlugTar = buildSingleFileTar(
+      "agentic.json",
+      JSON.stringify({ slug: "another-tenant" }),
+    );
+    const wrongSlug = await env.fetch("/v1/tenants/raas/code", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        version: "invalid-manifest-slug",
+        tarballBase64: (await gzip(wrongSlugTar)).toString("base64"),
+      }),
+    });
+    expect(wrongSlug.status).toBe(400);
+    expect(await wrongSlug.json()).toMatchObject({
+      ok: false,
+      error: { code: "tarball_invalid" },
+    });
+    await expect(
+      fs.stat(path.join(tmpRoot, "raas", "invalid-manifest-slug")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("POST /v1/tenants/raas/code accepts a tarball and lands a deployment", async () => {
     const { buildTestEnv } = await import("./harness");
     const env = await buildTestEnv();
-    const version = "0.1.0";
+    const version = VERSION_ONE;
 
     const manifest = JSON.stringify({
       slug: "raas",
@@ -137,7 +226,7 @@ describe("TC-27: P3-API-01 + P3-API-02 tenant code upload + rollback", () => {
   it("uploading a new version flips the prior to rolled_back", async () => {
     const { buildTestEnv } = await import("./harness");
     const env = await buildTestEnv();
-    const version = "0.2.0";
+    const version = VERSION_TWO;
 
     const manifest = JSON.stringify({
       slug: "raas",
@@ -162,7 +251,11 @@ describe("TC-27: P3-API-01 + P3-API-02 tenant code upload + rollback", () => {
 
     const { getDb, deployments, tenants } = await import("@agentic/db");
     const db = getDb();
-    const tenant = db.select().from(tenants).where(eq(tenants.slug, "raas")).all()[0];
+    const tenant = db
+      .select()
+      .from(tenants)
+      .where(eq(tenants.slug, "raas"))
+      .all()[0];
     expect(tenant).toBeDefined();
 
     // Exactly one tenant_code deployment is live for raas.
@@ -185,12 +278,17 @@ describe("TC-27: P3-API-01 + P3-API-02 tenant code upload + rollback", () => {
     const { buildTestEnv } = await import("./harness");
     const env = await buildTestEnv();
 
-    const { getDb, deployments, tenants } = await import("@agentic/db");
+    const { getDb, deployments, tenants, workflowVersions } =
+      await import("@agentic/db");
     const db = getDb();
-    const tenant = db.select().from(tenants).where(eq(tenants.slug, "raas")).all()[0]!;
+    const tenant = db
+      .select()
+      .from(tenants)
+      .where(eq(tenants.slug, "raas"))
+      .all()[0]!;
 
-    // Find the most recently-rolled-back tenant_code deployment (the v0.1.0
-    // one demoted by the v0.2.0 upload above) and try to rollback to it.
+    // Find the most recently-rolled-back tenant_code deployment (VERSION_ONE,
+    // demoted by the VERSION_TWO upload above) and roll back to it.
     const rolledBack = db
       .select()
       .from(deployments)
@@ -202,10 +300,17 @@ describe("TC-27: P3-API-01 + P3-API-02 tenant code upload + rollback", () => {
         ),
       )
       .all();
-    expect(rolledBack.length).toBeGreaterThanOrEqual(1);
-    const targetId = rolledBack[rolledBack.length - 1]!.id;
+    const targetVersion = db
+      .select()
+      .from(workflowVersions)
+      .where(eq(workflowVersions.version, VERSION_ONE))
+      .all()[0]!;
+    const targetId = rolledBack.find(
+      (deployment) => deployment.versionId === targetVersion.id,
+    )?.id;
+    expect(targetId).toBeDefined();
 
-    const res = await env.fetch(`/v1/deployments/${targetId}/rollback`, {
+    const res = await env.fetch(`/v1/deployments/${targetId!}/rollback`, {
       method: "POST",
     });
     expect(res.status).toBe(200);
@@ -221,8 +326,287 @@ describe("TC-27: P3-API-01 + P3-API-02 tenant code upload + rollback", () => {
     const after = db
       .select()
       .from(deployments)
-      .where(eq(deployments.id, targetId))
+      .where(eq(deployments.id, targetId!))
       .all()[0];
     expect(after?.status).toBe("live");
+  });
+
+  it("requires an exact version confirmation before compensation", async () => {
+    const { buildTestEnv } = await import("./harness");
+    const env = await buildTestEnv();
+    const { getDb, deployments, tenants } = await import("@agentic/db");
+    const db = getDb();
+    const tenant = db
+      .select()
+      .from(tenants)
+      .where(eq(tenants.slug, "raas"))
+      .all()[0]!;
+    const live = db
+      .select()
+      .from(deployments)
+      .where(
+        and(
+          eq(deployments.tenantId, tenant.id),
+          eq(deployments.target, "tenant_code"),
+          eq(deployments.status, "live"),
+        ),
+      )
+      .all()[0]!;
+
+    const res = await env.fetch(`/v1/tenants/raas/code/${live.id}`, {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ confirmVersion: "wrong-version" }),
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({
+      ok: false,
+      error: { code: "version_confirmation_mismatch" },
+    });
+    expect(
+      db.select().from(deployments).where(eq(deployments.id, live.id)).all()[0]
+        ?.status,
+    ).toBe("live");
+  });
+
+  it("restores the exact live pointer and files when broker sync rejects compensation", async () => {
+    const { removeLiveTenantCode } =
+      await import("../src/routes/v1/tenant-code");
+    const { getDb, deployments, tenants, workflowVersions } =
+      await import("@agentic/db");
+    const db = getDb();
+    const tenant = db
+      .select()
+      .from(tenants)
+      .where(eq(tenants.slug, "raas"))
+      .all()[0]!;
+    const laneBefore = db
+      .select()
+      .from(deployments)
+      .where(
+        and(
+          eq(deployments.tenantId, tenant.id),
+          eq(deployments.target, "tenant_code"),
+        ),
+      )
+      .all();
+    const liveBefore = laneBefore.find((row) => row.status === "live")!;
+    const priorBefore = laneBefore.find((row) => row.status === "rolled_back")!;
+    const version = db
+      .select()
+      .from(workflowVersions)
+      .where(eq(workflowVersions.id, liveBefore.versionId))
+      .all()[0]!;
+
+    let syncCalls = 0;
+    let reregisterCalls = 0;
+    await expect(
+      removeLiveTenantCode(
+        {
+          tenantId: tenant.id,
+          tenantSlug: "raas",
+          deploymentId: liveBefore.id,
+          confirmVersion: version.version,
+          log: { info: () => undefined, warn: () => undefined },
+        },
+        {
+          reregister: async (options) => {
+            reregisterCalls += 1;
+            return {
+              fnCount: 1,
+              scope: options.scope ?? "tenant",
+              appId: "agentic-raas",
+              appFnCount: 1,
+            };
+          },
+          sync: async (slug) => {
+            syncCalls += 1;
+            return {
+              slug,
+              appId: `agentic-${slug}`,
+              url: `http://test.invalid/inngest/${slug}`,
+              ok: syncCalls > 1,
+              error: syncCalls === 1 ? "forced broker rejection" : undefined,
+            };
+          },
+        },
+      ),
+    ).rejects.toMatchObject({
+      code: "tenant_code_remove_failed",
+      committed: false,
+      recoveryOk: true,
+    });
+
+    expect(syncCalls).toBe(2);
+    expect(reregisterCalls).toBe(2);
+    const laneAfter = db
+      .select()
+      .from(deployments)
+      .where(
+        and(
+          eq(deployments.tenantId, tenant.id),
+          eq(deployments.target, "tenant_code"),
+        ),
+      )
+      .all();
+    expect(laneAfter.find((row) => row.id === liveBefore.id)).toMatchObject({
+      status: "live",
+      deployedAt: liveBefore.deployedAt,
+    });
+    expect(laneAfter.find((row) => row.id === priorBefore.id)).toMatchObject({
+      status: "rolled_back",
+      deployedAt: priorBefore.deployedAt,
+    });
+    expect(
+      db
+        .select()
+        .from(workflowVersions)
+        .where(eq(workflowVersions.id, version.id))
+        .all()[0],
+    ).toBeDefined();
+    await expect(
+      fs.stat(path.join(tmpRoot, "raas", version.version, "agentic.json")),
+    ).resolves.toMatchObject({});
+    expect(
+      (await fs.readdir(path.join(tmpRoot, "raas"))).filter((name) =>
+        name.startsWith(`.remove-${version.version}-`),
+      ),
+    ).toHaveLength(0);
+  });
+
+  it("compensation deletes the current upload and restores the prior deployment", async () => {
+    const { buildTestEnv } = await import("./harness");
+    const env = await buildTestEnv();
+    const { getDb, deployments, tenants, workflowVersions } =
+      await import("@agentic/db");
+    const db = getDb();
+    const tenant = db
+      .select()
+      .from(tenants)
+      .where(eq(tenants.slug, "raas"))
+      .all()[0]!;
+    const lane = db
+      .select()
+      .from(deployments)
+      .where(
+        and(
+          eq(deployments.tenantId, tenant.id),
+          eq(deployments.target, "tenant_code"),
+        ),
+      )
+      .all();
+    const live = lane.find((row) => row.status === "live")!;
+    const prior = lane.find((row) => row.status === "rolled_back")!;
+    const version = db
+      .select()
+      .from(workflowVersions)
+      .where(eq(workflowVersions.id, live.versionId))
+      .all()[0]!;
+    const priorVersion = db
+      .select()
+      .from(workflowVersions)
+      .where(eq(workflowVersions.id, prior.versionId))
+      .all()[0]!;
+
+    const res = await env.fetch(`/v1/tenants/raas/code/${live.id}`, {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ confirmVersion: version.version }),
+    });
+    const responseBody = await res.json();
+    expect(res.status, JSON.stringify(responseBody)).toBe(200);
+    expect(responseBody).toMatchObject({
+      ok: true,
+      data: {
+        deployment_id: live.id,
+        removed_version: version.version,
+        restored_deployment_id: prior.id,
+        restored_version: priorVersion.version,
+      },
+    });
+    expect(
+      db.select().from(deployments).where(eq(deployments.id, live.id)).all()[0],
+    ).toBeUndefined();
+    expect(
+      db.select().from(deployments).where(eq(deployments.id, prior.id)).all()[0]
+        ?.status,
+    ).toBe("live");
+    expect(
+      db
+        .select()
+        .from(workflowVersions)
+        .where(eq(workflowVersions.id, version.id))
+        .all()[0],
+    ).toBeUndefined();
+    await expect(
+      fs.stat(path.join(tmpRoot, "raas", version.version)),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("compensation of the only live upload removes its control-plane and files", async () => {
+    const { buildTestEnv } = await import("./harness");
+    const env = await buildTestEnv();
+    const { getDb, deployments, tenants, workflowVersions } =
+      await import("@agentic/db");
+    const db = getDb();
+    const tenant = db
+      .select()
+      .from(tenants)
+      .where(eq(tenants.slug, "raas"))
+      .all()[0]!;
+    const live = db
+      .select()
+      .from(deployments)
+      .where(
+        and(
+          eq(deployments.tenantId, tenant.id),
+          eq(deployments.target, "tenant_code"),
+          eq(deployments.status, "live"),
+        ),
+      )
+      .all()[0]!;
+    const version = db
+      .select()
+      .from(workflowVersions)
+      .where(eq(workflowVersions.id, live.versionId))
+      .all()[0]!;
+
+    const res = await env.fetch(`/v1/tenants/raas/code/${live.id}`, {
+      method: "DELETE",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ confirmVersion: version.version }),
+    });
+    const responseBody = await res.json();
+    expect(res.status, JSON.stringify(responseBody)).toBe(200);
+    expect(responseBody).toMatchObject({
+      ok: true,
+      data: {
+        removed_version: version.version,
+        restored_deployment_id: null,
+        restored_version: null,
+      },
+    });
+    expect(
+      db
+        .select()
+        .from(deployments)
+        .where(
+          and(
+            eq(deployments.tenantId, tenant.id),
+            eq(deployments.target, "tenant_code"),
+          ),
+        )
+        .all(),
+    ).toHaveLength(0);
+    expect(
+      db
+        .select()
+        .from(workflowVersions)
+        .where(eq(workflowVersions.id, version.id))
+        .all()[0],
+    ).toBeUndefined();
+    await expect(
+      fs.stat(path.join(tmpRoot, "raas", version.version)),
+    ).rejects.toMatchObject({ code: "ENOENT" });
   });
 });

@@ -5,12 +5,40 @@
  */
 
 import { describe, it, expect, afterEach } from "vitest";
-import { LLMGateway, registerAllProviders, resolveConfig, setGatewayCallSink, type GatewayCallRecord } from "@agentic/llm-gateway";
+import {
+  LLMGateway,
+  setGatewayCallSink,
+  type ChatRequest,
+  type GatewayCallRecord,
+  type ProviderAdapter,
+} from "@agentic/llm-gateway";
+
+class TestProvider implements ProviderAdapter {
+  readonly id = "custom" as const;
+  readonly name = "telemetry-contract-test";
+  readonly hasKey = true;
+  readonly defaultModel = "telemetry-test-v1";
+
+  async chat(_request: ChatRequest) {
+    return {
+      text: "real adapter contract response",
+      provider: this.id,
+      model: this.defaultModel,
+      tokensIn: 2,
+      tokensOut: 2,
+      finishReason: "stop" as const,
+      latencyMs: 1,
+    };
+  }
+}
 
 function mkGateway(): LLMGateway {
-  const { gateway: cfg, adapterEnv } = resolveConfig({ LLM_DEFAULT_PROVIDER: "mock", LLM_DEFAULT_MODEL: "mock-model-v1" });
-  const g = new LLMGateway(cfg);
-  registerAllProviders(g, adapterEnv);
+  const g = new LLMGateway({
+    defaultProvider: "custom",
+    defaultModel: "telemetry-test-v1",
+    timeoutMs: 5_000,
+  });
+  g.registerProvider(new TestProvider());
   return g;
 }
 
@@ -26,7 +54,7 @@ describe("TC-G6: gateway call sink", () => {
     expect(recs).toHaveLength(1);
     const r = recs[0]!;
     expect(r.ok).toBe(true);
-    expect(r.provider).toBe("mock");
+    expect(r.provider).toBe("custom");
     expect(r.servedModel).toBeTruthy();
     expect(r.purpose).toBe("agent:testAgent");
     expect(r.latencyMs).toBeGreaterThanOrEqual(0);
@@ -44,12 +72,13 @@ describe("TC-G6: gateway call sink", () => {
     expect(recs[0]!.failureReason).toBeTruthy();
   });
 
-  it("sink 自身抛错绝不影响调用方（telemetry best-effort）", async () => {
+  it("sink 无法确认耐久性时不得把 provider 结果伪装成成功", async () => {
     setGatewayCallSink(() => {
       throw new Error("sink boom");
     });
     const g = mkGateway();
-    const res = await g.chat({ messages: [{ role: "user", content: "ping" }] });
-    expect(res.text.length).toBeGreaterThan(0); // 调用无恙
+    await expect(
+      g.chat({ messages: [{ role: "user", content: "ping" }] }),
+    ).rejects.toThrow("sink boom");
   });
 });

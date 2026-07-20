@@ -13,17 +13,38 @@
 //
 // SAFETY:
 //   · OFF when FACTORY_EXEC_GENERATED=0 (kill switch, same as codeact).
-//   · If a tenantSlug is supplied it MUST be a `-sb` sandbox tenant (mirrors codeact's isolation
+//   · If a tenantSlug is supplied it MUST be a factory-issued ephemeral sandbox tenant (mirrors codeact's isolation
 //     invariant) — so this can never be wired onto a real tenant by accident. Tests omit it.
-//   · Dependencies are STUBBED to {} by default; only an explicit `allowlist` passes through to the
+//   · Dependencies are DENIED by default; only an explicit `allowlist` passes through to the
 //     real `require` (the deploy/test-profile split of §07/§08 lives above this). Network egress
 //     guarding is a later phase (P6); this phase delivers time+memory containment + arbitrary exports.
 //   · Never throws — every failure returns a structured { ok:false, ... } result.
 
 import { Worker } from "node:worker_threads";
+import { isSandboxTenant } from "./sandbox-mode";
+
+/**
+ * Curated dependency allowlist for GENERATED code execution (the factory Tester's
+ * real run). Only safe, side-effect-free stdlib modules — pure computation /
+ * parsing, zero I/O reach. Anything that can touch the host (fs, net, http/https,
+ * child_process, os, …) is rejected by the require-shim. Both the
+ * `node:`-prefixed and bare specifier spellings are listed because the shim
+ * matches the literal id the generated code used. Shared by all three isolation
+ * tiers (worker / process / container) via `allowlist` opts; the AST security
+ * lint (packages/agent-factory/src/code-lint.ts) does not ban these modules.
+ */
+export const GENERATED_CODE_ALLOWLIST: readonly string[] = Object.freeze([
+  "node:crypto", "crypto",
+  "node:url", "url",
+  "node:querystring", "querystring",
+]);
 
 export interface ModuleRunResult {
   ok: boolean;
+  /** Isolation boundary that actually executed the module. */
+  isolationTier?: "worker" | "process" | "container";
+  /** Stronger tier requested by the caller when the runner explicitly degraded. */
+  requestedIsolationTier?: "worker" | "process" | "container";
   /** true when the worker was killed by the wall-clock timeout (sync or async hang). */
   timedOut?: boolean;
   /** true when the worker died from an out-of-memory / non-zero exit (e.g. resourceLimits breach). */
@@ -49,18 +70,18 @@ export interface RunModuleOpts {
   input?: unknown;
   /** multi-arg call (overrides `input` when present). */
   args?: unknown[];
-  /** module ids the require-shim resolves to the REAL module (everything else → {}). */
+  /** module ids the require-shim resolves to the REAL module (everything else is rejected). */
   allowlist?: string[];
   /** wall-clock ceiling in ms (default 5000). */
   timeoutMs?: number;
   /** worker heap cap in MB → resourceLimits.maxOldGenerationSizeMb (default 128). */
   memoryMb?: number;
-  /** isolation invariant: if set, MUST end in `-sb`. */
+  /** isolation invariant: if set, MUST be a recognized Agent Factory sandbox tenant. */
   tenantSlug?: string;
 }
 
 // The worker program (eval:true). Receives { code, ... } via workerData; transpiles TS→CJS with the
-// `typescript` package already in the workspace, runs the module behind a stubbing require-shim, picks
+// `typescript` package already in the workspace, runs the module behind a deny-by-default require-shim, picks
 // an entry export, optionally invokes it, and posts a serializable result. Any throw is reported, not
 // leaked. Kept as a string so no separate compiled worker-entry file must resolve at both dev(tsx) and
 // prod(dist) paths.
@@ -68,21 +89,26 @@ const WORKER_SRC = `
 const { parentPort, workerData } = require('node:worker_threads');
 (async () => {
   const post = (m) => { try { parentPort.postMessage(m); } catch (e) { parentPort.postMessage({ ok:false, error:'postMessage failed: '+String(e && e.message || e) }); } };
-  const safe = (v) => { try { return JSON.parse(JSON.stringify(v === undefined ? null : v)); } catch { return { __unserializable:true, preview:String(v).slice(0,500) }; } };
+  const serialize = (v) => {
+    try {
+      const json = JSON.stringify(v === undefined ? null : v);
+      if (json === undefined) throw new TypeError('result has no JSON representation');
+      return { ok:true, value:JSON.parse(json) };
+    } catch (e) {
+      return { ok:false, error:'entry result is not JSON-serializable: '+String(e && e.message || e).slice(0,500) };
+    }
+  };
   try {
     const { code, entryName, call, input, args, allowlist } = workerData;
-    let js = code;
-    try {
-      const ts = require('typescript');
-      js = ts.transpileModule(code, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } }).outputText;
-    } catch (e) { /* not TS or no compiler → try running the source as-is (may already be JS) */ }
+    const ts = require('typescript');
+    const js = ts.transpileModule(code, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } }).outputText;
     const allow = new Set(allowlist || []);
     let captured = null;
     const defineAgent = (cfg) => { captured = cfg; return cfg; };
     const requireShim = (id) => {
       if (id === '@agentic/runtime') return { defineAgent };
-      if (allow.has(id)) { try { return require(id); } catch { return {}; } }
-      return {};
+      if (allow.has(id)) return require(id);
+      throw new Error("module '" + id + "' is not allowlisted");
     };
     const moduleObj = { exports: {} };
     // eslint-disable-next-line no-new-func
@@ -100,7 +126,9 @@ const { parentPort, workerData } = require('node:worker_threads');
     if (call) {
       if (typeof entry !== 'function') { post({ ok:false, error:'no callable entry export found', exportNames }); return; }
       const out = Array.isArray(args) ? await entry.apply(null, args) : await entry(input);
-      post({ ok:true, called:true, exportName:name, exportNames, result: safe(out) });
+      const encoded = serialize(out);
+      if (!encoded.ok) { post({ ok:false, called:true, exportName:name, exportNames, error:encoded.error }); return; }
+      post({ ok:true, called:true, exportName:name, exportNames, result: encoded.value });
     } else {
       post({ ok:true, called:false, exportName:name, exportNames, hasEntry: entry != null, entryType: typeof entry });
     }
@@ -114,15 +142,15 @@ const { parentPort, workerData } = require('node:worker_threads');
  *  Never throws; always resolves a structured result. */
 export function runGeneratedModule(code: string, opts: RunModuleOpts = {}): Promise<ModuleRunResult> {
   const started = Date.now();
-  const done = (r: Omit<ModuleRunResult, "durationMs">): ModuleRunResult => ({ ...r, durationMs: Date.now() - started });
+  const done = (r: Omit<ModuleRunResult, "durationMs">): ModuleRunResult => ({ isolationTier: "worker", ...r, durationMs: Date.now() - started });
 
   if (process.env.FACTORY_EXEC_GENERATED === "0") {
     return Promise.resolve(done({ ok: false, error: "FACTORY_EXEC_GENERATED=0（生成代码执行已禁用）" }));
   }
   // Isolation invariant (mirrors codeact): a real-tenant slug is refused; the worker is the boundary,
   // but this stops the runner from ever being wired onto a non-sandbox tenant by accident.
-  if (opts.tenantSlug && !opts.tenantSlug.endsWith("-sb")) {
-    return Promise.resolve(done({ ok: false, error: "隔离不变量：runGeneratedModule 仅允许 -sb 沙箱租户" }));
+  if (opts.tenantSlug && !isSandboxTenant(opts.tenantSlug)) {
+    return Promise.resolve(done({ ok: false, error: "隔离不变量：runGeneratedModule 仅允许 Agent Factory 临时沙箱租户" }));
   }
   if (!code || code.trim().length < 1) {
     return Promise.resolve(done({ ok: false, error: "空代码" }));

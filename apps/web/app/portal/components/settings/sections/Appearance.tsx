@@ -7,9 +7,8 @@
  * in the top bar and the Tweaks panel. All three read/write the shared
  * PreferencesProvider, so changes here stay in sync everywhere in the tab.
  *
- * Note: this is the *interface language* (en/中). It is intentionally
- * separate from Workspace → "Locale" (en-US / zh-CN / …), which governs
- * number & date formatting. See the Rev-2 design spec §3.3.
+ * Language is the interface locale; all four controls apply immediately and
+ * persist through the shared PreferencesProvider.
  */
 
 import type { CSSProperties } from "react";

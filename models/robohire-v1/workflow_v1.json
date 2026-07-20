@@ -3,7 +3,7 @@
     "id": "sourcer-agent",
     "name": "sourcerAgent",
     "title": "Sourcer Agent",
-    "description": "Translates a fresh NEW_JOB_REQUISITION event into a candidate shortlist by combining the RoboHire mock MCP server (sample candidate database) with the real RoboHire REST API for resume + JD parsing and scoring.",
+    "description": "Scores the real JD and candidate resumes supplied by a NEW_JOB_REQUISITION event using the live RoboHire REST API; missing source data or credentials fail explicitly.",
     "actor": ["Agent"],
     "trigger": ["NEW_JOB_REQUISITION"],
     "tool_use": [
@@ -12,10 +12,7 @@
       { "name": "robohireHealthApi", "description": "Real RoboHire GET /api/v1/health — smoke test connectivity." },
       { "name": "parseJdApi", "description": "Real RoboHire POST /api/v1/parse-jd — structures a job description." },
       { "name": "parseResumeApi", "description": "Real RoboHire POST /api/v1/parse-resume — structures a resume." },
-      { "name": "matchResumeApi", "description": "Real RoboHire POST /api/v1/match-resume — REQUIRES {resume, jd} strings." },
-      { "name": "robohire-mcp.search_candidates", "description": "Mock candidate-pool search (3 deterministic samples)." },
-      { "name": "robohire-mcp.score_resume", "description": "Mock scoring fallback when matchResumeApi is unavailable." },
-      { "name": "robohire-mcp.get_job_requisition", "description": "Fetch a requisition (jr_001, jr_002 pre-seeded) from the mock pool." }
+      { "name": "matchResumeApi", "description": "Real RoboHire POST /api/v1/match-resume — REQUIRES {resume, jd} strings." }
     ],
     "actions": [
       {
@@ -31,22 +28,19 @@
     "id": "screener-agent",
     "name": "screenerAgent",
     "title": "Screener Agent",
-    "description": "Re-ranks the sourced shortlist using the real RoboHire match-resume API plus the resume-screening skill, and generates interview invitations for the top hits.",
+    "description": "Re-ranks the sourced shortlist using the real RoboHire match-resume API plus the resume-screening skill. It never sends invitations; inviterAgent owns the single delivery side effect.",
     "actor": ["Agent"],
     "trigger": ["CANDIDATES_SOURCED"],
     "tool_use": [
       { "name": "skills.list_skills", "description": "Discover available skills." },
       { "name": "skills.load_skill", "description": "Load a skill's body by name." },
-      { "name": "matchResumeApi", "description": "Real RoboHire POST /api/v1/match-resume — scores resume against JD." },
-      { "name": "inviteCandidateApi", "description": "Real RoboHire POST /api/v1/invite-candidate — generates interview email." },
-      { "name": "robohire-mcp.score_resume", "description": "Mock scoring fallback." },
-      { "name": "robohire-mcp.get_job_requisition", "description": "Refetch requisition if missing from payload." }
+      { "name": "matchResumeApi", "description": "Real RoboHire POST /api/v1/match-resume — scores resume against JD." }
     ],
     "actions": [
       {
         "order": "1",
         "name": "screenCandidates",
-        "description": "Load the resume-screening skill, score every candidate, emit ranked list with optional invite drafts.",
+        "description": "Load the resume-screening skill, score every candidate, and emit the ranked list without sending an invitation.",
         "type": "logic"
       }
     ],
@@ -79,17 +73,17 @@
     "id": "inviter-agent",
     "name": "inviterAgent",
     "title": "Inviter Agent",
-    "description": "Subscribes to MATCH_COMPLETED. If the match verdict is Strong Match, calls the live RoboHire inviteCandidateApi to generate an interview-invitation email body. Emits INVITE_GENERATED with the generated email (or a `skipped` envelope when the verdict was below the bar).",
+    "description": "Subscribes to MATCH_COMPLETED. If the match verdict is Strong Match, calls the side-effecting RoboHire inviteCandidateApi exactly once to send the invitation. Emits the legacy INVITE_GENERATED event with the real send receipt (or a skipped/failed envelope); it never represents a draft as delivery.",
     "actor": ["Agent"],
     "trigger": ["MATCH_COMPLETED"],
     "tool_use": [
-      { "name": "inviteCandidateApi", "description": "Real RoboHire POST /api/v1/invite-candidate — generates interview email." }
+      { "name": "inviteCandidateApi", "description": "Real side-effecting RoboHire POST /api/v1/invite-candidate — sends once and returns a receipt." }
     ],
     "actions": [
       {
         "order": "1",
         "name": "generateInvite",
-        "description": "Read the match analysis; if score ≥ 80, call inviteCandidateApi; otherwise emit skipped envelope.",
+        "description": "Read the match analysis; if score ≥ 80, call the single real sender inviteCandidateApi once and preserve its receipt; otherwise emit a skipped envelope.",
         "type": "logic"
       }
     ],

@@ -23,6 +23,10 @@ describe("system prompt carries production-discipline knowledge (Phase 0b)", () 
         // the exemplar lists several ordered steps for one agent
         expect(p.toLowerCase()).toContain("idempot");
       });
+      it("never treats a recommendation or timeout as human authorization", () => {
+        expect(p).toContain(lang === "zh" ? "recommended 只是你的建议，不是用户授权" : "A recommendation is advice, never authorization");
+        expect(p).toContain(lang === "zh" ? "不许替用户自动选择" : "must not auto-select");
+      });
     });
   }
 });

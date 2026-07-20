@@ -10,6 +10,11 @@
 //  · 子 agent tokens = 【无】——工厂未按子脑单独记 budget,故不显示(不编造)。
 
 import type { BrainEvent } from "@/lib/hooks/useBrainStream";
+import {
+  isAnswerCompletion,
+  isDeliveryCompletion,
+  normalizeFactoryCompletionKind,
+} from "./model";
 
 export interface PhaseAgentLite {
   key: string;
@@ -46,6 +51,9 @@ const STAGE_LABEL: Record<string, string> = {
   validate: "校验",
   sandbox: "试运行",
   deliver: "交付",
+  answer: "回答",
+  incomplete: "未完成",
+  completion_unknown: "结束（类型未知）",
 };
 
 const s = (v: unknown): string => (typeof v === "string" ? v : v == null ? "" : String(v));
@@ -65,6 +73,7 @@ export function derivePhaseTimeline(events: BrainEvent[]): PhaseTimeline {
   const phases = new Map<string, PhaseAcc>();
   let curStage = "intake";
   let runningTokens = 0;
+  let latestRealSandboxSucceeded = false;
 
   const phaseOf = (stage: string): PhaseAcc => {
     let p = phases.get(stage);
@@ -76,9 +85,27 @@ export function derivePhaseTimeline(events: BrainEvent[]): PhaseTimeline {
     return p;
   };
 
+  const moveFinalPhase = (from: string, to: string): PhaseAcc => {
+    if (from === to) return phaseOf(to);
+    const existing = phases.get(from);
+    if (!existing) return phaseOf(to);
+    phases.delete(from);
+    existing.stage = to;
+    existing.label = STAGE_LABEL[to] ?? to;
+    phases.set(to, existing);
+    const index = order.indexOf(from);
+    if (index >= 0) order[index] = to;
+    return existing;
+  };
+
   for (const e of events) {
     const t = s(e.t);
     const ts = num((e as { ts?: number }).ts);
+    if (t === "sandbox" && !e.simulated) {
+      latestRealSandboxSucceeded = Boolean(
+        e.fullChainRan || e.reachedSuccessTerminal,
+      );
+    }
     // running token total (budget carries a monotonic run-wide total).
     if (t === "budget") { const tk = num(e.tokens); if (tk != null) runningTokens = tk; }
     // phase switch on an ACTIVE stage marker.
@@ -88,6 +115,28 @@ export function derivePhaseTimeline(events: BrainEvent[]): PhaseTimeline {
       const p = phaseOf(st);
       if (s(e.status) === "error") p.status = "error";
       else if (s(e.status) === "ok" && p.status !== "error") p.status = "ok";
+    }
+    if (t === "done") {
+      const completionKind = normalizeFactoryCompletionKind(e.completionKind);
+      if (e.status === "waiting_human") {
+        // Suspension is neither success nor failure. Keep the current phase
+        // active so the separate HITL gate remains the actionable state.
+        phaseOf(curStage).status = "active";
+      } else if (isAnswerCompletion(e.status, completionKind)) {
+        moveFinalPhase(curStage === "deliver" ? "deliver" : "answer", "answer");
+        curStage = "answer";
+        phaseOf(curStage).status = "ok";
+      } else if (isDeliveryCompletion(e.status, completionKind)) {
+        curStage = "deliver";
+        phaseOf(curStage).status = latestRealSandboxSucceeded ? "ok" : "error";
+      } else {
+        const nextStage = completionKind === "legacy_unknown"
+          ? "completion_unknown"
+          : "incomplete";
+        moveFinalPhase(curStage === "deliver" ? "deliver" : nextStage, nextStage);
+        curStage = nextStage;
+        phaseOf(curStage).status = "error";
+      }
     }
     const p = phaseOf(curStage);
     // time bounds + token span for the current phase (real server ts).

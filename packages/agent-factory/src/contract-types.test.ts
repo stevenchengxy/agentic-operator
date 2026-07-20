@@ -245,11 +245,11 @@ describe("canonicalEventFields", () => {
   it("builds a per-event FieldSpec map from ontology event_data", () => {
     const ont = {
       events: [
-        { name: "RESUME_PROCESSED", payload: { source_action: null, event_data: [{ name: "candidate_id", type: "string", target_object: "Candidate" }], state_mutations: [] } },
+        { name: "RESUME_PROCESSED", payload: { source_action: null, event_data: [{ name: "candidate_id", type: "string", target_object: "Candidate", required: false }], state_mutations: [] } },
       ],
     } as unknown as DomainOntology;
     const m = canonicalEventFields(ont);
-    expect(m.get("RESUME_PROCESSED")).toEqual([{ field: "candidate_id", type: "string", source: "Candidate" }]);
+    expect(m.get("RESUME_PROCESSED")).toEqual([{ field: "candidate_id", type: "string", source: "Candidate", required: false }]);
   });
   it("is safe on null / missing payload", () => {
     expect(canonicalEventFields(null).size).toBe(0);

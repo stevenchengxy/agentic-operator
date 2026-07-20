@@ -14,8 +14,22 @@ import { PROVIDER_IDS } from "@agentic/contracts";
 import type { GatewayConfig } from "./types";
 
 const DEFAULT_TIMEOUT_MS = 60_000;
-let mockFallbackWarned = false;
 let deprecationWarned = false;
+
+const IMPLEMENTED_PROVIDER_IDS = new Set<ProviderId>([
+  "anthropic",
+  "openai",
+  "openrouter",
+  "gemini",
+  "mistral",
+  "groq",
+  "together",
+  "deepseek",
+  "qwen",
+  "azure",
+  "custom",
+  "mock",
+]);
 
 export interface AdapterEnvSlice {
   ANTHROPIC_API_KEY?: string;
@@ -70,26 +84,29 @@ export function resolveConfig(
   // "Mock response from mock-model-v1…" report bug). It is now a FAIL-CLOSED invariant, not a warning:
   //   - Normalize case/whitespace first, so "Custom" / " custom " resolve to a real provider instead
   //     of silently dropping to mock.
-  //   - A recognized provider id (incl. an EXPLICIT `mock`) is honored.
-  //   - An EMPTY or INVALID (typo'd) provider id THROWS outside test/demo/opt-in — refusing to run the
-  //     whole gateway on a canned echo. Mock stays the legitimate default ONLY when NODE_ENV=test,
-  //     AGENTIC_DEMO_MODE=true, or the explicit AGENTIC_ALLOW_MOCK=1 opt-in is set.
+  //   - A recognized REAL provider id is honored.
+  //   - `mock` is accepted only in NODE_ENV=test. Demo mode is intentionally
+  //     NOT an exemption: a visual demo must not pretend synthetic inference is real.
+  //   - An EMPTY or INVALID (typo'd) provider id THROWS outside tests — refusing to run the
+  //     whole gateway on a canned echo.
   const normProvider = (rawProvider ?? "").trim().toLowerCase();
   const providerValid = isProviderId(normProvider);
-  const mockAllowed = env.NODE_ENV === "test" || env.AGENTIC_DEMO_MODE === "true" || env.AGENTIC_ALLOW_MOCK === "1";
-  if (!providerValid && !mockAllowed) {
+  const providerImplemented = providerValid && IMPLEMENTED_PROVIDER_IDS.has(normProvider);
+  const mockAllowed = env.NODE_ENV === "test";
+  const requestedMock = normProvider === "mock";
+  if (providerValid && !providerImplemented) {
     throw new Error(
-      `[llm-gateway] LLM_DEFAULT_PROVIDER 未设置或无效（"${rawProvider ?? ""}"）。拒绝在非 test/demo 进程回退到 ` +
-        `MOCK 提供商（回声、非真实模型）——这正是「看着像真、实为 mock」的根因。请设置一个真实 provider（如 ` +
-        `custom + CUSTOM_LLM_BASE_URL），或显式设 AGENTIC_ALLOW_MOCK=1 才允许 mock。`,
+      `[llm-gateway] Provider "${normProvider}" is catalogued but has no real adapter in this build; refusing to register a placeholder`,
     );
   }
-  if (!providerValid && mockAllowed && env.NODE_ENV !== "test" && env.AGENTIC_DEMO_MODE !== "true" && !mockFallbackWarned) {
-    mockFallbackWarned = true;
-    // eslint-disable-next-line no-console
-    console.warn(`[llm-gateway] ⚠️  AGENTIC_ALLOW_MOCK=1 且 LLM_DEFAULT_PROVIDER 未设置/无效 → 使用 MOCK 提供商（回声、非真实模型）。`);
+  if ((!providerValid || requestedMock) && !mockAllowed) {
+    throw new Error(
+      `[llm-gateway] LLM_DEFAULT_PROVIDER 未设置、无效或指向 mock（"${rawProvider ?? ""}"）。拒绝在非 test 进程回退到 ` +
+        `MOCK 提供商（回声、非真实模型）——这正是「看着像真、实为 mock」的根因。请设置一个真实 provider（如 ` +
+        `custom + CUSTOM_LLM_BASE_URL）。mock 只允许在 NODE_ENV=test 中使用。`,
+    );
   }
-  const provider: ProviderId = providerValid ? (normProvider as ProviderId) : "mock";
+  const provider: ProviderId = providerValid && providerImplemented ? (normProvider as ProviderId) : "mock";
   const model = rawModel && rawModel.trim().length > 0 ? rawModel : null;
   const timeoutMs = Number(env.LLM_REQUEST_TIMEOUT_MS ?? DEFAULT_TIMEOUT_MS);
 
@@ -98,6 +115,7 @@ export function resolveConfig(
       defaultProvider: provider,
       defaultModel: model,
       timeoutMs: Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : DEFAULT_TIMEOUT_MS,
+      allowMock: mockAllowed,
     },
     adapterEnv: {
       ANTHROPIC_API_KEY: env.ANTHROPIC_API_KEY,

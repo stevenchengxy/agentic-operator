@@ -3,7 +3,6 @@
 /**
  * Tenants — workspace management table (P5-TEN-01b).
  *
- * Production sibling to the SPA's `apps/web/public/demo/views/tenants.jsx`.
  * Lists every tenant the operator can see (active + optionally archived),
  * with inline edit / archive / restore actions and an entry point into the
  * 4-step create wizard that the sidebar TenantSwitcher already mounts.
@@ -43,13 +42,10 @@ import {
   type TenantListItem,
 } from "@/lib/hooks/useTenants";
 import {
-  buildRuntimeDomainNameMap,
-  buildRuntimeDomainSlugSet,
-  displayRuntimeDomainName,
   isVisibleRuntimeDomain,
 } from "@/lib/domain-display";
-import { useAgentFactoryDomains } from "@/lib/hooks/useAgentFactoryDomains";
 import { useTenant } from "@/app/portal/lib/use-tenant";
+import { readApiData } from "@/lib/api-response";
 import { DomainSyncPanel } from "./domain-sync";
 
 const DEFAULT_COLORS = [
@@ -65,15 +61,6 @@ const DEFAULT_COLORS = [
 
 const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
 
-interface ApiOk<T> {
-  ok: true;
-  data: T;
-}
-interface ApiErr {
-  ok: false;
-  error: { code: string; message: string };
-}
-
 async function callV1<T>(
   path: string,
   init: RequestInit = {},
@@ -87,13 +74,7 @@ async function callV1<T>(
     },
     ...init,
   });
-  const body = (await res.json()) as ApiOk<T> | ApiErr;
-  if (!body.ok) {
-    const e = new Error(body.error.message);
-    (e as Error & { code?: string }).code = body.error.code;
-    throw e;
-  }
-  return body.data;
+  return readApiData<T>(res, path);
 }
 
 interface UpdateInput {
@@ -167,9 +148,6 @@ export default function TenantsPage() {
   const { t } = useI18n();
 
   const query = useTenants({ includeArchived });
-  const domainsQuery = useAgentFactoryDomains();
-  const domainNames = buildRuntimeDomainNameMap(domainsQuery.data?.domains);
-  const domainSlugs = buildRuntimeDomainSlugSet(domainsQuery.data?.domains);
 
   function handleRestore(slug: string) {
     restore.mutate(slug, {
@@ -189,8 +167,13 @@ export default function TenantsPage() {
   }
 
   const rows = (query.data?.items ?? []).filter((row) =>
-    isVisibleRuntimeDomain(row, domainSlugs),
+    isVisibleRuntimeDomain(row),
   );
+  const rowCount: string | number = query.isError && !query.data
+    ? "—"
+    : query.isLoading && !query.data
+      ? "…"
+      : rows.length;
 
   return (
     <div style={{ height: "100%", overflow: "auto", padding: "20px 24px" }}>
@@ -199,8 +182,8 @@ export default function TenantsPage() {
         subtitle={t("tenants.subtitle")}
         badge={
           <Badge tone="muted" style={{ fontFamily: "var(--mono)" }}>
-            {rows.length}{" "}
-            {rows.length === 1
+            {rowCount}{" "}
+            {rowCount === 1
               ? t("tenants.countSingular")
               : t("tenants.countPlural")}
           </Badge>
@@ -270,7 +253,7 @@ export default function TenantsPage() {
         </div>
       )}
 
-      {query.isLoading && rows.length === 0 ? (
+      {query.isError && !query.data ? null : query.isLoading && rows.length === 0 ? (
         <Empty
           title={t("tenants.loadingTitle")}
           hint={t("tenants.loadingHint")}
@@ -287,7 +270,6 @@ export default function TenantsPage() {
       ) : (
         <TenantsTable
           rows={rows}
-          domainNames={domainNames}
           onEdit={setEditTarget}
           onArchive={setArchiveTarget}
           onRestore={handleRestore}
@@ -330,13 +312,11 @@ export default function TenantsPage() {
 
 function TenantsTable({
   rows,
-  domainNames,
   onEdit,
   onArchive,
   onRestore,
 }: {
   rows: TenantListItem[];
-  domainNames: Map<string, string>;
   onEdit: (t: TenantListItem) => void;
   onArchive: (t: TenantListItem) => void;
   onRestore: (slug: string) => void;
@@ -369,7 +349,7 @@ function TenantsTable({
         <div></div>
       </div>
       {rows.map((t) => {
-        const displayName = displayRuntimeDomainName(t, domainNames);
+        const displayName = t.name;
         return (
           <Row
             key={t.slug}

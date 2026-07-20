@@ -5,15 +5,130 @@ export {
   mainTenantSlug,
   isMainTenant,
   allTenantClients,
+  disposeTenantInngestClient,
+  deleteFactorySandboxApp,
   SYSTEM_SLUG,
+  TENANT_INNGEST_CONFIG_REFS_ENV,
+  SANDBOX_INNGEST_CONFIG_REFS_ENV,
+  TARGET_INNGEST_ISOLATION_IDENTITY_SCHEMA,
+  TenantInngestConfigurationError,
+  tenantInngestConfigStatus,
+  tenantInngestIsolationIdentity,
+  sandboxInngestIsolationStatus,
+  tenantInngestServeOrigin,
+  tenantInngestBaseUrl,
+  tenantInngestControlHeaders,
+  inngestDeploymentStatus,
+  type TenantInngestConfigStatus,
+  type SandboxInngestIsolationStatus,
+  type TargetInngestIsolationIdentity,
+  type TenantInngestReadiness,
+  type InngestDeploymentMode,
+  type InngestDeploymentStatus,
   type EventMap,
 } from "./client";
 export { helloFn } from "./hello";
-export { registerAgent, findMissingTenantPrompts, type RegisterContext } from "./register";
+export type { InngestFunction } from "inngest";
+export {
+  registerAgent,
+  assertFactoryExecutionScope,
+  findMissingTenantPrompts,
+  functionRetries,
+  type FunctionRetryCount,
+  type RegisterContext,
+} from "./register";
 export { makeGeneratedAgentPrompt } from "./generated-agent";
-export { runGeneratedCode } from "./codeact";
+export {
+  actionErrorFacts,
+  validateErrorPredicateSyntax,
+  evaluateErrorPredicate,
+  classifyActionFailure,
+  failureForDisposition,
+  isNonRetriableFailure,
+  type ActionErrorFacts,
+  type ActionFailureResolution,
+  type ErrorPolicyAction,
+  type RuntimeErrorPolicyRule,
+  type RuntimeOnErrorPolicy,
+} from "./error-policy";
+export {
+  runGeneratedCode,
+  runGeneratedCodeIsolated,
+  type GeneratedCodeExecutionResult,
+  type GeneratedCodeFailure,
+  type GeneratedCodeHostRuntime,
+  type GeneratedCodeProductionPolicy,
+  type RunGeneratedCodeOptions,
+} from "./codeact";
+export {
+  authorizeProductionGeneratedAgent,
+  authorizeProductionCodeAct,
+  productionCodeActManifestSha256,
+  revalidateProductionGeneratedAgentCapability,
+  revalidateProductionCodeActCapability,
+  setProductionGeneratedAgentAuthorizationVerifier,
+  setProductionCodeActAuthorizationVerifier,
+  type ProductionGeneratedAgentAuthorizationRequest,
+  type ProductionGeneratedAgentAuthorizationVerifier,
+  type ProductionGeneratedAgentExecutionKind,
+  type ProductionCodeActAuthorizationRequest,
+  type ProductionCodeActAuthorizationVerifier,
+  type ProductionCodeActCapability,
+  type VerifiedProductionGeneratedAgentAuthorization,
+  type VerifiedProductionCodeActAuthorization,
+} from "./production-codeact-authorization";
+export {
+  CODEACT_ATTESTATION_STATUSES,
+  makeCodeActExecutionReceipt,
+  codeActExecutionReceiptFromMeta,
+  type CodeActAttestationStatus,
+  type CodeActIsolation,
+  type CodeActExecutionReceipt,
+} from "./codeact-receipt";
+export {
+  beginCodeActContainerAttempt,
+  buildCodeActContainerConfig,
+  DockerSocketCodeActTransport,
+  executeCodeActContainer,
+  finishCodeActContainerAttempt,
+  codeActCandidateImageAllowlistIssue,
+  isPinnedCodeActCandidateImage,
+  type CodeActContainerExecutionEvidence,
+  type CodeActContainerFailure,
+  type CodeActContainerOptions,
+  type CodeActContainerResult,
+  type CodeActDockerTransport,
+  type CodeActDockerAdmin,
+  type CodeActCandidateImageInspect,
+  type CodeActOrphanCandidate,
+  type DockerCandidateCreateConfig,
+} from "./codeact-container";
+export {
+  PRODUCTION_CODEACT_PROTOCOL,
+  activeProductionCodeActRpcContexts,
+  executeProductionCodeActRemote,
+  handleProductionCodeActRpc,
+  productionCodeActBearerMatches,
+  productionCodeActIdentityHash,
+  productionCodeActMessageSignature,
+  productionCodeActRemoteEnabled,
+  productionCodeActRemoteHealthExpectation,
+  productionCodeActSecret,
+  verifyProductionCodeActMessageSignature,
+  type ProductionCodeActExecuteCommand,
+  type ProductionCodeActExecutionIdentity,
+  type ProductionCodeActRpcRequest,
+  type ProductionCodeActRpcResponse,
+  type ProductionCodeActRemoteHealthExpectation,
+  type ProductionCodeActTerminalResponse,
+} from "./codeact-remote";
 // #P0a — isolated worker_thread runner for arbitrary generated modules (time + memory bounded).
-export { runGeneratedModule, type ModuleRunResult, type RunModuleOpts } from "./module-runner";
+export {
+  runGeneratedModule,
+  GENERATED_CODE_ALLOWLIST,
+  type ModuleRunResult,
+  type RunModuleOpts,
+} from "./module-runner";
 // #P6-1 — stronger-isolation sibling: child-process runner with a SCRUBBED env (strips real creds),
 // throwaway cwd, SIGKILL wall-clock, memory cap, and string-code-gen denied. scrubEnv is pure + tested.
 export {
@@ -25,36 +140,113 @@ export {
   type ScrubEnvOpts,
 } from "./module-runner-proc";
 // #P6 (full) — strongest tier: real Docker container isolation (--network none, --read-only, caps dropped,
-// non-root, memory/cpu/pids caps). Falls back to the child-process runner when Docker is unavailable.
-export { runGeneratedModuleContainer, dockerAvailable, _resetDockerProbe, type RunModuleContainerOpts } from "./module-runner-container";
-// #REDESIGN FU1 — the delivered-tier AgentRuntime adapter (power-strip contract).
-export { makeDeliveredRuntime, type DeliveredRuntimeDeps } from "./delivered-runtime";
+// non-root, memory/cpu/pids caps). Fails closed unless a diagnostic caller explicitly requests fallback.
+export {
+  runGeneratedModuleContainer,
+  dockerAvailable,
+  _resetDockerProbe,
+  type RunModuleContainerOpts,
+} from "./module-runner-container";
 // #COMMS — inter-agent message envelope: carry-forward payload assembler + content-addressed offload.
 export {
   assembleEmitPayload,
-  rehydratePayload, rehydratePayloadAsync,
+  rehydratePayload,
+  rehydratePayloadAsync,
   extractBusinessFields,
+  mergeStepResults,
   isBlobRef,
+  validateRuntimeContractPayload,
   type BlobRef,
   type EnvelopeMeta,
   type AssembleInput,
   type AssembleResult,
+  type RuntimeContractField,
+  type RuntimeContractError,
 } from "./message-envelope";
-export { putBlob, getBlob, resolveBlobRef, resolveBlobRefAsync, replicateBlob, fetchBlobRemote, makeBlobOffloader, blobDir } from "./blob-store";
-export { setBlobRemoteBackend, activeBlobBackend, blobBackendStatus, makeS3Backend, makeHttpBackend, resetBlobBackendCache, type BlobRemoteBackend } from "./blob-backend";
+export {
+  parseStructuredJson,
+  tryParseStructuredJson,
+} from "./structured-output";
+export {
+  CODEACT_WORKER_ISOLATION_CONTRACT,
+  codeActExecutionGate,
+  type CodeActExecutorIsolation,
+} from "./codeact-worker";
+export {
+  __resetTenantEventAdaptersForTests,
+  bareTenantEventName,
+  captureTenantEventAdapterState,
+  commitTenantEventAdapter,
+  currentTenantEventAdapter,
+  restoreTenantEventAdapterState,
+  scheduledAgentTriggerName,
+  tenantEventName,
+  tenantFunctionId,
+  type TenantEventAdapterState,
+} from "./event-name";
+export {
+  identityTenantEventAdapter,
+  resolveTenantEventAdapter,
+} from "./event-adapter";
+export {
+  putBlob,
+  getBlob,
+  resolveBlobRef,
+  resolveBlobRefAsync,
+  replicateBlob,
+  fetchBlobRemote,
+  makeBlobOffloader,
+  makeDurableBlobOffloader,
+  blobDir,
+  BlobIntegrityError,
+  type DurableBlobOffloader,
+} from "./blob-store";
+export {
+  setBlobRemoteBackend,
+  activeBlobBackend,
+  blobBackendStatus,
+  blobBackendHealth,
+  assertConfiguredBlobBackendReady,
+  validateBlobBackendConfiguration,
+  makeS3Backend,
+  makeHttpBackend,
+  resetBlobBackendCache,
+  BlobBackendConfigurationError,
+  BlobBackendRequestError,
+  ConfiguredBlobBackendUnavailableError,
+  type BlobBackendHealth,
+  type BlobRemoteBackend,
+} from "./blob-backend";
 export { sigV4Sign, amzNow, EMPTY_PAYLOAD_SHA256 } from "./sigv4";
 // #SCALE-TRACE — ambient trace context (ALS) for nested tools/logs.
-export { runWithTraceContext, getTraceContext, type TraceContext } from "./trace-context";
-// #P1-1 — durable event-store causality queries.
-export { getCausalityChain, getStoredEvent, type StoredEvent } from "./event-store-query";
+export {
+  runWithTraceContext,
+  getTraceContext,
+  type TraceContext,
+} from "./trace-context";
 // Agent migration — branch-emit: let a forked agent's final step pick which
 // declared `triggered_event` to emit (PASS/FAIL routing) instead of always [0].
-export { selectEmittedEvent } from "./emit-select";
+export {
+  selectEmittedEvent,
+  selectEmittedEvents,
+  type EmitIntent,
+} from "./emit-select";
 export {
   bootstrapAll,
   bootstrapAllByTenant,
   bootstrapTenantBySlug,
   bootstrapTenant,
+  selectFactoryToolsForManifest,
+  assertManifestToolsResolvable,
+  assertManifestInvokesValid,
+  FatalRuntimeBootstrapError,
+  PersistedFactoryToolLoadError,
+  PersistedFactoryToolDescriptorError,
+  ManifestToolResolutionError,
+  ManifestInvokeConfigurationError,
+  FactoryToolDomainConflictError,
+  type ManifestToolRef,
+  type ManifestInvokeIssue,
   type TenantRegistries,
   type BootstrapTenantResult,
 } from "./bootstrap";
@@ -64,19 +256,43 @@ export {
   ActionsManifestSchema,
   AgentSchema,
   ActionSchema,
+  FactoryInputBindingSchema,
+  ErrorPolicyActionEnum,
+  ErrorPolicyLadderSchema,
+  flattenActionSpecs,
   tenantSlugFromFolder,
   type AgentSpec,
   type ActionSpec,
+  type FactoryInputBinding,
   type WorkflowManifest,
   type ActionsManifest,
 } from "./manifest";
+export {
+  InputBindingResolutionError,
+  initializeInputBindings,
+  prepareObjectLookupArguments,
+  applyObjectLookupResult,
+  applyHumanInputResult,
+  resolveAvailableStepOutputBindings,
+  unresolvedRequiredInputBindings,
+  readInputBindingPath,
+  inputBindingValueMatchesType,
+  type RuntimeInputBindingIssue,
+  type RuntimeInputBindingState,
+  type RuntimeInputReferenceContext,
+} from "./input-bindings";
 // Workflow JSON Schema build (UC-14a-modern / TC-33 schema-drift gate)
 export {
   buildWorkflowJsonSchema,
   serializeWorkflowSchema,
 } from "./generate-workflow-schema";
 export { runAction } from "./step-engine";
-export { writeRunLog, logPathFor, type LogLevel } from "./log-writer";
+export {
+  writeRunLog,
+  logPathFor,
+  authorizedRunLogPath,
+  type LogLevel,
+} from "./log-writer";
 export { appendToLedger, eventLedgerPath } from "./event-ledger";
 export { correlationFromEvent, withCorrelation } from "./correlation";
 export {
@@ -120,16 +336,32 @@ export {
   type Embedder,
   type LocalVectorDriverOpts,
 } from "./memory-driver-local";
-// #REDESIGN P1b — sandbox tool-dispatch gating (read live / write gated).
+// Reviewed sandbox tool-dispatch policy (no verb/HTTP-method inference).
 export {
   sandboxToolMode,
   isSandboxTenant,
-  isWriteTool,
-  sandboxWritesAllowed,
+  isFactorySandboxTenant,
+  assertSandboxAttemptDispatchAllowed,
+  requiresAttemptGrant,
   toolDispatchDecision,
+  factorySandboxDispatchDecision,
+  gatedToolMarker,
   gatedWriteMarker,
   sandboxToolStub,
+  initializeFactorySandboxReplayAttempt,
+  stageFactorySandboxReplayCassette,
+  replayFactorySandboxTool,
+  recordFactorySandboxLocalDispatch,
+  readFactorySandboxDispatchEvidence,
+  removeFactorySandboxReplayAttempt,
   type SandboxToolMode,
+  type SandboxToolDispatchDecision,
+  type SandboxToolExecutionPolicy,
+  type FactorySandboxExecutionScope,
+  type FactorySandboxReplayRef,
+  type FactorySandboxDispatchKind,
+  type FactorySandboxDispatchReceipt,
+  type FactorySandboxDispatchEvidence,
   injectedFault,
   faultResult,
 } from "./sandbox-mode";
@@ -156,7 +388,6 @@ export {
   resolveLiveVersion,
   loadTenant,
   loadLiveTenants,
-  __resetPromptRegistry,
   assertTenantRegistryComplete,
   type TenantManifest,
   type LoadedTenant,
@@ -167,12 +398,28 @@ export { evaluateCondition, type ConditionContext } from "./condition";
 export {
   runRetentionSweep,
   retentionSweepFn,
+  retentionSweepFunctions,
+  resolveSystemCronConfig,
   type RetentionResult,
 } from "./retention";
-// P3-RT-01 / P3-RT-02 — cron / scheduler trigger surface (TC-32).
-export { registerCronTriggers, type CronTriggerResult } from "./scheduler";
+// P3-RT-01 — real tenant-manifest cron trigger surface.
 export {
-  systemCronFns,
-  __getCronFires,
-  __resetCronFires,
-} from "./system-cron";
+  registerCronTriggers,
+  assertCronManifestValid,
+  validateCronExpression,
+  runtimeScheduleHealth,
+  clearRuntimeScheduleStatusForTenant,
+  __resetRuntimeScheduleHealthForTests,
+  InvalidCronExpressionError,
+  type CronTriggerResult,
+  type RuntimeScheduleHealth,
+} from "./scheduler";
+export { resolveModelsRoot, shouldDiscoverModelFolder } from "./models-root";
+export {
+  canonicalWorkflowVersionId,
+  legacyWorkflowVersionId,
+  workflowVersionContentMatches,
+  workflowVersionContentSha256,
+  workflowVersionIdentityKind,
+  type StoredWorkflowVersionContent,
+} from "./workflow-version-identity";

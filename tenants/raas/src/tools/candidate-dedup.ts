@@ -12,9 +12,10 @@
  * migration). Index rows `phone:<x>` / `email:<y>` / `name:<z>` all point at the
  * same candidate record under (agentName="candidateDedupLookup", subject="registry").
  *
- * Load-bearing old semantics: SOFT-FAIL. Any error (DB down, malformed input)
- * returns a brand-new candidate with `dedup_degraded:true` and NEVER throws — a
- * dedup outage must not block resume processing.
+ * Failure semantics: fail closed. A tenant/DB/registry error is not evidence
+ * that the person is new, so the tool throws and the runtime fails/retries the
+ * step. A candidate id is returned only after every identity index row has
+ * committed successfully.
  */
 
 import { randomUUID } from "node:crypto";
@@ -79,87 +80,118 @@ export const candidateDedupLookup = defineTool({
     "parseResumeApi step, matches against the tenant's candidate registry " +
     "(phone > email > name tiers), registers a new candidate when none match, " +
     "and reports {candidate_id, is_new, tier, needs_review, lock_conflict}. " +
-    "Soft-fails to a new candidate on any error (never blocks the run).",
+    "Fails closed when tenant-scoped storage or identity data is unavailable.",
   output: z.record(z.string(), z.unknown()),
   // eslint-disable-next-line @typescript-eslint/require-await
   async handler(ctx) {
-    try {
-      const sources = identitySources(ctx);
-      const name = pick(sources, NAME_KEYS);
-      const phone = pick(sources, PHONE_KEYS);
-      const email = pick(sources, EMAIL_KEYS);
-      const owner =
-        pick(sources, OWNER_KEYS) ||
-        (typeof ctx.config?.default_recruiter === "string"
-          ? (ctx.config.default_recruiter as string)
-          : "") ||
-        (ctx.subject ?? "");
+    const sources = identitySources(ctx);
+    const name = pick(sources, NAME_KEYS);
+    const phone = pick(sources, PHONE_KEYS);
+    const email = pick(sources, EMAIL_KEYS);
+    const owner =
+      pick(sources, OWNER_KEYS) ||
+      (typeof ctx.config?.default_recruiter === "string"
+        ? (ctx.config.default_recruiter as string)
+        : "") ||
+      (ctx.subject ?? "");
 
-      const nPhone = normPhone(phone);
-      const nEmail = normEmail(email);
-      const nName = normName(name);
-
-      const db = getDb();
-      const tenantRow = db
-        .select({ id: tenants.id })
-        .from(tenants)
-        .where(eq(tenants.slug, ctx.tenantSlug))
-        .all()[0];
-      if (!tenantRow) {
-        // Can't scope — fail soft to a new candidate.
-        return { data: freshCandidate(name, nPhone, nEmail, true) };
-      }
-      const tenantId = tenantRow.id;
-
-      const lookup = (key: string): DedupMatch | null => {
-        const row = db
-          .select({ v: agentMemoryLong.valueJson })
-          .from(agentMemoryLong)
-          .where(
-            and(
-              eq(agentMemoryLong.tenantId, tenantId),
-              eq(agentMemoryLong.agentName, AGENT_KEY),
-              eq(agentMemoryLong.subject, SUBJECT),
-              eq(agentMemoryLong.key, key),
-            ),
-          )
-          .all()[0];
-        if (!row) return null;
-        try {
-          const r = JSON.parse(row.v) as { candidateId?: string; owner?: string | null };
-          return r.candidateId
-            ? { candidateId: r.candidateId, owner: r.owner ?? null }
-            : null;
-        } catch {
-          return null;
-        }
-      };
-
-      const verdict = selectDedup(
-        { phone: nPhone, email: nEmail, name: nName, owner },
-        {
-          byPhone: nPhone ? lookup(`phone:${nPhone}`) : null,
-          byEmail: nEmail ? lookup(`email:${nEmail}`) : null,
-          byName: nName ? lookup(`name:${nName}`) : null,
-        },
+    const nPhone = normPhone(phone);
+    const nEmail = normEmail(email);
+    const nName = normName(name);
+    const keys = [
+      nPhone ? `phone:${nPhone}` : "",
+      nEmail ? `email:${nEmail}` : "",
+      nName ? `name:${nName}` : "",
+    ].filter(Boolean);
+    if (keys.length === 0) {
+      throw new Error(
+        `[candidateDedupLookup] ${ctx.tenantSlug}: no usable name, phone, or email; refusing to create an unidentifiable candidate`,
       );
+    }
 
-      let candidateId = verdict.sameAsCandidateId;
-      if (verdict.isNew) {
-        candidateId = newCandidateId();
-        const record = JSON.stringify({
-          candidateId,
-          owner: owner || null,
-          name,
-          phone: nPhone,
-          email: nEmail,
-        });
-        const keys: string[] = [];
-        if (nPhone) keys.push(`phone:${nPhone}`);
-        if (nEmail) keys.push(`email:${nEmail}`);
-        if (nName) keys.push(`name:${nName}`);
+    const db = getDb();
+    const tenantRow = db
+      .select({ id: tenants.id })
+      .from(tenants)
+      .where(eq(tenants.slug, ctx.tenantSlug))
+      .all()[0];
+    if (!tenantRow) {
+      throw new Error(
+        `[candidateDedupLookup] unknown tenant slug=${ctx.tenantSlug}; dedup cannot be tenant-scoped`,
+      );
+    }
+    const tenantId = tenantRow.id;
+
+    const lookup = (key: string): DedupMatch | null => {
+      const row = db
+        .select({ v: agentMemoryLong.valueJson })
+        .from(agentMemoryLong)
+        .where(
+          and(
+            eq(agentMemoryLong.tenantId, tenantId),
+            eq(agentMemoryLong.agentName, AGENT_KEY),
+            eq(agentMemoryLong.subject, SUBJECT),
+            eq(agentMemoryLong.key, key),
+          ),
+        )
+        .all()[0];
+      if (!row) return null;
+      let parsed: { candidateId?: unknown; owner?: unknown };
+      try {
+        parsed = JSON.parse(row.v) as { candidateId?: unknown; owner?: unknown };
+      } catch (err) {
+        throw new Error(
+          `[candidateDedupLookup] corrupt registry row for ${key}`,
+          { cause: err },
+        );
+      }
+      if (typeof parsed.candidateId !== "string" || !parsed.candidateId.trim()) {
+        throw new Error(
+          `[candidateDedupLookup] registry row for ${key} has no candidateId`,
+        );
+      }
+      return {
+        candidateId: parsed.candidateId,
+        owner: typeof parsed.owner === "string" ? parsed.owner : null,
+      };
+    };
+
+    const lookups = {
+      byPhone: nPhone ? lookup(`phone:${nPhone}`) : null,
+      byEmail: nEmail ? lookup(`email:${nEmail}`) : null,
+      byName: nName ? lookup(`name:${nName}`) : null,
+    };
+    const matchedIds = new Set(
+      Object.values(lookups)
+        .map((match) => match?.candidateId)
+        .filter((id): id is string => Boolean(id)),
+    );
+    if (matchedIds.size > 1) {
+      throw new Error(
+        `[candidateDedupLookup] conflicting identity indexes resolve to multiple candidates: ${[...matchedIds].join(", ")}`,
+      );
+    }
+
+    const verdict = selectDedup(
+      { phone: nPhone, email: nEmail, name: nName, owner },
+      lookups,
+    );
+
+    let candidateId = verdict.sameAsCandidateId;
+    if (verdict.isNew) {
+      candidateId = newCandidateId();
+      const record = JSON.stringify({
+        candidateId,
+        owner: owner || null,
+        name,
+        phone: nPhone,
+        email: nEmail,
+      });
+      // A unique-key race must abort the whole registration. On retry the
+      // winning durable row will be read and returned as the existing match.
+      db.transaction((tx) => {
         for (const key of keys) {
-          db.insert(agentMemoryLong)
+          tx.insert(agentMemoryLong)
             .values({
               tenantId,
               agentName: AGENT_KEY,
@@ -167,57 +199,29 @@ export const candidateDedupLookup = defineTool({
               key,
               valueJson: record,
             })
-            .onConflictDoNothing()
             .run();
         }
-      }
-
-      return {
-        data: {
-          candidate_id: candidateId,
-          same_as_candidate_id: verdict.sameAsCandidateId,
-          is_new: verdict.isNew,
-          tier: verdict.tier,
-          needs_review: verdict.needsReview,
-          lock_conflict: verdict.lockConflict,
-          name,
-          phone: nPhone,
-          email: nEmail,
-        },
-      };
-    } catch (err) {
-      return {
-        data: {
-          candidate_id: newCandidateId(),
-          same_as_candidate_id: null,
-          is_new: true,
-          tier: null,
-          needs_review: false,
-          lock_conflict: false,
-          dedup_degraded: true,
-          error: String((err as Error)?.message ?? err),
-        },
-      };
+      });
     }
+
+    if (!candidateId) {
+      throw new Error(
+        "[candidateDedupLookup] dedup completed without a durable candidate id",
+      );
+    }
+
+    return {
+      data: {
+        candidate_id: candidateId,
+        same_as_candidate_id: verdict.sameAsCandidateId,
+        is_new: verdict.isNew,
+        tier: verdict.tier,
+        needs_review: verdict.needsReview,
+        lock_conflict: verdict.lockConflict,
+        name,
+        phone: nPhone,
+        email: nEmail,
+      },
+    };
   },
 });
-
-function freshCandidate(
-  name: string,
-  phone: string,
-  email: string,
-  degraded: boolean,
-): Record<string, unknown> {
-  return {
-    candidate_id: newCandidateId(),
-    same_as_candidate_id: null,
-    is_new: true,
-    tier: null,
-    needs_review: false,
-    lock_conflict: false,
-    ...(degraded ? { dedup_degraded: true } : {}),
-    name,
-    phone,
-    email,
-  };
-}

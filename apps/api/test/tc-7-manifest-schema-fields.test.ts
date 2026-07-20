@@ -208,7 +208,7 @@ describe("TC-7: manifest schema preserves the 4 new fields (P0-RT-01)", () => {
     // UC-V11-25: bootstrapTenant now refuses to boot when a `logic` action
     // has no matching tenant definePrompt. Provide a stub registry so the
     // synthetic action passes the validation gate.
-    const { definePrompt } = await import("@agentic/agent-kit");
+    const { definePrompt, defineTool } = await import("@agentic/agent-kit");
     const stubPrompt = definePrompt({
       name: "x",
       system: "stub",
@@ -218,7 +218,19 @@ describe("TC-7: manifest schema preserves the 4 new fields (P0-RT-01)", () => {
       tenantSlug: "__system",
       modelDir,
       tenantRegistry: {
-        tools: {},
+        // The production bootstrap is deliberately fail-closed: a manifest
+        // tool reference must resolve to an actual callable descriptor. Use a
+        // harmless test implementation instead of weakening that gate for a
+        // persistence-only fixture.
+        tools: {
+          tool1: defineTool({
+            name: "tool1",
+            description: "TC-7 isolated round-trip fixture tool",
+            async handler() {
+              return { data: { ok: true } };
+            },
+          }),
+        },
         prompts: { x: stubPrompt },
       },
     });

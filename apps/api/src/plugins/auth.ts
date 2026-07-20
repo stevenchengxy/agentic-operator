@@ -33,16 +33,16 @@ const SESSION_TTL_SECONDS = 60 * 60 * 24 * 30; // 30d
 /**
  * Session JWT signing secret. Accepts both `AUTH_SESSION_SECRET` (canonical
  * api name) and `SESSION_SECRET` (what apps/web sets). Returns null when
- * neither is configured. In dev we fall back to a fixed string so the portal
- * works out of the box; production MUST set one (the boot guard warns).
+ * neither is configured. Only the test process has a deterministic fallback;
+ * every runnable server must provide a real secret.
  */
-const DEV_SESSION_SECRET_FALLBACK = "dev-only-do-not-use-in-prod";
+const TEST_SESSION_SECRET_FALLBACK = "test-only-session-secret-not-for-servers";
 function getSessionSecret(): Uint8Array {
-  const raw =
-    process.env.AUTH_SESSION_SECRET ??
-    process.env.SESSION_SECRET ??
-    DEV_SESSION_SECRET_FALLBACK;
-  return new TextEncoder().encode(raw);
+  const raw = process.env.AUTH_SESSION_SECRET ?? process.env.SESSION_SECRET;
+  if (!raw && process.env.NODE_ENV !== "test") {
+    throw new Error("AUTH_SESSION_SECRET/SESSION_SECRET is required");
+  }
+  return new TextEncoder().encode(raw ?? TEST_SESSION_SECRET_FALLBACK);
 }
 
 /**
@@ -179,9 +179,11 @@ function resolveTenant(
     if (t) return { tenantId: t.id, tenantSlug: t.slug, role: first.role as TenantRole };
   }
   // Configured default (superadmin with no memberships, or none at all).
-  const fbSlug = process.env.AGENTIC_DEV_TENANT ?? "raas";
-  const fb = db.select().from(tenants).where(eq(tenants.slug, fbSlug)).all()[0];
-  if (fb) return { tenantId: fb.id, tenantSlug: fb.slug, role: roleFor(userId, fb.id) };
+  const fbSlug = process.env.AGENTIC_DEV_TENANT?.trim();
+  if (fbSlug) {
+    const fb = db.select().from(tenants).where(eq(tenants.slug, fbSlug)).all()[0];
+    if (fb) return { tenantId: fb.id, tenantSlug: fb.slug, role: roleFor(userId, fb.id) };
+  }
   return { tenantId: "", tenantSlug: "", role: null };
 }
 
@@ -231,9 +233,20 @@ async function authenticateCookie(
   };
 }
 
+function configuredDevUser() {
+  const db = getDb();
+  const email = process.env.AGENTIC_DEV_USER_EMAIL?.trim().toLowerCase();
+  if (email) return db.select().from(users).where(eq(users.email, email)).all()[0];
+  const admins = db
+    .select()
+    .from(users)
+    .where(and(eq(users.platformRole, "superadmin"), eq(users.status, "active")))
+    .all();
+  return admins.length === 1 ? admins[0] : undefined;
+}
+
 function authenticateDev(req: FastifyRequest): AuthedContext | null {
-  const email = process.env.AGENTIC_DEV_USER_EMAIL ?? "ops@agentic.local";
-  const u = getDb().select().from(users).where(eq(users.email, email)).all()[0];
+  const u = configuredDevUser();
   if (!u) return null;
   // Pin the active tenant to AGENTIC_DEV_TENANT when the request carries no
   // explicit tenant header — preserves the legacy dev default (the seeded dev
@@ -241,7 +254,7 @@ function authenticateDev(req: FastifyRequest): AuthedContext | null {
   // non-deterministic and break tenant-scoped tests/dashboards).
   const resolved = resolveTenant(u.id, [
     headerTenantSlug(req),
-    process.env.AGENTIC_DEV_TENANT ?? "raas",
+    process.env.AGENTIC_DEV_TENANT?.trim() ?? null,
   ]);
   return {
     userId: u.id,
@@ -280,7 +293,7 @@ function authenticateBearer(token: string): AuthedContext | null {
  * Resolve an authenticated context for `req`, or null if no credential matched.
  *
  * Dev-mode (`AUTH_MODE=dev`) resolves a REAL seeded user (default
- * `ops@agentic.local`) so audit + RBAC always have a concrete `userId` — it no
+ * configured development operator so audit + RBAC always have a concrete `userId` — it no
  * longer fabricates a userless tenant context.
  */
 export async function authenticate(req: FastifyRequest): Promise<AuthedContext | null> {
@@ -322,11 +335,11 @@ export function assertAuthModeSafe(): void {
 
   // #AUDIT-FIX(P0-07) — production 必须配置一个真实、足够随机的 session secret；缺失或仍是 dev
   // 固定回退值即启动失败（否则攻击者可伪造/预测会话签名）。这个检查独立于 AUTH_MODE。
-  if (isProd) {
+  if (process.env.NODE_ENV !== "test") {
     const secret = process.env.AUTH_SESSION_SECRET ?? process.env.SESSION_SECRET ?? "";
-    if (!secret || secret === DEV_SESSION_SECRET_FALLBACK) {
+    if (!secret || secret === TEST_SESSION_SECRET_FALLBACK) {
       throw new Error(
-        "生产启动失败：AUTH_SESSION_SECRET/SESSION_SECRET 未设置或仍是 dev 回退值——会话签名可被伪造。请设置一个 ≥32 字节的随机密钥。",
+        "启动失败：AUTH_SESSION_SECRET/SESSION_SECRET 未设置或仍是测试回退值——会话签名可被伪造。请设置一个 ≥32 字节的随机密钥。",
       );
     }
     if (Buffer.byteLength(secret, "utf8") < 32) {
@@ -336,7 +349,10 @@ export function assertAuthModeSafe(): void {
 
   if (!isDev) return;
 
-  const slug = process.env.AGENTIC_DEV_TENANT ?? "raas";
+  const slug = process.env.AGENTIC_DEV_TENANT?.trim();
+  if (!slug) {
+    throw new Error("AUTH_MODE=dev requires an explicit AGENTIC_DEV_TENANT; no hard-coded tenant fallback is used.");
+  }
   const tenant = getDb().select({ id: tenants.id }).from(tenants).where(eq(tenants.slug, slug)).all()[0];
   if (!tenant) {
     throw new Error(
@@ -346,12 +362,13 @@ export function assertAuthModeSafe(): void {
     );
   }
 
-  const email = process.env.AGENTIC_DEV_USER_EMAIL ?? "ops@agentic.local";
-  const user = getDb().select({ id: users.id }).from(users).where(eq(users.email, email)).all()[0];
+  const email = process.env.AGENTIC_DEV_USER_EMAIL?.trim().toLowerCase();
+  const user = configuredDevUser();
   if (!user) {
     throw new Error(
-      `AUTH_MODE=dev requires AGENTIC_DEV_USER_EMAIL to match a seeded user; ` +
-        `'${email}' was not found. Run \`pnpm db:seed\` or set AGENTIC_DEV_USER_EMAIL.`,
+      email
+        ? `AUTH_MODE=dev requires AGENTIC_DEV_USER_EMAIL to match an active user; '${email}' was not found.`
+        : "AUTH_MODE=dev requires AGENTIC_DEV_USER_EMAIL, unless exactly one active superadmin exists.",
     );
   }
 }

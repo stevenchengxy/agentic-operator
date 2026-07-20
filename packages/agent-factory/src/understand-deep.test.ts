@@ -61,11 +61,18 @@ const OK4 = ["objects", "rules", "actions", "events"].map((id) => ({
 
 beforeEach(() => {
   process.env.CUSTOM_LLM_API_KEY = "test-key"; // make isGatewayConfigured() true → deep path reachable
+  process.env.FACTORY_AI_MODEL = "test/real-model";
+  process.env.FACTORY_GATEWAY_BASE_URL = "http://127.0.0.1:1";
+  // #PERSPECTIVES — 本文件只测结构四维路径；镜头编排在 understand-perspectives.test.ts 单独测。
+  process.env.FACTORY_PERSPECTIVES = "0";
   vi.mocked(runSpecialists).mockReset();
   vi.mocked(synthesizeUnderstanding).mockReset();
 });
 afterEach(() => {
   delete process.env.CUSTOM_LLM_API_KEY;
+  delete process.env.FACTORY_AI_MODEL;
+  delete process.env.FACTORY_GATEWAY_BASE_URL;
+  delete process.env.FACTORY_PERSPECTIVES;
 });
 
 describe("understand_ontology v2 — deep fan-out", () => {

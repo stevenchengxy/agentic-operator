@@ -21,8 +21,10 @@ import type { ToolDescriptor } from "@agentic/agent-kit";
 
 import type { McpServerConfig, McpServerStatus } from "./types";
 import { resolve } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 
 interface RegisteredServer {
+  scope: string;
   config: McpServerConfig;
   client: Client | null;
   tools: ToolDescriptor[];
@@ -33,18 +35,25 @@ interface RegisteredServer {
 export class McpManager {
   private readonly servers = new Map<string, RegisteredServer>();
 
+  private serverKey(serverName: string, scope = "global"): string {
+    return `${scope}\u0000${serverName}`;
+  }
+
   /**
    * Register a server config without connecting. Re-registration overwrites
    * — useful for hot-reload paths after a tenant package edit.
    */
-  register(config: McpServerConfig): void {
-    this.servers.set(config.name, {
+  register(config: McpServerConfig, scope = "global"): void {
+    this.servers.set(this.serverKey(config.name, scope), {
+      scope,
       config,
       client: null,
       tools: [],
       status: {
         name: config.name,
+        scope,
         transport: config.transport,
+        optional: config.optional,
         connected: false,
         toolCount: 0,
       },
@@ -57,12 +66,51 @@ export class McpManager {
    * propagate failures; optional ones get their `status.lastError` set
    * and the rest of boot continues.
    */
-  async connectAll(configs: McpServerConfig[]): Promise<void> {
-    for (const cfg of configs) this.register(cfg);
+  async connectAll(
+    configs: McpServerConfig[],
+    scope = "global",
+  ): Promise<void> {
+    const names = new Set<string>();
+    for (const cfg of configs) {
+      if (names.has(cfg.name)) {
+        throw new Error(
+          `mcp: duplicate server name '${cfg.name}' in scope '${scope}'`,
+        );
+      }
+      names.add(cfg.name);
+    }
+    // The declaration is authoritative for this tenant. A removed MCP server
+    // must not retain a live child/transport or leak stale tools into the next
+    // hot-rebuilt registry.
+    for (const [key, prior] of [...this.servers.entries()]) {
+      if (prior.scope !== scope || names.has(prior.config.name)) continue;
+      if (prior.client) {
+        try {
+          await prior.client.close();
+        } catch {
+          // The old transport may already have exited.
+        }
+      }
+      this.servers.delete(key);
+    }
+    for (const cfg of configs) {
+      const key = this.serverKey(cfg.name, scope);
+      const prior = this.servers.get(key);
+      if (prior && isDeepStrictEqual(prior.config, cfg)) continue;
+      if (prior?.client) {
+        try {
+          await prior.client.close();
+        } catch {
+          // The replacement is authoritative; a dead prior transport may
+          // already have closed itself.
+        }
+      }
+      this.register(cfg, scope);
+    }
     await Promise.all(
       configs.map(async (cfg) => {
         try {
-          await this.ensureConnected(cfg.name);
+          await this.ensureConnected(cfg.name, scope);
         } catch (err) {
           if (!cfg.optional) throw err;
           // Optional: leave status with lastError; tools array stays empty.
@@ -76,8 +124,8 @@ export class McpManager {
    * Concurrent callers share the same in-flight connect promise so the
    * MCP server only sees one handshake per process.
    */
-  async ensureConnected(serverName: string): Promise<void> {
-    const reg = this.servers.get(serverName);
+  async ensureConnected(serverName: string, scope = "global"): Promise<void> {
+    const reg = this.servers.get(this.serverKey(serverName, scope));
     if (!reg) throw new Error(`mcp: unknown server '${serverName}'`);
     if (reg.client && reg.status.connected) return;
     if (reg.pendingConnect) return reg.pendingConnect;
@@ -97,15 +145,23 @@ export class McpManager {
           const transport = new StdioClientTransport({
             command: reg.config.command,
             args: reg.config.args,
-            env: { ...process.env as Record<string, string>, ...(reg.config.env ?? {}) },
-            cwd: reg.config.cwd ? resolve(process.cwd(), reg.config.cwd) : undefined,
+            env: {
+              ...(process.env as Record<string, string>),
+              ...(reg.config.env ?? {}),
+            },
+            cwd: reg.config.cwd
+              ? resolve(process.cwd(), reg.config.cwd)
+              : undefined,
             stderr: "inherit",
           });
           await client.connect(transport);
         } else {
-          const transport = new StreamableHTTPClientTransport(new URL(reg.config.url), {
-            requestInit: { headers: reg.config.headers },
-          });
+          const transport = new StreamableHTTPClientTransport(
+            new URL(reg.config.url),
+            {
+              requestInit: { headers: reg.config.headers },
+            },
+          );
           await client.connect(transport);
         }
         reg.client = client;
@@ -122,7 +178,7 @@ export class McpManager {
         reg.status = {
           ...reg.status,
           connected: false,
-          lastError: String(err instanceof Error ? err.message : err),
+          lastError: safeMcpError(err),
         };
         throw err;
       } finally {
@@ -144,7 +200,10 @@ export class McpManager {
    * — adapters that don't speak structured tool_result still see a
    * stringified body.
    */
-  private buildShims(reg: RegisteredServer, mcpTools: ListedTool[]): ToolDescriptor[] {
+  private buildShims(
+    reg: RegisteredServer,
+    mcpTools: ListedTool[],
+  ): ToolDescriptor[] {
     const allow = reg.config.allowTools ? new Set(reg.config.allowTools) : null;
     const out: ToolDescriptor[] = [];
     for (const t of mcpTools) {
@@ -153,11 +212,14 @@ export class McpManager {
       out.push(
         defineTool({
           name: shimName,
-          description: t.description ?? `MCP tool '${t.name}' on '${reg.config.name}'`,
+          description:
+            t.description ?? `MCP tool '${t.name}' on '${reg.config.name}'`,
           async handler(ctx) {
             const client = reg.client;
             if (!client) {
-              throw new Error(`mcp: server '${reg.config.name}' is not connected`);
+              throw new Error(
+                `mcp: server '${reg.config.name}' is not connected`,
+              );
             }
             const args = (ctx.event?.data ?? {}) as Record<string, unknown>;
             const res = await client.callTool({
@@ -169,12 +231,20 @@ export class McpManager {
             const content = Array.isArray(res.content)
               ? (res.content as McpContentBlock[])
               : undefined;
+            if (res.isError) {
+              const detail = flattenMcpContent(content);
+              throw new Error(
+                `mcp: tool '${reg.config.name}.${t.name}' failed: ${
+                  typeof detail === "string" ? detail : JSON.stringify(detail)
+                }`,
+              );
+            }
             return {
               data: flattenMcpContent(content),
               meta: {
                 mcpServer: reg.config.name,
                 mcpTool: t.name,
-                isError: Boolean(res.isError),
+                isError: false,
               },
             };
           },
@@ -190,17 +260,66 @@ export class McpManager {
    * servers don't shadow earlier ones because the qualified-name prefix
    * keeps each tool unique.
    */
-  toolMap(): Record<string, ToolDescriptor> {
+  toolMap(opts: { scope?: string } = {}): Record<string, ToolDescriptor> {
     const out: Record<string, ToolDescriptor> = {};
     for (const reg of this.servers.values()) {
+      if (opts.scope != null && reg.scope !== opts.scope) continue;
       for (const tool of reg.tools) out[tool.name] = tool;
     }
     return out;
   }
 
   /** Health/diagnostic snapshot. */
-  describe(): McpServerStatus[] {
-    return Array.from(this.servers.values()).map((r) => r.status);
+  describe(scope?: string): McpServerStatus[] {
+    return Array.from(this.servers.values())
+      .filter((r) => scope == null || r.scope === scope)
+      .map((r) => ({ ...r.status }));
+  }
+
+  /**
+   * Live readiness probe. A successful boot-time handshake is not permanent:
+   * stdio children can exit and HTTP transports can disappear later. Re-list
+   * tools to prove the connection still serves the declared capability. A
+   * failed server is left disconnected so a later probe can reconnect it.
+   */
+  async probeAll(): Promise<McpServerStatus[]> {
+    await Promise.all(
+      Array.from(this.servers.values()).map(async (reg) => {
+        try {
+          if (!reg.client || !reg.status.connected) {
+            await this.ensureConnected(reg.config.name, reg.scope);
+            return;
+          }
+          const list = await reg.client.listTools();
+          reg.tools = this.buildShims(reg, list.tools);
+          reg.status = {
+            ...reg.status,
+            connected: true,
+            toolCount: reg.tools.length,
+            connectedAt: Date.now(),
+            lastError: undefined,
+          };
+        } catch (error) {
+          reg.status = {
+            ...reg.status,
+            connected: false,
+            toolCount: 0,
+            lastError: safeMcpError(error),
+          };
+          const client = reg.client;
+          reg.client = null;
+          reg.tools = [];
+          if (client) {
+            try {
+              await client.close();
+            } catch {
+              // Already disconnected.
+            }
+          }
+        }
+      }),
+    );
+    return this.describe();
   }
 
   /** Cleanly close every connected server (SIGTERM path). */
@@ -215,10 +334,23 @@ export class McpManager {
           }
           reg.client = null;
           reg.status.connected = false;
+          reg.status.toolCount = 0;
+          reg.tools = [];
         }
       }),
     );
   }
+}
+
+function safeMcpError(error: unknown): string {
+  return String(error instanceof Error ? error.message : error)
+    .replace(/\bBearer\s+[^\s,"'}]+/gi, "Bearer [REDACTED]")
+    .replace(
+      /((?:api[_-]?key|access[_-]?token|token|authorization|secret|password|cookie|credential|session)\s*[:=]\s*)[^\s,"'}]+/gi,
+      "$1[REDACTED]",
+    )
+    .replace(/(https?:\/\/)[^\s/@:]+:[^\s/@]+@/gi, "$1[REDACTED]@")
+    .slice(0, 300);
 }
 
 /**

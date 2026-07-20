@@ -102,7 +102,7 @@ describe("deriveSessionTasks drill (#UI-DRILL)", () => {
         // sandbox is harness-scope → cursor resets; the following reasoning must stay in the harness.
         ev({ t: "tool.call", id: "c2", name: "sandbox_run", reasoning: "整链真跑", input: {} }),
         ev({ t: "think", delta: "整条事件链已闭合，可以结束了" }),
-        ev({ t: "done", status: "finished" }),
+        ev({ t: "done", status: "finished", completionKind: "delivery" }),
       ],
       false,
     );
@@ -137,5 +137,118 @@ describe("deriveSessionTasks drill (#UI-DRILL)", () => {
     expect(t.drill?.fidelityFail).toBe(true);
     expect(t.status).toBe("error"); // fidelity violation reads red
     expect(t.meta).toContain("契约违约");
+  });
+});
+
+describe("completionKind projection", () => {
+  it("projects waiting-human as an idle gate instead of a failed harness", () => {
+    const harness = deriveSessionTasks([
+      ev({ t: "clarify", question: "请选择", awaitingAnswer: true }),
+      ev({ t: "done", status: "waiting_human", completionKind: "incomplete" }),
+    ], false).find((task) => task.kind === "harness")!;
+    expect(harness.status).toBe("idle");
+    expect(harness.transcript.at(-1)).toMatchObject({ label: "等待人工回复" });
+  });
+
+  it("marks informational answers successful without a delivery claim", () => {
+    const harness = deriveSessionTasks([
+      ev({ t: "message", text: "回答" }),
+      ev({ t: "done", status: "incomplete", completionKind: "answer" }),
+    ], false).find((task) => task.kind === "harness")!;
+    expect(harness.status).toBe("ok");
+    expect(harness.transcript.at(-1)).toMatchObject({
+      label: "回答完成 · 无交付/沙箱声明",
+      ok: true,
+    });
+  });
+
+  it("does not guess completion type for legacy done frames", () => {
+    const harness = deriveSessionTasks([
+      ev({ t: "done", status: "finished" }),
+    ], false).find((task) => task.kind === "harness")!;
+    expect(harness.status).toBe("idle");
+    expect(harness.transcript.at(-1)).toMatchObject({ label: "结束 · 完成类型未知" });
+    expect(harness.transcript.at(-1)?.ok).toBeUndefined();
+  });
+});
+
+// #CHECKLIST — harness 持有的验收清单投影：acceptance 事件 → 舰队快照 + per-agent drill.checklist。
+describe("acceptance checklist projection (#CHECKLIST)", () => {
+  const acceptanceEv = (allPass: boolean) =>
+    ev({
+      t: "acceptance",
+      allPass,
+      criteria: [
+        { key: "coverage", label: "覆盖全部 Agent 动作", pass: true, detail: "6 个全覆盖" },
+        { key: "chain_ran", label: "链路端到端跑通", pass: allPass, detail: allPass ? "整链通" : "降级 processResume" },
+      ],
+      perAgent: [
+        { slug: "d-processResume", short: "processResume", pass: allPass, items: [{ key: "code_really_ran", label: "生成代码真的执行", pass: allPass, detail: allPass ? "回执 ✓" : "回退声明式" }] },
+      ],
+    });
+
+  it("deriveAcceptance returns the LAST snapshot; none → null", async () => {
+    const { deriveAcceptance } = await import("./workers");
+    expect(deriveAcceptance([created("a", "a")])).toBeNull();
+    const snap = deriveAcceptance([
+      ev({
+        t: "sandbox",
+        simulated: false,
+        fullChainRan: true,
+        reachedSuccessTerminal: true,
+      }),
+      acceptanceEv(false),
+      acceptanceEv(true),
+    ]);
+    expect(snap!.allPass).toBe(true);
+    expect(snap!.evidenceValid).toBe(true);
+    expect(snap!.criteria).toHaveLength(2);
+    expect(snap!.perAgent[0]!.short).toBe("processResume");
+  });
+
+  it("never turns a simulated sandbox or its checklist green", async () => {
+    const { deriveAcceptance } = await import("./workers");
+    const events = [
+      created("d-processResume", "processResume"),
+      ev({
+        t: "sandbox",
+        simulated: true,
+        fullChainRan: true,
+        reachedSuccessTerminal: true,
+        agentRuns: [
+          {
+            agentSlug: "d-processResume",
+            agentShort: "processResume",
+            status: "ok",
+            inputPayload: { value: "synthetic" },
+          },
+        ],
+      }),
+      acceptanceEv(true),
+    ];
+
+    const snap = deriveAcceptance(events);
+    expect(snap).toMatchObject({ allPass: false, evidenceValid: false });
+    expect(snap!.criteria.every((criterion) => !criterion.pass)).toBe(true);
+    expect(snap!.perAgent.every((agent) => !agent.pass)).toBe(true);
+
+    const tasks = deriveSessionTasks(events, false);
+    const sandbox = tasks.find((task) => task.kind === "sandbox")!;
+    expect(sandbox.status).toBe("error");
+    expect(sandbox.typeLabel).toContain("invalid evidence");
+    const agent = tasks.find(
+      (task) => task.agentSlug === "d-processResume",
+    )!;
+    expect(agent.drill?.io).toBeUndefined();
+    expect(agent.drill?.checklist?.every((item) => !item.pass)).toBe(true);
+  });
+
+  it("folds perAgent items into the agent's drill.checklist + a harness gate item", () => {
+    const tasks = deriveSessionTasks([created("d-processResume", "processResume"), acceptanceEv(false)], false);
+    const agent = tasks.find((x) => x.agentSlug === "d-processResume")!;
+    expect(agent.drill?.checklist).toHaveLength(1);
+    expect(agent.drill?.checklist?.[0]?.pass).toBe(false);
+    const harness = tasks.find((x) => x.kind === "harness")!;
+    expect(harness.transcript.some((it) => it.kind === "gate" && it.label.includes("验收清单"))).toBe(true);
   });
 });

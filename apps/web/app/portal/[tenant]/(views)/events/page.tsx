@@ -14,6 +14,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import {
   ActorTag,
   Badge,
@@ -30,7 +31,7 @@ import {
   eventTone,
   useToast,
 } from "@/app/portal/components";
-import { fmtAgo, fmtBytes, fmtTime } from "@/app/portal/lib/format";
+import { fmtAgo, fmtTime } from "@/app/portal/lib/format";
 import { useTenant } from "@/app/portal/lib/use-tenant";
 import { useI18n } from "@/app/portal/lib/preferences-context";
 import {
@@ -50,9 +51,15 @@ interface EventItem {
   category: string;
   at: number;
   source: string;
-  sourceTitle: string;
+  sourceTitle: string | null;
   subject: string;
   payloadBytes: number | null;
+}
+
+interface GraphState {
+  ready: boolean;
+  loading: boolean;
+  error: string | null;
 }
 
 function fromApiRow(r: EventRow): EventItem {
@@ -61,20 +68,32 @@ function fromApiRow(r: EventRow): EventItem {
     name: r.name,
     color: r.color ?? "muted",
     category: r.category ?? "agent",
-    at: r.receivedAt ? Date.parse(r.receivedAt) : Date.now(),
+    // Missing/invalid timestamps stay unknown. Substituting Date.now() made
+    // malformed rows look like events that had just fired.
+    at: r.receivedAt && Number.isFinite(Date.parse(r.receivedAt))
+      ? Date.parse(r.receivedAt)
+      : 0,
     source: r.sourceAgentName ?? "external",
-    sourceTitle: r.sourceAgentTitle ?? r.sourceAgentName ?? "External",
+    sourceTitle: r.sourceAgentTitle ?? r.sourceAgentName ?? null,
     subject: r.subject ?? "",
-    payloadBytes: r.payloadRef ? Number(r.payloadRef.length) : null,
+    // payloadRef is an opaque storage reference, not the payload itself. Do
+    // not present its character count as a byte size.
+    payloadBytes: null,
   };
 }
 
 export default function EventsPage() {
   const { t } = useI18n();
+  const searchParams = useSearchParams();
   const eventsQuery = useEvents({ limit: 200 });
   const dagQuery = useDag();
   const apiEvents = eventsQuery.data ?? [];
   const agents = dagQuery.data?.agents ?? [];
+  const graphState = {
+    ready: dagQuery.data !== undefined && !dagQuery.isError,
+    loading: dagQuery.isLoading && dagQuery.data === undefined,
+    error: dagQuery.isError ? dagQuery.error.message : null,
+  };
 
   // Live stream of events from /v1/events.
   const stream = useMemo<EventItem[]>(
@@ -99,14 +118,17 @@ export default function EventsPage() {
     return Array.from(names.values()).sort((a, b) => a.name.localeCompare(b.name));
   }, [stream, agents]);
 
-  const [typeFilter, setTypeFilter] = useState<string>("all");
+  const requestedType = searchParams.get("type") ?? searchParams.get("name");
+  const [typeFilter, setTypeFilter] = useState<string>(requestedType ?? "all");
   const [catFilter, setCatFilter] = useState<string>("all");
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
-  // Live toggle proxy.
-  const [liveStream] = useState(true);
   const [publishOpen, setPublishOpen] = useState(false);
+
+  useEffect(() => {
+    setTypeFilter(requestedType ?? "all");
+  }, [requestedType]);
 
   const filtered = useMemo(() => {
     return stream.filter((e) => {
@@ -136,14 +158,6 @@ export default function EventsPage() {
     return buckets;
   }, [filtered]);
 
-  // "Now" indicator pulse — every 2.5s when liveStream is on.
-  const [, setTick] = useState(0);
-  useEffect(() => {
-    if (!liveStream) return;
-    const id = setInterval(() => setTick((t) => t + 1), 2500);
-    return () => clearInterval(id);
-  }, [liveStream]);
-
   // `selected` is what the LIST highlights (explicit click, else the first
   // filtered row). `explicitSel` is ONLY a real click — used by the detail
   // panel so that selecting an event TYPE (no instance) can show the
@@ -152,43 +166,45 @@ export default function EventsPage() {
     ? stream.find((e) => e.id === selectedId)
     : null;
   const selected = explicitSel ?? filtered[0];
+  const eventsReady = eventsQuery.data !== undefined && !eventsQuery.isError;
+  const countValue: string | number = eventsReady
+    ? filtered.length
+    : eventsQuery.isLoading
+      ? "…"
+      : "—";
+  const typeCountValue: string | number = eventsReady
+    ? eventTypes.length
+    : countValue;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
       <ViewHeader
         title={t("nav.events")}
         subtitle={t("events.subtitle", {
-          count: filtered.length,
-          types: eventTypes.length,
-          state: liveStream ? t("events.liveTail") : t("events.paused"),
+          count: countValue,
+          types: typeCountValue,
+          state: t("events.autoRefresh"),
         })}
-        badge={
-          liveStream ? (
-            <Badge tone="signal">
-              <span className="live-dot" style={{ width: 5, height: 5 }} />{" "}
-              {t("events.live")}
-            </Badge>
-          ) : null
-        }
         action={
-          <div style={{ display: "flex", gap: 6 }}>
-            <Button icon="replay" small>
-              {t("events.replayWindow")}
-            </Button>
-            <Button
-              icon="run"
-              tone="primary"
-              small
-              onClick={() => setPublishOpen(true)}
-            >
-              {t("events.publishEvent")}
-            </Button>
-          </div>
+          <Button
+            icon="run"
+            tone="primary"
+            small
+            onClick={() => setPublishOpen(true)}
+          >
+            {t("events.publishEvent")}
+          </Button>
         }
       />
       {publishOpen && (
         <PublishEventModal onClose={() => setPublishOpen(false)} />
       )}
+
+      {dagQuery.isError ? (
+        <div role="alert" style={{ padding: "8px 24px", color: "var(--amber)", borderBottom: "1px solid var(--border)", fontSize: 12 }}>
+          {t("events.graphUnavailable")}: {dagQuery.error.message}
+        </div>
+      ) : null}
 
       {/* Histogram strip */}
       <div
@@ -198,7 +214,17 @@ export default function EventsPage() {
           background: "var(--panel)",
         }}
       >
-        <Histogram buckets={hist} />
+        {eventsQuery.isError ? (
+          <div role="alert" style={{ color: "var(--red)", fontSize: 12 }}>
+            {t("events.loadFailed")}: {eventsQuery.error.message}
+          </div>
+        ) : eventsQuery.isLoading && !eventsQuery.data ? (
+          <div role="status" style={{ color: "var(--text-3)", fontSize: 12 }}>
+            {t("events.loading")}
+          </div>
+        ) : (
+          <Histogram buckets={hist} />
+        )}
       </div>
 
       <div
@@ -315,17 +341,24 @@ export default function EventsPage() {
               className="mono"
               style={{ fontSize: 12, color: "var(--text)" }}
             >
-              {filtered.length}
+              {eventsReady
+                ? t("events.loadedRows", {
+                    shown: Math.min(filtered.length, 80),
+                    total: filtered.length,
+                  })
+                : countValue}
             </span>
             {typeFilter !== "all" && (
               <Badge tone="muted">
                 {typeFilter}{" "}
-                <span
+                <button
+                  type="button"
                   onClick={() => setTypeFilter("all")}
+                  aria-label={t("events.clearTypeFilter", { type: typeFilter })}
                   style={{ cursor: "pointer", marginLeft: 4 }}
                 >
                   ×
-                </span>
+                </button>
               </Badge>
             )}
           </div>
@@ -367,6 +400,14 @@ export default function EventsPage() {
                   <tr
                     key={e.id}
                     onClick={() => setSelectedId(e.id)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        setSelectedId(e.id);
+                      }
+                    }}
+                    tabIndex={0}
+                    aria-selected={selected?.id === e.id}
                     style={{
                       cursor: "pointer",
                       background:
@@ -388,7 +429,7 @@ export default function EventsPage() {
                           fontSize: 10.5,
                         }}
                       >
-                        {fmtTime(e.at)}
+                        {e.at > 0 ? fmtTime(e.at) : "—"}
                       </span>
                     </Td>
                     <Td>
@@ -398,7 +439,7 @@ export default function EventsPage() {
                       <span
                         style={{ fontSize: 11.5, color: "var(--text-2)" }}
                       >
-                        {e.sourceTitle}
+                        {e.sourceTitle ?? t("events.externalSystem")}
                       </span>
                     </Td>
                     <Td>
@@ -417,9 +458,7 @@ export default function EventsPage() {
                           color: "var(--text-3)",
                         }}
                       >
-                        {e.payloadBytes != null
-                          ? fmtBytes(e.payloadBytes)
-                          : "—"}
+                        {e.payloadBytes != null ? `${e.payloadBytes} B` : "—"}
                       </span>
                     </Td>
                   </tr>
@@ -437,15 +476,16 @@ export default function EventsPage() {
           }}
         >
           {explicitSel ? (
-            <EventDetail event={explicitSel} agents={agents} />
+            <EventDetail event={explicitSel} agents={agents} graphState={graphState} />
           ) : typeFilter !== "all" ? (
             <EventTypeSummary
               eventName={typeFilter}
               agents={agents}
               stream={stream}
+              graphState={graphState}
             />
           ) : selected ? (
-            <EventDetail event={selected} agents={agents} />
+            <EventDetail event={selected} agents={agents} graphState={graphState} />
           ) : (
             <Empty title={t("events.selectAnEvent")} />
           )}
@@ -561,7 +601,8 @@ function EventTypeRow({
 
 function Histogram({ buckets }: { buckets: number[] }) {
   const { t } = useI18n();
-  const max = Math.max(1, ...buckets);
+  const peak = Math.max(0, ...buckets);
+  const scale = Math.max(1, peak);
   return (
     <div>
       <div
@@ -577,12 +618,12 @@ function Histogram({ buckets }: { buckets: number[] }) {
             key={i}
             style={{
               flex: 1,
-              height: `${Math.max(2, (v / max) * 100)}%`,
+              height: `${Math.max(2, (v / scale) * 100)}%`,
               background:
                 i === buckets.length - 1
                   ? "var(--signal)"
                   : v > 0
-                    ? `color-mix(in srgb, var(--signal) ${(0.25 + (v / max) * 0.55) * 100}%, transparent)`
+                    ? `color-mix(in srgb, var(--signal) ${(0.25 + (v / scale) * 0.55) * 100}%, transparent)`
                     : "var(--border)",
             }}
           />
@@ -599,7 +640,7 @@ function Histogram({ buckets }: { buckets: number[] }) {
         }}
       >
         <span>{t("events.histStart")}</span>
-        <span>{t("events.histAxis", { max })}</span>
+        <span>{t("events.histAxis", { max: peak })}</span>
         <span>{t("events.histNow")}</span>
       </div>
     </div>
@@ -617,10 +658,12 @@ function EventTypeSummary({
   eventName,
   agents,
   stream,
+  graphState,
 }: {
   eventName: string;
   agents: DagAgent[];
   stream: EventItem[];
+  graphState: GraphState;
 }) {
   const { t } = useI18n();
   const tenant = useTenant();
@@ -639,6 +682,11 @@ function EventTypeSummary({
   const recent = instances.slice(0, 6);
   const color = instances[0]?.color ?? "muted";
   const category = instances[0]?.category ?? "";
+  const graphCount: string | number = graphState.ready
+    ? 0
+    : graphState.loading
+      ? "…"
+      : "—";
 
   return (
     <div style={{ display: "flex", flexDirection: "column" }}>
@@ -655,14 +703,16 @@ function EventTypeSummary({
           {t("events.typeSummaryHint")}
         </div>
         <div style={{ marginTop: 10, display: "flex", gap: 18 }}>
-          <TypeStat label={t("events.statProducers")} value={emitters.length} />
-          <TypeStat label={t("events.statConsumers")} value={listeners.length} />
+          <TypeStat label={t("events.statProducers")} value={graphState.ready ? emitters.length : graphCount} />
+          <TypeStat label={t("events.statConsumers")} value={graphState.ready ? listeners.length : graphCount} />
           <TypeStat label={t("events.statFired")} value={instances.length} />
         </div>
       </header>
 
-      <Section title={t("events.sectionEmitters", { count: emitters.length })}>
-        {emitters.length === 0 ? (
+      <Section title={t("events.sectionEmitters", { count: graphState.ready ? emitters.length : graphCount })}>
+        {!graphState.ready ? (
+          <GraphUnavailable state={graphState} />
+        ) : emitters.length === 0 ? (
           <span style={{ fontSize: 11.5, color: "var(--text-3)" }}>{t("events.noEmitter")}</span>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
@@ -673,8 +723,10 @@ function EventTypeSummary({
         )}
       </Section>
 
-      <Section title={t("events.sectionListeners", { count: listeners.length })}>
-        {listeners.length === 0 ? (
+      <Section title={t("events.sectionListeners", { count: graphState.ready ? listeners.length : graphCount })}>
+        {!graphState.ready ? (
+          <GraphUnavailable state={graphState} />
+        ) : listeners.length === 0 ? (
           <span style={{ fontSize: 11.5, color: "var(--text-3)" }}>{t("events.noListeners")}</span>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
@@ -702,7 +754,9 @@ function EventTypeSummary({
                   padding: "3px 0",
                 }}
               >
-                <span title={new Date(e.at).toLocaleString()}>{fmtAgo(e.at)}</span>
+                <span title={e.at > 0 ? new Date(e.at).toLocaleString() : undefined}>
+                  {e.at > 0 ? fmtAgo(e.at) : "—"}
+                </span>
                 <span style={{ color: "var(--text-2)" }}>{e.subject || "—"}</span>
               </div>
             ))}
@@ -713,7 +767,7 @@ function EventTypeSummary({
   );
 }
 
-function TypeStat({ label, value }: { label: string; value: number }) {
+function TypeStat({ label, value }: { label: string; value: string | number }) {
   return (
     <div>
       <div style={{ fontSize: 18, fontFamily: "var(--mono)", color: "var(--text)" }}>{value}</div>
@@ -732,12 +786,25 @@ function TypeStat({ label, value }: { label: string; value: number }) {
   );
 }
 
+function GraphUnavailable({ state }: { state: GraphState }) {
+  const { t } = useI18n();
+  return (
+    <span style={{ fontSize: 11.5, color: state.error ? "var(--amber)" : "var(--text-3)" }}>
+      {state.loading
+        ? t("events.loadingGraph")
+        : `${t("events.graphUnavailable")}${state.error ? `: ${state.error}` : ""}`}
+    </span>
+  );
+}
+
 function EventDetail({
   event,
   agents,
+  graphState,
 }: {
   event: EventItem;
   agents: DagAgent[];
+  graphState: GraphState;
 }) {
   const { t } = useI18n();
   const tenant = useTenant();
@@ -748,6 +815,7 @@ function EventDetail({
   const replay = useReplayEvent();
   const toast = useToast();
   async function handleReplay() {
+    if (!window.confirm(t("events.replayConfirm", { id: event.id }))) return;
     try {
       const r = await replay.mutateAsync(event.id);
       toast({
@@ -778,6 +846,11 @@ function EventDetail({
       null,
     [agents, event.source],
   );
+  const graphCount: string | number = graphState.ready
+    ? 0
+    : graphState.loading
+      ? "…"
+      : "—";
 
   return (
     <div style={{ display: "flex", flexDirection: "column" }}>
@@ -819,12 +892,33 @@ function EventDetail({
             color: "var(--text-3)",
           }}
         >
-          {new Date(event.at).toLocaleString()} · {fmtAgo(event.at)}
+          {event.at > 0
+            ? `${new Date(event.at).toLocaleString()} · ${fmtAgo(event.at)}`
+            : "—"}
         </div>
       </header>
 
+      {detail.isError ? (
+        <div
+          role="alert"
+          style={{
+            margin: 12,
+            padding: "8px 10px",
+            color: "var(--red)",
+            background: "color-mix(in srgb, var(--red) 8%, transparent)",
+            border: "1px solid color-mix(in srgb, var(--red) 30%, transparent)",
+            borderRadius: 6,
+            fontSize: 11.5,
+          }}
+        >
+          {t("events.detailLoadFailed")}: {detail.error.message}
+        </div>
+      ) : null}
+
       <Section title={t("events.sectionSource")}>
-        {source ? (
+        {!graphState.ready ? (
+          <GraphUnavailable state={graphState} />
+        ) : source ? (
           <Link
             href={`/portal/${tenant}/agents/${source.kebabId}` as never}
             style={{ textDecoration: "none" }}
@@ -860,8 +954,10 @@ function EventDetail({
         )}
       </Section>
 
-      <Section title={t("events.sectionEmitters", { count: emitters.length })}>
-        {emitters.length === 0 ? (
+      <Section title={t("events.sectionEmitters", { count: graphState.ready ? emitters.length : graphCount })}>
+        {!graphState.ready ? (
+          <GraphUnavailable state={graphState} />
+        ) : emitters.length === 0 ? (
           <span style={{ fontSize: 11.5, color: "var(--text-3)" }}>
             {t("events.noEmitter")}
           </span>
@@ -875,9 +971,11 @@ function EventDetail({
       </Section>
 
       <Section
-        title={t("events.sectionListeners", { count: listeners.length })}
+        title={t("events.sectionListeners", { count: graphState.ready ? listeners.length : graphCount })}
       >
-        {listeners.length === 0 ? (
+        {!graphState.ready ? (
+          <GraphUnavailable state={graphState} />
+        ) : listeners.length === 0 ? (
           <span style={{ fontSize: 11.5, color: "var(--text-3)" }}>
             {t("events.noListeners")}
           </span>
@@ -895,7 +993,11 @@ function EventDetail({
       <Section title={t("events.sectionConsumedBy", { count: consumers.length })}>
         {consumers.length === 0 ? (
           <span style={{ fontSize: 11.5, color: "var(--text-3)" }}>
-            {detail.isLoading ? t("events.loadingDetail") : t("events.noConsumers")}
+            {detail.isLoading
+              ? t("events.loadingDetail")
+              : detail.isError
+                ? t("events.detailUnavailable")
+                : t("events.noConsumers")}
           </span>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
@@ -942,6 +1044,10 @@ function EventDetail({
           <span style={{ fontSize: 11.5, color: "var(--text-3)" }}>
             {t("events.loadingDetail")}
           </span>
+        ) : detail.isError ? (
+          <span style={{ fontSize: 11.5, color: "var(--red)" }}>
+            {t("events.detailUnavailable")}
+          </span>
         ) : realPayload == null ? (
           <span style={{ fontSize: 11.5, color: "var(--text-3)" }}>
             {t("events.noPayload")}
@@ -968,7 +1074,6 @@ function EventDetail({
         >
           {replay.isPending ? t("events.replaying") : t("events.replayEvent")}
         </Button>
-        <Button icon="external">{t("events.inngestConsole")}</Button>
       </div>
     </div>
   );

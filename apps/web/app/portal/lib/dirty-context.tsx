@@ -80,18 +80,10 @@ export function DirtyProvider({ children }: { children: ReactNode }) {
   return <DirtyCtx.Provider value={value}>{children}</DirtyCtx.Provider>;
 }
 
-/**
- * Access the DirtyApi. Returns a no-op stub outside the provider so callers
- * (especially navigation hooks that live in the tree above the provider on
- * non-portal routes) don't need to null-check.
- */
+/** Access the live dirty-state registry. Missing provider wiring is a safety
+ * error: returning a no-op here would silently bypass unsaved-change guards. */
 export function useDirty(): DirtyApi {
   const ctx = useContext(DirtyCtx);
   if (ctx) return ctx;
-  // No-op fallback so call sites can always call the methods unconditionally.
-  return {
-    setDirty: () => {},
-    isDirty: () => false,
-    describe: () => "",
-  };
+  throw new Error("useDirty must be used within DirtyProvider");
 }

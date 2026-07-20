@@ -29,7 +29,6 @@ import {
   Panel,
   ViewHeader,
   useToast,
-  type BadgeTone,
 } from "@/app/portal/components";
 import {
   useTools,
@@ -44,29 +43,6 @@ function slugifyAnchor(name: string): string {
   return "tool-" + name.replace(/[^a-zA-Z0-9._-]/g, "-").toLowerCase();
 }
 
-// ── side-effect classification (read/write/dual/call) — merged from the old 工具库 page so the
-// catalog filtering and the API reference live on ONE surface. The /v1/tools catalog carries no
-// sideEffect field, so derive it from the tool's name + category (matches the brain's toolSideEffect).
-type SE = "read" | "write" | "dual" | "call";
-const SE_META: Record<SE, { label: string; tone: BadgeTone; hint: string }> = {
-  read: { label: "读", tone: "green", hint: "只读取数据，不产生副作用" },
-  write: { label: "写", tone: "amber", hint: "写入/落库/发送——有持久副作用" },
-  dual: { label: "双写", tone: "violet", hint: "既读又写（同步/补全类）" },
-  call: { label: "调用", tone: "blue", hint: "调用外部 API（RoboHire / HTTP 等）" },
-};
-const SE_WRITE_RE = /(write|create|invite|send|post|delete|update|save|archive|upsert|put|deploy|register|push)/i;
-const SE_READ_RE = /(read|parse|get|list|fetch|health|match|search|describe|inspect|ping|load|probe|jd|resume)/i;
-function deriveSE(tool: ToolCatalogEntry): SE {
-  const n = tool.name;
-  const w = SE_WRITE_RE.test(n);
-  const r = SE_READ_RE.test(n);
-  if (w && r) return "dual";
-  if (w) return "write";
-  if (tool.category === "http" || (tool.category === "robohire" && !r)) return "call";
-  if (r) return "read";
-  return "call";
-}
-
 export default function ToolsPage() {
   const { t } = useI18n();
   const params = useParams<{ tenant: string }>();
@@ -76,27 +52,13 @@ export default function ToolsPage() {
 
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState<string | "all">("all");
-  const [se, setSe] = useState<SE | "all">("all");
   const [showCreate, setShowCreate] = useState(false);
   const scrollPaneRef = useRef<HTMLDivElement | null>(null);
-
-  // side-effect class per tool, computed once.
-  const seOf = useMemo(() => {
-    const m = new Map<string, SE>();
-    for (const tl of tools) m.set(tl.name, deriveSE(tl));
-    return m;
-  }, [tools]);
-  const seCounts = useMemo(() => {
-    const c: Record<SE, number> = { read: 0, write: 0, dual: 0, call: 0 };
-    for (const v of seOf.values()) c[v]++;
-    return c;
-  }, [seOf]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return tools.filter((t) => {
       if (category !== "all" && t.category !== category) return false;
-      if (se !== "all" && seOf.get(t.name) !== se) return false;
       if (!q) return true;
       const hay = [
         t.name,
@@ -111,7 +73,7 @@ export default function ToolsPage() {
         .toLowerCase();
       return hay.includes(q);
     });
-  }, [tools, query, category, se, seOf]);
+  }, [tools, query, category]);
 
   // Group filtered tools by category for the right-pane TOC.
   const grouped = useMemo(() => {
@@ -240,16 +202,6 @@ export default function ToolsPage() {
                   </FilterChip>
                 );
               })}
-            </div>
-
-            {/* side-effect filter (merged from 工具库) */}
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
-              <FilterChip active={se === "all"} onClick={() => setSe("all")}>副作用·全部</FilterChip>
-              {(Object.keys(SE_META) as SE[]).map((k) => (
-                <FilterChip key={k} active={se === k} onClick={() => setSe(k)}>
-                  {SE_META[k].label} ({seCounts[k]})
-                </FilterChip>
-              ))}
             </div>
 
             <nav style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -396,7 +348,6 @@ function ToolSection({ tool }: { tool: ToolCatalogEntry }) {
             {tool.name}
           </h3>
           <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-            <span title={SE_META[deriveSE(tool)].hint}><Badge tone={SE_META[deriveSE(tool)].tone}>{SE_META[deriveSE(tool)].label}</Badge></span>
             <Badge tone="muted">{tool.category}</Badge>
             {/* #SCALE-TOOLS — empirical sandbox effectiveness: green ≥70%, red below (the ranking
                 actually demotes <70% w/ ≥3 runs, so a red badge = "won't be recommended"). */}
@@ -530,12 +481,21 @@ function SubBlock({
   children: React.ReactNode;
 }) {
   const { t } = useI18n();
+  const toast = useToast();
   const [copied, setCopied] = useState(false);
-  function copy() {
+  async function copy() {
     if (!copyText) return;
-    void navigator.clipboard.writeText(copyText);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1400);
+    try {
+      await navigator.clipboard.writeText(copyText);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1400);
+    } catch (error) {
+      toast({
+        tone: "red",
+        title: t("tools.copyFailed"),
+        description: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
   return (
     <div>
@@ -634,12 +594,21 @@ function SchemaTable({ schema }: { schema: Record<string, ToolFieldSchema> }) {
 
 function ExampleBlock({ value, label }: { value: unknown; label: string }) {
   const { t } = useI18n();
+  const toast = useToast();
   const json = useMemo(() => JSON.stringify(value, null, 2), [value]);
   const [copied, setCopied] = useState(false);
-  function copy() {
-    void navigator.clipboard.writeText(json);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1400);
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(json);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1400);
+    } catch (error) {
+      toast({
+        tone: "red",
+        title: t("tools.copyFailed"),
+        description: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
   return (
     <div style={{ marginTop: 8 }}>

@@ -47,7 +47,7 @@ Two cross-cutting concerns moved partial → implemented in Sprints 2-3:
 - **Idempotency:** `Idempotency-Key` header honored 1h (LRU at `routes/v1/tenants.ts:115-134`)
 - **Audit:** `tenant.create` written in same SQLite tx
 - **Tests:** `tc-70-tenants-crud.test.ts` (16 sub-cases), `tc-71-tenants-idempotency.test.ts` (3), `tc-62-tenants-isolation.test.ts` (7) — all green
-- **Open:** `resolveOperatorUserId` still hard-codes `ops@agentic.local`; once real auth lands, switch to `req.auth.userId`
+- **Actor identity:** resolved — mutations use the authenticated `req.auth.userId`; no seed-account fallback remains.
 
 ### UC-2: Import a workflow manifest ✅
 

@@ -40,20 +40,56 @@ function entityKey(raw: string): "动作" | "事件" | "规则" | "对象" {
   return "对象";
 }
 
-/** 每类实体的【合法数集】——全量数 + 报告里常见的合法口径。 */
-export function allowedCounts(ont: DomainOntology): Record<"动作" | "事件" | "规则" | "对象", Set<number>> {
+/** 每类实体的【合法数集】——全量数 + 报告里常见的合法口径 + 分析里【确定性算出来的合法子计数】。
+ *  关键：报告【本就应该】引用分阶段的规则簇计数（"简历匹配阶段 174 条"）、等级分布、每动作关联
+ *  数——这些都是 computeAnalysis 算出来的真实数据。若只放全量数（规则→{261}），审校器会把这些
+ *  正确子计数误判为"编造"，逼报告插入"请勿采信"警示，反而让正确分析显得不可信。所以把 digest.
+ *  analysis 里算出来的真实子计数并入合法集：命中任一真实计数 = 有据可查，不是幻觉；只有哪都对不上
+ *  的数字才判违规（防幻觉的初衷不变）。 */
+export function allowedCounts(ont: DomainOntology, digest?: unknown): Record<"动作" | "事件" | "规则" | "对象", Set<number>> {
   const agentActions = ont.actions.filter((a) => (a.actor ?? []).includes("Agent")).length;
   const humanActions = ont.actions.length - agentActions;
   const graphEvents = new Set<string>([
     ...ont.actions.flatMap((a) => a.trigger ?? []),
     ...ont.actions.flatMap((a) => a.triggered_event ?? []),
   ]).size;
-  return {
-    动作: new Set([ont.actions.length, agentActions, humanActions]),
-    事件: new Set([ont.events.length, graphEvents]),
-    规则: new Set([ont.rules.length]),
-    对象: new Set([ont.objects.length]),
+  const out = {
+    动作: new Set<number>([ont.actions.length, agentActions, humanActions]),
+    事件: new Set<number>([ont.events.length, graphEvents]),
+    规则: new Set<number>([ont.rules.length]),
+    对象: new Set<number>([ont.objects.length]),
   };
+  // Mine the deterministic analysis for legitimate SUB-counts the report is expected to cite.
+  const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
+  const addAll = (set: Set<number>, arr: unknown, pick: (o: Record<string, unknown>) => unknown) => {
+    if (!Array.isArray(arr)) return;
+    for (const o of arr) { const n = num(pick((o ?? {}) as Record<string, unknown>)); if (n != null) set.add(n); }
+  };
+  const a = (digest as { analysis?: Record<string, unknown> } | undefined)?.analysis;
+  if (a && typeof a === "object") {
+    const ra = a.ruleAnalysis as Record<string, unknown> | undefined;
+    if (ra) {
+      addAll(out.规则, ra.clusters, (o) => o.count);        // per-stage cluster sizes (e.g. 174)
+      addAll(out.规则, ra.clusters, (o) => o.mandatory);    // mandatory-within-cluster counts
+      addAll(out.规则, ra.levelDistribution, (o) => o.count); // enforcement-level splits
+      addAll(out.规则, ra.perAction, (o) => o.linkedRules); // rules linked to one action
+      addAll(out.规则, ra.unmodeledStages, (o) => o.rules); // rules in unmodeled stages
+      const raTotal = num(ra.total); if (raTotal != null) out.规则.add(raTotal);
+    }
+    const gaps = a.gaps as Record<string, unknown> | undefined;
+    if (gaps) {
+      if (Array.isArray(gaps.agentActionsWithoutTools)) out.动作.add(gaps.agentActionsWithoutTools.length);
+      if (Array.isArray(gaps.orphanConsumedEvents)) out.事件.add(gaps.orphanConsumedEvents.length);
+    }
+    const eg = a.eventGraph as Record<string, unknown> | undefined;
+    if (eg) {
+      if (Array.isArray(eg.events)) out.事件.add(eg.events.length);
+      if (Array.isArray(eg.fanOuts)) { out.事件.add(eg.fanOuts.length); for (const f of eg.fanOuts) { const c = (f as { consumers?: unknown })?.consumers; if (Array.isArray(c)) out.动作.add(c.length); } }
+    }
+    addAll(out.动作, a.objectTouch, (o) => o.actions);      // #actions touching one object
+    if (Array.isArray(a.suggestedBridges)) out.事件.add((a.suggestedBridges as unknown[]).length);
+  }
+  return out;
 }
 
 const MAX_VIOLATIONS = 12;
@@ -85,8 +121,8 @@ export function verifyReportGrounding(
     }
   }
 
-  // ② 计数接地：四类核心实体的数字声明必须命中合法数集。
-  const allowed = allowedCounts(ont);
+  // ② 计数接地：四类核心实体的数字声明必须命中合法数集（含分析算出的真实子计数——见 allowedCounts）。
+  const allowed = allowedCounts(ont, digest);
   const flagged = new Set<string>();
   const checkCount = (numRaw: string, entityRaw: string, excerpt: string) => {
     const n = Number(numRaw);

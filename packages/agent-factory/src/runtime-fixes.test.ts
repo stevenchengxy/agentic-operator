@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { modelChain, tierForContext } from "./model-router";
 import { runDigest, scoreRounds } from "./run-analysis";
+import { isGatewayConfigured, resolveFactoryGateway } from "./stream-gateway";
 import type { BrainEvent } from "./brain-types";
 
 // #7 — config-driven tiered model routing with fallback chains.
@@ -27,6 +28,36 @@ describe("modelChain (#7 — no hardcoded model ids)", () => {
     expect(modelChain("fast", env)[0]).toBe("f/1");
     expect(modelChain("default", env)[0]).toBe("d/1");
     expect(modelChain("hard", env)[0]).toBe("h/1");
+  });
+});
+
+describe("factory gateway configuration truthfulness", () => {
+  it("does not treat a key without an explicit real model as configured", () => {
+    const env = { CUSTOM_LLM_API_KEY: "secret" };
+    expect(isGatewayConfigured(env)).toBe(false);
+    expect(() => resolveFactoryGateway(env)).toThrow(/requires .* real model/i);
+  });
+
+  it("accepts an explicitly configured endpoint, key, and real model", () => {
+    const env = {
+      CUSTOM_LLM_BASE_URL: "https://gateway.example/v1",
+      CUSTOM_LLM_API_KEY: "secret",
+      FACTORY_AI_MODEL: "provider/real-model",
+    };
+    expect(isGatewayConfigured(env)).toBe(true);
+    expect(resolveFactoryGateway(env)).toMatchObject({
+      baseURL: "https://gateway.example/v1",
+      model: "provider/real-model",
+    });
+  });
+
+  it("rejects mock-named models even when credentials are present", () => {
+    const env = {
+      CUSTOM_LLM_API_KEY: "secret",
+      FACTORY_AI_MODEL: "mock-model-v1",
+    };
+    expect(isGatewayConfigured(env)).toBe(false);
+    expect(() => resolveFactoryGateway(env)).toThrow(/mock\/implicit defaults are forbidden/i);
   });
 });
 

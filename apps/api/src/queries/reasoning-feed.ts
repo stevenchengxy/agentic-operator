@@ -11,7 +11,7 @@
  */
 
 import { alias } from "drizzle-orm/sqlite-core";
-import { and, desc, eq, like, or, sql } from "drizzle-orm";
+import { and, desc, eq, isNull, like, or, sql } from "drizzle-orm";
 import { agents, events, getDb, llmTurns, runs } from "@agentic/db";
 import { resolvePayloadRef } from "./runs";
 import { resolveTenantId } from "./reasoning";
@@ -49,7 +49,10 @@ export function listRecentTurns(
   if (!tenantId) return [];
   const limit = Math.min(200, Math.max(1, opts.limit ?? 60));
 
-  const where = [eq(llmTurns.tenantId, tenantId)];
+  const where = [
+    eq(llmTurns.tenantId, tenantId),
+    isNull(runs.deletedAt),
+  ];
   if (opts.agent) where.push(eq(agents.name, opts.agent));
 
   const rows = db
@@ -163,7 +166,13 @@ export async function listRuleAudit(
       const consumer = db
         .select({ runId: runs.id })
         .from(runs)
-        .where(eq(runs.triggerEventId, r.id))
+        .where(
+          and(
+            eq(runs.triggerEventId, r.id),
+            eq(runs.tenantId, tenantId),
+            isNull(runs.deletedAt),
+          ),
+        )
         .all()[0];
       return {
         ...r,

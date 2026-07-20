@@ -14,7 +14,6 @@ export const matchAndAnalyze: PromptDescriptor = definePrompt({
   name: "matchAndAnalyze",
   description:
     "Call RoboHire matchResumeApi against the live API and emit the structured analysis as MATCH_COMPLETED.",
-  model: "anthropic/claude-haiku-4-5",
   system: [
     "You are matcherAgent inside Agentic Operator.",
     "",

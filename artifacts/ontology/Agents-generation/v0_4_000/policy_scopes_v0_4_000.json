@@ -1,0 +1,78 @@
+{
+  "metadata": {
+    "domainId": "Agents-generation",
+    "documentType": "PolicyScopes",
+    "version": "v0_4_000",
+    "generatedAt": "2026-07-16T00:00:00.000+08:00",
+    "generatedBy": "Codex reviewed ontology compiler",
+    "count": 6,
+    "sourceDigests": {
+      "actions_v0_2_001": "sha256:9a8db9ef101f781b9ba7a116e14535107420d6ea944c92bd69bf483aacd250c6",
+      "objects_v0_2_001": "sha256:08778d42494209a486a711675b51b2fea639117c8675289910d876c769ebcd74",
+      "rules_v0_2_001": "sha256:5699c6b3e2c33f5349e3316d929543c57078b2d4f0175bc876ca3cbdf8abd47d",
+      "live_rules_before_release": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    }
+  },
+  "policyScopes": [
+    {
+      "id": "policy-scope-6633b4b6176c561d",
+      "domainId": "Agents-generation",
+      "applicableClient": "腾讯",
+      "applicableDepartment": "CDG",
+      "stage": "简历匹配",
+      "status": "approved",
+      "source": "deterministic_rule_scope_compiler",
+      "version": "v0_4_000"
+    },
+    {
+      "id": "policy-scope-75a9d21a24f34c76",
+      "domainId": "Agents-generation",
+      "applicableClient": "腾讯",
+      "applicableDepartment": "N/A",
+      "stage": "简历匹配",
+      "status": "approved",
+      "source": "deterministic_rule_scope_compiler",
+      "version": "v0_4_000"
+    },
+    {
+      "id": "policy-scope-7cf0bfff79ad6d94",
+      "domainId": "Agents-generation",
+      "applicableClient": "腾讯",
+      "applicableDepartment": "IEG",
+      "stage": "简历匹配",
+      "status": "approved",
+      "source": "deterministic_rule_scope_compiler",
+      "version": "v0_4_000"
+    },
+    {
+      "id": "policy-scope-90fccab1efbaf4fe",
+      "domainId": "Agents-generation",
+      "applicableClient": "CSI",
+      "applicableDepartment": "N/A",
+      "stage": "简历匹配",
+      "status": "approved",
+      "source": "deterministic_rule_scope_compiler",
+      "version": "v0_4_000"
+    },
+    {
+      "id": "policy-scope-92073d12a564c0b9",
+      "domainId": "Agents-generation",
+      "applicableClient": "通用",
+      "applicableDepartment": "N/A",
+      "stage": "简历处理",
+      "status": "approved",
+      "source": "deterministic_rule_scope_compiler",
+      "version": "v0_4_000"
+    },
+    {
+      "id": "policy-scope-976c0cb5095561e2",
+      "domainId": "Agents-generation",
+      "applicableClient": "字节",
+      "applicableDepartment": "N/A",
+      "stage": "简历匹配",
+      "status": "approved",
+      "source": "deterministic_rule_scope_compiler",
+      "version": "v0_4_000"
+    }
+  ]
+}

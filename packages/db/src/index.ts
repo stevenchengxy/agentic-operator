@@ -1,4 +1,5 @@
 export * from "./client";
+export * from "./writer-lease";
 export * from "./schema";
 export * from "./with-tenant";
 export { hashPassword, verifyPassword } from "./password";
@@ -7,6 +8,11 @@ export { hashPassword, verifyPassword } from "./password";
 // separate `drizzle-orm` dependency.
 export { eq, and, or, sql, desc, asc, inArray } from "drizzle-orm";
 export { wipeRuntime } from "./wipe-runtime";
+export {
+  backupDatabase,
+  type BackupOptions,
+  type BackupResult,
+} from "./backup";
 export {
   pruneRolledBackDeployments,
   DEFAULT_ROLLED_BACK_RETENTION,

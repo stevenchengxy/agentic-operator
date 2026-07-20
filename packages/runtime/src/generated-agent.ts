@@ -17,12 +17,10 @@ export function makeGeneratedAgentPrompt(actionName: string): PromptDescriptor {
     name: `generated:${actionName}`,
     template: (ctx: ToolContext) => {
       const data = (ctx?.event?.data ?? {}) as Record<string, unknown>;
-      let payload: string;
-      try {
-        payload = JSON.stringify(data, null, 2);
-      } catch {
-        payload = String(data);
-      }
+      // The fenced block is explicitly labelled JSON.  If the event cannot
+      // be represented as JSON, fail the step instead of feeding the model a
+      // misleading "[object Object]" pseudo-payload.
+      const payload = JSON.stringify(data, null, 2);
       return [
         `Incoming event payload / 触发事件数据:`,
         "```json",

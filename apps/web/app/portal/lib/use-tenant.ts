@@ -4,8 +4,9 @@
  * useTenant (P2-FE-25) — extract the active tenant slug from the URL.
  *
  * The portal is routed at /portal/[tenant]/<view>; this hook is the canonical
- * way to read that param. Falls back to `raas` when the route isn't mounted
- * under a tenant segment (e.g. top-level not-found / loading boundary).
+ * way to read that param. A caller outside the tenant segment must be under a
+ * verified SessionProvider (or pass that verified tenant explicitly); silently
+ * selecting a business tenant would risk cross-tenant reads.
  *
  * Use `useTenantNavigate` to push a new tenant while keeping the rest of the
  * path intact — used by the TenantSwitcher dropdown.
@@ -14,20 +15,29 @@
 import { useParams, usePathname, useRouter } from "next/navigation";
 import { useCallback } from "react";
 import { useDirty } from "./dirty-context";
-
-const DEFAULT_TENANT = "raas";
+import { useSession } from "./session-context";
 
 /**
  * Pure helper exposed for unit tests: given the raw `tenant` URL param
  * (which Next.js may surface as `string`, `string[]`, or `undefined`),
- * return a stable string. Falls back to `raas` when the route isn't
- * mounted under a tenant segment.
+ * return a stable string. Missing params fail closed unless the server-verified
+ * session tenant is supplied by the caller.
  */
 export function resolveTenantParam(
   raw: string | string[] | undefined,
+  sessionTenant?: string,
 ): string {
-  if (!raw) return DEFAULT_TENANT;
-  return Array.isArray(raw) ? (raw[0] ?? DEFAULT_TENANT) : raw;
+  const fromRoute = Array.isArray(raw) ? raw[0] : raw;
+  if (typeof fromRoute === "string" && /^[a-z0-9_-]{1,64}$/i.test(fromRoute)) {
+    return fromRoute;
+  }
+  if (
+    typeof sessionTenant === "string" &&
+    /^[a-z0-9_-]{1,64}$/i.test(sessionTenant)
+  ) {
+    return sessionTenant;
+  }
+  throw new Error("Tenant route parameter is required");
 }
 
 /**
@@ -38,19 +48,31 @@ export function rewriteTenantInPath(
   pathname: string,
   nextTenant: string,
 ): string {
+  if (!/^[a-z0-9_-]{1,64}$/i.test(nextTenant)) {
+    throw new Error("Invalid tenant slug");
+  }
   const parts = pathname.split("/").filter(Boolean);
   if (parts[0] === "portal" && parts.length >= 2) {
     parts[1] = nextTenant;
+    // Entity detail ids are tenant-scoped. Preserve the top-level view but
+    // drop stale ids when switching domains. Settings/usage is a view, not
+    // an entity detail, and is safe to preserve.
+    if (!(parts[2] === "settings" && parts[3] === "usage")) {
+      parts.splice(3);
+    }
   } else {
-    parts.splice(0, parts.length, "portal", nextTenant);
+    parts.splice(0, parts.length, "portal", nextTenant, "dashboard");
   }
   return "/" + parts.join("/");
 }
 
-export function useTenant(): string {
+export function useTenant(sessionTenant?: string): string {
   const params = useParams<{ tenant?: string | string[] }>();
-  if (!params) return DEFAULT_TENANT;
-  return resolveTenantParam(params.tenant);
+  const verifiedSession = useSession();
+  return resolveTenantParam(
+    params?.tenant,
+    sessionTenant ?? verifiedSession?.tenant,
+  );
 }
 
 export function useTenantNavigate(): (nextTenant: string) => void {
@@ -76,5 +98,3 @@ export function useTenantNavigate(): (nextTenant: string) => void {
     [pathname, router, dirty],
   );
 }
-
-export { DEFAULT_TENANT };

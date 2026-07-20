@@ -19,17 +19,11 @@
  */
 
 import type { ReactNode } from "react";
-import { useCallback } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { RunStreamEvent } from "@agentic/contracts";
 import { useStream } from "@/lib/hooks/useStream";
 import { useTenants } from "@/lib/hooks/useTenants";
-import { useAgentFactoryDomains } from "@/lib/hooks/useAgentFactoryDomains";
-import {
-  buildRuntimeDomainNameMap,
-  buildRuntimeDomainSlugSet,
-  displayRuntimeDomainName,
-  isVisibleRuntimeDomain,
-} from "@/lib/domain-display";
+import { isVisibleRuntimeDomain } from "@/lib/domain-display";
 import { useTenant } from "@/app/portal/lib/use-tenant";
 import { useMe, useLogout } from "@/lib/hooks/useMe";
 import { Sidebar } from "./sidebar";
@@ -44,6 +38,61 @@ import {
 } from "../../lib/session-context";
 import { useI18n } from "@/app/portal/lib/preferences-context";
 
+/**
+ * Detects a layout viewport pinned by a CDP device-metrics override (left
+ * behind by browser automation or DevTools device emulation). The override
+ * survives reloads and window resizes, so when the window later shrinks —
+ * e.g. moving Chrome off an external monitor — the page keeps rendering at
+ * the stale width and every shell layer's `overflow: hidden` silently clips
+ * the right-hand side. The app cannot observe or clear the override itself;
+ * the only reliable signal is behavioral: the OS window resizes while the
+ * layout viewport stays frozen wider than the window. Page zoom never
+ * trips this (zoom moves innerWidth, not outerWidth), and normal resizes
+ * move both together.
+ */
+function useViewportPinWarning(): {
+  active: boolean;
+  inner: number;
+  outer: number;
+  dismiss: () => void;
+} {
+  const [pin, setPin] = useState<{ inner: number; outer: number } | null>(
+    null,
+  );
+  const [dismissed, setDismissed] = useState(false);
+  const last = useRef<{ inner: number; outer: number } | null>(null);
+  useEffect(() => {
+    const tick = () => {
+      const inner = window.innerWidth;
+      const outer = window.outerWidth;
+      const prev = last.current;
+      // outerWidth reads 0 while the window is minimized/hidden — skip.
+      if (outer > 0 && prev && prev.outer > 0) {
+        const outerMoved = Math.abs(outer - prev.outer) > 120;
+        const innerFrozen = inner === prev.inner;
+        if (outerMoved && innerFrozen && inner > outer + 120) {
+          setPin({ inner, outer });
+        } else if (inner <= outer + 8) {
+          // Window and layout agree again (window grew back to the pinned
+          // size, or the override was lifted) — self-heal.
+          setPin(null);
+          setDismissed(false);
+        }
+      }
+      if (outer > 0) last.current = { inner, outer };
+    };
+    tick();
+    const timer = setInterval(tick, 1000);
+    return () => clearInterval(timer);
+  }, []);
+  return {
+    active: pin != null && !dismissed,
+    inner: pin?.inner ?? 0,
+    outer: pin?.outer ?? 0,
+    dismiss: () => setDismissed(true),
+  };
+}
+
 export function PortalChrome({
   children,
   user,
@@ -53,6 +102,7 @@ export function PortalChrome({
 }) {
   const { t } = useI18n();
   const { data: me } = useMe();
+  const viewportPin = useViewportPinWarning();
   // UC-V11-06 — when the SSE stream surfaces a `deployment.created` event
   // for tenant code, fire a hot-reload toast so engineers see their CLI
   // deploy land without a manual refresh. Manifest deploys already get an
@@ -82,10 +132,7 @@ export function PortalChrome({
   // to the VIEWED tenant (EventSource can't set the x-agentic-tenant header,
   // so the proxy forwards it from the query param). Switching tenants
   // re-subscribes via the path dependency.
-  const activeTenant = useTenant();
-  const domainsQuery = useAgentFactoryDomains();
-  const domainNames = buildRuntimeDomainNameMap(domainsQuery.data?.domains);
-  const domainSlugs = buildRuntimeDomainSlugSet(domainsQuery.data?.domains);
+  const activeTenant = useTenant(user.tenant);
   useStream({
     path: activeTenant
       ? `/livefeed?tenant=${encodeURIComponent(activeTenant)}`
@@ -101,13 +148,12 @@ export function PortalChrome({
   const tenants: TenantOption[] = liveItems
     ? liveItems
         .filter((t) => t.archivedAt == null)
-        // 业务领域 = user-facing runtime domains. Hide internal sandbox/system rows
-        // and empty test leftovers, but keep the URL-active domain visible while
-        // the operator is already inside it.
-        .filter((t) => isVisibleRuntimeDomain(t, domainSlugs) || t.slug === activeTenant)
+        // Tenant visibility comes only from runtime tenancy. Ontology catalog
+        // availability must never hide an empty/new tenant from navigation.
+        .filter((t) => isVisibleRuntimeDomain(t) || t.slug === activeTenant)
         .map((t) => ({
           id: t.slug,
-          name: displayRuntimeDomainName(t, domainNames),
+          name: t.name,
           subtitle: t.subtitle ?? undefined,
           color: t.color ?? "#d0ff00",
           agentCount: t.agentCount,
@@ -162,6 +208,13 @@ export function PortalChrome({
         >
           <TopBar user={{ name: user.name, initials: user.initials }} />
           {apiUnreachable ? <ApiUnreachableBanner /> : null}
+          {viewportPin.active ? (
+            <ViewportPinnedBanner
+              inner={viewportPin.inner}
+              outer={viewportPin.outer}
+              onDismiss={viewportPin.dismiss}
+            />
+          ) : null}
           <div
             id="portal-view-content"
             tabIndex={-1}
@@ -215,9 +268,78 @@ function ApiUnreachableBanner() {
       />
       <span>
         {t("chromeComp.bannerCannotReachApi")}{" "}
-        <code style={{ fontFamily: "var(--mono)" }}>:3540</code>
         {t("chromeComp.bannerCheckPnpmDev")}
       </span>
+    </div>
+  );
+}
+
+/**
+ * Companion banner to `useViewportPinWarning` — tells the operator WHY the
+ * right side of the UI is unreachable and how to recover (close the tab; a
+ * reload does not lift a CDP viewport override). Amber, dismissible: the
+ * page still works, it is just clipped.
+ */
+function ViewportPinnedBanner({
+  inner,
+  outer,
+  onDismiss,
+}: {
+  inner: number;
+  outer: number;
+  onDismiss: () => void;
+}) {
+  const { t } = useI18n();
+  return (
+    <div
+      role="alert"
+      style={{
+        background: "color-mix(in srgb, var(--amber) 10%, transparent)",
+        borderBottom:
+          "1px solid color-mix(in srgb, var(--amber) 35%, var(--border))",
+        color: "var(--text)",
+        padding: "8px 16px",
+        fontSize: 12,
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+      }}
+    >
+      <span
+        style={{
+          width: 6,
+          height: 6,
+          borderRadius: "50%",
+          background: "var(--amber)",
+          flexShrink: 0,
+        }}
+        aria-hidden
+      />
+      <span style={{ minWidth: 0 }}>
+        {t("chromeComp.bannerViewportPinned", {
+          inner: String(inner),
+          outer: String(outer),
+        })}
+      </span>
+      {/* No marginLeft:auto — in the clipped state the banner's right edge
+        * is off-screen, so the dismiss button must hug the text to stay
+        * reachable. */}
+      <button
+        type="button"
+        onClick={onDismiss}
+        style={{
+          flexShrink: 0,
+          background: "none",
+          border: "1px solid var(--border-2)",
+          borderRadius: 4,
+          color: "var(--text-2)",
+          fontSize: 11,
+          padding: "3px 8px",
+          cursor: "pointer",
+        }}
+      >
+        {t("chromeComp.bannerViewportPinnedDismiss")}
+      </button>
     </div>
   );
 }

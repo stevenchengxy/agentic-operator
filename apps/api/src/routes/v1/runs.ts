@@ -1,11 +1,15 @@
 import type { FastifyInstance } from "fastify";
 import { readFile } from "node:fs/promises";
-import { and, desc, eq } from "drizzle-orm";
-import { agents, events, getDb, runs, tasks } from "@agentic/db";
-import { getTenantInngest } from "@agentic/runtime";
+import { and, desc, eq, inArray } from "drizzle-orm";
+import { agents, auditLog, events, getDb, runs, tasks } from "@agentic/db";
+import {
+  appendToLedger,
+  getTenantInngest,
+  publishStreamEvent,
+  tenantEventName,
+} from "@agentic/runtime";
 import { makeId } from "@agentic/shared";
 import { ListRunsQuery } from "@agentic/contracts";
-import { requireAuth } from "../../plugins/auth";
 import { requirePermission } from "../../plugins/rbac";
 import { writeAudit } from "../../plugins/audit";
 import {
@@ -20,7 +24,10 @@ import {
   purgeDeletedRuns,
 } from "../../queries/runs";
 import { getRunSummary } from "../../queries/reasoning";
-import { generateRunSummary } from "../../services/run-summary";
+import {
+  generateRunSummary,
+  RunSummaryGenerationError,
+} from "../../services/run-summary";
 
 export async function runsRoutes(app: FastifyInstance) {
   // GET /v1/runs — list.
@@ -78,11 +85,17 @@ export async function runsRoutes(app: FastifyInstance) {
       .select({
         id: tasks.id,
         title: tasks.title,
+        status: tasks.status,
         awaitingRole: tasks.awaitingRole,
         createdAt: tasks.createdAt,
       })
       .from(tasks)
-      .where(and(eq(tasks.runId, run.id), eq(tasks.status, "open")))
+      .where(
+        and(
+          eq(tasks.runId, run.id),
+          inArray(tasks.status, ["open", "resolving"]),
+        ),
+      )
       .orderBy(desc(tasks.createdAt))
       .all()[0];
     return reply.ok({ run, steps, waitingTask: waiting ?? null });
@@ -112,15 +125,29 @@ export async function runsRoutes(app: FastifyInstance) {
 
   // POST /v1/runs/:id/summary — generate (or regenerate) the AI summary and
   // cache it. Lazy: the run viewer calls this on first open when GET returned
-  // null, and again on an explicit "regenerate". Degrades to a digest-only
-  // summary when no real LLM provider is configured.
+  // null, and again on an explicit "regenerate". Generation fails explicitly
+  // when the real provider/structured output is unavailable.
   app.post<{ Params: { id: string } }>(
     "/runs/:id/summary",
     async (req, reply) => {
       const auth = requirePermission(req, "runs.read");
-      const summary = await generateRunSummary(auth.tenantSlug, req.params.id);
-      if (!summary) return reply.fail("not_found", "run not found", 404);
-      return reply.ok({ summary });
+      try {
+        const summary = await generateRunSummary(
+          auth.tenantSlug,
+          req.params.id,
+        );
+        if (!summary) return reply.fail("not_found", "run not found", 404);
+        return reply.ok({ summary });
+      } catch (error) {
+        if (error instanceof RunSummaryGenerationError) {
+          req.log.error(
+            { err: error, runId: req.params.id },
+            "run summary generation failed",
+          );
+          return reply.fail("summary_generation_failed", error.message, 502);
+        }
+        throw error;
+      }
     },
   );
 
@@ -130,7 +157,11 @@ export async function runsRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const auth = requirePermission(req, "runs.replay");
       const db = getDb();
-      const run = db.select().from(runs).where(eq(runs.id, req.params.id)).all()[0];
+      const run = db
+        .select()
+        .from(runs)
+        .where(eq(runs.id, req.params.id))
+        .all()[0];
       if (!run) return reply.fail("not_found", "run not found", 404);
       if (run.tenantId !== auth.tenantId)
         return reply.fail("forbidden", "forbidden", 403);
@@ -147,30 +178,102 @@ export async function runsRoutes(app: FastifyInstance) {
       let payload: Record<string, unknown> = {};
       if (evt.payloadRef) {
         const [filePath, offsetStr] = evt.payloadRef.split("#");
-        if (filePath && offsetStr != null) {
-          try {
-            const buf = await readFile(filePath);
-            const offset = parseInt(offsetStr, 10);
-            const nl = buf.indexOf(0x0a, offset);
-            const line = buf.toString(
-              "utf8",
-              offset,
-              nl === -1 ? undefined : nl,
-            );
-            payload = (JSON.parse(line).data ?? {}) as Record<string, unknown>;
-          } catch {}
+        if (
+          !filePath ||
+          offsetStr == null ||
+          !Number.isSafeInteger(Number(offsetStr))
+        ) {
+          return reply.fail(
+            "payload_unreadable",
+            "trigger event payload reference is malformed",
+            409,
+          );
+        }
+        try {
+          const buf = await readFile(filePath);
+          const offset = Number(offsetStr);
+          const nl = buf.indexOf(0x0a, offset);
+          const line = buf.toString("utf8", offset, nl === -1 ? undefined : nl);
+          payload = (JSON.parse(line).data ?? {}) as Record<string, unknown>;
+        } catch (err) {
+          req.log.error(
+            { err, runId: run.id, payloadRef: evt.payloadRef },
+            "run.replay: payload read failed",
+          );
+          return reply.fail(
+            "payload_unreadable",
+            "original trigger payload cannot be read; replay was not enqueued",
+            409,
+          );
         }
       }
 
       const newEventId = makeId("evt");
-      await getTenantInngest(auth.tenantSlug).send({
-        name: `${auth.tenantSlug}/${evt.name}` as `${string}/${string}`,
-        data: {
-          ...payload,
-          subject: evt.subject ?? undefined,
-          __triggerEventId: newEventId,
-          __replayOfRun: run.id,
-        },
+      const replayData = {
+        ...payload,
+        subject: evt.subject ?? undefined,
+        ...(auth.tenantSlug === "zhaopin"
+          ? { entity_id: evt.subject ?? newEventId }
+          : {}),
+        __triggerEventId: newEventId,
+        __replayOfRun: run.id,
+      };
+      const payloadRef = await appendToLedger(auth.tenantSlug, {
+        id: newEventId,
+        name: evt.name,
+        subject: evt.subject ?? undefined,
+        data: replayData,
+        ts: Date.now(),
+      });
+      db.insert(events)
+        .values({
+          id: newEventId,
+          tenantId: auth.tenantId,
+          name: evt.name,
+          category: evt.category ?? null,
+          subject: evt.subject ?? null,
+          payloadRef,
+        })
+        .run();
+      try {
+        publishStreamEvent({
+          type: "event.emitted",
+          tenantId: auth.tenantId,
+          at: Date.now(),
+          eventId: newEventId,
+          name: evt.name,
+          subject: evt.subject ?? null,
+          sourceRunId: run.id,
+        });
+      } catch {
+        /* durable event row is authoritative */
+      }
+      try {
+        await getTenantInngest(auth.tenantSlug).send({
+          name: tenantEventName(
+            auth.tenantSlug,
+            evt.name,
+          ) as `${string}/${string}`,
+          data: replayData,
+        });
+      } catch (err) {
+        req.log.error(
+          { err, runId: run.id, eventId: newEventId },
+          "run.replay: inngest.send failed",
+        );
+        return reply.fail(
+          "enqueue_failed",
+          `replay event was persisted as ${newEventId}, but Inngest rejected the enqueue`,
+          502,
+        );
+      }
+      writeAudit({
+        tenantId: auth.tenantId,
+        actorUserId: auth.userId ?? undefined,
+        action: "run.replay",
+        targetType: "run",
+        targetId: run.id,
+        meta: { new_event_id: newEventId },
       });
       return reply.ok({ replayed_run: run.id, new_event_id: newEventId });
     },
@@ -191,10 +294,11 @@ export async function runsRoutes(app: FastifyInstance) {
   //      That bubble-up causes the invoke route to return 200 with
   //      `cancelled:true` instead of an error envelope.
   //
-  // The route flips `runs.status` synchronously so the UI updates fast;
-  // the actual function termination is async (Inngest acks the cancel
-  // event, then exits at the next step boundary). The response `note`
-  // is honest about this.
+  // Manifest cancellation is fail-closed: the stable-id Inngest signal must
+  // be accepted before the durable row is marked cancelled. A transport
+  // failure returns 502 and leaves the run active so the UI never claims a
+  // stop that the runtime did not receive. Code agents use the durable row as
+  // their cooperative signal, so their update is committed directly.
   //
   // Idempotency: clicking Stop on a finished run is a no-op success —
   // operators routinely double-click; surfacing a 4xx for "already done"
@@ -205,7 +309,11 @@ export async function runsRoutes(app: FastifyInstance) {
     async (req, reply) => {
       const auth = requirePermission(req, "runs.cancel");
       const db = getDb();
-      const run = db.select().from(runs).where(eq(runs.id, req.params.id)).all()[0];
+      const run = db
+        .select()
+        .from(runs)
+        .where(eq(runs.id, req.params.id))
+        .all()[0];
       if (!run) return reply.fail("not_found", "run not found", 404);
       if (run.tenantId !== auth.tenantId)
         return reply.fail("forbidden", "forbidden", 403);
@@ -233,33 +341,6 @@ export async function runsRoutes(app: FastifyInstance) {
         });
       }
 
-      const previousStatus = run.status;
-      const endedAt = new Date();
-      const startedAtMs = run.startedAt?.getTime() ?? endedAt.getTime();
-      const durationMs = endedAt.getTime() - startedAtMs;
-
-      // Flip the run row first — both the UI and the code-agent
-      // cooperative-cancel poll read this status. Doing the DB write
-      // before the Inngest emit means the operator sees the cancel
-      // state immediately even if Inngest is unreachable.
-      db.update(runs)
-        .set({
-          status: "cancelled",
-          endedAt,
-          durationMs,
-          errorMessage: "cancelled_by_operator",
-        })
-        .where(eq(runs.id, run.id))
-        .run();
-
-      writeAudit({
-        tenantId: auth.tenantId,
-        action: "run.cancel",
-        targetType: "run",
-        targetId: run.id,
-        meta: { previousStatus, durationMs },
-      });
-
       // Resolve the agent kind so we can give the operator an accurate
       // `note`. For manifest agents we must fire the Inngest cancel
       // signal; for code agents the cooperative poll handles termination
@@ -271,29 +352,125 @@ export async function runsRoutes(app: FastifyInstance) {
         .all()[0];
       const isManifest = agentRow?.kind !== "code";
 
-      let inngestSent = false;
-      let inngestError: string | null = null;
+      const previousStatus = run.status;
       if (isManifest) {
         try {
-          // Resolve tenant slug for the namespaced event name. Cached at
-          // the auth context so this is a no-op lookup in practice.
           await getTenantInngest(auth.tenantSlug).send({
-            name: `${auth.tenantSlug}/run.cancel` as `${string}/${string}`,
+            // A timeout after broker acceptance is safe to retry: Inngest
+            // deduplicates this stable event id instead of cancelling twice.
+            id: `cancel-${run.id}`,
+            name: tenantEventName(
+              auth.tenantSlug,
+              "run.cancel",
+            ) as `${string}/${string}`,
             data: {
               runId: run.id,
               subject: run.subject ?? null,
+              ...(auth.tenantSlug === "zhaopin"
+                ? { entity_id: run.subject ?? run.id }
+                : {}),
               cancelledBy: auth.tenantSlug,
               previousStatus,
             },
           });
-          inngestSent = true;
         } catch (err) {
-          inngestError = err instanceof Error ? err.message : String(err);
-          req.log.warn(
+          const error = err instanceof Error ? err.message : String(err);
+          writeAudit({
+            tenantId: auth.tenantId,
+            actorUserId: auth.userId ?? undefined,
+            action: "run.cancel.failed",
+            targetType: "run",
+            targetId: run.id,
+            meta: { previousStatus, reason: "inngest_send_failed", error },
+          });
+          req.log.error(
             { err, runId: run.id, action: "run.cancel.inngest_send_failed" },
-            "cancel: inngest.send failed (run row already flipped to cancelled; manifest fn may continue until next checkpoint)",
+            "cancel: Inngest did not accept the cancellation; run status remains active",
+          );
+          return reply.fail(
+            "cancel_signal_failed",
+            "Inngest did not acknowledge the cancellation signal; run status was not changed",
+            502,
           );
         }
+      }
+
+      const endedAt = new Date();
+      const startedAtMs = run.startedAt?.getTime() ?? endedAt.getTime();
+      const durationMs = Math.max(0, endedAt.getTime() - startedAtMs);
+      const auditId = makeId("aud");
+      const persisted = db.transaction((tx) => {
+        const updated = tx
+          .update(runs)
+          .set({
+            status: "cancelled",
+            endedAt,
+            durationMs,
+            errorMessage: "cancelled_by_operator",
+          })
+          .where(
+            and(
+              eq(runs.id, run.id),
+              eq(runs.tenantId, auth.tenantId),
+              inArray(runs.status, ["queued", "running", "waiting"]),
+            ),
+          )
+          .run() as { changes?: number };
+        if ((updated.changes ?? 0) !== 1) return false;
+        tx.insert(auditLog)
+          .values({
+            id: auditId,
+            tenantId: auth.tenantId,
+            actorUserId: auth.userId,
+            action: "run.cancel",
+            targetType: "run",
+            targetId: run.id,
+            at: endedAt,
+            metaJson: {
+              previousStatus,
+              durationMs,
+              signal: isManifest ? "inngest_acknowledged" : "durable_status",
+            } as never,
+          })
+          .run();
+        return true;
+      });
+
+      if (!persisted) {
+        const current = db
+          .select({ status: runs.status })
+          .from(runs)
+          .where(and(eq(runs.id, run.id), eq(runs.tenantId, auth.tenantId)))
+          .all()[0];
+        return reply.ok({
+          runId: run.id,
+          status: current?.status ?? run.status,
+          cancelled: false,
+          note: `Run reached status=${current?.status ?? "unknown"} before cancellation was committed; no row was overwritten.`,
+        });
+      }
+
+      try {
+        publishStreamEvent({
+          type: "run.cancelled",
+          tenantId: auth.tenantId,
+          at: endedAt.getTime(),
+          runId: run.id,
+          reason: "cancelled_by_operator",
+        });
+        publishStreamEvent({
+          type: "audit.recorded",
+          tenantId: auth.tenantId,
+          at: endedAt.getTime(),
+          auditId,
+          action: "run.cancel",
+          actorUserId: auth.userId,
+          targetType: "run",
+          targetId: run.id,
+          decision: null,
+        });
+      } catch {
+        /* durable run + audit rows are authoritative */
       }
 
       req.log.info(
@@ -302,16 +479,13 @@ export async function runsRoutes(app: FastifyInstance) {
           tenantSlug: auth.tenantSlug,
           previousStatus,
           isManifest,
-          inngestSent,
           action: "run.cancel",
         },
-        "cancel: run flipped to cancelled",
+        "cancel: runtime signal accepted and run committed as cancelled",
       );
 
       const noteSuffix = isManifest
-        ? inngestSent
-          ? "Inngest cancel signal sent; manifest fn will exit at next step boundary."
-          : `Inngest send failed (${inngestError ?? "unknown"}); run row flipped to cancelled, but the manifest fn may continue until its next step boundary.`
+        ? "Inngest acknowledged the cancel signal; the manifest function will exit at its next step boundary."
         : "Code agent will exit at the next cooperative-cancel checkpoint (between LLM calls).";
 
       return reply.ok({
@@ -341,6 +515,7 @@ export async function runsRoutes(app: FastifyInstance) {
     if (reason === "ok") {
       writeAudit({
         tenantId: auth.tenantId,
+        actorUserId: auth.userId ?? undefined,
         action: "run.delete",
         targetType: "run",
         targetId: req.params.id,
@@ -369,6 +544,7 @@ export async function runsRoutes(app: FastifyInstance) {
       if (restored) {
         writeAudit({
           tenantId: auth.tenantId,
+          actorUserId: auth.userId ?? undefined,
           action: "run.restore",
           targetType: "run",
           targetId: req.params.id,
@@ -401,9 +577,14 @@ export async function runsRoutes(app: FastifyInstance) {
           "scope=oldest requires a positive `n`",
           400,
         );
-      const deleted = bulkSoftDeleteRuns(auth.tenantId, "oldest", Math.trunc(n));
+      const deleted = bulkSoftDeleteRuns(
+        auth.tenantId,
+        "oldest",
+        Math.trunc(n),
+      );
       writeAudit({
         tenantId: auth.tenantId,
+        actorUserId: auth.userId ?? undefined,
         action: "run.delete.bulk",
         targetType: "run",
         targetId: `oldest:${Math.trunc(n)}`,
@@ -420,6 +601,7 @@ export async function runsRoutes(app: FastifyInstance) {
       const deleted = bulkSoftDeleteRuns(auth.tenantId, "all");
       writeAudit({
         tenantId: auth.tenantId,
+        actorUserId: auth.userId ?? undefined,
         action: "run.delete.bulk",
         targetType: "run",
         targetId: "all",
@@ -436,6 +618,7 @@ export async function runsRoutes(app: FastifyInstance) {
       const deleted = await purgeDeletedRuns(auth.tenantId);
       writeAudit({
         tenantId: auth.tenantId,
+        actorUserId: auth.userId ?? undefined,
         action: "run.purge",
         targetType: "run",
         targetId: "recycle-bin",

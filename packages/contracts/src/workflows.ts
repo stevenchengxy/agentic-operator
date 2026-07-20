@@ -158,8 +158,18 @@ export const ManifestImportCommit = z.object({
   deployment_id: z.string(),
   target: z.enum(["staging", "production"]),
   inngest_fns_registered: z.number(),
+  inngest_activation: z.object({
+    verified: z.literal(true),
+    app_id: z.string(),
+    expected_function_count: z.number().int().nonnegative(),
+    observed_function_count: z.number().int().nonnegative(),
+    evidence: z.enum(["dev_graphql", "cloud_sync_acceptance", "test_only_bypass"]),
+    checked_at: z.string(),
+  }),
   file_written: z.string(),
   prior_deployment_id: z.string().nullable(),
+  /** Exact live-vs-new diff used by the overwrite guard and legacy editor. */
+  diff: ManifestDiff,
   note: z.string(),
   /** Elapsed wall-clock ms for the commit pipeline (per review O5). */
   elapsed_ms: z.number(),

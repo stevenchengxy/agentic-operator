@@ -12,7 +12,6 @@ import { describe, it, expect, beforeAll, beforeEach, afterEach } from "vitest";
 import { and, eq } from "drizzle-orm";
 import {
   bootstrapTenant,
-  __resetPromptRegistry,
   assertTenantRegistryComplete,
 } from "@agentic/runtime";
 import raasTenant from "@tenants/raas";
@@ -33,13 +32,13 @@ const MODEL_DIR = (process.env.AGENTIC_MODELS_DIR ?? "./models") + "/RAAS-v1";
  * a prompt key in a partial cleanup) trips a clear failure HERE instead of
  * surfacing as the cryptic "27 logic action(s) have no tenant definePrompt"
  * boot error inside `bootstrapTenant`. Keep this list in sync with the
- * `logic` actions in `models/RAAS-v1/workflow_v1.json`; the boot validator
- * itself re-derives this list at runtime, so a manifest edit forces this
- * test to update too.
+ * `logic` actions in the latest deployed RAAS manifest (currently
+ * `workflow_v5.json`); the boot validator itself re-derives this list at
+ * runtime, so a manifest edit forces this test to update too. In v5 the old
+ * LLM-owned invitation composition/notification pair was deliberately
+ * replaced by a real RoboHire send + durable receipt + deterministic route.
  */
 const REQUIRED_RAAS_PROMPTS: readonly string[] = [
-  "checkDeduplicatedRequisition",
-  "persistRequisitionData",
   "assessFeasibilityAndDifficulty",
   "generateClarificationAndStrategy",
   "prepareClarificationMaterial",
@@ -53,10 +52,10 @@ const REQUIRED_RAAS_PROMPTS: readonly string[] = [
   "validateRedlineAndBlacklist",
   "matchHardRequirements",
   "evaluateBonusAndCheckReflux",
-  "generateInterviewInvitation",
-  "notifyRecruiter",
+  "decideMatchOutcome",
   "receiveInterviewResult",
   "analyzeInterviewResult",
+  "evaluateWithModel",
   "generateEvaluationReport",
   "selectTemplateAndFormat",
   "generateRefinedResume",
@@ -75,16 +74,8 @@ describe("TC-11: bootstrap idempotency (P0-RT-07 + P0-MIG-02)", () => {
   });
 
   beforeEach(() => {
-    // Sprint 4 — defend against the registry-pollution failure mode Sprint 3
-    // verifier filed as F-S3-1. The reset hook is a no-op today (there is
-    // no module-level prompt cache; see tenant-loader.ts:__resetPromptRegistry
-    // for the architectural invariant). Calling it explicitly makes this
-    // test forward-compatible: if a future contributor wires a cache and
-    // forgets to invalidate it, the symptom surfaces here, not 18 tests
-    // later. Then assert that the in-memory raas registry is intact — a
-    // partially-mutated `raasTenant.prompts` map would otherwise show up
-    // as a confusing boot failure inside `bootstrapTenant` below.
-    __resetPromptRegistry();
+    // Assert that the in-memory raas registry is intact. There is no global
+    // prompt cache to reset; keeping a no-op reset hook only hid dead code.
     assertTenantRegistryComplete("raas", raasTenant, REQUIRED_RAAS_PROMPTS);
   });
 

@@ -20,7 +20,8 @@ import {
 
 export function RunAiSummary({ runId }: { runId: string }) {
   const { t } = useI18n();
-  const { data, isLoading } = useRunSummary(runId);
+  const summaryQuery = useRunSummary(runId);
+  const { data, isLoading } = summaryQuery;
   const gen = useGenerateRunSummary();
   const attempted = useRef(false);
 
@@ -37,6 +38,23 @@ export function RunAiSummary({ runId }: { runId: string }) {
   const summary: RunSummary | null = data?.summary ?? gen.data?.summary ?? null;
   const busy = isLoading || gen.isPending;
 
+  if (summaryQuery.isError && !summaryQuery.data) {
+    return (
+      <div role="alert" style={{ padding: "18px 16px", color: "var(--red)", fontSize: 13 }}>
+        <div>{t("runDetail.aiLoadFailed")}: {summaryQuery.error.message}</div>
+        <Button
+          small
+          icon="replay"
+          tone="ghost"
+          onClick={() => void summaryQuery.refetch()}
+          style={{ marginTop: 10 }}
+        >
+          {t("auditSection.retry")}
+        </Button>
+      </div>
+    );
+  }
+
   if (!summary && busy) {
     return (
       <div style={{ padding: "18px 16px", color: "var(--text-3)", fontSize: 13 }}>
@@ -48,6 +66,11 @@ export function RunAiSummary({ runId }: { runId: string }) {
   if (!summary) {
     return (
       <div style={{ padding: "18px 16px" }}>
+        {gen.isError ? (
+          <div role="alert" style={{ color: "var(--red)", fontSize: 12.5, marginBottom: 10 }}>
+            {t("runDetail.aiGenerationFailed")}: {gen.error.message}
+          </div>
+        ) : null}
         <Button small icon="spark" onClick={() => gen.mutate(runId)} disabled={gen.isPending}>
           {t("runDetail.aiGenerate")}
         </Button>
@@ -59,6 +82,21 @@ export function RunAiSummary({ runId }: { runId: string }) {
 
   return (
     <div style={{ padding: "14px 16px", overflow: "auto", minHeight: 0 }}>
+      {gen.isError ? (
+        <div
+          role="alert"
+          style={{
+            color: "var(--red)",
+            fontSize: 12,
+            marginBottom: 10,
+            padding: "7px 9px",
+            border: "1px solid color-mix(in srgb, var(--red) 30%, var(--border))",
+            borderRadius: 6,
+          }}
+        >
+          {t("runDetail.aiGenerationFailed")}: {gen.error.message}
+        </div>
+      ) : null}
       {/* Header */}
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
         <span style={{ fontSize: 15, fontWeight: 600, color: "var(--text)" }}>

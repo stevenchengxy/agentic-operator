@@ -11,9 +11,32 @@
  */
 
 import { useState, type FormEvent } from "react";
-import { PreferencesProvider, useI18n } from "@/app/portal/lib/preferences-context";
+import {
+  PreferencesProvider,
+  useI18n,
+} from "@/app/portal/lib/preferences-context";
+import { ApiResponseError, readApiData } from "@/lib/api-response";
 
-export function AuthForm({ initialMode }: { initialMode: "signin" | "signup" }) {
+interface AuthResult {
+  tenant?: unknown;
+  memberships?: Array<{ tenantSlug?: unknown }>;
+}
+
+function tenantFromAuthResult(result: AuthResult): string | null {
+  const candidate =
+    typeof result.tenant === "string"
+      ? result.tenant
+      : result.memberships?.[0]?.tenantSlug;
+  return typeof candidate === "string" && /^[a-z0-9_-]{1,64}$/i.test(candidate)
+    ? candidate
+    : null;
+}
+
+export function AuthForm({
+  initialMode,
+}: {
+  initialMode: "signin" | "signup";
+}) {
   return (
     <PreferencesProvider>
       <AuthFormInner initialMode={initialMode} />
@@ -50,7 +73,11 @@ function AuthFormInner({ initialMode }: { initialMode: "signin" | "signup" }) {
     setError(null);
     setPassword("");
     if (typeof window !== "undefined") {
-      window.history.replaceState(null, "", next === "signup" ? "/sign-up" : "/sign-in");
+      window.history.replaceState(
+        null,
+        "",
+        next === "signup" ? "/sign-up" : "/sign-in",
+      );
     }
   }
 
@@ -71,18 +98,34 @@ function AuthFormInner({ initialMode }: { initialMode: "signin" | "signup" }) {
         credentials: "same-origin",
         body: JSON.stringify(body),
       });
-      const json = (await res.json()) as
-        | { ok: true; data: unknown }
-        | { ok: false; error: { code: string } };
-      if (!json.ok) {
-        setError(mapError(json.error?.code, t));
-        setBusy(false);
-        return;
-      }
+      const result = await readApiData<AuthResult>(res, path);
       const params = new URLSearchParams(window.location.search);
-      window.location.href = params.get("return") || "/portal";
-    } catch {
-      setError(t("auth.genericError"));
+      const requested = params.get("return");
+      const authenticatedTenant = tenantFromAuthResult(result);
+      let destination = authenticatedTenant
+        ? `/portal/${encodeURIComponent(authenticatedTenant)}/dashboard`
+        : "/portal";
+      if (
+        requested?.startsWith("/") &&
+        !requested.startsWith("//") &&
+        !requested.includes("\\")
+      ) {
+        try {
+          const resolved = new URL(requested, window.location.origin);
+          if (resolved.origin === window.location.origin) {
+            destination = `${resolved.pathname}${resolved.search}${resolved.hash}`;
+          }
+        } catch {
+          // Malformed return targets fall back to the tenant portal.
+        }
+      }
+      window.location.href = destination;
+    } catch (cause) {
+      setError(
+        cause instanceof ApiResponseError
+          ? mapError(cause.code, t)
+          : t("auth.genericError"),
+      );
       setBusy(false);
     }
   }
@@ -118,11 +161,21 @@ function AuthFormInner({ initialMode }: { initialMode: "signin" | "signup" }) {
         >
           {t(isSignup ? "auth.signUpTitle" : "auth.signInTitle")}
         </h1>
-        <p style={{ marginTop: 6, marginBottom: 20, fontSize: 12.5, color: "var(--text-3)" }}>
+        <p
+          style={{
+            marginTop: 6,
+            marginBottom: 20,
+            fontSize: 12.5,
+            color: "var(--text-3)",
+          }}
+        >
           {t(isSignup ? "auth.signUpSubtitle" : "auth.signInSubtitle")}
         </p>
 
-        <form onSubmit={onSubmit} style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        <form
+          onSubmit={onSubmit}
+          style={{ display: "flex", flexDirection: "column", gap: 14 }}
+        >
           {isSignup ? (
             <Field
               label={t("auth.name")}
@@ -157,7 +210,8 @@ function AuthFormInner({ initialMode }: { initialMode: "signin" | "signup" }) {
                 fontSize: 12,
                 color: "var(--red)",
                 background: "color-mix(in srgb, var(--red) 10%, transparent)",
-                border: "1px solid color-mix(in srgb, var(--red) 30%, transparent)",
+                border:
+                  "1px solid color-mix(in srgb, var(--red) 30%, transparent)",
                 borderRadius: 6,
                 padding: "8px 10px",
               }}
@@ -188,7 +242,14 @@ function AuthFormInner({ initialMode }: { initialMode: "signin" | "signup" }) {
           </button>
         </form>
 
-        <div style={{ marginTop: 18, fontSize: 12, color: "var(--text-3)", textAlign: "center" }}>
+        <div
+          style={{
+            marginTop: 18,
+            fontSize: 12,
+            color: "var(--text-3)",
+            textAlign: "center",
+          }}
+        >
           {t(isSignup ? "auth.haveAccount" : "auth.noAccount")}{" "}
           <button
             type="button"
@@ -205,10 +266,6 @@ function AuthFormInner({ initialMode }: { initialMode: "signin" | "signup" }) {
           >
             {t(isSignup ? "auth.signInLink" : "auth.signUpLink")}
           </button>
-        </div>
-
-        <div style={{ marginTop: 14, fontSize: 10.5, color: "var(--text-4)", textAlign: "center", lineHeight: 1.5 }}>
-          {t("auth.devHint")}
         </div>
       </div>
     </div>

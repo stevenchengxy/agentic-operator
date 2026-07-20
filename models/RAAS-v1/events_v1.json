@@ -7,12 +7,19 @@
     "parent_version": null,
     "promoted_event_name": "AI_INTERVIEW_COMPLETED",
     "ai_involved": true,
-    "last_updated": "2026-05-18"
+    "last_updated": "2026-07-13",
+    "merge_note": "2026-07-13：合并 zhaopin-v1 的 16 个生产验证事件 + 依据 actions_v5 声明合成补全 21 个事件（readiness gate 0 blocking）。"
   },
   "events": [
     {
       "name": "AI_INTERVIEW_COMPLETED",
       "description": "候选人已完成AI面试流程，系统记录面试数据并准备生成评估分析报告。",
+      "producers": [
+        "interviewExecution"
+      ],
+      "consumers": [
+        "evaluateInterview"
+      ],
       "payload": {
         "source_action": "interviewExecution",
         "event_data": [
@@ -20,6 +27,11 @@
             "name": "interview_completed",
             "type": "Boolean",
             "target_object": null
+          },
+          {
+            "name": "interview_record_id",
+            "type": "String",
+            "target_object": "Interview_Record"
           }
         ],
         "state_mutations": [
@@ -57,8 +69,11 @@
     {
       "name": "CLIENT_RULES_PASSED",
       "description": "候选人简历通过客户特定的规则检查，可进入后续匹配评估流程。",
+      "producers": [
+        "matchResume"
+      ],
       "payload": {
-        "source_action": "ruleCheckerForClientResume",
+        "source_action": "matchResume",
         "event_data": [
           {
             "name": "client_id",
@@ -92,8 +107,11 @@
     {
       "name": "CLIENT_RULES_FAILED",
       "description": "候选人简历未通过客户特定的规则检查，流程终止或转入人工复核。",
+      "producers": [
+        "matchResume"
+      ],
       "payload": {
-        "source_action": "ruleCheckerForClientResume",
+        "source_action": "matchResume",
         "event_data": [
           {
             "name": "client_id",
@@ -128,6 +146,1135 @@
             ]
           }
         ]
+      }
+    },
+    {
+      "name": "REQUIREMENT_LOGGED",
+      "category": "JD创建与更新",
+      "description": "外部招聘需求已成功登记并结构化入库，触发 JD 生成（或需求分析）。",
+      "producers": [
+        "manualEntry"
+      ],
+      "consumers": [
+        "analyzeRequirement"
+      ],
+      "payload": {
+        "source_action": "manualEntry",
+        "event_data": [
+          {
+            "name": "job_requisition_id",
+            "type": "String",
+            "target_object": "Job_Requisition"
+          },
+          {
+            "name": "job_requisition_specification_id",
+            "type": "String",
+            "target_object": "Job_Requisition_Specification"
+          }
+        ],
+        "state_mutations": []
+      }
+    },
+    {
+      "name": "CLARIFICATION_READY",
+      "category": "JD创建与更新",
+      "description": "需求澄清确认无待澄清项或澄清已闭环，进入标准职位描述（JD）生成阶段。",
+      "producers": [
+        "clarifyRequirement"
+      ],
+      "consumers": [
+        "createJD"
+      ],
+      "payload": {
+        "source_action": "clarifyRequirement",
+        "event_data": [
+          {
+            "name": "job_requisition_id",
+            "type": "String",
+            "target_object": "Job_Requisition"
+          },
+          {
+            "name": "clarification_status",
+            "type": "String",
+            "target_object": null
+          },
+          {
+            "name": "must_have_skills",
+            "type": "List<String>",
+            "target_object": null
+          },
+          {
+            "name": "nice_to_have_skills",
+            "type": "List<String>",
+            "target_object": null
+          },
+          {
+            "name": "negative_requirement",
+            "type": "String",
+            "target_object": null
+          },
+          {
+            "name": "degree_requirement",
+            "type": "String",
+            "target_object": null
+          },
+          {
+            "name": "work_years",
+            "type": "Integer",
+            "target_object": null
+          },
+          {
+            "name": "city",
+            "type": "String",
+            "target_object": null
+          },
+          {
+            "name": "required_arrival_date",
+            "type": "Date",
+            "target_object": null
+          },
+          {
+            "name": "interview_mode",
+            "type": "String",
+            "target_object": null
+          },
+          {
+            "name": "headcount",
+            "type": "Integer",
+            "target_object": null
+          },
+          {
+            "name": "job_responsibility",
+            "type": "String",
+            "target_object": null
+          }
+        ],
+        "state_mutations": []
+      }
+    },
+    {
+      "name": "JD_REJECTED",
+      "category": "JD创建与更新",
+      "description": "生成的职位描述（JD）未通过审核，需退回重新创建或修正需求信息。",
+      "producers": [
+        "jdReview"
+      ],
+      "consumers": [
+        "createJD"
+      ],
+      "payload": {
+        "source_action": "jdReview",
+        "event_data": [
+          {
+            "name": "job_posting_id",
+            "type": "String",
+            "target_object": "Job_Posting"
+          },
+          {
+            "name": "job_requisition_id",
+            "type": "String",
+            "target_object": "Job_Requisition"
+          }
+        ],
+        "state_mutations": []
+      }
+    },
+    {
+      "name": "JD_GENERATED",
+      "category": "JD创建与更新",
+      "description": "基于已确认的需求，系统自动生成的标准化职位描述（JD）已就绪，等待审核发布。",
+      "producers": [
+        "createJD"
+      ],
+      "consumers": [
+        "jdReview"
+      ],
+      "payload": {
+        "source_action": "createJD",
+        "event_data": [
+          {
+            "name": "job_posting_id",
+            "type": "String",
+            "target_object": "Job_Posting"
+          },
+          {
+            "name": "jd_content",
+            "type": "String",
+            "target_object": null
+          }
+        ],
+        "state_mutations": []
+      }
+    },
+    {
+      "name": "RESUME_DOWNLOADED",
+      "category": "简历处理",
+      "description": "候选人简历已从招聘渠道成功采集并下载至系统暂存区，等待自动化处理。",
+      "producers": [
+        "resumeCollection"
+      ],
+      "consumers": [
+        "processResume"
+      ],
+      "payload": {
+        "source_action": "resumeCollection",
+        "event_data": [
+          {
+            "name": "resume_file_path",
+            "type": "String",
+            "target_object": "Resume"
+          },
+          {
+            "name": "job_requisition_id",
+            "type": "String",
+            "target_object": "Job_Requisition"
+          },
+          {
+            "name": "resume_file_paths",
+            "type": "List<String>",
+            "target_object": null
+          }
+        ],
+        "state_mutations": []
+      }
+    },
+    {
+      "name": "RESUME_PROCESSED",
+      "category": "简历处理",
+      "description": "简历已完成结构化解析、查重锁定与完整性校验，候选人档案就绪，进入后续身份去重与匹配环节。",
+      "producers": [
+        "processResume",
+        "resumeFix"
+      ],
+      "consumers": [
+        "matchResume"
+      ],
+      "payload": {
+        "source_action": "processResume",
+        "event_data": [
+          {
+            "name": "candidate_id",
+            "type": "String",
+            "target_object": "Candidate"
+          },
+          {
+            "name": "resume_id",
+            "type": "String",
+            "target_object": "Resume"
+          },
+          {
+            "name": "process_status",
+            "type": "String",
+            "target_object": null
+          },
+          {
+            "name": "fix_result",
+            "type": "String",
+            "target_object": null
+          }
+        ],
+        "state_mutations": []
+      }
+    },
+    {
+      "name": "RESUME_LOCKED_CONFLICT",
+      "category": "简历处理",
+      "description": "简历处理时检测到唯一性归属冲突（候选人已被其他顾问锁定），当前处理流程中止。",
+      "producers": [
+        "processResume"
+      ],
+      "payload": {
+        "source_action": "processResume",
+        "event_data": [
+          {
+            "name": "candidate_id",
+            "type": "String",
+            "target_object": "Candidate"
+          }
+        ],
+        "state_mutations": []
+      }
+    },
+    {
+      "name": "CANDIDATE_IDENTITY_CHECKED",
+      "category": "简历处理",
+      "description": "候选人身份去重检查完成：已按 9-15 三级规则判定本次上传候选人是否与已有候选人为同一人，并写入身份检查审计结果。",
+      "payload": {
+        "source_action": null,
+        "event_data": [
+          {
+            "name": "candidate_id",
+            "type": "String",
+            "target_object": "Candidate"
+          },
+          {
+            "name": "same_person",
+            "type": "Boolean",
+            "target_object": null
+          }
+        ],
+        "state_mutations": []
+      }
+    },
+    {
+      "name": "MATCH_RULE_CHECK_PASSED",
+      "category": "简历匹配",
+      "description": "候选人简历通过 matchResume 前置规则检查（关联公司冷冻期 / 国籍限制 / 回流冷冻期等），进入智能匹配评分环节。",
+      "payload": {
+        "source_action": null,
+        "event_data": [
+          {
+            "name": "candidate_id",
+            "type": "String",
+            "target_object": "Candidate"
+          },
+          {
+            "name": "job_requisition_id",
+            "type": "String",
+            "target_object": "Job_Requisition"
+          }
+        ],
+        "state_mutations": []
+      }
+    },
+    {
+      "name": "MATCH_RULE_CHECK_FAILED",
+      "category": "简历匹配",
+      "description": "候选人简历未通过 matchResume 前置规则检查，不进入智能匹配评分环节，触发审计与人工复核。",
+      "payload": {
+        "source_action": null,
+        "event_data": [
+          {
+            "name": "candidate_id",
+            "type": "String",
+            "target_object": "Candidate"
+          },
+          {
+            "name": "failure_reasons",
+            "type": "Array<String>",
+            "target_object": null
+          }
+        ],
+        "state_mutations": []
+      }
+    },
+    {
+      "name": "MATCH_PASSED_NEED_INTERVIEW",
+      "category": "简历匹配",
+      "description": "候选人通过匹配评分，根据业务规则需触发内部初试邀请流程。",
+      "producers": [
+        "matchResume"
+      ],
+      "consumers": [
+        "inviteInternalInterview"
+      ],
+      "payload": {
+        "source_action": "matchResume",
+        "event_data": [
+          {
+            "name": "candidate_id",
+            "type": "String",
+            "target_object": "Candidate"
+          },
+          {
+            "name": "overall_match_score",
+            "type": "Number",
+            "target_object": null
+          },
+          {
+            "name": "match_results",
+            "type": "List<JSON>",
+            "target_object": null
+          },
+          {
+            "name": "overall_status",
+            "type": "String",
+            "target_object": null
+          }
+        ],
+        "state_mutations": []
+      }
+    },
+    {
+      "name": "MATCH_PASSED_NO_INTERVIEW",
+      "category": "简历匹配",
+      "description": "候选人简历通过高精度匹配校验且符合直接推荐规则，跳过面试环节进入推荐包封装。",
+      "producers": [
+        "matchResume"
+      ],
+      "consumers": [
+        "refineResume"
+      ],
+      "payload": {
+        "source_action": "matchResume",
+        "event_data": [
+          {
+            "name": "candidate_id",
+            "type": "String",
+            "target_object": "Candidate"
+          }
+        ],
+        "state_mutations": []
+      }
+    },
+    {
+      "name": "MATCH_FAILED",
+      "category": "简历匹配",
+      "description": "候选人未通过匹配评分门槛（如硬性条件缺项、得分过低），匹配流程自动关闭。",
+      "producers": [
+        "matchResume"
+      ],
+      "payload": {
+        "source_action": "matchResume",
+        "event_data": [
+          {
+            "name": "candidate_id",
+            "type": "String",
+            "target_object": "Candidate"
+          }
+        ],
+        "state_mutations": []
+      }
+    },
+    {
+      "name": "INTERVIEW_INVITATION_REQUESTED",
+      "category": "内部面试邀约",
+      "description": "RaaS 在 HSM/审批确认后请求 AO 发起 AI 面试邀请；触发 inviteInternalInterview 调用 RoboHire /invite-candidate（外部边界事件）。",
+      "payload": {
+        "source_action": null,
+        "event_data": [
+          {
+            "name": "candidate_id",
+            "type": "String",
+            "target_object": "Candidate"
+          },
+          {
+            "name": "job_requisition_id",
+            "type": "String",
+            "target_object": "Job_Requisition"
+          }
+        ],
+        "state_mutations": []
+      }
+    },
+    {
+      "name": "INTERVIEW_INVITATION_SENT",
+      "category": "内部面试邀约",
+      "description": "AI 面试邀请已成功通过指定渠道发送给候选人，驱动面试执行环节。",
+      "producers": [
+        "inviteInternalInterview"
+      ],
+      "consumers": [
+        "interviewExecution"
+      ],
+      "payload": {
+        "source_action": "inviteInternalInterview",
+        "event_data": [
+          {
+            "name": "candidate_id",
+            "type": "String",
+            "target_object": "Candidate"
+          },
+          {
+            "name": "interview_record_id",
+            "type": "String",
+            "target_object": "Interview_Record"
+          },
+          {
+            "name": "invitation_status",
+            "type": "String",
+            "target_object": null
+          }
+        ],
+        "state_mutations": []
+      }
+    },
+    {
+      "name": "INTERVIEW_INVITATION_FAILED",
+      "category": "内部面试邀约",
+      "description": "AO 发起 AI 面试邀请失败（payload 缺关键字段 / 简历或 JD 回查失败 / RoboHire 报错 / 上游拒绝），供 RaaS 重试或人工跟进。",
+      "payload": {
+        "source_action": null,
+        "event_data": [
+          {
+            "name": "candidate_id",
+            "type": "String",
+            "target_object": "Candidate"
+          },
+          {
+            "name": "error_code",
+            "type": "String",
+            "target_object": null
+          }
+        ],
+        "state_mutations": []
+      }
+    },
+    {
+      "name": "SCHEDULED_SYNC",
+      "description": "定时同步触发信号（外部边界事件，无业务动作生产者）：按客户系统配置的同步频率周期性唤起需求同步。从动作 syncFromClientSystem 的声明推导（合成补全）。",
+      "consumers": [
+        "syncFromClientSystem"
+      ],
+      "payload": {
+        "source_action": null,
+        "event_data": [
+          {
+            "name": "client_rms_system_id",
+            "type": "String",
+            "target_object": "Client_RMS_System"
+          },
+          {
+            "name": "client_id",
+            "type": "String",
+            "target_object": "Client"
+          }
+        ],
+        "state_mutations": []
+      }
+    },
+    {
+      "name": "REQUIREMENT_SYNCED",
+      "description": "客户系统招聘需求同步完成，需求数据已落库，可进入需求分析。从动作 syncFromClientSystem 的声明推导（合成补全）。",
+      "producers": [
+        "syncFromClientSystem"
+      ],
+      "consumers": [
+        "analyzeRequirement"
+      ],
+      "payload": {
+        "source_action": "syncFromClientSystem",
+        "event_data": [
+          {
+            "name": "sync_result",
+            "type": "String",
+            "target_object": null
+          },
+          {
+            "name": "synced_job_requisition_ids",
+            "type": "List<String>",
+            "target_object": "Job_Requisition"
+          },
+          {
+            "name": "job_requisition_id",
+            "type": "String",
+            "target_object": "Job_Requisition"
+          }
+        ],
+        "state_mutations": []
+      }
+    },
+    {
+      "name": "SYNC_FAILED_ALERT",
+      "description": "客户系统需求同步失败，通知运维/顾问人工介入。从动作 syncFromClientSystem 的声明推导（合成补全）。",
+      "producers": [
+        "syncFromClientSystem"
+      ],
+      "payload": {
+        "source_action": "syncFromClientSystem",
+        "event_data": [
+          {
+            "name": "client_rms_system_id",
+            "type": "String",
+            "target_object": "Client_RMS_System"
+          },
+          {
+            "name": "failure_reasons",
+            "type": "Array<String>",
+            "target_object": null
+          }
+        ],
+        "state_mutations": []
+      }
+    },
+    {
+      "name": "ANALYSIS_COMPLETED",
+      "description": "招聘需求结构化分析完成，关键要素已抽取并写回招聘岗位。从动作 analyzeRequirement 的声明推导（合成补全）。",
+      "producers": [
+        "analyzeRequirement"
+      ],
+      "consumers": [
+        "clarifyRequirement"
+      ],
+      "payload": {
+        "source_action": "analyzeRequirement",
+        "event_data": [
+          {
+            "name": "job_requisition_id",
+            "type": "String",
+            "target_object": "Job_Requisition"
+          },
+          {
+            "name": "degree_requirement",
+            "type": "String",
+            "target_object": "Job_Requisition"
+          },
+          {
+            "name": "work_years",
+            "type": "Integer",
+            "target_object": "Job_Requisition"
+          },
+          {
+            "name": "city",
+            "type": "String",
+            "target_object": "Job_Requisition"
+          },
+          {
+            "name": "required_arrival_date",
+            "type": "Date",
+            "target_object": "Job_Requisition"
+          },
+          {
+            "name": "interview_mode",
+            "type": "String",
+            "target_object": "Job_Requisition"
+          },
+          {
+            "name": "headcount",
+            "type": "Integer",
+            "target_object": "Job_Requisition"
+          },
+          {
+            "name": "job_responsibility",
+            "type": "String",
+            "target_object": "Job_Requisition"
+          },
+          {
+            "name": "must_have_skills",
+            "type": "List<String>",
+            "target_object": "Job_Requisition"
+          },
+          {
+            "name": "nice_to_have_skills",
+            "type": "List<String>",
+            "target_object": "Job_Requisition"
+          },
+          {
+            "name": "negative_requirement",
+            "type": "String",
+            "target_object": "Job_Requisition"
+          },
+          {
+            "name": "gender",
+            "type": "String",
+            "target_object": "Job_Requisition"
+          },
+          {
+            "name": "recruitment_strategies",
+            "type": "String",
+            "target_object": "Job_Requisition"
+          },
+          {
+            "name": "clarify_questions",
+            "type": "List<String>",
+            "target_object": "Job_Requisition"
+          },
+          {
+            "name": "fill_difficulty",
+            "type": "String",
+            "target_object": "Job_Requisition"
+          }
+        ],
+        "state_mutations": []
+      }
+    },
+    {
+      "name": "ANALYSIS_BLOCKED",
+      "description": "招聘需求分析受阻（关键信息缺失或矛盾），需人工跟进。从动作 analyzeRequirement 的声明推导（合成补全）。",
+      "producers": [
+        "analyzeRequirement"
+      ],
+      "payload": {
+        "source_action": "analyzeRequirement",
+        "event_data": [
+          {
+            "name": "job_requisition_id",
+            "type": "String",
+            "target_object": "Job_Requisition"
+          },
+          {
+            "name": "failure_reasons",
+            "type": "Array<String>",
+            "target_object": null
+          }
+        ],
+        "state_mutations": []
+      }
+    },
+    {
+      "name": "CLARIFICATION_INCOMPLETE",
+      "description": "需求澄清未闭环，仍存在待澄清问题，转人工再澄清。从动作 clarifyRequirement 的声明推导（合成补全）。",
+      "producers": [
+        "clarifyRequirement"
+      ],
+      "consumers": [
+        "requirementReClarification"
+      ],
+      "payload": {
+        "source_action": "clarifyRequirement",
+        "event_data": [
+          {
+            "name": "job_requisition_id",
+            "type": "String",
+            "target_object": "Job_Requisition"
+          },
+          {
+            "name": "clarify_questions",
+            "type": "List<String>",
+            "target_object": "Job_Requisition"
+          }
+        ],
+        "state_mutations": []
+      }
+    },
+    {
+      "name": "CLARIFICATION_RETRY",
+      "description": "人工补充澄清反馈完成，需求重新进入分析环节。从动作 requirementReClarification 的声明推导（合成补全）。",
+      "producers": [
+        "requirementReClarification"
+      ],
+      "consumers": [
+        "analyzeRequirement"
+      ],
+      "payload": {
+        "source_action": "requirementReClarification",
+        "event_data": [
+          {
+            "name": "job_requisition_id",
+            "type": "String",
+            "target_object": "Job_Requisition"
+          },
+          {
+            "name": "clarification_feedback",
+            "type": "String",
+            "target_object": null
+          }
+        ],
+        "state_mutations": []
+      }
+    },
+    {
+      "name": "JD_APPROVED",
+      "description": "职位描述（JD）通过人工审核，可进入招聘任务分派。从动作 jdReview 的声明推导（合成补全）。",
+      "producers": [
+        "jdReview"
+      ],
+      "consumers": [
+        "assignRecruitTasks"
+      ],
+      "payload": {
+        "source_action": "jdReview",
+        "event_data": [
+          {
+            "name": "job_posting_id",
+            "type": "String",
+            "target_object": "Job_Posting"
+          },
+          {
+            "name": "review_result",
+            "type": "String",
+            "target_object": null
+          }
+        ],
+        "state_mutations": []
+      }
+    },
+    {
+      "name": "TASK_ASSIGNED",
+      "description": "招聘任务已分派至招聘专员，等待渠道发布。从动作 assignRecruitTasks 的声明推导（合成补全）。",
+      "producers": [
+        "assignRecruitTasks"
+      ],
+      "consumers": [
+        "publishJD"
+      ],
+      "payload": {
+        "source_action": "assignRecruitTasks",
+        "event_data": [
+          {
+            "name": "job_posting_id",
+            "type": "String",
+            "target_object": "Job_Posting"
+          },
+          {
+            "name": "job_requisition_id",
+            "type": "String",
+            "target_object": "Job_Requisition"
+          },
+          {
+            "name": "assigned_recruiter_id",
+            "type": "String",
+            "target_object": "Employee"
+          },
+          {
+            "name": "assignment_result",
+            "type": "String",
+            "target_object": null
+          }
+        ],
+        "state_mutations": []
+      }
+    },
+    {
+      "name": "CHANNEL_PUBLISHED",
+      "description": "职位已在招聘渠道成功发布（自动发布或人工补发），进入简历采集。从动作 publishJD / manualPublish 的声明推导（合成补全）。",
+      "producers": [
+        "publishJD",
+        "manualPublish"
+      ],
+      "consumers": [
+        "resumeCollection"
+      ],
+      "payload": {
+        "source_action": "publishJD",
+        "event_data": [
+          {
+            "name": "job_posting_id",
+            "type": "String",
+            "target_object": "Job_Posting"
+          },
+          {
+            "name": "publish_result",
+            "type": "String",
+            "target_object": null
+          },
+          {
+            "name": "manual_publish_result",
+            "type": "String",
+            "target_object": null
+          }
+        ],
+        "state_mutations": []
+      }
+    },
+    {
+      "name": "CHANNEL_PUBLISHED_FAILED",
+      "description": "渠道自动发布失败，转人工发布。从动作 publishJD 的声明推导（合成补全）。",
+      "producers": [
+        "publishJD"
+      ],
+      "consumers": [
+        "manualPublish"
+      ],
+      "payload": {
+        "source_action": "publishJD",
+        "event_data": [
+          {
+            "name": "job_posting_id",
+            "type": "String",
+            "target_object": "Job_Posting"
+          },
+          {
+            "name": "failure_reasons",
+            "type": "Array<String>",
+            "target_object": null
+          }
+        ],
+        "state_mutations": []
+      }
+    },
+    {
+      "name": "RESUME_PARSE_ERROR",
+      "description": "简历解析失败（格式异常/内容不可读），转人工修复。从动作 processResume 的声明推导（合成补全）。",
+      "producers": [
+        "processResume"
+      ],
+      "consumers": [
+        "resumeFix"
+      ],
+      "payload": {
+        "source_action": "processResume",
+        "event_data": [
+          {
+            "name": "resume_id",
+            "type": "String",
+            "target_object": "Resume"
+          },
+          {
+            "name": "resume_file_path",
+            "type": "String",
+            "target_object": "Resume"
+          },
+          {
+            "name": "failure_reasons",
+            "type": "Array<String>",
+            "target_object": null
+          }
+        ],
+        "state_mutations": []
+      }
+    },
+    {
+      "name": "RESUME_INFO_MISSING",
+      "description": "简历解析完成但关键信息缺失，通知顾问补充。从动作 processResume 的声明推导（合成补全）。",
+      "producers": [
+        "processResume"
+      ],
+      "payload": {
+        "source_action": "processResume",
+        "event_data": [
+          {
+            "name": "resume_id",
+            "type": "String",
+            "target_object": "Resume"
+          },
+          {
+            "name": "failure_reasons",
+            "type": "Array<String>",
+            "target_object": null
+          }
+        ],
+        "state_mutations": []
+      }
+    },
+    {
+      "name": "EVALUATION_PASSED",
+      "description": "面试综合评估通过，进入简历优化与推荐环节。从动作 evaluateInterview 的声明推导（合成补全）。",
+      "producers": [
+        "evaluateInterview"
+      ],
+      "consumers": [
+        "refineResume"
+      ],
+      "payload": {
+        "source_action": "evaluateInterview",
+        "event_data": [
+          {
+            "name": "evaluation_report_id",
+            "type": "String",
+            "target_object": "Evaluation_Report"
+          },
+          {
+            "name": "evaluation_result",
+            "type": "String",
+            "target_object": null
+          },
+          {
+            "name": "application_id",
+            "type": "String",
+            "target_object": "Application"
+          },
+          {
+            "name": "candidate_id",
+            "type": "String",
+            "target_object": "Candidate"
+          }
+        ],
+        "state_mutations": []
+      }
+    },
+    {
+      "name": "EVALUATION_FAILED",
+      "description": "面试综合评估未通过，流程关闭并通知相关人。从动作 evaluateInterview 的声明推导（合成补全）。",
+      "producers": [
+        "evaluateInterview"
+      ],
+      "payload": {
+        "source_action": "evaluateInterview",
+        "event_data": [
+          {
+            "name": "interview_record_id",
+            "type": "String",
+            "target_object": "Interview_Record"
+          },
+          {
+            "name": "failure_reasons",
+            "type": "Array<String>",
+            "target_object": null
+          }
+        ],
+        "state_mutations": []
+      }
+    },
+    {
+      "name": "RESUME_OPTIMIZED",
+      "description": "简历已按客户偏好优化（或人工补充完成），可生成推荐材料包。从动作 refineResume / packageSupplement 的声明推导（合成补全）。",
+      "producers": [
+        "refineResume",
+        "packageSupplement"
+      ],
+      "consumers": [
+        "generateRecommendationPackage"
+      ],
+      "payload": {
+        "source_action": "refineResume",
+        "event_data": [
+          {
+            "name": "resume_id",
+            "type": "String",
+            "target_object": "Resume"
+          },
+          {
+            "name": "job_requisition_id",
+            "type": "String",
+            "target_object": "Job_Requisition"
+          },
+          {
+            "name": "candidate_id",
+            "type": "String",
+            "target_object": "Candidate"
+          },
+          {
+            "name": "refined_resume_path",
+            "type": "String",
+            "target_object": null
+          },
+          {
+            "name": "supplement_status",
+            "type": "String",
+            "target_object": null
+          }
+        ],
+        "state_mutations": []
+      }
+    },
+    {
+      "name": "PACKAGE_GENERATED",
+      "description": "候选人推荐材料包生成完成，等待人工审核。从动作 generateRecommendationPackage 的声明推导（合成补全）。",
+      "producers": [
+        "generateRecommendationPackage"
+      ],
+      "consumers": [
+        "packageReview"
+      ],
+      "payload": {
+        "source_action": "generateRecommendationPackage",
+        "event_data": [
+          {
+            "name": "recommendation_material_id",
+            "type": "String",
+            "target_object": "Recommendation_Material"
+          },
+          {
+            "name": "package_status",
+            "type": "String",
+            "target_object": null
+          }
+        ],
+        "state_mutations": []
+      }
+    },
+    {
+      "name": "PACKAGE_MISSING_INFO",
+      "description": "推荐材料包信息不全，转人工补充。从动作 generateRecommendationPackage 的声明推导（合成补全）。",
+      "producers": [
+        "generateRecommendationPackage"
+      ],
+      "consumers": [
+        "packageSupplement"
+      ],
+      "payload": {
+        "source_action": "generateRecommendationPackage",
+        "event_data": [
+          {
+            "name": "recommendation_material_id",
+            "type": "String",
+            "target_object": "Recommendation_Material"
+          },
+          {
+            "name": "candidate_id",
+            "type": "String",
+            "target_object": "Candidate"
+          },
+          {
+            "name": "failure_reasons",
+            "type": "Array<String>",
+            "target_object": null
+          }
+        ],
+        "state_mutations": []
+      }
+    },
+    {
+      "name": "PACKAGE_APPROVED",
+      "description": "推荐材料包通过人工审核，可提交客户门户。从动作 packageReview 的声明推导（合成补全）。",
+      "producers": [
+        "packageReview"
+      ],
+      "consumers": [
+        "submitToClientPortal"
+      ],
+      "payload": {
+        "source_action": "packageReview",
+        "event_data": [
+          {
+            "name": "recommendation_material_id",
+            "type": "String",
+            "target_object": "Recommendation_Material"
+          },
+          {
+            "name": "review_result",
+            "type": "String",
+            "target_object": null
+          },
+          {
+            "name": "review_comments",
+            "type": "String",
+            "target_object": null
+          }
+        ],
+        "state_mutations": []
+      }
+    },
+    {
+      "name": "APPLICATION_SUBMITTED",
+      "description": "候选人推荐已成功提交至客户门户。从动作 submitToClientPortal 的声明推导（合成补全）。",
+      "producers": [
+        "submitToClientPortal"
+      ],
+      "payload": {
+        "source_action": "submitToClientPortal",
+        "event_data": [
+          {
+            "name": "recommendation_material_id",
+            "type": "String",
+            "target_object": "Recommendation_Material"
+          },
+          {
+            "name": "job_requisition_id",
+            "type": "String",
+            "target_object": "Job_Requisition"
+          },
+          {
+            "name": "candidate_id",
+            "type": "String",
+            "target_object": "Candidate"
+          },
+          {
+            "name": "submission_result",
+            "type": "String",
+            "target_object": null
+          }
+        ],
+        "state_mutations": []
+      }
+    },
+    {
+      "name": "SUBMISSION_FAILED",
+      "description": "向客户门户提交失败，转人工重试或跟进。从动作 submitToClientPortal 的声明推导（合成补全）。",
+      "producers": [
+        "submitToClientPortal"
+      ],
+      "payload": {
+        "source_action": "submitToClientPortal",
+        "event_data": [
+          {
+            "name": "recommendation_material_id",
+            "type": "String",
+            "target_object": "Recommendation_Material"
+          },
+          {
+            "name": "candidate_id",
+            "type": "String",
+            "target_object": "Candidate"
+          },
+          {
+            "name": "failure_reasons",
+            "type": "Array<String>",
+            "target_object": null
+          }
+        ],
+        "state_mutations": []
       }
     }
   ]

@@ -43,9 +43,12 @@ import { serve } from "inngest/fastify";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import {
   appIdForTenant,
+  captureTenantEventAdapterState,
   getTenantInngest,
   mainTenantSlug,
+  restoreTenantEventAdapterState,
   SYSTEM_SLUG,
+  tenantInngestServeOrigin,
 } from "@agentic/runtime";
 
 type ServeHandler = (
@@ -94,6 +97,12 @@ function buildEntry(
   const handler = serve({
     client: client as never,
     functions: fns as never,
+    // The request may arrive through the sandbox broker gateway.  Without an
+    // explicit callback origin the SDK derives the registration URL from the
+    // gateway's upstream Host header (`sandbox-workload`), which the isolated
+    // broker cannot reach.  Resolve the reviewed per-tenant origin instead of
+    // trusting transport headers.
+    serveOrigin: tenantInngestServeOrigin(slug),
     // Explicit per-app servePath: without it the SDK auto-detects `/inngest`
     // for EVERY app and they collide on one callback URL (the dev server
     // overwrites registrations). This is the load-bearing per-app isolation.
@@ -173,6 +182,19 @@ export function listRegisteredApps(): Array<{
   }));
 }
 
+/**
+ * B3 (sandbox teardown GC) — drop a single app entry from the in-memory
+ * registry. `reregisterInngest` only *rebuilds* apps and its `state.apps.delete`
+ * (in the no-slug full rebuild) fires solely when a slug has NO models folder —
+ * so a torn-down sandbox whose folder was left on disk stays a zombie forever,
+ * inflating `totalFnCount()` and the reconcile PUT loop. Teardown deletes the
+ * models folder AND calls this to evict the live handler in one shot. Returns
+ * whether an entry was actually present.
+ */
+export function unregisterApp(appId: string): boolean {
+  return state.apps.delete(appId);
+}
+
 function totalFnCount(): number {
   let n = 0;
   for (const e of state.apps.values()) n += e.fns.length;
@@ -236,28 +258,46 @@ async function _reregisterImpl(opts: {
       // A throw here (broken manifest) propagates WITHOUT mutating
       // state.apps, so the tenant keeps its last-good function set.
       const slug = opts.tenantSlug;
-      const fns = await bootstrap.rebuildTenantFns(slug);
-      const appId = appIdForTenant(slug);
-      // fns === [] means archived / unknown / all-agents-disabled → serve zero
-      // functions but KEEP the app entry so `/inngest/<slug>` still responds
-      // and Inngest shows the app offline (functionCount 0).
-      state.apps.set(appId, buildEntry(slug, getTenantInngest(slug), fns));
-      scopedAppId = appId;
-      scopedAppFnCount = fns.length;
+      const adapterState = captureTenantEventAdapterState();
+      try {
+        const fns = await bootstrap.rebuildTenantFns(slug);
+        const appId = appIdForTenant(slug);
+        // Build before swapping the map. If serve/client configuration is
+        // invalid, both the handler and tenant event adapter remain last-good.
+        const nextEntry = buildEntry(slug, getTenantInngest(slug), fns);
+        // fns === [] means archived / unknown / all-agents-disabled → serve
+        // zero functions but KEEP the app entry so `/inngest/<slug>` still
+        // responds and Inngest shows the app offline (functionCount 0).
+        state.apps.set(appId, nextEntry);
+        scopedAppId = appId;
+        scopedAppFnCount = fns.length;
+      } catch (error) {
+        restoreTenantEventAdapterState(adapterState);
+        throw error;
+      }
     } else if (bootstrap.rebuildAllTenantFnsByTenant) {
       // ── Full rebuild of every tenant app (no slug). ───────────────────
-      const byTenant = await bootstrap.rebuildAllTenantFnsByTenant();
-      const liveSlugs = new Set(byTenant.keys());
-      // Drop tenant apps that no longer have a model folder (tenant removed).
-      for (const [appId, entry] of [...state.apps.entries()]) {
-        if (entry.slug === SYSTEM_SLUG) continue;
-        if (!liveSlugs.has(entry.slug)) state.apps.delete(appId);
-      }
-      for (const [slug, fns] of byTenant) {
-        state.apps.set(
-          appIdForTenant(slug),
-          buildEntry(slug, getTenantInngest(slug), fns),
-        );
+      const adapterState = captureTenantEventAdapterState();
+      try {
+        const byTenant = await bootstrap.rebuildAllTenantFnsByTenant();
+        const liveSlugs = new Set(byTenant.keys());
+        // Stage the complete next map. No handler or adapter becomes visible
+        // when any tenant's serve configuration fails to build.
+        const nextApps = new Map(state.apps);
+        for (const [appId, entry] of [...nextApps.entries()]) {
+          if (entry.slug === SYSTEM_SLUG) continue;
+          if (!liveSlugs.has(entry.slug)) nextApps.delete(appId);
+        }
+        for (const [slug, fns] of byTenant) {
+          nextApps.set(
+            appIdForTenant(slug),
+            buildEntry(slug, getTenantInngest(slug), fns),
+          );
+        }
+        state.apps = nextApps;
+      } catch (error) {
+        restoreTenantEventAdapterState(adapterState);
+        throw error;
       }
     }
   }
@@ -303,4 +343,11 @@ export function _inspectRegistryForTests(): {
     tenantAppCount: tenantApps.length,
     totalFns: totalFnCount(),
   };
+}
+
+/** Test-only: remove every served app/function slice. */
+export function __resetInngestRegistryForTests(): void {
+  state.apps.clear();
+  state.systemBase = [];
+  state.systemCodeAgent = [];
 }

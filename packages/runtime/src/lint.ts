@@ -90,6 +90,12 @@ export interface LintContext {
    * first-time imports.
    */
   liveAgentIds?: ReadonlyMap<string, string>;
+  /** Non-empty environment-variable names visible to the deployment API.
+   * Values are deliberately excluded so preflight never serializes secrets. */
+  configuredEnv?: ReadonlySet<string>;
+  /** Names of schedule cadence variables explicitly set to `off`/`disabled`.
+   * Only names cross the lint boundary; their values are never returned. */
+  disabledScheduleEnv?: ReadonlySet<string>;
 }
 
 export interface LintResult {
@@ -373,26 +379,90 @@ export function lint(
     });
   }
 
-  // --- 8. cron expressions parse → conflict `invalid_cron` ----------------
+  // --- 8. cron expressions / env-backed schedule configuration ------------
   // Per review C4 the cron check was an issue (warning-only, non-fixable).
   // Promote to a conflict so the SPA's Resolve step surfaces it alongside
   // the other lint output, and offer "clear the cron" as the auto-fix.
   for (let i = 0; i < manifest.length; i += 1) {
-    const a = manifest[i]! as AgentSpec & { cron?: string };
-    if (!a.cron) continue;
-    if (isPlausibleCron(a.cron)) continue;
-    conflicts.push({
-      path: `agents[${i}].cron`,
-      type: "invalid_cron",
-      severity: "warn",
-      detail: `agent "${a.name}" has cron expression "${a.cron}" which does not look like a valid 5/6-field cron or named alias`,
-      suggestion: `clear the cron field, or fix the expression`,
-      auto_fix: {
+    const a = manifest[i]! as AgentSpec & {
+      cron?: string;
+      cron_timezone?: string;
+      cron_env?: string;
+      cron_timezone_env?: string;
+    };
+    if (!a.cron && !a.cron_env && (a.cron_timezone || a.cron_timezone_env)) {
+      conflicts.push({
+        path: `agents[${i}].${a.cron_timezone_env ? "cron_timezone_env" : "cron_timezone"}`,
+        type: "invalid_cron",
+        severity: "block",
+        detail: `agent "${a.name}" declares a cron timezone without a cron schedule`,
+        suggestion: "declare cron or cron_env, or remove the unused timezone",
+      });
+      continue;
+    }
+    if (a.cron && a.cron_env) {
+      conflicts.push({
+        path: `agents[${i}].cron_env`,
+        type: "invalid_cron",
+        severity: "block",
+        detail: `agent "${a.name}" declares both cron and cron_env; schedule authority is ambiguous`,
+        suggestion: "keep exactly one schedule source",
+      });
+      continue;
+    }
+    if (a.cron && !isPlausibleCron(a.cron)) {
+      conflicts.push({
         path: `agents[${i}].cron`,
-        action: "accept_suggestion",
-        override_value: null,
-      },
-    });
+        type: "invalid_cron",
+        severity: "warn",
+        detail: `agent "${a.name}" has cron expression "${a.cron}" which does not look like a valid 5/6-field cron or named alias`,
+        suggestion: `clear the cron field, or fix the expression`,
+        auto_fix: {
+          path: `agents[${i}].cron`,
+          action: "accept_suggestion",
+          override_value: null,
+        },
+      });
+    }
+    const refs = [
+      ["cron_env", a.cron_env],
+      ["cron_timezone_env", a.cron_timezone_env],
+    ] as const;
+    const explicitlyDisabled = Boolean(
+      a.cron_env && ctx.disabledScheduleEnv?.has(a.cron_env),
+    );
+    const missing: string[] = [];
+    for (const [field, name] of refs) {
+      if (!name) continue;
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+        conflicts.push({
+          path: `agents[${i}].${field}`,
+          type: "invalid_cron",
+          severity: "block",
+          detail: `agent "${a.name}" ${field} must name an environment variable`,
+          suggestion: "use an environment variable name such as ACME_SYNC_CRON",
+        });
+      } else if (explicitlyDisabled && field === "cron_timezone_env") {
+        // A deliberately disabled cadence never evaluates its timezone.
+      } else if (ctx.configuredEnv && !ctx.configuredEnv.has(name)) {
+        missing.push(name);
+      }
+    }
+    if (explicitlyDisabled) {
+      issues.push({
+        path: `agents[${i}].cron_env`,
+        message: `agent "${a.name}" schedule is explicitly disabled by ${a.cron_env}`,
+        severity: "info",
+        code: "schedule_env_disabled",
+      });
+    } else if (missing.length > 0) {
+      issues.push({
+        path: `agents[${i}].cron_env`,
+        message: `agent "${a.name}" schedule is declared but unconfigured; set ${missing.join(", ")} or set the cadence environment variable referenced by cron_env to "disabled"`,
+        severity: "warning",
+        code: "schedule_env_unconfigured",
+      });
+    }
   }
 
   // --- 9. No cycles in the trigger→emit graph -----------------------------

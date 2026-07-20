@@ -67,8 +67,8 @@ Commander-free hand-rolled arg parser at `apps/cli/src/cli.ts:1-60`. Four comman
 ### PF-MR-04 — `apps/inngest-worker` (Dockerfile-only wrapper) ✅
 Not a TypeScript workspace — only a `Dockerfile` wrapping the official `inngest/inngest:latest` image. Decision documented in `docs/audits/p4-ops-status.md §2`: agent code stays in-process inside the API container so steps can read SQLite directly; the Inngest broker is a separate container only because the official image is more battle-tested for queueing than a hand-rolled one. The api's `bootstrapRuntime()` call registers durable functions; the broker queues + replays events.
 
-### PF-MR-05 — `packages/agent-runtime` (formerly `@agentic/agents`) ✅
-Hosts `BaseAgent`, the code-agent registry, and the synchronous run engine that backs `POST /v1/agents/:name/invoke`. CLAUDE.md notes this used to be `@agentic/agents`; the new name `@agentic/agent-runtime` is the canonical going-forward. API still depends on the workspace name `@agentic/agents` (see `apps/api/package.json:18`); the rename is layered in but not yet propagated to API imports.
+### PF-MR-05 — `packages/agents` (`@agentic/agents`) ✅
+Canonical home of `BaseAgent`, the code-agent registry, multi-turn tool/repair run engine, system roster and durable code-agent Inngest functions. The API and TC-16/17 consume this same package; the unused parallel `agent-runtime` workspace was removed to prevent behavioral drift.
 
 ### PF-MR-06 — `packages/agent-sdk` (formerly `@agentic/agent-kit`) ✅
 Public SDK exports: `defineTool`, `definePrompt`, `MemoryHandle`, `TenantRegistry`. Consumed by `packages/runtime` for the step-engine tool dispatch. Tenant packages (e.g. `tenants/raas`) declare custom tools/prompts against this SDK and register them in the api's `TENANT_REGISTRIES` constant at `apps/api/src/bootstrap.ts`.
@@ -94,10 +94,11 @@ First-party mock tools: `http.fetch`, `llm.call`, `channel.publish`. Used by the
 ### PF-MR-13 — `tenants/raas` (example tenant) ✅
 Custom tools/prompts/registry for the RAAS demo tenant. Declared in `apps/api/package.json` as `"@tenants/raas": "workspace:*"` and registered in `TENANT_REGISTRIES` (`apps/api/src/bootstrap.ts`). This wiring lives in the API (not in `@agentic/runtime`) because pnpm's isolated module resolution requires each package to own its own deps. Adding a second tenant of this style takes ~15 minutes per CLAUDE.md.
 
-### PF-MR-14 — `data/system-agents/` ✅
-Not a workspace, but worth cataloguing: the on-disk home for system-level code agents like `testAgent`. Allow-listed in `apps/api/src/config/system-agents.ts` so they always run under the `__system` tenant regardless of caller (P0-AUTH-04). Vitest tests use `AGENTIC_DEV_TENANT=__system` to exercise this path.
-
-CLAUDE.md historical note: there is a parallel SDK family (`@agentic/agent-kit`, `@agentic/agent-sdk`, `@agentic/agent-runtime`) being layered in; the legacy `@agentic/agents` surface is still the API entry point. Do not assume the `agent-*` packages replace it for V1.
+### PF-MR-14 — `packages/agents/src/system/` ✅
+The production system-level code-agent roster is compiled and registered from
+the canonical package. `testAgent` is an isolated harness utility: it is
+registered and routed through `__system` only when `NODE_ENV=test`, and never
+appears in a development or production bootstrap.
 
 ---
 
@@ -131,7 +132,7 @@ Every route registered in `apps/api/src/server.ts:75-99`. The error envelope plu
 - **PF-API-AGT-01** `GET /v1/agents?kind=all|manifest|code` (`agents.ts:61`) — auth required. Lists agents in the caller's tenant. The `tenant=…` query param is a no-op (P0-AUTH-03). ✅
 - **PF-API-AGT-02** `GET /v1/agents/:kebab` (`agents.ts:85`) — auth required. Detail row (manifest + version history). ✅
 - **PF-API-AGT-03** `POST /v1/agents` (`agents.ts:97`) — auth required. Saves a manifest. Audit action: `agent.save`. **🟡 Known V1 bug:** 500s on tenants with a live `tenant_code` deployment (PF-GAP-02).
-- **PF-API-AGT-04** `POST /v1/agents/:name/invoke` (`agent-invoke.ts:38`) — auth required. Synchronously invokes a code agent through `BaseAgent.run()`; falls back to a manifest-based invocation if the named agent is registered as a manifest agent (option B). System agents like `testAgent` always run under `__system` regardless of caller per P0-AUTH-04. Audit action: `agent.invoke`. ✅
+- **PF-API-AGT-04** `POST /v1/agents/:name/invoke` (`agent-invoke.ts:38`) — auth required. Synchronously invokes a code agent through `BaseAgent.run()`; falls back to a manifest-based invocation if the named agent is registered as a manifest agent (option B). The test-only `testAgent` runs under `__system` in the isolated harness; production does not register it. Audit action: `agent.invoke`. ✅
 
 ### `tasks.ts` (PF-API-TSK-*)
 - **PF-API-TSK-01** `GET /v1/tasks` (`tasks.ts:12`) — auth required. Lists tenant tasks. ✅
@@ -383,7 +384,11 @@ Per-tenant per-day rollover at `data/logs/<tenant>/events/<date>.ndjson`. Writte
 `apps/api/data/imports/dpl-<id>/workflow.json`. Phase 2 of the four-phase commit writes here + fsyncs; phase 4 atomic-renames the file to `models/<slug>-vN/workflow_v<N+1>.json`. **🟡 Known gotcha** documented in CLAUDE.md: these staging dirs are **NOT gitignored at the repo root** (`.gitignore` covers `data/*` at top level but not `apps/api/data/`). The boot-time `reconcileImports` prunes expired pending rows + dirs, but a developer running locally can accidentally commit a partial staging dir. Mitigation: add `apps/api/data/imports/` to `.gitignore` (tracked as a follow-up).
 
 ### PF-STO-06 — System agents ✅
-`data/system-agents/` houses code agents like `testAgent` that must run under the `__system` tenant regardless of caller. The allow-list at `apps/api/src/config/system-agents.ts` (P0-AUTH-04) is the source of truth.
+`packages/agents/src/system/` houses canonical system code agents. The
+`testAgent` implementation remains there for unit/E2E coverage, but
+`system/index.ts` registers it only under `NODE_ENV=test`; the matching
+allow-list guard in `apps/api/src/config/system-agents.ts` enforces the same
+boundary.
 
 ### PF-STO-07 — Tenant code (deployed via CLI) ✅
 `data/tenants/<slug>/<version>/` is where `POST /v1/tenants/:slug/code` explodes a USTAR tarball uploaded by `agentic deploy`. The tarball contents are typechecked, then the new version is registered alongside the existing live one; promotion is a separate explicit step.
@@ -519,7 +524,9 @@ Root script. Predev hook kills any process squatting on `3599,3501,8288,8289,500
 
 ### PF-BUILD-07 — DB scripts ✅
 - `pnpm db:migrate` — `DATABASE_URL=file:../../data/agentic.db pnpm --filter @agentic/db exec tsx src/migrate.ts`. Idempotent.
-- `pnpm db:seed` — seeds 3 tenants + 1 admin user.
+- `pnpm db:seed` — seeds the 4 deployable tenant rows plus exactly one
+  superadmin supplied through explicit `AGENTIC_BOOTSTRAP_ADMIN_*` variables;
+  no sample user identities or default password are installed.
 - `pnpm db:generate` — `drizzle-kit generate` after editing `packages/db/src/schema.ts`. Writes the next-numbered SQL file + updates `_meta/_journal.json`.
 - `pnpm db:studio` — opens Drizzle Studio against the dev DB.
 - `pnpm db:backup` — added by P4-OPS-06; writes a snapshot to `$AGENTIC_BACKUP_DIR/<date>-agentic.db.gz` and prunes anything older than `BACKUP_RETENTION_DAYS` (default 14).
@@ -684,10 +691,10 @@ Sliding-window counter ceiling keyed on `tenantId ?? ip`. Default 100/min. `AGEN
 SIGTERM drain window before `process.exit(1)` is forced. Default 30000.
 
 ### PF-ENV-17 — `AGENTIC_RETENTION_DAYS` ✅
-Drives the daily retention sweep. Default 30. Soft-delete tombstones on `events`/`runs`/`tasks` + unlinks of `data/logs/<tenant>/runs/<date>/` older than this window.
+Drives the Inngest retention sweep for `events` and terminal `tasks`. Default 30. Run history is controlled separately by `AGENTIC_RUN_RETENTION_DAYS` (default 0, retained permanently); expired idempotency keys are purged on the same pass.
 
 ### PF-ENV-18 — `AGENTIC_SYSTEM_CRON` / `AGENTIC_SYSTEM_CRON_DISABLED` ✅
-Schedule expression for the system cron (retention sweep, orphan-run sweep). `AGENTIC_SYSTEM_CRON_DISABLED=1` disables; useful when running multiple api replicas and only one should sweep.
+Schedule expression for the retention Inngest function. `AGENTIC_SYSTEM_CRON_DISABLED=1` removes that function entirely. Orphan-run recovery is a separate startup + interval reconciler (`AGENTIC_RUN_TIMEOUT_MS` / `AGENTIC_RUN_RECONCILE_MS`), not this cron.
 
 ### PF-ENV-19 — `WEB_ORIGIN` ✅
 CORS allow-list for the Fastify api (`@fastify/cors` setup at `apps/api/src/server.ts:69-74`). Must include scheme + host (+ port if non-standard). Example: `https://operator.example.com`. Credentials are allowed; `x-request-id` is in the exposed headers list.

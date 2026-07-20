@@ -16,7 +16,6 @@ export const authorJD: PromptDescriptor = definePrompt({
     "Translate a hiring-requirements markdown into a polished Chinese JD, persist via writeJdToDisk, emit JD_DRAFTED.",
   // Pin to Claude Haiku 4.5 via OpenRouter — solid tool use + Chinese
   // generation, sub-30s for ~700 char JDs.
-  model: "anthropic/claude-haiku-4-5",
   system: [
     "你是 jdAuthorAgent,Agentic Operator 内部的 JD 撰写代理。",
     "",

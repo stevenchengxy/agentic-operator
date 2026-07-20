@@ -70,6 +70,42 @@ export function estimateDifficulty(ontology: DomainOntology | null | undefined):
   return { band, score, reasons };
 }
 
+/** #BUDGET-ROUTE (P1-5, arXiv 2408.03314) — difficulty-aware compute allocation. The paper's
+ *  compute-optimal result (~4× efficiency over uniform budgets): easy → SEQUENTIAL revision on one
+ *  draft; medium → verifier-guided PARALLEL candidates; hardest bands get almost nothing from more
+ *  test-time compute — escalate the MODEL TIER or go to the human (ask_user), don't grind. Also the
+ *  theory behind our old 12s-fixed-poll bug: any fixed budget is simultaneously too much and too
+ *  little. Pure + deterministic; the conductor/design loop reads this instead of hardcoded counts. */
+export interface ComputeBudget {
+  /** parallel candidate drafts per agent design (Monkeys: only worth >1 when a REAL verifier exists) */
+  candidates: number;
+  /** revise/debug turns per agent before reset (Self-Debug: gains land in first 2-3 turns) */
+  reviseTurns: number;
+  /** on persistent failure at this band: keep iterating, escalate model tier, or ask the human */
+  escalation: "iterate" | "tier_up" | "ask_user";
+  reasons: string[];
+}
+export function budgetForDifficulty(band: DifficultyBand, opts: { realVerifier?: boolean } = {}): ComputeBudget {
+  const verified = opts.realVerifier !== false; // default true — our sandbox IS a real verifier
+  if (band === "simple") {
+    return { candidates: 1, reviseTurns: 2, escalation: "iterate", reasons: ["简单域：单稿顺序修订最优（并行采样浪费）"] };
+  }
+  if (band === "standard") {
+    return {
+      candidates: verified ? 2 : 1,
+      reviseTurns: 3,
+      escalation: "tier_up",
+      reasons: [verified ? "标准域：2 候选并行 + 真验收择优（coverage 曲线的免费收益）" : "标准域但无真验证器：并行采样无法兑现，保持单稿", "卡住时升 model tier 而非加轮次"],
+    };
+  }
+  return {
+    candidates: verified ? 2 : 1,
+    reviseTurns: 3,
+    escalation: "ask_user",
+    reasons: ["复杂域：最难分位加推理预算几乎无益（2408.03314）——反复失败时问人（ask_user）或升 tier，不无限磨"],
+  };
+}
+
 // #OPEN-VOCAB — 流水线形状同样开放：已知四形给现有路由；未来 AI/配置可提出新形状（消费端
 // 未识别时按 full 处理）。DifficultyBand 保持封闭——它是我们计算出的【度量视图】，不是 AI
 // 提出的概念，三档是刻度不是认知框。

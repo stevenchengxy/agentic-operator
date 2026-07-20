@@ -387,7 +387,7 @@ required_field_missing    duplicate_event_listener
 - `run-engine.ts`（301 行）—— 安排 run row、step rows、gateway 呼叫、log writer、SSE publish。
 - `registry.ts`（42 行）—— `agentRegistry.register(name, factory)` 於 import 時自動執行。
 - `bootstrap.ts`（221 行）—— `bootstrapCodeAgents()` 為每個註冊的程式碼 agent 寫入 `__system` 租戶 + workflow + version + agent rows。
-- `system/` —— 內建程式碼 agent（如 `testAgent`）。
+- `system/` —— 內建程式碼 agent；`testAgent` 僅由明確的測試環境註冊。
 - `gateway-host.ts`（29 行）—— 模組全域的 `setGateway` / `getGateway`，給 LLM 派發用。
 
 `agent.run(input, ctx)` 透過 `log-writer.ts` 寫單行 `.log` 檔，並透過 broadcast channel 發出 `run.started`/`run.step.*`/`run.completed|failed`，讓 `/v1/stream` 訂閱者（以及 `useStream` hook）即時讓 React-Query keys 失效重抓。

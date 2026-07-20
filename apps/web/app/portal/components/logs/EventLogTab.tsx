@@ -8,7 +8,13 @@
  */
 
 import { Fragment, useMemo, useState } from "react";
-import { Badge, Empty, StatusDot, type BadgeTone, type StatusName } from "@/app/portal/components";
+import {
+  Badge,
+  Empty,
+  StatusDot,
+  type BadgeTone,
+  type StatusName,
+} from "@/app/portal/components";
 import { useI18n } from "@/app/portal/lib/preferences-context";
 import { useEvents, useEvent, type EventRow } from "@/lib/hooks/useEvents";
 import {
@@ -31,7 +37,7 @@ const STATUS_TO_DOT: Record<string, StatusName> = {
   waiting: "waiting",
   ok: "ok",
   failed: "failed",
-  cancelled: "paused",
+  cancelled: "cancelled",
   paused: "paused",
   idle: "idle",
 };
@@ -48,7 +54,9 @@ function EventDetail({ id, fallback }: { id: string; fallback: EventRow }) {
       <Field label="ID">{ev.id}</Field>
       <Field label={t("logsExplorer.colSubject")}>{ev.subject ?? "—"}</Field>
       <Field label={t("logsExplorer.colSource")}>
-        {ev.sourceAgentTitle || ev.sourceAgentName || t("logsExplorer.sourceExternal")}
+        {ev.sourceAgentTitle ||
+          ev.sourceAgentName ||
+          t("logsExplorer.sourceExternal")}
       </Field>
       <Field label={t("logsExplorer.colCategory")}>{ev.category ?? "—"}</Field>
       <div>
@@ -85,7 +93,10 @@ function EventDetail({ id, fallback }: { id: string; fallback: EventRow }) {
                   color: "var(--text-2)",
                 }}
               >
-                <StatusDot status={STATUS_TO_DOT[c.status] ?? "idle"} size={6} />
+                <StatusDot
+                  status={STATUS_TO_DOT[c.status] ?? "idle"}
+                  size={6}
+                />
                 {c.agentTitle || c.agentName || c.runId}
               </span>
             ))}
@@ -98,7 +109,11 @@ function EventDetail({ id, fallback }: { id: string; fallback: EventRow }) {
         </span>
       ) : (
         <JsonView
-          label={isLoading ? t("logsExplorer.payloadLoading") : t("logsExplorer.fullPayload")}
+          label={
+            isLoading
+              ? t("logsExplorer.payloadLoading")
+              : t("logsExplorer.fullPayload")
+          }
           value={ev.payload}
         />
       )}
@@ -153,25 +168,48 @@ export function EventLogTab() {
     <LogPane
       toolbar={
         <>
-          <LogSearch value={q} onChange={setQ} placeholder={t("logsExplorer.evSearch")} />
-          <MetaPill>{t("logsExplorer.rowCount", { n: filtered.length })}</MetaPill>
+          <LogSearch
+            value={q}
+            onChange={setQ}
+            placeholder={t("logsExplorer.evSearch")}
+          />
+          <MetaPill>
+            {q.trim()
+              ? t("logsExplorer.filteredRecentRows", {
+                  n: filtered.length,
+                  total: rows.length,
+                })
+              : rows.length >= 300
+                ? t("logsExplorer.recentRowCount", { n: rows.length })
+                : t("logsExplorer.rowCount", { n: rows.length })}
+          </MetaPill>
         </>
       }
     >
       {query.isError ? (
-        <Empty title={t("logsExplorer.loadFailed")} hint={query.error?.message ?? ""} />
+        <Empty
+          title={t("logsExplorer.loadFailed")}
+          hint={query.error?.message ?? ""}
+        />
       ) : rows.length === 0 && !query.isLoading ? (
-        <Empty title={t("logsExplorer.evEmpty")} hint={t("logsExplorer.evEmptyHint")} />
+        <Empty
+          title={t("logsExplorer.evEmpty")}
+          hint={t("logsExplorer.evEmptyHint")}
+        />
       ) : (
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
             <tr>
               <th style={{ ...thStyle, width: 28 }} />
-              <th style={{ ...thStyle, width: 90 }}>{t("logsExplorer.colTime")}</th>
+              <th style={{ ...thStyle, width: 90 }}>
+                {t("logsExplorer.colTime")}
+              </th>
               <th style={thStyle}>{t("logsExplorer.colEvent")}</th>
               <th style={thStyle}>{t("logsExplorer.colSubject")}</th>
               <th style={thStyle}>{t("logsExplorer.colSource")}</th>
-              <th style={{ ...thStyle, width: 110 }}>{t("logsExplorer.colCategory")}</th>
+              <th style={{ ...thStyle, width: 110 }}>
+                {t("logsExplorer.colCategory")}
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -181,6 +219,14 @@ export function EventLogTab() {
                 <Fragment key={r.id}>
                   <tr
                     onClick={() => toggle(r.id)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        toggle(r.id);
+                      }
+                    }}
+                    tabIndex={0}
+                    aria-expanded={isOpen}
                     style={{ cursor: "pointer" }}
                     className={isOpen ? undefined : "hover-row"}
                   >
@@ -202,7 +248,9 @@ export function EventLogTab() {
                           {r.sourceAgentTitle || r.sourceAgentName}
                         </span>
                       ) : (
-                        <span style={monoStyle}>{t("logsExplorer.sourceExternal")}</span>
+                        <span style={monoStyle}>
+                          {t("logsExplorer.sourceExternal")}
+                        </span>
                       )}
                     </td>
                     <td style={tdStyle}>

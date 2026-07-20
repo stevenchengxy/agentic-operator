@@ -14,8 +14,9 @@ export type LLMErrorCode =
   | "bad_request"        // 400 / invalid params
   | "provider_error"     // 5xx from upstream
   | "network"            // ECONNRESET, DNS failure
-  | "not_configured"     // adapter is a stub / no API key set
-  | "cost_limit_exceeded"; // P1-LLM-05 — tenant exceeded monthly budget cap
+  | "not_configured"     // real adapter lacks required credentials/config
+  | "cost_limit_exceeded" // P1-LLM-05 — tenant exceeded monthly budget cap
+  | "budget_storage";    // durable reservation/accounting store unavailable
 
 const TRANSIENT: ReadonlySet<LLMErrorCode> = new Set([
   "rate_limit",

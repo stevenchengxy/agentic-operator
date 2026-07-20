@@ -5,12 +5,15 @@
  *   GET  /v1/llm/providers/keys          — list masked metadata
  *   GET  /v1/llm/providers/:id/key       — single provider meta
  *   POST /v1/llm/providers/:id/key       — save + rotate (vault round-trip)
+ *   DELETE /v1/llm/providers/:id/key     — delete vault material + reset routing
  *   POST /v1/llm/providers/:id/test      — connectivity probe (mock provider)
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { existsSync, rmSync } from "node:fs";
 import path from "node:path";
 import { buildTestEnv, type TestEnv } from "./harness";
+import { and, eq } from "drizzle-orm";
+import { auditLog, getDb } from "@agentic/db";
 
 const VAULT_PATH = path.join(
   process.cwd().endsWith("apps/api") ? "../.." : ".",
@@ -102,6 +105,44 @@ describe("TC-60: /v1/llm/providers key management", () => {
       body: JSON.stringify({ apiKey: "aaaaaaaaaaaaaaaaaaaa", scope: "global" }),
     });
     expect(res.status).toBe(400);
+  });
+
+  it("DELETE /key removes vault material, returns effective state, and audits", async () => {
+    const res = await env.fetch("/v1/llm/providers/openrouter/key", {
+      method: "DELETE",
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      data: {
+        provider: string;
+        deleted: boolean;
+        effective: { hasKey: boolean; source: string };
+      };
+    };
+    expect(body.data).toMatchObject({
+      provider: "openrouter",
+      deleted: true,
+      effective: { hasKey: false, source: "none" },
+    });
+    const meta = await env.fetch("/v1/llm/providers/openrouter/key");
+    expect(await meta.json()).toMatchObject({
+      data: { hasKey: false, source: "none" },
+    });
+    const audit = getDb().select().from(auditLog).where(and(
+      eq(auditLog.action, "llm.key.delete"),
+      eq(auditLog.targetId, "openrouter"),
+    )).all();
+    expect(audit.length).toBeGreaterThan(0);
+  });
+
+  it("DELETE /key returns 404 when the vault has no such key", async () => {
+    const res = await env.fetch("/v1/llm/providers/openrouter/key", {
+      method: "DELETE",
+    });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toMatchObject({
+      error: { code: "not_found" },
+    });
   });
 
   it("mock provider test connection succeeds without network", async () => {

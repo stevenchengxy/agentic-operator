@@ -73,6 +73,45 @@ describe("decision_logic is never empty on delivered specs", () => {
     expect(c.specs[0]!.decisionLogic).toContain("JD_GENERATED");
   });
 
+  it("design_agent blocks ontology-rich actions from collapsing to one opaque logic step", async () => {
+    const c = ctx();
+    const action = c.ontology!.actions[0]!;
+    action.action_steps = [{ name: "generateJDContent", type: "logic" }, { name: "persistJD", type: "tool" }];
+    action.integration = { systems: [{ name: "Partner PG", role: "writes" }] };
+    const blocked = await design_agent.execute(
+      { action: "createJD", system_prompt: "生成并持久化 JD。", decision_logic: "成功 emit JD_GENERATED；失败终止。" },
+      c,
+    );
+    expect(blocked.ok).toBe(false);
+    expect(blocked.summary).toMatch(/单步 logic|structured plan/i);
+    expect(c.specs).toHaveLength(0);
+
+    c.toolCatalog = ["records.upsert"];
+    c.realTools = [{
+      name: "records.upsert",
+      operation: "write",
+      effectScope: "external",
+      sandboxPolicy: "requires_attempt_grant",
+      probeStatus: "verified",
+      capabilities: [{ systems: ["Partner PG"], kinds: ["database"], roles: ["write"] }],
+    }];
+    const accepted = await design_agent.execute(
+      {
+        action: "createJD",
+        system_prompt: "生成并持久化 JD。",
+        decision_logic: "成功 emit JD_GENERATED；失败终止。",
+        tools: ["records.upsert"],
+        plan: [
+          { stepId: "generateJDContent", kind: "logic" },
+          { stepId: "persistJD", kind: "tool", tool: "records.upsert", idempotencyKeyFrom: "entity_id", onError: "terminal" },
+        ],
+      },
+      c,
+    );
+    expect(accepted.ok).toBe(true);
+    expect(c.specs[0]!.plan?.map((step) => step.stepId)).toEqual(["generateJDContent", "persistJD"]);
+  });
+
   it("design_agent schema marks decision_logic required (the model can't silently skip it)", () => {
     const params = design_agent.parameters as { required?: string[] };
     expect(params.required ?? []).toContain("decision_logic");

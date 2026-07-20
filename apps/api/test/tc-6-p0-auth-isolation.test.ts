@@ -3,7 +3,7 @@
  *
  * Covers:
  *   - P0-AUTH-01: AUTH_MODE must be explicitly `dev`; NODE_ENV alone never
- *                 unlocks the seeded admin tenant.
+ *                 unlocks the isolated test administrator tenant.
  *   - P0-AUTH-02: GET /v1/runs/:id and /v1/runs/:id/logs no longer fall
  *                 back to `__system` for code-agent runs.
  *   - P0-AUTH-03: GET /v1/agents drops the `?tenant=` query param.
@@ -347,7 +347,7 @@ describe("TC-6: Phase 0 auth + tenant isolation", () => {
       } else {
         // Inngest unreachable — covered by the static-source + makeId
         // unit assertions above.
-        expect([200, 500]).toContain(res1.status);
+        expect([200, 502]).toContain(res1.status);
       }
     });
   });

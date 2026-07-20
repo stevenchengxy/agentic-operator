@@ -15,7 +15,7 @@
  *   - one `steps` row per LLM call + per tool dispatch.
  */
 
-import { describe, it, expect, beforeAll } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
 
@@ -23,10 +23,11 @@ import {
   BaseAgent,
   agentRegistry,
   setGateway,
-  bootstrapCodeAgents,
-} from "@agentic/agent-runtime";
-import type { AgentContext, ToolHandlerMap } from "@agentic/agent-runtime";
-import { getDb, runs, runMigrations, steps } from "@agentic/db";
+  ensureCodeAgentBinding,
+} from "@agentic/agents";
+import type { AgentContext, ToolHandlerMap } from "@agentic/agents";
+import { getDb, runs, runMigrations, steps, tenants } from "@agentic/db";
+import { makeId } from "@agentic/shared";
 import type {
   ChatMessage,
   ChatRequest,
@@ -42,6 +43,9 @@ interface CapturedCall {
   providers?: string[];
   provider?: string;
   jsonMode?: boolean;
+  maxTokens?: number;
+  tenantId?: string;
+  purpose?: string;
 }
 
 /** Programmable mock gateway: per-call queue of responses. */
@@ -71,6 +75,9 @@ class ProgrammableGateway {
       providers: req.providers as string[] | undefined,
       provider: req.provider,
       jsonMode: req.jsonMode,
+      maxTokens: req.maxTokens,
+      tenantId: req.tenantId,
+      purpose: req.purpose,
     });
     const next = this.queue.shift();
     if (!next) {
@@ -84,6 +91,7 @@ class WeatherAgent extends BaseAgent<{ city: string }, string> {
   readonly name = "weatherAgent";
   readonly description = "Look up the weather using a tool.";
   override readonly maxSteps = 3;
+  override readonly maxOutputTokens = 256;
   override readonly defaultProvider = "mock" as const;
 
   protected buildMessages({ city }: { city: string }): ChatMessage[] {
@@ -125,6 +133,7 @@ class ScorerAgent extends BaseAgent<{ text: string }, Score> {
   readonly description = "Score a string against a rubric.";
   override readonly outputSchema = scoreSchema;
   override readonly defaultProvider = "mock" as const;
+  override readonly maxOutputTokens = 128;
 
   protected buildMessages({ text }: { text: string }): ChatMessage[] {
     return [
@@ -135,34 +144,48 @@ class ScorerAgent extends BaseAgent<{ text: string }, Score> {
 }
 
 // ─── Test harness ─────────────────────────────────────────────────────────
-// We need the DB up so steps/runs rows can be inserted. The `harness` helper
-// boots the full server (which seeds tenants + bootstraps agents). For this
-// test we want a clean handle, so we manually invoke bootstrapCodeAgents
-// after registering the test agents.
+// We need the DB up so steps/runs rows can be inserted. These fixtures are
+// tenant-scoped code agents, so each must also have the same durable live
+// workflow/agent/version/deployment binding required in production. Keep that
+// state in a disposable tenant rather than relying on the system bootstrap,
+// which intentionally rejects tenant-owned definitions under `__system`.
 
 const gw = new ProgrammableGateway();
+const tenantId = makeId("ten");
+const tenantSlug = `qa-probe-tc16-${tenantId.slice(-8)}`;
+const weatherAgent = new WeatherAgent();
+const scorerAgent = new ScorerAgent();
 
 beforeAll(async () => {
-  // Apply migrations directly — avoid `buildTestEnv()` because it boots the
-  // whole Fastify server, which currently breaks under the runtime
-  // engineer's in-progress route additions. The DB seed below is all we
-  // need: bootstrapCodeAgents creates the __system tenant + workflow on
-  // first run, so the agent registry + DB are aligned without a server.
+  // Apply migrations directly; this test exercises the run engine without
+  // booting Fastify.
   const path = await import("node:path");
   const repoRoot = path.resolve(__dirname, "../../..");
   runMigrations(path.join(repoRoot, "packages/db/drizzle"));
+
+  getDb()
+    .insert(tenants)
+    .values({ id: tenantId, slug: tenantSlug, name: "TC-16 tool loop" })
+    .run();
 
   // Replace the gateway with our programmable mock so we can dictate
   // turn-by-turn behaviour.
   setGateway(gw as never);
 
-  agentRegistry.register(new WeatherAgent());
-  agentRegistry.register(new ScorerAgent());
-  await bootstrapCodeAgents();
+  agentRegistry.register(weatherAgent);
+  agentRegistry.register(scorerAgent);
+  ensureCodeAgentBinding(tenantSlug, weatherAgent);
+  ensureCodeAgentBinding(tenantSlug, scorerAgent);
+});
+
+afterAll(() => {
+  // All workflows, versions, agents, deployments, runs and steps created by
+  // this file are tenant-owned and therefore removed by FK cascades.
+  getDb().delete(tenants).where(eq(tenants.id, tenantId)).run();
 });
 
 function ctxFor(): AgentContext {
-  return { tenantSlug: "__system", correlationId: "cor-tc16" };
+  return { tenantSlug, correlationId: "cor-tc16" };
 }
 
 describe("TC-16: Phase 1 tool-use loop (P1-RT-01..02 + RT-06..07)", () => {
@@ -211,6 +234,11 @@ describe("TC-16: Phase 1 tool-use loop (P1-RT-01..02 + RT-06..07)", () => {
     expect(gw.captured[0]!.tools).toBeDefined();
     expect(gw.captured[0]!.tools!.length).toBe(1);
     expect(gw.captured[0]!.tools![0]!.name).toBe("lookupWeather");
+    expect(gw.captured[0]).toMatchObject({
+      maxTokens: 256,
+      tenantId: expect.stringMatching(/^ten/),
+      purpose: "agent:weatherAgent/role:primary/turn:0",
+    });
 
     // Turn 2: seed + assistant(tool_use) + tool(tool_result) = 4 messages
     const t2messages = gw.captured[1]!.messages;
@@ -239,7 +267,7 @@ describe("TC-16: Phase 1 tool-use loop (P1-RT-01..02 + RT-06..07)", () => {
     expect(runRow.tokensOut).toBe(13);
   });
 
-  it("respects maxSteps by terminating without a final tool dispatch", async () => {
+  it("fails closed at maxSteps without executing the final requested tool", async () => {
     gw.captured = [];
     // Agent has maxSteps=3 — queue 3 tool_use responses; loop should stop
     // after the LLM call on turn 3 (no dispatch on the final turn).
@@ -262,10 +290,19 @@ describe("TC-16: Phase 1 tool-use loop (P1-RT-01..02 + RT-06..07)", () => {
       });
     }
     const agent = agentRegistry.get("weatherAgent") as WeatherAgent;
-    const result = await agent.run({ city: "X" }, ctxFor());
-    // Three LLM calls; no exception.
+    await expect(agent.run({ city: "X" }, ctxFor())).rejects.toMatchObject({
+      code: "bad_request",
+      message: expect.stringMatching(/exhausted maxSteps=3/),
+    });
+    // Three provider turns were persisted, but the third requested tool was
+    // not dispatched after the execution bound was exhausted.
     expect(gw.captured.length).toBe(3);
-    expect(result.status).toBe("ok");
+    const runRow = getDb().select().from(runs).orderBy(runs.startedAt).all().at(-1)!;
+    expect(runRow).toMatchObject({
+      status: "failed",
+      tokensIn: 30,
+      tokensOut: 15,
+    });
   });
 
   it("forwards req.providers chain from ctx (P1-RT-06)", async () => {
@@ -317,6 +354,12 @@ describe("TC-16: Phase 1 tool-use loop (P1-RT-01..02 + RT-06..07)", () => {
     // jsonMode is on for both calls
     expect(gw.captured[0]!.jsonMode).toBe(true);
     expect(gw.captured[1]!.jsonMode).toBe(true);
+    expect(gw.captured[0]!.maxTokens).toBe(128);
+    expect(gw.captured[1]).toMatchObject({
+      maxTokens: 128,
+      tenantId: expect.stringMatching(/^ten/),
+      purpose: "agent:scorerAgent/role:primary/repair",
+    });
     // Tokens summed across both turns
     expect(result.tokensIn).toBe(10);
     expect(result.tokensOut).toBe(10);

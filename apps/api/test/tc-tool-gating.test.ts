@@ -1,36 +1,29 @@
 import { describe, it, expect } from "vitest";
-import { isWriteTool, toolDispatchDecision, gatedWriteMarker } from "@agentic/runtime";
+import { requiresAttemptGrant, toolDispatchDecision, gatedWriteMarker } from "@agentic/runtime";
 
 // #REDESIGN P1b — the sandbox "gated" tool mode: READS run live (real integration), external WRITES
-// are gated (real payload recorded, not fired) unless FACTORY_SANDBOX_ALLOW_WRITES=1.
+// are gated (real payload recorded, not fired) unless a server-owned run grant exists.
 
-describe("isWriteTool — side-effect heuristic", () => {
-  it("flags write/append/send/post/create/notify/email tools as writes", () => {
-    for (const n of ["fs.writeJdToDisk", "fs.appendToLog", "sendInviteEmail", "acme.postJob", "createRequisition", "notifyCandidate", "http.post", "match.updateStatus", "saveDraft", "audit.record"]) {
-      expect(isWriteTool(n)).toBe(true);
-    }
-  });
-  it("treats read/fetch/get/parse/match tools as reads", () => {
-    for (const n of ["fs.readFromInbox", "parseResumeApi", "getRequirement", "matchResumeApi", "http.fetch", "ontology.fetchActionRules"]) {
-      expect(isWriteTool(n)).toBe(false);
-    }
-  });
-});
+const readPolicy = { operation: "read", effectScope: "external", sandboxPolicy: "live_external" } as const;
+const writePolicy = { operation: "write", effectScope: "external", sandboxPolicy: "requires_attempt_grant" } as const;
 
 describe("toolDispatchDecision — gated mode (read live, write gated)", () => {
-  it("read tool → live", () => {
-    expect(toolDispatchDecision("parseResumeApi", "gated", {} as NodeJS.ProcessEnv)).toBe("live");
+  it("external read → live only with a verified sandbox profile", () => {
+    expect(toolDispatchDecision(readPolicy, "gated")).toBe("gate_profile");
+    expect(toolDispatchDecision(readPolicy, "gated", { sandboxProfileVerified: true })).toBe("live");
   });
   it("write tool → gate (not fired) without the confirm opt-in", () => {
-    expect(toolDispatchDecision("sendInviteEmail", "gated", {} as NodeJS.ProcessEnv)).toBe("gate");
+    expect(requiresAttemptGrant(writePolicy)).toBe(true);
+    expect(toolDispatchDecision(writePolicy, "gated")).toBe("gate_grant");
   });
-  it("write tool → live WITH FACTORY_SANDBOX_ALLOW_WRITES=1 (real data + confirm)", () => {
-    expect(toolDispatchDecision("sendInviteEmail", "gated", { FACTORY_SANDBOX_ALLOW_WRITES: "1" } as unknown as NodeJS.ProcessEnv)).toBe("live");
+  it("write tool → live only with an explicit scoped grant", () => {
+    expect(toolDispatchDecision(writePolicy, "gated", { attemptGrantVerified: true })).toBe("live");
   });
-  it("legacy modes: mock→stub, live→live, replay→replay", () => {
-    expect(toolDispatchDecision("anything", "mock", {} as NodeJS.ProcessEnv)).toBe("stub");
-    expect(toolDispatchDecision("sendInviteEmail", "live", {} as NodeJS.ProcessEnv)).toBe("live");
-    expect(toolDispatchDecision("getX", "replay", {} as NodeJS.ProcessEnv)).toBe("replay");
+  it("unknown rejects; reviewed mock/replay stay deterministic; live cannot bypass grants", () => {
+    expect(toolDispatchDecision(undefined, "mock")).toBe("reject");
+    expect(toolDispatchDecision(writePolicy, "mock")).toBe("stub");
+    expect(toolDispatchDecision(writePolicy, "live")).toBe("gate_grant");
+    expect(toolDispatchDecision(readPolicy, "replay")).toBe("replay");
   });
   it("gatedWriteMarker records the real payload but does not fire", () => {
     const m = gatedWriteMarker("sendInviteEmail", { to: "real@co.com" });

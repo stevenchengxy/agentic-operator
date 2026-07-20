@@ -1,0 +1,511 @@
+{
+  "metadata": {
+    "version_number": 2,
+    "created_at": "2026-07-14T00:00:00.000Z",
+    "created_by": "claude+yuhancheng",
+    "source": "v1 骨架 + 旧 AO server/inngest/client.ts 事件类型契约 + 六个生产函数 as-built payload 逆向;producers/consumers 已接线到 actions_v1 的 6 个 Agent action + 10 个 Human action",
+    "description": "招聘域 18 个事件的完整契约。payload.event_data 是权威 I/O 契约(工厂生成时会以此为准合并覆盖 AI 产出的 schema): canonical 字段标 required=true,carry-forward 便利字段标 required=false 并在 description 说明来源与用途。boundary=external 表示事件在 RAAS/外部平台侧产生(source_domain=RAAS),其 producer 是本体中的 Human action——事件图借此闭环: 每个入口事件有人工 producer,每个终点事件有人工 consumer。state_mutations 与 as-built 落库行为对齐。",
+    "conventions": "字段缺失统一 null、禁止空串(F3 契约);RAAS 信封形态 {entity_type, entity_id, event_id, payload, trace},AO 订阅端 unwrap 兼容扁平形态。",
+    "ai_involved": true,
+    "last_updated": "2026-07-14"
+  },
+  "events": [
+    {
+      "name": "REQUIREMENT_LOGGED",
+      "category": "JD创建与更新",
+      "boundary": "external",
+      "description": "外部招聘需求已在 RAAS 成功登记并结构化入库,由人工登记动作 manualEntry 产生(另一来源: 客户系统定时同步,六 agent 范围外)。RAAS canonical 信封只承诺 entity_id(=job_requisition_id),需求实体数据由 AO 回查 partner Postgres(事件瘦身契约);老格式兼容 payload.requirement_id / raw_input_data。",
+      "producers": ["manualEntry"],
+      "consumers": ["createJD"],
+      "external_consumers": [],
+      "payload": {
+        "source_action": "manualEntry",
+        "source_domain": "RAAS",
+        "event_data": [
+          { "name": "job_requisition_id", "type": "String", "target_object": "Job_Requisition", "required": true, "description": "需求编号,取信封 entity_id;兼容 payload.requirement_id / raw_input_data.job_requisition_id。" },
+          { "name": "client_id", "type": "String", "target_object": "Client", "required": false, "description": "客户编号(便利字段,缺失由 AO 回查)。" },
+          { "name": "is_urgent", "type": "Boolean", "target_object": null, "required": false, "description": "是否加急。" },
+          { "name": "source_channel", "type": "String", "target_object": null, "required": false, "description": "需求来源渠道。" },
+          { "name": "requirement_brief", "type": "String", "target_object": null, "required": false, "description": "free-text 需求简报(新格式;缺失可从 raw_input_data 拼)。" },
+          { "name": "raw_input_data", "type": "Object", "target_object": "Job_Requisition", "required": false, "description": "需求原始 28 字段快照(老格式兼容位,权威数据以 partner Postgres 为准)。" },
+          { "name": "trace", "type": "Object", "target_object": null, "required": false, "description": "{trace_id, request_id, workflow_id, parent_trace_id} 跨系统追踪。" }
+        ],
+        "state_mutations": [
+          { "target_object": "Job_Requisition", "mutation_type": "CREATE", "impacted_properties": ["job_requisition_id", "client_id", "client_job_title", "job_responsibility", "job_requirement"] }
+        ]
+      }
+    },
+    {
+      "name": "CLARIFICATION_READY",
+      "category": "JD创建与更新",
+      "boundary": "external",
+      "description": "需求澄清闭环(无待澄清项或已全部确认),由人工澄清录入动作 confirmRequirementClarification 产生,通知可进入/重新进入 JD 生成。createJD 会把澄清记录(Requirement_Clarification_Record)拼进生成 prompt,置于原始长文本之前(客户确认过的最权威补充)。",
+      "producers": ["confirmRequirementClarification"],
+      "consumers": ["createJD"],
+      "external_consumers": [],
+      "payload": {
+        "source_action": "confirmRequirementClarification",
+        "source_domain": "RAAS",
+        "event_data": [
+          { "name": "job_requisition_id", "type": "String", "target_object": "Job_Requisition", "required": true, "description": "需求编号(信封 entity_id)。" },
+          { "name": "trace", "type": "Object", "target_object": null, "required": false, "description": "追踪上下文。" }
+        ],
+        "state_mutations": [
+          { "target_object": "Requirement_Clarification_Record", "mutation_type": "CREATE", "impacted_properties": ["clarification_record_id", "job_requisition_id", "content", "clarified_at"] }
+        ]
+      }
+    },
+    {
+      "name": "JD_REJECTED",
+      "category": "JD创建与更新",
+      "boundary": "external",
+      "description": "生成的 JD 未通过人工审核动作 jdReview(交付经理驳回并附修改意见),退回重新生成。createJD 以 entity_id 解析需求编号重跑全链路(读最新需求+澄清→重新生成→同键覆盖持久化)。",
+      "producers": ["jdReview"],
+      "consumers": ["createJD"],
+      "external_consumers": [],
+      "payload": {
+        "source_action": "jdReview",
+        "source_domain": "RAAS",
+        "event_data": [
+          { "name": "job_requisition_id", "type": "String", "target_object": "Job_Requisition", "required": true, "description": "需求编号(重新生成锚点)。" },
+          { "name": "job_posting_id", "type": "String", "target_object": "Job_Posting", "required": false, "description": "被退回的岗位发布编号。" },
+          { "name": "reject_reason", "type": "String", "target_object": null, "required": false, "description": "审核退回原因(拼进重生成上下文)。" }
+        ],
+        "state_mutations": [
+          { "target_object": "Job_Posting", "mutation_type": "MODIFY", "impacted_properties": ["publish_status"] }
+        ]
+      }
+    },
+    {
+      "name": "JD_GENERATED",
+      "category": "JD创建与更新",
+      "boundary": "internal",
+      "description": "标准化 JD 已生成并完成 write-before-emit 持久化,等待人工审核动作 jdReview 裁决(通过→JD_APPROVED 进发布环节;驳回→JD_REJECTED 回createJD)。canonical event_data 只带 job_posting_id + jd_content;payload 顶层平铺 FK 便利字段(对齐 REQUIREMENT_LOGGED 习惯,订阅者一查就到位);其余实体字段(title/responsibility/requirement/key_words 等)不进事件,订阅者从 partner Postgres job_posting 表读。信封: entity_type=Job_Posting, entity_id=job_posting_id, source_action=createJD。",
+      "producers": ["createJD"],
+      "consumers": ["jdReview"],
+      "external_consumers": [],
+      "payload": {
+        "source_action": "createJD",
+        "source_domain": null,
+        "event_data": [
+          { "name": "job_posting_id", "type": "String", "target_object": "Job_Posting", "required": true, "description": "canonical: 岗位发布编号(=信封 entity_id)。" },
+          { "name": "jd_content", "type": "String", "target_object": "Job_Posting", "required": true, "description": "canonical: 整段 JD markdown(标题/正文/任职要求/硬性要求/加分项/面试要求/评估标准/福利)。" },
+          { "name": "job_requisition_id", "type": "String", "target_object": "Job_Requisition", "required": true, "description": "便利 FK: 父需求编号(partner 用它 join JR 拿 must_have_skills 等)。" },
+          { "name": "client_id", "type": "String", "target_object": "Client", "required": false, "description": "便利 FK: 客户编号(partner 按客户路由通知/HITL 任务)。" },
+          { "name": "trace", "type": "Object", "target_object": null, "required": false, "description": "追踪上下文透传。" }
+        ],
+        "state_mutations": [
+          { "target_object": "Job_Posting", "mutation_type": "CREATE_OR_MODIFY", "impacted_properties": ["job_posting_id", "job_requisition_id", "client_id", "title", "responsibility", "requirement", "key_words", "recruitment_type", "work_years", "degree_requirement", "education_requirement", "city", "salary_range", "interview_mode", "publish_status", "jd_content"] },
+          { "target_object": "Job_Requisition", "mutation_type": "MODIFY", "impacted_properties": ["must_have_skills", "nice_to_have_skills"] },
+          { "target_object": "Job_Requisition_Specification", "mutation_type": "MODIFY", "impacted_properties": ["status"] }
+        ]
+      }
+    },
+    {
+      "name": "JD_APPROVED",
+      "category": "JD创建与更新",
+      "boundary": "external",
+      "description": "JD 通过人工审核(jdReview 裁决 approved),进入发布环节。后续链路(assignRecruitTasks 任务分配→publishJD 渠道发布→CHANNEL_PUBLISHED)在六 agent 范围外——发布完成后招聘员开始渠道采集简历(人工动作 resumeCollection,与本事件之间隔发布环节,故 resumeCollection 无事件触发)。",
+      "producers": ["jdReview"],
+      "consumers": [],
+      "external_consumers": ["发布/任务分配环节(assignRecruitTasks / publishJD,六 agent 范围外)"],
+      "payload": {
+        "source_action": "jdReview",
+        "source_domain": "RAAS",
+        "event_data": [
+          { "name": "job_posting_id", "type": "String", "target_object": "Job_Posting", "required": true, "description": "通过审核的岗位发布编号。" },
+          { "name": "job_requisition_id", "type": "String", "target_object": "Job_Requisition", "required": false, "description": "父需求编号。" },
+          { "name": "review_comment", "type": "String", "target_object": null, "required": false, "description": "审核意见(可选)。" }
+        ],
+        "state_mutations": [
+          { "target_object": "Job_Posting", "mutation_type": "MODIFY", "impacted_properties": ["publish_status"] }
+        ]
+      }
+    },
+    {
+      "name": "RESUME_DOWNLOADED",
+      "category": "简历处理",
+      "boundary": "external",
+      "description": "候选人简历已从招聘渠道采集并落入对象存储,由人工采集上传动作 resumeCollection 产生(RAAS 上传弹框/Nextcloud 收件目录)。RAAS 发布 transport 元数据(不预解析,解析是 AO processResume 的职责,v7 拉模型)。etag 可为 null(手动上传链路不填,AO 用字节 MD5 兜底)。RMHR 锁归属字段(locked_by_*)自 2026-05-27 起随事件下发。",
+      "producers": ["resumeCollection"],
+      "consumers": ["processResume"],
+      "external_consumers": [],
+      "payload": {
+        "source_action": "resumeCollection",
+        "source_domain": "RAAS",
+        "event_data": [
+          { "name": "upload_id", "type": "String", "target_object": "Resume_Upload", "required": true, "description": "上传编号——全链路锚点,MATCH_* 事件需原样回传供 RAAS 反查。" },
+          { "name": "bucket", "type": "String", "target_object": "Resume_Upload", "required": true, "description": "对象存储桶。" },
+          { "name": "object_key", "type": "String", "target_object": "Resume_Upload", "required": true, "description": "对象存储键(与 bucket 一起做 Resume 去重)。" },
+          { "name": "etag", "type": "String", "target_object": "Resume_Upload", "required": false, "description": "文件 etag,可 null(AO 以原始字节 MD5 兜底作 dedup key)。" },
+          { "name": "filename", "type": "String", "target_object": "Resume_Upload", "required": false, "description": "原始文件名(路径 B 按文件名×岗位名模糊匹配辅助)。" },
+          { "name": "mime_type", "type": "String", "target_object": "Resume_Upload", "required": false, "description": "声明 MIME(不可信,AO 按 magic bytes 识别真实格式)。" },
+          { "name": "size", "type": "Int", "target_object": "Resume_Upload", "required": false, "description": "文件字节数。" },
+          { "name": "employee_id", "type": "String", "target_object": "Employee", "required": false, "description": "上传者(招聘员)工号;下游按其名下岗位收敛(路径 B 锚点)。" },
+          { "name": "locked_by_employee_id", "type": "String", "target_object": "Employee", "required": false, "description": "RMHR 锁持有人工号;有锁时候选人归属以锁持有人为权威(resume.uploaded_by 仍记上传者)。" },
+          { "name": "client_id", "type": "String", "target_object": "Client", "required": false, "description": "客户编号透传。" },
+          { "name": "job_requisition_id", "type": "String", "target_object": "Job_Requisition", "required": false, "description": "上传时关联的单岗位(路径 A 精准匹配)。" },
+          { "name": "job_requisition_ids", "type": "Array<String>", "target_object": "Job_Requisition", "required": false, "description": "ADR-0040: RAAS 预窄化岗位数组(Nextcloud 路径按文件名×名下在招岗位模糊匹配收敛;单数为空时生效,路径 B')。" },
+          { "name": "sourcing_channel_id", "type": "String", "target_object": "Sourcing_Channel", "required": false, "description": "简历来源渠道(BOSS直聘/猎聘/LinkedIn/人才库-AI…),落 candidate.sourcing_channel_id。" },
+          { "name": "parsed", "type": "Object", "target_object": null, "required": false, "description": "legacy 兼容: 事件已带 parsed.data 时 AO 跳过取件+解析。" },
+          { "name": "trace", "type": "Object", "target_object": null, "required": false, "description": "追踪上下文。" }
+        ],
+        "state_mutations": [
+          { "target_object": "Resume_Upload", "mutation_type": "CREATE", "impacted_properties": ["upload_id", "bucket", "object_key", "etag", "filename", "status"] }
+        ]
+      }
+    },
+    {
+      "name": "RESUME_PROCESSED",
+      "category": "简历处理",
+      "boundary": "internal",
+      "description": "简历完成解析+同人查重+持久化,候选人档案就绪。两个 producer: ①processResume 主链路; ②人工重派动作 redispatchCandidate(RAAS 重发 thin event 带新 job_requisition_id,走路径 A 重跑)。carry-forward 设计: payload 携带 parsed.data 与岗位收敛锚点,让下游规则检查免回查(thin event 时下游按 candidate_id+resume_id 回拉)。注意: 候选人身份查重不经此事件——它由 processResume 在落库前 step.invoke 同步完成。",
+      "producers": ["processResume", "redispatchCandidate"],
+      "consumers": ["ruleCheckForMatchResume"],
+      "external_consumers": ["RAAS(候选人档案状态同步)"],
+      "payload": {
+        "source_action": "processResume",
+        "source_domain": null,
+        "event_data": [
+          { "name": "candidate_id", "type": "String", "target_object": "Candidate", "required": true, "description": "候选人编号(持久化产物,新建或复用老档)。" },
+          { "name": "resume_id", "type": "String", "target_object": "Resume", "required": true, "description": "简历编号。" },
+          { "name": "upload_id", "type": "String", "target_object": "Resume_Upload", "required": true, "description": "上传编号锚点(RAAS 订阅者按此反查;每次 emit 必须携带)。" },
+          { "name": "employee_id", "type": "String", "target_object": "Employee", "required": true, "description": "上传者工号(下游路径 B 收敛锚点;保持上传者,不随锁归属改写)。" },
+          { "name": "application_id", "type": "String", "target_object": "Application", "required": false, "description": "投递申请编号(RAAS 侧创建,存在则透传)。" },
+          { "name": "parsed", "type": "Object", "target_object": "Resume", "required": false, "description": "{data:{name/phone/email/experience[]/education[]/skills/rawText…}} GoHire 结构化解析透传(fat event;缺失时下游回拉)。" },
+          { "name": "job_requisition_id", "type": "String", "target_object": "Job_Requisition", "required": false, "description": "上传关联单岗位→下游走路径 A 精准撮合(重派场景=新指派岗位)。" },
+          { "name": "job_requisition_ids", "type": "Array<String>", "target_object": "Job_Requisition", "required": false, "description": "预窄化岗位数组→下游走路径 B' 逐个撮合。" },
+          { "name": "sourcing_channel_id", "type": "String", "target_object": "Sourcing_Channel", "required": false, "description": "来源渠道透传(partner/重新订阅方需要)。" },
+          { "name": "client_id", "type": "String", "target_object": "Client", "required": false, "description": "客户编号透传(下游 client 维度过滤)。" },
+          { "name": "filename", "type": "String", "target_object": "Resume_Upload", "required": false, "description": "文件名透传(路径 B 模糊匹配辅助)。" },
+          { "name": "bucket", "type": "String", "target_object": "Resume_Upload", "required": false, "description": "transport 透传。" },
+          { "name": "objectKey", "type": "String", "target_object": "Resume_Upload", "required": false, "description": "transport 透传。" },
+          { "name": "etag", "type": "String", "target_object": "Resume_Upload", "required": false, "description": "最终 etag(事件值 > MD5 兜底)。" },
+          { "name": "parsedAt", "type": "String", "target_object": null, "required": false, "description": "解析完成时间 ISO-8601。" },
+          { "name": "parserVersion", "type": "String", "target_object": null, "required": false, "description": "解析器版本标识。" }
+        ],
+        "state_mutations": [
+          { "target_object": "Candidate", "mutation_type": "CREATE_OR_MODIFY", "impacted_properties": ["candidate_id", "employee_id", "name", "gender", "birth_date", "mobile", "email", "highest_acquired_degree", "sourcing_channel_id", "status"] },
+          { "target_object": "Resume", "mutation_type": "CREATE_OR_MODIFY", "impacted_properties": ["resume_id", "candidate_id", "file_path", "parsed_content", "raw_parse_result", "uploaded_by"] },
+          { "target_object": "Resume_Upload", "mutation_type": "MODIFY", "impacted_properties": ["status"] },
+          { "target_object": "Application", "mutation_type": "CREATE_OR_MODIFY", "impacted_properties": ["application_id", "candidate_id", "job_requisition_id"] }
+        ]
+      }
+    },
+    {
+      "name": "RESUME_LOCKED_CONFLICT",
+      "category": "简历处理",
+      "boundary": "internal",
+      "description": "锁定强制模式(LOCK_CHECK_ENFORCE=1)下检测到候选人已被他人锁定/保护/黑名单: 抑制 RESUME_PROCESSED(该上传者的匹配不启动),由人工协调动作 resolveLockConflict 处理归属。候选人与简历数据已正常入库,仅下游流程被拦截。",
+      "producers": ["processResume"],
+      "consumers": ["resolveLockConflict"],
+      "external_consumers": [],
+      "payload": {
+        "source_action": "processResume",
+        "source_domain": null,
+        "event_data": [
+          { "name": "upload_id", "type": "String", "target_object": "Resume_Upload", "required": true, "description": "上传编号。" },
+          { "name": "candidate_id", "type": "String", "target_object": "Candidate", "required": true, "description": "候选人编号(已入库)。" },
+          { "name": "resume_id", "type": "String", "target_object": "Resume", "required": true, "description": "简历编号(已入库)。" },
+          { "name": "current_owner_employee_id", "type": "String", "target_object": "Employee", "required": false, "description": "当前锁持有人工号。" },
+          { "name": "current_owner_email", "type": "String", "target_object": "Employee", "required": false, "description": "当前锁持有人邮箱。" },
+          { "name": "reason", "type": "String", "target_object": null, "required": false, "description": "拦截原因(locked/protected/blacklisted)。" }
+        ],
+        "state_mutations": []
+      }
+    },
+    {
+      "name": "CANDIDATE_IDENTITY_REQUESTED",
+      "category": "简历处理",
+      "boundary": "external",
+      "description": "候选人身份检查的事件入口——由人工复核动作 reviewCandidateIdentity 重发(存疑件修正后独立机检)或外部系统显式触发。正常主链路不发此事件: processResume 在落库前用 Inngest step.invoke 同步调用 ruleCheckForCandidateIdentity 并等待返回值(90s 超时,软失败按新人降级),这样查重函数保持独立注册、舰队可管理,又不牺牲落库前决策时序。",
+      "producers": ["reviewCandidateIdentity"],
+      "consumers": ["ruleCheckForCandidateIdentity"],
+      "external_consumers": [],
+      "payload": {
+        "source_action": "reviewCandidateIdentity",
+        "source_domain": "RAAS",
+        "event_data": [
+          { "name": "upload_id", "type": "String", "target_object": "Resume_Upload", "required": true, "description": "上传编号(case 锚点)。" },
+          { "name": "candidate_id", "type": "String", "target_object": "Candidate", "required": false, "description": "候选人编号;落库前调用时用 upload_id 占位(对比池 self 排除无影响)。" },
+          { "name": "resume_id", "type": "String", "target_object": "Resume", "required": false, "description": "简历编号(可空)。" },
+          { "name": "parsed", "type": "Object", "target_object": "Resume", "required": true, "description": "{data:{…}} 结构化解析结果,身份字段来源。" },
+          { "name": "invoked_by", "type": "String", "target_object": null, "required": false, "description": "调用来源标识(resume-parser / manual / external)。" },
+          { "name": "trace_id", "type": "String", "target_object": null, "required": false, "description": "追踪编号。" }
+        ],
+        "state_mutations": []
+      }
+    },
+    {
+      "name": "CANDIDATE_IDENTITY_CHECKED",
+      "category": "简历处理",
+      "boundary": "internal",
+      "description": "候选人身份检查完成: 按 9-15 三级规则(手机号 > 姓名+邮箱 > 六字段)判定是否同一人并已强制落审计。弱命中件(needs_human_review=true)由人工复核动作 reviewCandidateIdentity 订阅处理;主链路的真正出口是 step.invoke 返回值——processResume 用它驱动挂老档/新建。弱命中绝不自动合并。",
+      "producers": ["ruleCheckForCandidateIdentity"],
+      "consumers": ["reviewCandidateIdentity"],
+      "external_consumers": [],
+      "payload": {
+        "source_action": "ruleCheckForCandidateIdentity",
+        "source_domain": null,
+        "event_data": [
+          { "name": "upload_id", "type": "String", "target_object": "Resume_Upload", "required": false, "description": "上传编号。" },
+          { "name": "candidate_id", "type": "String", "target_object": "Candidate", "required": true, "description": "被检查候选人编号(落库前=upload_id 占位)。" },
+          { "name": "resume_id", "type": "String", "target_object": "Resume", "required": false, "description": "简历编号。" },
+          { "name": "same_person", "type": "Boolean", "target_object": null, "required": true, "description": "是否判定为同一人。" },
+          { "name": "same_as_candidate_id", "type": "String", "target_object": "Candidate", "required": false, "description": "强命中(自动合并)时的老候选人编号;弱命中/未命中 null。" },
+          { "name": "dedup_action", "type": "String", "target_object": null, "required": true, "description": "去重动作: auto-merged / needs_review / new。" },
+          { "name": "matched_rule", "type": "String", "target_object": null, "required": false, "description": "命中层级(IDENTITY-1/2/3,同属本体规则 9-15)。" },
+          { "name": "audit_id", "type": "String", "target_object": "Candidate_Identity_Result", "required": true, "description": "身份检查审计编号(强制产物,无审计不得有结论)。" }
+        ],
+        "state_mutations": [
+          { "target_object": "Candidate_Identity_Result", "mutation_type": "CREATE", "impacted_properties": ["candidate_identity_result_id", "candidate_id", "resume_id", "matched_rule", "same_person", "same_as_candidate_id", "dedup_action", "needs_human_review", "pool_size"] }
+        ]
+      }
+    },
+    {
+      "name": "MATCH_RULE_CHECK_PASSED",
+      "category": "简历匹配",
+      "boundary": "internal",
+      "description": "候选人×岗位通过匹配前规则检查,进入智能匹配评分。canonical 六字段(candidate_id/resume_id/job_requisition_id/client_id/rule_check_result/rule_check_reason)+ carry-forward 大字段(job_requisition 全量/parsed_resume/parsed_content/audit/rule_check_rules/runtime_context)让匹配段免回查。下游 matchResume 有防伪闸门: audit 非 bypass、rules_evaluated>0、rule_check_rules 无 fail——事件名本身不足为凭。",
+      "producers": ["ruleCheckForMatchResume"],
+      "consumers": ["matchResume"],
+      "external_consumers": ["RAAS(可选订阅,规则通过状态同步)"],
+      "payload": {
+        "source_action": "ruleCheckForMatchResume",
+        "source_domain": null,
+        "event_data": [
+          { "name": "candidate_id", "type": "String", "target_object": "Candidate", "required": true, "description": "canonical: 候选人编号(可 null,禁止空串)。" },
+          { "name": "resume_id", "type": "String", "target_object": "Resume", "required": false, "description": "canonical: 简历编号。" },
+          { "name": "job_requisition_id", "type": "String", "target_object": "Job_Requisition", "required": true, "description": "canonical: 本次通过检查的岗位编号(每岗位一条事件)。" },
+          { "name": "client_id", "type": "String", "target_object": "Client", "required": true, "description": "canonical: 客户编号。" },
+          { "name": "rule_check_result", "type": "Enum", "enum": ["通过"], "target_object": "Candidate_Match_Result", "required": true, "description": "canonical: PASS 路径恒为'通过'(pending/REVIEW 已 fail-closed 折叠)。" },
+          { "name": "rule_check_reason", "type": "String", "target_object": "Candidate_Match_Result", "required": true, "description": "canonical: PASS 时恒空串;optional 参考结论经 rule_check_rules 携带。" },
+          { "name": "upload_id", "type": "String", "target_object": "Resume_Upload", "required": false, "description": "carry: 上传锚点(F3: 缺失 null)。" },
+          { "name": "employee_id", "type": "String", "target_object": "Employee", "required": true, "description": "carry: 招聘员工号。" },
+          { "name": "audit", "type": "Object", "target_object": "Rule_Check_Audit", "required": true, "description": "carry: 审计元数据 {rules_evaluated, graph_calls, client_id, business_group, studio, llm_model, llm_duration_ms, llm_round_trips, rule_source, fail_reason?}——匹配段防伪闸门的核验对象。" },
+          { "name": "rule_check_rules", "type": "Array<Object>", "target_object": "Rule_Check_Audit", "required": false, "description": "carry: 逐条判定 [{rule_id, rule_name, status, reason(截300), enforcement_level, failure_policy, blocking}];匹配段默认追加进 JD 文本做深度匹配;bypass 路径不带→匹配端拒绝。" },
+          { "name": "job_requisition", "type": "Object", "target_object": "Job_Requisition", "required": true, "description": "carry: 完整岗位对象(含回填技能),匹配段据此拼 JD 文本,免回查。" },
+          { "name": "parsed_resume", "type": "Object", "target_object": "Resume", "required": true, "description": "carry: 结构化简历(匹配段渲染简历文本首选;可 null 时匹配端回退 parsed_content)。" },
+          { "name": "parsed_content", "type": "String", "target_object": "Resume", "required": false, "description": "carry: PDF 纯文本 rawText(结构化渲染为空时的回退,保证不发空简历)。" },
+          { "name": "runtime_context", "type": "Object", "target_object": null, "required": true, "description": "carry: {upload_id, candidate_id, resume_id, employee_id, filename?, received_at?, trace_id} 运行时上下文。" }
+        ],
+        "state_mutations": [
+          { "target_object": "Candidate_Match_Result", "mutation_type": "CREATE_OR_MODIFY", "impacted_properties": ["candidate_match_result_id", "client_id", "candidate_id", "job_requisition_id", "rule_check_result", "rule_check_reason"] },
+          { "target_object": "Rule_Check_Audit", "mutation_type": "CREATE", "impacted_properties": ["audit_id", "candidate_id", "resume_id", "job_requisition_id", "decision", "rules_evaluated", "rule_source", "rule_provenance"] }
+        ]
+      }
+    },
+    {
+      "name": "MATCH_RULE_CHECK_FAILED",
+      "category": "简历匹配",
+      "boundary": "internal",
+      "description": "候选人×岗位未通过匹配前规则检查(仅业务证据充分的 mandatory 失败才会到达——基础设施故障走停靠重试,绝不发本事件)。由人工重派动作 redispatchCandidate 消费(复核后淘汰或改派)。failed_rules 只含 mandatory/底线规则;optional 结论落审计与 Neo4j 作参考,不污染失败契约。partner-pg 无 rule_check_* 列,失败映射到 match_status=未通过 + match_reason。",
+      "producers": ["ruleCheckForMatchResume"],
+      "consumers": ["redispatchCandidate"],
+      "external_consumers": ["RAAS dispatcher(读顶层 rule_check_result 直接路由)"],
+      "payload": {
+        "source_action": "ruleCheckForMatchResume",
+        "source_domain": null,
+        "event_data": [
+          { "name": "candidate_id", "type": "String", "target_object": "Candidate", "required": true, "description": "canonical: 候选人编号(可 null)。" },
+          { "name": "resume_id", "type": "String", "target_object": "Resume", "required": false, "description": "canonical: 简历编号。" },
+          { "name": "job_requisition_id", "type": "String", "target_object": "Job_Requisition", "required": true, "description": "canonical: 未通过的岗位编号。" },
+          { "name": "client_id", "type": "String", "target_object": "Client", "required": true, "description": "canonical: 客户编号。" },
+          { "name": "rule_check_result", "type": "Enum", "enum": ["未通过"], "target_object": "Candidate_Match_Result", "required": true, "description": "canonical: 恒为'未通过'。" },
+          { "name": "rule_check_reason", "type": "String", "target_object": "Candidate_Match_Result", "required": true, "description": "canonical: mandatory 阻断原因拼接(formatExplanation,截 1000)。" },
+          { "name": "failed_rules", "type": "Array<Object>", "target_object": "Rule_Check_Audit", "required": true, "description": "canonical: [{rule_id, rule_name, step_id?, severity?, reason?}] 仅 mandatory 失败明细。" },
+          { "name": "matching_score", "type": "Float", "target_object": null, "required": true, "description": "F3 兼容: 恒 null(未进匹配)。" },
+          { "name": "upload_id", "type": "String", "target_object": "Resume_Upload", "required": false, "description": "F3 兼容: 上传锚点透传。" },
+          { "name": "success", "type": "Boolean", "target_object": null, "required": true, "description": "F3 兼容: 恒 false。" },
+          { "name": "data", "type": "Object", "target_object": null, "required": false, "description": "结构化错误信息 {audit}(GoHire envelope 风格保留位)。" }
+        ],
+        "state_mutations": [
+          { "target_object": "Candidate_Match_Result", "mutation_type": "CREATE_OR_MODIFY", "impacted_properties": ["candidate_match_result_id", "candidate_id", "job_requisition_id", "client_id", "match_status", "match_reason"] },
+          { "target_object": "Rule_Check_Audit", "mutation_type": "CREATE", "impacted_properties": ["audit_id", "decision", "failure_reasons", "rules_evaluated"] }
+        ]
+      }
+    },
+    {
+      "name": "MATCH_PASSED_NEED_INTERVIEW",
+      "category": "简历匹配",
+      "boundary": "internal",
+      "description": "候选人通过匹配评分(matching_score≥40 或分数缺失),需进入内部 AI 面试环节。F3 统一契约: 关键字段顶层平铺,缺失一律 null 禁止空串。⚠ 链路接缝: 本事件由人工审批动作 approveInterviewInvitation(HSM)消费——审批通过后 RAAS 先 INSERT interview_invitation(status=requested) 再回发 INTERVIEW_INVITATION_REQUESTED;AO 的邀约 action 不直接订阅本事件。",
+      "producers": ["matchResume"],
+      "consumers": ["approveInterviewInvitation"],
+      "external_consumers": ["RAAS auto-invitation dispatcher(读顶层 candidate_id/matching_score/upload_id 决定是否进入审批)"],
+      "payload": {
+        "source_action": "matchResume",
+        "source_domain": null,
+        "event_data": [
+          { "name": "job_requisition_id", "type": "String", "target_object": "Job_Requisition", "required": true, "description": "★岗位编号(必填)。" },
+          { "name": "candidate_id", "type": "String", "target_object": "Candidate", "required": true, "description": "★候选人编号(可 null,禁止空串)。" },
+          { "name": "matching_score", "type": "Float", "target_object": "Candidate_Match_Result", "required": true, "description": "★匹配分(取不到显式 null,不得省略字段;真实分源于 overallMatchScore.score 归一化)。" },
+          { "name": "upload_id", "type": "String", "target_object": "Resume_Upload", "required": true, "description": "★上传锚点(RAAS 反查 candidate 用;缺失 null)。" },
+          { "name": "job_posting_id", "type": "String", "target_object": "Job_Posting", "required": false, "description": "关联岗位发布编号(有则带)。" },
+          { "name": "candidate_match_result_id", "type": "String", "target_object": "Candidate_Match_Result", "required": false, "description": "partner Postgres 匹配结果主键(订阅方可直接 update 同行)。" },
+          { "name": "overall_status", "type": "Enum", "enum": ["匹配"], "target_object": "Candidate_Match_Result", "required": true, "description": "匹配结论(本事件恒'匹配')。" },
+          { "name": "success", "type": "Boolean", "target_object": null, "required": true, "description": "调用成功标志(恒 true)。" },
+          { "name": "data", "type": "Object", "target_object": null, "required": false, "description": "GoHire 原始匹配分析(overallMatchScore/breakdown/recommendation),consumer cherry-pick。" },
+          { "name": "requestId", "type": "String", "target_object": null, "required": false, "description": "GoHire 请求编号。" }
+        ],
+        "state_mutations": [
+          { "target_object": "Candidate_Match_Result", "mutation_type": "CREATE_OR_MODIFY", "impacted_properties": ["candidate_match_result_id", "overall_match_score", "overall_fit_verdict", "overall_fit_summary", "overall_match_grade"] }
+        ]
+      }
+    },
+    {
+      "name": "MATCH_PASSED_NO_INTERVIEW",
+      "category": "简历匹配",
+      "boundary": "internal",
+      "description": "【已下线保留位】高分免面试直推路径。2026-05-21 F3 单阈值化后运行时不再产出: ≥40 一律 MATCH_PASSED_NEED_INTERVIEW,不按分数自动免面试。保留事件定义作向后兼容订阅位(payload 同 F3 统一契约),producers 置空。",
+      "producers": [],
+      "consumers": [],
+      "external_consumers": [],
+      "payload": {
+        "source_action": null,
+        "source_domain": null,
+        "event_data": [
+          { "name": "job_requisition_id", "type": "String", "target_object": "Job_Requisition", "required": true, "description": "岗位编号。" },
+          { "name": "candidate_id", "type": "String", "target_object": "Candidate", "required": true, "description": "候选人编号。" },
+          { "name": "matching_score", "type": "Float", "target_object": "Candidate_Match_Result", "required": true, "description": "匹配分。" },
+          { "name": "upload_id", "type": "String", "target_object": "Resume_Upload", "required": true, "description": "上传锚点。" }
+        ],
+        "state_mutations": []
+      }
+    },
+    {
+      "name": "MATCH_FAILED",
+      "category": "简历匹配",
+      "boundary": "internal",
+      "description": "匹配终态失败,两个来源: ①评分路由 matching_score<40(overall_status=不匹配,匹配结果已入库); ②GoHire 调用不可恢复失败(凭证坏/空结果;data.error_kind=robohire-match-call-failed,error 带原因)。可恢复降级(欠费/瞬断)不发本事件——停靠自动续跑,避免重试成功前的假失败。由人工重派动作 redispatchCandidate 消费(复核后淘汰或改派)。",
+      "producers": ["matchResume"],
+      "consumers": ["redispatchCandidate"],
+      "external_consumers": ["RAAS(匹配失败状态同步)"],
+      "payload": {
+        "source_action": "matchResume",
+        "source_domain": null,
+        "event_data": [
+          { "name": "job_requisition_id", "type": "String", "target_object": "Job_Requisition", "required": true, "description": "★岗位编号。" },
+          { "name": "candidate_id", "type": "String", "target_object": "Candidate", "required": true, "description": "★候选人编号(可 null)。" },
+          { "name": "matching_score", "type": "Float", "target_object": "Candidate_Match_Result", "required": true, "description": "★匹配分(<40;调用失败路径为 null)。" },
+          { "name": "upload_id", "type": "String", "target_object": "Resume_Upload", "required": true, "description": "★上传锚点。" },
+          { "name": "job_posting_id", "type": "String", "target_object": "Job_Posting", "required": false, "description": "关联岗位发布编号。" },
+          { "name": "candidate_match_result_id", "type": "String", "target_object": "Candidate_Match_Result", "required": false, "description": "匹配结果主键(评分路由路径有)。" },
+          { "name": "overall_status", "type": "Enum", "enum": ["不匹配"], "target_object": "Candidate_Match_Result", "required": true, "description": "恒'不匹配'。" },
+          { "name": "success", "type": "Boolean", "target_object": null, "required": true, "description": "评分路由=true(调用成功业务不匹配);调用失败路径=false。" },
+          { "name": "data", "type": "Object", "target_object": null, "required": false, "description": "GoHire 原始数据;调用失败时为 {error_kind:'robohire-match-call-failed'}。" },
+          { "name": "error", "type": "String", "target_object": null, "required": false, "description": "调用失败原因(仅失败路径)。" }
+        ],
+        "state_mutations": [
+          { "target_object": "Candidate_Match_Result", "mutation_type": "CREATE_OR_MODIFY", "impacted_properties": ["candidate_match_result_id", "overall_match_score", "overall_fit_verdict", "overall_match_grade"] }
+        ]
+      }
+    },
+    {
+      "name": "INTERVIEW_INVITATION_REQUESTED",
+      "category": "内部面试邀约",
+      "boundary": "external",
+      "description": "RAAS 侧人工审批动作 approveInterviewInvitation(HSM)通过后请求 AO 发起 AI 面试邀请;失败重试场景由人工处理动作 handleInvitationFailure 重发。⚠ 前置状态契约: RAAS emit 前已 INSERT interview_invitation(status=requested,含 correlation_id),AO 完成后按 correlation_id 回写。信封形态 {entity_type, entity_id, event_id, payload, trace}。面试材料三级优先: robohire_*_id(服务端取数) > *_text 直传 > AO 按锚点回拉(thin event)。",
+      "producers": ["approveInterviewInvitation", "handleInvitationFailure"],
+      "consumers": ["inviteInternalInterview"],
+      "external_consumers": [],
+      "payload": {
+        "source_action": "approveInterviewInvitation",
+        "source_domain": "RAAS",
+        "event_data": [
+          { "name": "candidate_id", "type": "String", "target_object": "Candidate", "required": true, "description": "★候选人编号(缺→FAILED(MISSING_PAYLOAD))。" },
+          { "name": "job_requisition_id", "type": "String", "target_object": "Job_Requisition", "required": true, "description": "★岗位编号(缺→FAILED(MISSING_PAYLOAD))。" },
+          { "name": "application_id", "type": "String", "target_object": "Application", "required": false, "description": "投递申请编号(Interview_Record.application_id 引用)。" },
+          { "name": "candidate_match_result_id", "type": "String", "target_object": "Candidate_Match_Result", "required": false, "description": "匹配结果编号(trace 串联)。" },
+          { "name": "client_id", "type": "String", "target_object": "Client", "required": false, "description": "客户编号。" },
+          { "name": "resume_id", "type": "String", "target_object": "Resume", "required": false, "description": "简历编号(thin event 回拉 parsed_content 用)。" },
+          { "name": "recruiter_id", "type": "String", "target_object": "Employee", "required": false, "description": "发起邀请的招聘者工号(RAAS 实际字段名就是 recruiter_id,非 operator_id)。" },
+          { "name": "correlation_id", "type": "String", "target_object": "Interview_Invitation", "required": false, "description": "跨服务关联键——RAAS 用它把 _SENT join 回 interview_invitation 行;缺失则 AO 跳过回写仅告警。" },
+          { "name": "job_posting_id", "type": "String", "target_object": "Job_Posting", "required": false, "description": "派生 posting 编号(纯 trace)。" },
+          { "name": "requested_at", "type": "String", "target_object": "Interview_Invitation", "required": false, "description": "发起时间 ISO-8601(SLA 监控)。" },
+          { "name": "trigger_source", "type": "String", "target_object": "Interview_Invitation", "required": false, "description": "触发来源: manual_candidate_card / hsm_auto / bulk_invite 等。" },
+          { "name": "resume_text", "type": "String", "target_object": null, "required": false, "description": "直传简历文本(优先级 2)。" },
+          { "name": "jd_text", "type": "String", "target_object": null, "required": false, "description": "直传 JD 文本(优先级 2)。" },
+          { "name": "robohire_resume_id", "type": "String", "target_object": null, "required": false, "description": "GoHire 侧 resume 行 id(优先级 1,服务端取数;普通 resume_id 绝不可冒充)。" },
+          { "name": "robohire_job_id", "type": "String", "target_object": null, "required": false, "description": "GoHire 侧 job 行 id(优先级 1)。" },
+          { "name": "hiring_request_id", "type": "String", "target_object": null, "required": false, "description": "GoHire 招聘请求编号。" },
+          { "name": "candidate_email", "type": "String", "target_object": "Candidate", "required": false, "description": "候选人邮箱(缺省 GoHire 从简历推断)。" },
+          { "name": "recruiter_email", "type": "String", "target_object": "Employee", "required": false, "description": "招聘者邮箱(接收抄送)。" },
+          { "name": "interviewer_requirement", "type": "String", "target_object": null, "required": false, "description": "面试官考察要求(AI 面试出题依据)。" },
+          { "name": "job_title", "type": "String", "target_object": null, "required": false, "description": "岗位名称(邮件展示)。" },
+          { "name": "company_name", "type": "String", "target_object": null, "required": false, "description": "公司名称(邮件展示)。" },
+          { "name": "interview_language", "type": "Enum", "enum": ["en", "zh", "ja"], "target_object": null, "required": false, "description": "面试语言。" },
+          { "name": "interview_duration", "type": "Int", "target_object": null, "required": false, "description": "时长分钟(>0,默认 30)。" },
+          { "name": "interview_mode", "type": "String", "target_object": null, "required": false, "description": "面试形式(ai_video 等)。" },
+          { "name": "passing_score", "type": "Float", "target_object": null, "required": false, "description": "通过分数线。" },
+          { "name": "linked_assessment_id", "type": "String", "target_object": null, "required": false, "description": "关联测评编号。" },
+          { "name": "runtime_context", "type": "Object", "target_object": null, "required": false, "description": "{trace_id, request_id, workflow_id} 透传。" }
+        ],
+        "state_mutations": [
+          { "target_object": "Interview_Invitation", "mutation_type": "CREATE", "impacted_properties": ["correlation_id", "candidate_id", "job_requisition_id", "status", "requested_at", "trigger_source"] }
+        ]
+      }
+    },
+    {
+      "name": "INTERVIEW_INVITATION_SENT",
+      "category": "内部面试邀约",
+      "boundary": "internal",
+      "description": "AI 面试邀请已真实送达(GoHire 已签发 login_url 或复用已有邀请 reused=true)。由人工跟进动作 interviewExecution 消费(企业微信确认候选人参加;候选人在 GoHire 完成 AI 面试)。payload 含全量回执+AO 侧 Neo4j 主键,RAAS UI 可串起完整 trace;correlation_id 用于 join 回 interview_invitation 行。persistenceWarning 场景本事件与 _FAILED(PERSISTENCE_WARNING) 双发。信封 entity_type=Interview_Record。",
+      "producers": ["inviteInternalInterview"],
+      "consumers": ["interviewExecution"],
+      "external_consumers": ["RAAS(邀约状态回写/UI trace)"],
+      "payload": {
+        "source_action": "inviteInternalInterview",
+        "source_domain": null,
+        "event_data": [
+          { "name": "candidate_id", "type": "String", "target_object": "Candidate", "required": true, "description": "候选人编号。" },
+          { "name": "job_requisition_id", "type": "String", "target_object": "Job_Requisition", "required": true, "description": "岗位编号。" },
+          { "name": "application_id", "type": "String", "target_object": "Application", "required": false, "description": "投递申请编号。" },
+          { "name": "candidate_match_result_id", "type": "String", "target_object": "Candidate_Match_Result", "required": false, "description": "匹配结果编号(trace)。" },
+          { "name": "correlation_id", "type": "String", "target_object": "Interview_Invitation", "required": false, "description": "RAAS join 键(来自 _REQUESTED)。" },
+          { "name": "interview_record_id", "type": "String", "target_object": "Interview_Record", "required": true, "description": "AO 新建面试记录主键(ivr_<candidate>_<jr>_inv)。" },
+          { "name": "communication_log_id", "type": "String", "target_object": "Communication_Log", "required": true, "description": "AO 新建沟通日志主键。" },
+          { "name": "login_url", "type": "String", "target_object": "Interview_Invitation", "required": true, "description": "候选人 AI 面试入口(GoHire 签发;成功判据,可 null 仅当 reused)。" },
+          { "name": "qrcode_url", "type": "String", "target_object": "Interview_Invitation", "required": false, "description": "面试入口二维码。" },
+          { "name": "user_id", "type": "String", "target_object": null, "required": false, "description": "GoHire 用户编号。" },
+          { "name": "request_introduction_id", "type": "String", "target_object": null, "required": false, "description": "GoHire 请求编号。" },
+          { "name": "gohire_job_id", "type": "String", "target_object": null, "required": false, "description": "GoHire 侧岗位编号。" },
+          { "name": "candidate_email", "type": "String", "target_object": "Candidate", "required": false, "description": "实际接收邮箱(GoHire 回执 > 请求入参)。" },
+          { "name": "interview_language", "type": "String", "target_object": null, "required": false, "description": "面试语言。" },
+          { "name": "interview_duration_minutes", "type": "Int", "target_object": null, "required": false, "description": "面试时长(GoHire 回执 > 请求入参)。" },
+          { "name": "robohire_request_id", "type": "String", "target_object": null, "required": false, "description": "GoHire 请求编号(跨系统 trace)。" },
+          { "name": "sent_at", "type": "String", "target_object": "Interview_Invitation", "required": true, "description": "发出时间 ISO-8601。" }
+        ],
+        "state_mutations": [
+          { "target_object": "Interview_Record", "mutation_type": "CREATE", "impacted_properties": ["interview_record_id", "application_id", "interviewer_employee_id", "interview_type", "interview_round", "interview_mode", "duration_minutes", "recording_url", "raw_interview_notes"] },
+          { "target_object": "Communication_Log", "mutation_type": "CREATE", "impacted_properties": ["communication_log_id", "application_id", "message_sender", "message_receiver", "interaction_type", "message_content", "content_summary", "timestamp"] },
+          { "target_object": "Interview_Invitation", "mutation_type": "MODIFY", "impacted_properties": ["status", "login_url", "qrcode_url", "gohire_user_id", "request_introduction_id", "gohire_invite_log", "sent_at"] }
+        ]
+      }
+    },
+    {
+      "name": "INTERVIEW_INVITATION_FAILED",
+      "category": "内部面试邀约",
+      "boundary": "internal",
+      "description": "AI 面试邀请失败(终态或警示): error_code 已分类,由人工处理动作 handleInvitationFailure 消费(重试/线下邀约/知悉)。仅不可恢复失败发终态(锚点缺失/回拉失败/GoHire 4xx/配额/GoHire 拒绝);可恢复依赖降级(欠费/瞬断/5xx)停靠重试不发本事件。PERSISTENCE_WARNING 特例: 邀请已送达但落库告警,与 _SENT 双发。信封 entity_type=Candidate。",
+      "producers": ["inviteInternalInterview"],
+      "consumers": ["handleInvitationFailure"],
+      "external_consumers": [],
+      "payload": {
+        "source_action": "inviteInternalInterview",
+        "source_domain": null,
+        "event_data": [
+          { "name": "candidate_id", "type": "String", "target_object": "Candidate", "required": true, "description": "候选人编号(未知时 'unknown')。" },
+          { "name": "job_requisition_id", "type": "String", "target_object": "Job_Requisition", "required": true, "description": "岗位编号(未知时 'unknown')。" },
+          { "name": "application_id", "type": "String", "target_object": "Application", "required": false, "description": "投递申请编号。" },
+          { "name": "error_code", "type": "Enum", "enum": ["MISSING_PAYLOAD", "BACKFILL_FAILED", "ROBOHIRE_4XX", "ROBOHIRE_QUOTA", "ROBOHIRE_5XX", "GOHIRE_REJECTED", "PERSISTENCE_WARNING", "UNKNOWN"], "target_object": null, "required": true, "description": "失败分类: MISSING_PAYLOAD=锚点不全 / BACKFILL_FAILED=回拉简历或JD失败 / ROBOHIRE_4XX=客户端错误 / ROBOHIRE_QUOTA=402/403 配额 / ROBOHIRE_5XX=服务端重试到顶 / GOHIRE_REJECTED=上游业务拒绝(含 200 无 login_url) / PERSISTENCE_WARNING=邀请送达但 GoHire 端落库失败(与 _SENT 双发) / UNKNOWN=兜底。" },
+          { "name": "error_message", "type": "String", "target_object": null, "required": true, "description": "失败详情。" },
+          { "name": "http_status", "type": "Int", "target_object": null, "required": false, "description": "HTTP 状态码(GoHire 错误路径)。" },
+          { "name": "robohire_request_id", "type": "String", "target_object": null, "required": false, "description": "GoHire 请求编号。" },
+          { "name": "failed_at", "type": "String", "target_object": null, "required": true, "description": "失败时间 ISO-8601。" }
+        ],
+        "state_mutations": []
+      }
+    }
+  ]
+}

@@ -4,13 +4,12 @@
  * Spawns the compiled CLI as a child process against the live api:
  *
  *   1. `agentic init e2edemo` scaffolds a fresh tenant under a temp cwd.
- *   2. `agentic deploy <tenantDir> --no-typecheck` POSTs the manifest
- *      tarball to /v1/agents on the running api.
- *   3. The api returns a `deployments` row + a `workflow_version_id`.
- *   4. The scaffolded agent's name is invocable: the test re-POSTs to
- *      /v1/agents to confirm the version is queryable (the scaffolded
- *      agent is a manifest agent, so direct /v1/agents/:name/invoke is
- *      not the right surface — it would 404 in the code-agent registry).
+ *   2. Create the real empty tenant through the production API.
+ *   3. `agentic deploy <tenantDir> --no-typecheck` uploads the source registry
+ *      and then commits the manifest under that tenant.
+ *   4. Assert both deployment lanes are live and publish TENANT_START.
+ *   5. Prove the dynamically uploaded `exampleTool` ran by waiting for the
+ *      scaffolded intakeEvent run to reach a terminal state.
  *
  * We invoke the CLI source through `tsx` rather than the built `dist/`
  * shim so the test doesn't depend on `pnpm --filter @agentic/cli run
@@ -20,10 +19,10 @@
 
 import { test, expect } from "@playwright/test";
 import { spawn } from "node:child_process";
-import { mkdtemp, rm, access, unlink, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, access } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { apiFetch, API_BASE } from "./helpers";
+import { apiFetch, API_BASE, waitFor } from "./helpers";
 
 const repoRoot = path.resolve(__dirname, "../../..");
 const cliDir = path.join(repoRoot, "apps", "cli");
@@ -44,8 +43,8 @@ function runCli(args: string[], cwd: string): Promise<CliResult> {
       cwd,
       env: {
         ...process.env,
-        AGENTIC_API: API_BASE,
-        AGENTIC_TOKEN: process.env.AGENTIC_TOKEN ?? "",
+        AGENTIC_API_URL: API_BASE,
+        AGENTIC_API_TOKEN: process.env.AGENTIC_API_TOKEN ?? "",
       },
     });
     const out: string[] = [];
@@ -74,9 +73,25 @@ test.describe("P4-TEST-06: CLI init + deploy round-trip E2E", () => {
   // but the slug only needs to be unique per-suite run.
   const slug = `e2edemo${Date.now().toString(36).slice(-5)}`;
   let cwd: string;
+  let deployedVersion = "";
 
   test.beforeAll(async () => {
     cwd = await mkdtemp(path.join(tmpdir(), "agentic-e2e-"));
+    const created = await apiFetch("/v1/tenants", {
+      method: "POST",
+      body: JSON.stringify({
+        slug,
+        name: `CLI E2E ${slug}`,
+        starter: "empty",
+        mintToken: false,
+      }),
+    });
+    expect(created.status).toBe(201);
+    if (!created.body.ok) {
+      throw new Error(
+        `tenant create failed: ${created.body.error.code} — ${created.body.error.message}`,
+      );
+    }
   });
 
   test.afterAll(async () => {
@@ -97,21 +112,6 @@ test.describe("P4-TEST-06: CLI init + deploy round-trip E2E", () => {
 
   test("deploy POSTs the manifest and surfaces version + diff", async () => {
     const tenantDir = path.join(cwd, "data", "tenants", slug);
-    const modelsDir = path.join(cwd, "models", `${slug}-v1`);
-
-    // Known issue: the `agentic init` scaffolder emits
-    // `actions_v1.json` in the object-keyed form
-    // ({ actions: { name: {...} } }), but the manifest-upload contract
-    // expects an *array*. The CLI deploy code reads `.actions` and
-    // forwards it as-is, which fails the API's ManifestUploadBody parse.
-    // Workaround: replace actions_v1.json with an empty array so the
-    // E2E exercises the workflow path end-to-end. A follow-up fix
-    // should land in either the scaffolder or the cli's
-    // readWorkflow() converter.
-    await writeFile(
-      path.join(modelsDir, "actions_v1.json"),
-      JSON.stringify([], null, 2),
-    );
 
     const r = await runCli(
       [
@@ -125,27 +125,10 @@ test.describe("P4-TEST-06: CLI init + deploy round-trip E2E", () => {
       ],
       cwd,
     );
-    if (r.code !== 0) {
-      // Surface CLI output so a CI failure is debuggable in one click.
-      console.error(`[P4-TEST-06] cli stderr:\n${r.stderr}`);
-      console.error(`[P4-TEST-06] cli stdout:\n${r.stdout}`);
-    }
-    // P4-TEST-05's known issue (computeDiff on a tenant_code-coexist
-    // tenant) also bites here; accept either a clean 0 exit (deploy
-    // succeeded) or a non-zero exit when the api hits the diff bug.
-    if (r.code !== 0) {
-      // If the failure is the known computeDiff issue, treat as a soft
-      // pass — the spec proves the request shape was valid (we got past
-      // ManifestUploadBody.parse).
-      expect(r.stderr + r.stdout).toMatch(
-        /prior is not iterable|Deployed upload-/,
-      );
-      console.warn(
-        `[P4-TEST-06] deploy hit known-bug 500 — flagged in spawn task`,
-      );
-      return;
-    }
-    expect(r.stdout).toMatch(/Deployed upload-[a-f0-9]+/);
+    expect(r.code, `stderr=${r.stderr}\nstdout=${r.stdout}`).toBe(0);
+    const version = r.stdout.match(/Deployed (auto-[a-f0-9]{8})/)?.[1];
+    expect(version).toBeTruthy();
+    deployedVersion = version ?? "";
   });
 
   test("post-deploy: the new workflow_version is queryable via /v1/deployments", async () => {
@@ -159,13 +142,70 @@ test.describe("P4-TEST-06: CLI init + deploy round-trip E2E", () => {
         status: string;
       }>;
       live: { id: string; versionString: string } | null;
-    }>("/v1/deployments");
+    }>("/v1/deployments", { tenantSlug: slug });
     expect(deps.status).toBe(200);
     if (!deps.body.ok) throw new Error("deployments fetch failed");
-    // Our slug may or may not appear depending on tenant-scope ordering;
-    // either way, the list must be a non-empty array (we just inserted
-    // one in the previous test).
-    expect(deps.body.data.list.length).toBeGreaterThan(0);
+    const deployed = deps.body.data.list.find(
+      (entry) => entry.versionString === deployedVersion && entry.status === "live",
+    );
+    expect(deployed).toBeDefined();
+    const codeDeployment = deps.body.data.list.find(
+      (entry) =>
+        entry.workflowSlug === "__tenant_code__" && entry.status === "live",
+    );
+    expect(codeDeployment).toBeDefined();
+    expect(codeDeployment?.versionString).toMatch(/^v1-[a-f0-9]{12}$/);
+  });
+
+  test("post-deploy: uploaded registry executes through the real event runtime", async () => {
+    const agents = await apiFetch<Array<{ name: string; enabled: boolean }>>(
+      "/v1/agents?kind=manifest",
+      { tenantSlug: slug },
+    );
+    expect(agents.status).toBe(200);
+    if (!agents.body.ok) throw new Error("agents fetch failed");
+    expect(agents.body.data.some((agent) => agent.name === "intakeEvent" && agent.enabled)).toBe(
+      true,
+    );
+
+    const subject = `cli-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const ingest = await apiFetch<{ event_id: string }>("/v1/events", {
+      method: "POST",
+      tenantSlug: slug,
+      body: JSON.stringify({
+        name: "TENANT_START",
+        subject,
+        payload: { source: "cli-e2e" },
+      }),
+    });
+    expect(ingest.status).toBe(200);
+    if (!ingest.body.ok) {
+      throw new Error(
+        `event ingest failed: ${ingest.body.error.code} — ${ingest.body.error.message}`,
+      );
+    }
+
+    const run = await waitFor(
+      async () => {
+        const runs = await apiFetch<Array<{
+          id: string;
+          agentName: string;
+          subject: string | null;
+          status: string;
+        }>>("/v1/runs?agent=intakeEvent&limit=20", { tenantSlug: slug });
+        if (!runs.body.ok) return null;
+        return (
+          runs.body.data.find(
+            (candidate) =>
+              candidate.subject === subject &&
+              (candidate.status === "ok" || candidate.status === "failed"),
+          ) ?? null
+        );
+      },
+      { timeoutMs: 30_000, intervalMs: 500, label: "CLI tenant registry run" },
+    );
+    expect(run.agentName).toBe("intakeEvent");
+    expect(run.status).toBe("ok");
   });
 
   test("agentic --version reports a semver string", async () => {

@@ -6,7 +6,7 @@
  * Ported from v1_1 app.jsx:181-238. Behaviour:
  *   - Tenant is in the URL (P2-FE-25); selecting one calls `useTenantNavigate`
  *     to push `/portal/<new-slug>/<rest>`.
- *   - "New tenant" opens the 4-step `TenantCreateModal`, then optionally
+ *   - "New tenant" opens the 3-step `TenantCreateModal`, then optionally
  *     shows the bootstrap token reveal, then auto-launches the
  *     `ImportManifestModal` so the operator can populate the new tenant.
  */
@@ -83,7 +83,6 @@ export function TenantSwitcher({ tenants }: { tenants: TenantOption[] }) {
             onClose={() => setCreateOpen(false)}
             onCreated={handleCreated}
             existingSlugs={new Set(tenants.map((t) => t.id))}
-            existingTenants={tenants}
           />
         )}
         {tokenReveal && (
@@ -266,7 +265,6 @@ export function TenantSwitcher({ tenants }: { tenants: TenantOption[] }) {
           onClose={() => setCreateOpen(false)}
           onCreated={handleCreated}
           existingSlugs={new Set(tenants.map((t) => t.id))}
-          existingTenants={tenants}
         />
       )}
       {tokenReveal && (

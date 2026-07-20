@@ -42,8 +42,11 @@ export interface PruneDeploymentsReport {
 
 export function pruneRolledBackDeployments(
   retainPerNote: number = DEFAULT_ROLLED_BACK_RETENTION,
+  protectedDeploymentIds: readonly string[] = [],
 ): PruneDeploymentsReport {
   const sqlite = getRawSqlite();
+  const protectedIds = [...new Set(protectedDeploymentIds.filter((id) =>
+    typeof id === "string" && id.length > 0))];
 
   const countRolledBack = () =>
     (
@@ -58,6 +61,9 @@ export function pruneRolledBackDeployments(
   // drop everything past the retention cap. SQLite groups NULL notes into a
   // single partition — same semantics as the GROUP BY the Deployments audit
   // uses — so unlabelled boilerplate collapses together too.
+  const protectedClause = protectedIds.length
+    ? `AND id NOT IN (${protectedIds.map(() => "?").join(",")})`
+    : "";
   sqlite
     .prepare(
       `DELETE FROM deployments
@@ -70,11 +76,12 @@ export function pruneRolledBackDeployments(
              ) AS rn
            FROM deployments
            WHERE status = 'rolled_back'
+             ${protectedClause}
          )
          WHERE rn > ?
        )`,
     )
-    .run(retainPerNote);
+    .run(...protectedIds, retainPerNote);
 
   const after = countRolledBack();
 

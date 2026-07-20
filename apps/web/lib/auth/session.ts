@@ -1,22 +1,17 @@
 /**
- * Session cookie utilities (P2-FE-19).
+ * Server-side session lookup.
  *
- * We sign session payloads using `jose`'s HS256 — the API server reads the
- * same cookie via its own HMAC check, so the secret is shared via env.
- *
- * Token shape:
- *   { sub: <userId>, name, tenant, exp }
- *
- * In dev (`AUTH_MODE=dev` or `NODE_ENV !== "production"`) any visitor with
- * no cookie is auto-resolved to a synthetic "kenny.chien" session. Production
- * uses real magic-link sign-in (post-v1 — `/sign-in` is the stub today).
+ * The API is the only component that signs and verifies `agentic_session`.
+ * Next forwards the opaque cookie to `/v1/me` and maps the authenticated
+ * identity into the small shape needed by the portal shell. Keeping JWT
+ * verification in one process prevents a stale Web secret from turning a
+ * successful login into a silent redirect loop.
  */
 
 import { cookies } from "next/headers";
-import { jwtVerify, SignJWT } from "jose";
+import { serverApiUrl } from "@/lib/server-api-url";
 
 export const COOKIE_NAME = "agentic_session";
-const ALGORITHM = "HS256";
 
 export interface Session {
   sub: string;
@@ -25,99 +20,94 @@ export interface Session {
   tenant: string;
 }
 
-/**
- * Dev auto-login is gated on AUTH_MODE === "dev" ONLY (matching the api's
- * `authenticate()`), NOT on `NODE_ENV !== production`. Otherwise local dev
- * would always synthesize a session — the sign-in page, logout, and
- * change-password could never actually take effect (P6-AUTH fix).
- */
-function isDev(): boolean {
-  return process.env.AUTH_MODE === "dev";
+interface MeEnvelope {
+  ok: true;
+  data: {
+    user: {
+      id: string;
+      name: string;
+    };
+    activeTenant: {
+      slug: string;
+    } | null;
+    memberships: Array<{
+      tenantSlug: string;
+    }>;
+  };
+}
+
+function initialsFor(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "??";
+  if (parts.length === 1) return (parts[0] ?? "").slice(0, 2).toUpperCase();
+  const first = parts[0]?.[0] ?? "";
+  const last = parts[parts.length - 1]?.[0] ?? "";
+  return (first + last).toUpperCase();
+}
+
+function isMeEnvelope(value: unknown): value is MeEnvelope {
+  if (!value || typeof value !== "object") return false;
+  const envelope = value as Partial<MeEnvelope>;
+  const data = envelope.data;
+  return (
+    envelope.ok === true &&
+    Boolean(data && typeof data === "object") &&
+    typeof data?.user?.id === "string" &&
+    typeof data.user.name === "string" &&
+    (data.activeTenant === null ||
+      typeof data.activeTenant?.slug === "string") &&
+    Array.isArray(data.memberships)
+  );
 }
 
 /**
- * Must match the api's secret resolution (apps/api/src/plugins/auth.ts) so a
- * cookie the api signs on login verifies here. The api prefers
- * AUTH_SESSION_SECRET; accept SESSION_SECRET as a fallback.
- */
-function getSecret(): Uint8Array {
-  const raw =
-    process.env.AUTH_SESSION_SECRET ??
-    process.env.SESSION_SECRET ??
-    "dev-only-do-not-use-in-prod";
-  return new TextEncoder().encode(raw);
-}
-
-const DEV_SESSION: Session = {
-  sub: "dev-user",
-  name: "Liu Wei",
-  initials: "LW",
-  tenant: "raas",
-};
-
-/**
- * Read the current session (or null if none).
+ * Resolve the current session through the API's canonical verifier.
  *
- * In dev, falls back to a synthetic session so the portal works without a
- * sign-in dance.
+ * Missing/expired cookies return `null`. API outages and contract violations
+ * throw so the portal shows a real service error instead of pretending the
+ * user's credentials were rejected.
  */
 export async function readSession(): Promise<Session | null> {
   const store = await cookies();
   const raw = store.get(COOKIE_NAME)?.value;
-  if (!raw) {
-    return isDev() ? DEV_SESSION : null;
-  }
+  if (!raw) return null;
+
+  let response: Response;
   try {
-    const { payload } = await jwtVerify(raw, getSecret(), {
-      algorithms: [ALGORITHM],
+    response = await fetch(`${serverApiUrl()}/v1/me`, {
+      method: "GET",
+      headers: {
+        accept: "application/json",
+        cookie: `${COOKIE_NAME}=${raw}`,
+      },
+      cache: "no-store",
     });
-    const claims = payload as unknown as Partial<Session> & { exp?: number };
-    if (
-      typeof claims.sub === "string" &&
-      typeof claims.name === "string" &&
-      typeof claims.initials === "string" &&
-      typeof claims.tenant === "string"
-    ) {
-      return {
-        sub: claims.sub,
-        name: claims.name,
-        initials: claims.initials,
-        tenant: claims.tenant,
-      };
-    }
-    return null;
-  } catch {
-    return isDev() ? DEV_SESSION : null;
+  } catch (cause) {
+    throw new Error("Authentication service is unavailable", { cause });
   }
-}
 
-export async function signSession(session: Session): Promise<string> {
-  const jwt = await new SignJWT({
-    sub: session.sub,
-    name: session.name,
-    initials: session.initials,
-    tenant: session.tenant,
-  })
-    .setProtectedHeader({ alg: ALGORITHM })
-    .setIssuedAt()
-    .setExpirationTime("30d")
-    .sign(getSecret());
-  return jwt;
-}
+  if (response.status === 401) return null;
+  if (!response.ok) {
+    throw new Error(`Authentication service returned HTTP ${response.status}`);
+  }
 
-export async function writeSession(session: Session): Promise<void> {
-  const store = await cookies();
-  const jwt = await signSession(session);
-  store.set(COOKIE_NAME, jwt, {
-    path: "/",
-    httpOnly: true,
-    sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
-    maxAge: 60 * 60 * 24 * 30,
-  });
-}
+  let payload: unknown;
+  try {
+    payload = await response.json();
+  } catch (cause) {
+    throw new Error("Authentication service returned invalid JSON", { cause });
+  }
+  if (!isMeEnvelope(payload)) {
+    throw new Error(
+      "Authentication service returned an invalid session payload",
+    );
+  }
 
-export async function clearSession(): Promise<void> {
-  const store = await cookies();
-  store.delete(COOKIE_NAME);
+  const { user, activeTenant, memberships } = payload.data;
+  return {
+    sub: user.id,
+    name: user.name,
+    initials: initialsFor(user.name),
+    tenant: activeTenant?.slug ?? memberships[0]?.tenantSlug ?? "",
+  };
 }

@@ -21,10 +21,14 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { eq } from "drizzle-orm";
-import { getDb, tenantBudgets } from "@agentic/db";
-import { requireAuth } from "../../plugins/auth";
+import { getDb, getRawSqlite, tenantBudgets } from "@agentic/db";
+import { getActiveBudgetReservations } from "@agentic/llm-gateway";
 import { requirePermission } from "../../plugins/rbac";
 import { writeAudit } from "../../plugins/audit";
+import {
+  ensureBudgetRow,
+  reconcileBudgetUsage,
+} from "../../services/usage-accounting";
 
 const BudgetUpdateBody = z.object({
   monthlyTokenCap: z.number().int().nonnegative().nullable().optional(),
@@ -32,49 +36,45 @@ const BudgetUpdateBody = z.object({
   reset: z.boolean().optional(),
 });
 
-function shapeRow(row: typeof tenantBudgets.$inferSelect) {
-  return {
-    tenantId: row.tenantId,
-    monthlyTokenCap: row.monthlyTokenCap,
-    monthlyUsdCap: row.monthlyUsdCap,
-    usedTokensMonth: row.usedTokensMonth,
-    usedUsdMonth: row.usedUsdMonth,
-    periodStart: row.periodStart.getTime(),
-    updatedAt: row.updatedAt.getTime(),
-  };
+class ActiveBudgetResetError extends Error {
+  constructor(readonly count: number, readonly reservedTokens: number, readonly reservedUsdCents: number) {
+    super(`Cannot reset budget while ${count} LLM call(s) are in flight`);
+  }
 }
 
-function ensureRow(tenantId: string) {
-  const db = getDb();
-  let row = db
+function shapeRow(
+  row: typeof tenantBudgets.$inferSelect,
+) {
+  const reservations = getActiveBudgetReservations(row.tenantId);
+  // Lease expiry can conservatively increment the durable counters. Reload
+  // after observing reservations so this same response never presents stale
+  // lower usage alongside an already-disappeared active reservation.
+  const refreshed = getDb()
     .select()
     .from(tenantBudgets)
-    .where(eq(tenantBudgets.tenantId, tenantId))
-    .all()[0];
-  if (!row) {
-    db.insert(tenantBudgets)
-      .values({
-        tenantId,
-        monthlyTokenCap: null,
-        monthlyUsdCap: null,
-        usedTokensMonth: 0,
-        usedUsdMonth: 0,
-      })
-      .onConflictDoNothing({ target: tenantBudgets.tenantId })
-      .run();
-    row = db
-      .select()
-      .from(tenantBudgets)
-      .where(eq(tenantBudgets.tenantId, tenantId))
-      .all()[0]!;
-  }
-  return row;
+    .where(eq(tenantBudgets.tenantId, row.tenantId))
+    .all()[0] ?? row;
+  const usage = reconcileBudgetUsage(refreshed);
+  return {
+    tenantId: refreshed.tenantId,
+    monthlyTokenCap: refreshed.monthlyTokenCap,
+    monthlyUsdCap: refreshed.monthlyUsdCap,
+    usedTokensMonth: usage.tokens,
+    usedUsdMonth: usage.usdCents,
+    unpricedTokens: usage.unpricedTokens,
+    costComplete: usage.costComplete,
+    activeReservations: reservations.count,
+    reservedTokens: reservations.reservedTokens,
+    reservedUsdCents: reservations.reservedUsdCents,
+    periodStart: refreshed.periodStart.getTime(),
+    updatedAt: refreshed.updatedAt.getTime(),
+  };
 }
 
 export async function budgetsRoutes(app: FastifyInstance): Promise<void> {
   app.get("/budgets", async (req, reply) => {
     const auth = requirePermission(req, "usage.read");
-    const row = ensureRow(auth.tenantId);
+    const row = ensureBudgetRow(auth.tenantId);
     return reply.ok(shapeRow(row));
   });
 
@@ -82,7 +82,7 @@ export async function budgetsRoutes(app: FastifyInstance): Promise<void> {
     const auth = requirePermission(req, "budgets.write");
     const body = BudgetUpdateBody.parse(req.body ?? {});
     const db = getDb();
-    ensureRow(auth.tenantId);
+    ensureBudgetRow(auth.tenantId);
 
     const update: Partial<typeof tenantBudgets.$inferInsert> = {
       updatedAt: new Date(),
@@ -99,10 +99,59 @@ export async function budgetsRoutes(app: FastifyInstance): Promise<void> {
       update.periodStart = new Date();
     }
 
-    db.update(tenantBudgets)
-      .set(update)
-      .where(eq(tenantBudgets.tenantId, auth.tenantId))
-      .run();
+    try {
+      // Serialize reset/cap changes with reserveBudget's BEGIN IMMEDIATE.
+      // Otherwise a call can reserve between a reset precheck and the update.
+      getRawSqlite().transaction(() => {
+        if (body.reset) {
+          const now = Date.now();
+          getRawSqlite().prepare(
+            `UPDATE llm_budget_reservations
+             SET status = 'expired', actual_tokens = reserved_tokens,
+                 actual_usd_cents = reserved_usd_cents, settled_at = ?,
+                 outcome = 'lease_expired_conservative'
+             WHERE tenant_id = ? AND status = 'active' AND expires_at <= ?`,
+          ).run(now, auth.tenantId, now);
+          const active = getRawSqlite().prepare(
+            `SELECT count(*) AS count,
+                    coalesce(sum(reserved_tokens), 0) AS reservedTokens,
+                    coalesce(sum(reserved_usd_cents), 0) AS reservedUsdCents
+             FROM llm_budget_reservations
+             WHERE tenant_id = ? AND status = 'active'`,
+          ).get(auth.tenantId) as {
+            count: number;
+            reservedTokens: number;
+            reservedUsdCents: number;
+          };
+          if (Number(active.count) > 0) {
+            throw new ActiveBudgetResetError(
+              Number(active.count),
+              Number(active.reservedTokens),
+              Number(active.reservedUsdCents),
+            );
+          }
+        }
+        db.update(tenantBudgets)
+          .set(update)
+          .where(eq(tenantBudgets.tenantId, auth.tenantId))
+          .run();
+      }).immediate();
+    } catch (error) {
+      if (error instanceof ActiveBudgetResetError) {
+        return reply.status(409).send({
+          error: {
+            code: "budget_reservations_active",
+            message: error.message,
+            details: {
+              count: error.count,
+              reservedTokens: error.reservedTokens,
+              reservedUsdCents: error.reservedUsdCents,
+            },
+          },
+        });
+      }
+      throw error;
+    }
 
     const after = db
       .select()
@@ -112,6 +161,7 @@ export async function budgetsRoutes(app: FastifyInstance): Promise<void> {
 
     writeAudit({
       tenantId: auth.tenantId,
+      actorUserId: auth.userId ?? undefined,
       action: "budget.update",
       targetType: "tenant_budget",
       targetId: auth.tenantId,

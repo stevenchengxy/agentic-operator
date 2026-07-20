@@ -1,0 +1,626 @@
+# Production-mode primary-host deployment overlay.
+#
+# This replaces both bundled `inngest dev` brokers with durable `inngest
+# start` servers backed by independent PostgreSQL + Redis stores.  It also
+# keeps the primary broker off host ports and mounts generated secrets only
+# into the services that consume them.  Use with the base topology:
+#
+# Promotable external_sandbox: start the primary services without the optional
+# profile. The remote plane is deployed independently over HTTPS.
+#
+#   docker compose --env-file .env.production \
+#     -f docker-compose.yml -f docker-compose.production.yml up -d
+#
+# Local diagnostics may additionally opt in to `--profile factory-sandbox`;
+# those same-host results can never authorize promotion.
+
+services:
+  api:
+    image: "${AGENTIC_API_IMAGE:?AGENTIC_API_IMAGE is required}"
+    # Production uses host binds for SQLite and promoted manifests. Run the
+    # API as the non-root identity recorded by setup so those stores remain
+    # writable without chowning user-owned workspace files or granting 0777.
+    user: "${AGENTIC_RUNTIME_UID:?AGENTIC_RUNTIME_UID is required}:${AGENTIC_RUNTIME_GID:?AGENTIC_RUNTIME_GID is required}"
+    build: !reset null
+    pull_policy: never
+    env_file: !override
+      - path: .env.production
+        required: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=512m,mode=1777
+    # Keep the API reachable to a same-host reverse proxy/webhook ingress
+    # without publishing it on every interface by default. Operators that
+    # intentionally expose it must choose the bind address explicitly.
+    ports: !override
+      - "${API_BIND_ADDRESS:-127.0.0.1}:${API_PORT:-3501}:3501"
+    environment:
+      NODE_ENV: production
+      AGENTIC_PROCESS_ROLE: api
+      AUTH_MODE: production
+      # The numeric host-storage identity intentionally is not baked into
+      # /etc/passwd. Give libraries and headless Chromium a writable, tmpfs-
+      # backed home/cache instead of falling back to read-only /app or /root.
+      HOME: /tmp
+      XDG_CACHE_HOME: /tmp/.cache
+      XDG_CONFIG_HOME: /tmp/.config
+      INNGEST_DEV: "0"
+      INNGEST_BASE_URL: http://inngest:8288
+      INNGEST_SERVE_ORIGIN: http://api:3501
+      INNGEST_EVENT_KEY: ""
+      INNGEST_EVENT_KEY_FILE: /run/secrets/agentic-primary/system-event-key
+      INNGEST_SIGNING_KEY: ""
+      INNGEST_SIGNING_KEY_FILE: /run/secrets/agentic-primary/signing-key
+      # Reviewed production CodeAct runs are delegated over an internal,
+      # HMAC-authenticated channel. The API owns the attempt-scoped tool/model
+      # policy context but intentionally has no candidate image or Docker socket.
+      PRODUCTION_CODEACT_EXECUTOR_ENABLED: "${PRODUCTION_CODEACT_EXECUTOR_ENABLED:?PRODUCTION_CODEACT_EXECUTOR_ENABLED is required}"
+      PRODUCTION_CODEACT_EXECUTOR_URL: "${PRODUCTION_CODEACT_EXECUTOR_URL:?PRODUCTION_CODEACT_EXECUTOR_URL is required}"
+      PRODUCTION_CODEACT_EXECUTOR_TOKEN: ""
+      PRODUCTION_CODEACT_EXECUTOR_TOKEN_FILE: "${PRODUCTION_CODEACT_EXECUTOR_TOKEN_FILE:?PRODUCTION_CODEACT_EXECUTOR_TOKEN_FILE is required}"
+      PRODUCTION_CODEACT_EXECUTOR_HTTP_ALLOWED_HOSTS: "${PRODUCTION_CODEACT_EXECUTOR_HTTP_ALLOWED_HOSTS:?PRODUCTION_CODEACT_EXECUTOR_HTTP_ALLOWED_HOSTS is required}"
+      PRODUCTION_CODEACT_EXPECTED_EXECUTOR_ID: "${PRODUCTION_CODEACT_EXPECTED_EXECUTOR_ID:?PRODUCTION_CODEACT_EXPECTED_EXECUTOR_ID is required}"
+      PRODUCTION_CODEACT_EXPECTED_BUILD_ID: "${PRODUCTION_CODEACT_EXPECTED_BUILD_ID:?PRODUCTION_CODEACT_EXPECTED_BUILD_ID is required}"
+      PRODUCTION_CODEACT_ALLOWED_CANDIDATE_REFS: "${PRODUCTION_CODEACT_ALLOWED_CANDIDATE_REFS:?PRODUCTION_CODEACT_ALLOWED_CANDIDATE_REFS is required}"
+      PRODUCTION_CODEACT_ALLOWED_CANDIDATE_IMAGE_IDS: "${PRODUCTION_CODEACT_ALLOWED_CANDIDATE_IMAGE_IDS:?PRODUCTION_CODEACT_ALLOWED_CANDIDATE_IMAGE_IDS is required}"
+      PRODUCTION_CODEACT_CALLBACK_URL: ""
+      PRODUCTION_CODEACT_CALLBACK_HTTP_ALLOWED_HOSTS: ""
+      FACTORY_EXEC_GENERATED: "0"
+      FACTORY_CODEACT_CANDIDATE_IMAGE: ""
+      FACTORY_CODEACT_ALLOWED_IMAGE_DIGESTS: ""
+      FACTORY_CODEACT_DOCKER_SOCKET: ""
+    volumes: !override
+      - type: bind
+        source: ./data
+        target: /app/data
+      - type: bind
+        source: ./models
+        target: /app/models
+      - type: bind
+        source: ./.secrets/agent-factory/api
+        target: /run/secrets/agentic-primary
+        read_only: true
+      # Only the Ed25519 public trust root crosses into the API container. The
+      # host verifier's private key has no Compose variable or mount.
+      - type: bind
+        source: "${FACTORY_PRODUCTION_IMAGE_ATTESTATION_PUBLIC_KEY_HOST_FILE:?FACTORY_PRODUCTION_IMAGE_ATTESTATION_PUBLIC_KEY_HOST_FILE is required}"
+        target: "${FACTORY_PRODUCTION_IMAGE_ATTESTATION_PUBLIC_KEY_FILE:?FACTORY_PRODUCTION_IMAGE_ATTESTATION_PUBLIC_KEY_FILE is required}"
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${FACTORY_SB_REQUEST_HMAC_HOST_FILE:?FACTORY_SB_REQUEST_HMAC_HOST_FILE is required}"
+        target: "${FACTORY_SB_REQUEST_HMAC_FILE:?FACTORY_SB_REQUEST_HMAC_FILE is required}"
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${FACTORY_SB_RESULT_HMAC_HOST_FILE:?FACTORY_SB_RESULT_HMAC_HOST_FILE is required}"
+        target: "${FACTORY_SB_RESULT_HMAC_FILE:?FACTORY_SB_RESULT_HMAC_FILE is required}"
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${FACTORY_SB_RECEIPT_HMAC_HOST_FILE:?FACTORY_SB_RECEIPT_HMAC_HOST_FILE is required}"
+        target: "${FACTORY_SB_RECEIPT_HMAC_FILE:?FACTORY_SB_RECEIPT_HMAC_FILE is required}"
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${FACTORY_SB_MODEL_PROXY_TOKEN_HOST_FILE:?FACTORY_SB_MODEL_PROXY_TOKEN_HOST_FILE is required}"
+        target: "${FACTORY_SB_MODEL_PROXY_TOKEN_FILE:?FACTORY_SB_MODEL_PROXY_TOKEN_FILE is required}"
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${PRODUCTION_CODEACT_EXECUTOR_TOKEN_HOST_FILE:?PRODUCTION_CODEACT_EXECUTOR_TOKEN_HOST_FILE is required}"
+        target: "${PRODUCTION_CODEACT_EXECUTOR_TOKEN_FILE:?PRODUCTION_CODEACT_EXECUTOR_TOKEN_FILE is required}"
+        read_only: true
+        bind:
+          create_host_path: false
+    depends_on:
+      inngest:
+        condition: service_healthy
+      codeact-executor:
+        condition: service_healthy
+    networks: !override
+      - agentic
+      - agentic-runtime
+      - factory-sandbox-control
+      - factory-sandbox-model
+      - production-codeact
+
+  # Production generated-code launcher. This is a separate instance and
+  # lifecycle from the Factory sandbox workload. It receives no ontology,
+  # model-provider, tenant-adapter, broker, database or sandbox credentials.
+  # Its only authority is launching the reviewed one-shot candidate image;
+  # every tool/model/memory call returns to the API over a run-bound HMAC RPC.
+  codeact-executor:
+    image: "${PRODUCTION_CODEACT_EXECUTOR_IMAGE:?PRODUCTION_CODEACT_EXECUTOR_IMAGE is required}"
+    pull_policy: never
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: "${PRODUCTION_CODEACT_EXECUTOR_PIDS_LIMIT:-256}"
+    mem_limit: "${PRODUCTION_CODEACT_EXECUTOR_MEMORY_LIMIT:-1g}"
+    cpus: "${PRODUCTION_CODEACT_EXECUTOR_CPUS:-2.0}"
+    # preClose first rejects new work, aborts active candidates and proves that
+    # every production-plane container is absent. Keep Docker's grace longer
+    # than the executor's bounded drain so SIGKILL cannot bypass that proof.
+    # Drain is bounded to at most 60s by config; retain cleanup headroom even
+    # when an operator raises it above the 15s default.
+    stop_grace_period: 75s
+    expose: ["3570"]
+    entrypoint: ["/usr/bin/tini", "--"]
+    command:
+      - ./node_modules/.bin/tsx
+      - src/codeact-executor.ts
+    environment:
+      NODE_ENV: production
+      AGENTIC_PROCESS_ROLE: production-codeact-executor
+      AGENTIC_BUILD_ID: "${PRODUCTION_CODEACT_EXPECTED_BUILD_ID:?PRODUCTION_CODEACT_EXPECTED_BUILD_ID is required}"
+      HOST: 0.0.0.0
+      PRODUCTION_CODEACT_EXECUTOR_PORT: "3570"
+      PRODUCTION_CODEACT_EXECUTOR_ID: "${PRODUCTION_CODEACT_EXPECTED_EXECUTOR_ID:?PRODUCTION_CODEACT_EXPECTED_EXECUTOR_ID is required}"
+      PRODUCTION_CODEACT_EXECUTOR_MAX_ACTIVE: "${PRODUCTION_CODEACT_EXECUTOR_MAX_ACTIVE:-8}"
+      PRODUCTION_CODEACT_REAPER_INTERVAL_MS: "${PRODUCTION_CODEACT_REAPER_INTERVAL_MS:?PRODUCTION_CODEACT_REAPER_INTERVAL_MS is required}"
+      PRODUCTION_CODEACT_ORPHAN_GRACE_MS: "${PRODUCTION_CODEACT_ORPHAN_GRACE_MS:?PRODUCTION_CODEACT_ORPHAN_GRACE_MS is required}"
+      PRODUCTION_CODEACT_DRAIN_TIMEOUT_MS: "${PRODUCTION_CODEACT_DRAIN_TIMEOUT_MS:-15000}"
+      PRODUCTION_CODEACT_EXECUTOR_TOKEN: ""
+      PRODUCTION_CODEACT_EXECUTOR_TOKEN_FILE: "${PRODUCTION_CODEACT_EXECUTOR_TOKEN_FILE:?PRODUCTION_CODEACT_EXECUTOR_TOKEN_FILE is required}"
+      PRODUCTION_CODEACT_CALLBACK_URL: http://api:3501
+      PRODUCTION_CODEACT_CALLBACK_HTTP_ALLOWED_HOSTS: api
+      FACTORY_EXEC_GENERATED: "1"
+      FACTORY_CODEACT_CANDIDATE_IMAGE: "${FACTORY_CODEACT_CANDIDATE_IMAGE:?FACTORY_CODEACT_CANDIDATE_IMAGE must be immutable}"
+      FACTORY_CODEACT_ALLOWED_IMAGE_DIGESTS: "${FACTORY_CODEACT_ALLOWED_IMAGE_DIGESTS:?FACTORY_CODEACT_ALLOWED_IMAGE_DIGESTS must include the reviewed image}"
+      FACTORY_CODEACT_DOCKER_SOCKET: /var/run/docker.sock
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=128m,mode=1777
+    volumes:
+      - type: bind
+        source: "${FACTORY_CODEACT_DOCKER_SOCKET_HOST_PATH:?FACTORY_CODEACT_DOCKER_SOCKET_HOST_PATH is required}"
+        target: /var/run/docker.sock
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${PRODUCTION_CODEACT_EXECUTOR_TOKEN_HOST_FILE:?PRODUCTION_CODEACT_EXECUTOR_TOKEN_HOST_FILE is required}"
+        target: "${PRODUCTION_CODEACT_EXECUTOR_TOKEN_FILE:?PRODUCTION_CODEACT_EXECUTOR_TOKEN_FILE is required}"
+        read_only: true
+        bind:
+          create_host_path: false
+    group_add:
+      - "${FACTORY_CODEACT_DOCKER_SOCKET_GID:?FACTORY_CODEACT_DOCKER_SOCKET_GID is required}"
+    networks:
+      - production-codeact
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "const fs=require('node:fs');const f=process.env.PRODUCTION_CODEACT_EXECUTOR_TOKEN_FILE;const t=(process.env.PRODUCTION_CODEACT_EXECUTOR_TOKEN||(f?fs.readFileSync(f,'utf8'):'')).trim();fetch('http://127.0.0.1:3570/health',{headers:{authorization:'Bearer '+t}}).then(r=>r.ok?0:Promise.reject()).catch(()=>process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      start_period: 20s
+      retries: 6
+
+  web:
+    image: "${AGENTIC_WEB_IMAGE:?AGENTIC_WEB_IMAGE is required}"
+    build: !reset null
+    pull_policy: never
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=128m,mode=1777
+    # Keep the human review surface reachable.  Bind to loopback by default so
+    # a single-host install can be placed behind its own TLS reverse proxy;
+    # operators may explicitly choose another address/port.
+    ports: !override
+      - "${WEB_BIND_ADDRESS:-127.0.0.1}:${WEB_PORT:-3599}:3599"
+
+  inngest:
+    image: "${PRIMARY_INNGEST_IMAGE:?PRIMARY_INNGEST_IMAGE must be an immutable digest}"
+    build: !reset null
+    pull_policy: never
+    ports: !reset []
+    environment: !override
+      INNGEST_EVENT_KEYS_FILE: /run/secrets/primary-event-keys
+      INNGEST_SIGNING_KEY_FILE: /run/secrets/primary-signing-key
+      INNGEST_POSTGRES_PASSWORD_FILE: /run/secrets/primary-postgres-password
+      INNGEST_REDIS_PASSWORD_FILE: /run/secrets/primary-redis-password
+      INNGEST_POSTGRES_HOST: inngest-postgres
+      INNGEST_REDIS_HOST: inngest-redis
+      INNGEST_EXPERIMENTAL_PROM_METRICS: "1"
+    entrypoint: !override
+      - /bin/sh
+      - /opt/agentic/inngest-start.sh
+    command: !reset []
+    volumes: !override
+      - type: bind
+        source: ./deploy/compose/inngest-start.sh
+        target: /opt/agentic/inngest-start.sh
+        read_only: true
+      - type: bind
+        source: ./.secrets/agent-factory/primary-broker
+        target: /run/secrets
+        read_only: true
+    networks: !override
+      - agentic-runtime
+    depends_on:
+      inngest-postgres:
+        condition: service_healthy
+      inngest-redis:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, inngest, alpha, doctor, healthcheck]
+      interval: 15s
+      timeout: 8s
+      start_period: 45s
+      retries: 5
+
+  inngest-postgres:
+    image: "${PRIMARY_POSTGRES_IMAGE:?PRIMARY_POSTGRES_IMAGE must be an immutable digest}"
+    pull_policy: never
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: inngest
+      POSTGRES_USER: inngest
+      POSTGRES_PASSWORD_FILE: /run/secrets/primary-postgres-password
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - primary-inngest-postgres:/var/lib/postgresql/data
+      - type: bind
+        source: ./.secrets/agent-factory/primary-broker/primary-postgres-password
+        target: /run/secrets/primary-postgres-password
+        read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=128m,mode=1777
+      - /var/run/postgresql:rw,nosuid,nodev,size=16m,mode=3775
+    networks: [agentic-runtime]
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U inngest -d inngest]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  inngest-redis:
+    image: "${PRIMARY_REDIS_IMAGE:?PRIMARY_REDIS_IMAGE must be an immutable digest}"
+    pull_policy: never
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --aclfile
+      - /run/secrets/primary-redis-acl
+    volumes:
+      - primary-inngest-redis:/data
+      - type: bind
+        source: ./.secrets/agent-factory/primary-broker/primary-redis-acl
+        target: /run/secrets/primary-redis-acl
+        read_only: true
+      - type: bind
+        source: ./.secrets/agent-factory/primary-broker/primary-redis-password
+        target: /run/secrets/primary-redis-password
+        read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=64m,mode=1777
+    networks: [agentic-runtime]
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - redis-cli --no-auth-warning -a "$$(cat /run/secrets/primary-redis-password)" ping | grep -qx PONG
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  # The control and workload processes never address the raw broker. Both
+  # directions pass through the policy gateway, while the raw server and its
+  # databases exist only on a backend network that candidate code cannot join.
+  sandbox-runner:
+    image: "${FACTORY_SANDBOX_CONTROL_IMAGE:?FACTORY_SANDBOX_CONTROL_IMAGE must be an immutable sha256 image identity}"
+    build: !reset null
+    pull_policy: never
+    environment:
+      SANDBOX_INNGEST_BASE_URL: http://sandbox-broker-gateway:3562
+      SANDBOX_INNGEST_CONTROL_BEARER: ""
+      SANDBOX_INNGEST_CONTROL_BEARER_FILE: /run/secrets/factory-sandbox/control-bearer
+    volumes: !override
+      - type: volume
+        source: factory-sandbox-control-current
+        target: /sandbox/control
+      - type: bind
+        source: "${SANDBOX_WORKLOAD_TOKEN_HOST_FILE:?SANDBOX_WORKLOAD_TOKEN_HOST_FILE is required}"
+        target: /run/secrets/factory-sandbox/workload-token
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${SANDBOX_INNGEST_CONTROL_BEARER_HOST_FILE:?SANDBOX_INNGEST_CONTROL_BEARER_HOST_FILE is required}"
+        target: /run/secrets/factory-sandbox/control-bearer
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${FACTORY_SB_REQUEST_HMAC_HOST_FILE:?FACTORY_SB_REQUEST_HMAC_HOST_FILE is required}"
+        target: "${FACTORY_SB_REQUEST_HMAC_FILE:?FACTORY_SB_REQUEST_HMAC_FILE is required}"
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${FACTORY_SB_RESULT_HMAC_HOST_FILE:?FACTORY_SB_RESULT_HMAC_HOST_FILE is required}"
+        target: "${FACTORY_SB_RESULT_HMAC_FILE:?FACTORY_SB_RESULT_HMAC_FILE is required}"
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${FACTORY_SB_RECEIPT_HMAC_HOST_FILE:?FACTORY_SB_RECEIPT_HMAC_HOST_FILE is required}"
+        target: "${FACTORY_SB_RECEIPT_HMAC_FILE:?FACTORY_SB_RECEIPT_HMAC_FILE is required}"
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${SANDBOX_CANCEL_FENCE_HMAC_HOST_FILE:?SANDBOX_CANCEL_FENCE_HMAC_HOST_FILE is required}"
+        target: "${SANDBOX_CANCEL_FENCE_HMAC_FILE:?SANDBOX_CANCEL_FENCE_HMAC_FILE is required}"
+        read_only: true
+        bind:
+          create_host_path: false
+    depends_on: !override
+      sandbox-broker-gateway:
+        condition: service_healthy
+
+  sandbox-workload:
+    image: "${FACTORY_SANDBOX_WORKLOAD_IMAGE:?FACTORY_SANDBOX_WORKLOAD_IMAGE must be an immutable sha256 image identity}"
+    build: !reset null
+    pull_policy: never
+    environment:
+      FACTORY_EXEC_GENERATED: "${FACTORY_EXEC_GENERATED:-0}"
+      FACTORY_CODEACT_CANDIDATE_IMAGE: "${FACTORY_CODEACT_CANDIDATE_IMAGE:?FACTORY_CODEACT_CANDIDATE_IMAGE must be an immutable sha256 image identity}"
+      FACTORY_CODEACT_ALLOWED_IMAGE_DIGESTS: "${FACTORY_CODEACT_ALLOWED_IMAGE_DIGESTS:?FACTORY_CODEACT_ALLOWED_IMAGE_DIGESTS must contain the reviewed candidate identity}"
+      FACTORY_CODEACT_DOCKER_SOCKET: /var/run/docker.sock
+      SANDBOX_INNGEST_DEV_MODE: "0"
+      SANDBOX_INNGEST_EVENT_KEY: ""
+      SANDBOX_INNGEST_EVENT_KEY_FILE: /run/secrets/factory-sandbox/event-key
+      SANDBOX_INNGEST_SIGNING_KEY: ""
+      SANDBOX_INNGEST_SIGNING_KEY_FILE: /run/secrets/factory-sandbox/signing-key
+      SANDBOX_INNGEST_BASE_URL: http://sandbox-broker-gateway:3562
+      SANDBOX_INNGEST_WORKLOAD_SERVE_ORIGIN: http://sandbox-broker-gateway:3562
+      SANDBOX_INNGEST_CONTROL_BEARER: ""
+      SANDBOX_INNGEST_CONTROL_BEARER_FILE: /run/secrets/factory-sandbox/control-bearer
+      SANDBOX_MODEL_PROXY_ORIGIN: http://api:3501
+      SANDBOX_MODEL_PROXY_TOKEN_FILE: /run/secrets/factory-sandbox/model-proxy-token
+      SANDBOX_MODEL_PROXY_HTTP_ALLOWED_HOSTS: "${SANDBOX_MODEL_PROXY_HTTP_ALLOWED_HOSTS:?SANDBOX_MODEL_PROXY_HTTP_ALLOWED_HOSTS is required}"
+    volumes: !override
+      - factory-sandbox-db:/sandbox/db
+      - factory-sandbox-models:/sandbox/models
+      - factory-sandbox-data:/sandbox/data
+      - type: bind
+        source: "${FACTORY_CODEACT_DOCKER_SOCKET_HOST_PATH:?FACTORY_CODEACT_DOCKER_SOCKET_HOST_PATH is required}"
+        target: /var/run/docker.sock
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${SANDBOX_WORKLOAD_TOKEN_HOST_FILE:?SANDBOX_WORKLOAD_TOKEN_HOST_FILE is required}"
+        target: /run/secrets/factory-sandbox/workload-token
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${SANDBOX_INNGEST_CONTROL_BEARER_HOST_FILE:?SANDBOX_INNGEST_CONTROL_BEARER_HOST_FILE is required}"
+        target: /run/secrets/factory-sandbox/control-bearer
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${FACTORY_SB_MODEL_PROXY_TOKEN_HOST_FILE:?FACTORY_SB_MODEL_PROXY_TOKEN_HOST_FILE is required}"
+        target: /run/secrets/factory-sandbox/model-proxy-token
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${SANDBOX_CANCEL_FENCE_HMAC_HOST_FILE:?SANDBOX_CANCEL_FENCE_HMAC_HOST_FILE is required}"
+        target: "${SANDBOX_CANCEL_FENCE_HMAC_FILE:?SANDBOX_CANCEL_FENCE_HMAC_FILE is required}"
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./.secrets/agent-factory/sandbox/event-key
+        target: /run/secrets/factory-sandbox/event-key
+        read_only: true
+      - type: bind
+        source: ./.secrets/agent-factory/sandbox/signing-key
+        target: /run/secrets/factory-sandbox/signing-key
+        read_only: true
+    group_add: !override
+      - "${FACTORY_CODEACT_DOCKER_SOCKET_GID:?FACTORY_CODEACT_DOCKER_SOCKET_GID is required}"
+    depends_on: !override
+      sandbox-broker-gateway:
+        condition: service_healthy
+      sandbox-runner:
+        condition: service_healthy
+
+  sandbox-broker-gateway:
+    profiles: ["factory-sandbox"]
+    image: "${FACTORY_SANDBOX_GATEWAY_IMAGE:?FACTORY_SANDBOX_GATEWAY_IMAGE is required}"
+    pull_policy: "${FACTORY_SANDBOX_GATEWAY_PULL_POLICY:-never}"
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 128
+    mem_limit: 256m
+    cpus: "0.5"
+    expose: ["3562"]
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: "3562"
+      AGENTIC_DATA_ROOT: /sandbox/gateway
+      SANDBOX_BROKER_UPSTREAM_ORIGIN: http://sandbox-inngest:8288
+      SANDBOX_WORKLOAD_UPSTREAM_ORIGIN: http://sandbox-workload:3561
+      SANDBOX_INNGEST_CONTROL_BEARER: ""
+      SANDBOX_INNGEST_CONTROL_BEARER_FILE: /run/secrets/factory-sandbox/control-bearer
+      SANDBOX_GATEWAY_TOMBSTONE_HMAC: ""
+      SANDBOX_GATEWAY_TOMBSTONE_HMAC_FILE: /run/secrets/factory-sandbox/gateway-tombstone-hmac
+      SANDBOX_GATEWAY_TOMBSTONE_MAX_ENTRIES: "${SANDBOX_GATEWAY_TOMBSTONE_MAX_ENTRIES:?SANDBOX_GATEWAY_TOMBSTONE_MAX_ENTRIES is required}"
+      SANDBOX_INNGEST_APP_PREFIX: "${SANDBOX_INNGEST_APP_PREFIX:?SANDBOX_INNGEST_APP_PREFIX is required}"
+    volumes:
+      - factory-sandbox-gateway-state:/sandbox/gateway
+      - type: bind
+        source: "${SANDBOX_INNGEST_CONTROL_BEARER_HOST_FILE:?SANDBOX_INNGEST_CONTROL_BEARER_HOST_FILE is required}"
+        target: /run/secrets/factory-sandbox/control-bearer
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${SANDBOX_GATEWAY_TOMBSTONE_HMAC_HOST_FILE:?SANDBOX_GATEWAY_TOMBSTONE_HMAC_HOST_FILE is required}"
+        target: /run/secrets/factory-sandbox/gateway-tombstone-hmac
+        read_only: true
+        bind:
+          create_host_path: false
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
+    networks:
+      - factory-sandbox-execution
+      - factory-sandbox-broker-backend
+    depends_on:
+      sandbox-inngest:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "const fs=require('node:fs');const t=fs.readFileSync('/run/secrets/factory-sandbox/control-bearer','utf8').trim();fetch('http://127.0.0.1:3562/health',{headers:{authorization:'Bearer '+t}}).then(r=>{if(r.status!==200)process.exit(1)}).catch(()=>process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      start_period: 20s
+      retries: 6
+
+  sandbox-inngest:
+    image: "${SANDBOX_INNGEST_IMAGE:?SANDBOX_INNGEST_IMAGE must be immutable}"
+    build: !reset null
+    pull_policy: never
+    environment: !override
+      INNGEST_EVENT_KEYS_FILE: /run/secrets/sandbox-event-keys
+      INNGEST_SIGNING_KEY_FILE: /run/secrets/sandbox-signing-key
+      INNGEST_POSTGRES_PASSWORD_FILE: /run/secrets/sandbox-postgres-password
+      INNGEST_REDIS_PASSWORD_FILE: /run/secrets/sandbox-redis-password
+      INNGEST_POSTGRES_HOST: sandbox-inngest-postgres
+      INNGEST_REDIS_HOST: sandbox-inngest-redis
+      INNGEST_EXPERIMENTAL_PROM_METRICS: "1"
+    entrypoint: !override
+      - /bin/sh
+      - /opt/agentic/inngest-start.sh
+    command: !reset []
+    volumes: !override
+      - type: bind
+        source: ./deploy/compose/inngest-start.sh
+        target: /opt/agentic/inngest-start.sh
+        read_only: true
+      - type: bind
+        source: ./.secrets/agent-factory/sandbox-broker
+        target: /run/secrets
+        read_only: true
+    networks: !override
+      - factory-sandbox-broker-backend
+    depends_on: !override
+      sandbox-inngest-postgres:
+        condition: service_healthy
+      sandbox-inngest-redis:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, inngest, alpha, doctor, healthcheck]
+      interval: 15s
+      timeout: 8s
+      start_period: 45s
+      retries: 5
+
+  sandbox-inngest-postgres:
+    profiles: ["factory-sandbox"]
+    image: "${SANDBOX_POSTGRES_IMAGE:?SANDBOX_POSTGRES_IMAGE must be immutable}"
+    pull_policy: never
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: inngest
+      POSTGRES_USER: inngest
+      POSTGRES_PASSWORD_FILE: /run/secrets/sandbox-postgres-password
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - sandbox-inngest-postgres:/var/lib/postgresql/data
+      - type: bind
+        source: ./.secrets/agent-factory/sandbox-broker/sandbox-postgres-password
+        target: /run/secrets/sandbox-postgres-password
+        read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=128m,mode=1777
+      - /var/run/postgresql:rw,nosuid,nodev,size=16m,mode=3775
+    networks: [factory-sandbox-broker-backend]
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U inngest -d inngest]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  sandbox-inngest-redis:
+    profiles: ["factory-sandbox"]
+    image: "${SANDBOX_REDIS_IMAGE:?SANDBOX_REDIS_IMAGE must be immutable}"
+    pull_policy: never
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --aclfile
+      - /run/secrets/sandbox-redis-acl
+    volumes:
+      - sandbox-inngest-redis:/data
+      - type: bind
+        source: ./.secrets/agent-factory/sandbox-broker/sandbox-redis-acl
+        target: /run/secrets/sandbox-redis-acl
+        read_only: true
+      - type: bind
+        source: ./.secrets/agent-factory/sandbox-broker/sandbox-redis-password
+        target: /run/secrets/sandbox-redis-password
+        read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=64m,mode=1777
+    networks: [factory-sandbox-broker-backend]
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - redis-cli --no-auth-warning -a "$$(cat /run/secrets/sandbox-redis-password)" ping | grep -qx PONG
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+volumes:
+  factory-sandbox-control-current:
+    # Job journals, nonce ledgers, signed receipts and cancellation recovery
+    # survive image upgrades. An incompatible on-disk schema must fail closed
+    # in the process; changing build ID must never evade recovery with an empty
+    # replacement volume.
+    name: "agentic-operator_factory-sandbox-control-current"
+  primary-inngest-postgres:
+  primary-inngest-redis:
+  sandbox-inngest-postgres:
+  sandbox-inngest-redis:
+  factory-sandbox-gateway-state:
+
+networks:
+  agentic-runtime:
+    driver: bridge
+    internal: true
+  factory-sandbox-broker-backend:
+    driver: bridge
+    internal: true
+  production-codeact:
+    driver: bridge
+    internal: true

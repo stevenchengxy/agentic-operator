@@ -2,9 +2,9 @@
  * Provider key vault — persists per-provider API keys outside of `.env`.
  *
  * Keys live at `data/provider-keys.json` (gitignored) encrypted with
- * AES-256-GCM. A master key is derived from `AGENTIC_KEY_VAULT_SECRET`; in
- * dev a stable hostname-based fallback is used so the file decrypts across
- * restarts. Production deployments MUST set the env var.
+ * AES-256-GCM. A master key is derived from `AGENTIC_KEY_VAULT_SECRET` (or
+ * the already-required session secret). Only test processes have a fixed
+ * fallback; real processes fail closed rather than deriving a predictable key.
  *
  * `getProviderKeyOverlay()` returns an env-shaped map so the existing
  * `resolveConfig()` in `@agentic/llm-gateway` continues to be the single
@@ -15,12 +15,24 @@ import {
   createCipheriv,
   createDecipheriv,
   randomBytes,
-  scryptSync,
 } from "node:crypto";
-import { hostname } from "node:os";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { PROVIDER_IDS, type ProviderId } from "@agentic/contracts";
+import {
+  deriveVaultKey,
+  resolveVaultMasterSecret,
+} from "./secret-vault";
 
 function defaultVaultPath(): string {
   if (process.env.AGENTIC_KEY_VAULT_PATH) return process.env.AGENTIC_KEY_VAULT_PATH;
@@ -33,8 +45,6 @@ function defaultVaultPath(): string {
   }
   return join(process.cwd(), "data", "provider-keys.json");
 }
-
-const VAULT_PATH = defaultVaultPath();
 
 const ENV_VAR_BY_PROVIDER: Partial<Record<ProviderId, string>> = {
   anthropic: "ANTHROPIC_API_KEY",
@@ -73,52 +83,71 @@ interface VaultFile {
   records: ProviderKeyRecord[];
 }
 
-let cache: VaultFile | null = null;
-let masterKey: Buffer | null = null;
+let cache: { path: string; vault: VaultFile } | null = null;
+let masterKey: { identity: string; key: Buffer } | null = null;
 
 function isProviderId(s: string): s is ProviderId {
   return (PROVIDER_IDS as readonly string[]).includes(s);
 }
 
-function deriveMasterKey(salt: Buffer): Buffer {
-  const secret =
-    process.env.AGENTIC_KEY_VAULT_SECRET ??
-    `dev-vault::${hostname()}`;
-  return scryptSync(secret, salt, 32);
-}
-
 function loadVault(): VaultFile {
-  if (cache) return cache;
-  if (!existsSync(VAULT_PATH)) {
+  const vaultPath = defaultVaultPath();
+  if (cache?.path === vaultPath) return cache.vault;
+  // Runtime configuration is normally immutable, but tests and embedders may
+  // switch isolated vaults in one process. Never reuse ciphertext or a master
+  // key across paths.
+  cache = null;
+  masterKey = null;
+  if (!existsSync(vaultPath)) {
     const v: VaultFile = { saltHex: randomBytes(16).toString("hex"), records: [] };
-    cache = v;
+    cache = { path: vaultPath, vault: v };
     return v;
   }
   try {
-    const raw = readFileSync(VAULT_PATH, "utf8");
+    const raw = readFileSync(vaultPath, "utf8");
     const parsed = JSON.parse(raw) as VaultFile;
     if (!parsed.saltHex || !Array.isArray(parsed.records)) {
       throw new Error("malformed vault file");
     }
-    cache = parsed;
+    cache = { path: vaultPath, vault: parsed };
     return parsed;
   } catch (err) {
     throw new Error(
-      `provider-keys vault at ${VAULT_PATH} is unreadable: ${(err as Error).message}`,
+      `provider-keys vault at ${vaultPath} is unreadable: ${(err as Error).message}`,
     );
   }
 }
 
 function getMasterKey(vault: VaultFile): Buffer {
-  if (masterKey) return masterKey;
-  masterKey = deriveMasterKey(Buffer.from(vault.saltHex, "hex"));
-  return masterKey;
+  const secret = resolveVaultMasterSecret();
+  const identity = `${defaultVaultPath()}\0${vault.saltHex}\0${secret}`;
+  if (masterKey?.identity === identity) return masterKey.key;
+  const key = deriveVaultKey(Buffer.from(vault.saltHex, "hex"), secret);
+  masterKey = { identity, key };
+  return key;
 }
 
 function persist(vault: VaultFile): void {
-  mkdirSync(dirname(VAULT_PATH), { recursive: true });
-  writeFileSync(VAULT_PATH, JSON.stringify(vault, null, 2), { mode: 0o600 });
-  cache = vault;
+  const vaultPath = defaultVaultPath();
+  mkdirSync(dirname(vaultPath), { recursive: true });
+  const temp = `${vaultPath}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`;
+  let fd: number | undefined;
+  try {
+    fd = openSync(temp, "wx", 0o600);
+    writeFileSync(fd, JSON.stringify(vault, null, 2), "utf8");
+    fsyncSync(fd);
+    closeSync(fd);
+    fd = undefined;
+    renameSync(temp, vaultPath);
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+    try {
+      unlinkSync(temp);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
+  cache = { path: vaultPath, vault };
 }
 
 function encrypt(plain: string, vault: VaultFile): Pick<ProviderKeyRecord, "cipherHex" | "ivHex" | "tagHex"> {
@@ -181,8 +210,8 @@ export function getProviderKey(
     if (tenantRec) {
       try {
         return decrypt(tenantRec, vault);
-      } catch {
-        return null;
+      } catch (error) {
+        throw new Error(`tenant-scoped ${id} key cannot be decrypted`, { cause: error });
       }
     }
   }
@@ -194,8 +223,8 @@ export function getProviderKey(
   if (workspaceRec) {
     try {
       return decrypt(workspaceRec, vault);
-    } catch {
-      return null;
+    } catch (error) {
+      throw new Error(`workspace-scoped ${id} key cannot be decrypted`, { cause: error });
     }
   }
 
@@ -221,10 +250,19 @@ export interface ProviderKeyMeta {
   setAt: number | null;
 }
 
-export function getProviderKeyMeta(id: ProviderId): ProviderKeyMeta {
+export function getProviderKeyMeta(id: ProviderId, tenantId?: string): ProviderKeyMeta {
   const vault = loadVault();
-  const rec = vault.records.find((r) => r.provider === id);
+  const rec = tenantId
+    ? vault.records.find(
+        (r) => r.provider === id && r.scope === "tenant" && r.tenantId === tenantId,
+      ) ?? vault.records.find((r) => r.provider === id && r.scope === "workspace")
+    : vault.records.find((r) => r.provider === id && r.scope === "workspace");
   if (rec) {
+    try {
+      decrypt(rec, vault);
+    } catch (error) {
+      throw new Error(`${rec.scope}-scoped ${id} key metadata is corrupt`, { cause: error });
+    }
     return {
       provider: id,
       hasKey: true,
@@ -283,6 +321,9 @@ export function setProviderKey(
   if (key.length < 8) {
     throw new Error("API key is too short");
   }
+  if (input.scope === "tenant" && !input.tenantId?.trim()) {
+    throw new Error("tenant-scoped provider keys require tenantId");
+  }
   const vault = loadVault();
   const enc = encrypt(key, vault);
   const next: ProviderKeyRecord = {
@@ -294,7 +335,14 @@ export function setProviderKey(
     keyMasked: maskKey(key),
     ...enc,
   };
-  const others = vault.records.filter((r) => r.provider !== id);
+  const others = vault.records.filter(
+    (r) =>
+      !(
+        r.provider === id &&
+        r.scope === input.scope &&
+        (r.scope !== "tenant" || r.tenantId === input.tenantId)
+      ),
+  );
   persist({ saltHex: vault.saltHex, records: [...others, next] });
   return {
     provider: id,
@@ -326,7 +374,16 @@ export function getProviderKeyEnvOverlay(): Record<string, string | undefined> {
   for (const id of PROVIDER_IDS) {
     const envVar = ENV_VAR_BY_PROVIDER[id];
     if (!envVar) continue;
-    const key = getProviderKey(id);
+    // A single undecryptable vault record (secret rotated / corrupt row) must degrade to
+    // "no vault key for THIS provider" — env fallback still applies via resolveConfig —
+    // never crash the whole api boot (this ran at bootstrap and bricked the server).
+    let key: string | null = null;
+    try {
+      key = getProviderKey(id);
+    } catch (error) {
+      try { console.warn(`[provider-keys] ${id} 的保管库密钥无法解密——跳过该 provider 的覆盖（回退 env）。修复：重新录入该 key 或检查加密密钥。`, (error as Error).message); } catch { /* best-effort */ }
+      continue;
+    }
     if (key) out[envVar] = key;
   }
   return out;

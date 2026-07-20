@@ -74,7 +74,7 @@ Note: this backlog audit is backend-focused. The frontend lane outcomes are trac
 |---|---|
 | Delete `apps/web/app/_portal_legacy/` | ✅ removed (CLAUDE.md confirms) |
 | Gitignore `apps/api/data/imports/` | ✅ added |
-| Decide `models/RAAS-v1/workflow_v2.json` | ✅ resolved (orphan dirs cleared in Wave 4.5) |
+| Decide `models/RAAS-v1/workflow_v2.json` / `workflow_v3.json` | ✅ removed as unreferenced three-agent fragments; paired dead `actions-v2.json` / `actions-v3.json` removed (deployment references audited 2026-07-13) |
 | Update `docs/USE_CASES.md` (flip UC-V11-33, renumber UC-V11-38, add 13 persona journeys UC-V11-49..61) | ✅ — 128 UCs catalogued in current `USE_CASES.md` (5.7k words) |
 | Update `docs/PRODUCT_CATALOG.md` cross-ref matrix | ✅ — 3.1k-word catalog in repo |
 

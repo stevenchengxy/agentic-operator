@@ -8,7 +8,7 @@
  *   actor=<userId>    filter by `actor_user_id`
  *   action=<string>   filter by `action` (exact match)
  *   limit=<number>    page size (default 100, max 500)
- *   cursor=<unix-ms>  pagination cursor — opaque, equals `at` of last row
+ *   cursor=<opaque>   pagination cursor — `<at-ms>:<id>` (legacy unix-ms accepted)
  *
  * Response (success envelope):
  *
@@ -22,9 +22,8 @@
  */
 
 import type { FastifyInstance } from "fastify";
-import { and, desc, eq, gte, lt } from "drizzle-orm";
+import { and, desc, eq, gte, lt, or } from "drizzle-orm";
 import { auditLog, getDb } from "@agentic/db";
-import { requireAuth } from "../../plugins/auth";
 import { requirePermission } from "../../plugins/rbac";
 
 interface QueryString {
@@ -34,6 +33,16 @@ interface QueryString {
   action?: string;
   limit?: string;
   cursor?: string;
+}
+
+function parseCursor(raw: string): { at: number; id: string | null } | null {
+  const separator = raw.indexOf(":");
+  const at = Number(separator === -1 ? raw : raw.slice(0, separator));
+  if (!Number.isFinite(at)) return null;
+  return {
+    at,
+    id: separator === -1 ? null : raw.slice(separator + 1) || null,
+  };
 }
 
 export async function auditRoutes(app: FastifyInstance): Promise<void> {
@@ -62,12 +71,25 @@ export async function auditRoutes(app: FastifyInstance): Promise<void> {
     if (q.action !== undefined && q.action !== "") {
       conds.push(eq(auditLog.action, q.action));
     }
-    // Cursor: pages descend by `at`, so the next page starts STRICTLY before
-    // the previous page's last row's `at`. Equal timestamps may exist; the
-    // upper bound is exclusive so we never re-emit the boundary row.
+    // Composite cursor: audit writes can share the same millisecond. Ordering
+    // and paging by `(at DESC, id DESC)` prevents rows at the boundary from
+    // being skipped. Numeric legacy cursors remain supported.
     if (q.cursor !== undefined) {
-      const ms = Number(q.cursor);
-      if (Number.isFinite(ms)) conds.push(lt(auditLog.at, new Date(ms)));
+      const cursor = parseCursor(q.cursor);
+      if (cursor) {
+        const beforeTime = lt(auditLog.at, new Date(cursor.at));
+        conds.push(
+          cursor.id
+            ? or(
+                beforeTime,
+                and(
+                  eq(auditLog.at, new Date(cursor.at)),
+                  lt(auditLog.id, cursor.id),
+                ),
+              )!
+            : beforeTime,
+        );
+      }
     }
 
     const db = getDb();
@@ -75,14 +97,15 @@ export async function auditRoutes(app: FastifyInstance): Promise<void> {
       .select()
       .from(auditLog)
       .where(and(...conds))
-      .orderBy(desc(auditLog.at))
+      .orderBy(desc(auditLog.at), desc(auditLog.id))
       .limit(limit + 1)
       .all();
 
     const items = rows.slice(0, limit);
     const hasMore = rows.length > limit;
     const last = items[items.length - 1];
-    const nextCursor = hasMore && last ? String(last.at.getTime()) : null;
+    const nextCursor =
+      hasMore && last ? `${last.at.getTime()}:${last.id}` : null;
 
     return reply.ok({
       items: items.map((r) => ({

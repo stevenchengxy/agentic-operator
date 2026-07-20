@@ -7,13 +7,18 @@ node_modules
 dist
 .turbo
 *.tsbuildinfo
+# Native build metadata is machine-specific and may contain absolute home,
+# Python and node-gyp paths. Native bindings are rebuilt by ensure:native.
+packages/db/build/
 
 # env
 .env
 .env.local
 .env.*.local
+.secrets/
 # operator's real production secrets (compose env_file) — never commit
 .env.production
+.env.external
 # env / file backups — may contain plaintext secrets (e.g. .env.local.bak)
 *.bak
 
@@ -33,6 +38,12 @@ data/*
 # inside the artifact + log dirs, keep ONLY the .gitkeep placeholder
 data/artifacts/*
 !data/artifacts/.gitkeep
+# Database backups contain the complete control-plane state (including
+# encrypted credential envelopes and human conversations). Keep the directory
+# placeholder only; a new backup must never become an untracked commit
+# candidate or part of the curated image source fingerprint.
+data/backups/*
+!data/backups/.gitkeep
 data/logs/*
 !data/logs/.gitkeep
 
@@ -53,10 +64,13 @@ docs/*.html
 docs/design/agent-factory-redesign.md
 docs/design/factory-ops-sidebar-and-report-agent.md
 
-# Runtime output under apps/api/data — tenant ontology uploads, generated analysis
-# reports + their job sidecars. Pure runtime, never source (mirrors the root data/ rule).
-apps/api/data/factory-ontologies/
-apps/api/data/reports/
+# Runtime output under apps/api — NOTHING under these two dirs is source.
+# apps/api/data: tenant ontology uploads, factory drafts/policy, import tmp dirs,
+# generated reports (mirrors the root data/ rule). apps/api/models: the manifest
+# engine's cwd-relative models root when tests/dev run from apps/api — deploy
+# heads (__system-v1 workflow_vN.json) accumulate per run, never source.
+apps/api/data/
+apps/api/models/
 
 # logs
 npm-debug.log*
@@ -71,6 +85,10 @@ test-results
 
 # manifest-import test fixtures — random-slug model dirs leaked by e2e runs
 models/mi*-v*/
+
+# Crash-recovery staging shares the models filesystem to preserve atomic
+# publication. It is runtime state and must never be committed or image-baked.
+models/.imports/
 
 # __system is the test-suite tenant (AGENTIC_DEV_TENANT=__system). Its manifest
 # engine writes a fresh workflow_vN.json on every deploy / re-register, so these

@@ -113,16 +113,23 @@ export function createMemoryHandle(b: MemoryBinding): MemoryHandle {
       }
       const subj = scope === "tenant" ? TENANT_SCOPE_SUBJECT : b.subject;
       // #SCALE-MEM — pre-compute the embedding ONCE at write time (search stops re-embedding static
-      // values), and stamp a TTL when configured (MEMORY_TTL_DAYS; 0/unset = keep forever). Both
-      // best-effort: a failed embed just leaves NULL → the driver computes on demand as before.
+      // values), and stamp a TTL when configured (MEMORY_TTL_DAYS; 0/unset = keep forever).
+      // When a driver is configured, its embedding is part of the write contract: silently
+      // storing NULL made a successful put invisible to semantic search.
       let embeddingJson: string | null = null;
-      try {
-        const drv = getMemoryDriver();
-        if (drv) {
-          const vec = await localEmbed(`${key} ${typeof value === "string" ? value : JSON.stringify(value ?? "")}`.slice(0, 4000));
-          embeddingJson = JSON.stringify([...vec].map((x) => Math.round(x * 1e6) / 1e6));
+      const drv = getMemoryDriver();
+      if (drv) {
+        const embeddingInput = `${key} ${
+          typeof value === "string" ? value : JSON.stringify(value ?? "")
+        }`.slice(0, 4000);
+        const vec = drv.embed
+          ? await drv.embed(embeddingInput)
+          : Array.from(localEmbed(embeddingInput));
+        if (vec.length === 0 || vec.some((component) => !Number.isFinite(component))) {
+          throw new Error("memory driver returned an invalid write-time embedding");
         }
-      } catch { /* embed best-effort */ }
+        embeddingJson = JSON.stringify(vec.map((x) => Math.round(x * 1e6) / 1e6));
+      }
       const ttlDays = Number(process.env.MEMORY_TTL_DAYS);
       const expiresAt = Number.isFinite(ttlDays) && ttlDays > 0 ? new Date(Date.now() + ttlDays * 86_400_000) : null;
       db.insert(agentMemoryLong)
@@ -146,22 +153,24 @@ export function createMemoryHandle(b: MemoryBinding): MemoryHandle {
           set: { valueJson: encoded, embeddingJson, expiresAt, updatedAt: now },
         })
         .run();
-      // #SCALE-PGVECTOR — write-through mirror: a driver with its own store (pgvector) syncs this
-      // row fire-and-forget. SQLite stays the system of record; a mirror failure only degrades recall.
-      try {
-        const drv = getMemoryDriver();
-        if (drv?.mirror) void drv.mirror({ tenantId: b.tenantId, agentName: b.agentName, subject: subj, key, valueJson: encoded, embedding: embeddingJson ? (JSON.parse(embeddingJson) as number[]) : null, expiresAt }).catch(() => {});
-      } catch { /* mirror best-effort */ }
+      // #SCALE-PGVECTOR — wait for the configured mirror. SQLite remains the
+      // system of record and the operation is idempotent, so a caller can retry
+      // after an explicit mirror failure without losing the authoritative value.
+      if (drv?.mirror) {
+        await drv.mirror({ tenantId: b.tenantId, agentName: b.agentName, subject: subj, key, valueJson: encoded, embedding: embeddingJson ? (JSON.parse(embeddingJson) as number[]) : null, expiresAt });
+      }
       // #SCALE-MEM — lazy GC: cheap sweep of THIS tenant's expired rows on write (no cron needed).
-      try {
-        db.delete(agentMemoryLong).where(and(eq(agentMemoryLong.tenantId, b.tenantId), lt(agentMemoryLong.expiresAt, new Date()))).run();
-      } catch { /* GC best-effort */ }
+      db.delete(agentMemoryLong).where(and(eq(agentMemoryLong.tenantId, b.tenantId), lt(agentMemoryLong.expiresAt, new Date()))).run();
     },
 
     async delete(key: string, scope: MemoryScope = "subject"): Promise<void> {
       const db = getDb();
       if (scope === "run") {
-        if (!b.runId) return;
+        if (!b.runId) {
+          throw new Error(
+            "[memory] delete(scope:'run') requires a runId; the handle was built outside a run",
+          );
+        }
         db.delete(agentMemoryShort)
           .where(
             and(eq(agentMemoryShort.runId, b.runId), eq(agentMemoryShort.key, key)),
@@ -180,11 +189,11 @@ export function createMemoryHandle(b: MemoryBinding): MemoryHandle {
           ),
         )
         .run();
-      // #SCALE-PGVECTOR — keep the mirror in sync with KV deletes (fire-and-forget).
-      try {
-        const drv = getMemoryDriver();
-        if (drv?.deleteMirror) void drv.deleteMirror({ tenantId: b.tenantId, agentName: b.agentName, subject: subj, key }).catch(() => {});
-      } catch { /* mirror best-effort */ }
+      // #SCALE-PGVECTOR — a configured mirror is part of the delete contract.
+      const drv = getMemoryDriver();
+      if (drv?.deleteMirror) {
+        await drv.deleteMirror({ tenantId: b.tenantId, agentName: b.agentName, subject: subj, key });
+      }
     },
 
     async search(query: string, k: number): Promise<MemoryHit[]> {
@@ -258,9 +267,5 @@ function encode(v: unknown): string {
 }
 
 function decode<T>(s: string): T | null {
-  try {
-    return JSON.parse(s) as T;
-  } catch {
-    return null;
-  }
+  return JSON.parse(s) as T;
 }

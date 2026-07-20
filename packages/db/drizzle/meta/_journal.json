@@ -218,6 +218,174 @@
       "when": 1781100000000,
       "tag": "0030_run_summaries",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "6",
+      "when": 1783958400000,
+      "tag": "0031_factory_domain_bindings",
+      "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "6",
+      "when": 1784044800000,
+      "tag": "0032_factory_assets_ontology_scope",
+      "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "6",
+      "when": 1784131200000,
+      "tag": "0033_factory_tool_capabilities",
+      "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "6",
+      "when": 1784217600000,
+      "tag": "0034_llm_budget_reservations",
+      "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "6",
+      "when": 1784304000000,
+      "tag": "0035_factory_human_memories",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "6",
+      "when": 1784390400000,
+      "tag": "0036_hitl_recovery",
+      "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "6",
+      "when": 1784476800000,
+      "tag": "0037_codeact_execution_receipts",
+      "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "6",
+      "when": 1784563200000,
+      "tag": "0038_factory_tool_http_contracts",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "6",
+      "when": 1784649600000,
+      "tag": "0039_llm_call_attribution",
+      "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "6",
+      "when": 1784736000000,
+      "tag": "0040_factory_tool_probe_definition_scope",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "6",
+      "when": 1784822400000,
+      "tag": "0041_factory_integration_profiles",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "6",
+      "when": 1784908800000,
+      "tag": "0042_factory_authorization_challenges",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "6",
+      "when": 1784995200000,
+      "tag": "0043_operation_leases",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "6",
+      "when": 1785081600000,
+      "tag": "0044_system_agent_scope_cleanup",
+      "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "6",
+      "when": 1785168000000,
+      "tag": "0045_factory_tool_side_effect_fail_closed",
+      "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "6",
+      "when": 1785254400000,
+      "tag": "0046_factory_integration_profile_environment",
+      "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "6",
+      "when": 1785340800000,
+      "tag": "0047_factory_sandbox_lifecycle",
+      "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "6",
+      "when": 1785427200000,
+      "tag": "0048_factory_tool_execution_policy",
+      "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "6",
+      "when": 1785513600000,
+      "tag": "0049_factory_sandbox_run_drain",
+      "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "6",
+      "when": 1785600000000,
+      "tag": "0050_factory_sandbox_model_grants",
+      "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "6",
+      "when": 1785686400000,
+      "tag": "0051_factory_codeact_authorizations",
+      "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "6",
+      "when": 1785772800000,
+      "tag": "0052_factory_sandbox_attempt_fencing",
+      "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "6",
+      "when": 1785859200000,
+      "tag": "0053_factory_codeact_activation_binding",
+      "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "6",
+      "when": 1785945600000,
+      "tag": "0054_factory_domain_insights",
+      "breakpoints": true
     }
   ]
 }

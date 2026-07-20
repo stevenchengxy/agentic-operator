@@ -9,12 +9,20 @@
 
 import type { BaseAgent } from "./base-agent";
 
-class AgentRegistry {
+export class AgentRegistry {
   private readonly map = new Map<string, BaseAgent<unknown, unknown>>();
 
   register<TInput, TOutput>(agent: BaseAgent<TInput, TOutput>): void {
+    if (!agent.name || agent.name !== agent.name.trim()) {
+      throw new Error("Agent names must be non-empty and have no surrounding whitespace");
+    }
     if (this.map.has(agent.name)) {
-      // Re-registering is benign in test/dev (hot reload). Silently overwrite.
+      if (process.env.NODE_ENV !== "test" && process.env.NODE_ENV !== "development") {
+        throw new Error(`Duplicate code-agent registration: ${agent.name}`);
+      }
+      // Test isolation and development hot reload intentionally replace the
+      // in-process definition. Production duplicate names are ambiguous and
+      // fail above instead of silently changing which implementation runs.
       this.map.set(agent.name, agent as unknown as BaseAgent<unknown, unknown>);
       return;
     }

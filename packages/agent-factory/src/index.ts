@@ -18,6 +18,8 @@ export * from "./spec-types";
 export * from "./ontology-types";
 export * from "./graph";
 export * from "./contract";
+export * from "./execution-fidelity";
+export * from "./execution-ownership";
 export * from "./acceptance";
 export * from "./verification";
 export * from "./sandbox-harness";
@@ -27,7 +29,31 @@ export * from "./model-router";
 export * from "./codegen";
 export * from "./code-lint";
 export * from "./plan-projection";
+export * from "./ontology-execution";
+export * from "./ontology-readiness";
+export * from "./ontology-references";
+export * from "./input-bindings";
+export * from "./declarative-tool-hash";
+export * from "./declarative-tool-spec";
+export * from "./declarative-tool-policy";
+export * from "./decision-tables";
+export * from "./coverage-waiver";
+export * from "./test-case-decision";
+export * from "./integration-binding";
+export * from "./integration-profile";
+export * from "./integration-profile-authorization";
+export * from "./probe-authorization";
+export * from "./authorization-challenge";
+export * from "./human-interaction";
+export * from "./sandbox-design-review";
+export * from "./test-fixture-assets";
+export * from "./sensitive-input";
+export * from "./evidence-fingerprint";
+export * from "./sandbox-execution-plane";
+export * from "./sandbox-model-usage";
+export * from "./sandbox-registration";
 export * from "./tool-catalog";
+export * from "./tool-execution-policy";
 export * from "./ports";
 // M1-c — the brain:
 export * from "./brain-types";
@@ -39,13 +65,31 @@ export * from "./report-verify";
 export * from "./conductor";
 // business-flow SVG renderer (融合蓝图 P1.5 — pure swimlane visual):
 export * from "./business-flow-svg";
+// ontology-grounded blueprint model + deterministic SVG renderers (phase-flow / sequence):
+export * from "./blueprint";
+export * from "./blueprint-svg";
 // #P5 — capability ladder + spawnable-skill model (融合蓝图 §06):
 export * from "./capability-ladder";
 // #P1 — ts_function_module renderer (inngest.createFunction 形态,对标旧 AO 六文件):
 export * from "./ts-function-module";
 // #P2.5-Tester — 把交付形态变成可跑测试模块 + 验收判据(纯变换,执行在 apps/api):
 export * from "./function-tester";
+export * from "./function-test-contract";
 // #P3 — 独立监督者审计 + 版本锁定缺陷(finish 门清零):
 export * from "./supervisor";
 // #P7 — 治理闭环纯核心(生产回归从责任工位重入,融合蓝图 §08):
 export * from "./fleet-governance";
+// #P0-5 — Mem0 式记忆整合(extract→ADD/UPDATE/DELETE/NOOP,复活零调用方的写路径):
+export * from "./memory-consolidation";
+// Human-confirmed, pin-capable domain memory (kept out of LLM consolidation):
+export * from "./human-memory";
+// Shared conservative STOP classifier.  API-side eager HITL persistence uses
+// the same rule as the conductor so a stop command can never become a stored
+// business answer merely because it arrived through a different transport.
+export * from "./intent";
+// #P0-6 — AWM 式技能归纳(从真实验收通过的运行沉淀可复用技能):
+export * from "./skill-induction";
+// #SKILL-PROMOTE (P2) — 跨域通用道晋升判定核(P7 治理巡检挂载):
+export * from "./skill-promotion";
+// #P1-6 — 技能导出为 Agent Skills 开放标准(SKILL.md,可带出工厂被任意 harness 复用):
+export * from "./skill-export";

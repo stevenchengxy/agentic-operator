@@ -7,8 +7,8 @@
  * reads from `./portal.spec.ts-snapshots/v1_1-reference/` and writes
  * diff artifacts to `./test-results/`).
  *
- * Each new-portal route is `/portal/raas/<view>`. Pre-auth happens
- * through `/sign-in?return=...` which auto-mints a dev session.
+ * Each new-portal route is `/portal/raas/<view>`. Pre-auth uses the real
+ * password form with the explicitly configured bootstrap administrator.
  */
 
 import { chromium } from "@playwright/test";
@@ -45,6 +45,13 @@ const FREEZE_CSS = `
 `;
 
 async function capture(): Promise<void> {
+  const email = process.env.AGENTIC_BOOTSTRAP_ADMIN_EMAIL?.trim();
+  const password = process.env.AGENTIC_BOOTSTRAP_ADMIN_PASSWORD;
+  if (!email || !password) {
+    throw new Error(
+      "AGENTIC_BOOTSTRAP_ADMIN_EMAIL and AGENTIC_BOOTSTRAP_ADMIN_PASSWORD are required for authenticated captures",
+    );
+  }
   const browser = await chromium.launch({ headless: true });
   try {
     const ctx = await browser.newContext({
@@ -54,9 +61,10 @@ async function capture(): Promise<void> {
     });
     const page = await ctx.newPage();
 
-    // Pre-auth: hit /sign-in which forwards into the portal with the
-    // dev cookie set.
     await page.goto(`${BASE_URL}/sign-in?return=/portal/raas/dashboard`);
+    await page.getByLabel(/email|邮箱/i).fill(email);
+    await page.getByLabel(/password|密码/i).fill(password);
+    await page.locator('button[type="submit"]').click();
     await page.waitForURL(/\/portal\//, { timeout: 30_000 });
 
     for (const v of VIEWS) {

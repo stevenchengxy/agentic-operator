@@ -24,8 +24,10 @@ export function findRepoRoot(): string {
   return process.cwd();
 }
 
-export function resolveDataRoot(): string {
-  const env = process.env.AGENTIC_DATA_ROOT;
+export function resolveDataRoot(
+  environment: Record<string, string | undefined> = process.env,
+): string {
+  const env = environment.AGENTIC_DATA_ROOT;
   if (env && env.length > 0) {
     return path.isAbsolute(env) ? env : path.resolve(process.cwd(), env);
   }

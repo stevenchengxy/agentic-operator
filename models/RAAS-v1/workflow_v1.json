@@ -30,6 +30,8 @@
     "trigger": [
       "SCHEDULED_SYNC"
     ],
+    "cron_env": "RAAS_REQUIREMENTS_SYNC_CRON",
+    "cron_timezone_env": "RAAS_REQUIREMENTS_SYNC_TIMEZONE",
     "input_data": {},
     "ontology_instructions": "",
     "actions": [
@@ -44,19 +46,37 @@
         "order": "2",
         "name": "checkDeduplicatedRequisition",
         "description": "利用【招聘岗位】中的“客户侧岗位唯一编号”和“客户侧岗位名称”进行系统查重。如果数据库中已存在对应记录，识别为需求变更；若不存在，识别为新需求。",
-        "type": "logic",
+        "type": "tool",
         "condition": "数据获取与解析成功"
       },
       {
         "order": "3",
         "name": "persistRequisitionData",
         "description": "根据查重结果执行数据库操作：若是新需求，则创建【外包招聘需求】和对应的【招聘岗位】对象；若是变更，则更新现有对象的“计划招聘总人数”或“截止日期”等字段，并记录变更日志。若是删除或关闭的需求，更新状态为终止。同步完成后生成执行报告，对失败或异常情况触发告警通知交付经理。",
-        "type": "logic",
+        "type": "tool",
         "condition": "查重逻辑执行完毕"
       }
     ],
     "typescript_code": "",
-    "tool_use": "",
+    "tool_use": [
+      {
+        "name": "monitorAndFetchRequirement",
+        "description": "从已配置的客户需求 API 拉取真实增量并校验版本化收据",
+        "config": {
+          "api_url_env": "RAAS_CLIENT_REQUIREMENTS_API_URL",
+          "token_env": "RAAS_CLIENT_REQUIREMENTS_API_TOKEN",
+          "auth_scheme": "bearer"
+        }
+      },
+      {
+        "name": "checkDeduplicatedRequisition",
+        "description": "使用租户 business_records 做确定性查重"
+      },
+      {
+        "name": "persistRequisitionData",
+        "description": "在一个事务中持久化已校验的需求批次"
+      }
+    ],
     "triggered_event": [
       "REQUIREMENT_SYNCED",
       "SYNC_FAILED_ALERT"
@@ -595,7 +615,7 @@
         "order": "3",
         "name": "evaluateWithModel",
         "description": "使用招聘岗位配置的评估模型对候选人进行量化评分。按照各维度权重计算综合得分，判断是否达到及格线阈值，输出各维度分数明细和评分依据说明。",
-        "type": "tool",
+        "type": "logic",
         "condition": "内容分析完成"
       },
       {

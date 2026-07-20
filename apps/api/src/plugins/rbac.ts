@@ -15,10 +15,10 @@
 
 import type { FastifyRequest } from "fastify";
 import { eq } from "drizzle-orm";
-import { auditLog, getDb, tenants } from "@agentic/db";
-import { makeId } from "@agentic/shared";
+import { getDb, tenants } from "@agentic/db";
 import { can as canPerm, type Permission } from "@agentic/contracts";
 import { requireAuth, type AuthedContext } from "./auth";
+import { writeAudit as writeAuditEntry } from "./audit";
 
 let systemTenantIdCache: string | null = null;
 function systemTenantId(): string {
@@ -44,31 +44,25 @@ export interface AuditOpts {
   decision?: "allow" | "deny";
 }
 
-/** Best-effort audit write. Never throws into the request path. */
+/** Durable audit write. An operation that cannot be supervised must fail
+ * visibly instead of silently disappearing from the operation log. */
 export function writeAudit(ctx: AuthedContext, opts: AuditOpts): void {
-  try {
-    const tenantId = opts.tenantId || ctx.tenantId || systemTenantId();
-    if (!tenantId) return;
-    getDb()
-      .insert(auditLog)
-      .values({
-        id: makeId("aud"),
-        tenantId,
-        actorUserId: ctx.userId ?? null,
-        action: opts.action,
-        targetType: opts.targetType ?? null,
-        targetId: opts.targetId ?? null,
-        at: new Date(),
-        metaJson: {
-          decision: opts.decision ?? "allow",
-          actorEmail: ctx.email ?? undefined,
-          ...(opts.meta ?? {}),
-        } as never,
-      })
-      .run();
-  } catch {
-    // Auditing must never break the request.
+  const tenantId = opts.tenantId || ctx.tenantId || systemTenantId();
+  if (!tenantId) {
+    throw new Error(`cannot persist audit action ${opts.action}: no tenant anchor exists`);
   }
+  writeAuditEntry({
+    tenantId,
+    actorUserId: ctx.userId ?? undefined,
+    action: opts.action,
+    targetType: opts.targetType,
+    targetId: opts.targetId ?? undefined,
+    meta: {
+      decision: opts.decision ?? "allow",
+      actorEmail: ctx.email ?? undefined,
+      ...(opts.meta ?? {}),
+    },
+  });
 }
 
 function forbidden(perm: string): never {

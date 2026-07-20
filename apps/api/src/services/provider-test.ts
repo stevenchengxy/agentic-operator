@@ -60,7 +60,10 @@ interface OpenAICompatibleConfig {
 const OPENAI_COMPATIBLE: Partial<Record<ProviderId, OpenAICompatibleConfig>> = {
   openai: { baseURL: "https://api.openai.com/v1" },
   // OpenRouter's /models is public; /auth/key requires the bearer.
-  openrouter: { baseURL: "https://openrouter.ai/api/v1", probePath: "/auth/key" },
+  openrouter: {
+    baseURL: "https://openrouter.ai/api/v1",
+    probePath: "/auth/key",
+  },
   groq: { baseURL: "https://api.groq.com/openai/v1" },
   together: { baseURL: "https://api.together.xyz/v1" },
   mistral: { baseURL: "https://api.mistral.ai/v1" },
@@ -88,7 +91,7 @@ async function testOpenAICompatible(
       const detail =
         modelCount !== null
           ? `returned ${modelCount} models`
-          : describeAuthResponse(body) ?? "key accepted";
+          : (describeAuthResponse(body) ?? "key accepted");
       return {
         ok: true,
         statusCode: status,
@@ -122,13 +125,16 @@ function describeAuthResponse(body: unknown): string | null {
 async function testAnthropic(apiKey: string): Promise<ProviderTestResult> {
   const start = Date.now();
   try {
-    const { status, body } = await fetchJson("https://api.anthropic.com/v1/models", {
-      headers: {
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-        Accept: "application/json",
+    const { status, body } = await fetchJson(
+      "https://api.anthropic.com/v1/models",
+      {
+        headers: {
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01",
+          Accept: "application/json",
+        },
       },
-    });
+    );
     const latencyMs = Date.now() - start;
     if (status >= 200 && status < 300) {
       const modelCount = countModels(body);
@@ -137,9 +143,10 @@ async function testAnthropic(apiKey: string): Promise<ProviderTestResult> {
         statusCode: status,
         latencyMs,
         modelCount,
-        message: modelCount !== null
-          ? `200 OK · ${latencyMs} ms · returned ${modelCount} models`
-          : `200 OK · ${latencyMs} ms`,
+        message:
+          modelCount !== null
+            ? `200 OK · ${latencyMs} ms · returned ${modelCount} models`
+            : `200 OK · ${latencyMs} ms`,
       };
     }
     return {
@@ -158,7 +165,9 @@ async function testGemini(apiKey: string): Promise<ProviderTestResult> {
   const start = Date.now();
   try {
     const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`;
-    const { status, body } = await fetchJson(url, { headers: { Accept: "application/json" } });
+    const { status, body } = await fetchJson(url, {
+      headers: { Accept: "application/json" },
+    });
     const latencyMs = Date.now() - start;
     if (status >= 200 && status < 300) {
       const modelCount = countModels(body);
@@ -167,9 +176,10 @@ async function testGemini(apiKey: string): Promise<ProviderTestResult> {
         statusCode: status,
         latencyMs,
         modelCount,
-        message: modelCount !== null
-          ? `200 OK · ${latencyMs} ms · returned ${modelCount} models`
-          : `200 OK · ${latencyMs} ms`,
+        message:
+          modelCount !== null
+            ? `200 OK · ${latencyMs} ms · returned ${modelCount} models`
+            : `200 OK · ${latencyMs} ms`,
       };
     }
     return {
@@ -184,11 +194,68 @@ async function testGemini(apiKey: string): Promise<ProviderTestResult> {
   }
 }
 
+async function testAzure(apiKey: string): Promise<ProviderTestResult> {
+  const endpoint = (process.env.AZURE_OPENAI_ENDPOINT ?? "").trim().replace(/\/+$/, "");
+  const apiVersion = (process.env.AZURE_OPENAI_API_VERSION ?? "").trim();
+  if (!endpoint || !apiVersion) {
+    return {
+      ok: false,
+      statusCode: null,
+      latencyMs: 0,
+      modelCount: null,
+      message: "Azure OpenAI endpoint or API version is not configured",
+    };
+  }
+  let base: URL;
+  try {
+    base = new URL(endpoint);
+    if (base.protocol !== "https:" && !(process.env.NODE_ENV !== "production" && base.protocol === "http:")) {
+      throw new Error("unsupported protocol");
+    }
+  } catch {
+    return {
+      ok: false,
+      statusCode: null,
+      latencyMs: 0,
+      modelCount: null,
+      message: "Azure OpenAI endpoint is not a valid allowed URL",
+    };
+  }
+  const start = Date.now();
+  try {
+    const url = new URL(`${base.toString().replace(/\/+$/, "")}/openai/models`);
+    url.searchParams.set("api-version", apiVersion);
+    const { status, body } = await fetchJson(url.toString(), {
+      headers: { "api-key": apiKey, Accept: "application/json" },
+    });
+    const latencyMs = Date.now() - start;
+    if (status >= 200 && status < 300) {
+      return {
+        ok: true,
+        statusCode: status,
+        latencyMs,
+        modelCount: countModels(body),
+        message: `Azure OpenAI credential accepted · ${latencyMs} ms`,
+      };
+    }
+    return {
+      ok: false,
+      statusCode: status,
+      latencyMs,
+      modelCount: null,
+      message: errorMessageFromStatus(status, body),
+    };
+  } catch (error) {
+    return networkError(error, Date.now() - start);
+  }
+}
+
 function errorMessageFromStatus(status: number, body: unknown): string {
   const fromBody = extractErrorText(body);
   const label = httpStatusLabel(status);
   if (fromBody) return `${status} ${label} — ${fromBody}`;
-  if (status === 401 || status === 403) return `${status} ${label} — key rejected by provider`;
+  if (status === 401 || status === 403)
+    return `${status} ${label} — key rejected by provider`;
   if (status === 429) return `${status} ${label} — rate limited`;
   return `${status} ${label}`;
 }
@@ -253,6 +320,15 @@ export async function testProviderKey(
   }
 
   if (provider === "mock") {
+    if (process.env.NODE_ENV !== "test") {
+      return {
+        ok: false,
+        statusCode: null,
+        latencyMs: 0,
+        modelCount: null,
+        message: "The mock provider is available only inside NODE_ENV=test",
+      };
+    }
     return {
       ok: true,
       statusCode: 200,
@@ -264,6 +340,22 @@ export async function testProviderKey(
 
   if (provider === "anthropic") return testAnthropic(trimmed);
   if (provider === "gemini") return testGemini(trimmed);
+  if (provider === "azure") return testAzure(trimmed);
+  if (provider === "custom") {
+    const baseURL = (process.env.CUSTOM_LLM_BASE_URL ?? "")
+      .trim()
+      .replace(/\/+$/, "");
+    if (!baseURL) {
+      return {
+        ok: false,
+        statusCode: null,
+        latencyMs: 0,
+        modelCount: null,
+        message: "CUSTOM_LLM_BASE_URL is not configured",
+      };
+    }
+    return testOpenAICompatible(trimmed, { baseURL });
+  }
 
   const oai = OPENAI_COMPATIBLE[provider];
   if (oai) return testOpenAICompatible(trimmed, oai);

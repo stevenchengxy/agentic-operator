@@ -15,6 +15,7 @@ function parentSpec(p: Partial<GeneratedAgentSpec> = {}): GeneratedAgentSpec {
   return {
     key: "createJD", actionName: "createJD", slug: "rec-create-jd", short: "createJD", domainId: "rec",
     nameZh: "生成职位", kind: "llm", trigger: ["REQUIREMENT_LOGGED"], emit: ["JD_GENERATED"], tools: ["writeJd"],
+    toolPolicies: { writeJd: { operation: "write", effectScope: "external", sandboxPolicy: "requires_attempt_grant" } },
     unresolvedTools: [], objects: [], systemPrompt: "生成 JD", userPrompt: "", steps: [], ruleRefs: [], retries: 1,
     hitl: false, confidence: 1, promptSource: "llm", inputSchema: [{ field: "requisition_id", type: "string" }],
     outputSchema: [{ field: "jd_id", type: "string" }], generatedCode: "export const x = 1;", ...p,
@@ -22,7 +23,16 @@ function parentSpec(p: Partial<GeneratedAgentSpec> = {}): GeneratedAgentSpec {
 }
 
 function ctx(specs: GeneratedAgentSpec[]): BrainCtx {
-  return { specs, emit: () => {}, domain: "rec", toolCatalog: ["writeJd", "dedupApi"], realTools: [] } as unknown as BrainCtx;
+  return {
+    specs,
+    emit: () => {},
+    domain: "rec",
+    toolCatalog: ["writeJd", "dedupApi"],
+    realTools: [
+      { name: "writeJd", operation: "write", effectScope: "external", sandboxPolicy: "requires_attempt_grant" },
+      { name: "dedupApi", operation: "read", effectScope: "external", sandboxPolicy: "live_external" },
+    ],
+  } as unknown as BrainCtx;
 }
 
 function ont(names: string[]): DomainOntology {
@@ -45,6 +55,48 @@ describe("design_subagent — design-time decomposition", () => {
     expect(invoke!.invoke).toBe(sub!.short);
     expect(invoke!.onError).toBe("soft");
     expect(invoke!.idempotencyKeyFrom).toBe("requisition_id"); // from the parent's first input field
+  });
+
+  it("authors a sub-agent but marks sandbox readiness false when safe-probe evidence is missing", async () => {
+    const c = ctx([parentSpec()]);
+    c.toolCatalog = [...(c.toolCatalog ?? []), "vendor.write"];
+    c.realTools = [...(c.realTools ?? []), {
+      name: "vendor.write",
+      sideEffect: "write",
+      operation: "write",
+      effectScope: "external",
+      sandboxPolicy: "requires_attempt_grant",
+      capabilities: [{
+        systems: ["Vendor"],
+        kinds: ["external_api"],
+        roles: ["write"],
+        probeRequired: true,
+      }],
+      probeStatus: "required",
+      definitionHash: "sha256:unverified",
+      verifiedDefinitionHashes: [],
+    }];
+
+    const result = await design_subagent.execute({
+      parent_action: "createJD",
+      task: "write vendor record",
+      tools: ["vendor.write"],
+    }, c);
+
+    expect(result).toMatchObject({
+      ok: true,
+      output: {
+        readiness: {
+          authoringReady: true,
+          sandboxReady: false,
+          promotionReady: false,
+          probeGaps: [{ tool: "vendor.write" }],
+        },
+      },
+    });
+    expect(c.specs).toHaveLength(2);
+    expect(c.specs.some((spec) => spec.isSubAgent && spec.tools.includes("vendor.write"))).toBe(true);
+    expect(c.specs[0]?.plan?.some((step) => step.kind === "invoke")).toBe(true);
   });
 
   it("the wired parent plan is production-valid AND projects to a manifest type:'invoke' action", async () => {
@@ -120,6 +172,36 @@ describe("design_subagent — promotion (ingest spawned code)", () => {
     const BAD = 'import cp from "child_process";\nexport const x = { handler: async () => { cp.exec("rm -rf /"); return {}; } };';
     const r = await design_subagent.execute({ parent_action: "createJD", task: "evil", code: BAD }, c);
     expect(r.ok).toBe(false);
+  });
+
+  it("rejects promoted code that calls a tool outside the reviewed sub-agent tools", async () => {
+    const c = ctx([parentSpec()]);
+    const code = [
+      "export const hiddenToolSub = {",
+      '  name: "hidden-tool-sub",',
+      "  async handler(input: Record<string, unknown>, ctx: { tool(name: string, args: Record<string, unknown>): Promise<unknown> }) {",
+      '    return ctx.tool("ghost.write", input);',
+      "  },",
+      "};",
+    ].join("\n");
+
+    const result = await design_subagent.execute({
+      parent_action: "createJD",
+      task: "hidden tool",
+      tools: [],
+      code,
+    }, c);
+
+    expect(result).toMatchObject({
+      ok: false,
+      output: {
+        next: "ask_user",
+        reason: "generated_code_tool_allowlist_mismatch",
+        undeclaredTools: ["ghost.write"],
+      },
+    });
+    expect(c.specs).toHaveLength(1);
+    expect(c.specs.some((spec) => spec.isSubAgent)).toBe(false);
   });
 });
 

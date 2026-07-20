@@ -14,8 +14,9 @@
  *
  *   - `applyDraft(agents, draft)` — merge view: returns the agents list
  *      with overrides applied + removed entries filtered out.
- *   - `toManifest(applied)`       — convert the agents list to a
- *      WorkflowManifest payload acceptable to `POST /v1/agents`.
+ *   - `toManifest(applied, behaviorById)` — convert the agents list while
+ *      requiring the caller to provide the canonical behavior fields that
+ *      are absent from the DAG payload.
  *
  * The save endpoint is the existing `POST /v1/agents` (ManifestUploadBody).
  * It persists a new `workflow_version` row keyed by manifest hash — the
@@ -26,8 +27,8 @@ import type { DagAgent } from "@/lib/hooks/useAgents";
 
 /**
  * A subset of the AgentSpec fields the editor can mutate. Other fields
- * (id, actor, actions, description) are preserved verbatim from the
- * live snapshot in `toManifest()`.
+ * (id, actor, actions, description) are preserved verbatim from canonical
+ * agent list/detail reads in `toManifest()`.
  */
 export interface DraftAgent {
   id: string;
@@ -100,16 +101,36 @@ export function applyDraft(
 /**
  * Build the WorkflowManifest body for `POST /v1/agents`.
  *
- * The manifest is an array of AgentSpec entries. The contract requires
- * `actions: ActionSpec[]` — we synthesize a one-element placeholder action
- * for added nodes so the schema parse succeeds. For existing nodes the
- * client doesn't ship their actions (it doesn't read them from the DAG
- * payload in v1), so the action set is reduced to a stub. A follow-up
- * will round-trip the full action set once the API surfaces `actions` on
- * `GET /v1/agents/:kebab`.
+ * The DAG response deliberately omits description/actions. Deploying a
+ * manifest reconstructed from that response alone used to replace every
+ * real action with a `default` placeholder. The safe builder now refuses to
+ * serialize any agent whose canonical behavior was not supplied by the
+ * caller from `/v1/agents` + `/v1/agents/:kebab`.
  */
+export interface PreservedAgentBehavior {
+  description: string;
+  actions: Array<{
+    order: string;
+    name: string;
+    description?: string;
+    type:
+      | "tool"
+      | "logic"
+      | "manual"
+      | "condition"
+      | "delay"
+      | "subflow"
+      | "invoke"
+      | "foreach"
+      | "emit";
+    condition?: string;
+    task_type?: string;
+  }>;
+}
+
 export function toManifest(
   applied: DagAgent[],
+  behaviorById: Record<string, PreservedAgentBehavior>,
 ): Array<{
   id: string;
   name: string;
@@ -117,26 +138,27 @@ export function toManifest(
   description: string;
   actor: ["Agent" | "Human"];
   trigger: string[];
-  actions: Array<{ order: string; name: string; description: string; type: "logic" }>;
+  actions: PreservedAgentBehavior["actions"];
   triggered_event: string[];
 }> {
-  return applied.map((a) => ({
-    id: a.kebabId,
-    name: a.name,
-    title: a.title,
-    description: "",
-    actor: [a.actor],
-    trigger: a.triggers,
-    actions: [
-      {
-        order: "1",
-        name: "default",
-        description: "placeholder action — round-tripped by editor",
-        type: "logic" as const,
-      },
-    ],
-    triggered_event: a.emits,
-  }));
+  return applied.map((a) => {
+    const behavior = behaviorById[a.kebabId];
+    if (!behavior) {
+      throw new Error(
+        `Unsafe workflow deploy blocked: canonical behavior missing for ${a.kebabId}`,
+      );
+    }
+    return {
+      id: a.kebabId,
+      name: a.name,
+      title: a.title,
+      description: behavior.description,
+      actor: [a.actor],
+      trigger: a.triggers,
+      actions: behavior.actions.map((action) => ({ ...action })),
+      triggered_event: a.emits,
+    };
+  });
 }
 
 export interface DraftCounts {

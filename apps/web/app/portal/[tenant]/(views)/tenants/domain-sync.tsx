@@ -1,94 +1,107 @@
 "use client";
 
 /**
- * Domain ↔ 知识域同步面板。
+ * Shows the persisted relation for the runtime tenant currently being viewed.
  *
- * 「业务领域」页历史上只列运行面（/v1/tenants）；工厂的「业务域」列的是本体源
- * （知识面，/v1/agent-factory/domains：uploaded > 本地 models/ > Allmeta live）。两者
- * 语义不同（知识域 ⊇ 运行 Domain），"同步"的正确形态是把对应关系摆出来并给打通动作：
- *   · 已连接 —— 域 id ≈ 运行 slug（RAAS-v1 -> raas）：知识 + 运行两面齐
- *   · 仅知识域 —— 工厂可生成，还没有承载运行的 Domain → 「去工厂生成」
- *   · 仅运行 Domain —— 有运行面但当前读不到本体（Allmeta 掉线 / 未配置）→ 标注原因
+ * Runtime tenants and ontology domains are intentionally different identities:
+ * this panel never joins them by slug, display name, aliases, or catalog order.
+ * The only "connected" state comes from factory_domain_bindings via the API.
  */
 
 import { Icon, Panel } from "@/app/portal/components";
-import {
-  buildRuntimeDomainNameMap,
-  domainLabel,
-  isInternalRuntimeDomain,
-  runtimeDomainSlug,
-  type AgentFactoryDomain,
-} from "@/lib/domain-display";
+import { domainLabel } from "@/lib/domain-display";
 import { useAgentFactoryDomains } from "@/lib/hooks/useAgentFactoryDomains";
-import { useTenants } from "@/lib/hooks/useTenants";
+
+const SOURCE_LABEL = {
+  explicit: "人工连接",
+  auto: "迁移确认",
+  upload: "上传本体",
+} as const;
 
 export function DomainSyncPanel({ activeTenant }: { activeTenant: string }) {
-  const tenantsQuery = useTenants();
-  const domainsQuery = useAgentFactoryDomains();
+  const query = useAgentFactoryDomains(activeTenant);
+  const binding = query.data?.binding ?? null;
+  const boundDomain = query.data?.boundDomain ?? null;
+  const factoryHref = `/portal/${encodeURIComponent(activeTenant)}/factory`;
 
-  const rawDomains = domainsQuery.data?.domains ?? [];
-  const domainNames = buildRuntimeDomainNameMap(rawDomains);
-  const domainBySlug = new Map<string, AgentFactoryDomain>();
-  for (const d of rawDomains) {
-    const slug = runtimeDomainSlug(d.id);
-    const current = domainBySlug.get(slug);
-    if (!current || (!current.counts && d.counts)) domainBySlug.set(slug, d);
-  }
-  const domains = Array.from(domainBySlug.entries()).map(([slug, d]) => ({
-    ...d,
-    name: domainNames.get(slug) ?? domainLabel(d),
-  }));
-
-  const tenants = (tenantsQuery.data?.items ?? []).filter(
-    (t) => t.archivedAt == null && !isInternalRuntimeDomain(t.slug),
-  );
-  if (domainsQuery.isLoading || tenantsQuery.isLoading) return null;
-
-  const tBySlug = new Map(tenants.map((t) => [t.slug.toLowerCase(), t]));
-  const dBySlug = new Map(domains.map((d) => [runtimeDomainSlug(d.id), d]));
-  const linked = domains.filter((d) => tBySlug.has(runtimeDomainSlug(d.id)));
-  const knowledgeOnly = domains.filter((d) => !tBySlug.has(runtimeDomainSlug(d.id)));
-  // 仅运行 Domain：只列有 agents 或知识域来源的（空测试残留对领域同步无意义），其余计数折叠。
-  const tenantOnlyAll = tenants.filter((t) => !dBySlug.has(t.slug.toLowerCase()));
-  const tenantOnly = tenantOnlyAll.filter((t) => (t.agentCount ?? 0) > 0);
-  const emptyTenantOnly = tenantOnlyAll.length - tenantOnly.length;
-  if (!knowledgeOnly.length && !tenantOnly.length) return null; // 全部打通 → 不打扰
-
-  const cnt = (d: AgentFactoryDomain) => (d.counts ? `${d.counts.actions ?? 0} 动作 · ${d.counts.events ?? 0} 事件` : "");
-  const chip: React.CSSProperties = { display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11.5, padding: "4px 10px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--panel-2)", color: "var(--text-2)" };
+  if (query.isLoading) return null;
 
   return (
-    <Panel title={`知识域 ↔ 运行 Domain（已连接 ${linked.length}）`}>
-      <div style={{ padding: 12, display: "flex", flexDirection: "column", gap: 10 }}>
-        {knowledgeOnly.length > 0 && (
-          <div>
-            <div style={{ fontSize: 10.5, color: "var(--text-3)", fontFamily: "var(--mono)", marginBottom: 6 }}>仅知识域（工厂可生成，尚无运行 Domain）</div>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-              {knowledgeOnly.map((d) => (
-                <a key={d.id} href={`/portal/${activeTenant}/factory?domain=${encodeURIComponent(d.id)}`} title={`在工厂中用「${d.name ?? d.id}」生成 functions`} style={{ ...chip, textDecoration: "none" }}>
-                  📦 {d.name ?? d.id}
-                  {cnt(d) && <span style={{ color: "var(--text-3)", fontSize: 10 }}>{cnt(d)}</span>}
-                  <span style={{ color: "var(--signal)", display: "inline-flex", alignItems: "center", gap: 2 }}>去工厂生成 <Icon name="chevron-right" size={11} /></span>
-                </a>
-              ))}
-            </div>
-          </div>
-        )}
-        {tenantOnly.length > 0 && (
-          <div>
-            <div style={{ fontSize: 10.5, color: "var(--text-3)", fontFamily: "var(--mono)", marginBottom: 6 }}>仅运行 Domain（当前读不到本体：Allmeta 掉线或未配置本体源）</div>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-              {tenantOnly.map((t) => (
-                <span key={t.slug} style={chip} title="工厂的业务域列表暂时看不到它的本体——检查 Allmeta 或在工厂上传本地本体">
-                  ⚠ {t.name || t.slug}
-                  <span style={{ color: "var(--text-3)", fontSize: 10 }}>{t.agentCount ?? 0} agents</span>
-                </span>
-              ))}
-            </div>
-            {emptyTenantOnly > 0 && <div style={{ fontSize: 10, color: "var(--text-4)", marginTop: 6 }}>另有 {emptyTenantOnly} 个无 agent 的 Domain 未列出</div>}
-          </div>
+    <Panel title="运行领域 ↔ 本体连接">
+      <div
+        style={{
+          padding: 12,
+          display: "flex",
+          alignItems: "center",
+          gap: 12,
+          flexWrap: "wrap",
+          fontSize: 12,
+        }}
+      >
+        <Identity label="运行领域（租户）" value={activeTenant} />
+        <Icon name="chevron-right" size={13} />
+
+        {query.isError ? (
+          <span style={{ color: "var(--red)" }}>无法读取本体连接：{(query.error as Error).message}</span>
+        ) : binding && boundDomain ? (
+          <>
+            <Identity
+              label="已连接本体"
+              value={domainLabel(boundDomain)}
+              detail={`${boundDomain.id} · ${SOURCE_LABEL[binding.source]}`}
+            />
+            <a href={factoryHref} style={linkStyle}>查看或更换连接</a>
+          </>
+        ) : binding ? (
+          <>
+            <Identity
+              label="连接不可用"
+              value={binding.ontologyDomainName || binding.ontologyDomainId}
+              detail={binding.ontologyDomainId}
+              tone="red"
+            />
+            <span style={{ color: "var(--red)" }}>目录中已找不到该本体，工厂已停止执行。</span>
+            <a href={factoryHref} style={linkStyle}>重新连接</a>
+          </>
+        ) : (
+          <>
+            <span style={{ color: "var(--amber)" }}>尚未连接本体；该租户仍然有效，但 Agent 工厂不会猜测一个本体。</span>
+            <a href={factoryHref} style={linkStyle}>去 Agent 工厂连接</a>
+          </>
         )}
       </div>
     </Panel>
   );
 }
+
+function Identity({
+  label,
+  value,
+  detail,
+  tone = "default",
+}: {
+  label: string;
+  value: string;
+  detail?: string;
+  tone?: "default" | "red";
+}) {
+  return (
+    <span style={{ display: "inline-flex", flexDirection: "column", gap: 2 }}>
+      <span style={{ color: "var(--text-3)", fontSize: 10.5 }}>{label}</span>
+      <span style={{ color: tone === "red" ? "var(--red)" : "var(--text)", fontWeight: 600 }}>{value}</span>
+      {detail && <span style={{ color: "var(--text-3)", fontFamily: "var(--mono)", fontSize: 10 }}>{detail}</span>}
+    </span>
+  );
+}
+
+const linkStyle: React.CSSProperties = {
+  marginLeft: "auto",
+  display: "inline-flex",
+  alignItems: "center",
+  padding: "5px 10px",
+  border: "1px solid var(--border-2)",
+  borderRadius: 6,
+  color: "var(--signal)",
+  textDecoration: "none",
+  whiteSpace: "nowrap",
+};

@@ -3,10 +3,12 @@
  *
  * Per DESIGN.md §5:
  *   - One Inngest function per (tenant, agent).
- *   - Function ID: `${tenantSlug}.${agentName}`.
+ *   - Function ID: `${tenantSlug}.${agentName}` unless the tenant's transport
+ *     adapter explicitly owns a legacy external id mapping.
  *   - Concurrency key: `event.data.subject` (one run per subject in flight).
- *   - Retries: 3 (Inngest default).
- *   - Triggers: each trigger event name namespaced with `${tenantSlug}/`.
+ *   - Retries: manifest `retries` (0–10) when declared, else 3 (Inngest default).
+ *   - Triggers: tenant-namespaced by default, or projected by the selected
+ *     tenant transport adapter when it owns an external wire contract.
  *
  * The handler:
  *   1. Allocates a run ID + correlation ID (correlation propagates through chains).
@@ -17,17 +19,55 @@
  *   5. Updates the run with status=ok + emitted_event_id.
  */
 
-import { getTenantInngest } from "./client";
-import { runAction, type LlmTurnTrace } from "./step-engine";
-import { stableStepId, shouldSkip, softInvoke, type GateState } from "./action-plan";
-import { selectEmittedEvent } from "./emit-select";
+import { createHash } from "node:crypto";
+
+import { appIdForTenant, getTenantInngest } from "./client";
+import { runAction, type LlmTurnTrace, type StepOutput } from "./step-engine";
+import {
+  codeActExecutionReceiptFromMeta,
+  type CodeActExecutionReceipt,
+  type CodeActIsolation,
+} from "./codeact-receipt";
+import {
+  foreachStepId,
+  materializeForeach,
+  resolveConditionPath,
+  runSequentialForeach,
+  stableStepId,
+  shouldSkip,
+  softInvoke,
+  type GateState,
+} from "./action-plan";
+import { selectEmittedEvents, type EmitIntent } from "./emit-select";
 import { appendToLedger } from "./event-ledger";
 import { publish } from "./broadcast";
 import { writeArtifact } from "./artifacts";
-import { writeRunLog } from "./log-writer";
+import { logPathFor, writeRunLog } from "./log-writer";
 import { correlationFromEvent, withCorrelation } from "./correlation";
-import type { AgentSpec } from "./manifest";
-import { makeId } from "@agentic/shared";
+import {
+  flattenActionSpecs,
+  type ActionSpec,
+  type AgentSpec,
+  type FactoryInputBinding,
+} from "./manifest";
+import {
+  InputBindingResolutionError,
+  applyHumanInputResult,
+  applyObjectLookupResult,
+  initializeInputBindings,
+  prepareObjectLookupArguments,
+  resolveAvailableStepOutputBindings,
+  unresolvedRequiredInputBindings,
+  type RuntimeInputBindingIssue,
+} from "./input-bindings";
+import {
+  classifyActionFailure,
+  failureForDisposition,
+  isNonRetriableFailure,
+  type ActionFailureResolution,
+  type RuntimeOnErrorPolicy,
+} from "./error-policy";
+import { makeId, materializeInvokePayload } from "@agentic/shared";
 import {
   agents,
   agentVersions,
@@ -49,20 +89,44 @@ import { eq, and } from "drizzle-orm";
  * deployments); token counts on `steps`/`llm_calls` are unaffected.
  */
 function captureLlmTurns(): boolean {
-  const raw = (process.env.AGENTIC_CAPTURE_LLM_TURNS ?? "").trim().toLowerCase();
+  const raw = (process.env.AGENTIC_CAPTURE_LLM_TURNS ?? "")
+    .trim()
+    .toLowerCase();
   return !["0", "false", "no", "off"].includes(raw);
 }
 
-import type { TenantRegistry, ToolDescriptor } from "@agentic/agent-kit";
+import type {
+  TenantEventAdapter,
+  TenantRegistry,
+  ToolDescriptor,
+} from "@agentic/agent-kit";
 import type { InngestFunction } from "inngest";
-import { getRuntimeMetrics, getRuntimeGateway } from "./llm-host";
-import { globalToolRegistry } from "@agentic/tools";
+import { getRuntimeMetrics } from "./llm-host";
 import { createMemoryHandle } from "./memory";
-import { makeDeliveredRuntime } from "./delivered-runtime";
 import { runWithTraceContext } from "./trace-context";
 // #COMMS — inter-agent message envelope: carry-forward payload assembler + content-addressed offload.
-import { assembleEmitPayload, rehydratePayloadAsync } from "./message-envelope";
-import { makeBlobOffloader, resolveBlobRefAsync } from "./blob-store";
+import {
+  assembleEmitPayload,
+  mergeStepResults,
+  rehydratePayloadAsync,
+} from "./message-envelope";
+import { makeDurableBlobOffloader, resolveBlobRefAsync } from "./blob-store";
+import {
+  scheduledAgentTriggerName,
+  tenantEventName,
+  tenantFunctionId,
+} from "./event-name";
+import { resolveTenantEventAdapter } from "./event-adapter";
+import {
+  assertSandboxAttemptDispatchAllowed,
+  isFactorySandboxTenant,
+} from "./sandbox-mode";
+import {
+  productionCodeActManifestSha256,
+  revalidateProductionGeneratedAgentCapability,
+  type ProductionCodeActCapability,
+  type ProductionGeneratedAgentAuthorizationRequest,
+} from "./production-codeact-authorization";
 
 export interface RegisterContext {
   tenantId: string;
@@ -75,11 +139,16 @@ export interface RegisterContext {
    */
   tenantRegistry?: TenantRegistry;
   /**
+   * Optional per-registration broker-envelope override. The tenant registry's
+   * adapter is used otherwise; ordinary tenants receive the identity adapter.
+   */
+  eventAdapter?: TenantEventAdapter;
+  /**
    * Phase 1a — optional resolver mapping an `invoke` action's target ref (an agent name or
    * Inngest function id) to the registered InngestFunction, so `type:"invoke"` actions can
-   * synchronously call a sub-agent via step.invoke. When unset (or the target is unknown), an
-   * invoke action soft-fails to its `default_result`. Wired in bootstrap after all functions
-   * are built (so siblings are resolvable by the time a handler actually runs).
+   * synchronously call a sub-agent via step.invoke. Missing/failed targets are terminal unless
+   * the manifest explicitly declares on_error:"soft" with default_result. Wired in bootstrap
+   * after all functions are built (so siblings resolve by handler-run time).
    */
   resolveFunction?: (ref: string) => InngestFunction.Any | undefined;
   /**
@@ -89,6 +158,18 @@ export interface RegisterContext {
    * DECLARED actually INVOKABLE by the deployed agent. Domain-scoped + injected by the api.
    */
   declarativeTools?: Record<string, ToolDescriptor>;
+  /** Opaque authority minted from the durable Agent Factory promotion ledger.
+   * It is captured by the registered handler and cannot be reconstructed from
+   * manifest JSON. Declarative and sandbox agents leave it undefined. */
+  productionCodeActCapability?: ProductionCodeActCapability;
+  productionCodeActManifestSha256?: string;
+  productionCodeActWorkflowManifestSha256?: string;
+  /** Opaque promotion authority required for every generated production Agent,
+   * including declarative plans. The CodeAct-specific fields above remain the
+   * final handler-execution binding for exact code bytes. */
+  productionGeneratedAgentCapability?: ProductionCodeActCapability;
+  productionGeneratedAgentManifestSha256?: string;
+  productionGeneratedWorkflowManifestSha256?: string;
 }
 
 /**
@@ -119,7 +200,7 @@ export function findMissingTenantPrompts(args: {
     // Generated agents (Agent Factory) supply their own default prompt at runtime — not a missing
     // hand-written prompt, so they never block boot.
     if ((agent as { generated?: boolean }).generated) continue;
-    for (const action of agent.actions) {
+    for (const action of flattenActionSpecs(agent.actions)) {
       if (action.type !== "logic") continue;
       if (prompts[action.name]) continue;
       missing.push({
@@ -161,21 +242,290 @@ function truncateForLog(s: string, max = 100): string {
   return trimmed.length > max ? `${trimmed.slice(0, max - 1)}…` : trimmed;
 }
 
+/** Inngest accepts a literal 0–20 for `retries`; the manifest caps agents at 10. */
+export type FunctionRetryCount = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10;
+
+/**
+ * Agent-level retry budget for the Inngest function. The manifest's optional
+ * `retries` (AgentSchema, integer 0–10) wins when declared; absence keeps the
+ * historical default of 3. Defensively clamped so a value that bypassed schema
+ * validation can never exceed Inngest's accepted range. Exported for TC-12.
+ */
+export function functionRetries(
+  agent: Pick<AgentSpec, "retries">,
+): FunctionRetryCount {
+  const r = agent.retries;
+  if (typeof r !== "number" || !Number.isFinite(r)) return 3;
+  return Math.min(Math.max(Math.trunc(r), 0), 10) as FunctionRetryCount;
+}
+
+interface RuntimeStepOutcome {
+  ok: boolean;
+  data: unknown;
+  tokensIn: number;
+  tokensOut: number;
+  durationMs: number;
+  model?: string;
+  provider?: string;
+  meta?: Record<string, unknown>;
+}
+
+/** Persist/broadcast only fields authored by the isolated CodeAct runtime.
+ * A manifest's `codeExecuted` flag is an execution request and never reaches
+ * this mapper. */
+function codeActReceiptFields(receipt: CodeActExecutionReceipt) {
+  return {
+    codeRan: receipt.codeRan,
+    codeExecuted: receipt.codeExecuted,
+    codeIsolation: receipt.isolation,
+    codeSha256: receipt.codeSha256,
+    codeAttestation: receipt.attestation,
+    codeExecutionFailure: receipt.failure,
+  } as const;
+}
+
+const codeActRunReceiptSelection = {
+  codeRan: runs.codeRan,
+  codeExecuted: runs.codeExecuted,
+  codeIsolation: runs.codeIsolation,
+  codeSha256: runs.codeSha256,
+  codeAttestation: runs.codeAttestation,
+  codeExecutionFailure: runs.codeExecutionFailure,
+} as const;
+
+function storedCodeActReceiptFields(receipt: {
+  codeRan: boolean | null;
+  codeExecuted: boolean | null;
+  codeIsolation: string | null;
+  codeSha256: string | null;
+  codeAttestation: CodeActExecutionReceipt["attestation"] | null;
+  codeExecutionFailure: string | null;
+}) {
+  const codeIsolation: CodeActIsolation | null =
+    receipt.codeIsolation === "worker_thread" ||
+    receipt.codeIsolation === "isolated_subprocess" ||
+    receipt.codeIsolation === "isolated_container"
+      ? receipt.codeIsolation
+      : null;
+  return {
+    ...receipt,
+    codeIsolation,
+  };
+}
+
+class ActionReturnedFailure extends Error {
+  readonly output: unknown;
+
+  constructor(actionName: string, output: unknown) {
+    super(`action ${actionName} returned ok=false`);
+    this.name = "ActionReturnedFailure";
+    this.output = output;
+  }
+}
+
+class RequiredStepEvidenceError extends Error {
+  override readonly cause: unknown;
+
+  constructor(label: string, cause: unknown) {
+    super(
+      `required step evidence '${label}' failed: ${String(
+        (cause as { message?: unknown } | null)?.message ?? cause,
+      )}`,
+    );
+    this.name = "RequiredStepEvidenceError";
+    this.cause = cause;
+  }
+}
+
+async function requireStepEvidence<T>(
+  label: string,
+  operation: () => T | Promise<T>,
+): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    throw new RequiredStepEvidenceError(label, error);
+  }
+}
+
+/** Turn a failed action into either a serializable continue receipt or real
+ * Inngest control flow. Terminal becomes NonRetriableError; retry/park keeps
+ * the original throwable so the function retry budget remains active. */
+function resolveActionFailureOutcome(
+  action: ActionSpec,
+  failure: unknown,
+  partial?: Partial<RuntimeStepOutcome>,
+  options?: { reclassifyControlFlow?: boolean },
+): RuntimeStepOutcome {
+  if (isNonRetriableFailure(failure) && !options?.reclassifyControlFlow)
+    throw failure;
+  const inherited = (
+    failure as ActionReturnedFailure | null
+  )?.output as { meta?: { failureResolution?: unknown } } | undefined;
+  const inheritedResolution = inherited?.meta?.failureResolution;
+  const resolution =
+    action.on_error === undefined &&
+    inheritedResolution &&
+    typeof inheritedResolution === "object" &&
+    !Array.isArray(inheritedResolution)
+      ? (inheritedResolution as ActionFailureResolution)
+      : classifyActionFailure({
+          policy: action.on_error as RuntimeOnErrorPolicy,
+          failure,
+          defaultResult: Object.prototype.hasOwnProperty.call(
+            action,
+            "default_result",
+          )
+            ? action.default_result
+            : action.on_error === "soft"
+              ? null
+              : undefined,
+        });
+  const controlFlowError = failureForDisposition(resolution, failure);
+  if (controlFlowError) throw controlFlowError;
+  return {
+    ok: true,
+    data: resolution.defaultResult,
+    tokensIn: partial?.tokensIn ?? 0,
+    tokensOut: partial?.tokensOut ?? 0,
+    durationMs: partial?.durationMs ?? 0,
+    meta: {
+      ...(partial?.meta ?? {}),
+      failureResolution: resolution,
+      softFailed: true,
+    },
+  };
+}
+
+/** Foreach is a container boundary: an explicitly declared container policy
+ * may catch a terminal child, while an undeclared policy preserves the
+ * child's NonRetriable control flow. Exported to keep this critical boundary
+ * independently regression-testable. */
+export function resolveForeachContainerFailure(
+  action: ActionSpec,
+  failure: unknown,
+): RuntimeStepOutcome {
+  return resolveActionFailureOutcome(action, failure, undefined, {
+    reclassifyControlFlow: action.on_error !== undefined,
+  });
+}
+
+function failureResolutionFromOutcome(outcome: {
+  meta?: Record<string, unknown>;
+}): ActionFailureResolution | undefined {
+  const value = outcome.meta?.failureResolution;
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as ActionFailureResolution)
+    : undefined;
+}
+
+/** Validate that an ephemeral app can execute only a sandbox-scoped manifest,
+ * and that a production tenant can never register a sandbox attempt pointer. */
+export function assertFactoryExecutionScope(
+  agent: AgentSpec,
+  tenantSlug: string,
+): void {
+  const executionScope = agent.factory_execution_scope;
+  if (isFactorySandboxTenant(tenantSlug)) {
+    if (!agent.generated || executionScope?.kind !== "sandbox") {
+      throw new Error(
+        `[runtime] ephemeral sandbox ${tenantSlug} refuses an agent without sandbox execution scope`,
+      );
+    }
+  } else if (executionScope?.kind === "sandbox") {
+    throw new Error(
+      `[runtime] production tenant ${tenantSlug} refuses sandbox app pointer ${executionScope.attempt_id}`,
+    );
+  }
+  if (
+    executionScope &&
+    agent.factory_domain_id &&
+    executionScope.target_domain_id !== agent.factory_domain_id
+  ) {
+    throw new Error(
+      `[runtime] factory target domain mismatch for ${agent.id}: ${executionScope.target_domain_id} != ${agent.factory_domain_id}`,
+    );
+  }
+}
+
 export function registerAgent(
   agent: AgentSpec,
   ctx: RegisterContext,
 ): InngestFunction.Any | null {
   const tenantSlug = ctx.tenantSlug;
-  const fnId = `${tenantSlug}.${agent.name}`;
+  assertFactoryExecutionScope(agent, tenantSlug);
+  let productionGeneratedAuthorizationRequest:
+    | ProductionGeneratedAgentAuthorizationRequest
+    | null = null;
+  if (agent.generated === true && !isFactorySandboxTenant(tenantSlug)) {
+    const agentManifestSha256 = productionCodeActManifestSha256(agent);
+    const scope = agent.factory_execution_scope;
+    if (
+      scope?.kind !== "production" ||
+      !agent.factory_domain_id ||
+      agent.factory_target_domain_id !== agent.factory_domain_id ||
+      scope.target_domain_id !== agent.factory_domain_id ||
+      !agent.factory_promotion_version_id ||
+      !agent.factory_regression_suite_fingerprint ||
+      !ctx.productionGeneratedAgentCapability ||
+      ctx.productionGeneratedAgentManifestSha256 !== agentManifestSha256 ||
+      !ctx.productionGeneratedWorkflowManifestSha256
+    ) {
+      throw new Error(
+        `[runtime] generated production Agent ${tenantSlug}/${agent.id} has no exact durable Factory promotion capability`,
+      );
+    }
+    const executionKind = agent.codeExecuted === true
+      ? "codeact" as const
+      : "declarative" as const;
+    if (executionKind === "codeact" && !agent.typescript_code) {
+      throw new Error(
+        `[runtime] generated production CodeAct ${tenantSlug}/${agent.id} has no handler bytes`,
+      );
+    }
+    productionGeneratedAuthorizationRequest = {
+      executionKind,
+      tenantId: ctx.tenantId,
+      tenantSlug,
+      domainId: agent.factory_domain_id,
+      agentSlug: agent.id,
+      promotionVersionId: agent.factory_promotion_version_id,
+      regressionSuiteFingerprint:
+        agent.factory_regression_suite_fingerprint,
+      codeSha256: executionKind === "codeact"
+        ? createHash("sha256")
+            .update(agent.typescript_code!, "utf8")
+            .digest("hex")
+        : agentManifestSha256,
+      agentManifestSha256,
+      workflowManifestSha256:
+        ctx.productionGeneratedWorkflowManifestSha256,
+    };
+  }
+  const eventAdapter = resolveTenantEventAdapter(ctx);
+  const fnId = tenantFunctionId(tenantSlug, agent.name, eventAdapter);
 
-  // No triggers (e.g. `manualEntry`) → register without an event trigger and
-  // skip; the workflow author fires it via an explicit external event.
-  if (agent.trigger.length === 0) {
+  // A pure-schedule agent has no business event trigger, but scheduler.ts
+  // emits this canonical synthetic event on every cron tick. Registering the
+  // matching listener is load-bearing: previously registerAgent returned
+  // null here while the cron producer still emitted, creating a convincing
+  // but permanently dead schedule.
+  const scheduleDeclared = Boolean(agent.cron || agent.cron_env);
+  const triggerNames =
+    agent.trigger.length > 0
+      ? agent.trigger
+      : scheduleDeclared
+        ? [scheduledAgentTriggerName(agent.name)]
+        : [];
+
+  // No event or schedule trigger (e.g. manual-only entry) → no autonomous
+  // Inngest function is registered.
+  if (triggerNames.length === 0) {
     return null;
   }
 
-  const triggers = agent.trigger.map((t) => ({
-    event: `${tenantSlug}/${t}` as `${string}/${string}`,
+  const triggers = triggerNames.map((t) => ({
+    event: tenantEventName(tenantSlug, t, eventAdapter) as `${string}/${string}`,
   }));
 
   // Per review M2: prior to this change `register.ts` hardcoded `limit: 8`
@@ -193,12 +543,15 @@ export function registerAgent(
     typeof concurrencyConfig?.max_concurrent_executions === "number"
       ? concurrencyConfig.max_concurrent_executions
       : 8;
+  const triggerSubjectExpr =
+    eventAdapter.subjectExpressions?.trigger ?? "event.data.subject";
+  const cancelSubjectExpr =
+    eventAdapter.subjectExpressions?.cancel ?? "async.data.subject";
 
   // One Inngest app per tenant: bind this agent's function to the tenant's own
-  // client (`agentic-operator-<slug>`). fnId stays `${slug}.${agent}` — Inngest
-  // tracks function history by id, so we keep it stable even though the app id
-  // already carries the slug (the external slug becomes
-  // `agentic-operator-<slug>-<slug>.<agent>`, redundant but harmless).
+  // client (`agentic-operator-<slug>`). Normal tenants keep `${slug}.${agent}`;
+  // the opted-in zhaopin compatibility app reuses the six old AO function ids
+  // so Inngest sees a handler upgrade rather than a duplicate fleet.
   return getTenantInngest(tenantSlug).createFunction(
     {
       id: fnId,
@@ -211,11 +564,13 @@ export function registerAgent(
       // `concurrencyCap` only counts that tenant's traffic.
       concurrency: {
         limit: concurrencyCap,
-        key: `"${tenantSlug}:" + event.data.subject`,
+        key: `"${tenantSlug}:" + ${triggerSubjectExpr}`,
       },
-      retries: 3,
-      // Operator kill switch (POST /v1/runs/:id/cancel). The route emits
-      // `${tenantSlug}/run.cancel` carrying { runId, subject }. We match on
+      // Per-agent retry budget from the manifest (`retries`, 0–10); defaults
+      // to the historical 3 when the agent doesn't declare one.
+      retries: functionRetries(agent),
+      // Operator kill switch (POST /v1/runs/:id/cancel). The route emits the
+      // tenant-adapted `run.cancel` carrying { runId, subject }. We match on
       // subject because the runId is allocated *inside* the function (the
       // triggering event doesn't know it yet, and Inngest's `cancelOn.if`
       // can only compare values already present on the trigger envelope).
@@ -228,8 +583,12 @@ export function registerAgent(
       // posture.
       cancelOn: [
         {
-          event: `${tenantSlug}/run.cancel` as `${string}/${string}`,
-          if: `async.data.subject == event.data.subject`,
+          event: tenantEventName(
+            tenantSlug,
+            "run.cancel",
+            eventAdapter,
+          ) as `${string}/${string}`,
+          if: `${cancelSubjectExpr} == ${triggerSubjectExpr}`,
         },
       ],
       // v4: triggers moved into opts (was a separate 2nd arg in v3)
@@ -240,9 +599,28 @@ export function registerAgent(
       // wire/storage stayed small; the active run resolves on demand). No-op when there are no refs.
       // Async resolution: local fs first, then the shared backend (#SCALE-BLOB) — so on a multi-
       // instance deploy a blob written by instance A rehydrates on instance B.
-      const data = await rehydratePayloadAsync((event.data ?? {}) as Record<string, unknown>, async (ref) => (await resolveBlobRefAsync(ref)) ?? ref);
+      const rehydratedData = await rehydratePayloadAsync(
+        (event.data ?? {}) as Record<string, unknown>,
+        async (ref) => {
+          const resolved = await resolveBlobRefAsync(ref);
+          if (resolved == null) {
+            throw new Error(
+              `Blob ${ref.hash} (${ref.bytes} bytes) is unavailable from both local and configured shared storage`,
+            );
+          }
+          return resolved;
+        },
+      );
+      // Tenant transport concerns terminate here. The generic runtime always
+      // operates on canonical flat data and never branches on a business
+      // tenant or legacy envelope format.
+      const data = eventAdapter.inbound({
+        eventName: event.name,
+        data: rehydratedData,
+      });
       // #COMMS — offloader for oversized OUTBOUND fields (content-addressed, dedup by sha256).
-      const offloader = makeBlobOffloader();
+      const durableOffloader = makeDurableBlobOffloader();
+      const offloader = durableOffloader.offload;
       const subject = typeof data.subject === "string" ? data.subject : null;
       const triggerEventId =
         typeof data.__triggerEventId === "string"
@@ -260,7 +638,27 @@ export function registerAgent(
       // run-row allocation so identical IDs are reused on every replay, and
       // we never create duplicate runs rows.
       const init = await step.run("init", async () => {
-        const cid = correlationFromEvent(event);
+        if (productionGeneratedAuthorizationRequest) {
+          const authorized =
+            await revalidateProductionGeneratedAgentCapability(
+              ctx.productionGeneratedAgentCapability,
+              productionGeneratedAuthorizationRequest,
+            );
+          if (!authorized) {
+            throw new Error(
+              `[runtime] generated production Agent authorization is absent or revoked for ${tenantSlug}/${agent.id}`,
+            );
+          }
+        }
+        assertSandboxAttemptDispatchAllowed({
+          tenantId: ctx.tenantId,
+          tenantSlug,
+          appId: appIdForTenant(tenantSlug),
+          executionScope: agent.factory_execution_scope,
+        });
+        // Use normalized data, not the raw transport event. A tenant adapter
+        // may recover transport-native correlation metadata as __correlationId.
+        const cid = correlationFromEvent({ data });
         const rid = makeId("run");
         const db = getDb();
 
@@ -297,6 +695,16 @@ export function registerAgent(
           .all()[0];
 
         const startedAt = Date.now();
+        const runLogPath = logPathFor(
+          {
+            tenantSlug,
+            tenantId: ctx.tenantId,
+            runId: rid,
+            correlationId: cid,
+            agentName: agent.name,
+          },
+          new Date(startedAt),
+        );
         db.insert(runs)
           .values({
             id: rid,
@@ -309,7 +717,7 @@ export function registerAgent(
             correlationId: cid,
             subject,
             isTest,
-            logPath: null,
+            logPath: runLogPath,
           })
           .run();
         // Live feed: broadcast run.started so the portal's stream (LIVE pill,
@@ -336,6 +744,7 @@ export function registerAgent(
           correlationId: cid,
           agentDbId: agentRow.id,
           startedAt,
+          runLogPath,
         };
       });
 
@@ -347,8 +756,11 @@ export function registerAgent(
 
       const logCtx = {
         tenantSlug,
+        tenantId: ctx.tenantId,
         runId,
         correlationId,
+        agentName: agent.name,
+        logPath: init.runLogPath,
       };
 
       await writeRunLog(logCtx, "INFO", "run.start", {
@@ -362,60 +774,58 @@ export function registerAgent(
       // step-engine resolves them ahead of the global registry. No-op when none are injected.
       const effectiveTenantRegistry =
         ctx.declarativeTools && Object.keys(ctx.declarativeTools).length
-          ? { ...ctx.tenantRegistry, tools: { ...(ctx.tenantRegistry?.tools ?? {}), ...ctx.declarativeTools } }
+          ? {
+              ...ctx.tenantRegistry,
+              tools: {
+                ...(ctx.tenantRegistry?.tools ?? {}),
+                ...ctx.declarativeTools,
+              },
+            }
           : ctx.tenantRegistry;
 
-      // #REDESIGN FU1 — the DELIVERED-tier AgentRuntime (power-strip contract). register.ts is the
-      // delivered adapter: it constructs the SAME `AgentRuntime` socket the CodeAct tier does, backed
-      // by durable primitives. `memory` is the REAL createMemoryHandle (persists across runs) and is
-      // threaded into generated-code execution below — the one durable capability legal inside a
-      // `step.run` body. emit/invoke are the durable ACTION-level ops (register already runs those via
-      // step.sendEvent / step.invoke); here they log/resolve for observability + the promotion path
-      // (they are NOT invoked from inside a step.run — Inngest forbids nested steps).
-      const deliveredRuntime = makeDeliveredRuntime({
+      // Generated code inside `step.run` can safely use durable DB-backed memory. Durable
+      // emit/invoke are orchestrated below via Inngest steps; the removed adapter exposed dead
+      // callbacks that only logged or returned null and therefore implied capabilities it did not have.
+      const runMemory = createMemoryHandle({
+        tenantId: ctx.tenantId,
         agentName: agent.name,
-        tenantSlug,
-        correlationId,
-        subject: subject ?? undefined,
-        memory: createMemoryHandle({ tenantId: ctx.tenantId, agentName: agent.name, subject: subject ?? "", runId }),
-        // #AUDIT-FIX(H0 fail-open twin) — 与 codeact.ts 同款：决策核心失败不得伪造 {ok:true}，
-        // 返回 _reasonFailed 标记让消费方走失败分支（fail-close）并留日志。
-        reason: async (sp, inp) => {
-          const gw = getRuntimeGateway();
-          if (!gw) {
-            try { console.warn("[runtime] reason() 无 LLM 网关——fail-close，不伪造通过"); } catch { /* best-effort */ }
-            return { ok: false, _reasonFailed: true, error: "llm_gateway_missing" };
-          }
-          let failure = "";
-          const r = await gw
-            .chat({ messages: [{ role: "system", content: sp }, { role: "user", content: JSON.stringify(inp ?? {}) }], tenantSlug })
-            .catch((e) => { failure = String((e as Error)?.message ?? e).slice(0, 200); return null; });
-          if (!r) {
-            try { console.warn(`[runtime] reason() LLM 调用失败——fail-close：${failure}`); } catch { /* best-effort */ }
-            return { ok: false, _reasonFailed: true, error: failure || "llm_call_failed" };
-          }
-          try { return JSON.parse(r.text); } catch { return { text: r.text, ok: true }; }
-        },
-        toolRun: async (name, toolArgs) => {
-          const t = effectiveTenantRegistry?.tools?.[name] ?? globalToolRegistry.get(name);
-          if (!t) return { __error: `tool ${name} not registered` };
-          try {
-            const r = await t.handler({ agentName: agent.name, actionName: name, correlationId, tenantSlug, event: { name, data: (toolArgs ?? {}) as Record<string, unknown> } } as never);
-            return (r as { data?: unknown })?.data ?? r;
-          } catch (e) { return { __error: (e as Error).message }; }
-        },
-        emit: (evName, payload) => { void writeRunLog(logCtx, "INFO", "delivered.emit", { event: evName, payload }); },
-        invoke: async (ref) => { void ctx.resolveFunction?.(ref); return null; /* durable invoke is a type:"invoke" action; see the loop below */ },
-        log: (level, msg, data) => { try { logger[level]?.(msg, data as object) ?? logger.info(msg, data as object); } catch { /* best-effort */ } },
+        subject: subject ?? "",
+        runId,
       });
 
       let tokensIn = 0;
       let tokensOut = 0;
       let lastResult: unknown = null;
-      // #REDESIGN P1 — execution receipt. Set true when a logic action's GENERATED CODE actually ran
-      // (runGeneratedCode returned non-null); stays false if it fell back to the declarative/prompt
-      // path. Persisted to runs.code_ran at finalize so the finish gate can require real execution.
-      let codeRan = false;
+      // Raw output of every completed action, keyed by manifest `result_key` (the generated
+      // plan's stepId). This is the durable in-run dataflow graph; `lastResult` remains only the
+      // backwards-compatible adjacent-step view.
+      const stepResults: Record<string, unknown> = {};
+      // Explicit emit actions and CodeAct handlers can produce more than one intent (especially
+      // inside foreach). Preserve declaration order and duplicates; finalization validates every
+      // intent against agent.triggered_event before persisting/sending it.
+      const emitIntents: EmitIntent[] = [];
+      // A continue rule may deliberately suppress the historical implicit
+      // `triggered_event[0]` success emit. Explicit emits already produced by
+      // prior steps remain durable and are never erased.
+      let suppressImplicitEmit = false;
+      const applyFailureEmission = (outcome: {
+        meta?: Record<string, unknown>;
+      }): void => {
+        const resolution = failureResolutionFromOutcome(outcome);
+        if (!resolution) return;
+        if (resolution.suppressEmit) suppressImplicitEmit = true;
+        if (!resolution.emitEvent) return;
+        const fallbackPayload =
+          resolution.defaultResult &&
+          typeof resolution.defaultResult === "object" &&
+          !Array.isArray(resolution.defaultResult)
+            ? (resolution.defaultResult as Record<string, unknown>)
+            : { error: resolution.facts };
+        emitIntents.push({
+          event: resolution.emitEvent,
+          payload: { ...fallbackPayload, ...(resolution.emitPayload ?? {}) },
+        });
+      };
       // #REDESIGN P1b — the REAL model that served this run (last step that reported one), so the run
       // records the actual model instead of a hardcoded "mock-model-v1".
       let runModel: string | null = null;
@@ -431,85 +841,921 @@ export function registerAgent(
         if (!comp) return;
         // #W1-2 — NEVER wrap step.* in try/catch: Inngest orchestrates via control-flow exceptions,
         // and swallowing them can corrupt replay. step.sendEvent is durable + idempotent by its id, so
-        // Inngest itself retries transient failures — that IS the "best-effort" mechanism. Only the
-        // run-log write (a plain fs op) stays best-effort.
+        // Inngest itself retries transient failures. The run log is also required evidence.
         await step.sendEvent(`compensate.${runId}`, {
-          name: `${tenantSlug}/${comp}` as `${string}/${string}`,
-          data: withCorrelation(correlationId, { subject: subject ?? undefined, source_agent: agent.name, source_run: runId, __compensation: true, reason: reason.slice(0, 200) }),
+          name: tenantEventName(
+            tenantSlug,
+            comp,
+            eventAdapter,
+          ) as `${string}/${string}`,
+          data: withCorrelation(correlationId, {
+            subject: subject ?? undefined,
+            source_agent: agent.name,
+            source_run: runId,
+            __compensation: true,
+            reason: reason.slice(0, 200),
+          }),
         });
-        await writeRunLog(logCtx, "WARN", "run.compensate", { event: comp, reason: reason.slice(0, 200) }).catch(() => {});
+        await writeRunLog(logCtx, "WARN", "run.compensate", {
+          event: comp,
+          reason: reason.slice(0, 200),
+        });
       };
+
+      const factoryInputBindings = (agent.factory_input_bindings ??
+        []) as FactoryInputBinding[];
+      const factoryToolConfigs = Object.fromEntries(
+        (agent.tool_use ?? []).map((entry) => [entry.name, entry.config ?? {}]),
+      );
+      const initializedBindings = initializeInputBindings(
+        factoryInputBindings,
+        data,
+        {
+          toolConfigs: factoryToolConfigs,
+          toolProfileRefs: agent.factory_tool_profile_refs ?? {},
+          env: process.env,
+          eventName: event.name,
+        },
+      );
+      const inputBindingState = initializedBindings.state;
+      const boundData = inputBindingState.data;
+      const abortForInputBindings = async (
+        issues: RuntimeInputBindingIssue[],
+      ): Promise<never> => {
+        const error = new InputBindingResolutionError(issues);
+        await writeRunLog(logCtx, "ERROR", "input.binding-failed", {
+          issues: issues.map((entry) => ({
+            code: entry.code,
+            field: entry.field,
+            message: entry.message,
+          })),
+        });
+        await failRun(runId, error.message, startedAt);
+        throw error;
+      };
+      if (initializedBindings.issues.length) {
+        await abortForInputBindings(initializedBindings.issues);
+      }
 
       for (let i = 0; i < agent.actions.length; i++) {
         const action = agent.actions[i]!;
         const ord = i + 1;
+        const actionKey =
+          (action as { result_key?: string }).result_key ?? action.name;
+        const availableStepBindings = resolveAvailableStepOutputBindings(
+          inputBindingState,
+          factoryInputBindings,
+          stepResults,
+        );
+        if (availableStepBindings.length)
+          await abortForInputBindings(availableStepBindings);
+
+        const actionBinding = action.input_binding;
+        let actionData: Record<string, unknown> = boundData;
+        if (actionBinding?.kind === "object_lookup") {
+          const prepared = prepareObjectLookupArguments(
+            inputBindingState,
+            actionBinding,
+          );
+          if (!prepared.ok) {
+            await abortForInputBindings(prepared.issues);
+          } else {
+            actionData = { ...boundData, ...prepared.arguments };
+          }
+        }
         // Scope for stable idempotency-keyed step ids + (later) invoke input resolution.
         const stepScope = {
-          event: { name: event.name, data },
+          event: { name: event.name, data: actionData },
           subject: subject ?? undefined,
           lastResult,
+          results: stepResults,
         };
 
         // Phase 1a — dependsOn gating. Skip (don't fail) an action whose gating condition was
         // false or whose dependency was skipped. Backward-compatible: actions with no depends_on
         // never skip, so existing single-path manifests are unaffected.
-        const skip = shouldSkip({ name: action.name, dependsOn: (action as { depends_on?: string[] }).depends_on }, gate);
+        const skip = shouldSkip(
+          {
+            name: actionKey,
+            dependsOn: (action as { depends_on?: string[] }).depends_on,
+          },
+          gate,
+        );
         if (skip.skip) {
-          gate.skipped.add(action.name);
-          await writeRunLog(logCtx, "INFO", "step.skip", { ord, name: action.name, type: action.type, reason: skip.reason });
+          gate.skipped.add(actionKey);
+          await writeRunLog(logCtx, "INFO", "step.skip", {
+            ord,
+            name: action.name,
+            resultKey: actionKey,
+            type: action.type,
+            reason: skip.reason,
+          });
           continue;
         }
 
-        // Phase 1a — synchronous sub-agent invoke (step.invoke) with timeout + soft-fail default.
-        // Dormant for existing manifests (none declare type:"invoke"). Resolves the target via the
-        // optional ctx.resolveFunction; soft-fails to `default_result` when unresolved or on error.
+        // Phase 1a — synchronous sub-agent invoke (step.invoke). Failure is terminal by default.
+        // Soft continuation is accepted only when the manifest explicitly declares on_error:"soft"
+        // AND owns a default_result (also enforced at boot).
         if (action.type === "invoke") {
-          const a = action as { invoke?: string; invoke_input?: Record<string, unknown>; timeout_s?: number; on_error?: "soft" | "terminal"; default_result?: unknown };
+          const a = action as ActionSpec & {
+            invoke?: string;
+            invoke_input?: Record<string, unknown>;
+            forward_last_result?: boolean;
+            forward_results?: boolean;
+            timeout_s?: number;
+            default_result?: unknown;
+          };
           const targetRef = a.invoke ?? "";
           const fn = ctx.resolveFunction?.(targetRef);
-          const invoked = await softInvoke(
-            async () => {
-              if (!fn) throw new Error(`invoke target "${targetRef}" not resolvable`);
-              return await step.invoke(`invoke-${stableStepId(action.name, (action as { idempotency_key_from?: string }).idempotency_key_from, stepScope)}`, {
-                function: fn,
-                data: { ...(a.invoke_input ?? {}), _subject: subject, _correlationId: correlationId },
-                timeout: a.timeout_s ? `${a.timeout_s}s` : undefined,
-              });
-            },
-            { timeoutMs: a.timeout_s ? a.timeout_s * 1000 : undefined, onError: a.on_error ?? "soft", fallback: a.default_result },
-          );
-          if (!invoked.ok && (a.on_error ?? "soft") !== "soft") {
-            await failRun(runId, `invoke ${targetRef} failed`, startedAt);
-            throw new Error(`invoke ${targetRef} failed`);
+          const hasSoftFallback =
+            a.on_error === "soft" &&
+            Object.prototype.hasOwnProperty.call(a, "default_result");
+          if (a.on_error === "soft" && !hasSoftFallback) {
+            await failRun(
+              runId,
+              `invoke ${targetRef || "<missing>"} declares soft failure without default_result`,
+              startedAt,
+            );
+            throw new Error(
+              `invoke ${targetRef || "<missing>"}: on_error=soft requires default_result`,
+            );
           }
-          lastResult = invoked.data ?? null;
-          await writeRunLog(logCtx, invoked.softFailed ? "WARN" : "INFO", "step.invoke", { ord, name: action.name, target: targetRef, softFailed: invoked.softFailed, timedOut: invoked.timedOut });
+          let invoked: Awaited<ReturnType<typeof softInvoke>>;
+          try {
+            invoked = await softInvoke(
+              async () => {
+                if (!fn)
+                  throw new Error(
+                    `invoke target "${targetRef}" not resolvable`,
+                  );
+                return await step.invoke(
+                  `invoke-${stableStepId(action.name, (action as { idempotency_key_from?: string }).idempotency_key_from, stepScope)}`,
+                  {
+                    function: fn,
+                    data: materializeInvokePayload({
+                      eventData: actionData,
+                      invokeInput: a.invoke_input,
+                      forwardLastResult: a.forward_last_result,
+                      forwardResults: a.forward_results,
+                      lastResult,
+                      results: stepResults,
+                      subject,
+                      correlationId,
+                    }),
+                    timeout: a.timeout_s ? `${a.timeout_s}s` : undefined,
+                  },
+                );
+              },
+              {
+                timeoutMs: a.timeout_s ? a.timeout_s * 1000 : undefined,
+                // Classification happens below. Always rethrow here so a
+                // ladder (and legacy soft) observes the original typed error.
+                onError: "terminal",
+              },
+            );
+          } catch (failure) {
+            const handled = resolveActionFailureOutcome(action, failure);
+            applyFailureEmission(handled);
+            stepResults[actionKey] = handled.data ?? null;
+            lastResult = mergeStepResults(lastResult, handled.data ?? null);
+            await writeRunLog(logCtx, "WARN", "step.invoke-continue", {
+              ord,
+              name: action.name,
+              resultKey: actionKey,
+              target: targetRef,
+              classification:
+                failureResolutionFromOutcome(handled)?.policyAction,
+            });
+            continue;
+          }
+          stepResults[actionKey] = invoked.data ?? null;
+          lastResult = mergeStepResults(lastResult, invoked.data ?? null);
+          await writeRunLog(
+            logCtx,
+            invoked.softFailed ? "WARN" : "INFO",
+            "step.invoke",
+            {
+              ord,
+              name: action.name,
+              resultKey: actionKey,
+              target: targetRef,
+              softFailed: invoked.softFailed,
+              timedOut: invoked.timedOut,
+            },
+          );
           continue;
         }
 
         if (action.type === "subflow") {
-          // #P1-3 — subflow FANOUT: the manifest's `subflow` names a child event; emit it so a sibling
-          // agent handles it in parallel. Fire-and-forget (async fanout) — the child's result flows back
-          // via ITS own emitted event, not synchronously (that's what `invoke` is for). step.sendEvent is
-          // idempotent + runs at the handler top level (not inside step.run), so it's replay-safe.
-          const a = action as { subflow?: string; subflow_input?: Record<string, unknown> };
+          // #P1-3 — durable subflow FANOUT. Persist the outbound event and a
+          // running step receipt before handing it to Inngest, then mark the
+          // step complete only after step.sendEvent succeeds. This makes a
+          // broker failure visible as a running/retried step instead of a
+          // parent run that falsely claims the child was dispatched.
+          const a = action as {
+            subflow?: string;
+            subflow_input?: Record<string, unknown>;
+          };
           const target = (a.subflow ?? "").trim();
-          if (target) {
-            await step.sendEvent(`subflow.${stableStepId(action.name, (action as { idempotency_key_from?: string }).idempotency_key_from, stepScope)}`, {
-              name: `${tenantSlug}/${target}` as `${string}/${string}`,
-              data: withCorrelation(correlationId, {
-                ...(a.subflow_input ?? {}),
-                ...(lastResult && typeof lastResult === "object" && !Array.isArray(lastResult) ? (lastResult as Record<string, unknown>) : {}), // #W1-5 arrays would flatten to numeric keys
-                subject: subject ?? undefined,
-                source_agent: agent.name,
-                source_run: runId,
-              }),
-            });
-            await writeRunLog(logCtx, "INFO", "step.subflow", { ord, name: action.name, target });
-          } else {
-            await writeRunLog(logCtx, "WARN", "step.subflow", { ord, name: action.name, reason: "no subflow target declared" });
+          if (!target) {
+            const reason = `subflow ${actionKey}: no target event declared`;
+            await failRun(runId, reason, startedAt);
+            await emitCompensation(reason);
+            throw new Error(reason);
           }
+
+          const subflowStepKey = stableStepId(
+            action.name,
+            (action as { idempotency_key_from?: string }).idempotency_key_from,
+            stepScope,
+          );
+          const subflowPayload = withCorrelation(correlationId, {
+            ...(a.subflow_input ?? {}),
+            ...(lastResult &&
+            typeof lastResult === "object" &&
+            !Array.isArray(lastResult)
+              ? (lastResult as Record<string, unknown>)
+              : {}),
+            subject: subject ?? undefined,
+            source_agent: agent.name,
+            source_run: runId,
+          });
+          const scheduled = await step.run(
+            `subflow.persist.${subflowStepKey}`,
+            async () => {
+              const dbInner = getDb();
+              const scheduledAt = Date.now();
+              const emittedEventId = `evt-${runId.replace(/^run-/, "")}-sub-${ord}`;
+              const stepId = `stp-${runId.replace(/^run-/, "")}-sub-${ord}`;
+              const payloadRef = await appendToLedger(tenantSlug, {
+                id: emittedEventId,
+                name: target,
+                subject: subject ?? undefined,
+                data: subflowPayload,
+                ts: scheduledAt,
+              });
+              const inputRef = await requireStepEvidence(
+                "subflow input artifact",
+                () =>
+                  writeArtifact(runId, `step-${ord}-input.json`, {
+                    target,
+                    payload: subflowPayload,
+                  }),
+              );
+              const payloadJson = (() => {
+                const json = JSON.stringify(subflowPayload);
+                return json.length > 200_000
+                  ? JSON.stringify({
+                      __truncated: true,
+                      bytes: json.length,
+                      head: json.slice(0, 180_000),
+                    })
+                  : json;
+              })();
+
+              let persistedStepId = stepId;
+              dbInner.transaction((tx) => {
+                const existingEvent = tx
+                  .select({ id: events.id })
+                  .from(events)
+                  .where(eq(events.id, emittedEventId))
+                  .get();
+                if (!existingEvent) {
+                  tx.insert(events)
+                    .values({
+                      id: emittedEventId,
+                      tenantId: ctx.tenantId,
+                      name: target,
+                      sourceAgentId: init.agentDbId,
+                      subject,
+                      payloadRef,
+                    })
+                    .run();
+                  tx.insert(eventStore)
+                    .values({
+                      id: emittedEventId,
+                      tenantId: ctx.tenantId,
+                      name: target,
+                      subject: subject ?? null,
+                      sourceRunId: runId,
+                      sourceAgent: agent.name,
+                      causationId: triggerEventId ?? null,
+                      correlationId,
+                      payloadJson,
+                    })
+                    .run();
+                }
+                const existingStep = tx
+                  .select({ id: steps.id, attempts: steps.attempts })
+                  .from(steps)
+                  .where(and(eq(steps.runId, runId), eq(steps.ord, ord)))
+                  .get();
+                if (existingStep) {
+                  persistedStepId = existingStep.id;
+                  tx.update(steps)
+                    .set({
+                      status: "running",
+                      attempts: (existingStep.attempts ?? 1) + 1,
+                      startedAt: new Date(scheduledAt),
+                      endedAt: null,
+                      durationMs: null,
+                      error: null,
+                      inputRef,
+                    })
+                    .where(eq(steps.id, existingStep.id))
+                    .run();
+                } else {
+                  tx.insert(steps)
+                    .values({
+                      id: stepId,
+                      runId,
+                      ord,
+                      name: action.name,
+                      type: "subflow",
+                      status: "running",
+                      startedAt: new Date(scheduledAt),
+                      attempts: 1,
+                      inputRef,
+                    })
+                    .run();
+                }
+              });
+              await writeRunLog(logCtx, "INFO", "step.subflow.persisted", {
+                ord,
+                name: action.name,
+                target,
+                eventId: emittedEventId,
+              });
+              try {
+                publish({
+                  type: "event.emitted",
+                  tenantId: ctx.tenantId,
+                  at: scheduledAt,
+                  eventId: emittedEventId,
+                  name: target,
+                  subject: subject ?? null,
+                  sourceRunId: runId,
+                });
+                publish({
+                  type: "run.step.started",
+                  tenantId: ctx.tenantId,
+                  at: scheduledAt,
+                  runId,
+                  stepId,
+                  ord,
+                  name: action.name,
+                  stepType: "subflow",
+                });
+              } catch {
+                /* live delivery is best-effort; durable rows are authoritative */
+              }
+              return { emittedEventId, stepId: persistedStepId, scheduledAt };
+            },
+          );
+
+          const wireData = eventAdapter.outbound({
+            eventId: scheduled.emittedEventId,
+            eventName: target,
+            payload: subflowPayload,
+            subject,
+            correlationId,
+            sourceAgent: agent.name,
+            emittedAt: new Date(scheduled.scheduledAt).toISOString(),
+          });
+          await step.sendEvent(`subflow.send.${scheduled.emittedEventId}`, {
+            name: tenantEventName(
+              tenantSlug,
+              target,
+              eventAdapter,
+            ) as `${string}/${string}`,
+            data: wireData,
+          });
+
+          await step.run(`subflow.complete.${subflowStepKey}`, async () => {
+            const completedAt = Date.now();
+            const output = {
+              emittedEventId: scheduled.emittedEventId,
+              target,
+              dispatched: true,
+            };
+            const outputRef = await requireStepEvidence(
+              "subflow output artifact",
+              () => writeArtifact(runId, `step-${ord}-output.json`, output),
+            );
+            await requireStepEvidence("subflow completion row", () =>
+              getDb()
+                .update(steps)
+                .set({
+                  status: "ok",
+                  endedAt: new Date(completedAt),
+                  durationMs: completedAt - scheduled.scheduledAt,
+                  outputRef,
+                })
+                .where(eq(steps.id, scheduled.stepId))
+                .run(),
+            );
+            await writeRunLog(logCtx, "INFO", "step.subflow", {
+              ord,
+              name: action.name,
+              target,
+              eventId: scheduled.emittedEventId,
+            });
+            try {
+              publish({
+                type: "run.step.completed",
+                tenantId: ctx.tenantId,
+                at: completedAt,
+                runId,
+                stepId: scheduled.stepId,
+                ord,
+                name: action.name,
+                stepType: "subflow",
+                status: "ok",
+                durationMs: completedAt - scheduled.scheduledAt,
+                provider: null,
+                model: null,
+                tokensIn: null,
+                tokensOut: null,
+                error: null,
+              });
+            } catch {
+              /* live delivery is best-effort; durable rows are authoritative */
+            }
+            return output;
+          });
+          stepResults[actionKey] = {
+            emittedEventId: scheduled.emittedEventId,
+            target,
+            dispatched: true,
+          };
           continue;
+        }
+
+        if (action.type === "delay") {
+          // A delay is orchestration state, not in-process work. Persist the
+          // running step first, let Inngest own the timer, and only then mark
+          // completion. setTimeout inside step.run would hold a worker and
+          // could be replayed after a crash.
+          const delayMs = (action as { delay_ms?: number }).delay_ms;
+          if (!(typeof delayMs === "number" && delayMs > 0)) {
+            const reason = `delay ${actionKey}: delay_ms must be greater than zero`;
+            await failRun(runId, reason, startedAt);
+            await emitCompensation(reason);
+            throw new Error(reason);
+          }
+          const delayStepKey = stableStepId(
+            action.name,
+            (action as { idempotency_key_from?: string }).idempotency_key_from,
+            stepScope,
+          );
+          const scheduled = await step.run(
+            `delay.schedule.${delayStepKey}`,
+            async () => {
+              const dbInner = getDb();
+              const scheduledAt = Date.now();
+              const proposedStepId = `stp-${runId.replace(/^run-/, "")}-delay-${ord}`;
+              const inputRef = await requireStepEvidence(
+                "delay input artifact",
+                () =>
+                  writeArtifact(runId, `step-${ord}-input.json`, {
+                    delay_ms: delayMs,
+                  }),
+              );
+              const existing = dbInner
+                .select({ id: steps.id, attempts: steps.attempts })
+                .from(steps)
+                .where(and(eq(steps.runId, runId), eq(steps.ord, ord)))
+                .get();
+              const stepId = existing?.id ?? proposedStepId;
+              if (existing) {
+                dbInner
+                  .update(steps)
+                  .set({
+                    status: "running",
+                    attempts: (existing.attempts ?? 1) + 1,
+                    startedAt: new Date(scheduledAt),
+                    endedAt: null,
+                    durationMs: null,
+                    error: null,
+                    inputRef,
+                  })
+                  .where(eq(steps.id, stepId))
+                  .run();
+              } else {
+                dbInner
+                  .insert(steps)
+                  .values({
+                    id: stepId,
+                    runId,
+                    ord,
+                    name: action.name,
+                    type: "delay",
+                    status: "running",
+                    startedAt: new Date(scheduledAt),
+                    attempts: 1,
+                    inputRef,
+                  })
+                  .run();
+              }
+              await writeRunLog(logCtx, "INFO", "step.delay.scheduled", {
+                ord,
+                name: action.name,
+                delayMs,
+              });
+              try {
+                publish({
+                  type: "run.step.started",
+                  tenantId: ctx.tenantId,
+                  at: scheduledAt,
+                  runId,
+                  stepId,
+                  ord,
+                  name: action.name,
+                  stepType: "delay",
+                });
+              } catch {
+                /* live delivery is best-effort; durable rows are authoritative */
+              }
+              return { stepId, scheduledAt };
+            },
+          );
+
+          await step.sleep(`delay.wait.${delayStepKey}`, delayMs);
+
+          const delayResult = await step.run(
+            `delay.complete.${delayStepKey}`,
+            async () => {
+              const completedAt = Date.now();
+              const output = { delay_ms: delayMs, sleptMs: delayMs };
+              const outputRef = await requireStepEvidence(
+                "delay output artifact",
+                () => writeArtifact(runId, `step-${ord}-output.json`, output),
+              );
+              await requireStepEvidence("delay completion row", () =>
+                getDb()
+                  .update(steps)
+                  .set({
+                    status: "ok",
+                    endedAt: new Date(completedAt),
+                    durationMs: completedAt - scheduled.scheduledAt,
+                    outputRef,
+                  })
+                  .where(eq(steps.id, scheduled.stepId))
+                  .run(),
+              );
+              await writeRunLog(logCtx, "INFO", "step.ok", {
+                name: action.name,
+                type: "delay",
+                duration: completedAt - scheduled.scheduledAt + "ms",
+              });
+              try {
+                publish({
+                  type: "run.step.completed",
+                  tenantId: ctx.tenantId,
+                  at: completedAt,
+                  runId,
+                  stepId: scheduled.stepId,
+                  ord,
+                  name: action.name,
+                  stepType: "delay",
+                  status: "ok",
+                  durationMs: completedAt - scheduled.scheduledAt,
+                  provider: null,
+                  model: null,
+                  tokensIn: null,
+                  tokensOut: null,
+                  error: null,
+                });
+              } catch {
+                /* live delivery is best-effort; durable rows are authoritative */
+              }
+              return output;
+            },
+          );
+          stepResults[actionKey] = delayResult;
+          lastResult = mergeStepResults(lastResult, delayResult);
+          continue;
+        }
+
+        if (action.type === "foreach") {
+          try {
+          const a = action as typeof action & {
+            items_from?: string;
+            item_as?: string;
+            item_key_from?: string;
+            foreach_actions?: typeof agent.actions;
+            timeout_s?: number;
+          };
+          // A foreach timeout is one wall-clock budget for the entire fan-out,
+          // not a fresh budget per item. Each body run receives this absolute
+          // deadline; its own timeout_s can only shorten it.
+          const foreachDeadlineAt = a.timeout_s
+            ? Date.now() + a.timeout_s * 1000
+            : undefined;
+          const collection = resolveConditionPath(
+            {
+              lastResult,
+              results: stepResults,
+              event: { name: event.name, data: boundData },
+              input: boundData,
+            },
+            a.items_from ?? "",
+          );
+          if (!collection.valid || !Array.isArray(collection.value)) {
+            const reason = `foreach ${actionKey}: items_from "${a.items_from ?? ""}" did not resolve to an array`;
+            throw new Error(reason);
+          }
+          const materialized = materializeForeach({
+            items: collection.value,
+            itemAs: a.item_as,
+            itemKeyFrom: a.item_key_from ?? "",
+          });
+          if (!materialized.ok) {
+            const reason = `foreach ${actionKey}: ${materialized.error}`;
+            throw new Error(reason);
+          }
+
+          const foreachFailure: {
+            current: { stepId: string; data: unknown } | null;
+          } = { current: null };
+          const durableActionRuntime = {
+            run: (stepId: string, operation: () => Promise<StepOutput>) =>
+              step.run(stepId, operation),
+            invoke: async (request: {
+              stepId: string;
+              target: string;
+              input: Record<string, unknown>;
+              timeoutMs?: number;
+            }): Promise<unknown> => {
+              const fn = ctx.resolveFunction?.(request.target);
+              if (!fn) {
+                throw new Error(`invoke target "${request.target}" not resolvable`);
+              }
+              return step.invoke(`invoke-${request.stepId}`, {
+                function: fn,
+                data: request.input,
+                timeout: request.timeoutMs
+                  ? `${Math.max(1, Math.ceil(request.timeoutMs / 1000))}s`
+                  : undefined,
+              });
+            },
+          };
+          const receipts = await runSequentialForeach(
+            materialized.frames,
+            async (frame) => {
+              if (foreachFailure.current) {
+                return {
+                  index: frame.index,
+                  key: frame.businessKey,
+                  stableKey: frame.stableKey,
+                  item: frame.item,
+                  stepIds: [] as string[],
+                  results: {} as Record<string, unknown>,
+                  lastResult: frame.item as unknown,
+                  skipped: true,
+                  reason: "prior foreach item failed terminally",
+                };
+              }
+              let localLast: unknown = frame.item;
+              const localResults: Record<string, unknown> = {};
+              const localGate: GateState = {
+                conditionTrue: {},
+                skipped: new Set<string>(),
+              };
+              const childStepIds: string[] = [];
+              for (const child of a.foreach_actions ?? []) {
+                const childKey = child.result_key ?? child.name;
+                const childStepId = foreachStepId(actionKey, frame, childKey);
+                childStepIds.push(childStepId);
+                const childSkip = shouldSkip(
+                  { name: childKey, dependsOn: child.depends_on },
+                  localGate,
+                );
+                if (childSkip.skip) {
+                  localGate.skipped.add(childKey);
+                  localResults[childKey] = {
+                    skipped: true,
+                    reason: childSkip.reason,
+                  };
+                  continue;
+                }
+
+                // Leaf item/body pairs are their own durable Inngest steps.
+                // A nested foreach is a container (its descendants own the
+                // durable steps), while invoke delegates directly to
+                // step.invoke; neither may be nested inside step.run.
+                const runChild = async (): Promise<StepOutput> => {
+                  try {
+                    const output = await runAction({
+                      ctx: {
+                        agentName: agent.name,
+                        actionName: child.name,
+                        ontologyActionName: agent.factory_action_name,
+                        subject: subject ?? undefined,
+                        correlationId,
+                        runId,
+                        tenantSlug,
+                        tenantId: ctx.tenantId,
+                        event: {
+                          name: event.name,
+                          data: {
+                            ...boundData,
+                            ...frame.locals,
+                            _foreach: {
+                              parentStepId: actionKey,
+                              index: frame.index,
+                              key: frame.businessKey,
+                              stableKey: frame.stableKey,
+                            },
+                          },
+                        },
+                        lastResult: localLast,
+                        results: { ...stepResults, ...localResults },
+                        locals: frame.locals,
+                        memory: runMemory,
+                      },
+                      action: child,
+                      agent: {
+                        id: agent.id,
+                        name: agent.name,
+                        description: agent.description,
+                        ontology_instructions: agent.ontology_instructions,
+                        generated: (agent as { generated?: boolean }).generated,
+                        factoryDomainId: agent.factory_domain_id,
+                        factoryExecutionScope: agent.factory_execution_scope,
+                        factoryToolProfileRefs: agent.factory_tool_profile_refs,
+                        factoryToolReplayRefs: agent.factory_tool_replay_refs,
+                        codeExecuted: (agent as { codeExecuted?: boolean })
+                          .codeExecuted,
+                        typescriptCode: agent.typescript_code,
+                        codeAttestation: agent.code_attestation,
+                        factoryPromotionVersionId: agent.factory_promotion_version_id,
+                        factoryRegressionSuiteFingerprint: agent.factory_regression_suite_fingerprint,
+                        productionCodeActCapability:
+                          ctx.productionCodeActCapability,
+                        productionCodeActManifestSha256:
+                          ctx.productionCodeActManifestSha256,
+                        productionCodeActWorkflowManifestSha256:
+                          ctx.productionCodeActWorkflowManifestSha256,
+                        triggeredEvents: agent.triggered_event,
+                        tool_use: Array.isArray(agent.tool_use)
+                          ? (agent.tool_use as Array<{
+                              name: string;
+                              description?: string;
+                              input_schema?: unknown;
+                            }>)
+                          : undefined,
+                      },
+                      tenantRegistry: effectiveTenantRegistry,
+                      autoResolveManual: true,
+                      memory: runMemory,
+                      deadlineAt: foreachDeadlineAt,
+                      durableStepId: childStepId,
+                      durableActionRuntime,
+                    });
+                    const codeReceipt = codeActExecutionReceiptFromMeta(
+                      output.meta,
+                    );
+                    if (codeReceipt) {
+                      await requireStepEvidence(
+                        "foreach CodeAct run receipt",
+                        () =>
+                          db
+                            .update(runs)
+                            .set(codeActReceiptFields(codeReceipt))
+                            .where(eq(runs.id, runId))
+                            .run(),
+                      );
+                      await requireStepEvidence(
+                        "foreach CodeAct receipt log",
+                        () =>
+                          writeRunLog(
+                            logCtx,
+                            codeReceipt.codeRan ? "INFO" : "WARN",
+                            "codeact.receipt",
+                            {
+                              step: child.name,
+                              step_id: childStepId,
+                              ...codeActReceiptFields(codeReceipt),
+                              duration_ms: codeReceipt.durationMs,
+                            },
+                          ),
+                      );
+                    }
+                    // An enclosing foreach deadline is authoritative. A child
+                    // soft policy cannot convert expiration of the parent
+                    // budget into a success and continue later items.
+                    if (
+                      !output.ok &&
+                      (output.meta as { deadlineSource?: unknown } | undefined)
+                        ?.deadlineSource === "parent_deadline"
+                    ) {
+                      return output;
+                    }
+                    if (output.ok) return output;
+                    const handled = resolveActionFailureOutcome(
+                      child,
+                      new ActionReturnedFailure(child.name, output),
+                      {
+                        tokensIn: output.tokensIn ?? 0,
+                        tokensOut: output.tokensOut ?? 0,
+                        meta: output.meta,
+                      },
+                    );
+                    return { ...handled, type: child.type };
+                  } catch (failure) {
+                    if (failure instanceof RequiredStepEvidenceError)
+                      throw failure;
+                    return {
+                      ...resolveActionFailureOutcome(child, failure),
+                      type: child.type,
+                    };
+                  }
+                };
+                const bodyResult =
+                  child.type === "foreach" || child.type === "invoke"
+                    ? await runChild()
+                    : await step.run(childStepId, runChild);
+
+                tokensIn += bodyResult.tokensIn ?? 0;
+                tokensOut += bodyResult.tokensOut ?? 0;
+                if (bodyResult.model) runModel = bodyResult.model;
+                const emitted = (
+                  bodyResult.meta as { emitted?: EmitIntent[] } | undefined
+                )?.emitted;
+                if (Array.isArray(emitted)) emitIntents.push(...emitted);
+                if (
+                  (bodyResult.meta as { suppressImplicitEmit?: unknown } | undefined)
+                    ?.suppressImplicitEmit === true
+                ) {
+                  suppressImplicitEmit = true;
+                }
+                applyFailureEmission(bodyResult);
+
+                if (!bodyResult.ok) {
+                  foreachFailure.current = {
+                    stepId: childStepId,
+                    data: bodyResult.data,
+                  };
+                  break;
+                }
+                localResults[childKey] = bodyResult.data;
+                localLast = mergeStepResults(localLast, bodyResult.data);
+                if (child.type === "condition") {
+                  localGate.conditionTrue[childKey] = Boolean(
+                    (bodyResult.data as { evaluated?: boolean } | null)
+                      ?.evaluated,
+                  );
+                }
+              }
+              return {
+                index: frame.index,
+                key: frame.businessKey,
+                stableKey: frame.stableKey,
+                item: frame.item,
+                stepIds: childStepIds,
+                results: localResults,
+                lastResult: localLast,
+              };
+            },
+          );
+
+          if (foreachFailure.current) {
+            const reason = `foreach ${actionKey} body step ${foreachFailure.current.stepId} failed`;
+            throw new Error(reason);
+          }
+          const aggregate = {
+            count: receipts.length,
+            items: receipts,
+            byKey: Object.fromEntries(
+              receipts.map((receipt) => [receipt.stableKey, receipt]),
+            ),
+          };
+          stepResults[actionKey] = aggregate;
+          lastResult = mergeStepResults(lastResult, aggregate);
+          await writeRunLog(logCtx, "INFO", "step.foreach", {
+            ord,
+            name: action.name,
+            resultKey: actionKey,
+            count: receipts.length,
+            mode: "sequential",
+          });
+          continue;
+          } catch (failure) {
+            if (failure instanceof RequiredStepEvidenceError) throw failure;
+            const handled = resolveForeachContainerFailure(action, failure);
+            applyFailureEmission(handled);
+            stepResults[actionKey] = handled.data ?? null;
+            lastResult = mergeStepResults(lastResult, handled.data ?? null);
+            await writeRunLog(logCtx, "WARN", "step.foreach-continue", {
+              ord,
+              name: action.name,
+              resultKey: actionKey,
+              classification:
+                failureResolutionFromOutcome(handled)?.policyAction,
+            });
+            continue;
+          }
         }
 
         if (action.type === "manual") {
@@ -520,42 +1766,95 @@ export function registerAgent(
           const initStep = await step.run(`init-task-${ord}`, async () => {
             const sid = makeId("stp");
             const tid = makeId("tsk");
+            const resumeMarker = `hitl:${ctx.tenantId}:${runId}:${tid}`;
             const sStarted = Date.now();
             const dbInner = getDb();
-            dbInner
-              .insert(steps)
-              .values({
-                id: sid,
+            // The task, its exact wait step, and the owning run's waiting
+            // state form one recovery unit. A crash cannot leave an open task
+            // whose parked step/origin cannot be identified.
+            dbInner.transaction((tx) => {
+              tx.insert(steps)
+                .values({
+                  id: sid,
+                  runId,
+                  ord,
+                  name: action.name,
+                  // invoke steps never reach an insert (handled+continue'd above); cast to the
+                  // steps.type column union which predates the "invoke" member.
+                  type: action.type as
+                    | "tool"
+                    | "logic"
+                    | "manual"
+                    | "condition"
+                    | "delay"
+                    | "subflow",
+                  status: "running",
+                  startedAt: new Date(sStarted),
+                })
+                .run();
+              tx.insert(tasksTable)
+                .values({
+                  id: tid,
+                  tenantId: ctx.tenantId,
+                  runId,
+                  originEventId: triggerEventId,
+                  originEventName: event.name ?? null,
+                  waitStepId: sid,
+                  resumeMarker,
+                  resumeState: "pending",
+                  type: action.task_type ?? action.name,
+                  title: `${agent.title ?? agent.name} · ${action.name}`,
+                  priority: "medium",
+                  status: "open",
+                  payloadJson: {
+                    agentName: agent.name,
+                    actionName: action.name,
+                    description: action.description,
+                    subject,
+                    condition: action.condition ?? null,
+                    ...(actionBinding?.kind === "human_input"
+                      ? {
+                          inputBinding: {
+                            kind: "human_input",
+                            field: actionBinding.field,
+                            type: actionBinding.type,
+                            required: actionBinding.required,
+                            prompt: actionBinding.prompt,
+                          },
+                        }
+                      : {}),
+                  } as never,
+                } as never)
+                .run();
+              tx.update(runs)
+                .set({ status: "waiting" })
+                .where(and(eq(runs.id, runId), eq(runs.status, "running")))
+                .run();
+            });
+            try {
+              publish({
+                type: "run.step.started",
+                tenantId: ctx.tenantId,
+                at: sStarted,
                 runId,
+                stepId: sid,
                 ord,
                 name: action.name,
-                // invoke steps never reach an insert (handled+continue'd above); cast to the
-                // steps.type column union which predates the "invoke" member.
-                type: action.type as "tool" | "logic" | "manual" | "condition" | "delay" | "subflow",
-                status: "running",
-                startedAt: new Date(sStarted),
-              })
-              .run();
-            dbInner
-              .insert(tasksTable)
-              .values({
-                id: tid,
+                stepType: action.type,
+              });
+              publish({
+                type: "task.created",
                 tenantId: ctx.tenantId,
+                at: sStarted,
+                taskId: tid,
                 runId,
-                type: action.task_type ?? action.name,
+                taskType: action.task_type ?? action.name,
                 title: `${agent.title ?? agent.name} · ${action.name}`,
-                priority: "medium",
-                status: "open",
-                payloadJson: {
-                  agentName: agent.name,
-                  actionName: action.name,
-                  description: action.description,
-                  subject,
-                  condition: action.condition ?? null,
-                } as never,
-              } as never)
-              .run();
-            return { stepId: sid, taskId: tid, sStarted };
+              });
+            } catch {
+              /* live delivery is best-effort */
+            }
+            return { stepId: sid, taskId: tid, resumeMarker, sStarted };
           });
 
           await writeRunLog(logCtx, "INFO", "step.wait", {
@@ -568,15 +1867,18 @@ export function registerAgent(
           // P5-TEN-01 — pin the predicate to the issuing tenant so a leaked
           // taskId in another tenant cannot resume this run. tasks.ts:resolve
           // now includes auth.tenantId in the event payload.
-          // Per-tenant app: HITL resume listens on the tenant-namespaced
-          // `${slug}/task.resolved` (the resolve route sends it on the SAME
-          // tenant client). With one app per tenant the bare `task.resolved`
-          // would not be served by this tenant's app, so the name MUST be
-          // namespaced in lockstep with `routes/v1/tasks.ts`. The tenantId
-          // predicate stays as defense-in-depth.
+          // Per-tenant app: HITL resume and the resolve route both project
+          // `task.resolved` through the same committed TenantEventAdapter.
+          // Ordinary tenants therefore use `${slug}/task.resolved`; a tenant
+          // that owns a legacy bus may intentionally use another wire name.
+          // The tenantId predicate stays as defense-in-depth.
           const resolved = await step.waitForEvent(`wait-task-${ord}`, {
-            event: `${tenantSlug}/task.resolved` as `${string}/${string}`,
-            if: `async.data.taskId == "${initStep.taskId}" && async.data.tenantId == "${ctx.tenantId}"`,
+            event: tenantEventName(
+              tenantSlug,
+              "task.resolved",
+              eventAdapter,
+            ) as `${string}/${string}`,
+            if: `async.data.taskId == "${initStep.taskId}" && async.data.tenantId == "${ctx.tenantId}" && async.data.resumeMarker == "${initStep.resumeMarker}"`,
             timeout: "7d",
           });
 
@@ -586,16 +1888,28 @@ export function registerAgent(
               const dbInner = getDb();
               dbInner
                 .update(steps)
-                .set({ status: "failed", error: "task timeout", endedAt: new Date() })
+                .set({
+                  status: "failed",
+                  error: "task timeout",
+                  endedAt: new Date(),
+                })
                 .where(eq(steps.id, initStep.stepId))
                 .run();
               dbInner
                 .update(tasksTable)
-                .set({ status: "snoozed" })
+                .set({
+                  status: "failed",
+                  resumeState: "failed",
+                  resumeError: "task_wait_timeout",
+                })
                 .where(eq(tasksTable.id, initStep.taskId))
                 .run();
             });
-            await failRun(runId, `task ${initStep.taskId} timed out`, startedAt);
+            await failRun(
+              runId,
+              `task ${initStep.taskId} timed out`,
+              startedAt,
+            );
             throw new Error("task timeout");
           }
 
@@ -603,29 +1917,122 @@ export function registerAgent(
             taskId: string;
             decision?: string;
             payload?: unknown;
+            resumeMarker?: string;
+            actorUserId?: string | null;
           };
+
+          if (
+            resolution.decision !== "reject" &&
+            actionBinding?.kind === "human_input"
+          ) {
+            const humanIssues = applyHumanInputResult(
+              inputBindingState,
+              actionBinding,
+              resolution.payload,
+            );
+            if (humanIssues.length) {
+              await step.run(`invalid-task-input-${ord}`, async () => {
+                const failedAt = new Date();
+                const dbInner = getDb();
+                dbInner.transaction((tx) => {
+                  tx.update(steps)
+                    .set({
+                      status: "failed",
+                      error: humanIssues
+                        .map((entry) => entry.message)
+                        .join("; "),
+                      endedAt: failedAt,
+                    })
+                    .where(eq(steps.id, initStep.stepId))
+                    .run();
+                  tx.update(tasksTable)
+                    .set({
+                      status: "failed",
+                      resolvedAt: failedAt,
+                      resolvedBy: resolution.actorUserId ?? null,
+                      resolutionJson: resolution as never,
+                      resumeState: "failed",
+                      resumeError: "invalid_human_input",
+                    })
+                    .where(eq(tasksTable.id, initStep.taskId))
+                    .run();
+                });
+              });
+              await abortForInputBindings(humanIssues);
+            }
+          }
 
           await step.run(`close-task-${ord}`, async () => {
             const dbInner = getDb();
             const sEnded = Date.now();
-            dbInner
-              .update(steps)
-              .set({
-                status: resolution.decision === "reject" ? "failed" : "ok",
-                endedAt: new Date(sEnded),
+            const stepStatus =
+              resolution.decision === "reject" ? "failed" : "ok";
+            dbInner.transaction((tx) => {
+              const taskUpdate = tx
+                .update(tasksTable)
+                .set({
+                  status: "resolved",
+                  resolvedAt: new Date(sEnded),
+                  resolvedBy: resolution.actorUserId ?? null,
+                  resolutionJson: resolution as never,
+                  resumeState: "acknowledged",
+                  resumeAcknowledgedAt: new Date(sEnded),
+                  resumeError: null,
+                })
+                .where(
+                  and(
+                    eq(tasksTable.id, initStep.taskId),
+                    eq(tasksTable.status, "resolving"),
+                    eq(tasksTable.resumeMarker, initStep.resumeMarker),
+                  ),
+                )
+                .run() as { changes?: number };
+              if ((taskUpdate.changes ?? 0) !== 1) {
+                throw new Error(
+                  `task ${initStep.taskId} resume was not durably claimed`,
+                );
+              }
+              tx.update(steps)
+                .set({
+                  status: stepStatus,
+                  endedAt: new Date(sEnded),
+                  durationMs: sEnded - initStep.sStarted,
+                })
+                .where(eq(steps.id, initStep.stepId))
+                .run();
+              tx.update(runs)
+                .set({ status: "running" })
+                .where(and(eq(runs.id, runId), eq(runs.status, "waiting")))
+                .run();
+            });
+            try {
+              publish({
+                type: "run.step.completed",
+                tenantId: ctx.tenantId,
+                at: sEnded,
+                runId,
+                stepId: initStep.stepId,
+                ord,
+                name: action.name,
+                stepType: action.type,
+                status: stepStatus,
                 durationMs: sEnded - initStep.sStarted,
-              })
-              .where(eq(steps.id, initStep.stepId))
-              .run();
-            dbInner
-              .update(tasksTable)
-              .set({
-                status: "resolved",
-                resolvedAt: new Date(sEnded),
-                resolutionJson: resolution as never,
-              })
-              .where(eq(tasksTable.id, initStep.taskId))
-              .run();
+                provider: null,
+                model: null,
+                tokensIn: null,
+                tokensOut: null,
+                error: stepStatus === "failed" ? "human rejected" : null,
+              });
+              publish({
+                type: "task.resolved",
+                tenantId: ctx.tenantId,
+                at: sEnded,
+                taskId: initStep.taskId,
+                decision: resolution.decision ?? "approve",
+              });
+            } catch {
+              /* live delivery is best-effort */
+            }
           });
 
           if (resolution.decision === "reject") {
@@ -633,7 +2040,12 @@ export function registerAgent(
             throw new Error("rejected by human");
           }
 
-          lastResult = resolution.payload ?? null;
+          const manualResult =
+            actionBinding?.kind === "human_input"
+              ? { [actionBinding.field]: boundData[actionBinding.field] }
+              : (resolution.payload ?? null);
+          lastResult = mergeStepResults(lastResult, manualResult);
+          stepResults[actionKey] = manualResult;
           await writeRunLog(logCtx, "INFO", "step.ok", {
             name: action.name,
             type: action.type,
@@ -646,379 +2058,677 @@ export function registerAgent(
         // tool | logic: atomic step.run with auto-managed step row.
         // Phase 1a — stable, idempotency-keyed Inngest step id. Falls back to the (sanitized)
         // action name when no idempotency_key_from is declared, so existing manifests are unchanged.
-        const stepKey = stableStepId(action.name, (action as { idempotency_key_from?: string }).idempotency_key_from, stepScope);
-        // Phase 1 — per-step failure policy. on_error:"soft" → log + continue with default_result
-        // (the createJD fetch-clarifications pattern: a non-critical step that must not break the
-        // run). Otherwise a failed step fails the run. "park"/default → Inngest retries (unset).
-        const onErr = (action as { on_error?: "soft" | "terminal" }).on_error;
-        const softDefault = (action as { default_result?: unknown }).default_result ?? null;
-        let stepOutcome: { ok: boolean; data: unknown; tokensIn: number; tokensOut: number; durationMs: number };
+        const stepKey = stableStepId(
+          action.name,
+          (action as { idempotency_key_from?: string }).idempotency_key_from,
+          stepScope,
+        );
+        // Per-step error behavior is resolved inside the durable callback so
+        // retry/park throws before the step can be memoized as a success.
+        let stepOutcome: RuntimeStepOutcome;
         try {
-        stepOutcome = await step.run(stepKey, async () => {
-          const sStarted = Date.now();
-          const dbInner = getDb();
-          // Upsert by (runId, ord). On an Inngest retry the failed body
-          // re-executes; reuse the existing row and bump `attempts` instead
-          // of inserting a phantom duplicate at the same ord.
-          const existing = dbInner
-            .select({ id: steps.id, attempts: steps.attempts })
-            .from(steps)
-            .where(and(eq(steps.runId, runId), eq(steps.ord, ord)))
-            .all()[0];
-          let sid: string;
-          let attempt: number;
-          if (existing) {
-            sid = existing.id;
-            attempt = (existing.attempts ?? 1) + 1;
-            dbInner
-              .update(steps)
-              .set({
-                status: "running",
-                attempts: attempt,
-                startedAt: new Date(sStarted),
-                endedAt: null,
-                durationMs: null,
-                error: null,
-              })
-              .where(eq(steps.id, sid))
-              .run();
-          } else {
-            sid = makeId("stp");
-            attempt = 1;
-            dbInner
-              .insert(steps)
-              .values({
-                id: sid,
-                runId,
+          stepOutcome = await step.run(stepKey, async () => {
+            const sStarted = Date.now();
+            const dbInner = getDb();
+            // Upsert by (runId, ord). On an Inngest retry the failed body
+            // re-executes; reuse the existing row and bump `attempts` instead
+            // of inserting a phantom duplicate at the same ord.
+            const existing = dbInner
+              .select({ id: steps.id, attempts: steps.attempts })
+              .from(steps)
+              .where(and(eq(steps.runId, runId), eq(steps.ord, ord)))
+              .all()[0];
+            let sid: string;
+            let attempt: number;
+            if (existing) {
+              sid = existing.id;
+              attempt = (existing.attempts ?? 1) + 1;
+              dbInner
+                .update(steps)
+                .set({
+                  status: "running",
+                  attempts: attempt,
+                  startedAt: new Date(sStarted),
+                  endedAt: null,
+                  durationMs: null,
+                  error: null,
+                })
+                .where(eq(steps.id, sid))
+                .run();
+            } else {
+              sid = makeId("stp");
+              attempt = 1;
+              dbInner
+                .insert(steps)
+                .values({
+                  id: sid,
+                  runId,
+                  ord,
+                  name: action.name,
+                  // invoke steps never reach an insert (handled+continue'd above); cast to the
+                  // steps.type column union which predates the "invoke" member.
+                  type: action.type as
+                    | "tool"
+                    | "logic"
+                    | "manual"
+                    | "condition"
+                    | "delay"
+                    | "subflow"
+                    | "foreach"
+                    | "emit"
+                    | "decision",
+                  status: "running",
+                  startedAt: new Date(sStarted),
+                  attempts: 1,
+                })
+                .run();
+            }
+            await writeRunLog(
+              logCtx,
+              attempt > 1 ? "WARN" : "DEBUG",
+              "step.start",
+              {
                 ord,
                 name: action.name,
-                // invoke steps never reach an insert (handled+continue'd above); cast to the
-                // steps.type column union which predates the "invoke" member.
-                type: action.type as "tool" | "logic" | "manual" | "condition" | "delay" | "subflow",
-                status: "running",
-                startedAt: new Date(sStarted),
-                attempts: 1,
-              })
-              .run();
-          }
-          await writeRunLog(logCtx, attempt > 1 ? "WARN" : "DEBUG", "step.start", {
-            ord,
-            name: action.name,
-            type: action.type,
-            attempt,
-          });
-          try {
-            publish({
-              type: "run.step.started",
-              tenantId: ctx.tenantId,
-              at: sStarted,
-              runId,
-              stepId: sid,
-              ord,
-              name: action.name,
-              stepType: action.type,
-            });
-          } catch {
-            /* broadcast best-effort */
-          }
-
-          try {
-            const res = await runWithTraceContext({ correlationId, agentName: agent.name, tenantSlug, runId }, () => runAction({
-              ctx: {
-                agentName: agent.name,
-                actionName: action.name,
-                subject: subject ?? undefined,
-                correlationId,
-                runId,
-                tenantSlug,
-                event: {
-                  name: event.name,
-                  data,
-                },
-                lastResult,
-                // #P0-1 — durable scoped memory reaches tenant tools (the production code path), not
-                // just generated code. Same handle threaded via StepInput.memory for generated code.
-                memory: deliveredRuntime.memory,
+                type: action.type,
+                attempt,
               },
-              action,
-              // Hand the step engine the slots it needs for prompt assembly
-              // AND the tool-use loop. `tool_use` is the canonical roster
-              // of advertised tools — the engine cross-references each
-              // entry against `tenantRegistry.tools` before passing it to
-              // the LLM, so a stale declaration silently no-ops instead of
-              // crashing.
-              agent: {
-                name: agent.name,
-                description: agent.description,
-                ontology_instructions: agent.ontology_instructions,
-                generated: (agent as { generated?: boolean }).generated,
-                codeExecuted: (agent as { codeExecuted?: boolean }).codeExecuted,
-                typescriptCode: agent.typescript_code,
-                tool_use: Array.isArray(agent.tool_use)
-                  ? (agent.tool_use as Array<{
-                      name: string;
-                      description?: string;
-                      input_schema?: unknown;
-                    }>)
-                  : undefined,
-              },
-              tenantRegistry: effectiveTenantRegistry,
-              autoResolveManual: true,
-              // #REDESIGN FU1 — real durable memory for generated-code execution (delivered tier).
-              memory: deliveredRuntime.memory,
-            })); // #SCALE-TRACE — ambient correlationId/agentName/tenantSlug/runId for nested tools/logs
-            // #REDESIGN P1 — receipt: the generated handler actually executed (didn't fall back).
-            if ((res.meta as { codeExecuted?: boolean } | undefined)?.codeExecuted === true) codeRan = true;
-            if (res.model) runModel = res.model;
-            const sEnded = Date.now();
-            // Persist this step's INPUT (what flowed in — the prior step's
-            // result + the trigger event) and OUTPUT (what it returned) so the
-            // run-detail Timeline/Trace/IO tabs can show real per-step
-            // input/output, Inngest-style. Best-effort; mirrors the code
-            // engine (run-engine.ts). Inside step.run ⇒ written once per run.
-            let stepInputRef: string | null = null;
-            let stepOutputRef: string | null = null;
-            try {
-              stepInputRef = await writeArtifact(runId, `step-${ord}-input.json`, {
-                last_result: lastResult ?? null,
-                trigger_event: event.name,
-                subject: subject ?? null,
-              });
-              stepOutputRef = await writeArtifact(
-                runId,
-                `step-${ord}-output.json`,
-                res.data ?? null,
-              );
-            } catch {
-              /* artifact write best-effort — never fail the step */
-            }
-            dbInner
-              .update(steps)
-              .set({
-                status: res.ok ? "ok" : "failed",
-                endedAt: new Date(sEnded),
-                durationMs: sEnded - sStarted,
-                inputRef: stepInputRef,
-                outputRef: stepOutputRef,
-                provider: res.provider ?? null,
-                model: res.model ?? null,
-                tokensIn: res.tokensIn ?? null,
-                tokensOut: res.tokensOut ?? null,
-              })
-              .where(eq(steps.id, sid))
-              .run();
-            // #W0 — persist the raw per-turn LLM capture (response text +
-            // reasoning + requested tools) to `llm_turns`, keyed on runId+stepId.
-            // Gated + best-effort: a capture failure must never fail the step.
-            // Inside step.run ⇒ written exactly once per real execution. On an
-            // Inngest retry (attempt>1) we clear the prior attempt's rows first
-            // so a retried step doesn't accumulate duplicate turns.
-            if (captureLlmTurns()) {
-              const capturedTurns = (
-                res.meta as { turns?: LlmTurnTrace[] } | undefined
-              )?.turns;
-              if (Array.isArray(capturedTurns) && capturedTurns.length > 0) {
-                try {
-                  if (attempt > 1) {
-                    dbInner.delete(llmTurns).where(eq(llmTurns.stepId, sid)).run();
-                  }
-                  dbInner
-                    .insert(llmTurns)
-                    .values(
-                      capturedTurns.map((tn) => ({
-                        id: makeId("llt"),
-                        tenantId: ctx.tenantId,
-                        runId,
-                        stepId: sid,
-                        ord: tn.ord,
-                        promptPreview: tn.promptPreview ?? null,
-                        responseText: tn.responseText ?? null,
-                        reasoning: tn.reasoning ?? null,
-                        toolCallsJson: tn.toolCalls ?? [],
-                        provider: tn.provider ?? null,
-                        model: tn.model ?? null,
-                        tokensIn: tn.tokensIn ?? null,
-                        tokensOut: tn.tokensOut ?? null,
-                        finishReason: tn.finishReason ?? null,
-                        latencyMs: tn.latencyMs ?? null,
-                        correlationId,
-                      })),
-                    )
-                    .run();
-                } catch {
-                  /* capture is a debugging aid, never a correctness gate */
-                }
-              }
-            }
+            );
             try {
               publish({
-                type: "run.step.completed",
+                type: "run.step.started",
                 tenantId: ctx.tenantId,
-                at: sEnded,
+                at: sStarted,
                 runId,
                 stepId: sid,
                 ord,
                 name: action.name,
                 stepType: action.type,
-                status: res.ok ? "ok" : "failed",
-                durationMs: sEnded - sStarted,
-                provider: res.provider ?? null,
-                model: res.model ?? null,
-                tokensIn: res.tokensIn ?? null,
-                tokensOut: res.tokensOut ?? null,
-                error: null,
               });
             } catch {
               /* broadcast best-effort */
             }
-            // Rich per-call logs so the run viewer reads like Inngest's trace:
-            // one llm.call line (provider/model/tokens) + one tool.call line
-            // per dispatched tool, before the step.ok summary.
-            if (res.provider || res.model) {
-              await writeRunLog(logCtx, "INFO", "llm.call", {
-                step: action.name,
-                provider: res.provider ?? "—",
-                model: res.model ?? "—",
-                tokens_in: res.tokensIn ?? 0,
-                tokens_out: res.tokensOut ?? 0,
+
+            let codeReceipt: CodeActExecutionReceipt | null = null;
+            try {
+              // Persist the exact input before invoking any provider/tool.
+              // A later output/evidence failure must not leave a real side
+              // effect with no record of what initiated it.
+              const stepInputRef = await requireStepEvidence(
+                "input artifact",
+                () =>
+                  writeArtifact(runId, `step-${ord}-input.json`, {
+                    last_result: lastResult ?? null,
+                    trigger_event: event.name,
+                    subject: subject ?? null,
+                  }),
+              );
+              await requireStepEvidence("input artifact reference", () =>
+                dbInner
+                  .update(steps)
+                  .set({ inputRef: stepInputRef })
+                  .where(eq(steps.id, sid))
+                  .run(),
+              );
+
+              const res = await runWithTraceContext(
+                { correlationId, agentName: agent.name, tenantSlug, runId },
+                () =>
+                  runAction({
+                    ctx: {
+                      agentName: agent.name,
+                      actionName: action.name,
+                      ontologyActionName: agent.factory_action_name,
+                      subject: subject ?? undefined,
+                      correlationId,
+                      runId,
+                      tenantSlug,
+                      tenantId: ctx.tenantId,
+                      event: {
+                        name: event.name,
+                        data: actionData,
+                      },
+                      lastResult,
+                      results: stepResults,
+                      // #P0-1 — durable scoped memory reaches tenant tools (the production code path), not
+                      // just generated code. Same handle threaded via StepInput.memory for generated code.
+                      memory: runMemory,
+                    },
+                    action,
+                    // Hand the step engine the slots it needs for prompt assembly
+                    // AND the tool-use loop. `tool_use` is the canonical roster
+                    // of advertised tools — the engine cross-references each
+                    // entry against `tenantRegistry.tools` before passing it to
+                    // the LLM; stale declarations fail closed.
+                    agent: {
+                      id: agent.id,
+                      name: agent.name,
+                      description: agent.description,
+                      ontology_instructions: agent.ontology_instructions,
+                      generated: (agent as { generated?: boolean }).generated,
+                      factoryDomainId: agent.factory_domain_id,
+                      factoryExecutionScope: agent.factory_execution_scope,
+                      factoryToolProfileRefs: agent.factory_tool_profile_refs,
+                      factoryToolReplayRefs: agent.factory_tool_replay_refs,
+                      codeExecuted: (agent as { codeExecuted?: boolean })
+                        .codeExecuted,
+                      typescriptCode: agent.typescript_code,
+                      codeAttestation: agent.code_attestation,
+                      factoryPromotionVersionId: agent.factory_promotion_version_id,
+                      factoryRegressionSuiteFingerprint: agent.factory_regression_suite_fingerprint,
+                      productionCodeActCapability:
+                        ctx.productionCodeActCapability,
+                      productionCodeActManifestSha256:
+                        ctx.productionCodeActManifestSha256,
+                      productionCodeActWorkflowManifestSha256:
+                        ctx.productionCodeActWorkflowManifestSha256,
+                      triggeredEvents: agent.triggered_event,
+                      tool_use: Array.isArray(agent.tool_use)
+                        ? (agent.tool_use as Array<{
+                            name: string;
+                            description?: string;
+                            input_schema?: unknown;
+                          }>)
+                        : undefined,
+                    },
+                    tenantRegistry: effectiveTenantRegistry,
+                    autoResolveManual: true,
+                    // #REDESIGN FU1 — real durable memory for generated-code execution (delivered tier).
+                    memory: runMemory,
+                  }),
+              ); // #SCALE-TRACE — ambient correlationId/agentName/tenantSlug/runId for nested tools/logs
+              codeReceipt = codeActExecutionReceiptFromMeta(res.meta);
+              if (res.model) runModel = res.model;
+              const sEnded = Date.now();
+              // Persist provider usage and the runtime-authored receipt as one
+              // recovery unit before any later artifact/telemetry sink can
+              // fail. Updating the run here (inside the durable step body)
+              // makes the receipt replay-safe; finalization must never derive
+              // or overwrite it from a fresh in-memory closure.
+              await requireStepEvidence(
+                "provider usage and CodeAct receipt",
+                () =>
+                  dbInner.transaction((tx) => {
+                    tx.update(steps)
+                      .set({
+                        provider: res.provider ?? null,
+                        model: res.model ?? null,
+                        tokensIn: res.tokensIn ?? null,
+                        tokensOut: res.tokensOut ?? null,
+                        ...(codeReceipt
+                          ? codeActReceiptFields(codeReceipt)
+                          : {}),
+                      })
+                      .where(eq(steps.id, sid))
+                      .run();
+                    if (codeReceipt) {
+                      tx.update(runs)
+                        .set(codeActReceiptFields(codeReceipt))
+                        .where(eq(runs.id, runId))
+                        .run();
+                    }
+                  }),
+              );
+              if (codeReceipt) {
+                await requireStepEvidence("CodeAct receipt log", () =>
+                  writeRunLog(
+                    logCtx,
+                    codeReceipt!.codeRan ? "INFO" : "WARN",
+                    "codeact.receipt",
+                    {
+                      step: action.name,
+                      step_id: sid,
+                      ...codeActReceiptFields(codeReceipt!),
+                      duration_ms: codeReceipt!.durationMs,
+                    },
+                  ),
+                );
+              }
+              let stepOutputRef: string | undefined;
+              let artifactError: unknown;
+              try {
+                stepOutputRef = await writeArtifact(
+                  runId,
+                  `step-${ord}-output.json`,
+                  res.data ?? null,
+                );
+              } catch (error) {
+                artifactError = error;
+              }
+
+              let telemetryError: unknown;
+              try {
+                // #W0 — persist raw per-turn capture. On an Inngest retry,
+                // replace the prior attempt's rows rather than duplicating
+                // them. This attempt still runs if the sidecar write failed.
+                if (captureLlmTurns()) {
+                  const capturedTurns = (
+                    res.meta as { turns?: LlmTurnTrace[] } | undefined
+                  )?.turns;
+                  if (
+                    Array.isArray(capturedTurns) &&
+                    capturedTurns.length > 0
+                  ) {
+                    if (attempt > 1) {
+                      dbInner
+                        .delete(llmTurns)
+                        .where(eq(llmTurns.stepId, sid))
+                        .run();
+                    }
+                    dbInner
+                      .insert(llmTurns)
+                      .values(
+                        capturedTurns.map((tn) => ({
+                          id: makeId("llt"),
+                          tenantId: ctx.tenantId,
+                          runId,
+                          stepId: sid,
+                          ord: tn.ord,
+                          promptPreview: tn.promptPreview ?? null,
+                          responseText: tn.responseText ?? null,
+                          reasoning: tn.reasoning ?? null,
+                          toolCallsJson: tn.toolCalls ?? [],
+                          provider: tn.provider ?? null,
+                          model: tn.model ?? null,
+                          tokensIn: tn.tokensIn ?? null,
+                          tokensOut: tn.tokensOut ?? null,
+                          finishReason: tn.finishReason ?? null,
+                          latencyMs: tn.latencyMs ?? null,
+                          correlationId,
+                        })),
+                      )
+                      .run();
+                  }
+                }
+              } catch (error) {
+                telemetryError = error;
+              }
+              if (stepOutputRef) {
+                await requireStepEvidence("output artifact reference", () =>
+                  dbInner
+                    .update(steps)
+                    .set({ outputRef: stepOutputRef })
+                    .where(eq(steps.id, sid))
+                    .run(),
+                );
+              }
+              if (artifactError && telemetryError) {
+                throw new RequiredStepEvidenceError(
+                  "output artifact and llm-turn telemetry",
+                  new AggregateError(
+                    [artifactError, telemetryError],
+                    `Step '${action.name}' output artifact and llm-turn telemetry both failed to persist`,
+                  ),
+                );
+              }
+              if (artifactError) {
+                throw new RequiredStepEvidenceError(
+                  "output artifact",
+                  artifactError,
+                );
+              }
+              if (telemetryError) {
+                throw new RequiredStepEvidenceError(
+                  "llm-turn telemetry",
+                  telemetryError,
+                );
+              }
+              // Rich per-call logs so the run viewer reads like Inngest's trace:
+              // one llm.call line (provider/model/tokens) + one tool.call line
+              // per dispatched tool, before the step.ok summary.
+              if (res.provider || res.model) {
+                await requireStepEvidence("llm call log", () =>
+                  writeRunLog(logCtx, "INFO", "llm.call", {
+                    step: action.name,
+                    provider: res.provider ?? "—",
+                    model: res.model ?? "—",
+                    tokens_in: res.tokensIn ?? 0,
+                    tokens_out: res.tokensOut ?? 0,
+                  }),
+                );
+              }
+              const toolCalls = (
+                res.meta as
+                  | {
+                      toolCalls?: Array<{
+                        name: string;
+                        isError?: boolean;
+                        durationMs?: number;
+                      }>;
+                    }
+                  | undefined
+              )?.toolCalls;
+              if (Array.isArray(toolCalls)) {
+                for (const tc of toolCalls) {
+                  await requireStepEvidence(`tool call log '${tc.name}'`, () =>
+                    writeRunLog(
+                      logCtx,
+                      tc.isError ? "ERROR" : "INFO",
+                      "tool.call",
+                      {
+                        step: action.name,
+                        tool: tc.name,
+                        ok: tc.isError ? false : true,
+                        duration: `${tc.durationMs ?? 0}ms`,
+                      },
+                    ),
+                  );
+                }
+              }
+              const returnedError = res.ok
+                ? null
+                : String(
+                    (
+                      res.meta as
+                        | { message?: unknown; error?: unknown }
+                        | undefined
+                    )?.message ??
+                      (res.meta as { error?: unknown } | undefined)?.error ??
+                      `action '${action.name}' returned ok=false`,
+                  );
+              await requireStepEvidence("terminal step status", () =>
+                dbInner
+                  .update(steps)
+                  .set({
+                    status: res.ok ? "ok" : "failed",
+                    endedAt: new Date(sEnded),
+                    durationMs: sEnded - sStarted,
+                    error: returnedError,
+                  })
+                  .where(eq(steps.id, sid))
+                  .run(),
+              );
+              try {
+                publish({
+                  type: "run.step.completed",
+                  tenantId: ctx.tenantId,
+                  at: sEnded,
+                  runId,
+                  stepId: sid,
+                  ord,
+                  name: action.name,
+                  stepType: action.type,
+                  status: res.ok ? "ok" : "failed",
+                  durationMs: sEnded - sStarted,
+                  provider: res.provider ?? null,
+                  model: res.model ?? null,
+                  tokensIn: res.tokensIn ?? null,
+                  tokensOut: res.tokensOut ?? null,
+                  error: returnedError,
+                  ...(codeReceipt ? codeActReceiptFields(codeReceipt) : {}),
+                });
+              } catch {
+                /* broadcast best-effort */
+              }
+              const durableOutcome: RuntimeStepOutcome = {
+                ok: res.ok,
+                data: res.data,
+                tokensIn: res.tokensIn ?? 0,
+                tokensOut: res.tokensOut ?? 0,
+                durationMs: sEnded - sStarted,
+                meta: res.meta,
+              };
+              return res.ok
+                ? durableOutcome
+                : resolveActionFailureOutcome(
+                    action,
+                    new ActionReturnedFailure(action.name, res),
+                    durableOutcome,
+                  );
+            } catch (err) {
+              const message = err instanceof Error ? err.message : String(err);
+              const failedAt = Date.now();
+              let failureStatusError: unknown;
+              try {
+                await requireStepEvidence("failed terminal step status", () =>
+                  dbInner
+                    .update(steps)
+                    .set({
+                      status: "failed",
+                      endedAt: new Date(failedAt),
+                      durationMs: failedAt - sStarted,
+                      error: message,
+                    })
+                    .where(eq(steps.id, sid))
+                    .run(),
+                );
+              } catch (error) {
+                failureStatusError = error;
+              }
+              // A completion broadcast is only truthful after the
+              // authoritative terminal status has been persisted.
+              if (!failureStatusError) {
+                try {
+                  publish({
+                    type: "run.step.completed",
+                    tenantId: ctx.tenantId,
+                    at: failedAt,
+                    runId,
+                    stepId: sid,
+                    ord,
+                    name: action.name,
+                    stepType: action.type,
+                    status: "failed",
+                    durationMs: failedAt - sStarted,
+                    provider: null,
+                    model: null,
+                    tokensIn: null,
+                    tokensOut: null,
+                    error: message,
+                    ...(codeReceipt ? codeActReceiptFields(codeReceipt) : {}),
+                  });
+                } catch {
+                  /* broadcast best-effort */
+                }
+              }
+              let failureLogError: unknown;
+              try {
+                await requireStepEvidence("step failure log", () =>
+                  writeRunLog(logCtx, "ERROR", "step.fail", {
+                    ord,
+                    name: action.name,
+                    attempt,
+                    error: message,
+                  }),
+                );
+              } catch (error) {
+                failureLogError = error;
+              }
+              if (failureStatusError || failureLogError) {
+                const causes = [
+                  ...(err instanceof RequiredStepEvidenceError ? [err] : []),
+                  ...(failureStatusError ? [failureStatusError] : []),
+                  ...(failureLogError ? [failureLogError] : []),
+                ];
+                throw new RequiredStepEvidenceError(
+                  "failed-step evidence",
+                  causes.length === 1
+                    ? causes[0]
+                    : new AggregateError(
+                        causes,
+                        `Step '${action.name}' failure evidence did not persist`,
+                      ),
+                );
+              }
+              // Required evidence failures are runtime failures, never
+              // business failures eligible for a manifest soft/default rule.
+              if (err instanceof RequiredStepEvidenceError) throw err;
+              return resolveActionFailureOutcome(action, err, {
+                durationMs: failedAt - sStarted,
               });
             }
-            const toolCalls = (res.meta as { toolCalls?: Array<{ name: string; isError?: boolean; durationMs?: number }> } | undefined)?.toolCalls;
-            if (Array.isArray(toolCalls)) {
-              for (const tc of toolCalls) {
-                await writeRunLog(logCtx, tc.isError ? "ERROR" : "INFO", "tool.call", {
-                  step: action.name,
-                  tool: tc.name,
-                  ok: tc.isError ? false : true,
-                  duration: `${tc.durationMs ?? 0}ms`,
-                });
-              }
-            }
-            return {
-              ok: res.ok,
-              data: res.data,
-              tokensIn: res.tokensIn ?? 0,
-              tokensOut: res.tokensOut ?? 0,
-              durationMs: sEnded - sStarted,
-            };
-          } catch (err) {
-            const message = err instanceof Error ? err.message : String(err);
-            dbInner
-              .update(steps)
-              .set({
-                status: "failed",
-                endedAt: new Date(),
-                durationMs: Date.now() - sStarted,
-                error: message,
-              })
-              .where(eq(steps.id, sid))
-              .run();
-            await writeRunLog(logCtx, "ERROR", "step.fail", {
-              ord,
-              name: action.name,
-              attempt,
-              error: message,
-            });
-            throw err;
-          }
-        });
+          });
         } catch (stepErr) {
-          // Phase 1 — step.run threw after its own Inngest retries. Honor the per-step policy:
-          // soft → log + continue with the default; otherwise fail the run.
-          if (onErr === "soft") {
-            const errMsg = stepErr instanceof Error ? stepErr.message : String(stepErr);
-            await writeRunLog(logCtx, "WARN", "step.soft-fail", { ord, name: action.name, error: errMsg });
-            // #SCALE-ANALYSIS — optional agent-aware error reflection (AGENTIC_ERROR_ANALYSIS=1): one
-            // memoized LLM pass over the failure so the run log carries a DIAGNOSIS, not just the raw
-            // error. Inside its own step.run (we're at handler level here) → replay-safe; best-effort.
-            if (process.env.AGENTIC_ERROR_ANALYSIS === "1") {
-              try {
-                const advice = await step.run(`error-analysis-${ord}`, async () => {
-                  const gw = getRuntimeGateway();
-                  if (!gw) return null;
-                  const r = await gw.chat({ messages: [
-                    { role: "system", content: "你是运行时错误分析器。判断这个失败是【业务失败/外部依赖临时故障/输入数据问题/配置问题】哪一类,一句话给处置建议(重试/跳过/修数据/修配置)。只输出一句中文。" },
-                    { role: "user", content: `agent=${agent.name} step=${action.name} error=${errMsg.slice(0, 400)} lastResult=${JSON.stringify(lastResult ?? {}).slice(0, 400)}` },
-                  ], tenantSlug }).catch(() => null);
-                  return r?.text?.slice(0, 300) ?? null;
-                });
-                if (advice) await writeRunLog(logCtx, "INFO", "step.error-analysis", { ord, name: action.name, advice });
-              } catch { /* analysis never affects the run */ }
-            }
-            lastResult = softDefault;
-            continue;
+          if (stepErr instanceof RequiredStepEvidenceError) {
+            await emitCompensation(stepErr.message);
+            throw stepErr;
           }
-          await emitCompensation(stepErr instanceof Error ? stepErr.message : String(stepErr));
-          throw stepErr;
+          // Defense in depth for SDK StepError wrappers. Normally the durable
+          // callback already classified the failure; if the wrapper reaches
+          // this boundary we apply the same deterministic policy once more.
+          try {
+            stepOutcome = resolveActionFailureOutcome(action, stepErr);
+          } catch (controlFlowError) {
+            await emitCompensation(
+              controlFlowError instanceof Error
+                ? controlFlowError.message
+                : String(controlFlowError),
+            );
+            throw controlFlowError;
+          }
         }
 
-        if (!stepOutcome.ok) {
-          if (onErr === "soft") {
-            await writeRunLog(logCtx, "WARN", "step.soft-fail", { ord, name: action.name, reason: "ok=false" });
-            lastResult = softDefault;
-            continue;
-          }
-          await failRun(runId, "step returned ok=false", startedAt);
-          await emitCompensation(`step ${action.name} returned ok=false`);
-          throw new Error(`step ${action.name} failed`);
+        applyFailureEmission(stepOutcome);
+        const continuedFailure = failureResolutionFromOutcome(stepOutcome);
+        if (continuedFailure) {
+          await writeRunLog(logCtx, "WARN", "step.error-continue", {
+            ord,
+            name: action.name,
+            kind: continuedFailure.facts.kind,
+            code: continuedFailure.facts.code,
+            status: continuedFailure.facts.status,
+            matchedRule: continuedFailure.matchedRule,
+            emitEvent: continuedFailure.emitEvent,
+            suppressEmit: continuedFailure.suppressEmit,
+          });
         }
         tokensIn += stepOutcome.tokensIn;
         tokensOut += stepOutcome.tokensOut;
-        lastResult = stepOutcome.data;
+        const emitted = (
+          stepOutcome.meta as { emitted?: EmitIntent[] } | undefined
+        )?.emitted;
+        if (Array.isArray(emitted)) emitIntents.push(...emitted);
+        if (actionBinding?.kind === "object_lookup") {
+          const lookupIssues = applyObjectLookupResult(
+            inputBindingState,
+            actionBinding,
+            stepOutcome.data,
+          );
+          if (lookupIssues.length) await abortForInputBindings(lookupIssues);
+        }
+        stepResults[actionKey] = stepOutcome.data;
+        lastResult = mergeStepResults(lastResult, stepOutcome.data);
 
         // Phase 1a — record a condition step's verdict so downstream depends_on actions branch on it.
         if (action.type === "condition") {
-          gate.conditionTrue[action.name] = Boolean((stepOutcome.data as { evaluated?: boolean } | null)?.evaluated);
+          gate.conditionTrue[actionKey] = Boolean(
+            (stepOutcome.data as { evaluated?: boolean } | null)?.evaluated,
+          );
         }
 
-        await writeRunLog(logCtx, "INFO", "step.ok", {
-          name: action.name,
-          type: action.type,
-          duration: stepOutcome.durationMs + "ms",
-        });
+        // A soft/default policy permits the workflow to continue; it does
+        // not retroactively make the underlying action successful. The
+        // failed terminal step row + step.error-continue log above are the
+        // truthful record, so never append a contradictory step.ok marker.
+        if (!continuedFailure) {
+          await writeRunLog(logCtx, "INFO", "step.ok", {
+            name: action.name,
+            type: action.type,
+            duration: stepOutcome.durationMs + "ms",
+          });
+        }
       }
 
-      // Emit downstream event + finalize run — wrapped in step.run so it
-      // executes once even with Inngest replays.
-      //
-      // Branch-emit: a forked agent's final step can name which declared
-      // `triggered_event` to emit (e.g. MATCH_FAILED vs MATCH_PASSED_*) via an
-      // `_emit`/`event`/`next_event` field on its result; validated against the
-      // declared list, falling back to [0] for every single-outcome agent.
-      const emittedName = selectEmittedEvent(agent.triggered_event, lastResult);
-      // #COMMS — assemble the outbound payload: carry-forward the inbound business fields (so nothing
-      // the final step forgot to echo is LOST), unify to top-level (matching external-trigger shape),
-      // offload oversized fields to content-addressed refs (keeps the wire + ledger small), keep
-      // last_result for back-compat, stamp _meta provenance. Deterministic given (data, lastResult) so
-      // recomputing outside step.run is replay-safe; blob writes are idempotent (content-addressed).
-      const assembled = emittedName
-        ? assembleEmitPayload({
-            incoming: data,
-            lastResult,
-            meta: {
-              subject: subject ?? undefined,
-              correlationId,
-              causationId: triggerEventId ?? correlationId,
-              producedBy: agent.name,
-              sourceRun: runId,
+      const finalStepBindingIssues = resolveAvailableStepOutputBindings(
+        inputBindingState,
+        factoryInputBindings,
+        stepResults,
+      );
+      if (finalStepBindingIssues.length)
+        await abortForInputBindings(finalStepBindingIssues);
+      const unresolvedBindings = unresolvedRequiredInputBindings(
+        inputBindingState,
+        factoryInputBindings,
+      );
+      if (unresolvedBindings.length)
+        await abortForInputBindings(unresolvedBindings);
+
+      // Preserve all explicit emit intents (including repeated names from foreach). If no step
+      // emitted explicitly, selectEmittedEvents retains the historical exactly-one branch routing.
+      const selectedEmits = selectEmittedEvents(
+        agent.triggered_event,
+        lastResult,
+        emitIntents,
+        { suppressImplicit: suppressImplicitEmit },
+      );
+      const outbound = selectedEmits.map((intent) => ({
+        intent,
+        // An explicit emit payload is authoritative for that event. The incoming envelope is still
+        // carried forward, while the aggregate foreach receipt stays internal unless selected.
+        assembled: assembleEmitPayload({
+          incoming: data,
+          lastResult: intent.payload ?? lastResult,
+          meta: {
+            subject: subject ?? undefined,
+            correlationId,
+            causationId: triggerEventId ?? correlationId,
+            producedBy: agent.name,
+            sourceRun: runId,
+          },
+          contractSchema: agent.factory_output_schema,
+          offload: offloader,
+        }),
+      }));
+      for (const item of outbound) {
+        const assembled = item.assembled;
+        if (
+          assembled.carried.length ||
+          assembled.offloaded.length ||
+          assembled.missing.length
+        ) {
+          await writeRunLog(
+            logCtx,
+            assembled.missing.length ? "WARN" : "INFO",
+            "emit.envelope",
+            {
+              event: item.intent.event,
+              carried: assembled.carried,
+              offloaded: assembled.offloaded,
+              missing: assembled.missing,
             },
-            offload: offloader,
-          })
-        : null;
-      if (assembled && (assembled.carried.length || assembled.offloaded.length || assembled.missing.length)) {
-        await writeRunLog(logCtx, assembled.missing.length ? "WARN" : "INFO", "emit.envelope", {
-          event: emittedName,
-          carried: assembled.carried, // inbound fields rescued from loss
-          offloaded: assembled.offloaded, // oversized fields moved to content-addressed refs
-          missing: assembled.missing, // declared contract fields absent (a data gap)
-        });
+          );
+        }
       }
+      const invalidOutbound = outbound.filter(
+        (item) => item.assembled.contractErrors.length > 0,
+      );
+      if (invalidOutbound.length) {
+        const failures = invalidOutbound.flatMap((item) =>
+          item.assembled.contractErrors.map((error) => ({
+            event: item.intent.event,
+            field: error.field,
+            kind: error.kind,
+            expectedType: error.expectedType,
+            ...(error.actualType ? { actualType: error.actualType } : {}),
+          })),
+        );
+        await writeRunLog(logCtx, "ERROR", "emit.contract-invalid", {
+          failures,
+        });
+        throw new Error(
+          `outbound event contract rejected: ${failures
+            .slice(0, 8)
+            .map((failure) => `${failure.event}.${failure.field}:${failure.kind}`)
+            .join(", ")}`,
+        );
+      }
+      // BlobRefs become durable event truth below. When a shared backend is
+      // configured, all referenced bytes must be reachable there before the
+      // ledger/event-store rows are committed; otherwise another instance
+      // can receive a successful event whose payload is impossible to load.
+      await durableOffloader.flush();
       const finalize = await step.run("finalize", async () => {
         const dbInner = getDb();
-        let emittedEventId: string | null = null;
-        if (emittedName) {
-          emittedEventId = makeId("evt");
-          const payload = assembled?.payload ?? {}; // #W1-12 — no non-null assertion; guard is if(emittedName) but keep this decoupled
+        const emittedEvents: Array<{
+          id: string;
+          name: string;
+          index: number;
+        }> = [];
+        for (let index = 0; index < outbound.length; index++) {
+          const item = outbound[index]!;
+          const emittedEventId = makeId("evt");
+          const emittedName = item.intent.event;
+          const payload = item.assembled.payload;
           const payloadRef = await appendToLedger(tenantSlug, {
             id: emittedEventId,
             name: emittedName,
@@ -1039,46 +2749,123 @@ export function registerAgent(
             .run();
           // #P1-1 — mirror into the durable, queryable event store: full assembled payload inline
           // (small thanks to blob offload) + causation lineage, so cross-agent causality is queryable
-          // + replay-safe across restarts (unlike the per-instance NDJSON ledger). Best-effort.
-          try {
-            dbInner
-              .insert(eventStore)
-              .values({
-                id: emittedEventId,
-                tenantId: ctx.tenantId,
-                name: emittedName,
-                subject: subject ?? null,
-                sourceRunId: runId,
-                sourceAgent: agent.name,
-                causationId: triggerEventId ?? null,
-                correlationId,
-                payloadJson: (() => {
-                  const j = JSON.stringify(assembled?.payload ?? {});
-                  // #W1-14 — no SILENT truncation: oversize payloads store a marker so audits see the cut.
-                  return j.length > 200_000 ? JSON.stringify({ __truncated: true, bytes: j.length, head: j.slice(0, 180_000) }) : j;
-                })(),
-              })
-              .run();
-          } catch {
-            /* durable event store best-effort — never fails the run */
-          }
-          try {
-            publish({
-              type: "event.emitted",
+          // + replay-safe across restarts (unlike the per-instance NDJSON ledger). This is required
+          // causality evidence, so insertion failures fail the finalize step.
+          dbInner
+            .insert(eventStore)
+            .values({
+              id: emittedEventId,
               tenantId: ctx.tenantId,
-              at: Date.now(),
-              eventId: emittedEventId,
               name: emittedName,
               subject: subject ?? null,
               sourceRunId: runId,
-            });
-          } catch {
-            /* broadcast best-effort */
-          }
+              sourceAgent: agent.name,
+              causationId: triggerEventId ?? null,
+              correlationId,
+              payloadJson: (() => {
+                const j = JSON.stringify(payload);
+                // #W1-14 — no SILENT truncation: oversize payloads store a marker so audits see the cut.
+                return j.length > 200_000
+                  ? JSON.stringify({
+                      __truncated: true,
+                      bytes: j.length,
+                      head: j.slice(0, 180_000),
+                    })
+                  : j;
+              })(),
+            })
+            .run();
+          emittedEvents.push({ id: emittedEventId, name: emittedName, index });
         }
 
-        const endedAtMs = Date.now();
+        // The DB schema keeps one primary emitted_event_id for backwards compatibility. It points
+        // to the first event; the complete ordered list lives in events/event_store and is returned.
+        const emittedEventId = emittedEvents[0]?.id ?? null;
+
+        const persistedAtMs = Date.now();
+        // Persist the output receipt while the run is still in-flight. A broker rejection below must
+        // leave the run non-terminal so Inngest can retry the idempotent step.sendEvent operations;
+        // declaring status=ok here used to expose a false success before any downstream event was
+        // actually accepted.
         dbInner
+          .update(runs)
+          .set({
+            tokensIn,
+            tokensOut,
+            // #REDESIGN P1b — record the REAL model that served the run (falls back to the run's own
+            // recorded model, else the configured default), not a hardcoded "mock-model-v1".
+            model: runModel ?? "unknown",
+            emittedEventId,
+          })
+          .where(eq(runs.id, runId))
+          .run();
+        return { emittedEventId, emittedEvents, persistedAtMs };
+      });
+
+      // The actual inngest.send must be outside step.run (step results are
+      // memoized; sending an event inside a step would re-send on replay).
+      // We use step.sendEvent which is Inngest's idempotent send primitive.
+      for (const persisted of finalize.emittedEvents) {
+        const item = outbound[persisted.index];
+        if (!item) continue;
+        const emittedName = persisted.name;
+        const emittedEventId = persisted.id;
+        const flatWireData = withCorrelation(correlationId, {
+          ...item.assembled.payload,
+          __triggerEventId: emittedEventId,
+        });
+        const wireData = eventAdapter.outbound({
+          eventId: emittedEventId,
+          eventName: emittedName,
+          payload: flatWireData,
+          subject,
+          correlationId,
+          sourceAgent: agent.name,
+          emittedAt: new Date(finalize.persistedAtMs).toISOString(),
+        });
+        await step.sendEvent(`emit.${persisted.index}.${emittedEventId}`, {
+          id: emittedEventId,
+          name: tenantEventName(
+            tenantSlug,
+            emittedName,
+            eventAdapter,
+          ) as `${string}/${string}`,
+          // #COMMS — the unified, carry-forward, offloaded payload (same object written to the ledger),
+          // plus this event's id for downstream lineage.
+          data: wireData,
+        });
+        // Stream/UI evidence is emitted only after the broker accepted the durable send step. The
+        // events/event_store rows above are the persisted outbox; they are not delivery proof.
+        await step.run(
+          `confirm-emit.${persisted.index}.${emittedEventId}`,
+          async () => {
+            try {
+              publish({
+                type: "event.emitted",
+                tenantId: ctx.tenantId,
+                at: Date.now(),
+                eventId: emittedEventId,
+                name: emittedName,
+                subject: subject ?? null,
+                sourceRunId: runId,
+              });
+            } catch {
+              /* broadcast best-effort */
+            }
+            return true;
+          },
+        );
+        await writeRunLog(logCtx, "INFO", "event.emit", {
+          name: emittedName,
+          event_id: emittedEventId,
+          index: persisted.index,
+        });
+      }
+
+      const completion = await step.run("finalize-dispatched", async () => {
+        const dbInner = getDb();
+        const endedAtMs = Date.now();
+        const updated = dbInner
           .update(runs)
           .set({
             status: "ok",
@@ -1086,15 +2873,26 @@ export function registerAgent(
             durationMs: endedAtMs - startedAtMs,
             tokensIn,
             tokensOut,
-            // #REDESIGN P1b — record the REAL model that served the run (falls back to the run's own
-            // recorded model, else the configured default), not a hardcoded "mock-model-v1".
             model: runModel ?? "unknown",
-            emittedEventId,
-            // #REDESIGN P1 — execution receipt (see the run-scoped `codeRan`).
-            codeRan,
+            emittedEventId: finalize.emittedEventId,
           })
+          .where(and(eq(runs.id, runId), eq(runs.status, "running")))
+          .run() as { changes?: number };
+        if ((updated.changes ?? 0) !== 1) {
+          const current = dbInner
+            .select({ status: runs.status })
+            .from(runs)
+            .where(eq(runs.id, runId))
+            .all()[0];
+          throw new Error(
+            `run ${runId} cannot be completed after event dispatch (current status: ${current?.status ?? "missing"})`,
+          );
+        }
+        const completedReceipt = dbInner
+          .select(codeActRunReceiptSelection)
+          .from(runs)
           .where(eq(runs.id, runId))
-          .run();
+          .all()[0];
         try {
           publish({
             type: "run.completed",
@@ -1104,25 +2902,22 @@ export function registerAgent(
             durationMs: endedAtMs - startedAtMs,
             tokensIn,
             tokensOut,
-            emittedEventId,
+            emittedEventId: finalize.emittedEventId,
+            ...(completedReceipt
+              ? storedCodeActReceiptFields(completedReceipt)
+              : {}),
           });
         } catch {
           /* broadcast best-effort */
         }
 
-        // UC-V11-22 / AR-GAP-07 / PF-GAP-08 — Prometheus `runs_total`
-        // bump for the manifest engine. Lives inside this `step.run`
-        // block so Inngest replays don't double-count: step results are
-        // memoized, so the .inc only fires on the actual execution.
-        // The metrics registry is injected at api boot via
-        // `setRuntimeMetrics()`; missing in tests/standalone callers, in
-        // which case we silently skip.
+        // Completion metrics are terminal evidence too, so they are recorded only after all
+        // downstream sends have succeeded and inside a memoized step to avoid replay double-counts.
         const m = getRuntimeMetrics();
         if (m) {
           m.runs.inc({
             tenant: tenantSlug,
             agent: agent.name,
-            // #W1-3 — real served model (was a hardcoded "mock-model-v1" that made per-model metrics lie).
             model: runModel ?? "unknown",
             status: "ok",
           });
@@ -1131,35 +2926,45 @@ export function registerAgent(
             agent: agent.name,
           });
         }
-        return { emittedEventId, endedAtMs };
+        return { endedAtMs };
       });
-
-      // The actual inngest.send must be outside step.run (step results are
-      // memoized; sending an event inside a step would re-send on replay).
-      // We use step.sendEvent which is Inngest's idempotent send primitive.
-      if (emittedName && finalize.emittedEventId) {
-        await step.sendEvent(`emit.${emittedName}`, {
-          name: `${tenantSlug}/${emittedName}` as `${string}/${string}`,
-          // #COMMS — the unified, carry-forward, offloaded payload (same object written to the ledger),
-          // plus this event's id for downstream lineage.
-          data: withCorrelation(correlationId, {
-            ...(assembled?.payload ?? {}),
-            __triggerEventId: finalize.emittedEventId,
-          }),
-        });
-        await writeRunLog(logCtx, "INFO", "event.emit", {
-          name: emittedName,
-          event_id: finalize.emittedEventId,
-        });
-      }
 
       await writeRunLog(logCtx, "INFO", "run.end", {
         status: "ok",
-        duration: finalize.endedAtMs - startedAtMs + "ms",
-        emitted: emittedName ?? "—",
+        duration: completion.endedAtMs - startedAtMs + "ms",
+        emitted:
+          finalize.emittedEvents
+            .map((item: { name: string }) => item.name)
+            .join(",") || "—",
       });
 
-      return { ok: true, runId, emittedEventId: finalize.emittedEventId };
+      // #INVOKE-RESULT — a parent step.invoke with forward_last_result:true
+      // needs the child's BUSINESS conclusion, not just a delivery receipt:
+      // without it the parent's carry-forward loses fields the child minted
+      // (e.g. candidate_id from the dedup registry) and downstream
+      // write-before-emit gates fail closed. Spread the primary emitted
+      // payload flat (envelope `_*` keys stripped; receipt keys stay
+      // authoritative last) so mergeStepResults exposes it to the chain.
+      const primaryPayload = outbound[0]?.assembled.payload;
+      const forwardedResult: Record<string, unknown> = {};
+      if (
+        primaryPayload &&
+        typeof primaryPayload === "object" &&
+        !Array.isArray(primaryPayload)
+      ) {
+        for (const [key, value] of Object.entries(primaryPayload)) {
+          if (!key.startsWith("_")) forwardedResult[key] = value;
+        }
+      }
+      return {
+        ...forwardedResult,
+        ok: true,
+        runId,
+        emittedEventId: finalize.emittedEventId,
+        emittedEventIds: finalize.emittedEvents.map(
+          (item: { id: string }) => item.id,
+        ),
+      };
 
       async function failRun(
         rid: string,
@@ -1183,6 +2988,11 @@ export function registerAgent(
             })
             .where(eq(runs.id, rid))
             .run();
+          const failedReceipt = db
+            .select(codeActRunReceiptSelection)
+            .from(runs)
+            .where(eq(runs.id, rid))
+            .all()[0];
           try {
             publish({
               type: "run.failed",
@@ -1190,6 +3000,9 @@ export function registerAgent(
               at: ended.getTime(),
               runId: rid,
               errorMessage: message,
+              ...(failedReceipt
+                ? storedCodeActReceiptFields(failedReceipt)
+                : {}),
             });
           } catch {
             /* broadcast best-effort */

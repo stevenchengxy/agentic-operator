@@ -3,8 +3,7 @@
 /**
  * AgentCodeTab — read-only Code tab in agent detail.
  *
- * Ported from `apps/web/public/portal/views/agent-code.jsx:197-393`.
- * Includes the Phase 1 deltas:
+ * Includes:
  *   - D-6: Maximize toggle hides the sidebar
  *   - D-6: Per-block height splitters (ontology / input_data / tool_use)
  *   - D-6: Sidebar width splitter (default 340, range 300-900)
@@ -15,7 +14,6 @@
 import { useState } from "react";
 import { useI18n } from "@/app/portal/lib/preferences-context";
 import {
-  Badge,
   Button,
   Empty,
   Icon,
@@ -23,23 +21,32 @@ import {
   Panel,
   Splitter,
 } from "@/app/portal/components";
-import {
-  AGENT_SAMPLE_TOOL_USE,
-  AGENT_SAMPLE_TS_CODE,
-  type ToolUseSchema,
-} from "./samples";
+
+interface ToolUseSchema {
+  name: string;
+  description?: string;
+  input_schema?: {
+    properties?: Record<string, { type?: string }>;
+    required?: string[];
+  };
+}
 
 interface AgentCodeShape {
   actor: "Agent" | "Human";
   name: string;
-  typescript_code?: string;
-  tool_use?: unknown;
-  input_data?: Record<string, unknown>;
-  ontology_instructions?: string;
+  typescript_code?: string | null;
+  tool_use?: unknown[] | null;
+  input_data?: Record<string, unknown> | null;
+  ontology_instructions?: string | null;
+  sourceUnavailable?: boolean;
 }
 
 export function AgentCodeTab({ agent }: { agent: AgentCodeShape }) {
   const { t } = useI18n();
+  const [maximized, setMaximized] = useState(false);
+  const [sidebarW, setSidebarW] = useState(340);
+  const [ontologyH, setOntologyH] = useState(220);
+  const [inputDataH, setInputDataH] = useState(160);
   if (agent.actor !== "Agent") {
     return (
       <Empty
@@ -48,25 +55,49 @@ export function AgentCodeTab({ agent }: { agent: AgentCodeShape }) {
       />
     );
   }
-  const code = agent.typescript_code || AGENT_SAMPLE_TS_CODE;
+  if (agent.sourceUnavailable) {
+    return (
+      <Empty
+        title={t("agentCodeTab.sourceUnavailableTitle")}
+        hint={t("agentCodeTab.sourceUnavailableHint")}
+      />
+    );
+  }
+  const code = agent.typescript_code;
   const rawTools = agent.tool_use;
   const tools: ToolUseSchema[] =
     Array.isArray(rawTools) && rawTools.length > 0
-      ? (rawTools as ToolUseSchema[])
-      : AGENT_SAMPLE_TOOL_USE;
-  const inputData = agent.input_data ?? {};
-  const ontology = agent.ontology_instructions ?? "";
+      ? rawTools.filter(
+          (tool): tool is ToolUseSchema =>
+            Boolean(
+              tool &&
+                typeof tool === "object" &&
+                "name" in tool &&
+                typeof tool.name === "string",
+            ),
+        )
+      : [];
+  const inputData = agent.input_data;
+  const ontology = agent.ontology_instructions;
 
-  const [maximized, setMaximized] = useState(false);
-  const [sidebarW, setSidebarW] = useState(340);
-  const [ontologyH, setOntologyH] = useState(220);
-  const [inputDataH, setInputDataH] = useState(160);
-  const [toolUseH, setToolUseH] = useState(240);
+  if (
+    !code?.trim() &&
+    tools.length === 0 &&
+    (inputData == null || Object.keys(inputData).length === 0) &&
+    !ontology?.trim()
+  ) {
+    return (
+      <Empty
+        title={t("agentCodeTab.noRecordedTitle")}
+        hint={t("agentCodeTab.noRecordedHint")}
+      />
+    );
+  }
 
   const codePanel = (
     <Panel
       title="typescript_code"
-      subtitle={`${agent.name}.ts`}
+      subtitle={code == null ? t("agentCodeTab.fieldNotRecorded") : `${agent.name}.ts`}
       padded={false}
       style={{
         flex: 1,
@@ -76,8 +107,6 @@ export function AgentCodeTab({ agent }: { agent: AgentCodeShape }) {
       }}
       action={
         <div style={{ display: "flex", gap: 4, alignItems: "center", flexShrink: 0 }}>
-          <Button small icon="external" tone="ghost" title={t("agentCodeTab.openInIde")} />
-          <Button small icon="upload" tone="ghost" title={t("agentCodeTab.download")} />
           <Button
             small
             tone="ghost"
@@ -89,7 +118,14 @@ export function AgentCodeTab({ agent }: { agent: AgentCodeShape }) {
         </div>
       }
     >
-      <MonacoEditor value={code} language="typescript" height="100%" readOnly />
+      {code == null ? (
+        <Empty
+          title={t("agentCodeTab.codeNotRecorded")}
+          hint={t("agentCodeTab.fieldNotRecorded")}
+        />
+      ) : (
+        <MonacoEditor value={code} language="typescript" height="100%" readOnly />
+      )}
     </Panel>
   );
 
@@ -154,7 +190,7 @@ export function AgentCodeTab({ agent }: { agent: AgentCodeShape }) {
                 whiteSpace: "pre-wrap",
               }}
             >
-              {ontology}
+              {ontology ?? t("agentCodeTab.fieldNotRecorded")}
             </div>
           </Panel>
         </div>
@@ -164,7 +200,7 @@ export function AgentCodeTab({ agent }: { agent: AgentCodeShape }) {
         <div style={{ height: inputDataH, flexShrink: 0, minHeight: 0 }}>
           <Panel title="input_data" subtitle={t("agentCodeTab.inputDataSubtitle")} padded={false} style={{ height: "100%" }}>
             <MonacoEditor
-              value={JSON.stringify(inputData, null, 2)}
+              value={JSON.stringify(inputData ?? null, null, 2)}
               language="json"
               height="100%"
               readOnly
@@ -174,7 +210,7 @@ export function AgentCodeTab({ agent }: { agent: AgentCodeShape }) {
 
         <Splitter axis="y" getValue={() => inputDataH} setValue={setInputDataH} min={80} max={500} />
 
-        <div style={{ height: toolUseH, flexShrink: 0, minHeight: 0 }}>
+        <div style={{ flex: 1, minHeight: 100 }}>
           <Panel
             title={`tool_use · ${tools.length}`}
             subtitle={t("agentCodeTab.toolUseSubtitle")}
@@ -183,92 +219,63 @@ export function AgentCodeTab({ agent }: { agent: AgentCodeShape }) {
             style={{ height: "100%" }}
           >
             <div style={{ height: "100%", overflow: "auto" }}>
-              {tools.map((tool) => (
-                <div key={tool.name} style={{ padding: "10px 14px", borderBottom: "1px solid var(--border)" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
-                    <Icon name="code" size={10} style={{ color: "var(--accent-text)" }} />
-                    <span className="mono" style={{ fontSize: 12, color: "var(--text)" }}>{tool.name}</span>
-                    <span
-                      style={{
-                        marginLeft: "auto",
-                        fontSize: 10,
-                        color: "var(--text-3)",
-                        fontFamily: "var(--mono)",
-                      }}
-                    >
-                      {t("agentCodeTab.params", { n: Object.keys(tool.input_schema.properties).length })}
-                    </span>
-                  </div>
-                  <div style={{ fontSize: 11.5, color: "var(--text-2)", lineHeight: 1.5, marginBottom: 6 }}>
-                    {tool.description}
-                  </div>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>
-                    {Object.entries(tool.input_schema.properties).map(([k, v]) => (
-                      <span
-                        key={k}
-                        style={{
-                          display: "inline-flex",
-                          alignItems: "center",
-                          gap: 4,
-                          padding: "1px 6px",
-                          fontSize: 10,
-                          fontFamily: "var(--mono)",
-                          background: "var(--panel-2)",
-                          border: "1px solid var(--border)",
-                          borderRadius: 3,
-                          color: tool.input_schema.required.includes(k)
-                            ? "var(--text)"
-                            : "var(--text-3)",
-                        }}
-                      >
-                        {k}
-                        <span style={{ color: "var(--text-3)" }}>:</span>
-                        <span style={{ color: "var(--blue)" }}>{v.type}</span>
-                        {tool.input_schema.required.includes(k) && (
-                          <span style={{ color: "var(--amber)" }}>*</span>
-                        )}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </Panel>
-        </div>
-
-        <Splitter axis="y" getValue={() => toolUseH} setValue={setToolUseH} min={100} max={700} />
-
-        <div style={{ flex: 1, minHeight: 80 }}>
-          <Panel title={t("agentCodeTab.runtimeTitle")} padded style={{ height: "100%" }}>
-            <div style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 11.5 }}>
-              <RuntimeRow label={t("agentCodeTab.runtimeLanguage")} value="TypeScript 5.6" />
-              <RuntimeRow label={t("agentCodeTab.runtimeRuntime")} value="Node 26 · esm" />
-              <RuntimeRow label={t("agentCodeTab.runtimeBundler")} value="esbuild" />
-              <RuntimeRow label={t("agentCodeTab.runtimeSource")} value="agentic/raas-workflows@main" mono />
-              <RuntimeRow label={t("agentCodeTab.runtimeLastBuild")} value="3.4s · 12 KB minified" />
+              {rawTools == null ? (
+                <Empty
+                  title={t("agentCodeTab.toolsNotRecorded")}
+                  hint={t("agentCodeTab.fieldNotRecorded")}
+                />
+              ) : (
+                tools.map((tool) => <ToolSchemaRow key={tool.name} tool={tool} />)
+              )}
             </div>
           </Panel>
         </div>
       </div>
-
-      {/* Keep Badge import alive in case future tools surface schema errors. */}
-      {false && <Badge tone="muted">unused</Badge>}
     </div>
   );
 }
 
-function RuntimeRow({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+function ToolSchemaRow({ tool }: { tool: ToolUseSchema }) {
+  const { t } = useI18n();
+  const properties = tool.input_schema?.properties ?? {};
+  const required = new Set(tool.input_schema?.required ?? []);
   return (
-    <div style={{ display: "flex", justifyContent: "space-between" }}>
-      <span style={{ color: "var(--text-3)" }}>{label}</span>
-      <span
-        style={{
-          color: "var(--text-2)",
-          fontFamily: mono ? "var(--mono)" : "var(--sans)",
-        }}
-      >
-        {value}
-      </span>
+    <div style={{ padding: "10px 14px", borderBottom: "1px solid var(--border)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+        <Icon name="code" size={10} style={{ color: "var(--accent-text)" }} />
+        <span className="mono" style={{ fontSize: 12, color: "var(--text)" }}>{tool.name}</span>
+        <span style={{ marginLeft: "auto", fontSize: 10, color: "var(--text-3)", fontFamily: "var(--mono)" }}>
+          {t("agentCodeTab.params", { n: Object.keys(properties).length })}
+        </span>
+      </div>
+      {tool.description && (
+        <div style={{ fontSize: 11.5, color: "var(--text-2)", lineHeight: 1.5, marginBottom: 6 }}>
+          {tool.description}
+        </div>
+      )}
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>
+        {Object.entries(properties).map(([name, schema]) => (
+          <span
+            key={name}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 4,
+              padding: "1px 6px",
+              fontSize: 10,
+              fontFamily: "var(--mono)",
+              background: "var(--panel-2)",
+              border: "1px solid var(--border)",
+              borderRadius: 3,
+              color: required.has(name) ? "var(--text)" : "var(--text-3)",
+            }}
+          >
+            {name}<span style={{ color: "var(--text-3)" }}>:</span>
+            <span style={{ color: "var(--blue)" }}>{schema.type ?? "unknown"}</span>
+            {required.has(name) && <span style={{ color: "var(--amber)" }}>*</span>}
+          </span>
+        ))}
+      </div>
     </div>
   );
 }

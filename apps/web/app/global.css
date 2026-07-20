@@ -215,3 +215,10 @@ a { color: inherit; text-decoration: none; }
 .factory-md th, .factory-md td { border: 1px solid var(--border); padding: 5px 9px; text-align: left; }
 .factory-md th { background: var(--panel-2); font-weight: 600; }
 .factory-md hr { border: none; border-top: 1px solid var(--border); margin: 12px 0; }
+
+/* #VIZ-INLINE — server-rendered diagram thumbnails inside the factory chat: the SVG scales to the
+   card width (top-aligned crop for tall diagrams); the lightbox shows it full-size. */
+.viz-thumb svg { max-width: 100%; height: auto; display: block; }
+/* Lightbox: the server SVG hard-codes width/height; drop them so viewBox drives sizing and the
+   wrapper's width (zoom) governs scale. 1× = fit-to-width; higher zoom overflows into the scroll box. */
+.viz-full svg { width: 100% !important; height: auto !important; display: block; }

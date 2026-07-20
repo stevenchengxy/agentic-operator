@@ -13,25 +13,35 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  schedule:
+    # Production promotions do not change the Git SHA. Re-run the fresh signed
+    # inventory/replay gate hourly so newly committed artifacts are covered.
+    - cron: "17 * * * *"
   workflow_dispatch:
 
 # Cancel in-flight runs of the same workflow on the same ref to save
 # minutes. Especially useful on a force-push to a PR branch.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
 env:
   # Pinned to .nvmrc — the native sqlite binding is compiled per Node
   # major. Any bump here also requires regenerating better-sqlite3.
   NODE_VERSION: "26"
-  PNPM_VERSION: "11.1.2"
+  PNPM_VERSION: "11.3.0"
   # Tests assume the mock provider so no real API keys are needed.
   LLM_DEFAULT_PROVIDER: mock
   LLM_DEFAULT_MODEL: mock-model-v1
   # Set NODE_ENV=test to opt into the test-time logging level. (apps/api
   # picks this up in src/server.ts.)
   NODE_ENV: test
+  SANDBOX_NODE_BASE_IMAGE: docker.io/library/node@sha256:715e55e4b84e4bb0ff48e49b398a848f08e55daed8eb6a0ea1839ae53bc57583
+  # Explicit, test-only bootstrap identity. Production seed has no built-in
+  # email/name/password; CI supplies all three like any other deployment.
+  AGENTIC_BOOTSTRAP_ADMIN_EMAIL: ci-bootstrap-admin@agentic.invalid
+  AGENTIC_BOOTSTRAP_ADMIN_NAME: CI Bootstrap Administrator
+  AGENTIC_DEV_USER_EMAIL: ci-bootstrap-admin@agentic.invalid
 
 jobs:
   install:
@@ -74,6 +84,9 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+
+      - name: Test Factory sandbox release-manifest fail-closed contract
+        run: node --test scripts/factory-sandbox-release-manifest.test.mjs
       - run: pnpm -r typecheck
 
   lint:
@@ -115,6 +128,10 @@ jobs:
       # ephemeral).
       - name: Apply migrations + seed
         run: |
+          seed_password="$(openssl rand -hex 24)"
+          echo "::add-mask::$seed_password"
+          export AGENTIC_BOOTSTRAP_ADMIN_PASSWORD="$seed_password"
+          echo "AGENTIC_BOOTSTRAP_ADMIN_PASSWORD=$seed_password" >> "$GITHUB_ENV"
           pnpm db:migrate
           pnpm db:seed
 
@@ -153,6 +170,8 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm -r build
+        env:
+          AGENTIC_API_URL: http://localhost:3540
 
   e2e:
     name: E2E (Playwright)
@@ -179,9 +198,12 @@ jobs:
 
       - name: Apply migrations + seed
         run: |
+          seed_password="$(openssl rand -hex 24)"
+          echo "::add-mask::$seed_password"
+          export AGENTIC_BOOTSTRAP_ADMIN_PASSWORD="$seed_password"
+          echo "AGENTIC_BOOTSTRAP_ADMIN_PASSWORD=$seed_password" >> "$GITHUB_ENV"
           pnpm db:migrate
           pnpm db:seed
-          pnpm seed:rich
 
       - name: Install Playwright browsers
         run: pnpm --filter @agentic/web exec playwright install --with-deps chromium
@@ -207,11 +229,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
 
-      # TODO(P4-OPS-01): the Dockerfiles land under Engineer A's
-      # workstream. Until then, this job verifies BuildKit is wired and
-      # short-circuits if no Dockerfile is present. Flip the `if:` block
-      # below to a real build once apps/api/Dockerfile + apps/web/Dockerfile
-      # are checked in.
+      # Keep the detection explicit so a packaging regression produces a
+      # readable job result instead of a missing-path BuildKit error.
       - name: Detect Dockerfiles
         id: detect
         run: |
@@ -229,12 +248,189 @@ jobs:
           push: false
           tags: agentic-api:ci
 
+      - name: Build Factory sandbox control image
+        if: steps.detect.outputs.api == 'yes'
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: apps/api/Dockerfile
+          target: sandbox-control
+          push: false
+          load: true
+          platforms: linux/amd64
+          provenance: false
+          sbom: false
+          build-args: |
+            NODE_BASE_IMAGE=${{ env.SANDBOX_NODE_BASE_IMAGE }}
+            AGENTIC_BUILD_ID=${{ github.sha }}
+            AGENTIC_SOURCE_REPOSITORY=https://github.com/${{ github.repository }}
+          tags: agentic-sandbox-control:ci
+
+      - name: Build Factory sandbox workload image
+        if: steps.detect.outputs.api == 'yes'
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: apps/api/Dockerfile
+          target: sandbox-workload
+          push: false
+          load: true
+          platforms: linux/amd64
+          provenance: false
+          sbom: false
+          build-args: |
+            NODE_BASE_IMAGE=${{ env.SANDBOX_NODE_BASE_IMAGE }}
+            AGENTIC_BUILD_ID=${{ github.sha }}
+            AGENTIC_SOURCE_REPOSITORY=https://github.com/${{ github.repository }}
+          tags: agentic-sandbox-workload:ci
+
+      - name: Build Factory CodeAct candidate image
+        if: steps.detect.outputs.api == 'yes'
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: apps/api/Dockerfile
+          target: codeact-candidate
+          push: false
+          load: true
+          platforms: linux/amd64
+          provenance: false
+          sbom: false
+          build-args: |
+            NODE_BASE_IMAGE=${{ env.SANDBOX_NODE_BASE_IMAGE }}
+            AGENTIC_BUILD_ID=${{ github.sha }}
+            AGENTIC_SOURCE_REPOSITORY=https://github.com/${{ github.repository }}
+          tags: agentic-codeact-candidate:ci
+
+      - name: Build Factory production CodeAct executor image
+        if: steps.detect.outputs.api == 'yes'
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: apps/api/Dockerfile
+          target: production-codeact-executor
+          push: false
+          load: true
+          platforms: linux/amd64
+          provenance: false
+          sbom: false
+          build-args: |
+            NODE_BASE_IMAGE=${{ env.SANDBOX_NODE_BASE_IMAGE }}
+            AGENTIC_BUILD_ID=${{ github.sha }}
+            AGENTIC_SOURCE_REPOSITORY=https://github.com/${{ github.repository }}
+          tags: agentic-production-codeact-executor:ci
+
+      - name: Build Factory sandbox broker gateway image
+        if: steps.detect.outputs.api == 'yes'
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: apps/api/Dockerfile
+          target: sandbox-broker-gateway
+          push: false
+          load: true
+          platforms: linux/amd64
+          provenance: false
+          sbom: false
+          build-args: |
+            NODE_BASE_IMAGE=${{ env.SANDBOX_NODE_BASE_IMAGE }}
+            AGENTIC_BUILD_ID=${{ github.sha }}
+            AGENTIC_SOURCE_REPOSITORY=https://github.com/${{ github.repository }}
+          tags: agentic-sandbox-gateway:ci
+
+      - name: Verify sandbox image role and source labels
+        if: steps.detect.outputs.api == 'yes'
+        shell: bash
+        run: |
+          test "$(docker image inspect agentic-sandbox-control:ci --format '{{ index .Config.Labels "io.agentic.sandbox.role" }}')" = control
+          test "$(docker image inspect agentic-sandbox-workload:ci --format '{{ index .Config.Labels "io.agentic.sandbox.role" }}')" = workload
+          test "$(docker image inspect agentic-codeact-candidate:ci --format '{{ index .Config.Labels "io.agentic.sandbox.role" }}')" = codeact-candidate
+          test "$(docker image inspect agentic-production-codeact-executor:ci --format '{{ index .Config.Labels "io.agentic.sandbox.role" }}')" = production-codeact-executor
+          test "$(docker image inspect agentic-sandbox-gateway:ci --format '{{ index .Config.Labels "io.agentic.sandbox.role" }}')" = gateway
+          test "$(docker image inspect agentic-sandbox-control:ci --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" = "$GITHUB_SHA"
+          test "$(docker image inspect agentic-sandbox-workload:ci --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" = "$GITHUB_SHA"
+          test "$(docker image inspect agentic-codeact-candidate:ci --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" = "$GITHUB_SHA"
+          test "$(docker image inspect agentic-production-codeact-executor:ci --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" = "$GITHUB_SHA"
+          test "$(docker image inspect agentic-production-codeact-executor:ci --format '{{ index .Config.Labels "org.opencontainers.image.source" }}')" = "https://github.com/$GITHUB_REPOSITORY"
+          test "$(docker image inspect agentic-sandbox-gateway:ci --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" = "$GITHUB_SHA"
+          test "$(docker image inspect agentic-codeact-candidate:ci --format '{{.Config.User}}')" = 65532:65532
+
+      - name: Generate control image SPDX SBOM smoke artifact
+        if: steps.detect.outputs.api == 'yes'
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: agentic-sandbox-control:ci
+          format: spdx-json
+          output-file: ${{ runner.temp }}/control.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Generate workload image SPDX SBOM smoke artifact
+        if: steps.detect.outputs.api == 'yes'
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: agentic-sandbox-workload:ci
+          format: spdx-json
+          output-file: ${{ runner.temp }}/workload.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Generate candidate image SPDX SBOM smoke artifact
+        if: steps.detect.outputs.api == 'yes'
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: agentic-codeact-candidate:ci
+          format: spdx-json
+          output-file: ${{ runner.temp }}/candidate.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Generate production CodeAct executor image SPDX SBOM smoke artifact
+        if: steps.detect.outputs.api == 'yes'
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: agentic-production-codeact-executor:ci
+          format: spdx-json
+          output-file: ${{ runner.temp }}/executor.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Block CI on critical production-executor-image vulnerabilities
+        if: steps.detect.outputs.api == 'yes'
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7
+        with:
+          sbom: ${{ runner.temp }}/executor.spdx.json
+          fail-build: true
+          severity-cutoff: critical
+          only-fixed: false
+          output-format: json
+          output-file: ${{ runner.temp }}/executor.vulnerabilities.json
+          cache-db: true
+
+      - name: Generate gateway image SPDX SBOM smoke artifact
+        if: steps.detect.outputs.api == 'yes'
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: agentic-sandbox-gateway:ci
+          format: spdx-json
+          output-file: ${{ runner.temp }}/gateway.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Validate generated sandbox SPDX documents
+        if: steps.detect.outputs.api == 'yes'
+        shell: bash
+        run: |
+          node -e 'for (const file of process.argv.slice(1)) { const value=require(file); if (value.spdxVersion !== "SPDX-2.3" || !Array.isArray(value.packages) || value.packages.length === 0) throw new Error(`${file} is not a populated SPDX 2.3 document`); }' "${RUNNER_TEMP}/control.spdx.json" "${RUNNER_TEMP}/workload.spdx.json" "${RUNNER_TEMP}/gateway.spdx.json" "${RUNNER_TEMP}/candidate.spdx.json" "${RUNNER_TEMP}/executor.spdx.json"
+
       - name: Build apps/web image
         if: steps.detect.outputs.web == 'yes'
         uses: docker/build-push-action@v5
         with:
           context: .
           file: apps/web/Dockerfile
+          build-args: |
+            AGENTIC_API_URL=http://api:3501
           push: false
           tags: agentic-web:ci
 
@@ -243,13 +439,164 @@ jobs:
         run: |
           echo "::warning::No Dockerfiles found yet (P4-OPS-01 / P4-OPS-02 pending). Skipping docker build."
 
+  # The sibling exporter runs on a production-evidence self-hosted runner for
+  # the same main commit. This job waits for that exact workflow/ref/event/SHA,
+  # then verifies its HMAC-signed inventory before executing any artifact.
+  # Pull requests never download the production-derived bundle.
+  factory-regression:
+    name: Factory promoted regressions
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Dispatch a fresh trusted exporter for this CI consumer
+        id: export-request
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const crypto = require("node:crypto");
+            const nonce = crypto.randomBytes(32).toString("hex");
+            const attempt = String(process.env.GITHUB_RUN_ATTEMPT);
+            const runName = `factory-regression-export/${context.runId}/${attempt}/${nonce}`;
+            core.setSecret(nonce);
+            core.setOutput("nonce", nonce);
+            core.setOutput("run_name", runName);
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: "factory-regression-export.yml",
+              ref: "main",
+              inputs: {
+                consumer_workflow: ".github/workflows/ci.yml",
+                consumer_run_id: String(context.runId),
+                consumer_run_attempt: attempt,
+                request_nonce: nonce,
+              },
+            });
+
+      - name: Build isolated CodeAct image for promoted regression replay
+        id: regression-codeact-image
+        shell: bash
+        run: |
+          docker build --pull \
+            --file apps/api/Dockerfile \
+            --target codeact-candidate \
+            --build-arg "NODE_BASE_IMAGE=${SANDBOX_NODE_BASE_IMAGE}" \
+            --build-arg "AGENTIC_BUILD_ID=${GITHUB_SHA}" \
+            --build-arg "AGENTIC_SOURCE_REPOSITORY=https://github.com/${GITHUB_REPOSITORY}" \
+            --tag "agentic-codeact-regression:${GITHUB_SHA}" \
+            .
+          image_id="$(docker image inspect "agentic-codeact-regression:${GITHUB_SHA}" --format '{{.Id}}')"
+          if [[ ! "$image_id" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "::error::Regression CodeAct image is not content-addressed."
+            exit 1
+          fi
+          echo "image_id=$image_id" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for the exact trusted exporter run
+        id: bundle
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            // The trusted exporter itself may legally run for 15 minutes.
+            // Give it a cleanup/upload margin instead of timing out first.
+            const deadline = Date.now() + 18 * 60 * 1000;
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const requestedRunName = `${{ steps.export-request.outputs.run_name }}`;
+            while (Date.now() < deadline) {
+              const { data } = await github.rest.actions.listWorkflowRuns({
+                owner,
+                repo,
+                workflow_id: "factory-regression-export.yml",
+                branch: "main",
+                per_page: 50,
+              });
+              const exact = data.workflow_runs.filter((run) =>
+                run.head_sha === context.sha &&
+                run.head_branch === "main" &&
+                run.event === "workflow_dispatch" &&
+                run.display_title === requestedRunName &&
+                run.path === ".github/workflows/factory-regression-export.yml" &&
+                run.head_repository?.full_name === `${owner}/${repo}`
+              );
+              const passed = exact.find((run) => run.status === "completed" && run.conclusion === "success");
+              if (passed) {
+                core.setOutput("run_id", String(passed.id));
+                core.setOutput("run_attempt", String(passed.run_attempt));
+                core.setOutput("event", passed.event);
+                core.setOutput("artifact_name", `agent-factory-promoted-regressions-${context.sha}`);
+                return;
+              }
+              const terminal = exact.find((run) => run.status === "completed" && run.conclusion !== "success");
+              if (terminal) throw new Error(`Exact Factory exporter run did not succeed (run ${terminal.id}).`);
+              await new Promise((resolve) => setTimeout(resolve, 15000));
+            }
+            throw new Error("Timed out waiting for the exact main/SHA Factory exporter run.");
+
+      - name: Download immutable promoted regression data
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ steps.bundle.outputs.artifact_name }}
+          path: ${{ runner.temp }}/agent-factory-promoted-regressions
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.bundle.outputs.run_id }}
+
+      - name: Bind replay to the signed snapshot high-watermark
+        id: checkpoint
+        shell: bash
+        env:
+          EXPORT_ROOT: ${{ runner.temp }}/agent-factory-promoted-regressions
+        run: |
+          node -e 'const fs=require("node:fs"); const path=require("node:path"); const value=JSON.parse(fs.readFileSync(path.join(process.env.EXPORT_ROOT,"factory-regression-export.json"),"utf8")); const state=value?.highWatermark?.stateHash; if (typeof state !== "string" || !/^factory-promotion-high-watermark:v1:[a-f0-9]{64}$/.test(state)) throw new Error("export manifest has no valid high-watermark state hash"); process.stdout.write(`state_hash=${state}\n`);' >> "$GITHUB_OUTPUT"
+
+      - name: Replay every committed promotion without live external calls
+        env:
+          FACTORY_EXEC_TIER: container
+          FACTORY_CONTAINER_IMAGE: ${{ env.SANDBOX_NODE_BASE_IMAGE }}
+          FACTORY_EXEC_GENERATED: "1"
+          FACTORY_CODEACT_CANDIDATE_IMAGE: ${{ steps.regression-codeact-image.outputs.image_id }}
+          FACTORY_CODEACT_ALLOWED_IMAGE_DIGESTS: '["${{ steps.regression-codeact-image.outputs.image_id }}"]'
+          FACTORY_CODEACT_DOCKER_SOCKET: /var/run/docker.sock
+          FACTORY_REGRESSION_EXPORT_SIGNING_KEY: ${{ secrets.FACTORY_REGRESSION_EXPORT_SIGNING_KEY }}
+        run: >-
+          pnpm --filter @agentic/api replay:factory-regressions --
+          --data-root "${RUNNER_TEMP}/agent-factory-promoted-regressions"
+          --export-run-id "${{ steps.bundle.outputs.run_id }}"
+          --export-run-attempt "${{ steps.bundle.outputs.run_attempt }}"
+          --export-event "${{ steps.bundle.outputs.event }}"
+          --expected-ref "refs/heads/main"
+          --expected-sha "${{ github.sha }}"
+          --consumer-workflow ".github/workflows/ci.yml"
+          --consumer-run-id "${{ github.run_id }}"
+          --consumer-run-attempt "${{ github.run_attempt }}"
+          --request-nonce "${{ steps.export-request.outputs.nonce }}"
+          --expected-high-watermark-state-hash "${{ steps.checkpoint.outputs.state_hash }}"
+
   # Meta gate — branch protection should require *this* job, which is
   # green only when every leaf above is green. Adding new jobs above
   # automatically tightens the protection once they're listed here.
   ci:
     name: CI
     if: always()
-    needs: [typecheck, lint, test-coverage, build, e2e, docker]
+    needs:
+      [typecheck, lint, test-coverage, build, e2e, docker, factory-regression]
     runs-on: ubuntu-latest
     steps:
       - name: Fail when any required leaf failed
@@ -259,7 +606,9 @@ jobs:
           needs.test-coverage.result != 'success' ||
           needs.build.result != 'success' ||
           needs.e2e.result != 'success' ||
-          needs.docker.result != 'success'
+          needs.docker.result != 'success' ||
+          (github.event_name != 'pull_request' && needs.factory-regression.result != 'success') ||
+          (github.event_name == 'pull_request' && needs.factory-regression.result != 'success' && needs.factory-regression.result != 'skipped')
         run: |
           echo "One or more required leaf jobs failed."
           echo "typecheck=${{ needs.typecheck.result }}"
@@ -268,6 +617,16 @@ jobs:
           echo "build=${{ needs.build.result }}"
           echo "e2e=${{ needs.e2e.result }}"
           echo "docker=${{ needs.docker.result }}"
+          echo "factory-regression=${{ needs.factory-regression.result }}"
           exit 1
+      - name: Report missing persistent Factory evidence
+        if: github.event_name == 'pull_request' && needs.factory-regression.result == 'skipped'
+        run: |
+          echo "::notice::Pull-request CI intentionally did not download production-derived Factory evidence. The required main check performs the signed live-inventory replay after merge."
       - name: Summary
-        run: echo "All CI leaf jobs passed."
+        run: |
+          if [ "${{ needs.factory-regression.result }}" = "success" ]; then
+            echo "All CI leaves passed, including every committed Agent Factory promotion in the supplied evidence bundle."
+          else
+            echo "Core pull-request CI leaves passed; the signed production replay remains a required main-only check."
+          fi

@@ -34,13 +34,18 @@ export function TenantTokenRevealModal({
   const { t } = useI18n();
   const [acked, setAcked] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [copyError, setCopyError] = useState(false);
 
-  function copy() {
-    if (!navigator.clipboard) return;
-    void navigator.clipboard.writeText(payload.token).then(() => {
+  async function copy() {
+    setCopyError(false);
+    try {
+      if (!navigator.clipboard) throw new Error("Clipboard API unavailable");
+      await navigator.clipboard.writeText(payload.token);
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
-    });
+    } catch {
+      setCopyError(true);
+    }
   }
 
   // Block dismissal until acked — the parent component should not call onClose
@@ -128,6 +133,11 @@ export function TenantTokenRevealModal({
               {copied ? t("tenantTokenRevealModal.copied") : t("tenantTokenRevealModal.copy")}
             </button>
           </div>
+          {copyError ? (
+            <div role="alert" style={{ color: "var(--red)", fontSize: 11, marginTop: -4, marginBottom: 8 }}>
+              {t("tenantTokenRevealModal.copyFailed")}
+            </div>
+          ) : null}
           <div style={{ fontSize: 11, color: "var(--text-3)", marginTop: 6 }}>
             {t("tenantTokenRevealModal.scopes")}{" "}
             {(payload.scopes || []).join(", ") || t("tenantTokenRevealModal.defaultScope")}
@@ -145,7 +155,7 @@ export function TenantTokenRevealModal({
                 borderRadius: 4,
               }}
             >{`curl -H "Authorization: Bearer ${payload.token}" \\
-  http://localhost:3540/v1/agents`}</pre>
+  ${typeof window === "undefined" ? "<your-origin>" : window.location.origin}/v1/agents`}</pre>
           </div>
         </div>
 

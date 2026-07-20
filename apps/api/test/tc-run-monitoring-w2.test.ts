@@ -237,11 +237,14 @@ describe("W2: AI run summary", () => {
     expect(summary!.digest).toContain("TypeError");
   });
 
-  it("degrades to a digest-only summary when the gateway returns non-JSON", async () => {
+  it("fails explicitly and preserves the last real summary when the gateway returns non-JSON", async () => {
     nextReply = { text: "sorry, I cannot do that", model: "mock-model" };
-    const { summary } = await post(okRunId);
-    expect(summary!.scored).toBe(false);
-    expect(summary!.digest).toContain("步骤");
+    const { status, summary } = await post(okRunId);
+    expect(status).toBe(502);
+    expect(summary).toBeNull();
+    const cached = await get(okRunId);
+    expect(cached!.scored).toBe(true);
+    expect(cached!.model).toBe("opus-stub");
   });
 
   it("404s a run the tenant does not own", async () => {

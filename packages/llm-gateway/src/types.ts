@@ -108,6 +108,9 @@ export interface ChatRequest {
   tools?: ToolDef[];
   /** P1-RT-06 — caller-provided tenantId for usage attribution (optional). */
   tenantId?: string;
+  /** Durable run attribution for per-call usage. Runtime callers must pass
+   * the runs.id they are executing; non-run calls intentionally omit it. */
+  runId?: string;
   /** Alias of `tenantId` used by some legacy callers. */
   tenantSlug?: string;
 }
@@ -151,4 +154,10 @@ export interface GatewayConfig {
   defaultProvider: ProviderId;
   defaultModel: string | null;
   timeoutMs: number;
+  /**
+   * Test-only escape hatch for the deterministic mock adapter. Secure by
+   * default: hand-constructed production gateways that omit this flag cannot
+   * route a request to `mock`, even when a caller supplies it explicitly.
+   */
+  allowMock?: boolean;
 }

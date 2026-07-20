@@ -1,14 +1,9 @@
 /**
  * P3-RT-07 — Vector memory driver contract.
  *
- * Interface only. v1 ships no implementation; the default driver is `null`
- * and any call to `ctx.memory.search()` raises a "no vector driver
- * configured" error so authors get a clear signal that they need to plug a
- * driver in.
- *
- * v2 candidates: SQLite-VSS, pgvector, Qdrant, Pinecone. Each ships as its
- * own package that exports a `MemoryDriver` implementation; ops wires it
- * into the runtime via `setMemoryDriver()` (next phase).
+ * No driver is selected implicitly: without one, `ctx.memory.search()` raises
+ * a "no vector driver configured" error. The runtime ships a local driver and
+ * can accept external implementations through `setMemoryDriver()`.
  */
 
 /**
@@ -29,14 +24,17 @@ export interface MemoryHit {
 
 /**
  * Scope threaded from the SDK boundary so a driver can partition its search by
- * tenant / agent (subject is intentionally left to the driver's ranking, so
- * cross-subject semantic recall works). All fields optional — a driver may
- * ignore them, but a tenant-scoped store MUST honour `tenantId` for isolation.
+ * tenant / agent. Subject is normally left to ranking for cross-subject recall,
+ * but `subjectExact` turns it into a mandatory partition for supervised stores.
+ * A driver MUST honour `tenantId` and any requested exact-subject constraint.
  */
 export interface MemorySearchScope {
   tenantId?: string;
   agentName?: string;
   subject?: string;
+  /** When true, the driver MUST restrict candidates to the exact subject.
+   * Omitted/false preserves normal cross-subject recall within an agent. */
+  subjectExact?: boolean;
 }
 
 /**
@@ -45,6 +43,10 @@ export interface MemorySearchScope {
  * so a single driver can serve multiple tenants by partitioning internally.
  */
 export interface MemoryDriver {
+  /** Optional write-time embedder. When provided, the authoritative SQLite
+   * row stores vectors in the same space this driver's search() uses. */
+  embed?(text: string): Promise<number[]>;
+
   /**
    * Return the top-`k` matches for `query`. The query is plain text; the
    * driver is responsible for whatever embedding model it uses. `scope` (when
@@ -54,8 +56,9 @@ export interface MemoryDriver {
 
   /** OPTIONAL write-through hook (#SCALE-PGVECTOR): a driver with its OWN store (pgvector/Qdrant)
    *  mirrors every long-scope KV write so its index stays in sync. SQLite remains the system of
-   *  record — the runtime calls this fire-and-forget after the KV upsert. `embedding` is the
-   *  write-time L2-normalized vector (same space as search queries); null → driver embeds itself. */
+   *  record, but the runtime awaits this hook and propagates failures so callers never receive a
+   *  false "fully mirrored" success. `embedding` is the write-time L2-normalized vector (same
+   *  space as search queries); null means the driver embeds the value itself. */
   mirror?(row: MemoryMirrorRow): Promise<void>;
 
   /** OPTIONAL delete hook — keeps the mirror in sync with KV deletes. */

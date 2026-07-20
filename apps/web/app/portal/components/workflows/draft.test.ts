@@ -77,17 +77,35 @@ describe("toManifest", () => {
         title: "First",
       }),
     ];
-    const out = toManifest(agents);
+    const out = toManifest(agents, {
+      "1": {
+        description: "Preserved description",
+        actions: [
+          { order: "1", name: "realAction", type: "tool", task_type: "search" },
+        ],
+      },
+    });
     expect(out[0]?.id).toBe("1");
     expect(out[0]?.trigger).toEqual(["TRIG_A"]);
     expect(out[0]?.triggered_event).toEqual(["EMIT_A"]);
     expect(out[0]?.actor).toEqual(["Agent"]);
-    expect(out[0]?.actions).toHaveLength(1);
+    expect(out[0]?.description).toBe("Preserved description");
+    expect(out[0]?.actions).toEqual([
+      { order: "1", name: "realAction", type: "tool", task_type: "search" },
+    ]);
   });
 
   it("preserves Human actor", () => {
-    const out = toManifest([agent("1", { actor: "Human" })]);
+    const out = toManifest([agent("1", { actor: "Human" })], {
+      "1": { description: "", actions: [] },
+    });
     expect(out[0]?.actor).toEqual(["Human"]);
+  });
+
+  it("blocks serialization when canonical behavior is missing", () => {
+    expect(() => toManifest([agent("1")], {})).toThrow(
+      "Unsafe workflow deploy blocked",
+    );
   });
 });
 

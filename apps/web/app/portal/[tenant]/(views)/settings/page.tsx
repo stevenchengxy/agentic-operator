@@ -1,30 +1,11 @@
 "use client";
 
-/**
- * Settings view — 9 sections per audit 01 §4.9. P2-FE-15 + P2-FE-27.
- *
- * Sections:
- *   1. Workspace (name, slug, timezone, locale, accent)
- *   2. People & roles
- *   3. Models (CRUD on configured providers/models)
- *   4. Channels
- *   5. Integrations
- *   6. Notifications
- *   7. API tokens
- *   8. Billing / Cost caps
- *   9. Audit log (reads `/v1/audit`)
- *
- * Ported from `apps/web/public/portal/views/settings.jsx` (2303 LOC) with
- * timezone wired through to the new `useWorkspace()` hook (P2-FE-27).
- */
+/** Settings only exposes sections backed by working persistence/API routes. */
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import {
-  Badge,
-  Button,
   Icon,
-  Panel,
   ViewHeader,
 } from "@/app/portal/components";
 import { useTenant } from "@/app/portal/lib/use-tenant";
@@ -38,12 +19,7 @@ import { WorkspaceSection } from "@/app/portal/components/settings/sections/Work
 import { AppearanceSection } from "@/app/portal/components/settings/sections/Appearance";
 import { PeopleSection } from "@/app/portal/components/settings/sections/People";
 import { ModelsSection } from "@/app/portal/components/settings/sections/Models";
-import { ChannelsSection } from "@/app/portal/components/settings/sections/Channels";
-import { IntegrationsSection } from "@/app/portal/components/settings/sections/Integrations";
-import { NotificationsSection } from "@/app/portal/components/settings/sections/Notifications";
-import { TokensSection } from "@/app/portal/components/settings/sections/Tokens";
 import { BillingSection } from "@/app/portal/components/settings/sections/Billing";
-import { AuditSection } from "@/app/portal/components/settings/sections/Audit";
 
 // P3-FE-03 / P3-FE-05 — these section ids deep-link to their own sub-routes
 // instead of being rendered inline (the views are too heavy to live in the
@@ -99,15 +75,6 @@ export default function SettingsPage() {
             <span style={{ color: "var(--text)" }}>{operatorName}</span>
           </>
         }
-        badge={<Badge tone="muted">v0.6.2</Badge>}
-        action={[
-          <Button key="docs" small icon="external" tone="ghost">
-            {t("settings.docs")}
-          </Button>,
-          <Button key="exp" small icon="upload">
-            {t("settings.export")}
-          </Button>,
-        ]}
       />
 
       <div
@@ -143,17 +110,10 @@ export default function SettingsPage() {
             {section === "appearance" && <AppearanceSection />}
             {section === "people" && <PeopleSection />}
             {section === "models" && <ModelsSection />}
-            {section === "channels" && <ChannelsSection />}
-            {section === "integrations" && <IntegrationsSection />}
-            {section === "notifications" && <NotificationsSection />}
-            {section === "tokens" && <TokensSection />}
             {section === "billing" && <BillingSection />}
-            {section === "audit" && <AuditSection />}
           </div>
         </div>
       </div>
-
-      {false && <Panel title="hidden" />}
     </div>
   );
 }

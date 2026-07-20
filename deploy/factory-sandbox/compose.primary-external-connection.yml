@@ -1,0 +1,29 @@
+# Primary-host connector overlay for the independently deployed sandbox VM.
+# Apply this only to the primary base+production Compose stack. It is not part
+# of compose.external.yml and does not connect the two Docker projects.
+
+services:
+  api:
+    environment:
+      FACTORY_PRODUCTION_IMAGE_ATTESTATION_TOPOLOGY: external_sandbox
+      FACTORY_SANDBOX_REMOTE_CONFIG_REFS: '{"runnerUrlEnv":"FACTORY_SB_RUNNER_URL","requestSigningKeyEnv":"FACTORY_SB_REQUEST_HMAC","resultSigningKeyEnv":"FACTORY_SB_RESULT_HMAC","receiptSigningKeyEnv":"FACTORY_SB_RECEIPT_HMAC","keyIdEnv":"FACTORY_SB_KEY_ID","runnerIdEnv":"FACTORY_SB_RUNNER_ID","allowedBuildIdsEnv":"FACTORY_SB_ALLOWED_BUILD_IDS","allowedImageDigestsEnv":"FACTORY_SB_ALLOWED_IMAGE_DIGESTS"}'
+      FACTORY_SB_RUNNER_URL: "${EXTERNAL_SANDBOX_PUBLIC_RUNNER_ORIGIN:?set the certificate-verified remote runner HTTPS origin}"
+      FACTORY_SB_RUNNER_HTTP_ALLOWED_HOSTS: ""
+      FACTORY_SB_REQUEST_HMAC: ""
+      FACTORY_SB_REQUEST_HMAC_FILE: /run/secrets/factory-sandbox/request-hmac
+      FACTORY_SB_RESULT_HMAC: ""
+      FACTORY_SB_RESULT_HMAC_FILE: /run/secrets/factory-sandbox/result-hmac
+      FACTORY_SB_RECEIPT_HMAC: ""
+      FACTORY_SB_RECEIPT_HMAC_FILE: /run/secrets/factory-sandbox/receipt-hmac
+      FACTORY_SB_KEY_ID: "${EXTERNAL_SANDBOX_KEY_ID:?set the external runner key id}"
+      FACTORY_SB_RUNNER_ID: "${EXTERNAL_SANDBOX_RUNNER_ID:?set the external runner id}"
+      FACTORY_SB_ALLOWED_BUILD_IDS: '["${EXTERNAL_SANDBOX_RUNNER_BUILD_ID:?set the exact external runner build id}"]'
+      FACTORY_SB_ALLOWED_IMAGE_DIGESTS: '["${EXTERNAL_SANDBOX_RUNTIME_IMAGE_DIGEST:?set the exact external workload OCI digest}"]'
+    volumes:
+      - type: bind
+        source: "${FACTORY_SB_RECEIPT_HMAC_HOST_FILE:?copy the external receipt HMAC into the primary secret store}"
+        target: /run/secrets/factory-sandbox/receipt-hmac
+        read_only: true
+        bind:
+          create_host_path: false
+

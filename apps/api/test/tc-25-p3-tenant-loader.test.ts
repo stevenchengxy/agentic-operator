@@ -86,7 +86,7 @@ describe("TC-25: P3-RT-08 tenant-loader", () => {
     expect(missing).toBeNull();
   });
 
-  it("resolveLiveVersion falls back to highest-sorted dir when no deployment row", async () => {
+  it("resolveLiveVersion falls back to the highest semantic version when no deployment row", async () => {
     const slug = "fixture-c";
     for (const v of ["0.1.0", "0.2.0", "0.10.0"]) {
       const dir = path.join(tmpRoot, slug, v);
@@ -97,12 +97,10 @@ describe("TC-25: P3-RT-08 tenant-loader", () => {
       );
     }
     const { resolveLiveVersion } = await import("@agentic/runtime");
-    // Note: lexical sort puts "0.10.0" before "0.2.0". This is the documented
-    // fallback when no deployment row exists; semantic versioning kicks in
-    // ONLY when the operator deploys via the API. The fixture asserts the
-    // documented behavior, not semver.
+    // The filesystem fallback follows semantic-version precedence as well as
+    // the deployment path, so 0.10.0 correctly wins over 0.2.0.
     const v = await resolveLiveVersion(slug);
-    expect(v).toBe("0.2.0");
+    expect(v).toBe("0.10.0");
   });
 
   it("dataTenantsRoot honors AGENTIC_TENANTS_DIR", async () => {

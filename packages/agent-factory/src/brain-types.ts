@@ -7,7 +7,22 @@
 
 import type { DomainOntology } from "./ontology-types";
 import type { GeneratedAgentSpec } from "./spec-types";
-import type { FactoryPorts } from "./ports";
+import type {
+  FactoryPorts,
+  SandboxDeployResult,
+  FactorySignedFixturePreparation,
+  FactorySignedFixtureRequest,
+} from "./ports";
+import type {
+  FactoryAuthorizationChallenge,
+  FactoryHumanAuthorizationReceipt,
+  FactoryHumanMessage,
+  FactoryHumanInteractionKind,
+  FactoryPendingHumanInteraction,
+} from "./authorization-challenge";
+import type { RealTool } from "./tool-catalog";
+import type { OntologyReadinessReport } from "./ontology-readiness";
+import type { FunctionTestAssertions } from "./function-test-contract";
 
 /** A generated agent, trimmed for the UI card. */
 export type AgentCardLite = {
@@ -55,6 +70,12 @@ export type BuildPlan = {
   }>;
   notes: string[];
   version: number;
+  /** #SCOPE — deliberate plan scope. "partial" = the USER asked for a subset of the ontology's
+   * Agent actions (e.g. "只生成 createJD 的 function"); uncovered actions are then intent, not an
+   * omission — create_plan stops warning about them and finish's full-coverage refusal routes to
+   * save_draft instead. Absent/"full" keeps the original all-actions delivery semantics. */
+  scope?: "full" | "partial";
+  scopeReason?: string;
 };
 
 /** 4-dimension deterministic quality score for one spec (each 0-100). */
@@ -91,6 +112,15 @@ export type TestCase = {
   entryEvent: string;
   payload: Record<string, unknown>;
   expectedOutcome: string;
+  /** Exact declared event expected by a structured decision-table boundary
+   * case. When set, sandbox grading checks this event rather than inferring
+   * success/failure from its name. */
+  expectedEvent?: string;
+  /** Machine-readable coverage-matrix cell generated from the table row. */
+  coverageCell?: string;
+  /** Optional executable assertions persisted into the immutable regression
+   * suite. Prose in expectedOutcome is never parsed into a test contract. */
+  functionAssertions?: FunctionTestAssertions;
 };
 
 /** A boundary event = an event some agent EMITS but no INTERNAL agent consumes. Inngest
@@ -166,15 +196,33 @@ export type BrainEvent =
   // complete business-flow diagram (the hand-drawn 6-agent SVG, generated). Typed loosely here
   // to avoid a type-only import cycle; the shape is business-flow.ts#BusinessFlowModel.
   | { t: "flow.business"; model: Record<string, unknown> }
+  // #BLUEPRINT — an AI-reasoned, ONTOLOGY-GROUNDED phased workflow/business-flow/agent blueprint.
+  // Each phase/step carries ontology anchors (entity/action/rule/event id); anything that could not
+  // be grounded is recorded in `model.unresolved` (fail-closed, never invented). `diagrams[]` carry
+  // pre-rendered deterministic SVG. The UI renders it as the "蓝图" panel. Shape = blueprint.ts#BlueprintModel.
+  | { t: "flow.blueprint"; model: Record<string, unknown> }
+  // #USER-MESSAGE — what the HUMAN said, as a first-class transcript frame: the goal that started
+  // a run, a message injected into a live brain, a HITL gate answer. The chat UI renders it as the
+  // user's bubble so the conversation reads as a dialogue, not an assistant monologue. Emitted by
+  // the run registry / inject route (control-plane resume steers are deliberately NOT emitted).
+  | { t: "user.message"; text: string }
   // #POLICY — the entrance router's decision (why this pipeline shape / specialist depth / tier
   // bias was selected for THIS request). Emitted right after the intent gate; UI renders it as
   // the "推理策略" chip so the choice is explainable, not implicit.
   | { t: "policy"; pipeline: string; strategy?: string; band: string; deepUnderstand: boolean; deepCritique: boolean; tierBias?: string | null; reasons: string[] }
   // #STRATEGY-COMBO — AI 就某子问题自选的推理方法【组合】(单个或 tot→debate→reflection 之类)。
   | { t: "strategy"; mode: "single" | "combo"; steps: string[]; chosenBy: "ai" | "default"; rationale: string; forAgent?: string }
+  // #REASONING-KERNEL — a single step of a strategy plan ACTUALLY executing (not just declared): the
+  // reasoning kernel ran this method (cot/reflection/debate/tot/react) and produced this output. A combo
+  // emits one per step in order; the UI can show the real deliberation, not just a label.
+  | { t: "reasoning.step"; strategy: string; index: number; total: number; output: string; forAgent?: string; meta?: Record<string, unknown> }
   // #REVISION — 证据驱动的本体修订提案（真实沙箱载荷 vs canonical event_data 持续不一致）。
   // 工厂只提案不写回；大脑据此 ask_user 确认（"AI 提案 → 人确认 → 生效"，同 boundary-gate 范式）。
   | { t: "ontology.revision"; proposals: Array<{ kind: string; event: string; field: string; observedType: string; canonicalType?: string; occurrences: number; evidence: string }> }
+  // #ONTOLOGY-HEAL — deterministic self-consistency normalization applied while reading (for
+  // example, a uniquely implied primary key). Model-authored revision proposals never emit this
+  // event and cannot mutate the working copy.
+  | { t: "ontology.heal"; changes: Array<{ code: string; detail: string }>; source: "auto"; blockingBefore?: number; blockingAfter?: number }
   | {
       t: "sandbox";
       ran: number;
@@ -184,8 +232,8 @@ export type BrainEvent =
       events: string[];
       appId?: string;
       functionsRegistered?: number;
-      /** the function ids actually registered on the sandbox app this commit (= agent slugs) —
-       *  proof of WHICH agents deployed, surfaced in the UI as the per-app registration list. */
+      /** Legacy UI field. New runs place the committed manifest IDs here for
+       * display; independent broker proof is evaluated separately. */
       registeredIds?: string[];
       /** #REDESIGN P1a — spec shorts whose GENERATED CODE actually EXECUTED (真跑, not fell back). */
       codeRanAgents?: string[];
@@ -196,6 +244,8 @@ export type BrainEvent =
       /** #D — how the chain closed: N internal chains + M legitimate external-handoff terminals. */
       internalChains?: number;
       externalTerminals?: number;
+      /** External callbacks that lacked an explicit approved test case/payload, so no dispatch ran. */
+      uncoveredExternalInputs?: string[];
       runUrls?: Array<{ runId: string; url: string; status: string; fn: string }>;
       /** per-agent REAL I/O captured after the run settled (Feature: agent-io). */
       agentRuns?: AgentRunIO[];
@@ -206,7 +256,7 @@ export type BrainEvent =
        *  (proving error propagation, not silent success). Surfaced as per-kind verdict chips. */
       caseVerdicts?: {
         allPass: boolean;
-        results: Array<{ kind: string; pass: boolean; reason: string }>;
+        results: Array<{ caseId?: string; kind: string; pass: boolean; reason: string }>;
         byKind: Record<string, { total: number; passed: number }>;
       };
       /** TRUE = a graph-closure SIMULATION, not a real Inngest deploy+run. The UI must
@@ -224,23 +274,32 @@ export type BrainEvent =
   | { t: "tool.search"; query: string; results: Array<{ name: string; summary: string; sideEffect: string }> } // progressive tool discovery
   | { t: "tool.schema"; name: string; method: string; url: string; fields: number } // doc→tool schema extracted
   | { t: "web.result"; query: string; results: Array<{ title: string; url: string; snippet: string }> }
-  | { t: "subagent.start"; task: string; role?: string; parentAgent?: string }
-  | { t: "subagent.done"; task: string; summary: string; parentAgent?: string }
+  | { t: "subagent.start"; task: string; role?: string; parentAgent?: string; groupId?: string }
+  | { t: "subagent.done"; task: string; summary: string; parentAgent?: string; groupId?: string }
+  // #SUBAGENT-GROUP — a reasoning-driven group of sub-brains fanned out by spawn_subagent_group, each a
+  // member that runs its OWN runBrain loop; the pair brackets the members so the UI can render a tree.
+  | { t: "group.start"; groupId: string; label: string; members: number; mode: "research" | "build" | "design" | "review" | "refine" }
+  | { t: "group.done"; groupId: string; label: string; ok: number; total: number; summary: string }
   | { t: "code"; actionName: string; code: string; codeSource: "ai" | "render" }
   // Explicit pipeline-stage signal. status: "active" = the brain entered/is working this
   // stage; "ok"/"error" = its tool settled. Drives the live-canvas stage rail + health strip
   // directly, instead of every consumer re-inferring a stage from heterogeneous event types.
   | { t: "stage"; role?: string; stage: FactoryStage; status: "active" | "ok" | "error"; detail?: string }
-  | { t: "test.cases"; cases: TestCase[]; awaitingApproval: boolean; coverage?: { required: string[]; covered: string[]; backfilled: string[]; uncoveredNeedingData: string[] } }
-  | { t: "test.decision"; decision: "approve" | "regenerate"; note?: string }
+  // #CHECKLIST — the harness-owned acceptance checklist snapshot, emitted on every finish attempt
+  // (pass or fail). criteria = fleet-level bar; perAgent = per-agent items derived from the same
+  // evidence. The UI renders this as a checklist the brain cannot edit — items flip green only via
+  // real execution evidence.
+  | { t: "acceptance"; allPass: boolean; criteria: Array<{ key: string; label: string; pass: boolean; detail: string }>; perAgent: Array<{ slug: string; short: string; pass: boolean; items: Array<{ key: string; label: string; pass: boolean; detail: string }> }> }
+  | { t: "test.cases"; cases: TestCase[]; awaitingApproval: boolean; interactionId?: string; coverage?: { required: string[]; covered: string[]; backfilled: string[]; uncoveredNeedingData: string[] } }
+  | { t: "test.decision"; decision: "approve" | "regenerate" | "supply_data"; interactionId?: string; note?: string }
   // Boundary events the brain proposes for the user to classify (external handoff /
   // terminal / break). awaitingDecision=true → the conductor is PARKED for the choice.
-  | { t: "boundary.cases"; proposals: BoundaryProposal[]; awaitingDecision: boolean }
-  | { t: "boundary.decided"; events: BoundaryEvent[] }
+  | { t: "boundary.cases"; proposals: BoundaryProposal[]; awaitingDecision: boolean; interactionId?: string }
+  | { t: "boundary.decided"; events: BoundaryEvent[]; interactionId?: string }
   // ask_user: a general clarification the brain raises when uncertain / missing info. The
   // conductor PARKS (awaitingAnswer) until the user supplies a free-text answer or picks an
   // option (one may be the AI's recommendation). Keeps generation flexible, not rigid.
-  | { t: "clarify"; question: string; options?: Array<{ label: string; value: string; recommended?: boolean }>; context?: string; awaitingAnswer: boolean }
+  | { t: "clarify"; question: string; options?: Array<{ label: string; value: string; recommended?: boolean }>; context?: string; awaitingAnswer: boolean; interactionId?: string }
   | { t: "reflect"; kind: string; lesson: string; count?: number }
   // #7 — which model served this turn + the difficulty tier it was routed to (annotated in the
   // activity log). The router picks fast/default/hard from the live context, config-driven.
@@ -249,12 +308,17 @@ export type BrainEvent =
       t: "budget";
       turn: number;
       maxTurns: number;
+      /** Tokens charged by provider usage during this run invocation only. */
       tokens: number;
+      /** Checkpointed spend across the full resumable conversation. */
+      conversationTokens?: number;
       maxTokens: number | null;
       specsBuilt: number;
       sandboxRuns?: number;
       level?: "ok" | "elevated" | "high";
       costNote?: string;
+      /** Present when a pre-call reserve/headroom gate stopped the run. */
+      stopReason?: string;
     }
   | { t: "message"; text: string } // the brain's narration / final answer
   // #2d — auto-compaction made visible: `summary` is the one-line notice, `state` is the full
@@ -262,8 +326,25 @@ export type BrainEvent =
   | { t: "compaction"; summary: string; state: string }
   // Only "finished" (finish PASSED the acceptance gate) is success; everything else
   // is a failed/incomplete run so a budget/turn-exhausted/errored run never reads green.
-  | { t: "done"; tokensUsed: number; turns: number; status: "finished" | "budget_exhausted" | "turns_exhausted" | "errored" | "incomplete" }
+  | {
+      t: "done";
+      /** Provider tokens spent by this run invocation, excluding resume history. */
+      tokensUsed: number;
+      /** Provider tokens accumulated by the resumable conversation. */
+      conversationTokensUsed?: number;
+      turns: number;
+      status: "finished" | "budget_exhausted" | "turns_exhausted" | "errored" | "incomplete" | "waiting_human";
+      /** Distinguishes a complete informational answer from an unfinished
+       * generation. The registry must never infer success from zero new agent
+       * events: resumed conversations can already contain generated specs. */
+      completionKind: "delivery" | "answer" | "incomplete";
+    }
   | { t: "error"; message: string };
+
+/** Trusted control-plane continuation reason. This is deliberately separate
+ * from the user's goal text: a caller cannot obtain recovery semantics by
+ * typing a magic prefix into an ordinary request. */
+export type BrainContinuationMode = "crash_resume" | "human_gate_resume";
 
 export type BrainEmit = (e: BrainEvent) => void;
 
@@ -287,6 +368,9 @@ export interface BrainCtx {
   specs: GeneratedAgentSpec[];
   /** cached after read_ontology */
   ontology: DomainOntology | null;
+  /** Executable-contract verdict produced by read_ontology. A successful fetch
+   * is not the same thing as a generation-ready Ontology. */
+  ontologyReadiness?: OntologyReadinessReport;
   /** #4 — signature of the ontology at first read (counts), so a mid-run re-read can flag drift
    *  (the Allmeta graph changed under already-built specs) instead of silently swapping ground truth. */
   ontologySig?: string;
@@ -296,44 +380,109 @@ export interface BrainCtx {
     stageTokens?: Record<string, number> };
   /** explicit BuildPlan (create_plan sets it; design/refine read it). */
   currentPlan: BuildPlan | null;
+  /** #SCOPE — resolved plan scope (create_plan sets it): which ontology Agent actions the user
+   * deliberately left out. finish reads it to route partial deliveries to save_draft. */
+  planScope?: { kind: "full" | "partial"; reason?: string; missedActions: string[] };
+  /** #HUMAN-BOUNDARY — integration gaps the human confirmed as deliberate manual boundaries via a
+   * clarify card. Written ONLY by the conductor while consuming a [澄清回答] (server-side; the model
+   * never writes it); persisted with the conversation snapshot so resumes don't re-ask. Design
+   * admits these as status:"human_boundary" bindings; sandbox/finish/promotion stay fail-closed. */
+  integrationHumanBoundaries?: import("./integration-binding").IntegrationHumanBoundary[];
+  /** The exact (system, mode) pairs the CURRENT integration clarify card asked about — recorded by
+   * the asking tool, consumed + cleared by the conductor when the human answers. */
+  pendingIntegrationBoundaryAsk?: Array<{ system: string; mode: string }>;
   /** the domain's tool grounding catalog (built from the ontology's tool_use on read). */
   toolCatalog: string[];
   /** #C — the REAL global tools (name/summary/configKeys), loaded from ports.toolRegistry at
    *  read_ontology, so the brain can be recommended real tools by semantic rank + told what config
    *  to supply, even when the ontology declared none. */
-  realTools?: Array<{ name: string; summary?: string; configKeys?: string[]; category?: string; aliases?: string[] }>;
-  /** #B — design-time rule grounding: per Agent-action, the relevant business rules (id-prefix or
-   *  text match) so design_agent reasons rule-grounded, not blind. Runtime fetchActionRules still
-   *  enforces at execution time. Keyed by action name. */
+  realTools?: RealTool[];
+  /** Design-time rule grounding resolved only from exact
+   * `action_steps[].rules` IDs/names. Ambiguous or missing references are
+   * surfaced for ask_user instead of being inferred from prefixes or text. */
   rulesByAction?: Record<string, Array<{ id: string; name: string; summary: string }>>;
   /** per-action refinement history (refine snapshots + critiques; read by refine/revert/read_spec). */
   attemptHistory: Record<string, RefineAttempt[]>;
   /** #W2-HITL — human messages drained but TAGGED for a different gate: re-queued here so the right
    *  gate consumes them next tick instead of the wrong gate eating (and mis-parsing) them. */
-  pendingHuman?: string[];
+  pendingHuman?: FactoryHumanMessage[];
+  /** One opaque, one-shot identity per pending gate kind. Multiple kinds may
+   * coexist in a restored checkpoint; priority is resolved separately. */
+  humanInteractions?: Partial<Record<FactoryHumanInteractionKind, FactoryPendingHumanInteraction>>;
+  /** Recent durable mailbox deliveries already represented by a conversation checkpoint.
+   *  Retained across restart so an interrupted ack can be completed without replaying input. */
+  checkpointedHumanDeliveries?: string[];
   /** skills the brain authored this run (woven into generated agents). */
   createdSkills: Array<{ name: string; purpose: string; promptFragment: string; tools: string[]; decisionRule: string }>;
   /** facts gathered via web_search (fed into agent prompts as grounding). */
   research: Array<{ query: string; findings: string }>;
   /** test cases the brain authored (generate_test_cases); fired by sandbox_run after approval. */
   testCases?: TestCase[];
+  /** Latest deterministic coverage matrix for the proposed suite. */
+  testCoverage?: { required: string[]; covered: string[]; backfilled: string[]; uncoveredNeedingData: string[] };
+  /** Explicit human waiver for data-dependent cells. Bound to the exact cell
+   * list; regenerating cases clears it. */
+  testCoverageWaiver?: { cells: string[]; note?: string; confirmedAt: number };
   /** real values the USER supplied (supply_test_data) to replace demo placeholders for contact /
    *  credential / id fields (e.g. a real interview email) — applied into the fired test payloads. */
   testDataOverrides?: Record<string, unknown>;
   /** true while parked waiting for the user's 执行/重新生成 decision on the test cases. */
   awaitingApproval?: boolean;
+  /** User chose to supplement the still-unapproved suite. While true the
+   * conductor admits only test-data tools; sandbox_run/finish remain blocked
+   * by awaitingApproval until the edited suite is reviewed again. */
+  testDataSupplementPending?: boolean;
   /** boundary events the user CLASSIFIED (external handoff / terminal / break) — graph
    *  validation honors external + terminal so they aren't false-flagged as broken chains. */
   boundaryEvents?: BoundaryEvent[];
   /** true while parked for the user's boundary-event decision (`[边界事件决策…]`). */
   awaitingBoundary?: boolean;
-  /** ask_user park: true while waiting for the user's clarification answer; the prompt is
-   *  kept so a park timeout can fall back to the AI's recommended option. */
+  /** ask_user park: true while waiting for the user's clarification answer. The prompt is
+   *  retained across suspension/resume; a recommended option never substitutes for consent. */
   awaitingClarify?: boolean;
-  clarifyPrompt?: { question: string; options?: Array<{ label: string; value: string; recommended?: boolean }>; context?: string };
+  /** #ASK-PROPOSAL — `proposal` 是提问那一刻大脑自己写的【提案原文】（同一轮 assistant 正文）。
+   *  必须快照：选项常常只活在这段散文里（"路线A：只生成 createJD ／ 路线B：补齐全部 6 个"），
+   *  `options` 是可选的、自动挂起路径更是完全没有 options。不留原文，用户的回答就退化成一个
+   *  无法解析的字母（"用户回答：A"），大脑只能瞎猜 A 指什么——真实事故正是这么发生的。 */
+  clarifyPrompt?: { question: string; options?: Array<{ label: string; value: string; recommended?: boolean }>; context?: string; proposal?: string };
   /** #ASK-DEDUP — normalized question → the user's answer ("" while pending). ask_user refuses
    *  to re-ask an already-answered question (the answer is replayed to the brain instead). */
   askedQuestions?: Record<string, string>;
+  /** Exact responder evidence for the current clarification answer. Ordinary
+   * de-dup uses `askedQuestions`; authorization additionally requires this
+   * authenticated, question/context-exact record. */
+  clarificationAnswerEvidence?: Record<string, {
+    question: string;
+    context?: string;
+    options?: Array<{ label: string; value: string; recommended?: boolean }>;
+    answer: string;
+    actor?: string;
+    answeredAt: number;
+  }>;
+  /** Server-issued challenges waiting for an exact human answer. */
+  pendingAuthorizationChallenges?: Record<string, FactoryAuthorizationChallenge>;
+  /** Secret-free, exact signed-fixture proposals parked behind a durable
+   * one-shot challenge. The API re-resolves definition/config before signing;
+   * this checkpoint merely lets a resumed Brain repeat the reviewed bytes
+   * instead of regenerating timestamps or fixture entries. */
+  pendingSignedFixtureProposals?: Record<string, {
+    request: FactorySignedFixtureRequest;
+    preparation: FactorySignedFixturePreparation;
+  }>;
+  /** Server-consumed, authenticated sign-off for exactly one current sandbox
+   * evidence tuple. A changed fingerprint or runtime build identity makes it
+   * unusable and forces a fresh review. */
+  sandboxDesignReview?: {
+    fingerprint: string;
+    subjectDigest: string;
+    receipt: FactoryHumanAuthorizationReceipt;
+  };
+  /** One-shot write-probe approvals already consumed in this conversation.
+   * Persisted with the checkpoint so a repeated tool call cannot reuse them. */
+  consumedProbeAuthorizationDigests?: string[];
+  /** One-shot integration-profile confirmations already consumed in this
+   * conversation. Persisted with the checkpoint and never reused as memory. */
+  consumedIntegrationProfileAuthorizationDigests?: string[];
   /** #AUDIT-FIX(H4) — 本会话已成功交付过（finish 通过）。跨 run 持久（serializeCtx），
    *  完成守卫据此不再对交付后的追问轮催「去 finish」。 */
   delivered?: boolean;
@@ -352,12 +501,19 @@ export interface BrainCtx {
     /** 难度带（policy-learning 的 arm 维度之一；run 收束时随 outcome 回喂）——度量刻度，保持封闭。 */
     band?: "simple" | "standard" | "complex";
   };
+  /** #REASONING-KERNEL — the intent-derived DEFAULT reasoning method for this run (executed via the
+   *  kernel, not react-by-default). "cot" for analyze/question/report answers; "react" (ambient tool
+   *  loop) for generate/modify. Drives the top-level answer routing + prompt guidance. */
+  reasoningDefault?: string;
   /** the proposals awaiting decision, kept so a park TIMEOUT can auto-apply the AI's kinds. */
   boundaryProposals?: BoundaryProposal[];
   /** outcome of the last sandbox_run — the finish gate requires real end-to-end
    *  evidence, tied to the exact specs via fingerprint so a changed spec can't
    *  finish on stale-green evidence. */
   lastSandbox: {
+    /** Historical field name retained for persisted-context compatibility. Since evidence v2 this
+     * is the canonical sandbox-evidence fingerprint (specs + tests/overrides + ontology + selected
+     * tool bindings/config), not a specs-only hash. */
     specsFingerprint: string;
     deployed: number;
     agentsRan: number;
@@ -365,6 +521,10 @@ export interface BrainCtx {
     reachedTerminal: boolean;
     reachedSuccessTerminal: boolean;
     fullChainRan: boolean;
+    /** Exact approved-suite identity and per-case runtime verdicts used only
+     * as the strict timing fallback when fullChainRan has not settled yet. */
+    caseVerdicts?: import("./acceptance").CompleteSuiteVerdicts;
+    expectedCaseIds?: string[];
     /** #REDESIGN P1 — spec shorts whose generated code actually executed (not fell back). */
     codeRanAgents?: string[];
     degradedAgents: string[];
@@ -372,8 +532,52 @@ export interface BrainCtx {
      *  (evaluateExecutionFidelity over the sandbox agentRuns). Undefined ⇒ not graded ⇒ lenient. */
     fidelityFailures?: string[];
     /** R2: true = graph-closure SIMULATION (Inngest not reachable), not a real deploy+run.
-     *  The finish gate refuses simulated evidence unless FACTORY_ALLOW_SIMULATED_FINISH=1. */
+     *  The finish gate always refuses it outside an isolated unit-test waiver. */
     simulated: boolean;
+    /** #TESTER-WIRE — per-spec P2.5 function-tester verdicts (rendered .ts deliverable really
+     *  executed in isolation). Undefined ⇒ not evaluated ⇒ acceptance UNKNOWN-blocks on real runs. */
+    functionTester?: import("./ports").FunctionTesterEntry[];
+    /** #TESTER-WIRE — sandbox chain tool dispatch mode (mock/replay/live/gated), for honest verdicts. */
+    toolMode?: string;
+    /** Fingerprint-bound proof of whether this exact spec set contains any
+     * external-write tool. `false` permits gated mode only because every
+     * dispatched integration is read-only/live. */
+    externalWritesRequired?: boolean;
+    /** Whether the latest real sandbox attempt proved broker registration/readiness and accepted
+     * every entry-event dispatch. `false` invalidates any carried same-fingerprint success. */
+    transportAccepted?: boolean;
+    /** Latest transport diagnostic, retained for the finish gate/operator instead of being hidden by
+     * an older successful snapshot for the same spec fingerprint. */
+    transportError?: string;
+    /** Manifest intent and independent Inngest registry observation. */
+    appId?: string;
+    committedManifestFunctionIds?: string[];
+    brokerRegistration?: import("./ports").SandboxBrokerRegistrationProof;
+    /** Fresh, content-addressed proof that the exact ephemeral Inngest app for
+     * this attempt was deleted and read back as absent. */
+    cleanupReceipt?: import("./ports").SandboxCleanupReceipt;
+    /** Remote execution-plane attestation for the exact generated bundle. A
+     * production finish never accepts a worker/process-only sandbox result. */
+    executionReceipt?: import("./sandbox-execution-plane").SandboxExecutionPlaneReceipt;
+    /** Real semantic-model calls; externalLiveCalls below counts tools only. */
+    modelUsage?: import("./sandbox-model-usage").SandboxModelUsageEvidence;
+    candidateFingerprint?: string;
+    targetDomainId?: string;
+    sandboxAttemptId?: string;
+    sandboxTenantSlug?: string;
+    /** Authenticated server-consumed review that approved this exact evidence
+     * tuple before its ephemeral App was created. */
+    designReviewReceipt?: FactoryHumanAuthorizationReceipt;
+    designReviewSubjectDigest?: string;
+    /** Full-chain sandbox tool-dispatch proof. External handlers must never run
+     * live; every external call is backed by an exact attempt cassette. */
+    externalLiveCalls?: number | null;
+    replayReceipts?: import("./ports").SandboxToolDispatchReceipt[];
+    sandboxReplayEvidenceComplete?: boolean;
+    /** Exact binding/config-scoped cassette references sealed into this
+     * attempt's remote bundle. Never reconstruct these later from a display
+     * catalog: global, tenant-native and multi-config uses would be lost. */
+    cassetteRefs?: SandboxDeployResult["cassetteRefs"];
     ts: number;
   } | null;
   /** #P3 — 独立监督者的版本锁定缺陷(在 sandbox_run 后审计+结转,finish 门读它清零)。
@@ -385,6 +589,9 @@ export interface BrainCtx {
   sandboxSeq?: number;
   /** last validate_graph result with per-agent backref (refine reads agentIssueMap[slug]). */
   lastValidation: { agentIssueMap: Record<string, unknown[]>; ok: boolean } | null;
+  /** #BLUEPRINT — last build_blueprint result (ontology-grounded phased model + rendered SVGs).
+   *  generate_report reads it to append a blueprint section to the HTML/PDF report. */
+  lastBlueprint?: import("./blueprint").BlueprintModel;
   /** authoritative directives a human injected mid-run (HITL). */
   humanDirectives: string[];
   /** the intent gate's structured reading of the user's goal(s) — APPENDED per new goal so the
@@ -396,6 +603,40 @@ export interface BrainCtx {
   /** the brain's explicit, AI-synthesized understanding of the ontology (understand_ontology) —
    *  kept so the design phase reasons over a digested model, not a raw re-read ("读了就忘"). */
   ontologyUnderstanding?: string;
+  /** ontology CONTENT hash captured when ontologyUnderstanding was computed — understand_ontology
+   *  replays the remembered understanding while this matches the current ontology (cache gate),
+   *  and re-digests automatically the moment the ontology actually changes. */
+  ontologyUnderstandingSig?: string;
+  /** #UNDERSTAND-FIDELITY — HOW the remembered understanding was produced. The content hash alone
+   *  cannot distinguish a deterministic skeleton from a full four-dimension deep read, so a cheap
+   *  early skeleton used to satisfy (and silently swallow) a later explicit `deep:true` request.
+   *  The cache now only serves a request whose fidelity it actually meets. */
+  ontologyUnderstandingMode?: "skeleton" | "shallow" | "deep";
+  /** #FULL-DIMENSION — the provable per-dimension coverage behind a `deep` understanding, retained
+   *  so a cache replay can restate it honestly instead of dropping the disclosure. */
+  ontologyUnderstandingCoverage?: {
+    itemsAnalyzed: number;
+    itemsTotal: number;
+    batches: number;
+    oversized: number;
+    complete: boolean;
+  };
+  /** #AMBIGUITY-COUNT — how many ambiguities understand_ontology actually found, recorded as DATA
+   *  by the writer. The policy router previously recovered this by regex-scraping the understanding
+   *  prose for "N 处歧义" — a literal no healthy writer ever emits (it lives in tool summaries), so
+   *  the ask_first route was dead on success and fired only on the degraded fallback stitch, which
+   *  concatenates specialist summaries that DO contain it. Never re-derive this from prose. */
+  ontologyAmbiguityCount?: number;
+  /** #PERSPECTIVES — which stakeholder lenses the deep read ran, with honest outcome.
+   *  Presence = the deep understanding is lens-AWARE（#UNDERSTAND-CACHE 的保真版本号：镜头前的
+   *  深读摘要不携带此字段，不得静默满足镜头时代的显式 deep:true）；absent = 镜头前产物或已关闭。
+   *  视角的具体发现并入 ontologyUnderstanding 正文，这里只记选配与成败。Fold/serialize-surviving. */
+  ontologyPerspectives?: {
+    selected: Array<{ id: string; label: string; focus: string; adapted: boolean }>;
+    okCount: number;
+    total: number;
+    source: "llm" | "fallback";
+  };
   /** reflections loaded on start from prior runs of this domain. */
   priorReflections: ReflectionLite[];
   /** the conversation key (durability) + abort signal (client disconnect). */
@@ -403,6 +644,28 @@ export interface BrainCtx {
   signal?: AbortSignal;
   /** sub-brain recursion depth (0 = main brain) — bounds spawn_subagent fan-out (R9). */
   subagentDepth?: number;
+  /** #TREE-BUDGET — the spend ledger shared by reference across the whole spawn tree (see BudgetLedger).
+   *  Present on every ctx (root creates it; children inherit the same object). */
+  budgetLedger?: BudgetLedger;
+  /** #RUN-REGRESSION (P1-6) — per-case verdict snapshot from the last regression replay, so the next
+   *  replay reports fixed/regressed per test case instead of a bare pass count. Fold/restart-surviving. */
+  regressionBaseline?: {
+    fingerprint: string;
+    at: number;
+    verdicts: Record<string, { pass: boolean; kind: string; reason: string }>;
+  };
+}
+
+/** #TREE-BUDGET — a single spend ledger shared BY REFERENCE across the WHOLE spawn tree (root brain +
+ *  every nested sub-brain / group member). Without it, a reasoning-driven parallel fan-out × recursion
+ *  would each build an independent fresh budget (maxTurns=200 / MAX_TOKENS) and multiply into unbounded
+ *  aggregate spend. Every LLM call adds to `tokens`; every spawn adds to `spawns`; the brainLoop enforces
+ *  the tree-wide token ceiling and the spawn tools enforce `maxSpawns`. */
+export interface BudgetLedger {
+  tokens: number;
+  spawns: number;
+  maxTokens: number | null;
+  maxSpawns: number;
 }
 
 export interface BrainTool {

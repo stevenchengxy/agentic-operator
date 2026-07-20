@@ -19,7 +19,6 @@
  */
 
 import type { TenantRegistry } from "@agentic/agent-kit";
-import { pingProbe } from "./tools/ping-probe";
 import {
   parseResumeApi,
   matchResumeApi,
@@ -29,14 +28,31 @@ import {
 } from "@agentic/tools/robohire";
 import { candidateDedupLookup } from "./tools/candidate-dedup";
 import { foldRuleDecisionTool } from "./tools/fold-rule-decision";
-import { sendInvitationEmail } from "./tools/send-invitation-email";
+import { routeInterviewInvitation } from "./tools/route-interview-invitation";
+import {
+  loadContextData,
+  assemblePackageMaterials,
+} from "./tools/business-context";
+import {
+  executeAutomatedPublication,
+  generatePublishHelperPage,
+  updatePublicationStatus,
+} from "./tools/publication";
+import { submitToClientSystem } from "./tools/client-submission";
+import {
+  monitorAndFetchRequirement,
+  checkDeduplicatedRequisition,
+  persistRequisitionData,
+} from "./tools/requirement-sync";
 import { raasPrompts } from "./prompts";
+import { raasReasoningConfig } from "./reasoning-config";
 
 const tools: TenantRegistry["tools"] = {
-  // The action.name in workflow_v1.json maps here. pingProbe targets the
-  // first action of syncFromClientSystem ("monitorAndFetchRequirement") so
-  // a SCHEDULED_SYNC trigger exercises the tenant resolver end-to-end.
-  monitorAndFetchRequirement: pingProbe,
+  // Real client-system ingestion: configured HTTP receipt -> tenant-scoped
+  // deterministic dedup -> atomic durable persistence. No ping/sample shim.
+  monitorAndFetchRequirement,
+  checkDeduplicatedRequisition,
+  persistRequisitionData,
 
   // Agent migration (招聘-v1): re-export the first-party RoboHire REST tools
   // into the RAAS tenant registry. Required because the LLM tool-use ADVERTISE
@@ -59,8 +75,20 @@ const tools: TenantRegistry["tools"] = {
   // RuleCheck: deterministic fail-closed fold (the verdict the LLM must NOT own).
   foldRuleDecision: foldRuleDecisionTool,
 
-  // InterviewInviter: real email delivery (RoboHire only generates the body).
-  sendInvitationEmail,
+  // InterviewInviter: RoboHire performs the one real send. This terminal tool
+  // only routes the persisted receipt and cannot trigger a duplicate delivery.
+  routeInterviewInvitation,
+
+  // Requirement/package reads are backed by durable tenant business records.
+  loadContextData,
+  assemblePackageMaterials,
+
+  // Publication/submission actions perform real configured I/O or create a
+  // durable human task. They never return a placeholder success receipt.
+  executeAutomatedPublication,
+  generatePublishHelperPage,
+  updatePublicationStatus,
+  submitToClientSystem,
 };
 
 // Wave 4.5 — every `logic` action in models/RAAS-v1/workflow_v1.json must
@@ -68,5 +96,11 @@ const tools: TenantRegistry["tools"] = {
 // (`findMissingTenantPrompts` in packages/runtime/src/register.ts).
 const prompts: TenantRegistry["prompts"] = raasPrompts;
 
-const registry: TenantRegistry = { tools, prompts };
+const registry: TenantRegistry = {
+  tools,
+  prompts,
+  // Production rule evaluation is an independent tenant capability. It does
+  // not read, create, or update Agent Factory ontology-domain bindings.
+  reasoning: raasReasoningConfig,
+};
 export default registry;

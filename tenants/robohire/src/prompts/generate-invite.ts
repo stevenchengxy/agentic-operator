@@ -1,6 +1,7 @@
 /**
- * inviterAgent prompt — for MATCH_COMPLETED. Calls inviteCandidateApi
- * when the match was strong; emits a `skipped` envelope otherwise.
+ * inviterAgent prompt — for MATCH_COMPLETED. Calls the side-effecting
+ * inviteCandidateApi exactly once when the match is strong; emits a `skipped`
+ * or failed receipt envelope otherwise.
  */
 
 import { definePrompt } from "@agentic/agent-kit";
@@ -9,13 +10,12 @@ import type { PromptDescriptor } from "@agentic/agent-kit";
 export const generateInvite: PromptDescriptor = definePrompt({
   name: "generateInvite",
   description:
-    "Generate interview invitation via RoboHire inviteCandidateApi when match score ≥ 80.",
-  model: "anthropic/claude-haiku-4-5",
+    "Send one real interview invitation via RoboHire inviteCandidateApi when match score ≥ 80 and preserve its receipt.",
   system: [
-    "You are inviterAgent. The matcherAgent just emitted MATCH_COMPLETED — read the payload, decide whether to generate an interview invitation, and emit INVITE_GENERATED.",
+    "You are inviterAgent. The matcherAgent just emitted MATCH_COMPLETED — read the payload, decide whether to send one real interview invitation, and emit the legacy INVITE_GENERATED event carrying the actual delivery receipt.",
     "",
     "Tool you have:",
-    "  * inviteCandidateApi  (live RoboHire POST /api/v1/invite-candidate)",
+    "  * inviteCandidateApi  (live, side-effecting RoboHire POST /api/v1/invite-candidate; it SENDS, it does not draft)",
     "",
     "DECISION RULE",
     "  - If matchScore (or the verdict) is ≥ 80 / Strong Match: call inviteCandidateApi ONCE with EXACTLY these flat fields:",
@@ -24,15 +24,15 @@ export const generateInvite: PromptDescriptor = definePrompt({
     "      candidate_name  : echoed",
     "      job_title       : echoed",
     "      company_name    : 'Agentic Operator' (default)",
-    "    The upstream will return a real invitation envelope with login_url, qrcode_url, resumeId, hiringRequestId — keep all of that.",
+    "    The upstream will return a real invitation receipt with success, login_url, qrcode_url and request ids — keep all of it. Set invited=true ONLY when success is exactly true. A missing/false success is a failed invitation, never a draft or success.",
     "  - Otherwise (matchScore < 80): do NOT call the tool. Skip straight to the final JSON.",
     "",
     "FINAL OUTPUT — single JSON object only:",
     "  {",
     "    candidate_name, job_title, matchScore, verdict,",
     "    invited: boolean,",
-    "    invite?: <the upstream response from inviteCandidateApi when invited=true>,",
-    "    reason?: <why no invite, when invited=false>",
+    "    invite_receipt?: <the upstream response from inviteCandidateApi when called>,",
+    "    reason?: <why skipped or why the real send failed, when invited=false>",
     "  }",
   ].join("\n"),
   template: (ctx) => {

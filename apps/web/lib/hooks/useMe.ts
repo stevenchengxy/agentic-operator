@@ -15,16 +15,8 @@ import {
 } from "@tanstack/react-query";
 import { usePathname } from "next/navigation";
 import type { MeResponse, Permission } from "@agentic/contracts";
+import { readApiData } from "@/lib/api-response";
 import { tenantHeader, tenantFromPathname } from "./tenant-header";
-
-interface ApiOk<T> {
-  ok: true;
-  data: T;
-}
-interface ApiErr {
-  ok: false;
-  error: { code: string; message: string };
-}
 
 async function callV1<T>(path: string, init: RequestInit = {}): Promise<T> {
   const { headers: initHeaders, ...rest } = init;
@@ -41,11 +33,7 @@ async function callV1<T>(path: string, init: RequestInit = {}): Promise<T> {
       ...(initHeaders as Record<string, string> | undefined),
     },
   });
-  const body = (await res.json()) as ApiOk<T> | ApiErr;
-  if (!body.ok) {
-    throw new Error(`${path}: ${body.error.code} — ${body.error.message}`);
-  }
-  return body.data;
+  return readApiData<T>(res, path);
 }
 
 export const ME_KEY = ["me"] as const;
@@ -79,18 +67,31 @@ export function useIsSuperadmin(): boolean {
 
 export function useChangePassword() {
   return useMutation({
-    mutationFn: (body: { currentPassword: string; newPassword: string }) =>
-      callV1<{ ok: boolean }>("/v1/me/password", {
+    mutationFn: async (body: { currentPassword: string; newPassword: string }) => {
+      const result = await callV1<{ ok?: unknown }>("/v1/me/password", {
         method: "POST",
         body: JSON.stringify(body),
-      }),
+      });
+      if (result.ok !== true) {
+        throw new Error("Password change response did not confirm success");
+      }
+      return { ok: true as const };
+    },
   });
 }
 
 export function useLogout() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: () => callV1<{ ok: boolean }>("/v1/auth/logout", { method: "POST" }),
+    mutationFn: async () => {
+      const result = await callV1<{ ok?: unknown }>("/v1/auth/logout", {
+        method: "POST",
+      });
+      if (result.ok !== true) {
+        throw new Error("Logout response did not confirm success");
+      }
+      return { ok: true as const };
+    },
     onSuccess: () => {
       qc.clear();
       if (typeof window !== "undefined") window.location.href = "/sign-in";

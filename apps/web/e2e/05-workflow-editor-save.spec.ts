@@ -23,6 +23,7 @@
  */
 
 import { test, expect } from "@playwright/test";
+import { access } from "node:fs/promises";
 import { apiFetch } from "./helpers";
 
 interface ManifestAgent {
@@ -43,42 +44,15 @@ interface ManifestAgent {
 
 const TEST_MANIFEST: ManifestAgent[] = [
   {
-    id: "1",
+    id: "e2e-test-agent",
     name: "e2eTestAgent",
     description: "P4-TEST-05 throwaway agent for workflow save round-trip.",
     actor: ["Agent"],
     trigger: ["E2E_TEST_KICKOFF"],
-    actions: [
-      {
-        order: "1",
-        name: "e2eLogic",
-        description: "do something",
-        type: "logic",
-        condition: "always",
-      },
-    ],
+    actions: [],
     triggered_event: ["E2E_TEST_DONE"],
   },
 ];
-
-/**
- * KNOWN ISSUE (tracked separately): the route's `computeDiff()` call
- * reads the first live deployment under the tenant regardless of
- * `target`. If a tenant_code deployment is also live (as the seeded
- * raas tenant has), the manifestJson read is an object rather than an
- * array and `for (const a of prior)` throws. The fix lives in
- * `apps/api/src/routes/v1/agents.ts` — add `eq(deployments.target,
- * "workflow")` to the .where() chain. Until that lands, this spec
- * accepts either 200 (correct path) or 500 (current bug) so the suite
- * exercises the route end-to-end without falsely blocking merges. Once
- * the api fix is in, tighten the asserts back to strict 200.
- */
-function expectSuccessOrKnownBug<T extends { status: number }>(r: T): boolean {
-  if (r.status === 200) return true;
-  // Accept the documented 500 only on the manifest-upload path; any
-  // other 5xx is a real regression.
-  return r.status === 500;
-}
 
 test.describe("P4-TEST-05: workflow editor save E2E", () => {
   test("POST /v1/agents inserts workflow_version + live deployment", async () => {
@@ -92,32 +66,37 @@ test.describe("P4-TEST-05: workflow editor save E2E", () => {
         prior_version: string | null;
       };
       note: string | null;
+      deployment_id: string;
+      file_written: string;
+      inngest_fns_registered: number;
     }>("/v1/agents", {
       method: "POST",
       body: JSON.stringify({
         manifest: TEST_MANIFEST,
-        workflowSlug: `e2e-${Date.now()}`,
         note: "P4-TEST-05 e2e",
       }),
     });
 
-    // See KNOWN ISSUE doc above the describe block.
-    expect(expectSuccessOrKnownBug(upload)).toBe(true);
-    if (upload.status !== 200) {
-      console.warn(
-        `[P4-TEST-05] known-bug 500 from /v1/agents — tracked separately`,
-      );
-      return;
-    }
+    expect(upload.status).toBe(200);
     if (!upload.body.ok) {
       throw new Error(
         `manifest upload failed: ${upload.body.error.code} — ${upload.body.error.message}`,
       );
     }
-    const { workflow_version_id, version, diff } = upload.body.data;
+    const {
+      workflow_version_id,
+      version,
+      diff,
+      deployment_id,
+      file_written,
+      inngest_fns_registered,
+    } = upload.body.data;
     expect(workflow_version_id).toMatch(/^wfv-/);
-    expect(version).toMatch(/^upload-[a-f0-9]+$/);
-    expect(diff.added).toContain("1");
+    expect(deployment_id).toMatch(/^dpl-/);
+    expect(version).toMatch(/^auto-[a-f0-9]{8}$/);
+    expect(diff.added).toContain("e2e-test-agent");
+    expect(inngest_fns_registered).toBeGreaterThan(0);
+    await expect(access(file_written)).resolves.toBeUndefined();
 
     // Confirm a live deployment row exists pointing at the new version.
     const deps = await apiFetch<{
@@ -143,14 +122,9 @@ test.describe("P4-TEST-05: workflow editor save E2E", () => {
       method: "POST",
       body: JSON.stringify({
         manifest: TEST_MANIFEST,
-        workflowSlug: "e2e-idempotency",
       }),
     });
-    expect(expectSuccessOrKnownBug(first)).toBe(true);
-    if (first.status !== 200) {
-      console.warn(`[P4-TEST-05] known-bug 500 on first upload`);
-      return;
-    }
+    expect(first.status).toBe(200);
     if (!first.body.ok) throw new Error("first upload failed");
     const v1 = first.body.data.version;
 
@@ -158,26 +132,19 @@ test.describe("P4-TEST-05: workflow editor save E2E", () => {
       method: "POST",
       body: JSON.stringify({
         manifest: TEST_MANIFEST,
-        workflowSlug: "e2e-idempotency",
       }),
     });
-    expect(expectSuccessOrKnownBug(second)).toBe(true);
-    if (second.status !== 200) return;
+    expect(second.status).toBe(200);
     if (!second.body.ok) throw new Error("second upload failed");
     expect(second.body.data.version).toBe(v1);
   });
 
   test("modifying a single agent surfaces in the diff modifications list", async () => {
-    const slug = `e2e-diff-${Date.now()}`;
     const initial = await apiFetch("/v1/agents", {
       method: "POST",
-      body: JSON.stringify({ manifest: TEST_MANIFEST, workflowSlug: slug }),
+      body: JSON.stringify({ manifest: TEST_MANIFEST }),
     });
-    expect(expectSuccessOrKnownBug(initial)).toBe(true);
-    if (initial.status !== 200) {
-      console.warn(`[P4-TEST-05] known-bug 500 on initial upload`);
-      return;
-    }
+    expect(initial.status).toBe(200);
 
     const modified: ManifestAgent[] = [
       {
@@ -189,11 +156,10 @@ test.describe("P4-TEST-05: workflow editor save E2E", () => {
       diff: { added: string[]; modified: string[]; removed: string[] };
     }>("/v1/agents", {
       method: "POST",
-      body: JSON.stringify({ manifest: modified, workflowSlug: slug }),
+      body: JSON.stringify({ manifest: modified }),
     });
-    expect(expectSuccessOrKnownBug(r)).toBe(true);
-    if (r.status !== 200) return;
+    expect(r.status).toBe(200);
     if (!r.body.ok) throw new Error("modify upload failed");
-    expect(r.body.data.diff.modified).toContain("1");
+    expect(r.body.data.diff.modified).toContain("e2e-test-agent");
   });
 });

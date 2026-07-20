@@ -61,15 +61,10 @@ describe("normalizePreferences", () => {
   it("falls back to the default language for an unknown value", () => {
     expect(normalizePreferences({ language: "fr" }).language).toBe("en");
   });
-  it("ignores a non-boolean liveStream", () => {
-    expect(normalizePreferences({ liveStream: "yes" }).liveStream).toBe(
-      DEFAULT_PREFERENCES.liveStream,
-    );
-  });
-  it("keeps a string accent / tenant when provided", () => {
+  it("keeps a string accent and ignores obsolete tenant preferences", () => {
     const p = normalizePreferences({ accent: "#5deeff", tenant: "acme" });
     expect(p.accent).toBe("#5deeff");
-    expect(p.tenant).toBe("acme");
+    expect("tenant" in p).toBe(false);
   });
 });
 

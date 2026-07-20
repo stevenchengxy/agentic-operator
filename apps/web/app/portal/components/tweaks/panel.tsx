@@ -9,14 +9,14 @@
  *
  * Restyled to theme tokens (was hardcoded light glass, unreadable in dark
  * mode). Controls: Theme (system/light/dark), Language (EN/中), Density,
- * Accent, Live stream, Show debug, Tenant, Data source.
+ * Accent and the active tenant route.
  */
 
 import { useEffect, useState } from "react";
 import { Icon } from "../Icon";
 import { useTweaks, type Tweaks } from "./use-tweaks";
 import { LanguageToggle } from "../shell/appearance-controls";
-import { useTenantNavigate } from "../../lib/use-tenant";
+import { useTenant, useTenantNavigate } from "../../lib/use-tenant";
 import { useI18n } from "@/app/portal/lib/preferences-context";
 
 const ACCENT_OPTIONS: { value: string; label: string }[] = [
@@ -38,6 +38,7 @@ export interface TweaksPanelProps {
 export function TweaksPanel({ tenants = [] }: TweaksPanelProps) {
   const [open, setOpen] = useState(false);
   const [tweaks, setTweak] = useTweaks();
+  const activeTenant = useTenant();
   const goTenant = useTenantNavigate();
   const { t } = useI18n();
 
@@ -82,6 +83,7 @@ export function TweaksPanel({ tenants = [] }: TweaksPanelProps) {
           tweaks={tweaks}
           setTweak={setTweak}
           tenants={tenants}
+          activeTenant={activeTenant}
           onClose={() => setOpen(false)}
           onTenantChange={goTenant}
         />
@@ -94,12 +96,14 @@ function PanelBody({
   tweaks,
   setTweak,
   tenants,
+  activeTenant,
   onClose,
   onTenantChange,
 }: {
   tweaks: Tweaks;
   setTweak: ReturnType<typeof useTweaks>[1];
   tenants: TenantOption[];
+  activeTenant: string;
   onClose: () => void;
   onTenantChange: (next: string) => void;
 }) {
@@ -186,35 +190,12 @@ function PanelBody({
           options={ACCENT_OPTIONS}
           onChange={(v) => setTweak("accent", v)}
         />
-        <ToggleRow
-          label={t("tweaksPanel.liveStream")}
-          value={tweaks.liveStream}
-          onChange={(v) => setTweak("liveStream", v)}
-        />
-        <ToggleRow
-          label={t("tweaksPanel.showDebug")}
-          value={tweaks.showDebug}
-          onChange={(v) => setTweak("showDebug", v)}
-        />
         {tenants.length > 0 && (
           <SelectRow
             label={t("tweaksPanel.activeTenant")}
-            value={tweaks.tenant}
+            value={activeTenant}
             options={tenants.map((t) => ({ value: t.id, label: t.name }))}
-            onChange={(v) => {
-              setTweak("tenant", v);
-              onTenantChange(v);
-            }}
-          />
-        )}
-        {tweaks.showDebug && (
-          <RadioRow
-            label={t("tweaksPanel.dataSource")}
-            value={tweaks.dataSource}
-            options={["json", "neo4j"]}
-            optionKeyPrefix="tweaksPanel.dataSource_"
-            onChange={(v) => setTweak("dataSource", v as Tweaks["dataSource"])}
-            note={t("tweaksPanel.dataSourceNote")}
+            onChange={onTenantChange}
           />
         )}
       </div>
@@ -307,49 +288,6 @@ function RadioRow({
           );
         })}
       </div>
-    </Row>
-  );
-}
-
-function ToggleRow({
-  label,
-  value,
-  onChange,
-}: {
-  label: string;
-  value: boolean;
-  onChange: (v: boolean) => void;
-}) {
-  return (
-    <Row label={label} inline>
-      <button
-        role="switch"
-        aria-checked={value}
-        onClick={() => onChange(!value)}
-        style={{
-          position: "relative",
-          width: 32,
-          height: 18,
-          borderRadius: 999,
-          background: value ? "var(--green)" : "var(--border-2)",
-          transition: "background .15s",
-        }}
-      >
-        <span
-          style={{
-            position: "absolute",
-            top: 2,
-            left: 2,
-            width: 14,
-            height: 14,
-            borderRadius: "50%",
-            background: "#fff",
-            boxShadow: "0 1px 2px rgba(0,0,0,.25)",
-            transform: value ? "translateX(14px)" : "translateX(0)",
-            transition: "transform .15s",
-          }}
-        />
-      </button>
     </Row>
   );
 }

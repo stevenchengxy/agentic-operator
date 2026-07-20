@@ -5,10 +5,9 @@
  * llm_turns data: build a faithful digest of everything the run did, hand it to
  * the shared LLM gateway, and get back a natural-language summary. On success
  * the model describes the business outcome; on failure it describes the problem
- * and guesses likely causes from the error. Degrades to digest-only when the
- * gateway can't produce JSON (e.g. mock provider in demo mode). Results are
- * cached in `run_summaries` (see queries/reasoning.ts) so re-opening a run
- * doesn't re-spend tokens.
+ * and guesses likely causes from the error. If the real gateway cannot
+ * produce a valid summary, generation fails explicitly; a digest must never
+ * masquerade as an AI result or overwrite the last valid cached summary.
  */
 
 import { readFile } from "node:fs/promises";
@@ -34,7 +33,7 @@ function preview(v: unknown, n: number): string {
   }
 }
 
-/** Last `maxLines` lines of a run's `.log` file (bounded). Best-effort. */
+/** Last `maxLines` lines of a run's `.log` file (bounded). */
 async function readLogTail(
   logPath: string | null | undefined,
   maxLines: number,
@@ -44,8 +43,9 @@ async function readLogTail(
     const text = await readFile(logPath, "utf8");
     const lines = text.split("\n").filter(Boolean);
     return lines.slice(-maxLines).join("\n");
-  } catch {
-    return "";
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "";
+    throw error;
   }
 }
 
@@ -108,7 +108,10 @@ const SYSTEM_PROMPT = [
 
 /** Extract the first balanced JSON object from a model reply (strips fences/prose). */
 function parseJsonObject(text: string): Record<string, unknown> | null {
-  const cleaned = text.replace(/```json/gi, "").replace(/```/g, "").trim();
+  const cleaned = text
+    .replace(/```json/gi, "")
+    .replace(/```/g, "")
+    .trim();
   const start = cleaned.indexOf("{");
   const end = cleaned.lastIndexOf("}");
   if (start === -1 || end <= start) return null;
@@ -119,32 +122,22 @@ function parseJsonObject(text: string): Record<string, unknown> | null {
   }
 }
 
-const toStr = (v: unknown): string => (typeof v === "string" ? v : v == null ? "" : String(v));
+const toStr = (v: unknown): string =>
+  typeof v === "string" ? v : v == null ? "" : String(v);
 const toArr = (v: unknown): string[] =>
   Array.isArray(v) ? v.map(toStr).filter(Boolean) : [];
 
-function fallback(run: RunRow, digest: string, failed: boolean): RunSummary {
-  const errorMsg = run.errorMessage ?? run.error ?? null;
-  return {
-    scored: false,
-    status: run.status,
-    headline: failed
-      ? `运行失败（${run.agentTitle ?? run.agentName}）`
-      : `运行 ${run.status}（${run.agentTitle ?? run.agentName}）`,
-    narrative: "（未启用 LLM 网关或解析失败，仅给出活动叙事；配置真实 provider 后可生成 AI 总结）",
-    businessDetails: [],
-    problem: failed && errorMsg ? String(errorMsg) : null,
-    likelyCauses: [],
-    suggestions: [],
-    model: "",
-    digest,
-  };
+export class RunSummaryGenerationError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "RunSummaryGenerationError";
+  }
 }
 
 /**
  * Generate (and cache) the AI summary for a run. Returns null when the run
- * isn't found / not owned by the tenant. Never throws — degrades to a
- * digest-only summary on any gateway/parse failure.
+ * isn't found / not owned by the tenant. Throws RunSummaryGenerationError
+ * when the real model call or structured response validation fails.
  */
 export async function generateRunSummary(
   tenantSlug: string,
@@ -173,6 +166,8 @@ export async function generateRunSummary(
       jsonMode: true,
       purpose: "run_summary",
       tenantSlug,
+      tenantId,
+      runId,
       temperature: 0.3,
       maxTokens: 1600,
     });
@@ -181,7 +176,11 @@ export async function generateRunSummary(
     summary = {
       scored: true,
       status: run.status,
-      headline: toStr(j.headline) || fallback(run, digest, failed).headline,
+      headline:
+        toStr(j.headline) ||
+        (failed
+          ? `运行失败（${run.agentTitle ?? run.agentName}）`
+          : `运行 ${run.status}（${run.agentTitle ?? run.agentName}）`),
       narrative: toStr(j.narrative),
       businessDetails: toArr(j.businessDetails),
       problem: j.problem == null ? null : toStr(j.problem) || null,
@@ -190,8 +189,11 @@ export async function generateRunSummary(
       model: res.model,
       digest,
     };
-  } catch {
-    summary = fallback(run, digest, failed);
+  } catch (error) {
+    throw new RunSummaryGenerationError(
+      `Run ${run.id} summary generation failed; no synthetic fallback was saved`,
+      { cause: error },
+    );
   }
 
   saveRunSummary(tenantId, run.id, summary, summary.model);

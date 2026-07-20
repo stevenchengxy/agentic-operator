@@ -1,11 +1,14 @@
 /**
  * TC-1 — Provider listing reflects env state.
  *
- * Boots the API, ensures GET /v1/llm/providers returns all 14 providers,
- * and that hasKey accurately reflects which env vars are set.
+ * Boots the API, ensures GET /v1/llm/providers returns every adapter that is
+ * actually installed in this process, and that hasKey accurately reflects
+ * which env vars are set. Roadmap-only presets must not be manufactured as
+ * runnable providers merely to preserve an old count.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { PROVIDER_PRESETS } from "@agentic/contracts";
 import { buildTestEnv, type TestEnv } from "./harness";
 
 const ENV_BEFORE = {
@@ -28,7 +31,7 @@ describe("TC-1: /v1/llm/providers", () => {
     await env.cleanup();
   });
 
-  it("returns exactly 14 providers", async () => {
+  it("returns exactly the adapters installed in the test process", async () => {
     const res = await env.fetch("/v1/llm/providers");
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
@@ -37,7 +40,14 @@ describe("TC-1: /v1/llm/providers", () => {
     };
     expect(body.ok).toBe(true);
     expect(body.data).toBeInstanceOf(Array);
-    expect(body.data).toHaveLength(14);
+    // Mock is intentionally available only in tests. Bedrock and Vertex are
+    // catalog presets with no signed adapter in this build and therefore must
+    // not be reported as runnable.
+    const expectedIds = PROVIDER_PRESETS
+      .filter((provider) => provider.installed || provider.id === "mock")
+      .map((provider) => provider.id)
+      .sort();
+    expect(body.data.map((provider) => provider.id).sort()).toEqual(expectedIds);
   });
 
   it("includes the openrouter entry", async () => {

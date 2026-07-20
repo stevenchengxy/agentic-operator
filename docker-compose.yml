@@ -1,33 +1,48 @@
-# docker-compose.yml — local + production preview stack (P4-OPS-04).
+# docker-compose.yml — local persistent preview stack (P4-OPS-04).
 #
-# Three services:
+# This stack runs the real API, database, model provider and event path, but
+# its bundled `inngest dev` broker is explicitly a development service and is
+# not production infrastructure. Production must use Inngest Cloud or a
+# production self-hosted Inngest server with NODE_ENV=production and
+# INNGEST_DEV unset; the API now rejects that invalid mixed mode at startup.
+#
+# Three primary services, plus an opt-in external Factory sandbox plane:
 #
 #   * `api`     — the Fastify API + in-process Inngest functions.
-#                 Bind-mounts `data/` so SQLite + logs + artifacts persist
-#                 across `docker compose down/up`. Bind-mounts `models/`
-#                 so an operator can hot-swap manifests with the
-#                 NODE_ENV=production watcher disabled (the live update
-#                 path is `POST /v1/agents/...` rather than file watch).
+#                 Mounts the `agentic-data` volume so SQLite + logs + artifacts persist
+#                 across `docker compose down/up`. Mounts a persistent,
+#                 writable models volume. Docker seeds it from the manifests
+#                 baked into the API image on first use; later imports and
+#                 hot-swaps persist through restarts. The live update path is
+#                 `POST /v1/agents/...` rather than a production file watcher.
 #   * `web`     — the Next.js standalone server. Reads `AGENTIC_API_URL`
 #                 to know where to send `/v1/*` rewrites. No DB access.
 #   * `inngest` — the Inngest broker that queues events fired by
 #                 `inngest.send()` and POSTs them at `api:3501/inngest`.
-#                 Persists its own state under a named volume.
+#                 Uses a separate mount, but remains an in-memory development
+#                 broker; a named volume does not make `inngest dev` durable.
+#   * `sandbox-runner` + `sandbox-workload` + `sandbox-inngest` — enabled
+#                 only with the `factory-sandbox` profile. The signer/control
+#                 process is separate from generated-code execution; sandbox
+#                 state uses isolated networks/volumes and has no host ports.
 #
 # Volumes are named so they survive `docker compose down` (but not
-# `down --volumes` — that's the explicit nuke option). Healthchecks
-# inherit from the per-service Dockerfile HEALTHCHECK directives.
+# `down --volumes` — that's the explicit nuke option). The API inherits its
+# image healthcheck; both brokers use an explicit, verified `/health` probe
+# because the Inngest image does not declare one.
 #
-# Network: a single bridge network. The API is the only service that
-# reads tenant code/secrets, so it's also the only one that needs the
-# bind mount of `data/`. The web service has no need to share state
-# beyond the HTTP edge.
+# Network: the primary stack uses one bridge. The optional sandbox adds an
+# internal control bridge (API <-> runner) and a separate internal execution
+# bridge (runner <-> sandbox broker). The API cannot resolve or reach the
+# sandbox broker and never receives its event/signing/delete credentials.
 #
 # To run locally:
 #   docker compose --env-file .env.production up --build
 #
-# To validate without building:
-#   docker compose --env-file .env.production.example config
+# To validate without building, first copy the example and fill every required
+# value; the checked-in example intentionally contains blank credentials:
+#   cp .env.production.example .env.production
+#   docker compose --env-file .env.production config --quiet
 
 name: agentic-operator
 
@@ -37,6 +52,7 @@ services:
     build:
       context: .
       dockerfile: apps/api/Dockerfile
+      target: api-runtime
     container_name: agentic-api
     restart: unless-stopped
     ports:
@@ -48,7 +64,12 @@ services:
       - path: .env.production
         required: false
     environment:
-      NODE_ENV: production
+      # The bundled broker below is `inngest dev`; describe that honestly to
+      # the SDK/runtime while retaining real session auth and real providers.
+      # Setting this to production intentionally fails closed until the dev
+      # broker is replaced by Cloud or a production self-hosted endpoint.
+      NODE_ENV: "${AGENTIC_API_NODE_ENV:-development}"
+      AGENTIC_PROCESS_ROLE: api
       PORT: "3501"
       HOST: "0.0.0.0"
       AGENTIC_DATA_DIR: /app/data
@@ -56,10 +77,23 @@ services:
       # 不设它们会写到未挂载的 /app/apps/api/data（cwd），容器重启丢草稿/策略/上传本体/blob/cassette。
       AGENTIC_DATA_ROOT: /app/data
       AGENTIC_MODELS_DIR: /app/models
+      # Staging and published manifests share the writable models volume so
+      # the import transaction can finish with an atomic rename.
+      AGENTIC_IMPORTS_DIR: /app/models/.imports
       AGENTIC_LOGS_DIR: /app/data/logs
       AGENTIC_ARTIFACTS_DIR: /app/data/artifacts
       AGENTIC_TENANTS_DIR: /app/data/tenants
       DATABASE_URL: file:/app/data/agentic.db
+      # Writer capabilities are minted only inside PID 1 after it acquires the
+      # canonical lease. Keeping them out of Container.Config.Env means an
+      # unrelated `docker exec` cannot inherit either the production capability
+      # or the tightly-scoped Vitest bypass from env_file.
+      AGENTIC_SQLITE_WRITER_LEASE_TOKEN: ""
+      AGENTIC_SQLITE_WRITER_LEASE_PATH: ""
+      AGENTIC_SQLITE_WRITER_SUPERVISOR_PID: ""
+      AGENTIC_SQLITE_WRITER_SUPERVISED: ""
+      AGENTIC_SQLITE_TEST_WRITER: ""
+      AGENTIC_API_TEST_RUN_ROOT: ""
       INNGEST_BASE_URL: http://inngest:8288
       # Dev-mode broker (the inngest service runs `inngest dev`); match it or the
       # SDK uses cloud/signed semantics the dev broker doesn't provide.
@@ -68,28 +102,161 @@ services:
       # in-network address (NOT localhost, which resolves to the broker's own
       # container) or the 6 zhaopin functions never fire from queued events.
       INNGEST_SERVE_ORIGIN: http://api:3501
-      INNGEST_EVENT_KEY: "${INNGEST_EVENT_KEY:-dev}"
-      INNGEST_SIGNING_KEY: "${INNGEST_SIGNING_KEY:-dev}"
+      # Direct values remain convenient for the local dev broker. Production
+      # may instead mount the matching *_FILE paths; runtime rejects setting
+      # both forms and fails readiness when neither resolves.
+      INNGEST_EVENT_KEY: "${INNGEST_EVENT_KEY:-}"
+      INNGEST_EVENT_KEY_FILE: "${INNGEST_EVENT_KEY_FILE:-}"
+      INNGEST_SIGNING_KEY: "${INNGEST_SIGNING_KEY:-}"
+      INNGEST_SIGNING_KEY_FILE: "${INNGEST_SIGNING_KEY_FILE:-}"
       # Live ontology (rule-check) + RoboHire (parse/match/invite). `localhost`
       # inside the container is NOT the host — reach host services via
       # host.docker.internal (see extra_hosts below).
-      ALLMETA_BASE_URL: "${ALLMETA_BASE_URL:-http://host.docker.internal:3500}"
-      ALLMETA_API_KEY: "${ALLMETA_API_KEY:-abc123}"
+      ALLMETA_BASE_URL: "${ALLMETA_BASE_URL:-}"
+      ALLMETA_API_KEY: "${ALLMETA_API_KEY:-}"
       ALLMETA_TIMEOUT_MS: "8000"
       ROBOHIRE_API_KEY: "${ROBOHIRE_API_KEY:-}"
       ROBOHIRE_BASE_URL: "${ROBOHIRE_BASE_URL:-https://api.gohire.top/api/v1}"
-      WEB_ORIGIN: "${WEB_ORIGIN:-http://localhost:3599}"
+      WEB_ORIGIN: "${WEB_ORIGIN:?WEB_ORIGIN is required}"
+      # External Factory sandbox control plane. This JSON contains env names
+      # only. HMAC values (or their *_FILE references) stay API/runner scoped;
+      # broker and delete credentials exist only on sandbox-runner below.
+      FACTORY_SANDBOX_REMOTE_CONFIG_REFS: "${FACTORY_SANDBOX_REMOTE_CONFIG_REFS:-}"
+      FACTORY_SB_RUNNER_URL: "${FACTORY_SB_RUNNER_URL:-}"
+      FACTORY_SB_REQUEST_HMAC: "${FACTORY_SB_REQUEST_HMAC:-}"
+      FACTORY_SB_REQUEST_HMAC_FILE: "${FACTORY_SB_REQUEST_HMAC_FILE:-}"
+      FACTORY_SB_RESULT_HMAC: "${FACTORY_SB_RESULT_HMAC:-}"
+      FACTORY_SB_RESULT_HMAC_FILE: "${FACTORY_SB_RESULT_HMAC_FILE:-}"
+      # API-side half of the semantic sandbox model proxy. The candidate and
+      # workload never receive provider credentials; this service token only
+      # authenticates an already-active attempt/bundle back to the API.
+      FACTORY_SB_MODEL_PROXY_TOKEN: ""
+      FACTORY_SB_MODEL_PROXY_TOKEN_FILE: "${FACTORY_SB_MODEL_PROXY_TOKEN_FILE:-}"
+      # Host CLI authenticates only to a narrow probe route. The route runs in
+      # this supervised process; the host never opens SQLite itself.
+      FACTORY_PRODUCTION_PROBE_TOKEN: ""
+      FACTORY_PRODUCTION_PROBE_TOKEN_FILE: "${FACTORY_PRODUCTION_PROBE_TOKEN_FILE:-}"
+      FACTORY_SB_KEY_ID: "${FACTORY_SB_KEY_ID:-}"
+      FACTORY_SB_RUNNER_ID: "${FACTORY_SB_RUNNER_ID:-}"
+      FACTORY_SB_ALLOWED_BUILD_IDS: "${FACTORY_SB_ALLOWED_BUILD_IDS:-}"
+      FACTORY_SB_ALLOWED_IMAGE_DIGESTS: "${FACTORY_SB_ALLOWED_IMAGE_DIGESTS:-}"
+      # Defense in depth for the broad legacy env_file above: even if an
+      # operator accidentally puts runner-only values in .env.production,
+      # Compose overrides them to empty in the API container. This also blocks
+      # the former in-process sandbox path instead of silently using it.
+      INNGEST_SANDBOX_CONFIG_REFS: ""
+      SANDBOX_INNGEST_DEV_MODE: ""
+      SANDBOX_INNGEST_EVENT_KEY: ""
+      SANDBOX_INNGEST_SIGNING_KEY: ""
+      SANDBOX_INNGEST_BASE_URL: ""
+      SANDBOX_INNGEST_WORKLOAD_SERVE_ORIGIN: ""
+      SANDBOX_INNGEST_APP_PREFIX: ""
+      SANDBOX_INNGEST_DELETE_URL: ""
+      SANDBOX_INNGEST_DELETE_TOKEN: ""
+      SANDBOX_WORKLOAD_TOKEN: ""
+      SANDBOX_WORKLOAD_TOKEN_FILE: ""
+      SANDBOX_INNGEST_CONTROL_BEARER: ""
+      SANDBOX_INNGEST_CONTROL_BEARER_FILE: ""
+      SANDBOX_CANCEL_FENCE_HMAC: ""
+      SANDBOX_CANCEL_FENCE_HMAC_FILE: ""
+      SANDBOX_CANCEL_FENCE_HMAC_HOST_FILE: ""
+      SANDBOX_CANCEL_FENCE_MAX_ENTRIES: ""
+      SANDBOX_GATEWAY_TOMBSTONE_HMAC: ""
+      SANDBOX_GATEWAY_TOMBSTONE_HMAC_FILE: ""
+      SANDBOX_GATEWAY_TOMBSTONE_HMAC_HOST_FILE: ""
+      SANDBOX_GATEWAY_TOMBSTONE_MAX_ENTRIES: ""
+      # These knobs are consumed by the external control/workload services,
+      # not by the API. The broad env_file above must not leak them into the
+      # process that authors and promotes candidates.
+      FACTORY_SANDBOX_ATTEMPT_LEASE_MS: ""
+      FACTORY_SANDBOX_ATTEMPT_HEARTBEAT_MS: ""
+      FACTORY_SANDBOX_JOB_TTL_MS: ""
+      FACTORY_SANDBOX_REAPER_MS: ""
+      FACTORY_SANDBOX_DELETE_VERIFY_MS: ""
+      # The primary API never launches candidate containers and never receives
+      # the Docker socket. Production may explicitly enable the separately
+      # authenticated executor in docker-compose.production.yml; the local/base
+      # topology stays fail-closed even if an env_file contains those values.
+      FACTORY_EXEC_GENERATED: "0"
+      FACTORY_CODEACT_CANDIDATE_IMAGE: ""
+      FACTORY_CODEACT_ALLOWED_IMAGE_DIGESTS: ""
+      FACTORY_CODEACT_DOCKER_SOCKET: ""
+      FACTORY_CODEACT_DOCKER_SOCKET_HOST_PATH: ""
+      FACTORY_CODEACT_DOCKER_SOCKET_GID: ""
+      PRODUCTION_CODEACT_EXECUTOR_ENABLED: "0"
+      PRODUCTION_CODEACT_EXECUTOR_URL: ""
+      PRODUCTION_CODEACT_EXECUTOR_TOKEN: ""
+      PRODUCTION_CODEACT_EXECUTOR_TOKEN_FILE: ""
+      PRODUCTION_CODEACT_EXECUTOR_TOKEN_HOST_FILE: ""
+      PRODUCTION_CODEACT_EXECUTOR_HTTP_ALLOWED_HOSTS: ""
+      PRODUCTION_CODEACT_EXPECTED_EXECUTOR_ID: ""
+      PRODUCTION_CODEACT_EXPECTED_BUILD_ID: ""
+      PRODUCTION_CODEACT_ALLOWED_CANDIDATE_REFS: ""
+      PRODUCTION_CODEACT_ALLOWED_CANDIDATE_IMAGE_IDS: ""
+      PRODUCTION_CODEACT_REAPER_INTERVAL_MS: ""
+      PRODUCTION_CODEACT_ORPHAN_GRACE_MS: ""
+      PRODUCTION_CODEACT_CALLBACK_URL: ""
+      PRODUCTION_CODEACT_CALLBACK_HTTP_ALLOWED_HOSTS: ""
+      # Host bind sources are Compose metadata, never application config.
+      FACTORY_SB_REQUEST_HMAC_HOST_FILE: ""
+      FACTORY_SB_RESULT_HMAC_HOST_FILE: ""
+      FACTORY_SB_RECEIPT_HMAC_HOST_FILE: ""
+      FACTORY_SB_MODEL_PROXY_TOKEN_HOST_FILE: ""
+      FACTORY_PRODUCTION_PROBE_TOKEN_HOST_FILE: ""
+      SANDBOX_WORKLOAD_TOKEN_HOST_FILE: ""
+      SANDBOX_INNGEST_CONTROL_BEARER_HOST_FILE: ""
+      FACTORY_SB_INNGEST_EVENT_KEY: ""
+      FACTORY_SB_INNGEST_SIGNING_KEY: ""
+      FACTORY_SB_INNGEST_SERVE_ORIGIN: ""
+      FACTORY_SB_INNGEST_BASE_URL: ""
+      FACTORY_SB_BASE_URL: ""
+      FACTORY_SB_APP_PREFIX: ""
+      FACTORY_SB_DELETE_URL: ""
+      FACTORY_SB_DELETE_TOKEN: ""
     # Resolve host.docker.internal on Linux hosts (macOS Docker Desktop native).
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
       - agentic-data:/app/data
-      - ./models:/app/models:ro
+      # Manifest import and Agent Factory promotion commit versioned files to
+      # AGENTIC_MODELS_DIR. A read-only bind made those production features
+      # fail after validation, so keep their durable store writable. On a new
+      # named volume Docker copies the image's /app/models seed automatically.
+      - agentic-models:/app/models
+      # `_FILE` is a path inside the container. Compose needs a separate host
+      # source to make that path real. /dev/null is an unused placeholder when
+      # direct-value mode is selected, so the file form stays optional.
+      - type: bind
+        source: "${FACTORY_SB_REQUEST_HMAC_HOST_FILE:-/dev/null}"
+        target: "${FACTORY_SB_REQUEST_HMAC_FILE:-/run/secrets/.factory-sandbox-request-hmac-unused}"
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${FACTORY_SB_RESULT_HMAC_HOST_FILE:-/dev/null}"
+        target: "${FACTORY_SB_RESULT_HMAC_FILE:-/run/secrets/.factory-sandbox-result-hmac-unused}"
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${FACTORY_SB_RECEIPT_HMAC_HOST_FILE:-/dev/null}"
+        target: "${FACTORY_SB_RECEIPT_HMAC_FILE:-/run/secrets/.factory-sandbox-receipt-hmac-unused}"
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${FACTORY_SB_MODEL_PROXY_TOKEN_HOST_FILE:-/dev/null}"
+        target: "${FACTORY_SB_MODEL_PROXY_TOKEN_FILE:-/run/secrets/.factory-sandbox-model-proxy-unused}"
+        read_only: true
+        bind:
+          create_host_path: false
     depends_on:
       inngest:
         condition: service_started
     networks:
       - agentic
+      - factory-sandbox-control
+      - factory-sandbox-model
     # Per-Dockerfile healthcheck handles readiness; compose just inherits
     # so `depends_on: { condition: service_healthy }` works upstream.
 
@@ -126,8 +293,12 @@ services:
     ports:
       - "${INNGEST_PORT:-8288}:8288"
     environment:
-      INNGEST_EVENT_KEY: "${INNGEST_EVENT_KEY:-local-dev-event-key}"
-      INNGEST_SIGNING_KEY: "${INNGEST_SIGNING_KEY:-local-dev-signing-key}"
+      INNGEST_EVENT_KEY: "${INNGEST_EVENT_KEY:-}"
+      INNGEST_SIGNING_KEY: "${INNGEST_SIGNING_KEY:-}"
+    # The pinned image exposes `inngest` as CMD rather than ENTRYPOINT. Compose
+    # replaces CMD when `command` is present, so make the executable explicit.
+    entrypoint:
+      - inngest
     # The broker auto-discovers our `/inngest` serve() endpoint on first
     # connection; passing `-u` makes it explicit so a fresh boot doesn't
     # depend on discovery races.
@@ -141,13 +312,367 @@ services:
     networks:
       - agentic
     depends_on: []
+    healthcheck:
+      test:
+        - CMD
+        - curl
+        - --fail
+        - --silent
+        - --show-error
+        - http://127.0.0.1:8288/health
+      interval: 15s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+  # Signed control plane only. It owns job journals, HMAC/receipt keys and the
+  # narrow delete/readback capability, but never loads or executes generated
+  # candidate modules. sandbox-workload below has no control-plane HMAC.
+  sandbox-runner:
+    profiles: ["factory-sandbox"]
+    image: "${FACTORY_SANDBOX_CONTROL_IMAGE:-agentic-sandbox-control:dev}"
+    pull_policy: "${FACTORY_SANDBOX_CONTROL_PULL_POLICY:-never}"
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+      target: sandbox-control
+    command:
+      - ./node_modules/.bin/tsx
+      - src/sandbox-runner.ts
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: "${FACTORY_SANDBOX_RUNNER_PIDS_LIMIT:-256}"
+    mem_limit: "${FACTORY_SANDBOX_RUNNER_MEMORY_LIMIT:-768m}"
+    cpus: "${FACTORY_SANDBOX_RUNNER_CPUS:-1.0}"
+    expose:
+      - "3560"
+    environment:
+      NODE_ENV: production
+      AGENTIC_PROCESS_ROLE: sandbox-runner-control
+      SANDBOX_RUNNER_ROLE: control
+      HOST: 0.0.0.0
+      PORT: "3560"
+      SANDBOX_WORKLOAD_URL: "${SANDBOX_WORKLOAD_URL:-http://sandbox-workload:3561}"
+      SANDBOX_WORKLOAD_TOKEN: "${SANDBOX_WORKLOAD_TOKEN:-}"
+      SANDBOX_WORKLOAD_TOKEN_FILE: "${SANDBOX_WORKLOAD_TOKEN_FILE:-}"
+      SANDBOX_RUNNER_ID: "${FACTORY_SB_RUNNER_ID:-}"
+      SANDBOX_RUNNER_KEY_ID: "${FACTORY_SB_KEY_ID:-}"
+      SANDBOX_RUNNER_BUILD_ID: "${FACTORY_SB_RUNNER_BUILD_ID:-}"
+      SANDBOX_RUNNER_RUNTIME_IMAGE_DIGEST: "${FACTORY_SB_RUNTIME_IMAGE_DIGEST:-}"
+      # The bundled topology shares the host daemon and is diagnostic only.
+      # External VM deployments override this with deployment-owned evidence.
+      SANDBOX_RUNNER_ACTUAL_ISOLATION_TIER: "${SANDBOX_RUNNER_ACTUAL_ISOLATION_TIER:-same_host_container}"
+      SANDBOX_RUNNER_REQUEST_HMAC: "${FACTORY_SB_REQUEST_HMAC:-}"
+      SANDBOX_RUNNER_REQUEST_HMAC_FILE: "${FACTORY_SB_REQUEST_HMAC_FILE:-}"
+      SANDBOX_RUNNER_RESULT_HMAC: "${FACTORY_SB_RESULT_HMAC:-}"
+      SANDBOX_RUNNER_RESULT_HMAC_FILE: "${FACTORY_SB_RESULT_HMAC_FILE:-}"
+      SANDBOX_RUNNER_RECEIPT_HMAC: "${FACTORY_SB_RECEIPT_HMAC:-}"
+      SANDBOX_RUNNER_RECEIPT_HMAC_FILE: "${FACTORY_SB_RECEIPT_HMAC_FILE:-}"
+      SANDBOX_CANCEL_FENCE_HMAC: "${SANDBOX_CANCEL_FENCE_HMAC:-}"
+      SANDBOX_CANCEL_FENCE_HMAC_FILE: "${SANDBOX_CANCEL_FENCE_HMAC_FILE:-}"
+      DATABASE_URL: file:/sandbox/control/sandbox-control.db
+      AGENTIC_DATA_DIR: /sandbox/control
+      AGENTIC_DATA_ROOT: /sandbox/control
+      AGENTIC_LOGS_DIR: /sandbox/control/logs
+      AGENTIC_ARTIFACTS_DIR: /sandbox/control/artifacts
+      SANDBOX_RUNNER_EGRESS_MODE: deny_all
+      SANDBOX_RUNNER_JOB_TTL_MS: "${FACTORY_SANDBOX_JOB_TTL_MS:-1080000}"
+      SANDBOX_RUNNER_REAPER_MS: "${FACTORY_SANDBOX_REAPER_MS:-60000}"
+      FACTORY_EXEC_GENERATED: "0"
+      FACTORY_CODEACT_CANDIDATE_IMAGE: ""
+      FACTORY_CODEACT_ALLOWED_IMAGE_DIGESTS: ""
+      FACTORY_CODEACT_DOCKER_SOCKET: ""
+      # Read-only broker origin plus narrow delete-control authentication. The
+      # control process intentionally has no broker event/signing credentials.
+      SANDBOX_INNGEST_BASE_URL: "${SANDBOX_INNGEST_BASE_URL:-http://sandbox-inngest:8288}"
+      SANDBOX_INNGEST_APP_PREFIX: "${SANDBOX_INNGEST_APP_PREFIX:-agentic-factory-sandbox}"
+      SANDBOX_INNGEST_DELETE_URL: "${SANDBOX_INNGEST_DELETE_URL:-http://127.0.0.1:3560/internal/inngest/apps/{appId}}"
+      SANDBOX_INNGEST_DELETE_TOKEN: "${SANDBOX_WORKLOAD_TOKEN:-}"
+      SANDBOX_INNGEST_DELETE_TOKEN_FILE: "${SANDBOX_WORKLOAD_TOKEN_FILE:-}"
+      # Optional bearer for a hardened broker/sidecar GraphQL control plane.
+      # The local dev broker leaves both empty.
+      SANDBOX_INNGEST_CONTROL_BEARER: "${SANDBOX_INNGEST_CONTROL_BEARER:-}"
+      SANDBOX_INNGEST_CONTROL_BEARER_FILE: "${SANDBOX_INNGEST_CONTROL_BEARER_FILE:-}"
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=256m,mode=1777
+    volumes:
+      - factory-sandbox-control-data:/sandbox/control
+      - type: bind
+        source: "${FACTORY_SB_REQUEST_HMAC_HOST_FILE:-/dev/null}"
+        target: "${FACTORY_SB_REQUEST_HMAC_FILE:-/run/secrets/.factory-sandbox-request-hmac-unused}"
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${FACTORY_SB_RESULT_HMAC_HOST_FILE:-/dev/null}"
+        target: "${FACTORY_SB_RESULT_HMAC_FILE:-/run/secrets/.factory-sandbox-result-hmac-unused}"
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${FACTORY_SB_RECEIPT_HMAC_HOST_FILE:-/dev/null}"
+        target: "${FACTORY_SB_RECEIPT_HMAC_FILE:-/run/secrets/.factory-sandbox-receipt-hmac-unused}"
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${SANDBOX_WORKLOAD_TOKEN_HOST_FILE:-/dev/null}"
+        target: "${SANDBOX_WORKLOAD_TOKEN_FILE:-/run/secrets/.sandbox-workload-token-unused}"
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${SANDBOX_INNGEST_CONTROL_BEARER_HOST_FILE:-/dev/null}"
+        target: "${SANDBOX_INNGEST_CONTROL_BEARER_FILE:-/run/secrets/.sandbox-inngest-control-bearer-unused}"
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${SANDBOX_CANCEL_FENCE_HMAC_HOST_FILE:-/dev/null}"
+        target: "${SANDBOX_CANCEL_FENCE_HMAC_FILE:-/run/secrets/.sandbox-cancel-fence-hmac-unused}"
+        read_only: true
+        bind:
+          create_host_path: false
+    depends_on:
+      sandbox-inngest:
+        condition: service_healthy
+    networks:
+      - factory-sandbox-control
+      - factory-sandbox-execution
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "const fs=require('node:fs');const f=process.env.SANDBOX_INNGEST_DELETE_TOKEN_FILE;const t=(process.env.SANDBOX_INNGEST_DELETE_TOKEN||(f?fs.readFileSync(f,'utf8'):'')).trim();fetch('http://127.0.0.1:3560/internal/health/delete-control',{headers:{authorization:'Bearer '+t}}).then(async r=>{const b=r.ok?await r.json():null;if(!b||b.schema!=='agent-factory-sandbox-delete-control-readiness/v1'||b.ready!==true)process.exit(1)}).catch(()=>process.exit(1))"
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    stop_grace_period: 45s
+
+  # Generated-code execution plane. It has a different process role, service
+  # identity and volume set. It receives sandbox broker credentials and one
+  # restricted control/workload token, but never receives request/result/
+  # receipt HMAC keys and therefore cannot mint a promotable receipt.
+  sandbox-workload:
+    profiles: ["factory-sandbox"]
+    image: "${FACTORY_SANDBOX_WORKLOAD_IMAGE:-agentic-sandbox-workload:dev}"
+    pull_policy: "${FACTORY_SANDBOX_WORKLOAD_PULL_POLICY:-never}"
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+      target: sandbox-workload
+    command:
+      - ./node_modules/.bin/tsx
+      - src/sandbox-runner.ts
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: "${FACTORY_SANDBOX_WORKLOAD_PIDS_LIMIT:-256}"
+    mem_limit: "${FACTORY_SANDBOX_WORKLOAD_MEMORY_LIMIT:-2g}"
+    cpus: "${FACTORY_SANDBOX_WORKLOAD_CPUS:-2.0}"
+    expose:
+      - "3561"
+    environment:
+      NODE_ENV: production
+      AGENTIC_PROCESS_ROLE: sandbox-runner-workload
+      AGENTIC_BUILD_ID: "${FACTORY_SB_RUNNER_BUILD_ID:-unverified-local-build}"
+      SANDBOX_RUNNER_ROLE: workload
+      HOST: 0.0.0.0
+      PORT: "3561"
+      SANDBOX_RUNNER_WORKLOAD_PORT: "3561"
+      SANDBOX_WORKLOAD_TOKEN: "${SANDBOX_WORKLOAD_TOKEN:-}"
+      SANDBOX_WORKLOAD_TOKEN_FILE: "${SANDBOX_WORKLOAD_TOKEN_FILE:-}"
+      SANDBOX_CANCEL_FENCE_HMAC: "${SANDBOX_CANCEL_FENCE_HMAC:-}"
+      SANDBOX_CANCEL_FENCE_HMAC_FILE: "${SANDBOX_CANCEL_FENCE_HMAC_FILE:-}"
+      SANDBOX_CANCEL_FENCE_MAX_ENTRIES: "${SANDBOX_CANCEL_FENCE_MAX_ENTRIES:-10000}"
+      DATABASE_URL: file:/sandbox/db/sandbox-workload.db
+      AGENTIC_DATA_DIR: /sandbox/data
+      AGENTIC_DATA_ROOT: /sandbox/data
+      AGENTIC_MODELS_DIR: /sandbox/models
+      # Import staging and final manifests must share one filesystem so the
+      # commit path can use an atomic POSIX rename (never a cross-volume copy).
+      AGENTIC_IMPORTS_DIR: /sandbox/models/.imports
+      AGENTIC_LOGS_DIR: /sandbox/data/logs
+      AGENTIC_ARTIFACTS_DIR: /sandbox/data/artifacts
+      AGENTIC_TENANTS_DIR: /sandbox/data/tenants
+      SANDBOX_RUNNER_EGRESS_MODE: deny_all
+      FACTORY_SANDBOX_ATTEMPT_LEASE_MS: "${FACTORY_SANDBOX_ATTEMPT_LEASE_MS:-180000}"
+      FACTORY_SANDBOX_ATTEMPT_HEARTBEAT_MS: "${FACTORY_SANDBOX_ATTEMPT_HEARTBEAT_MS:-30000}"
+      FACTORY_SANDBOX_DELETE_VERIFY_MS: "${FACTORY_SANDBOX_DELETE_VERIFY_MS:-8000}"
+      FACTORY_SANDBOX_REAPER_MS: "${FACTORY_SANDBOX_REAPER_MS:-60000}"
+      # Explicit opt-in plus an immutable image identity. A mutable tag is
+      # rejected again by the runtime before it contacts Docker.
+      FACTORY_EXEC_GENERATED: "${FACTORY_EXEC_GENERATED:-0}"
+      FACTORY_CODEACT_CANDIDATE_IMAGE: "${FACTORY_CODEACT_CANDIDATE_IMAGE:-}"
+      FACTORY_CODEACT_ALLOWED_IMAGE_DIGESTS: "${FACTORY_CODEACT_ALLOWED_IMAGE_DIGESTS:-}"
+      FACTORY_CODEACT_DOCKER_SOCKET: /var/run/docker.sock
+      # Only the trusted workload can reach this origin. Generated candidate
+      # containers use --network none and receive neither this token nor any
+      # provider credential.
+      SANDBOX_MODEL_PROXY_ORIGIN: "${SANDBOX_MODEL_PROXY_ORIGIN:-http://api:3501}"
+      SANDBOX_MODEL_PROXY_HTTP_ALLOWED_HOSTS: "${SANDBOX_MODEL_PROXY_HTTP_ALLOWED_HOSTS:-api}"
+      SANDBOX_MODEL_PROXY_TOKEN: ""
+      SANDBOX_MODEL_PROXY_TOKEN_FILE: "${SANDBOX_MODEL_PROXY_TOKEN_FILE:-/run/secrets/factory-sandbox/model-proxy-token}"
+      # The runtime accepts plain HTTP for delete control only when it is the
+      # exact origin on this internal network and the process proves it is the
+      # isolated workload role. Any other HTTP endpoint remains blocked.
+      SANDBOX_INTERNAL_CONTROL_ORIGIN: "${SANDBOX_INTERNAL_CONTROL_ORIGIN:-http://sandbox-runner:3560}"
+      INNGEST_SANDBOX_CONFIG_REFS: '{"eventKeyEnv":"SANDBOX_INNGEST_EVENT_KEY","signingKeyEnv":"SANDBOX_INNGEST_SIGNING_KEY","serveOriginEnv":"SANDBOX_INNGEST_WORKLOAD_SERVE_ORIGIN","baseUrlEnv":"SANDBOX_INNGEST_BASE_URL","appPrefixEnv":"SANDBOX_INNGEST_APP_PREFIX","devModeEnv":"SANDBOX_INNGEST_DEV_MODE","controlBearerEnv":"SANDBOX_INNGEST_CONTROL_BEARER","cleanupMode":"custom_delete_control","deleteControlUrlEnv":"SANDBOX_INNGEST_DELETE_URL","deleteControlTokenEnv":"SANDBOX_INNGEST_DELETE_TOKEN"}'
+      # This profile deliberately runs the bundled `inngest dev` service. The
+      # scoped flag reaches only the deny-all workload; it is not INNGEST_DEV
+      # and never changes the API/control process mode. Managed/durable
+      # sandbox deployments must set it to 0.
+      SANDBOX_INNGEST_DEV_MODE: "${SANDBOX_INNGEST_DEV_MODE:-1}"
+      SANDBOX_INNGEST_EVENT_KEY: "${SANDBOX_INNGEST_EVENT_KEY:-}"
+      SANDBOX_INNGEST_SIGNING_KEY: "${SANDBOX_INNGEST_SIGNING_KEY:-}"
+      SANDBOX_INNGEST_BASE_URL: "${SANDBOX_INNGEST_BASE_URL:-http://sandbox-inngest:8288}"
+      SANDBOX_INNGEST_WORKLOAD_SERVE_ORIGIN: "${SANDBOX_INNGEST_WORKLOAD_SERVE_ORIGIN:-http://sandbox-workload:3561}"
+      SANDBOX_INNGEST_APP_PREFIX: "${SANDBOX_INNGEST_APP_PREFIX:-agentic-factory-sandbox}"
+      SANDBOX_INNGEST_DELETE_URL: "${SANDBOX_INNGEST_DELETE_URL:-http://sandbox-runner:3560/internal/inngest/apps/{appId}}"
+      SANDBOX_INNGEST_DELETE_TOKEN: "${SANDBOX_WORKLOAD_TOKEN:-}"
+      # The runtime resolves the referenced secret's sibling `_FILE` value;
+      # direct and file forms together must be rejected.
+      SANDBOX_INNGEST_DELETE_TOKEN_FILE: "${SANDBOX_WORKLOAD_TOKEN_FILE:-}"
+      SANDBOX_INNGEST_CONTROL_BEARER: "${SANDBOX_INNGEST_CONTROL_BEARER:-}"
+      SANDBOX_INNGEST_CONTROL_BEARER_FILE: "${SANDBOX_INNGEST_CONTROL_BEARER_FILE:-}"
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=256m,mode=1777
+    volumes:
+      - factory-sandbox-db:/sandbox/db
+      - factory-sandbox-models:/sandbox/models
+      - factory-sandbox-data:/sandbox/data
+      # Docker authority belongs only to this trusted launcher. Candidate
+      # containers receive no socket or any other mount.
+      - type: bind
+        source: "${FACTORY_CODEACT_DOCKER_SOCKET_HOST_PATH:-/var/run/docker.sock}"
+        target: /var/run/docker.sock
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${SANDBOX_WORKLOAD_TOKEN_HOST_FILE:-/dev/null}"
+        target: "${SANDBOX_WORKLOAD_TOKEN_FILE:-/run/secrets/.sandbox-workload-token-unused}"
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${SANDBOX_INNGEST_CONTROL_BEARER_HOST_FILE:-/dev/null}"
+        target: "${SANDBOX_INNGEST_CONTROL_BEARER_FILE:-/run/secrets/.sandbox-inngest-control-bearer-unused}"
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${FACTORY_SB_MODEL_PROXY_TOKEN_HOST_FILE:-/dev/null}"
+        target: "${SANDBOX_MODEL_PROXY_TOKEN_FILE:-/run/secrets/factory-sandbox/model-proxy-token}"
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${SANDBOX_CANCEL_FENCE_HMAC_HOST_FILE:-/dev/null}"
+        target: "${SANDBOX_CANCEL_FENCE_HMAC_FILE:-/run/secrets/.sandbox-cancel-fence-hmac-unused}"
+        read_only: true
+        bind:
+          create_host_path: false
+    group_add:
+      - "${FACTORY_CODEACT_DOCKER_SOCKET_GID:-0}"
+    depends_on:
+      sandbox-inngest:
+        condition: service_healthy
+      sandbox-runner:
+        # The control container healthcheck proves its authenticated delete
+        # endpoint is listening. Workload startup may then safely reconcile
+        # durable orphan Apps; signed full cleanup health remains a later gate.
+        condition: service_healthy
+    networks:
+      - factory-sandbox-execution
+      - factory-sandbox-model
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "const fs=require('node:fs');const f=process.env.SANDBOX_WORKLOAD_TOKEN_FILE;const t=(process.env.SANDBOX_WORKLOAD_TOKEN||(f?fs.readFileSync(f,'utf8'):'')).trim();fetch('http://127.0.0.1:3561/health',{headers:{authorization:'Bearer '+t}}).then(r=>{if(r.status!==200)process.exit(1)}).catch(()=>process.exit(1))"
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    stop_grace_period: 45s
+
+  # Dedicated dev broker for generated apps. It has no host port, no primary
+  # network and no production app discovery URL. Ephemeral apps self-register
+  # their per-attempt /inngest/:sandboxTenantSlug callback through the runner.
+  sandbox-inngest:
+    profiles: ["factory-sandbox"]
+    image: agentic-sandbox-inngest:dev
+    build:
+      context: .
+      dockerfile: apps/inngest-worker/Dockerfile
+    restart: unless-stopped
+    environment:
+      INNGEST_EVENT_KEY: "${SANDBOX_INNGEST_EVENT_KEY:-}"
+      INNGEST_SIGNING_KEY: "${SANDBOX_INNGEST_SIGNING_KEY:-}"
+    entrypoint:
+      - inngest
+    command:
+      - dev
+      - --no-discovery
+    volumes:
+      - factory-sandbox-inngest:/var/lib/inngest
+    networks:
+      - factory-sandbox-execution
+    depends_on: []
+    healthcheck:
+      test:
+        - CMD
+        - curl
+        - --fail
+        - --silent
+        - --show-error
+        - http://127.0.0.1:8288/health
+      interval: 15s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
 
 volumes:
   agentic-data:
     # Persistent SQLite + logs + artifacts. Use a host bind by setting
     # `device:` if you'd rather keep these under git-ignored ./data/.
+  agentic-models:
+    # Persistent, writable manifest history. Delete only when intentionally
+    # resetting imported/deployed workflow versions.
   agentic-inngest:
+  factory-sandbox-control-data:
+    # HMAC-free job payloads, durable nonce ledger and signed control receipts.
+  factory-sandbox-db:
+    # Workload-only SQLite; never point the main API/control DATABASE_URL here.
+  factory-sandbox-models:
+    # Generated manifests/code for sandbox attempts only.
+  factory-sandbox-data:
+    # Fixtures, cassettes, logs and per-attempt artifacts only.
+  factory-sandbox-inngest:
+    # Dedicated broker state; deletion still requires authoritative app
+    # absence verification before this volume may be removed.
 
 networks:
   agentic:
     driver: bridge
+  factory-sandbox-control:
+    driver: bridge
+    internal: true
+  factory-sandbox-execution:
+    driver: bridge
+    internal: true
+  # API <-> trusted workload only. The broker/control services and one-shot
+  # candidate containers are not attached to this network.
+  factory-sandbox-model:
+    driver: bridge
+    internal: true

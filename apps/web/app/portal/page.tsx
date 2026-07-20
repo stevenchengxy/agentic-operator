@@ -6,10 +6,10 @@ export const dynamic = "force-dynamic";
 
 /**
  * `/portal` — redirect to `/portal/<active-tenant>/dashboard`. The active
- * tenant comes from the session; fall back to "raas" when unset.
+ * tenant comes only from the verified session.
  */
 export default async function PortalIndex() {
   const session = await readSession();
-  const tenant = session?.tenant ?? "raas";
-  redirect(`/portal/${tenant}/dashboard`);
+  if (!session) redirect("/sign-in?return=/portal");
+  redirect(`/portal/${session.tenant}/dashboard`);
 }

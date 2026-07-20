@@ -21,30 +21,19 @@ import {
   Button,
   Empty,
   FilterChip,
-  Panel,
   SearchInput,
   ViewHeader,
 } from "@/app/portal/components";
 import { fmtAgo } from "@/lib/format";
 import { useAgents, type AgentListRow } from "@/lib/hooks/useAgents";
-import { useRuns, type RunListRow } from "@/lib/hooks/useRuns";
+import { useRuns } from "@/lib/hooks/useRuns";
 import { useTenant } from "@/app/portal/lib/use-tenant";
 import { useI18n } from "@/app/portal/lib/preferences-context";
-import { DeployAgentModal } from "@/app/portal/components/agents/DeployAgentModal";
 import { ImportManifestModal } from "@/app/portal/components/import-manifest/ImportManifestModal";
-
-interface AgentStats {
-  runs: number;
-  errors: number;
-  lastRun: number;
-  tests: number;
-  lastTestRunId: string | null;
-  lastTestAt: number;
-}
-
-function emptyStats(): AgentStats {
-  return { runs: 0, errors: 0, lastRun: 0, tests: 0, lastTestRunId: null, lastTestAt: 0 };
-}
+import {
+  buildAgentStats,
+  type AgentStatsSnapshot,
+} from "@/lib/agent-stats";
 
 export default function AgentsPage() {
   const router = useRouter();
@@ -56,43 +45,17 @@ export default function AgentsPage() {
   const runs = runsQuery.data ?? [];
   const [query, setQuery] = useState("");
   const [actorFilter, setActorFilter] = useState<"all" | "Agent" | "Human">("all");
-  const [deployOpen, setDeployOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
 
   const stats = useMemo(() => {
-    // Stats are bucketed by name (the canonical join key the api uses on
-    // run rows) and additionally by kebabId so older snapshots that key
-    // by id still resolve.
-    const m = new Map<string, AgentStats>();
-    agents.forEach((a) => {
-      const s = emptyStats();
-      m.set(a.kebabId, s);
-      m.set(a.id, s);
-      if (a.name) m.set(a.name, s);
-    });
-    runs.forEach((r) => {
-      const s = m.get(r.agentName ?? "");
-      if (!s) return;
-      const startedAt = r.startedAt ? Date.parse(r.startedAt) : 0;
-      s.runs += 1;
-      if (r.status === "failed") s.errors += 1;
-      if (startedAt > s.lastRun) s.lastRun = startedAt;
-      if (r.testRun) {
-        s.tests += 1;
-        if (startedAt > s.lastTestAt) {
-          s.lastTestAt = startedAt;
-          s.lastTestRunId = r.id;
-        }
-      }
-    });
-    return m;
+    return buildAgentStats(agents, runs);
   }, [agents, runs]);
 
   const filtered = agents.filter((a) => {
     if (actorFilter !== "all" && a.actor !== actorFilter) return false;
     if (
       query &&
-      !a.title.toLowerCase().includes(query.toLowerCase()) &&
+      !(a.title ?? a.name).toLowerCase().includes(query.toLowerCase()) &&
       !a.name.toLowerCase().includes(query.toLowerCase())
     ) {
       return false;
@@ -107,25 +70,42 @@ export default function AgentsPage() {
   const isLoading = agentsQuery.isLoading;
   const isError = agentsQuery.isError;
   const error = agentsQuery.error;
+  const statsReady = agentsQuery.data !== undefined && !agentsQuery.isError;
+  const runSampleReady = runsQuery.data !== undefined && !runsQuery.isError;
+  const countsReady = agentsQuery.data !== undefined && !agentsQuery.isError;
+  const countValue: string | number = countsReady
+    ? agents.length
+    : agentsQuery.isLoading
+      ? "…"
+      : "—";
+  const automatedValue: string | number = countsReady
+    ? agents.filter((agent) => agent.actor === "Agent").length
+    : countValue;
+  const humanValue: string | number = countsReady
+    ? agents.filter((agent) => agent.actor === "Human").length
+    : countValue;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
       <ViewHeader
         title={t("nav.agents")}
         subtitle={t("agents.subtitle", {
-          count: agents.length,
-          automated: agents.filter((a) => a.actor === "Agent").length,
-          human: agents.filter((a) => a.actor === "Human").length,
+          count: countValue,
+          automated: automatedValue,
+          human: humanValue,
         })}
-        action={[
-          <Button key="upload" icon="upload" small onClick={() => setImportOpen(true)}>
+        action={
+          <Button icon="upload" small onClick={() => setImportOpen(true)}>
             {t("agents.importManifest")}
-          </Button>,
-          <Button key="new" icon="plus" tone="primary" small onClick={() => setDeployOpen(true)}>
-            {t("agents.deployAgent")}
-          </Button>,
-        ]}
+          </Button>
+        }
       />
+
+      {runsQuery.isError ? (
+        <div role="alert" style={{ padding: "8px 16px", color: "var(--amber)", borderBottom: "1px solid var(--border)" }}>
+          {t("agents.statsUnavailable")}: {runsQuery.error.message}
+        </div>
+      ) : null}
 
       <div style={{ flex: 1, display: "flex", flexDirection: "row", minHeight: 0 }}>
         <aside
@@ -184,17 +164,19 @@ export default function AgentsPage() {
                 }
               />
             ) : (
-              <AgentsGrid agents={filtered} stats={stats} onPick={openAgent} />
+              <AgentsGrid
+                agents={filtered}
+                stats={stats}
+                statsReady={statsReady}
+                runSampleReady={runSampleReady}
+                onPick={openAgent}
+              />
             )}
           </div>
         </aside>
       </div>
 
-      {deployOpen && <DeployAgentModal onClose={() => setDeployOpen(false)} models={[]} />}
       {importOpen && <ImportManifestModal onClose={() => setImportOpen(false)} mode="agent" />}
-
-      {/* preserve unused-import lint pass */}
-      {false && <Panel title="hidden" />}
     </div>
   );
 }
@@ -202,10 +184,14 @@ export default function AgentsPage() {
 function AgentsGrid({
   agents,
   stats,
+  statsReady,
+  runSampleReady,
   onPick,
 }: {
   agents: AgentListRow[];
-  stats: Map<string, AgentStats>;
+  stats: Map<string, AgentStatsSnapshot>;
+  statsReady: boolean;
+  runSampleReady: boolean;
   onPick: (kebabId: string) => void;
 }) {
   const { t } = useI18n();
@@ -219,7 +205,7 @@ function AgentsGrid({
       }}
     >
       {agents.map((a) => {
-        const s = stats.get(a.kebabId) ?? stats.get(a.name) ?? emptyStats();
+        const s = stats.get(a.kebabId) ?? stats.get(a.name);
         return (
           <button
             key={a.id}
@@ -241,18 +227,37 @@ function AgentsGrid({
               (e.currentTarget as HTMLButtonElement).style.background = "var(--panel)";
             }}
           >
-            <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
-              <ActorTag actor={a.actor} />
-              <Badge tone="muted">{a.kebabId}</Badge>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6, minWidth: 0 }}>
+              <span style={{ flexShrink: 0, display: "inline-flex" }}>
+                <ActorTag actor={a.actor} />
+              </span>
+              <Badge
+                tone="muted"
+                style={{
+                  display: "block",
+                  minWidth: 0,
+                  flexShrink: 1,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                }}
+              >
+                <span title={a.kebabId}>{a.kebabId}</span>
+              </Badge>
               <span
                 style={{
                   marginLeft: "auto",
+                  flexShrink: 0,
+                  whiteSpace: "nowrap",
                   fontSize: 10.5,
                   color: "var(--text-3)",
                   fontFamily: "var(--mono)",
                 }}
               >
-                {s.lastRun > 0 ? fmtAgo(s.lastRun) : t("agents.idle")}
+                {statsReady
+                  ? (s?.lastRun ?? 0) > 0
+                    ? fmtAgo(s!.lastRun)
+                    : t("agents.idle")
+                  : "—"}
               </span>
             </div>
             <div
@@ -262,9 +267,14 @@ function AgentsGrid({
                 fontWeight: 500,
                 marginBottom: 4,
                 lineHeight: 1.3,
+                display: "-webkit-box",
+                WebkitLineClamp: 2,
+                WebkitBoxOrient: "vertical",
+                overflow: "hidden",
+                wordBreak: "break-word",
               }}
             >
-              {a.title}
+              {a.title ?? a.name}
             </div>
             <div
               style={{
@@ -290,13 +300,17 @@ function AgentsGrid({
                 color: "var(--text-3)",
               }}
             >
-              <span>{t("agents.runsCount", { count: s.runs })}</span>
-              {s.errors > 0 && (
-                <span style={{ color: "var(--red)" }}>{t("agents.errCount", { count: s.errors })}</span>
+              {statsReady ? (
+                <span>{t("agents.runsCount", { count: s?.runs ?? 0 })}</span>
+              ) : (
+                <span>{t("agents.statsUnavailable")}</span>
               )}
-              {s.tests > 0 && (
+              {statsReady && (s?.errors ?? 0) > 0 && (
+                <span style={{ color: "var(--red)" }}>{t("agents.errCount", { count: s?.errors ?? 0 })}</span>
+              )}
+              {runSampleReady && (s?.sampledTests ?? 0) > 0 && (
                 <span style={{ color: "var(--accent-text)" }}>
-                  {t("agents.testCount", { count: s.tests })}
+                  {t("agents.sampledTestCount", { count: s?.sampledTests ?? 0 })}
                 </span>
               )}
               <span style={{ marginLeft: "auto" }}>{a.kind}</span>

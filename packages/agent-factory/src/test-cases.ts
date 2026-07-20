@@ -9,6 +9,7 @@
 
 import { chatOnce, isGatewayConfigured } from "./stream-gateway";
 import { synthesizeField } from "./fixtures";
+import { deriveDecisionBoundaryFixtures } from "./decision-tables";
 import type { BrainTool, BrainCtx, BrainToolResult, TestCase } from "./brain-types";
 
 function params(props: Record<string, unknown>, required: string[] = []): Record<string, unknown> {
@@ -85,8 +86,16 @@ function parseJsonArray(text: string): unknown[] {
   }
 }
 
-async function authorTestCases(ctx: BrainCtx): Promise<TestCase[]> {
-  if (!isGatewayConfigured() || !ctx.ontology) return goldenFixture(ctx);
+/** #INDEPENDENT-TESTER — build the test-designer's LLM input from CONTRACT DATA ONLY.
+ *
+ *  INVARIANT (locked by test-cases-independence.test.ts): the assembled prompt must never
+ *  contain the designed agents' `generatedCode` / `systemPrompt` / `decisionLogic`. AgentCoder
+ *  (arXiv 2312.13010) ablated exactly this: tests authored WITHOUT seeing the code under test
+ *  reach 87.8% test accuracy vs 61.0% when the same model sees the code — a test designer that
+ *  reads the implementation inherits its blind spots and loses objectivity. The designer here
+ *  sees only: domain, event graph shape (trigger/emit/short), ontology event_data contracts,
+ *  DataObject properties, and inputSchema FIELD NAMES/TYPES (contract, not implementation). */
+export function buildTestAuthorPrompt(ctx: BrainCtx): { sys: string; user: string } {
   const entries = entryEventsOf(ctx);
   const chains: string[] = [];
   for (const a of ctx.specs) for (const e of a.emit) for (const b of ctx.specs) if (b.slug !== a.slug && b.trigger.includes(e)) chains.push(`${a.short} —${e}→ ${b.short}`);
@@ -94,10 +103,10 @@ async function authorTestCases(ctx: BrainCtx): Promise<TestCase[]> {
   const consumed = new Set(ctx.specs.flatMap((s) => s.trigger).filter(Boolean));
   const terminals = [...emitted].filter((e) => !consumed.has(e));
   const objIndex = new Map<string, { name: string; type?: string }[]>();
-  for (const o of ctx.ontology.objects) objIndex.set(o.name, (o.properties ?? []).map((p) => ({ name: p.name, type: p.type })));
+  for (const o of ctx.ontology?.objects ?? []) objIndex.set(o.name, (o.properties ?? []).map((p) => ({ name: p.name, type: p.type })));
   // R1: prefer the entry event's CANONICAL payload (ontology event_data) as the authoritative
   // field contract; fall back to the agent's (now event_data-grounded) inputSchema + DataObjects.
-  const evByName = new Map(ctx.ontology.events.map((ev) => [ev.name, ev]));
+  const evByName = new Map((ctx.ontology?.events ?? []).map((ev) => [ev.name, ev]));
   const entryFields = entries.map((e) => {
     const canon = (evByName.get(e)?.payload?.event_data ?? []).map((f) => `${f.name}:${f.type}${f.target_object ? `(${f.target_object})` : ""}`);
     if (canon.length) return `${e} 的权威 payload 字段(event_data): ${canon.slice(0, 16).join(", ")}`;
@@ -107,7 +116,7 @@ async function authorTestCases(ctx: BrainCtx): Promise<TestCase[]> {
     return `${e} 需要字段: ${[...new Set([...fields, ...objs])].slice(0, 14).join(", ") || "(未知,用代表性值)"}`;
   });
   const sys =
-    "你是工厂的【测试用例设计师】(一个聚焦子大脑)。给定一组将要部署的业务 agent 和它们的事件图,设计 2-4 个【全流程测试用例】,每个用一条入口事件 + 一份真实感的 payload 去触发整条链,覆盖不同路径:至少一个 kind=pass、一个 kind=reject、可选一个 kind=edge。payload 字段必须严格对齐给出的【权威 payload 字段(event_data)】——字段名和类型照搬,值填真实数据;reject 用例要让某个字段违反业务规则,edge 用例可缺一个非必需字段。" +
+    "你是工厂的【独立测试用例设计师】(一个聚焦子大脑)。你【看不到】被测 agent 的实现代码/提示词——只按契约出题(独立出题防被实现带偏)。给定一组将要部署的业务 agent 和它们的事件图,设计 2-4 个【全流程测试用例】,每个用一条入口事件 + 一份真实感的 payload 去触发整条链,覆盖不同路径:至少一个 kind=pass、一个 kind=reject、可选一个 kind=edge。payload 字段必须严格对齐给出的【权威 payload 字段(event_data)】——字段名和类型照搬,值填真实数据;reject 用例要让某个字段违反业务规则,edge 用例可缺一个非必需字段。" +
     '只输出 JSON 数组,每个元素 {"name":string,"scenario":string,"kind":"pass"|"reject"|"edge","entryEvent":string,"payload":object,"expectedOutcome":string}。entryEvent 必须是给出的入口事件之一。不要任何其它文字。';
   const user = [
     `业务域: ${ctx.domain}`,
@@ -117,6 +126,13 @@ async function authorTestCases(ctx: BrainCtx): Promise<TestCase[]> {
     `各入口事件的 payload 字段:\n${entryFields.join("\n")}`,
     `agent: ${ctx.specs.map((s) => `${s.short}(${s.trigger.join("/") || "入口"}→${s.emit.join("/") || "终态"})`).join("; ")}`,
   ].join("\n");
+  return { sys, user };
+}
+
+async function authorTestCases(ctx: BrainCtx): Promise<TestCase[]> {
+  if (!isGatewayConfigured() || !ctx.ontology) return goldenFixture(ctx);
+  const entries = entryEventsOf(ctx);
+  const { sys, user } = buildTestAuthorPrompt(ctx);
   try {
     const text = await chatOnce(sys, user, { temperature: 0.6, maxTokens: 1800 });
     const rows = parseJsonArray(text);
@@ -156,7 +172,10 @@ export async function proposeTestCases(ctx: BrainCtx): Promise<BrainToolResult> 
   // (generate_test_cases + sandbox_run's auto-gate) get a covered, fault-carrying suite + coverage report.
   const { cases, coverage } = ensureCoverage(ctx, authored);
   ctx.testCases = cases;
+  ctx.testCoverage = coverage;
+  ctx.testCoverageWaiver = undefined;
   ctx.awaitingApproval = true;
+  ctx.testDataSupplementPending = false;
   const kinds = cases.reduce<Record<string, number>>((m, c) => {
     m[c.kind] = (m[c.kind] ?? 0) + 1;
     return m;
@@ -240,6 +259,40 @@ export function ensureCoverage(ctx: BrainCtx, cases: TestCase[]): { cases: TestC
       else needData.push(cell);
     }
   }
+  // Structured decision tables are executable data, so their direct-input
+  // rows can produce exact boundary fixtures mechanically (39/40/missing,
+  // enum member, etc.). Put them first so a bounded live sandbox cannot spend
+  // its case budget on narrative cases while skipping the machine rules.
+  const decisionCases: TestCase[] = [];
+  for (const sp of specs) {
+    if (!sp.decisionTables?.length) continue;
+    const entryEvent = (sp.trigger ?? []).find((event) => entries.includes(event)) ?? sp.trigger?.[0];
+    if (!entryEvent) continue;
+    const fixtures = deriveDecisionBoundaryFixtures(sp.actionName, sp.decisionTables, base);
+    for (const fixture of fixtures) {
+      required.push(fixture.cell);
+      const existing = out.find((testCase) => testCase.coverageCell === fixture.cell);
+      if (existing) { covered.push(fixture.cell); continue; }
+      decisionCases.push({
+        id: fixture.id,
+        name: fixture.name,
+        scenario: `结构化决策表边界：${fixture.cell}`,
+        kind: "edge",
+        entryEvent,
+        // A `:missing` boundary is intentionally schema-incomplete. Do not let
+        // canonical back-fill silently turn the null/missing test into a normal
+        // value (the exact bug this table is meant to catch).
+        payload: fixture.cell.endsWith(":missing")
+          ? fixture.payload
+          : fillCanonical(fixture.payload, entryEvent, ctx, base),
+        expectedOutcome: fixture.expectedOutcome,
+        expectedEvent: fixture.expectedEvent,
+        coverageCell: fixture.cell,
+      });
+      backfilled.push(fixture.cell);
+    }
+  }
+  if (decisionCases.length) out.unshift(...decisionCases);
   return { cases: out, coverage: { required, covered, backfilled, uncoveredNeedingData: needData } };
 }
 

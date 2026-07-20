@@ -7,6 +7,7 @@
  * implementation.
  */
 
+import type { ToolConfigContract, WriteProbeSafetyContract } from "@agentic/shared";
 import type { z } from "zod";
 
 /**
@@ -50,6 +51,54 @@ export interface ToolResult<T = unknown> {
   meta?: Record<string, unknown>;
 }
 
+export interface ToolFactoryMetadata {
+  summary?: string;
+  category: string;
+  sideEffect: "read" | "write" | "dual" | "call";
+  operation: "read" | "compute" | "write" | "read_write";
+  effectScope: "none" | "sandbox_local" | "external";
+  sandboxPolicy: "pure" | "sandbox_local" | "live_external" | "requires_attempt_grant";
+  aliases?: string[];
+  argsSchema?: Record<string, ToolFactoryFieldSchema>;
+  returnsSchema?: Record<string, ToolFactoryFieldSchema>;
+  configSchema?: Record<string, ToolFactoryFieldSchema>;
+  configContract?: ToolConfigContract;
+  credentialEnv?: string[];
+  capabilities?: ToolFactoryCapability[];
+  profileScope?: ToolFactoryProfileScope;
+  probeSafety?: WriteProbeSafetyContract;
+  source: { modulePath: string; exportName?: string; revision?: string };
+}
+
+export interface ToolFactoryFieldSchema {
+  type: string;
+  required?: boolean;
+  description?: string;
+  default?: unknown;
+  allowedValues?: Array<string | number | boolean | null>;
+}
+
+export interface ToolFactoryCapability {
+  systems: string[];
+  /** Required for systems:["*"]: profile config key containing the exact
+   * Ontology system this reusable transport is authorized to represent. */
+  systemConfigKey?: string;
+  kinds: string[];
+  roles: string[];
+  operations?: string[];
+  objectTypes?: string[];
+  probeRequired?: boolean;
+}
+
+export interface ToolFactoryProfileScope {
+  exact?: Array<{ configKey: string; source: "tenantId" | "tenantSlug" | "domain" | "action" }>;
+  allowlists?: Array<{ configKey: string; source: "tenant" | "domain" | "action" | "objects"; match: "any" | "all" }>;
+}
+
+export interface TenantRegistryFactoryMetadata {
+  source: { kind: string; id: string; version: string; revision?: string };
+}
+
 /**
  * A tool descriptor produced by `defineTool()`. The runtime calls
  * `descriptor.handler(ctx)` and (optionally) validates the output against
@@ -61,6 +110,7 @@ export interface ToolDescriptor<TOutput = unknown> {
   readonly description?: string;
   /** Optional Zod schema — runtime validates handler output if present. */
   readonly output?: z.ZodType<TOutput>;
+  readonly factory?: ToolFactoryMetadata;
   handler(ctx: ToolContext): Promise<ToolResult<TOutput>>;
 }
 
@@ -84,6 +134,39 @@ export interface PromptDescriptor<TOutput = unknown> {
   readonly output?: z.ZodType<TOutput>;
 }
 
+export interface TenantInboundEvent {
+  eventName: string;
+  data: Record<string, unknown>;
+}
+
+export interface TenantOutboundEvent {
+  eventId: string;
+  eventName: string;
+  payload: Record<string, unknown>;
+  subject?: string | null;
+  correlationId?: string | null;
+  sourceAgent?: string | null;
+  emittedAt?: string | null;
+}
+
+export interface TenantEventAdapter {
+  readonly name?: string;
+  readonly wireEventName?: (input: {
+    tenantSlug: string;
+    eventName: string;
+  }) => string;
+  readonly subjectExpressions?: {
+    trigger: string;
+    cancel: string;
+  };
+  readonly functionId?: (input: {
+    tenantSlug: string;
+    agentName: string;
+  }) => string;
+  inbound(input: TenantInboundEvent): Record<string, unknown>;
+  outbound(input: TenantOutboundEvent): Record<string, unknown>;
+}
+
 /**
  * A tenant package's default export. Bootstrap auto-discovers `@tenants/<slug>`
  * and merges these registries with the generic tool/prompt set so manifest
@@ -92,4 +175,17 @@ export interface PromptDescriptor<TOutput = unknown> {
 export interface TenantRegistry {
   tools?: Record<string, ToolDescriptor>;
   prompts?: Record<string, PromptDescriptor>;
+  /** Optional broker-envelope codec. Omission means the identity adapter. */
+  eventAdapter?: TenantEventAdapter;
+  /** Standalone Reasoning runtime configuration; unrelated to Agent Factory. */
+  reasoning?: TenantReasoningConfigLike;
+  factory?: TenantRegistryFactoryMetadata;
+}
+
+export interface TenantReasoningConfigLike {
+  ontology: {
+    provider: "allmeta";
+    domainId: string;
+  };
+  allowedActions?: string[];
 }

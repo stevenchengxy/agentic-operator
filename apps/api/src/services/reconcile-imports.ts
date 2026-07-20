@@ -6,13 +6,14 @@
  *
  *   1. EXPIRED PENDING — `status='pending' AND expires_at < now()`. The
  *      operator abandoned a validate; the row + its workflow_version + the
- *      `data/imports/<deployment_id>/` tmp dir should all be removed.
+ *      `AGENTIC_IMPORTS_DIR/<deployment_id>/` tmp dir should all be removed.
  *
- *   2. CRASHED RENAME — `status='live' AND file_path LIKE 'data/imports/%'`.
+ *   2. CRASHED RENAME — `status='live'` with `file_path` inside the configured
+ *      `AGENTIC_IMPORTS_DIR`.
  *      Phase 3 (DB commit) succeeded but phase 4 (rename + re-register) did
  *      not. The DB says the new version is live; the runtime would load
  *      the OLD manifest from disk because the new one is still under
- *      `data/imports/<deployment_id>/workflow.json`. Complete the rename,
+ *      `AGENTIC_IMPORTS_DIR/<deployment_id>/workflow.json`. Complete the rename,
  *      then `reregisterInngest`.
  *
  *   3. MISSING ON-DISK FILE — `status='live' AND file_path NOT NULL AND
@@ -24,7 +25,8 @@
  * Idempotent. Safe to re-run.
  */
 
-import { mkdir, readdir, rm, stat, writeFile, rename } from "node:fs/promises";
+import { mkdir, open, readdir, rm, stat, rename } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import {
   deployments,
@@ -33,7 +35,7 @@ import {
   tenants,
   getDb,
 } from "@agentic/db";
-import { and, eq, isNotNull, like, lt } from "drizzle-orm";
+import { and, eq, isNotNull, lt } from "drizzle-orm";
 import { tenantSlugFromFolder, publishStreamEvent } from "@agentic/runtime";
 
 type Db = ReturnType<typeof getDb>;
@@ -46,7 +48,7 @@ function importsRoot(): string {
 
 function modelsRoot(): string {
   const env = process.env.AGENTIC_MODELS_DIR;
-  if (!env) return path.resolve(process.cwd(), "models");
+  if (!env) throw new Error("AGENTIC_MODELS_DIR is required for import reconciliation");
   return path.isAbsolute(env) ? env : path.resolve(process.cwd(), env);
 }
 
@@ -58,8 +60,9 @@ async function findTenantDirs(
   let entries: string[];
   try {
     entries = await readdir(root);
-  } catch {
-    return [];
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new Error(`models root does not exist: ${root}`, { cause: error });
+    throw error;
   }
   const matches: Array<{ folder: string; version: number; absDir: string }> = [];
   for (const folder of entries) {
@@ -68,8 +71,9 @@ async function findTenantDirs(
     let isDir = false;
     try {
       isDir = (await stat(abs)).isDirectory();
-    } catch {
-      continue;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      throw error;
     }
     if (!isDir) continue;
     if (tenantSlugFromFolder(folder) !== slug) continue;
@@ -85,8 +89,8 @@ async function nextWorkflowVN(targetDir: string): Promise<string> {
   let files: string[] = [];
   try {
     files = await readdir(targetDir);
-  } catch {
-    files = [];
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
   let max = 0;
   const re = /^workflow(?:_v(\d+))?\.json$/i;
@@ -97,6 +101,48 @@ async function nextWorkflowVN(targetDir: string): Promise<string> {
     if (v > max) max = v;
   }
   return `workflow_v${max + 1}.json`;
+}
+
+function isUnderImports(filePath: string | null): boolean {
+  if (!filePath) return false;
+  const root = path.resolve(importsRoot());
+  const candidate = path.resolve(filePath);
+  const relative = path.relative(root, candidate);
+  return relative !== "" && relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+
+async function reserveNextWorkflow(targetDir: string): Promise<{ name: string; filePath: string }> {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const name = await nextWorkflowVN(targetDir);
+    const filePath = path.join(targetDir, name);
+    try {
+      const reservation = await open(filePath, "wx", 0o600);
+      await reservation.close();
+      return { name, filePath };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") continue;
+      await rm(filePath, { force: true }).catch(() => undefined);
+      throw error;
+    }
+  }
+  throw new Error("could not reserve a unique reconciled workflow filename after 8 attempts");
+}
+
+async function writeDurableJson(filePath: string, value: unknown): Promise<void> {
+  const temp = `${filePath}.${randomUUID()}.tmp`;
+  let handle: Awaited<ReturnType<typeof open>> | null = null;
+  try {
+    handle = await open(temp, "wx", 0o600);
+    await handle.writeFile(JSON.stringify(value, null, 2) + "\n", "utf8");
+    await handle.sync();
+    await handle.close();
+    handle = null;
+    await rename(temp, filePath);
+  } catch (error) {
+    if (handle) await handle.close().catch(() => undefined);
+    await rm(temp, { force: true }).catch(() => undefined);
+    throw error;
+  }
 }
 
 interface ReconcileSummary {
@@ -110,11 +156,12 @@ interface ReconcileSummary {
 function tenantSlugForDeployment(
   db: Db,
   deploymentId: string,
-): { slug: string; tenantId: string } | null {
+): { slug: string; tenantId: string; archivedAt: Date | null } | null {
   const row = db
     .select({
       tenantId: tenants.id,
       slug: tenants.slug,
+      archivedAt: tenants.archivedAt,
     })
     .from(deployments)
     .innerJoin(workflowVersions, eq(workflowVersions.id, deployments.versionId))
@@ -122,11 +169,15 @@ function tenantSlugForDeployment(
     .innerJoin(tenants, eq(tenants.id, workflows.tenantId))
     .where(eq(deployments.id, deploymentId))
     .all()[0];
-  return row ? { slug: row.slug, tenantId: row.tenantId } : null;
+  return row
+    ? { slug: row.slug, tenantId: row.tenantId, archivedAt: row.archivedAt }
+    : null;
 }
 
 /**
- * Run the three recovery sweeps. Returns a summary; never throws.
+ * Run the three recovery sweeps. Per-row repair failures are counted in the
+ * summary so the composition root can fail readiness; store-level/query
+ * failures are allowed to throw because no trustworthy sweep was performed.
  *
  * @param db - the database connection. Pass `getDb()`.
  * @param opts.reregister - optional callback to re-register Inngest functions
@@ -163,15 +214,15 @@ export async function reconcileImports(
     .all();
   for (const row of expired) {
     try {
+      await rm(path.join(importsRoot(), row.id), {
+        recursive: true,
+        force: true,
+      });
       db.transaction(() => {
         db.delete(deployments).where(eq(deployments.id, row.id)).run();
         db.delete(workflowVersions)
           .where(eq(workflowVersions.id, row.versionId))
           .run();
-      });
-      await rm(path.join(importsRoot(), row.id), {
-        recursive: true,
-        force: true,
       });
       summary.expired_pruned += 1;
     } catch {
@@ -188,30 +239,42 @@ export async function reconcileImports(
     .where(
       and(
         eq(deployments.status, "live"),
-        like(deployments.filePath, `%data/imports/%`),
+        isNotNull(deployments.filePath),
       ),
     )
     .all();
-  // Some platforms may have absolute paths; the LIKE above also catches
-  // `/abs/path/.../data/imports/...`. Filter again on path segment to be safe.
-  for (const row of stranded.filter((r) => r.filePath?.includes("data/imports/") ?? false)) {
+  for (const row of stranded.filter((r) => isUnderImports(r.filePath))) {
+    let finalPathForCleanup: string | null = null;
+    let finalActionsForCleanup: string | null = null;
+    let deploymentUpdated = false;
     try {
       const tenantRow = tenantSlugForDeployment(db, row.id);
       if (!tenantRow) {
         summary.failures += 1;
         continue;
       }
-      // Verify the tmp file actually exists; if not, fall through to the
-      // missing-file branch below.
+      // Archived tenants are intentionally inert. Factory sandbox cleanup
+      // archives the audit identity and removes executable artifacts; boot
+      // recovery must not recreate those files or re-register the deleted App.
+      if (tenantRow.archivedAt) continue;
+      const wfv = db
+        .select()
+        .from(workflowVersions)
+        .where(eq(workflowVersions.id, row.versionId))
+        .all()[0];
+      if (!wfv) throw new Error(`workflow version ${row.versionId} is missing`);
+
+      // Verify whether the tmp file survived. If the crash happened after
+      // rename but before the DB update, reconstruct from the durable
+      // workflow_versions row instead of leaving the stranded deployment.
       const tmpPath = row.filePath!;
       let tmpExists = false;
       try {
         await stat(tmpPath);
         tmpExists = true;
-      } catch {
-        tmpExists = false;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       }
-      if (!tmpExists) continue; // handled below
       // Pick / reserve the final filename in the tenant's models folder.
       const dirs = await findTenantDirs(tenantRow.slug);
       let targetDir: string;
@@ -221,31 +284,38 @@ export async function reconcileImports(
       } else {
         targetDir = dirs[0]!.absDir;
       }
-      const nextName = await nextWorkflowVN(targetDir);
-      const finalPath = path.join(targetDir, nextName);
-      await rename(tmpPath, finalPath);
-      // Best-effort: rename actions.json too if present.
+      const reserved = await reserveNextWorkflow(targetDir);
+      const nextName = reserved.name;
+      const finalPath = reserved.filePath;
+      finalPathForCleanup = finalPath;
+      if (tmpExists) await rename(tmpPath, finalPath);
+      else await writeDurableJson(finalPath, wfv.manifestJson);
+
+      // Rename actions.json when it exists. Only ENOENT means the optional
+      // actions manifest is absent; permissions/I/O errors block recovery.
       const tmpDir = path.dirname(tmpPath);
       const tmpActions = path.join(tmpDir, "actions.json");
+      let actionsExist = false;
       try {
         await stat(tmpActions);
+        actionsExist = true;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+      if (actionsExist) {
         const versionMatch = nextName.match(/v(\d+)/);
         const v = versionMatch ? versionMatch[1] : "1";
         const finalActions = path.join(targetDir, `actions_v${v}.json`);
+        finalActionsForCleanup = finalActions;
         await rename(tmpActions, finalActions);
-      } catch {
-        /* no actions file */
       }
-      db.update(deployments)
+      const updated = db.update(deployments)
         .set({ filePath: finalPath })
         .where(eq(deployments.id, row.id))
-        .run();
-      // Clean up the now-empty tmp dir.
-      try {
-        await rm(tmpDir, { recursive: true, force: true });
-      } catch {
-        /* ignore */
-      }
+        .run() as { changes?: number };
+      if ((updated.changes ?? 0) !== 1) throw new Error(`deployment ${row.id} was not updated`);
+      deploymentUpdated = true;
+      await rm(tmpDir, { recursive: true, force: true });
       if (opts.reregister) {
         await opts.reregister(tenantRow.slug);
       }
@@ -274,6 +344,13 @@ export async function reconcileImports(
       }
       summary.rename_completed += 1;
     } catch {
+      if (!deploymentUpdated) {
+        await Promise.all(
+          [finalPathForCleanup, finalActionsForCleanup]
+            .filter((filePath): filePath is string => Boolean(filePath))
+            .map((filePath) => rm(filePath, { force: true }).catch(() => undefined)),
+        );
+      }
       summary.failures += 1;
     }
   }
@@ -295,11 +372,12 @@ export async function reconcileImports(
     try {
       if (!row.filePath) continue;
       // Skip stranded-tmp survivors (handled above).
-      if (row.filePath.includes("data/imports/")) continue;
+      if (isUnderImports(row.filePath)) continue;
       let exists = true;
       try {
         await stat(row.filePath);
-      } catch {
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
         exists = false;
       }
       if (exists) continue;
@@ -309,16 +387,15 @@ export async function reconcileImports(
         .from(workflowVersions)
         .where(eq(workflowVersions.id, row.versionId))
         .all()[0];
-      if (!wfv) {
-        summary.failures += 1;
-        continue;
-      }
+      if (!wfv) throw new Error(`workflow version ${row.versionId} is missing`);
+      const tenantRow = tenantSlugForDeployment(db, row.id);
+      if (!tenantRow) throw new Error(`deployment ${row.id} has no tenant`);
+      // Missing files for an archived tenant are the expected result of
+      // decommissioning, not a crashed live deployment to resurrect.
+      if (tenantRow.archivedAt) continue;
       await mkdir(path.dirname(row.filePath), { recursive: true });
-      await writeFile(
-        row.filePath,
-        JSON.stringify(wfv.manifestJson, null, 2) + "\n",
-        "utf8",
-      );
+      await writeDurableJson(row.filePath, wfv.manifestJson);
+      if (opts.reregister) await opts.reregister(tenantRow.slug);
       summary.missing_file_repaired += 1;
     } catch {
       summary.failures += 1;

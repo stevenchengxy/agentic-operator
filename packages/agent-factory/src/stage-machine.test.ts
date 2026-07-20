@@ -18,6 +18,9 @@ describe("stageAdmission (#W2-STAGE)", () => {
     const ont = { actions: [], events: [], objects: [], rules: [] };
     expect(stageAdmission("design_agent", mk({ ontology: ont }))).toMatch(/create_plan/);
     expect(stageAdmission("sandbox_run", mk({ ontology: ont, specs: [{}] }))).toMatch(/validate_graph/);
+    expect(stageAdmission("sandbox_run", mk({ ontology: ont, specs: [{}], lastValidation: { agentIssueMap: {} } }))).toMatch(/ok=true/);
+    expect(stageAdmission("sandbox_run", mk({ ontology: ont, specs: [{}], lastValidation: { ok: false, agentIssueMap: {} } }))).toMatch(/ok=true/);
+    expect(stageAdmission("sandbox_run", mk({ ontology: ont, specs: [{}], lastValidation: { ok: true, agentIssueMap: {} } }))).toBeNull();
     expect(stageAdmission("finish", mk({ ontology: ont, specs: [{}] }))).toMatch(/沙箱/);
     expect(stageAdmission("finish", mk({ ontology: ont, specs: [{}], lastSandbox: { fullChainRan: true } }))).toBeNull();
   });

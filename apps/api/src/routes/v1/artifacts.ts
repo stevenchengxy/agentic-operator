@@ -3,7 +3,6 @@ import { stat } from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import { eq } from "drizzle-orm";
 import { artifacts, getDb } from "@agentic/db";
-import { requireAuth } from "../../plugins/auth";
 import { requirePermission } from "../../plugins/rbac";
 
 export async function artifactsRoutes(app: FastifyInstance) {
@@ -20,8 +19,11 @@ export async function artifactsRoutes(app: FastifyInstance) {
 
     try {
       await stat(row.path);
-    } catch {
-      return reply.fail("gone", "artifact file missing", 410);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return reply.fail("gone", "artifact file missing", 410);
+      }
+      throw error;
     }
     reply
       .header("Content-Type", row.kind ?? "application/octet-stream")

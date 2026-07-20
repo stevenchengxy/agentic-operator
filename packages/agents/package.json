@@ -10,6 +10,7 @@
     "./system": "./src/system/index.ts"
   },
   "scripts": {
+    "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist .turbo"
   },
@@ -24,6 +25,7 @@
   },
   "devDependencies": {
     "@types/node": "^25.8.0",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3",
+    "vitest": "^3.0.5"
   }
 }

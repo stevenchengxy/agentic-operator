@@ -70,6 +70,8 @@ export function formatEvent(ev: StreamEvent, useColor: boolean): string {
       return `${t} ${colorize("run.ok", "green", useColor)} ${ev.runId} ${ev.durationMs ?? 0}ms tokens=${ev.tokensIn ?? 0}/${ev.tokensOut ?? 0}`;
     case "run.failed":
       return `${t} ${colorize("run.fail", "red", useColor)} ${ev.runId} ${ev.errorMessage}`;
+    case "run.cancelled":
+      return `${t} ${colorize("run.cancel", "yellow", useColor)} ${ev.runId} ${ev.reason}`;
     case "event.emitted":
       return `${t} ${colorize("emit", "magenta", useColor)} ${ev.name} ${ev.eventId} subject=${ev.subject ?? "—"}`;
     case "task.created":
@@ -79,6 +81,18 @@ export function formatEvent(ev: StreamEvent, useColor: boolean): string {
     case "deployment.created": {
       const slug = ev.workflowSlug ?? "—";
       return `${t} ${colorize("deploy", "magenta", useColor)} ${ev.deploymentId} kind=${ev.kind} version=${ev.version} workflow=${slug}`;
+    }
+    case "log.line":
+      return `${t} ${colorize(ev.level, ev.level === "ERROR" ? "red" : ev.level === "WARN" ? "yellow" : "grey", useColor)} ${ev.runId} ${ev.event} ${ev.message}`;
+    case "audit.recorded":
+      return `${t} ${colorize("audit", "cyan", useColor)} ${ev.action} target=${ev.targetType ?? "—"}:${ev.targetId ?? "—"} decision=${ev.decision ?? "—"}`;
+    case "llm.call.completed": {
+      const outcome = ev.ok ? colorize("ok", "green", useColor) : colorize("failed", "red", useColor);
+      return `${t} ${colorize("llm.call", "magenta", useColor)} ${outcome} provider=${ev.provider ?? "—"} model=${ev.servedModel ?? ev.requestedModel ?? "—"} tokens=${ev.tokensIn ?? 0}/${ev.tokensOut ?? 0}`;
+    }
+    case "tool.call.completed": {
+      const outcome = ev.ok ? colorize("ok", "green", useColor) : colorize("failed", "red", useColor);
+      return `${t} ${colorize("tool.call", "blue", useColor)} ${outcome} ${ev.runId} tool=${ev.toolName} agent=${ev.agentName ?? "—"}`;
     }
   }
 }

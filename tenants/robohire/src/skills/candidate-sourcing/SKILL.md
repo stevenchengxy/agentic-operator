@@ -10,20 +10,15 @@ Use this skill when you need to turn a fresh job requisition into a candidate lo
 
 ## Input you will see
 
-You will be invoked after a `NEW_JOB_REQUISITION` event. The event payload always carries `job_requisition_id`. Use `robohire-mcp.get_job_requisition` (or the real REST `getJobRequisitionApi` if available) to fetch the structured req before doing anything else.
+You will be invoked after a `NEW_JOB_REQUISITION` event. The payload must carry `job_requisition_id`, the real `jd` text, and `candidates: [{ candidate_id, resume }]` from the caller's ATS or export. No candidate-search connector is configured for this tenant, so missing source data is a blocking integration gap.
 
 ## Procedure
 
-1. **Fetch the req** with `robohire-mcp.get_job_requisition`. Record `title`, `must_have`, `nice_to_have`, `location`.
-2. **Build the search args** for `searchCandidatesApi`:
-   - `job_title` = the req's `title`
-   - `must_have` = first 3-5 items from `must_have`
-   - `nice_to_have` = first 3 items from `nice_to_have`
-   - `location` = req's `location` if it constrains to a city or "Remote"
-   - `limit` = 10 unless you have a reason to go wider
-3. **If the real REST search fails or returns empty**, fall back to `robohire-mcp.search_candidates` (the mock MCP server) with `{ job_title }` as the query — confirms the workflow is alive even when the live API is unreachable.
-4. **Score the longlist** by calling `robohire-mcp.score_resume` for each candidate (or `matchResumeApi` if you have `resume_id`). Keep only `STRONG_FIT` and the top 2 `POSSIBLE_FIT` results.
-5. **Emit `CANDIDATES_SOURCED`** with payload `{ job_requisition_id, shortlist: [{candidate_id, score, verdict}, …] }`.
+1. **Validate source data**. If `jd` or any candidate's `resume` is empty, return `missing_source_data` with the exact missing fields and stop.
+2. **Probe RoboHire** with `robohireHealthApi`. Treat missing credentials or an unreachable upstream as a real failure.
+3. **Structure the requisition** with `parseJdApi` when downstream needs parsed must-have and nice-to-have fields.
+4. **Score supplied candidates** with `matchResumeApi` using the exact real `{ resume, jd }` strings. Never replace a failed call with a locally generated score.
+5. **Emit `CANDIDATES_SOURCED`** with `{ job_requisition_id, jd, shortlist: [{candidate_id, resume, score, verdict}, …] }`.
 
 ## What "done" looks like
 
@@ -32,5 +27,5 @@ A shortlist of 3-5 candidates with a numeric score and a one-line rationale per 
 ## Failure modes
 
 - `ROBOHIRE_API_KEY not set` — surface verbatim. Do not retry.
-- Upstream 5xx — try the MCP mock fallback once, then give up.
+- Upstream 5xx — preserve the upstream error and stop or mark that candidate failed; do not synthesize a replacement.
 - Empty result — emit the empty shortlist with `reason`. Don't synthesize candidates.

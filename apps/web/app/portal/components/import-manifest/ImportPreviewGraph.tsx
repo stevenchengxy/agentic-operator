@@ -132,16 +132,13 @@ export function ImportPreviewGraph({ manifest, diff }: ImportPreviewGraphProps) 
   }, [diff]);
 
   // Canvas dimensions.
-  const maxStage = positions.stageKeys.length
-    ? Math.max(...positions.stageKeys)
-    : 0;
   const maxLane = useMemo(() => {
     let m = 0;
     for (const v of byStage.values()) m = Math.max(m, v.length);
     return m;
   }, [byStage]);
 
-  const W = PAD_X * 2 + Math.max(1, maxStage + 1) * COL_W;
+  const W = PAD_X * 2 + Math.max(1, positions.stageKeys.length) * COL_W;
   const H = PAD_Y * 2 + Math.max(1, maxLane) * ROW_H;
 
   const [hovered, setHovered] = useState<string | null>(null);
@@ -189,9 +186,12 @@ export function ImportPreviewGraph({ manifest, diff }: ImportPreviewGraphProps) 
       <svg
         width={W}
         height={H + 24}
+        role="img"
+        aria-label={t("importPreviewGraph.title")}
         style={{ display: "block", minWidth: "100%" }}
         viewBox={`0 0 ${W} ${H + 24}`}
       >
+        <title>{t("importPreviewGraph.title")}</title>
         {/* Stage column headers + dividers */}
         {positions.stageKeys.map((s, i) => (
           <g key={`stage-${s}`}>
@@ -211,7 +211,7 @@ export function ImportPreviewGraph({ manifest, diff }: ImportPreviewGraphProps) 
               fontFamily="var(--mono)"
               letterSpacing="0.08em"
             >
-              {String(i).padStart(2, "0")} · {t("importPreviewGraph.stage")}
+              {String(s).padStart(2, "0")} · {t("importPreviewGraph.stage")}
             </text>
           </g>
         ))}
@@ -265,7 +265,9 @@ export function ImportPreviewGraph({ manifest, diff }: ImportPreviewGraphProps) 
               opacity={dim ? 0.18 : isHi ? 1 : 0.5}
               markerEnd={isHi ? "url(#ipg-arrow-hi)" : "url(#ipg-arrow)"}
               style={{ transition: "opacity 0.12s, stroke 0.12s" }}
-            />
+            >
+              <title>{e.event}</title>
+            </path>
           );
         })}
 
@@ -302,6 +304,7 @@ export function ImportPreviewGraph({ manifest, diff }: ImportPreviewGraphProps) 
                 transition: "opacity 0.12s",
               }}
             >
+              <title>{`${a.name} · ${a.id}`}</title>
               <rect
                 x={p.x}
                 y={p.y}
@@ -395,44 +398,53 @@ function toKebab(s: string): string {
     .toLowerCase();
 }
 
-/**
- * Longest-path stage assignment via bounded relaxation. Cyclic stragglers
- * fall back to stage 0. The bound (`PASSES`) protects against worst-case
- * loops in pathological inputs.
- */
+/** Longest-path stages for the acyclic portion; cycle-bound nodes stay at 0. */
 function computeStages(agents: NormalizedAgent[]): Map<string, number> {
-  const byTrigger = new Map<string, string[]>();
+  const listeners = new Map<string, string[]>();
   agents.forEach((a) => {
-    a.emits.forEach((ev) => {
-      const arr = byTrigger.get(ev) ?? [];
+    a.triggers.forEach((ev) => {
+      const arr = listeners.get(ev) ?? [];
       arr.push(a.id);
-      byTrigger.set(ev, arr);
+      listeners.set(ev, arr);
     });
   });
 
   const stage = new Map<string, number>();
-  agents.forEach((a) => stage.set(a.id, 0));
+  const outgoing = new Map<string, Set<string>>();
+  const indegree = new Map<string, number>();
+  agents.forEach((a) => {
+    stage.set(a.id, 0);
+    outgoing.set(a.id, new Set());
+    indegree.set(a.id, 0);
+  });
 
-  const PASSES = Math.min(agents.length + 1, 32);
-  for (let pass = 0; pass < PASSES; pass++) {
-    let changed = false;
-    agents.forEach((a) => {
-      let maxParent = -1;
-      a.triggers.forEach((ev) => {
-        const emitters = byTrigger.get(ev) ?? [];
-        emitters.forEach((eId) => {
-          if (eId === a.id) return;
-          const s = stage.get(eId);
-          if (s != null && s > maxParent) maxParent = s;
-        });
+  agents.forEach((source) => {
+    source.emits.forEach((event) => {
+      (listeners.get(event) ?? []).forEach((destinationId) => {
+        if (destinationId === source.id || !indegree.has(destinationId)) return;
+        const targets = outgoing.get(source.id);
+        if (!targets || targets.has(destinationId)) return;
+        targets.add(destinationId);
+        indegree.set(destinationId, (indegree.get(destinationId) ?? 0) + 1);
       });
-      const want = maxParent + 1;
-      if (want > (stage.get(a.id) ?? 0)) {
-        stage.set(a.id, want);
-        changed = true;
-      }
     });
-    if (!changed) break;
+  });
+
+  const queue = agents
+    .map((a) => a.id)
+    .filter((id) => (indegree.get(id) ?? 0) === 0)
+    .sort();
+  for (let index = 0; index < queue.length; index += 1) {
+    const sourceId = queue[index]!;
+    for (const destinationId of outgoing.get(sourceId) ?? []) {
+      stage.set(
+        destinationId,
+        Math.max(stage.get(destinationId) ?? 0, (stage.get(sourceId) ?? 0) + 1),
+      );
+      const nextDegree = (indegree.get(destinationId) ?? 0) - 1;
+      indegree.set(destinationId, nextDegree);
+      if (nextDegree === 0) queue.push(destinationId);
+    }
   }
   return stage;
 }

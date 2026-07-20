@@ -140,7 +140,7 @@ export async function listTenantsWithCounts(
     .where(
       and(
         inArray(tasks.tenantId, tenantIds),
-        eq(tasks.status, "open"),
+        inArray(tasks.status, ["open", "resolving"]),
         isNull(tasks.deletedAt),
       ),
     )
@@ -208,7 +208,7 @@ export async function getTenantDetail(
     .where(
       and(
         eq(tasks.tenantId, t.id),
-        eq(tasks.status, "open"),
+        inArray(tasks.status, ["open", "resolving"]),
         isNull(tasks.deletedAt),
       ),
     )
@@ -314,7 +314,7 @@ export function tenantHasActiveWork(tenantId: string): {
     .where(
       and(
         eq(tasks.tenantId, tenantId),
-        eq(tasks.status, "open"),
+        inArray(tasks.status, ["open", "resolving"]),
         isNull(tasks.deletedAt),
       ),
     )

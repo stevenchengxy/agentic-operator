@@ -17,6 +17,7 @@
 
 import { definePrompt } from "@agentic/agent-kit";
 import type { PromptDescriptor, ToolContext } from "@agentic/agent-kit";
+import { z } from "zod";
 
 /** Build a "context bundle" the LLM can read — trigger event + previous step output. */
 function ctxBundle(ctx: ToolContext): string {
@@ -27,14 +28,104 @@ function ctxBundle(ctx: ToolContext): string {
   }
   if (ctx.subject) parts.push(`Subject: ${ctx.subject}`);
   if (ctx.lastResult !== undefined) {
-    parts.push(`Previous step output: ${JSON.stringify(ctx.lastResult, null, 2)}`);
+    parts.push(
+      `Previous step output: ${JSON.stringify(ctx.lastResult, null, 2)}`,
+    );
   }
   return parts.join("\n");
 }
 
+// Runtime-enforced structured outputs. The prompts already asked for these
+// exact JSON shapes, but without `output` the runtime returned raw model text
+// and downstream tools saw a string (often a ```json fenced string).
+const jdOutputSchema = z
+  .object({
+    title: z.string(),
+    keywords: z.array(z.string()).length(5),
+    responsibilities: z.array(z.string()),
+    must_have: z.array(z.string()),
+    nice_to_have: z.array(z.string()),
+    company: z.string(),
+    compensation: z.string(),
+    logistics: z.string(),
+    jd_content: z.string().min(1),
+  })
+  .passthrough();
+
+const requisitionMappingSchema = z
+  .object({
+    mapping: z.array(
+      z
+        .object({
+          posting_key: z.string(),
+          requirement_ids: z.array(z.string()),
+          channel: z.string().nullable(),
+          variant_note: z.string().nullable(),
+        })
+        .passthrough(),
+    ),
+    rationale: z.string(),
+  })
+  .passthrough();
+
+const completenessSchema = z
+  .object({
+    complete: z.boolean(),
+    missing_fields: z.array(z.string()),
+    candidate_id: z.string().nullable(),
+    lock_conflict: z.boolean(),
+  })
+  .passthrough();
+
+const candidacySchema = z
+  .object({
+    _emit: z.enum(["RESUME_PROCESSED", "RESUME_LOCKED_CONFLICT"]),
+    decision: z.enum(["proceed", "lock_conflict"]),
+    candidate_id: z.string().nullable(),
+    missing_fields: z.array(z.string()),
+    reason: z.string(),
+  })
+  .passthrough();
+
+const candidateIdentitySchema = z
+  .object({
+    same_person: z.boolean(),
+    same_as_candidate_id: z.string().nullable(),
+    matched_tier: z
+      .union([z.literal(1), z.literal(2), z.literal(3)])
+      .nullable(),
+    dedup_action: z.enum(["merge", "new", "pending-review"]),
+    needs_review: z.boolean(),
+    decision_reason: z.string(),
+  })
+  .passthrough();
+
+const ruleResultSchema = z
+  .object({
+    rule_id: z.string(),
+    status: z.enum(["pass", "fail", "insufficient_info"]),
+    reason: z.string(),
+    evidence: z.string().nullable(),
+  })
+  .passthrough();
+
+const ruleResultsSchema = z
+  .object({
+    rule_results: z.array(ruleResultSchema),
+  })
+  .passthrough();
+
+const matchOutcomeSchema = z
+  .object({
+    _emit: z.enum(["MATCH_PASSED_NEED_INTERVIEW", "MATCH_FAILED"]),
+    match_score: z.number(),
+    decision_reason: z.string(),
+  })
+  .passthrough();
+
 // ── 4 createJD (JDGenerator) ─────────────────────────────────────────────────
-// Migrated from old create-jd-agent. Old AO called RoboHire /generate-jd; here
-// the LLM drafts the JD directly from the clarified requirement in the event.
+// Retained only for replaying historical zhaopin manifests. The live v1
+// workflow calls the verified RoboHire generateJdApi adapter, as old AO did.
 
 export const generateJDContent = definePrompt({
   name: "generateJDContent",
@@ -63,6 +154,7 @@ export const generateJDContent = definePrompt({
     `  "logistics": string,          // 工作地点 / 用工方式 / 工作时间\n` +
     `  "jd_content": string          // 上述内容拼成的完整 Markdown 正文\n` +
     `}`,
+  output: jdOutputSchema,
 });
 
 export const handleRequisitionMapping = definePrompt({
@@ -77,6 +169,7 @@ export const handleRequisitionMapping = definePrompt({
     `规划需求与职位发布的映射。\n\n${ctxBundle(ctx)}\n\n` +
     `只返回 JSON：\n` +
     `{ "mapping": [ { "posting_key": string, "requirement_ids": string[], "channel": string | null, "variant_note": string | null } ], "rationale": string }`,
+  output: requisitionMappingSchema,
 });
 
 // ── 9-1 processResume (ResumeParser) ─────────────────────────────────────────
@@ -94,6 +187,7 @@ export const validateCompleteness = definePrompt({
     `校验候选人档案完整性。\n\n${ctxBundle(ctx)}\n\n` +
     `只返回 JSON：\n` +
     `{ "complete": boolean, "missing_fields": string[], "candidate_id": string | null, "lock_conflict": boolean }`,
+  output: completenessSchema,
 });
 
 // Routing gate (last action of 9-1). Faithful emits: RESUME_PROCESSED |
@@ -118,6 +212,7 @@ export const validateCandidacy = definePrompt({
     `  "missing_fields": string[],\n` +
     `  "reason": string\n` +
     `}`,
+  output: candidacySchema,
 });
 
 // ── 10-3 ruleCheckForCandidateIdentity (CandidateDedup) ──────────────────────
@@ -148,6 +243,7 @@ export const checkCandidateIdentity = definePrompt({
     `  "needs_review": boolean,\n` +
     `  "decision_reason": string\n` +
     `}`,
+  output: candidateIdentitySchema,
 });
 
 // ── 10-1 ruleCheckForMatchResume (RuleCheck) ─────────────────────────────────
@@ -168,6 +264,7 @@ export const checkRelatedCompaniesRecords = definePrompt({
     `执行关联公司冷冻期规则检查。\n\n${ctxBundle(ctx)}\n\n` +
     `只返回 JSON：\n` +
     `{ "rule_results": [ { "rule_id": "related_companies_freeze", "status": "pass" | "fail" | "insufficient_info", "reason": string, "evidence": string | null } ] }`,
+  output: ruleResultsSchema,
 });
 
 export const checkNationality = definePrompt({
@@ -182,6 +279,7 @@ export const checkNationality = definePrompt({
     `执行国籍规则检查，并在上一步 rule_results 基础上追加本步判定。\n\n${ctxBundle(ctx)}\n\n` +
     `只返回 JSON（rule_results 含此前所有规则 + 本步 nationality 规则）：\n` +
     `{ "rule_results": [ { "rule_id": string, "status": "pass" | "fail" | "insufficient_info", "reason": string, "evidence": string | null } ] }`,
+  output: ruleResultsSchema,
 });
 
 export const checkReflux = definePrompt({
@@ -196,6 +294,7 @@ export const checkReflux = definePrompt({
     `执行回流冷冻期规则检查，并在上一步 rule_results 基础上追加本步判定。\n\n${ctxBundle(ctx)}\n\n` +
     `只返回 JSON（rule_results 含此前所有规则 + 本步 reflux 规则）：\n` +
     `{ "rule_results": [ { "rule_id": string, "status": "pass" | "fail" | "insufficient_info", "reason": string, "evidence": string | null } ] }`,
+  output: ruleResultsSchema,
 });
 
 // ── 10-2 matchResume (Matcher) ───────────────────────────────────────────────
@@ -209,62 +308,18 @@ export const decideMatchOutcome = definePrompt({
     "Score the (already rule-passed) candidate against the JD and route via _emit.",
   system:
     "你是简历匹配决策官。本节点的前置规则检查（关联公司 / 国籍 / 回流冷冻期）已通过，你只需做匹配评分与路由。" +
-    "可调用 matchResumeApi（传入 {resume, jd} 文本）获取 RoboHire 0-100 量化打分作为主要依据：" +
-    "(a) 评分明显偏低（如 < 40）或硬性条件不符 → 不通过（MATCH_FAILED）；" +
-    "(b) 评分达标、需进一步面试核实 → 通过需面试（MATCH_PASSED_NEED_INTERVIEW，多数通过候选走此路）；" +
-    "(c) 评分极高且画像与岗位高度一致、可免面试直接进入推荐 → 通过免面试（MATCH_PASSED_NO_INTERVIEW）。" +
-    "必须在 `_emit` 给出三者之一，运行时据此路由；评分缺失/接口异常时从稳妥判定为需面试，不要误判为不通过。",
+    "读取已由 matchResumeApi 返回的 RoboHire 0-100 量化打分，严格按生产阈值路由：" +
+    "评分 < 40 → MATCH_FAILED；评分 >= 40 → MATCH_PASSED_NEED_INTERVIEW。" +
+    "免面试分支已经下线，禁止输出 MATCH_PASSED_NO_INTERVIEW；评分缺失时不得编造。",
   template: (ctx) =>
     `给出最终匹配结论。\n\n${ctxBundle(ctx)}\n\n` +
     `只返回 JSON：\n` +
     `{\n` +
-    `  "_emit": "MATCH_PASSED_NEED_INTERVIEW" | "MATCH_PASSED_NO_INTERVIEW" | "MATCH_FAILED",\n` +
+    `  "_emit": "MATCH_PASSED_NEED_INTERVIEW" | "MATCH_FAILED",\n` +
     `  "match_score": number,\n` +
     `  "decision_reason": string\n` +
     `}`,
-});
-
-// ── 11-1 inviteInternalInterview (InterviewInviter) ──────────────────────────
-// Migrated from old interview-inviter-agent. Trigger is the post-approval
-// boundary event INTERVIEW_INVITATION_REQUESTED. Generates the invite, delivers
-// it, notifies the recruiter, and routes SENT / FAILED via _emit on the last step.
-
-export const generateInterviewInvitation = definePrompt({
-  name: "generateInterviewInvitation",
-  description:
-    "Compose a personalized interview invitation (recipient + subject + body) for delivery.",
-  system:
-    "你是面试协调助理。为通过匹配的候选人撰写个性化的面试邀请。" +
-    "可调用 inviteCandidateApi 生成邀请正文初稿（仅生成、不投递）再润色。" +
-    "邀请需包含：称呼、岗位与公司、面试形式（线上 / 线下 / AI 面试）、时间窗口与截止日期、参与方式或链接占位、以及礼貌的确认请求。" +
-    "语气专业友好；从上下文提取候选人邮箱或手机号作为收件人；不要编造未提供的时间或地点（缺失则用占位并注明需确认）。",
-  template: (ctx) =>
-    `撰写面试邀请。\n\n${ctxBundle(ctx)}\n\n` +
-    `只返回 JSON（字段名固定，供下一步投递读取）：\n` +
-    `{ "to": string, "subject": string, "body": string, "deadline_days": number, "invite_link_placeholder": string }`,
-});
-
-// Routing gate (last action of 11-1). Reads the sendInvitationEmail delivery
-// result (Previous step output) and routes INTERVIEW_INVITATION_SENT (delivered)
-// vs INTERVIEW_INVITATION_FAILED (delivery failed / unconfigured / error).
-export const notifyRecruiter = definePrompt({
-  name: "notifyRecruiter",
-  description:
-    "Compose the recruiter handoff message and route the invite outcome (SENT / FAILED) via _emit.",
-  system:
-    "你是招聘协同助理。依据上一步 sendInvitationEmail 的投递结果决定本次面试邀约的最终事件，并为招聘专员生成可在企业微信转发给候选人的跟进话术（含面试链接），便于其催办、提高完成率。" +
-    "路由规则：若投递结果 delivered 为真 → 邀约成功（INTERVIEW_INVITATION_SENT）；若 delivered 为假 / 未配置投递通道 / 出现错误 → 邀约失败（INTERVIEW_INVITATION_FAILED，便于上游重试或人工升级）。" +
-    "必须在 `_emit` 给出二者之一，运行时据此路由。",
-  template: (ctx) =>
-    `生成招聘专员跟进话术并路由邀约结果。\n\n${ctxBundle(ctx)}\n\n` +
-    `只返回 JSON：\n` +
-    `{\n` +
-    `  "_emit": "INTERVIEW_INVITATION_SENT" | "INTERVIEW_INVITATION_FAILED",\n` +
-    `  "recruiter_id": string | null,\n` +
-    `  "wecom_message": string,\n` +
-    `  "interview_link": string | null,\n` +
-    `  "reason": string\n` +
-    `}`,
+  output: matchOutcomeSchema,
 });
 
 // ── registry export ──────────────────────────────────────────────────────────
@@ -286,7 +341,4 @@ export const zhaopinPrompts: Record<string, PromptDescriptor> = {
   checkReflux,
   // 10-2 matchResume
   decideMatchOutcome,
-  // 11-1 inviteInternalInterview
-  generateInterviewInvitation,
-  notifyRecruiter,
 };

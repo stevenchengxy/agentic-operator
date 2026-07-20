@@ -308,7 +308,11 @@ Every mutation writes exactly one `audit_log` row inside the same transaction as
 
 Transactional placement matters: if the audit insert fails, the state change rolls back too. We never end up with state changes absent from the audit trail.
 
-`actorUserId` is populated from `resolveOperatorUserId()` (`routes/v1/tenants.ts:118-126`), which looks up the seed admin `ops@agentic.local`. This is a temporary stand-in noted at `routes/v1/tenants.ts:111-115`; the real user identity must come from the auth context (token's owning user, or SSO subject when SSO ships). P5-TEN-02 will derive from `req.auth`. Until then, the `by_tenant` field in `metaJson` is the only cross-tenant accountability marker.
+`actorUserId` is populated from the authenticated `req.auth.userId`. Tenant
+creation also passes that same id into the transaction for the initial admin
+membership. Bearer tokens without a user principal retain a null actor rather
+than being falsely attributed to a bootstrap account; `by_tenant` remains
+additional cross-tenant context in `metaJson`.
 
 There is no separate tenant audit view; the global audit view filters by tenant. `targetType = "tenant"` plus `action LIKE 'tenant.%'` is the query for the per-tenant lifecycle report.
 
@@ -339,7 +343,7 @@ Items deliberately out of scope and tracked for follow-up:
 - **Slug uniqueness across archived rows.** `tenants_slug_uq` is global — archived `acme` blocks new `acme`. PRD documents the "clone-then-archive" workaround.
 - **Hard-delete and retention sweeper.** Archived data lives indefinitely. PRD §11 phase-3.
 - **Clone fidelity for code-agent tarballs.** `copy-from:<slug>` duplicates the manifest but does *not* deep-copy `data/tenants/<source>/<version>/`. The cloned tenant must redeploy.
-- **`actorUserId` derivation.** Audit rows currently credit `ops@agentic.local`. P5-TEN-02 derives from `req.auth.userId`.
+- **`actorUserId` derivation is complete.** Audit rows use `req.auth.userId`; there is no bootstrap-user substitution.
 - **No `HEAD /v1/tenants/:slug` slug probe.** Wizard uses regex+local-list validation; collisions surface as 409 on submit.
 
 ## 14. Testing strategy

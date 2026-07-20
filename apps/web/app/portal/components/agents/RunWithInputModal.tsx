@@ -17,11 +17,29 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
+import { z } from "zod";
 
 import { Button } from "@/app/portal/components";
 import { ModalOverlay } from "@/app/portal/components/Modal";
 import { useI18n } from "@/app/portal/lib/preferences-context";
 import { useInvokeAgent } from "@/lib/hooks/useAgents";
+
+const CodeInvokeSuccess = z.object({
+  kind: z.literal("code").optional(),
+  runId: z.string().min(1),
+  status: z.enum(["ok", "failed", "queued", "cancelled"]),
+});
+
+const ManifestInvokeSuccess = z.object({
+  kind: z.literal("manifest"),
+  status: z.literal("queued"),
+  eventId: z.string().min(1),
+  eventName: z.string().min(1),
+  correlationId: z.string().min(1),
+  subject: z.string().min(1),
+});
+
+const InvokeSuccess = z.union([ManifestInvokeSuccess, CodeInvokeSuccess]);
 
 interface RunWithInputModalProps {
   /** Manifest agent's `name` (e.g. "matcherAgent"). */
@@ -108,27 +126,33 @@ export function RunWithInputModal({
         testRun: true,
         input: parsed,
       });
-      const runId = res.runId ?? res.run_id ?? null;
+      const result = InvokeSuccess.safeParse(res);
+      if (!result.success) {
+        const first = result.error.issues[0];
+        setServerError(
+          t("runWithInputModal.protocolError", {
+            detail: first
+              ? `${first.path.join(".") || "response"}: ${first.message}`
+              : "invalid response",
+          }),
+        );
+        return;
+      }
       const now = Date.now();
-      if (runId) {
-        setSubmitted({ kind: "code", runId, submittedAt: now });
-        if (onSubmitted) onSubmitted(runId);
-      } else if (res.eventId && res.correlationId) {
+      if (result.data.kind === "manifest") {
         setSubmitted({
           kind: "manifest",
-          eventId: res.eventId,
-          correlationId: res.correlationId,
+          eventId: result.data.eventId,
+          correlationId: result.data.correlationId,
           submittedAt: now,
         });
       } else {
-        // Fallback — surface an opaque success so the operator sees something
-        // landed even when the route returns a shape we don't recognise.
         setSubmitted({
-          kind: "manifest",
-          eventId: "(no event id)",
-          correlationId: "(no correlation id)",
+          kind: "code",
+          runId: result.data.runId,
           submittedAt: now,
         });
+        onSubmitted?.(result.data.runId);
       }
     } catch (err) {
       setServerError(

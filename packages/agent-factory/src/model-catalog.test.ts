@@ -82,4 +82,32 @@ describe("modelChain catalog validation/derivation (#7)", () => {
     const env = { ...ENV, FACTORY_MODEL_HARD: "a/x,b/y" };
     expect(modelChain("hard", env)).toEqual(["a/x", "b/y", "google/gemini-3-flash-preview"]);
   });
+
+  // New-api gpt-5.6 series must route by task difficulty (price/strength) with NO env pins — proving
+  // the factory freely assigns luna→fast, terra→default, sol→hard, sol-pro→review off the live catalog.
+  it("routes the New-api gpt-5.6 tiers to fast/default/hard/review by difficulty (env unset)", async () => {
+    const CATALOG_56 = [
+      "openai/gpt-5.6-sol",
+      "openai/gpt-5.6-sol-pro",
+      "openai/gpt-5.6-terra",
+      "openai/gpt-5.6-terra-pro",
+      "openai/gpt-5.6-luna",
+      "openai/gpt-5.6-luna-pro",
+      "anthropic/claude-sonnet-4.6",
+      "anthropic/claude-opus-4.8",
+      "google/gemini-3-flash-preview",
+      "google/gemini-3-pro-image-preview", // non-chat: must never appear in any tier
+    ];
+    vi.stubGlobal("fetch", mockModelsFetch(CATALOG_56));
+    await fetchModelCatalog(ENV, { force: true });
+
+    expect(modelChain("fast", ENV)[0]).toBe("openai/gpt-5.6-luna");     // cheapest → reading/planning
+    expect(modelChain("default", ENV)[0]).toBe("openai/gpt-5.6-terra"); // mid → design
+    expect(modelChain("hard", ENV)[0]).toBe("openai/gpt-5.6-sol");      // strong → code/refine
+    expect(modelChain("review", ENV)[0]).toBe("openai/gpt-5.6-sol-pro"); // strongest → critic
+
+    for (const tier of ["fast", "default", "hard", "review"] as const) {
+      expect(modelChain(tier, ENV).some((m) => /image/.test(m))).toBe(false);
+    }
+  });
 });

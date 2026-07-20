@@ -74,13 +74,7 @@ export const readFromInbox = defineTool({
     const filename =
       typeof args.filename === "string" && args.filename.trim()
         ? args.filename.trim()
-        : typeof args.resume_filename === "string" && args.resume_filename.trim()
-          ? args.resume_filename.trim()
-          : // Accept a RESUME_DOWNLOADED that carries only `resume_file_path`:
-            // take its basename (assertFlatFilename below rejects a real path).
-            typeof args.resume_file_path === "string" && args.resume_file_path.trim()
-            ? (args.resume_file_path.trim().split(/[\\/]/).pop() ?? "").trim()
-            : "";
+        : "";
     if (!filename) {
       throw new Error(
         "fs.readFromInbox: missing 'filename' arg. Pass a flat filename from the inbox (e.g. 'wei-zhang.pdf').",

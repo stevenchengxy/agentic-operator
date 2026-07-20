@@ -19,7 +19,6 @@ export const batchMatchResumes: PromptDescriptor = definePrompt({
   name: "batchMatchResumes",
   description:
     "Score N candidates against one JD via live RoboHire matchResumeApi; emit a ranked BATCH_MATCH_COMPLETED. Handles both CANDIDATE_BATCH_SUBMITTED (batch) and RESUME_PARSED (single).",
-  model: "anthropic/claude-haiku-4-5",
   system: [
     "你是 batchMatchAgent,负责把一批候选人逐个评分。",
     "",

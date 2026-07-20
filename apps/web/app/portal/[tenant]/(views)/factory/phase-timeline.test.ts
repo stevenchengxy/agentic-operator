@@ -9,6 +9,14 @@ const ev = (o: Record<string, unknown>): BrainEvent => o as unknown as BrainEven
 // start→done durations. Pure over BrainEvent[] (replay-safe).
 
 describe("derivePhaseTimeline (#OBSERVABILITY)", () => {
+  it("does not paint a waiting-human suspension as an execution error", () => {
+    const timeline = derivePhaseTimeline([
+      ev({ t: "stage", stage: "validate", status: "active", ts: 100 }),
+      ev({ t: "done", status: "waiting_human", completionKind: "incomplete", ts: 200 }),
+    ]);
+    expect(timeline.phases.find((phase) => phase.stage === "validate")?.status).toBe("active");
+  });
+
   it("groups by stage; per-phase tokens=budget delta, tools=count, time=ts span", () => {
     const tl = derivePhaseTimeline([
       ev({ t: "budget", tokens: 100, ts: 1000 }),
@@ -81,5 +89,25 @@ describe("derivePhaseTimeline (#OBSERVABILITY)", () => {
     const design = tl.phases.find((p) => p.stage === "design")!;
     expect(design.tools).toBe(1);
     expect(design.durationMs).toBe(0);
+  });
+
+  it("projects answer completion as its own successful phase, never as delivery", () => {
+    const tl = derivePhaseTimeline([
+      ev({ t: "message", text: "answer", ts: 1000 }),
+      ev({ t: "done", status: "incomplete", completionKind: "answer", ts: 1100 }),
+    ]);
+    expect(tl.phases.at(-1)).toMatchObject({ stage: "answer", label: "回答", status: "ok" });
+    expect(tl.phases.some((phase) => phase.stage === "deliver")).toBe(false);
+  });
+
+  it("keeps old terminal frames without completionKind unknown", () => {
+    const tl = derivePhaseTimeline([
+      ev({ t: "done", status: "finished", ts: 1000 }),
+    ]);
+    expect(tl.phases.at(-1)).toMatchObject({
+      stage: "completion_unknown",
+      label: "结束（类型未知）",
+      status: "error",
+    });
   });
 });

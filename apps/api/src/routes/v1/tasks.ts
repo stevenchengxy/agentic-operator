@@ -1,12 +1,15 @@
 import type { FastifyInstance } from "fastify";
 import { eq } from "drizzle-orm";
 import { getDb, tasks } from "@agentic/db";
-import { getTenantInngest } from "@agentic/runtime";
 import { ResolveTaskBody } from "@agentic/contracts";
-import { requireAuth } from "../../plugins/auth";
 import { requirePermission } from "../../plugins/rbac";
 import { writeAudit } from "../../plugins/audit";
 import { listAllTasks, getTask } from "../../queries/tasks";
+import {
+  HumanTaskDispatchError,
+  HumanTaskError,
+  requestHumanTaskResolution,
+} from "../../services/hitl-recovery";
 
 export async function tasksRoutes(app: FastifyInstance) {
   // GET /v1/tasks — list
@@ -35,36 +38,63 @@ export async function tasksRoutes(app: FastifyInstance) {
       if (!row) return reply.fail("not_found", "task not found", 404);
       if (row.tenantId !== auth.tenantId)
         return reply.fail("forbidden", "forbidden", 403);
-      if (row.status !== "open")
-        return reply.fail("already_resolved", `task already ${row.status}`, 409);
-
-      // P5-TEN-01 — include tenantId in the resolve event so the waiting
-      // agent's `step.waitForEvent` can pin the predicate to the issuing
-      // tenant. Without this, a leaked taskId in tenant A would let an
-      // attacker resume tenant B's HITL flow.
-      // Per-tenant app: send on THIS tenant's client with the tenant-namespaced
-      // name `${slug}/task.resolved`. Lockstep with the waitForEvent in
-      // `packages/runtime/src/register.ts` — both the name AND the client must
-      // match the waiting function's app, or HITL resume hangs to timeout.
-      await getTenantInngest(auth.tenantSlug).send({
-        name: `${auth.tenantSlug}/task.resolved` as `${string}/${string}`,
-        data: {
+      try {
+        const result = await requestHumanTaskResolution({
           taskId: req.params.id,
           tenantId: auth.tenantId,
+          tenantSlug: auth.tenantSlug,
+          actorUserId: auth.userId,
           decision: body.decision,
-          payload: body.payload ?? null,
-        },
-      });
-
-      writeAudit({
-        tenantId: auth.tenantId,
-        action: "task.resolve",
-        targetType: "task",
-        targetId: req.params.id,
-        meta: { decision: body.decision },
-      });
-
-      return reply.ok({ task_id: req.params.id, decision: body.decision });
+          payload: body.payload,
+        });
+        writeAudit({
+          tenantId: auth.tenantId,
+          actorUserId: auth.userId ?? undefined,
+          action: "task.resolve",
+          targetType: "task",
+          targetId: req.params.id,
+          meta: {
+            decision: body.decision,
+            deliveryStatus: result.status,
+            resumeMarker: result.resumeMarker,
+            attempt: result.attempt,
+          },
+        });
+        return reply.ok({
+          task_id: result.taskId,
+          decision: result.decision,
+          status: result.status,
+          resume_marker: result.resumeMarker,
+        });
+      } catch (error) {
+        if (error instanceof HumanTaskDispatchError) {
+          // The decision is durable and retry-safe even though the broker did
+          // not accept this transport attempt. Never roll it back to `open` or
+          // claim it was resolved; startup/periodic reconciliation will retry.
+          writeAudit({
+            tenantId: auth.tenantId,
+            actorUserId: auth.userId ?? undefined,
+            action: "task.resolve.pending",
+            targetType: "task",
+            targetId: req.params.id,
+            meta: {
+              decision: body.decision,
+              resumeMarker: error.resumeMarker,
+              error: error.message,
+            },
+          });
+          return reply.fail(
+            error.code,
+            error.message,
+            error.statusCode,
+            "decision is persisted; retrying the same request is safe",
+          );
+        }
+        if (error instanceof HumanTaskError) {
+          return reply.fail(error.code, error.message, error.statusCode);
+        }
+        throw error;
+      }
     },
   );
 }

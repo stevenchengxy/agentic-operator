@@ -4,9 +4,9 @@
 // the base FACTORY model so the product runs out-of-the-box and any deployment can tune per tier
 // without a code change.
 //
-//   FACTORY_MODEL_FAST=google/gemini-3-flash-preview,anthropic/claude-haiku-4.5   # reading / planning
-//   FACTORY_MODEL_DEFAULT=google/gemini-3.1-pro-preview-customtools                # design
-//   FACTORY_MODEL_HARD=anthropic/claude-sonnet-4.6,openai/gpt-5.4                  # code / refine / review
+//   FACTORY_MODEL_FAST=openai/gpt-5.6-luna,google/gemini-3-flash-preview,anthropic/claude-haiku-4.5   # reading / planning
+//   FACTORY_MODEL_DEFAULT=openai/gpt-5.6-terra,google/gemini-3.1-pro-preview-customtools              # design
+//   FACTORY_MODEL_HARD=openai/gpt-5.6-sol,anthropic/claude-sonnet-4.6                                 # code / refine / review
 //
 // When a tier's env chain is UNSET, the chain is DERIVED from the live catalog by preference
 // patterns (also env-overridable), so a fresh deployment routes by difficulty without any config.
@@ -25,11 +25,15 @@ export type ModelTier = "fast" | "default" | "hard" | "review";
 /** Built-in preference patterns used to DERIVE a tier chain from the live catalog when no env
  *  chain is pinned. Overridable per tier via FACTORY_MODEL_<TIER>_PREFER (comma-separated
  *  substrings/regex). These are heuristics over whatever the gateway serves — never hardcoded ids. */
+// New-api gpt-5.6 tiering by price/strength: luna ($1/$6)→fast, terra ($2.50/$15)→default,
+// sol ($5/$30)→hard, sol-pro→review (strongest for the critic). Each is listed first so it LEADS
+// its tier when served, with the prior cross-family models kept as fallbacks. Bare "gpt-5" stays a
+// broad family catch-all. `.` in a pattern is a regex wildcard — harmless (matches the literal dot).
 const DEFAULT_PREFER: Record<ModelTier, string[]> = {
-  fast: ["flash", "haiku", "mini", "nano", "lite", "small"],
-  default: ["gemini-3.1-pro", "gpt-5.4", "sonnet", "pro", "gpt-5"],
-  hard: ["sonnet", "kimi", "gpt-5.4", "opus", "gpt-5", "deepseek-v4-pro", "reason"],
-  review: ["opus", "gpt-5.5", "gpt-5", "sonnet", "reason"],
+  fast: ["gpt-5.6-luna", "flash", "haiku", "mini", "nano", "lite", "small"],
+  default: ["gpt-5.6-terra", "gemini-3.1-pro", "gpt-5.4", "sonnet", "pro", "gpt-5"],
+  hard: ["gpt-5.6-sol", "sonnet", "kimi", "gpt-5.4", "opus", "gpt-5", "deepseek-v4-pro", "reason"],
+  review: ["gpt-5.6-sol-pro", "opus", "gpt-5.5", "gpt-5", "sonnet", "reason"],
 };
 
 /** Models that are clearly not chat/reasoning models — excluded from catalog derivation. */
@@ -76,6 +80,31 @@ export function modelChain(tier: ModelTier, env: Record<string, string | undefin
 
   const out = [...chain, base].filter((m, i, a) => m && a.indexOf(m) === i);
   return out.length ? out : [base];
+}
+
+/** #HETERO-REVIEW (P1-3, arXiv 2502.08788) — the review/critic chain must LEAD with a model whose
+ *  BASE differs from the generator's head: same-model self-debate ≈ self-consistency but pricier
+ *  (MAD never beat CoT >20% of configs), while heterogeneous judging adds +6.4~8.2% — the gain
+ *  comes from complementary error distributions, and a CHEAPER different-family critic often beats
+ *  a bigger same-family one. Pure reorder: if the review chain's head shares the generator head's
+ *  model family, rotate the first different-family model to the front. Family = the id's last
+ *  path segment's alpha prefix (e.g. "anthropic/claude-sonnet-4.6" → "claude"). */
+export function modelFamily(id: string): string {
+  const tail = id.includes("/") ? id.slice(id.lastIndexOf("/") + 1) : id;
+  const m = tail.toLowerCase().match(/^[a-z]+/);
+  return m ? m[0] : tail.toLowerCase();
+}
+export function heterogeneousReviewChain(
+  generatorTier: ModelTier = "hard",
+  env: Record<string, string | undefined> = process.env,
+): string[] {
+  const review = modelChain("review", env);
+  const genHead = modelChain(generatorTier, env)[0];
+  if (!genHead || review.length < 2) return review;
+  if (modelFamily(review[0]!) !== modelFamily(genHead)) return review;
+  const idx = review.findIndex((m) => modelFamily(m) !== modelFamily(genHead));
+  if (idx <= 0) return review; // no different family available — keep order (still works, just homogeneous)
+  return [review[idx]!, ...review.slice(0, idx), ...review.slice(idx + 1)];
 }
 
 /** Pick a tier from the brain's live PHASE so the per-turn driver model tracks task difficulty

@@ -8,7 +8,7 @@
  *      (the schema column is plumbed; the manifest runtime side will be
  *      wired in a sibling change, so we assert at the boundary the impl
  *      plan governs)
- *   4. `source: "operator"` writes an `event.publish` audit row whose
+ *   4. every authenticated publish writes an `event.publish` audit row whose
  *      meta contains field *names* but not values (NFR-6)
  *   5. GET /v1/events/recent?causality=1 walks the seed → run → emitted
  *      event graph up to depth 3
@@ -28,6 +28,7 @@ import {
   events,
   eventTypes,
   getDb,
+  getRawSqlite,
   runs,
   tenants,
   workflows,
@@ -66,7 +67,11 @@ interface CatalogResponse {
   data: {
     events: Array<{
       name: string;
-      fields: Array<{ name: string; type: string; target_object?: string | null }>;
+      fields: Array<{
+        name: string;
+        type: string;
+        target_object?: string | null;
+      }>;
       source_action?: string | null;
       raw_payload_schema: unknown;
     }>;
@@ -90,9 +95,10 @@ function captureInngest(): { calls: InngestCapture[]; restore: () => void } {
   // not the __system singleton.
   const proto = Object.getPrototypeOf(inngest) as { send: typeof inngest.send };
   const original = proto.send;
-  proto.send = (async (
-    payload: { name: string; data: Record<string, unknown> },
-  ) => {
+  proto.send = (async (payload: {
+    name: string;
+    data: Record<string, unknown>;
+  }) => {
     calls.push({
       name: payload.name,
       data: { ...(payload.data ?? {}) },
@@ -139,7 +145,11 @@ describe("Event Tester backend", () => {
           source_action: "ruleCheckerForClientResume",
           event_data: [
             { name: "client_id", type: "String", target_object: "Client" },
-            { name: "candidate_id", type: "String", target_object: "Candidate" },
+            {
+              name: "candidate_id",
+              type: "String",
+              target_object: "Candidate",
+            },
             { name: "rules_passed", type: "Boolean", target_object: null },
           ],
         } as never,
@@ -231,7 +241,11 @@ describe("Event Tester backend", () => {
           body: JSON.stringify({
             name: "CLIENT_RULES_PASSED",
             subject: "category-stamp",
-            payload: { client_id: "cc1", candidate_id: "kk1", rules_passed: true },
+            payload: {
+              client_id: "cc1",
+              candidate_id: "kk1",
+              rules_passed: true,
+            },
           }),
         });
         expect(res.status).toBe(200);
@@ -258,7 +272,10 @@ describe("Event Tester backend", () => {
         const res = await env.fetch("/v1/events", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ name: "UNCATALOGUED_EVENT", subject: "no-cat" }),
+          body: JSON.stringify({
+            name: "UNCATALOGUED_EVENT",
+            subject: "no-cat",
+          }),
         });
         expect(res.status).toBe(200);
         const body = (await res.json()) as PublishResponse;
@@ -448,7 +465,11 @@ describe("Event Tester backend", () => {
           body: JSON.stringify({
             name: "CLIENT_RULES_PASSED",
             subject: "test-flag-true",
-            payload: { client_id: "c1", candidate_id: "k1", rules_passed: true },
+            payload: {
+              client_id: "c1",
+              candidate_id: "k1",
+              rules_passed: true,
+            },
             test: true,
           }),
         });
@@ -460,7 +481,11 @@ describe("Event Tester backend", () => {
           body: JSON.stringify({
             name: "CLIENT_RULES_PASSED",
             subject: "test-flag-false",
-            payload: { client_id: "c2", candidate_id: "k2", rules_passed: true },
+            payload: {
+              client_id: "c2",
+              candidate_id: "k2",
+              rules_passed: true,
+            },
           }),
         });
         expect(r2.status).toBe(200);
@@ -483,8 +508,8 @@ describe("Event Tester backend", () => {
   // Scenario 4 — audit row
   // ─────────────────────────────────────────────────────────────────────
 
-  describe("writes audit row when source=operator", () => {
-    it("source:operator emits event.publish; absent source does not", async () => {
+  describe("writes an audit row for every authenticated publish", () => {
+    it("audits both explicit operator source and an omitted source", async () => {
       const cap = captureInngest();
       try {
         // Baseline count for our tenant.
@@ -546,7 +571,8 @@ describe("Event Tester backend", () => {
         expect(JSON.stringify(meta)).not.toContain("c-a");
         expect(JSON.stringify(meta)).not.toContain("k-a");
 
-        // Publish without source — must NOT add another audit row.
+        // Portal clients historically omitted source. This authenticated,
+        // permission-gated publish must still be visible in operation logs.
         const before2 = rows.length;
         const r2 = await env.fetch("/v1/events", {
           method: "POST",
@@ -562,7 +588,8 @@ describe("Event Tester backend", () => {
           }),
         });
         expect(r2.status).toBe(200);
-        const after = getDb()
+        const r2Body = (await r2.json()) as PublishResponse;
+        const afterRows = getDb()
           .select()
           .from(auditLog)
           .where(
@@ -571,10 +598,63 @@ describe("Event Tester backend", () => {
               eq(auditLog.action, "event.publish"),
             ),
           )
-          .all().length;
-        expect(after).toBe(before2);
+          .all();
+        expect(afterRows).toHaveLength(before2 + 1);
+        const omittedSourceAudit = afterRows.find(
+          (row) => row.targetId === r2Body.data.event_id,
+        );
+        expect(omittedSourceAudit).toBeDefined();
+        expect(
+          (omittedSourceAudit!.metaJson as Record<string, unknown>).source,
+        ).toBe("authenticated_api");
       } finally {
         cap.restore();
+      }
+    });
+
+    it("does not enqueue or return success when the audit row cannot persist", async () => {
+      const capture = captureInngest();
+      const trigger = `fail_event_audit_${makeId("tag").replace(/[^a-z0-9]/gi, "")}`;
+      getRawSqlite().exec(`
+        CREATE TRIGGER ${trigger}
+        BEFORE INSERT ON audit_log
+        WHEN NEW.action = 'event.publish'
+        BEGIN
+          SELECT RAISE(ABORT, 'forced audit failure');
+        END;
+      `);
+      try {
+        const res = await env.fetch("/v1/events", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            name: "CLIENT_RULES_PASSED",
+            subject: "audit-write-must-succeed",
+            payload: { safe_field: true },
+          }),
+        });
+        expect(res.status).toBe(500);
+        const body = (await res.json()) as {
+          ok: false;
+          error: { code: string };
+        };
+        expect(body.error.code).toBe("audit_failed");
+        expect(capture.calls).toHaveLength(0);
+        expect(
+          getDb()
+            .select({ id: events.id })
+            .from(events)
+            .where(
+              and(
+                eq(events.tenantId, tenantId),
+                eq(events.subject, "audit-write-must-succeed"),
+              ),
+            )
+            .all(),
+        ).toHaveLength(1);
+      } finally {
+        getRawSqlite().exec(`DROP TRIGGER IF EXISTS ${trigger}`);
+        capture.restore();
       }
     });
   });
@@ -624,7 +704,11 @@ describe("Event Tester backend", () => {
             enabled: true,
           })
           .run();
-        agentRow = db.select().from(agents).where(eq(agents.id, agentId)).all()[0]!;
+        agentRow = db
+          .select()
+          .from(agents)
+          .where(eq(agents.id, agentId))
+          .all()[0]!;
       }
 
       const seedEventId = makeId("evt");
@@ -722,11 +806,21 @@ describe("Event Tester backend", () => {
 
           const edges = body.data.edges ?? [];
           // We should see both kinds of edges along the chain.
-          expect(edges.some((e) => e.from === seedEventId && e.to === runA)).toBe(true);
-          expect(edges.some((e) => e.from === runA && e.to === childEventId)).toBe(true);
-          expect(edges.some((e) => e.from === childEventId && e.to === runB)).toBe(true);
-          expect(edges.some((e) => e.from === runB && e.to === grandchildEventId)).toBe(true);
-          expect(edges.some((e) => e.from === grandchildEventId && e.to === runC)).toBe(true);
+          expect(
+            edges.some((e) => e.from === seedEventId && e.to === runA),
+          ).toBe(true);
+          expect(
+            edges.some((e) => e.from === runA && e.to === childEventId),
+          ).toBe(true);
+          expect(
+            edges.some((e) => e.from === childEventId && e.to === runB),
+          ).toBe(true);
+          expect(
+            edges.some((e) => e.from === runB && e.to === grandchildEventId),
+          ).toBe(true);
+          expect(
+            edges.some((e) => e.from === grandchildEventId && e.to === runC),
+          ).toBe(true);
         });
     });
   });
@@ -783,108 +877,99 @@ describe("Event Tester backend", () => {
         // names filter narrows correctly — confirms the SSE ?names= path
         // doesn't leak the row when the caller asked for a different
         // event type.
-        const filtered = await fetchEventsSince(
-          tenantSlug,
-          before - 1000,
-          ["UNRELATED_NAME"],
+        const filtered = await fetchEventsSince(tenantSlug, before - 1000, [
+          "UNRELATED_NAME",
+        ]);
+        expect(filtered.some((r) => r.id === pubBody.data.event_id)).toBe(
+          false,
         );
-        expect(filtered.some((r) => r.id === pubBody.data.event_id)).toBe(false);
       } finally {
         restore();
       }
     });
 
-    it(
-      "GET /v1/events/stream delivers a published event over a live socket",
-      async () => {
-        // Mirrors TC-14's pattern: fastify.inject() buffers the body so it
-        // can't observe SSE frames. We bind the shared singleton to an
-        // ephemeral port (idempotent — the harness never listens itself)
-        // and fetch the SSE endpoint with a streaming Response.
-        const { build } = await import("../src/server");
-        const app = await build();
-        let port: number | null = null;
-        try {
-          const addr = await app.listen({ port: 0, host: "127.0.0.1" });
-          const m = /:(\d+)/.exec(addr);
-          if (m) port = Number(m[1]);
-        } catch {
-          const a = app.server.address();
-          if (a && typeof a !== "string") port = a.port;
-        }
-        expect(port).toBeTruthy();
+    it("GET /v1/events/stream delivers a published event over a live socket", async () => {
+      // Mirrors TC-14's pattern: fastify.inject() buffers the body so it
+      // can't observe SSE frames. We bind the shared singleton to an
+      // ephemeral port (idempotent — the harness never listens itself)
+      // and fetch the SSE endpoint with a streaming Response.
+      const { build } = await import("../src/server");
+      const app = await build();
+      let port: number | null = null;
+      try {
+        const addr = await app.listen({ port: 0, host: "127.0.0.1" });
+        const m = /:(\d+)/.exec(addr);
+        if (m) port = Number(m[1]);
+      } catch {
+        const a = app.server.address();
+        if (a && typeof a !== "string") port = a.port;
+      }
+      expect(port).toBeTruthy();
 
-        const cap = captureInngest();
-        const ctrl = new AbortController();
-        const stopMarker = `evt-tester-sse-${makeId("tag").slice(-6)}`;
-        try {
-          // Pre-publish into the past so we don't have to race against the
-          // poll. The cursor we hand the route is anchored 1.5s before the
-          // publish wall-clock; the SQLite unixepoch() truncates the row
-          // to the start of its second, so a margin > 1s spans the worst
-          // case.
-          //
-          // We then open the SSE stream with `since` set to (publishTime −
-          // 1500ms), so the FIRST poll tick (≤ 250ms after open) emits a
-          // frame for our row.
-          const pubRes = await env.fetch("/v1/events", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-              name: "CLIENT_RULES_PASSED",
-              subject: stopMarker,
-              payload: {
-                client_id: "c-stream",
-                candidate_id: "k-stream",
-                rules_passed: true,
-              },
-            }),
-          });
-          expect(pubRes.status).toBe(200);
+      const cap = captureInngest();
+      const ctrl = new AbortController();
+      const stopMarker = `evt-tester-sse-${makeId("tag").slice(-6)}`;
+      try {
+        // Pre-publish into the past so we don't have to race against the
+        // poll. The cursor we hand the route is anchored 1.5s before the
+        // publish wall-clock; the SQLite unixepoch() truncates the row
+        // to the start of its second, so a margin > 1s spans the worst
+        // case.
+        //
+        // We then open the SSE stream with `since` set to (publishTime −
+        // 1500ms), so the FIRST poll tick (≤ 250ms after open) emits a
+        // frame for our row.
+        const pubRes = await env.fetch("/v1/events", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            name: "CLIENT_RULES_PASSED",
+            subject: stopMarker,
+            payload: {
+              client_id: "c-stream",
+              candidate_id: "k-stream",
+              rules_passed: true,
+            },
+          }),
+        });
+        expect(pubRes.status).toBe(200);
 
-          const since = Date.now() - 5000;
-          const res = await fetch(
-            `http://127.0.0.1:${port}/v1/events/stream?since=${since}`,
-            { signal: ctrl.signal },
-          );
-          expect(res.status).toBe(200);
-          expect(res.headers.get("content-type")).toContain(
-            "text/event-stream",
-          );
+        const since = Date.now() - 5000;
+        const res = await fetch(
+          `http://127.0.0.1:${port}/v1/events/stream?since=${since}`,
+          { signal: ctrl.signal },
+        );
+        expect(res.status).toBe(200);
+        expect(res.headers.get("content-type")).toContain("text/event-stream");
 
-          const reader = res.body!.getReader();
-          const decoder = new TextDecoder();
-          let buf = "";
+        const reader = res.body!.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
 
-          const readerDone = (async () => {
-            const deadline = Date.now() + 3000;
-            while (Date.now() < deadline) {
-              const { value, done } = await reader.read();
-              if (done) return;
-              buf += decoder.decode(value);
-              if (buf.includes(stopMarker)) return;
-            }
-          })();
+        const readerDone = (async () => {
+          const deadline = Date.now() + 3000;
+          while (Date.now() < deadline) {
+            const { value, done } = await reader.read();
+            if (done) return;
+            buf += decoder.decode(value);
+            if (buf.includes(stopMarker)) return;
+          }
+        })();
 
-          await Promise.race([
-            readerDone,
-            new Promise<void>((_, reject) =>
-              setTimeout(
-                () => reject(new Error("sse frame timeout")),
-                3500,
-              ),
-            ),
-          ]);
+        await Promise.race([
+          readerDone,
+          new Promise<void>((_, reject) =>
+            setTimeout(() => reject(new Error("sse frame timeout")), 3500),
+          ),
+        ]);
 
-          expect(buf).toContain(stopMarker);
-          expect(buf).toMatch(/event: event/);
-        } finally {
-          cap.restore();
-          ctrl.abort();
-        }
-      },
-      10_000,
-    );
+        expect(buf).toContain(stopMarker);
+        expect(buf).toMatch(/event: event/);
+      } finally {
+        cap.restore();
+        ctrl.abort();
+      }
+    }, 10_000);
   });
 
   // ─────────────────────────────────────────────────────────────────────
@@ -901,4 +986,3 @@ describe("Event Tester backend", () => {
     });
   });
 });
-

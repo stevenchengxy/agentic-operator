@@ -41,8 +41,8 @@ export default defineConfig({
       reporter: ["text", "json-summary", "lcov"],
       // Coverage scope is intentionally narrow: pure helpers with a unit
       // test seam. TanStack Query hooks (useAgents, useRuns, useUsage,
-      // ...) and React effects (useStream's EventSource lifecycle,
-      // useDensity's MutationObserver) are exercised end-to-end via
+      // ...) and React effects (such as useStream's EventSource lifecycle)
+      // are exercised end-to-end via
       // Playwright (P4-TEST-04 / P4-TEST-05); the unit gate would only
       // reward mocking the browser globals out, which is performative.
       //
@@ -52,7 +52,6 @@ export default defineConfig({
       include: [
         "app/portal/lib/format.ts",
         "app/portal/lib/use-tenant.ts",
-        "app/portal/components/agent-code/tar.ts",
         "app/portal/components/workflows/layout.ts",
         "app/portal/components/workflows/draft.ts",
         "app/portal/components/usage/charts.ts",
@@ -60,7 +59,6 @@ export default defineConfig({
       exclude: [
         "**/*.d.ts",
         "**/*.test.*",
-        "**/_portal_legacy/**",
         "public/**",
       ],
       thresholds: {

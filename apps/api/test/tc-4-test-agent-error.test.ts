@@ -2,7 +2,7 @@
  * TC-4 — error paths:
  *   - invalid provider override → 400 bad_request, no run row created
  *   - unknown agent → 404 not_found
- *   - bedrock stub provider → 503 not_configured (with failed run recorded)
+ *   - removed placeholder provider → 400 bad_request, no run created
  */
 
 import { describe, it, expect, beforeAll } from "vitest";
@@ -49,19 +49,19 @@ describe("TC-4: testAgent error paths", () => {
     expect(body.error.message.toLowerCase()).toContain("not found");
   });
 
-  it("returns not_configured for a stubbed provider (bedrock)", async () => {
+  it("rejects a provider whose placeholder adapter was removed", async () => {
     const res = await env.fetch("/v1/agents/testAgent/invoke", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ provider: "bedrock" }),
     });
-    // 503 not_configured (mapped from LLMError code)
-    expect([400, 503]).toContain(res.status);
+    expect(res.status).toBe(400);
     const body = (await res.json()) as {
       ok: boolean;
       error: { code: string; message: string };
     };
     expect(body.ok).toBe(false);
-    expect(["not_configured", "auth", "bad_request"]).toContain(body.error.code);
+    expect(body.error.code).toBe("bad_request");
+    expect(body.error.message).toContain("Provider not registered: bedrock");
   });
 });

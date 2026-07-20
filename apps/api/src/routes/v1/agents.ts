@@ -1,63 +1,39 @@
 import type { FastifyInstance } from "fastify";
-import crypto from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import {
   agents,
-  agentVersions,
   deployments,
-  eventListeners,
   getDb,
   runs,
-  tenants,
   workflows,
   workflowVersions,
 } from "@agentic/db";
-import { makeId } from "@agentic/shared";
 import { ManifestUploadBody } from "@agentic/contracts";
-import { requireAuth } from "../../plugins/auth";
 import { requirePermission } from "../../plugins/rbac";
 import { writeAudit } from "../../plugins/audit";
-import { getAgentDetail, listAgentRuns, listAgents } from "../../queries/agents";
-import { resolveTenantCodePath } from "../../services/tenant-code";
+import {
+  getAgentDetail,
+  listAgentRuns,
+  listAgents,
+} from "../../queries/agents";
 import { reregisterInngest } from "../../services/inngest-registry";
+import { syncTenantApp } from "../../services/inngest-sync";
+import {
+  BlockingIssuesError,
+  commit,
+  OverwriteRequiredError,
+} from "../../services/manifest-import";
+import { withTenantWorkflowMutationLease } from "../../services/tenant-workflow-mutation";
 
-function hashManifest(m: unknown): string {
-  return crypto
-    .createHash("sha256")
-    .update(JSON.stringify(m))
-    .digest("hex")
-    .slice(0, 8);
-}
-
-interface DiffSummary {
-  added: string[];
-  removed: string[];
-  modified: string[];
-  prior_version: string | null;
-}
-
-function computeDiff(prior: unknown[], next: unknown[]): DiffSummary {
-  const priorMap = new Map<string, string>();
-  const nextMap = new Map<string, string>();
-  for (const a of prior as Array<{ id: string }>) priorMap.set(a.id, JSON.stringify(a));
-  for (const a of next as Array<{ id: string }>) nextMap.set(a.id, JSON.stringify(a));
-  const added: string[] = [];
-  const removed: string[] = [];
-  const modified: string[] = [];
-  for (const [id, json] of nextMap) {
-    const oldJson = priorMap.get(id);
-    if (!oldJson) added.push(id);
-    else if (oldJson !== json) modified.push(id);
+async function synchronizeTenantRuntime(tenantSlug: string): Promise<number> {
+  const registered = await reregisterInngest({ tenantSlug, scope: "tenant" });
+  const sync = await syncTenantApp(tenantSlug);
+  if (!sync.ok) {
+    throw new Error(
+      `Inngest rejected tenant app sync${sync.status ? ` (${sync.status})` : ""}: ${sync.error ?? "unknown error"}`,
+    );
   }
-  for (const id of priorMap.keys()) {
-    if (!nextMap.has(id)) removed.push(id);
-  }
-  return {
-    added,
-    removed,
-    modified,
-    prior_version: prior.length > 0 ? "prior" : null,
-  };
+  return registered.appFnCount ?? registered.fnCount;
 }
 
 export async function agentsRoutes(app: FastifyInstance) {
@@ -69,24 +45,19 @@ export async function agentsRoutes(app: FastifyInstance) {
   // override entirely; the listed tenant is now exclusively driven by
   // `auth.tenantSlug`. Code agents still implicitly include the synthetic
   // `__system` tenant because that's where platform code agents live.
-  app.get<{ Querystring: { kind?: string } }>(
-    "/agents",
-    async (req, reply) => {
-      const auth = requirePermission(req, "agents.read");
-      const rawKind = (req.query as { kind?: string }).kind;
-      const kind: "code" | "manifest" | "all" =
-        rawKind === "code" || rawKind === "manifest" ? rawKind : "all";
-      const tenantSlug = auth.tenantSlug;
-      const tenantsToQuery =
-        kind === "code" ? ["__system", tenantSlug] : [tenantSlug];
-      const lists = await Promise.all(
-        Array.from(new Set(tenantsToQuery)).map((t) =>
-          listAgents(t, { kind }),
-        ),
-      );
-      return reply.ok(lists.flat());
-    },
-  );
+  app.get<{ Querystring: { kind?: string } }>("/agents", async (req, reply) => {
+    const auth = requirePermission(req, "agents.read");
+    const rawKind = (req.query as { kind?: string }).kind;
+    const kind: "code" | "manifest" | "all" =
+      rawKind === "code" || rawKind === "manifest" ? rawKind : "all";
+    const tenantSlug = auth.tenantSlug;
+    const tenantsToQuery =
+      kind === "code" ? ["__system", tenantSlug] : [tenantSlug];
+    const lists = await Promise.all(
+      Array.from(new Set(tenantsToQuery)).map((t) => listAgents(t, { kind })),
+    );
+    return reply.ok(lists.flat());
+  });
 
   // GET /v1/agents/:kebab — detail
   app.get<{ Params: { kebab: string } }>(
@@ -100,204 +71,78 @@ export async function agentsRoutes(app: FastifyInstance) {
     },
   );
 
-  // POST /v1/agents — Mode 1 manifest upload
+  // POST /v1/agents — compatibility surface for a real manifest deployment.
+  // The old implementation wrote SQLite rows only and claimed a restart would
+  // activate them, although runtime bootstrap reads the models directory. Keep
+  // the public route but delegate to the durable disk + DB + Inngest commit saga.
   app.post("/agents", async (req, reply) => {
     const auth = requirePermission(req, "agents.write");
     const parsed = ManifestUploadBody.parse(req.body);
-    const db = getDb();
-    const tenant = db
-      .select()
-      .from(tenants)
-      .where(eq(tenants.id, auth.tenantId))
-      .all()[0];
-    if (!tenant) return reply.fail("tenant_missing", "tenant missing", 500);
-
-    // AR-GAP-02 / UC-V11-18 / UC-V11-28 — when the tenant has a live
-    // `target='tenant_code'` deployment, the post-upload Inngest
-    // re-register tries to load the tenant bundle. The pre-fix path
-    // forgot the version segment in `data/tenants/<slug>/<version>/`,
-    // surfacing as `Cannot find module '@tenants/<slug>/dist'` 500.
-    // Resolve the path here so any disagreement between the DB row and
-    // on-disk dir is logged before we touch `deployments`. Null = no
-    // live tenant_code (legacy `TENANT_REGISTRIES` path); not an error.
-    const codeLoc = await resolveTenantCodePath(tenant.id);
-    if (codeLoc) {
-      req.log.debug(
-        {
-          tenantSlug: auth.tenantSlug,
-          tenantCodeVersion: codeLoc.version,
-          dir: codeLoc.dir,
-          cjsEntry: codeLoc.cjsEntry,
-          srcEntry: codeLoc.srcEntry,
-        },
-        "live tenant_code resolved for manifest upload",
+    const canonicalWorkflowSlug = `${auth.tenantSlug}-default`;
+    if (parsed.workflowSlug && parsed.workflowSlug !== canonicalWorkflowSlug) {
+      return reply.fail(
+        "unsupported_workflow_slug",
+        `this runtime serves one workflow per tenant; workflowSlug must be ${canonicalWorkflowSlug}`,
+        422,
       );
     }
-
-    const slug = parsed.workflowSlug ?? `${auth.tenantSlug}-default`;
-    let workflow = db
-      .select()
-      .from(workflows)
-      .where(and(eq(workflows.tenantId, tenant.id), eq(workflows.slug, slug)))
-      .all()[0];
-    if (!workflow) {
-      const wfId = makeId("wf");
-      db.insert(workflows)
-        .values({ id: wfId, tenantId: tenant.id, slug, name: slug })
-        .run();
-      workflow = db.select().from(workflows).where(eq(workflows.id, wfId)).all()[0]!;
-    }
-
-    const versionStr = `upload-${hashManifest(parsed.manifest)}`;
-    let workflowVersion = db
-      .select()
-      .from(workflowVersions)
-      .where(
-        and(
-          eq(workflowVersions.workflowId, workflow.id),
-          eq(workflowVersions.version, versionStr),
-        ),
-      )
-      .all()[0];
-
-    const live = db
-      .select({
-        version: workflowVersions.version,
-        manifestJson: workflowVersions.manifestJson,
-      })
-      .from(deployments)
-      .innerJoin(workflowVersions, eq(workflowVersions.id, deployments.versionId))
-      .where(
-        and(
-          eq(deployments.tenantId, tenant.id),
-          eq(deployments.status, "live"),
-        ),
-      )
-      .all()[0];
-
-    const diff = computeDiff(
-      (live?.manifestJson as unknown[]) ?? [],
-      parsed.manifest,
-    );
-
-    if (!workflowVersion) {
-      const wfvId = makeId("wfv");
-      db.insert(workflowVersions)
-        .values({
-          id: wfvId,
-          workflowId: workflow.id,
-          version: versionStr,
-          manifestJson: parsed.manifest as unknown as object,
-          actionsJson: parsed.actions as unknown as object,
-        })
-        .run();
-      workflowVersion = db
-        .select()
-        .from(workflowVersions)
-        .where(eq(workflowVersions.id, wfvId))
-        .all()[0]!;
-
-      for (const a of parsed.manifest) {
-        let agentRow = db
-          .select()
-          .from(agents)
-          .where(
-            and(eq(agents.workflowId, workflow.id), eq(agents.kebabId, a.id)),
-          )
-          .all()[0];
-        if (!agentRow) {
-          const aid = makeId("agt");
-          const now = new Date();
-          db.insert(agents)
-            .values({
-              id: aid,
-              workflowId: workflow.id,
-              kebabId: a.id,
-              name: a.name,
-              title: a.title ?? a.name,
-              actor: a.actor[0] === "Human" ? "Human" : "Agent",
-              createdAt: now,
-              updatedAt: now,
-            })
-            .run();
-          agentRow = db.select().from(agents).where(eq(agents.id, aid)).all()[0]!;
-        }
-        const existing = db
-          .select()
-          .from(agentVersions)
-          .where(
-            and(
-              eq(agentVersions.agentId, agentRow.id),
-              eq(agentVersions.workflowVersionId, workflowVersion.id),
-            ),
-          )
-          .all()[0];
-        if (!existing) {
-          db.insert(agentVersions)
-            .values({
-              id: makeId("agv"),
-              agentId: agentRow.id,
-              workflowVersionId: workflowVersion.id,
-              manifestJson: a as unknown as object,
-            })
-            .run();
-        }
-        for (const trig of a.trigger) {
-          const exists = db
-            .select()
-            .from(eventListeners)
-            .where(
-              and(
-                eq(eventListeners.eventName, trig),
-                eq(eventListeners.agentId, agentRow.id),
-              ),
-            )
-            .all()[0];
-          if (!exists) {
-            db.insert(eventListeners)
-              .values({ eventName: trig, agentId: agentRow.id })
-              .run();
-          }
-        }
+    try {
+      const out = await withTenantWorkflowMutationLease({
+        tenantId: auth.tenantId,
+        kind: "agents_manifest_deploy",
+        fn: async (lease) => {
+          lease.assertOwned();
+          const value = await commit(
+            {
+              mode: "commit",
+              workflow: parsed.manifest,
+              actions: parsed.actions,
+              target: "production",
+              // This compatibility route is itself the explicit Deploy action.
+              // The six-step import route retains the separate overwrite guard.
+              confirm_overwrite: true,
+              conflict_resolutions: [],
+              note: parsed.note,
+            },
+            {
+              tenantId: auth.tenantId,
+              tenantSlug: auth.tenantSlug,
+              workflowSlug: canonicalWorkflowSlug,
+            },
+            {
+              actorUserId: auth.userId ?? undefined,
+              log: {
+                error: (obj, msg) => req.log.error(obj, msg ?? ""),
+                info: (obj, msg) => req.log.info(obj, msg ?? ""),
+              },
+            },
+          );
+          lease.assertOwned();
+          return value;
+        },
+      });
+      return reply.ok(out);
+    } catch (err) {
+      if (err instanceof OverwriteRequiredError) {
+        return reply.status(409).send(err.payload);
       }
+      if (err instanceof BlockingIssuesError) {
+        return reply.status(400).send({
+          ok: false,
+          error: {
+            code: "blocking_issues",
+            message:
+              "deployment refused because the manifest has blocking issues",
+            hint: err.issues
+              .slice(0, 6)
+              .map((issue) => `${issue.path}: ${issue.message}`)
+              .join("; "),
+          },
+          issues: err.issues,
+        });
+      }
+      throw err;
     }
-
-    db.transaction(() => {
-      db.update(deployments)
-        .set({ status: "rolled_back" })
-        .where(
-          and(
-            eq(deployments.tenantId, tenant.id),
-            eq(deployments.status, "live"),
-          ),
-        )
-        .run();
-      db.insert(deployments)
-        .values({
-          id: makeId("dpl"),
-          tenantId: tenant.id,
-          target: "workflow",
-          versionId: workflowVersion.id,
-          status: "live",
-          note: parsed.note ?? null,
-        })
-        .run();
-    });
-
-    writeAudit({
-      tenantId: tenant.id,
-      action: "manifest.deploy",
-      targetType: "workflow_version",
-      targetId: workflowVersion.id,
-      meta: { version: versionStr, diff },
-    });
-
-    return reply.ok({
-      workflow_version_id: workflowVersion.id,
-      version: versionStr,
-      diff,
-      note: "Server restart picks up the new manifest in Inngest runtime.",
-    });
   });
 
   // PATCH /v1/agents/:kebab — 上线/下线 a single agent (toggle `enabled`).
@@ -308,154 +153,345 @@ export async function agentsRoutes(app: FastifyInstance) {
   // routes to it until it's re-enabled. Code agents have no Inngest function;
   // their `enabled` flag is honored at invoke time instead. Idempotent —
   // toggling to the current state still returns 200 with the row state.
-  app.patch<{ Params: { kebab: string }; Body: { enabled?: unknown; title?: unknown } }>(
-    "/agents/:kebab",
-    async (req, reply) => {
-      const auth = requirePermission(req, "agents.write");
-      const body = (req.body ?? {}) as { enabled?: unknown; title?: unknown };
-      const hasEnabled = typeof body.enabled === "boolean";
-      const hasTitle = typeof body.title === "string";
-      if (!hasEnabled && !hasTitle) {
-        return reply.fail(
-          "invalid_body",
-          "body must include { enabled: boolean } and/or { title: string }",
-          400,
-        );
-      }
-      const db = getDb();
-      const row = db
-        .select({
-          id: agents.id,
-          kebabId: agents.kebabId,
-          name: agents.name,
-          title: agents.title,
-          kind: agents.kind,
-          enabled: agents.enabled,
-        })
-        .from(agents)
-        .innerJoin(workflows, eq(workflows.id, agents.workflowId))
-        .where(
-          and(
-            eq(workflows.tenantId, auth.tenantId),
-            eq(agents.kebabId, req.params.kebab),
-          ),
-        )
-        .all()[0];
-      if (!row) return reply.fail("not_found", "agent not found", 404);
+  app.patch<{
+    Params: { kebab: string };
+    Body: { enabled?: unknown; title?: unknown };
+  }>("/agents/:kebab", async (req, reply) => {
+    const auth = requirePermission(req, "agents.write");
+    const body = (req.body ?? {}) as { enabled?: unknown; title?: unknown };
+    const hasEnabled = typeof body.enabled === "boolean";
+    const hasTitle = typeof body.title === "string";
+    if (!hasEnabled && !hasTitle) {
+      return reply.fail(
+        "invalid_body",
+        "body must include { enabled: boolean } and/or { title: string }",
+        400,
+      );
+    }
+    const db = getDb();
+    const row = db
+      .select({
+        id: agents.id,
+        kebabId: agents.kebabId,
+        name: agents.name,
+        title: agents.title,
+        kind: agents.kind,
+        enabled: agents.enabled,
+      })
+      .from(agents)
+      .innerJoin(workflows, eq(workflows.id, agents.workflowId))
+      .where(
+        and(
+          eq(workflows.tenantId, auth.tenantId),
+          eq(agents.kebabId, req.params.kebab),
+        ),
+      )
+      .all()[0];
+    if (!row) return reply.fail("not_found", "agent not found", 404);
 
-      // Rename (title) — display-only; the kebabId / event routing is unchanged, so no re-register.
-      if (hasTitle) {
-        const title = String(body.title).trim();
-        if (!title) return reply.fail("invalid_body", "title 不能为空", 400);
-        if (title !== row.title) {
-          db.update(agents).set({ title, updatedAt: new Date() }).where(eq(agents.id, row.id)).run();
-          writeAudit({ tenantId: auth.tenantId, action: "agent.rename", targetType: "agent", targetId: row.id, meta: { kebabId: row.kebabId, from: row.title, to: title } });
+    const title = hasTitle ? String(body.title).trim() : row.title;
+    if (hasTitle && !title)
+      return reply.fail("invalid_body", "title 不能为空", 400);
+    if (title && title.length > 200) {
+      return reply.fail(
+        "invalid_body",
+        "title cannot exceed 200 characters",
+        400,
+      );
+    }
+    const enabled = hasEnabled ? (body.enabled as boolean) : row.enabled;
+    const titleChanged = title !== row.title;
+    const enabledChanged = enabled !== row.enabled;
+
+    if (titleChanged || enabledChanged) {
+      db.update(agents)
+        .set({ title, enabled, updatedAt: new Date() })
+        .where(eq(agents.id, row.id))
+        .run();
+    }
+
+    // An enable/disable mutation is complete only after the rebuilt handler
+    // has been accepted by Inngest. Roll the row and runtime back together on
+    // any failure; returning a green "next boot will reflect it" was a false
+    // success because events could still reach the old function set.
+    let fnCount: number | undefined;
+    if (enabledChanged) {
+      try {
+        fnCount = await synchronizeTenantRuntime(auth.tenantSlug);
+      } catch (error) {
+        let rollbackError: unknown = null;
+        try {
+          db.update(agents)
+            .set({
+              title: row.title,
+              enabled: row.enabled,
+              updatedAt: new Date(),
+            })
+            .where(eq(agents.id, row.id))
+            .run();
+          await synchronizeTenantRuntime(auth.tenantSlug);
+        } catch (failure) {
+          rollbackError = failure;
         }
-        if (!hasEnabled) return reply.ok({ kebabId: row.kebabId, name: row.name, title, kind: row.kind, enabled: row.enabled });
-      }
-
-      const enabled = hasEnabled ? (body.enabled as boolean) : row.enabled;
-      if (row.enabled !== enabled) {
-        db.update(agents)
-          .set({ enabled, updatedAt: new Date() })
-          .where(eq(agents.id, row.id))
-          .run();
         writeAudit({
           tenantId: auth.tenantId,
-          action: enabled ? "agent.enable" : "agent.disable",
+          actorUserId: auth.userId ?? undefined,
+          action: "agent.update.failed",
           targetType: "agent",
           targetId: row.id,
-          meta: { kebabId: row.kebabId, kind: row.kind },
+          meta: {
+            kebabId: row.kebabId,
+            error: String((error as Error)?.message ?? error).slice(0, 500),
+            rollback_ok: rollbackError === null,
+            rollback_error: rollbackError
+              ? String(
+                  (rollbackError as Error)?.message ?? rollbackError,
+                ).slice(0, 500)
+              : null,
+          },
         });
-      }
-
-      // Re-register so a manifest agent's function is added/removed from the
-      // live serve handler without a restart. No-op for code agents (they
-      // contribute no Inngest function) but harmless. Best-effort: a failed
-      // re-register is logged and surfaced, but the DB flip already persisted
-      // and the next boot reflects it.
-      let reregistered = false;
-      let fnCount: number | undefined;
-      try {
-        const r = await reregisterInngest({
-          tenantSlug: auth.tenantSlug,
-          scope: "tenant",
-        });
-        reregistered = true;
-        fnCount = r.fnCount;
-      } catch (err) {
-        req.log.warn(
-          { err, kebabId: row.kebabId },
-          "agent enable/disable: re-register failed; next boot will reflect it",
+        req.log.error(
+          { err: error, rollbackErr: rollbackError, kebabId: row.kebabId },
+          "agent update failed to synchronize with Inngest",
         );
+        if (rollbackError) {
+          throw new AggregateError(
+            [error, rollbackError],
+            "agent update and runtime rollback both failed",
+          );
+        }
+        throw error;
       }
+    }
 
-      return reply.ok({
-        kebabId: row.kebabId,
-        name: row.name,
-        title: row.title,
-        kind: row.kind,
-        enabled,
-        reregistered,
-        fnCount,
+    if (titleChanged) {
+      writeAudit({
+        tenantId: auth.tenantId,
+        actorUserId: auth.userId ?? undefined,
+        action: "agent.rename",
+        targetType: "agent",
+        targetId: row.id,
+        meta: { kebabId: row.kebabId, from: row.title, to: title },
       });
-    },
-  );
+    }
+    if (enabledChanged) {
+      writeAudit({
+        tenantId: auth.tenantId,
+        actorUserId: auth.userId ?? undefined,
+        action: enabled ? "agent.enable" : "agent.disable",
+        targetType: "agent",
+        targetId: row.id,
+        meta: { kebabId: row.kebabId, kind: row.kind, inngest_fns: fnCount },
+      });
+    }
 
-  // DELETE /v1/agents/:kebab — remove an agent from the fleet.
-  //   • No run history → hard delete (agent_versions + event_listeners cascade, then the row);
-  //     the agent disappears from the tenant workflow's served set on re-register.
-  //   • Has run history → runs.agent_id is a RESTRICT FK, so a hard delete would orphan history.
-  //     We disable + delist instead and report it, so the caller gets an honest outcome (no crash,
-  //     no lost audit trail). Pass ?force=1 to also purge run history first (destructive).
+    return reply.ok({
+      kebabId: row.kebabId,
+      name: row.name,
+      title,
+      kind: row.kind,
+      enabled,
+      reregistered: enabledChanged,
+      runtimeSynchronized: enabledChanged,
+      fnCount,
+    });
+  });
+
+  // DELETE /v1/agents/:kebab — remove a manifest agent from its durable source,
+  // then synchronize the new function set. Deleting only its SQLite projection
+  // is not sufficient: bootstrap would recreate it from workflow.json.
   app.delete<{ Params: { kebab: string }; Querystring: { force?: string } }>(
     "/agents/:kebab",
     async (req, reply) => {
       const auth = requirePermission(req, "agents.write");
-      const db = getDb();
-      const row = db
-        .select({ id: agents.id, kebabId: agents.kebabId, name: agents.name, kind: agents.kind })
-        .from(agents)
-        .innerJoin(workflows, eq(workflows.id, agents.workflowId))
-        .where(and(eq(workflows.tenantId, auth.tenantId), eq(agents.kebabId, req.params.kebab)))
-        .all()[0];
-      if (!row) return reply.fail("not_found", "agent not found", 404);
+      return withTenantWorkflowMutationLease({
+        tenantId: auth.tenantId,
+        kind: "agents_delete",
+        workId: req.params.kebab,
+        fn: async (lease) => {
+          lease.assertOwned();
+          const db = getDb();
+          const row = db
+            .select({
+              id: agents.id,
+              kebabId: agents.kebabId,
+              name: agents.name,
+              kind: agents.kind,
+              enabled: agents.enabled,
+              workflowId: workflows.id,
+              workflowSlug: workflows.slug,
+            })
+            .from(agents)
+            .innerJoin(workflows, eq(workflows.id, agents.workflowId))
+            .where(
+              and(
+                eq(workflows.tenantId, auth.tenantId),
+                eq(agents.kebabId, req.params.kebab),
+              ),
+            )
+            .all()[0];
+          if (!row) return reply.fail("not_found", "agent not found", 404);
 
-      const runCount = db.select({ id: runs.id }).from(runs).where(eq(runs.agentId, row.id)).all().length;
-      const force = req.query.force === "1" || req.query.force === "true";
+          const runCount = db
+            .select({ id: runs.id })
+            .from(runs)
+            .where(eq(runs.agentId, row.id))
+            .all().length;
+          const force = req.query.force === "1" || req.query.force === "true";
 
-      let deleted = false;
-      let disabled = false;
-      if (runCount > 0 && !force) {
-        // Soft path: disable so it drops out of the served Inngest set (same as PATCH disable).
-        db.update(agents).set({ enabled: false, updatedAt: new Date() }).where(eq(agents.id, row.id)).run();
-        disabled = true;
-      } else {
-        if (force && runCount > 0) {
-          // Destructive purge of history first (steps/events/artifacts cascade off runs).
-          db.delete(runs).where(eq(runs.agentId, row.id)).run();
-        }
-        // agent_versions + event_listeners cascade on agent delete; deployments reference the
-        // version rows (cascade) — remove the agent row last.
-        db.delete(agents).where(eq(agents.id, row.id)).run();
-        deleted = true;
-      }
-      writeAudit({ tenantId: auth.tenantId, action: deleted ? "agent.delete" : "agent.disable", targetType: "agent", targetId: row.id, meta: { kebabId: row.kebabId, kind: row.kind, runCount, force } });
+          let sourceRemoved = false;
+          let runtimeSynchronized = false;
+          let deploymentId: string | null = null;
+          let version: string | null = null;
 
-      let reregistered = false;
-      try {
-        await reregisterInngest({ tenantSlug: auth.tenantSlug, scope: "tenant" });
-        reregistered = true;
-      } catch (err) {
-        req.log.warn({ err, kebabId: row.kebabId }, "agent delete: re-register failed; next boot will reflect it");
-      }
-      return reply.ok({
-        kebabId: row.kebabId,
-        deleted,
-        disabled,
-        runCount,
-        reregistered,
-        note: disabled ? "该智能体有运行历史，已下线并移出服务集（未物理删除）；如需彻底删除请用 ?force=1 一并清理历史。" : undefined,
+          if (row.kind === "manifest") {
+            const live = db
+              .select({
+                manifest: workflowVersions.manifestJson,
+                actions: workflowVersions.actionsJson,
+              })
+              .from(deployments)
+              .innerJoin(
+                workflowVersions,
+                eq(workflowVersions.id, deployments.versionId),
+              )
+              .where(
+                and(
+                  eq(deployments.tenantId, auth.tenantId),
+                  eq(deployments.target, "workflow"),
+                  eq(deployments.status, "live"),
+                  eq(workflowVersions.workflowId, row.workflowId),
+                ),
+              )
+              .all()[0];
+            if (live) {
+              if (!Array.isArray(live.manifest)) {
+                throw new Error(
+                  "live workflow manifest is not an array; refusing an unsafe deletion",
+                );
+              }
+              const nextManifest = live.manifest.filter(
+                (entry) =>
+                  !entry ||
+                  typeof entry !== "object" ||
+                  (entry as { id?: unknown }).id !== row.kebabId,
+              );
+              sourceRemoved = nextManifest.length !== live.manifest.length;
+              if (sourceRemoved) {
+                const out = await commit(
+                  {
+                    mode: "commit",
+                    workflow: nextManifest,
+                    actions: Array.isArray(live.actions)
+                      ? live.actions
+                      : undefined,
+                    target: "production",
+                    confirm_overwrite: true,
+                    conflict_resolutions: [],
+                    note: `Agent ${row.kebabId} removed by operator`,
+                  },
+                  {
+                    tenantId: auth.tenantId,
+                    tenantSlug: auth.tenantSlug,
+                    workflowSlug: row.workflowSlug,
+                  },
+                  {
+                    actorUserId: auth.userId ?? undefined,
+                    log: {
+                      error: (obj, msg) => req.log.error(obj, msg ?? ""),
+                      info: (obj, msg) => req.log.info(obj, msg ?? ""),
+                    },
+                  },
+                );
+                runtimeSynchronized = true;
+                deploymentId = out.deployment_id;
+                version = out.version;
+              }
+            }
+          }
+
+          // Code agents and legacy projections without a live manifest do not have
+          // an editable source artifact here. Disable them honestly; for a manifest
+          // projection, synchronize so any matching disk function is excluded.
+          if (!sourceRemoved) {
+            db.update(agents)
+              .set({ enabled: false, updatedAt: new Date() })
+              .where(eq(agents.id, row.id))
+              .run();
+            if (row.kind === "manifest") {
+              try {
+                await synchronizeTenantRuntime(auth.tenantSlug);
+                runtimeSynchronized = true;
+              } catch (error) {
+                db.update(agents)
+                  .set({ enabled: row.enabled, updatedAt: new Date() })
+                  .where(eq(agents.id, row.id))
+                  .run();
+                let rollbackError: unknown = null;
+                try {
+                  await synchronizeTenantRuntime(auth.tenantSlug);
+                } catch (failure) {
+                  rollbackError = failure;
+                }
+                if (rollbackError) {
+                  throw new AggregateError(
+                    [error, rollbackError],
+                    "agent delete and runtime rollback both failed",
+                  );
+                }
+                throw error;
+              }
+            }
+          }
+
+          let deleted = false;
+          // Physical deletion is safe only after the durable manifest no longer
+          // contains the agent. Otherwise a later bootstrap would resurrect it.
+          if (sourceRemoved && (runCount === 0 || force)) {
+            db.transaction(() => {
+              if (force && runCount > 0) {
+                db.delete(runs).where(eq(runs.agentId, row.id)).run();
+              }
+              db.delete(agents).where(eq(agents.id, row.id)).run();
+            });
+            deleted = true;
+          }
+          const disabled = !deleted;
+          writeAudit({
+            tenantId: auth.tenantId,
+            actorUserId: auth.userId ?? undefined,
+            action: deleted ? "agent.delete" : "agent.disable",
+            targetType: "agent",
+            targetId: row.id,
+            meta: {
+              kebabId: row.kebabId,
+              kind: row.kind,
+              runCount,
+              force,
+              sourceRemoved,
+              runtimeSynchronized,
+              deploymentId,
+              version,
+            },
+          });
+          lease.assertOwned();
+          return reply.ok({
+            kebabId: row.kebabId,
+            deleted,
+            disabled,
+            runCount,
+            sourceRemoved,
+            reregistered: runtimeSynchronized,
+            runtimeSynchronized,
+            deploymentId,
+            version,
+            note: disabled
+              ? sourceRemoved
+                ? "该智能体已从运行清单移除并下线；因保留运行历史，未物理删除记录。使用 ?force=1 可清理历史后删除。"
+                : "该智能体没有可由此接口安全修改的运行清单，已真实下线但保留来源记录。"
+              : undefined,
+          });
+        },
       });
     },
   );

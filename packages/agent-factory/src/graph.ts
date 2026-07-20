@@ -52,7 +52,14 @@ export type GraphIssue =
   | { kind: "unreachable_node"; action: string } // not reachable from any entry node
   | { kind: "no_entry" } // graph has no entry node at all
   | { kind: "no_terminal" } // graph never reaches a terminal
-  | { kind: "dead_end"; action: string }; // #AUDIT-FIX(P2-02) reachable but can't reach any terminal (困在环/死路)
+  | { kind: "dead_end"; action: string } // #AUDIT-FIX(P2-02) reachable but can't reach any terminal (困在环/死路)
+  // #IAL — UNBOUNDED event cycle: actions re-triggering each other through events with NO
+  // human-in-the-loop node inside the cycle. At the fleet level such a cycle re-fires Inngest
+  // functions indefinitely (per-function retries/concurrency do NOT bound cross-function
+  // re-triggering). Evidence: arXiv 2607.01641 — of 68 confirmed infinite agentic loops, 100%
+  // lacked a stopping bound ON THE FEEDBACK PATH itself; a HITL gate IS such a bound (a human
+  // must act each iteration), so HITL-containing cycles are NOT flagged.
+  | { kind: "cycle"; actions: string[]; events: string[] };
 
 export type VerifyResult = {
   ok: boolean;
@@ -246,6 +253,68 @@ export function verifyGraph(
       if (reachable.has(n.action) && !canReachTerminal.has(n.action) && !graph.terminalActions.includes(n.action)) {
         issues.push({ kind: "dead_end", action: n.action });
       }
+    }
+  }
+
+  // #IAL — unbounded event-cycle detection (Tarjan SCC, iterative — ontology graphs are small
+  // but recursion depth must not depend on input). A cyclic SCC (size>1, or a self-loop) whose
+  // member actions include NO HITL node has no stopping bound on the feedback path → flag it.
+  // HITL inside the cycle = a human must act every iteration = a verified bound → not flagged.
+  {
+    const hitl = new Set(graph.hitlActions);
+    const index = new Map<string, number>();
+    const low = new Map<string, number>();
+    const onStack = new Set<string>();
+    const stack: string[] = [];
+    let counter = 0;
+    const sccs: string[][] = [];
+    for (const start of graph.nodes.map((n) => n.action)) {
+      if (index.has(start)) continue;
+      // iterative Tarjan: frames of [node, childIdx]
+      const frames: Array<[string, number]> = [[start, 0]];
+      while (frames.length) {
+        const frame = frames[frames.length - 1]!;
+        const [v] = frame;
+        if (frame[1] === 0) {
+          index.set(v, counter);
+          low.set(v, counter);
+          counter++;
+          stack.push(v);
+          onStack.add(v);
+        }
+        const children = adj.get(v) ?? [];
+        if (frame[1] < children.length) {
+          const w = children[frame[1]]!;
+          frame[1]++;
+          if (!index.has(w)) frames.push([w, 0]);
+          else if (onStack.has(w)) low.set(v, Math.min(low.get(v)!, index.get(w)!));
+        } else {
+          if (low.get(v) === index.get(v)) {
+            const comp: string[] = [];
+            for (;;) {
+              const w = stack.pop()!;
+              onStack.delete(w);
+              comp.push(w);
+              if (w === v) break;
+            }
+            sccs.push(comp);
+          }
+          frames.pop();
+          if (frames.length) {
+            const parent = frames[frames.length - 1]![0];
+            low.set(parent, Math.min(low.get(parent)!, low.get(v)!));
+          }
+        }
+      }
+    }
+    const selfLoop = new Set(graph.edges.filter((e) => e.from === e.to).map((e) => e.from));
+    for (const comp of sccs) {
+      const cyclic = comp.length > 1 || (comp.length === 1 && selfLoop.has(comp[0]!));
+      if (!cyclic) continue;
+      if (comp.some((a) => hitl.has(a))) continue; // human gate bounds every iteration
+      const inComp = new Set(comp);
+      const cycleEvents = [...new Set(graph.edges.filter((e) => inComp.has(e.from) && inComp.has(e.to)).map((e) => e.event))].sort();
+      issues.push({ kind: "cycle", actions: [...comp].sort(), events: cycleEvents });
     }
   }
 

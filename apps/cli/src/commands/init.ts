@@ -113,7 +113,7 @@ export async function scaffoldTenant(opts: InitOptions): Promise<InitResult> {
     },
     {
       path: path.join(modelsDir, "workflow_v1.json"),
-      body: workflowV1(opts.slug),
+      body: workflowV1(),
     },
     {
       path: path.join(modelsDir, "events_v1.json"),
@@ -167,7 +167,10 @@ function agenticJson(slug: string): string {
         name: slug.charAt(0).toUpperCase() + slug.slice(1),
         version: "v1",
         manifestPath: `models/${slug}-v1`,
-        codeRoot: ".",
+        schemaVersion: 1,
+        code: {
+          registry: "src/index.ts",
+        },
         description: `Tenant package scaffolded by 'agentic init ${slug}'.`,
       },
       null,
@@ -293,7 +296,7 @@ export const examplePrompt = definePrompt({
 `;
 }
 
-function workflowV1(slug: string): string {
+function workflowV1(): string {
   const workflow = [
     {
       id: "1",

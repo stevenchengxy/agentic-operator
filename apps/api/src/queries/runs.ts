@@ -1,4 +1,5 @@
-import { readFile, unlink } from "node:fs/promises";
+import { readFile, rm, unlink } from "node:fs/promises";
+import path from "node:path";
 import { alias } from "drizzle-orm/sqlite-core";
 import {
   and,
@@ -30,49 +31,52 @@ import type { RunRow, StepRow, EventRow } from "@agentic/contracts";
  *   - event ledger: "<file>#<byteOffset>" → the NDJSON line's `.data`
  *   - step artifact: "<file>"             → the whole JSON file
  * Bounded to MAX_PAYLOAD_BYTES so a base64 résumé can't bloat the response;
- * an oversized payload collapses to a small preview marker. Best-effort —
- * a missing/garbled file resolves to null rather than throwing.
+ * an oversized payload collapses to a small preview marker. A persisted ref
+ * that cannot be resolved is a data-integrity failure, not an empty payload.
  */
 const MAX_PAYLOAD_BYTES = 24_000;
 
-function capPayload(value: unknown): unknown {
+function capPayload(
+  value: unknown,
+  maxPayloadBytes = MAX_PAYLOAD_BYTES,
+): unknown {
   if (value == null) return value;
-  let serialized: string;
-  try {
-    serialized = JSON.stringify(value);
-  } catch {
-    return null;
-  }
-  if (serialized.length <= MAX_PAYLOAD_BYTES) return value;
+  const serialized = JSON.stringify(value);
+  const bytes = Buffer.byteLength(serialized, "utf8");
+  if (bytes <= maxPayloadBytes) return value;
   return {
     _truncated: true,
-    _bytes: serialized.length,
+    _bytes: bytes,
     _preview: serialized.slice(0, 4000),
   };
 }
 
 export async function resolvePayloadRef(
   ref: string | null | undefined,
+  maxPayloadBytes = MAX_PAYLOAD_BYTES,
 ): Promise<unknown> {
   if (!ref) return null;
   const hashIdx = ref.lastIndexOf("#");
-  try {
-    if (hashIdx === -1) {
-      // step artifact — the whole file is the payload
-      return capPayload(JSON.parse(await readFile(ref, "utf8")));
-    }
-    // event ledger ref "<file>#<offset>" → the line's `.data`
-    const filePath = ref.slice(0, hashIdx);
-    const offset = Number(ref.slice(hashIdx + 1));
-    if (!Number.isFinite(offset)) return null;
-    const buf = await readFile(filePath);
-    const nl = buf.indexOf(0x0a, offset);
-    const line = buf.toString("utf8", offset, nl === -1 ? undefined : nl);
-    const parsed = JSON.parse(line) as { data?: unknown };
-    return capPayload(parsed.data ?? parsed);
-  } catch {
-    return null;
+  if (hashIdx === -1) {
+    // step artifact — the whole file is the payload
+    return capPayload(
+      JSON.parse(await readFile(ref, "utf8")),
+      maxPayloadBytes,
+    );
   }
+  // event ledger ref "<file>#<offset>" → the line's `.data`
+  const filePath = ref.slice(0, hashIdx);
+  const offset = Number(ref.slice(hashIdx + 1));
+  if (!Number.isFinite(offset) || offset < 0) {
+    throw new Error(`invalid payload ledger offset in ref ${ref}`);
+  }
+  const buf = await readFile(filePath);
+  if (offset >= buf.length)
+    throw new Error(`payload ledger offset is beyond EOF in ref ${ref}`);
+  const nl = buf.indexOf(0x0a, offset);
+  const line = buf.toString("utf8", offset, nl === -1 ? undefined : nl);
+  const parsed = JSON.parse(line) as { data?: unknown };
+  return capPayload(parsed.data ?? parsed, maxPayloadBytes);
 }
 
 // UC-V11-21 / AR-GAP-06 — two `events` joins on the same query (the
@@ -103,7 +107,12 @@ function hydrateStepInfo(rows: Array<RunRow & { id: string }>): RunRow[] {
   for (const row of db
     .select({ runId: steps.runId, c: sql<number>`count(*)` })
     .from(steps)
-    .where(sql`${steps.runId} IN (${sql.join(runIds.map((id) => sql`${id}`), sql`, `)})`)
+    .where(
+      sql`${steps.runId} IN (${sql.join(
+        runIds.map((id) => sql`${id}`),
+        sql`, `,
+      )})`,
+    )
     .groupBy(steps.runId)
     .all()) {
     countMap.set(row.runId, Number(row.c));
@@ -111,7 +120,12 @@ function hydrateStepInfo(rows: Array<RunRow & { id: string }>): RunRow[] {
 
   // For runs in "running"/"waiting"/"queued" status: find current in-flight step.
   const liveIds = rows
-    .filter((r) => r.status === "running" || r.status === "waiting" || r.status === "queued")
+    .filter(
+      (r) =>
+        r.status === "running" ||
+        r.status === "waiting" ||
+        r.status === "queued",
+    )
     .map((r) => r.id);
   const currentMap = new Map<string, { name: string; ord: number }>();
   if (liveIds.length > 0) {
@@ -125,7 +139,10 @@ function hydrateStepInfo(rows: Array<RunRow & { id: string }>): RunRow[] {
       })
       .from(steps)
       .where(
-        sql`${steps.runId} IN (${sql.join(liveIds.map((id) => sql`${id}`), sql`, `)})`,
+        sql`${steps.runId} IN (${sql.join(
+          liveIds.map((id) => sql`${id}`),
+          sql`, `,
+        )})`,
       )
       .orderBy(steps.runId, desc(steps.ord))
       .all()) {
@@ -191,7 +208,9 @@ function buildRunWhere(tenantId: string, opts: RunFilterOpts) {
     opts.status !== "all" &&
     (VALID_STATUSES as readonly string[]).includes(opts.status)
   ) {
-    whereParts.push(eq(runs.status, opts.status as (typeof VALID_STATUSES)[number]));
+    whereParts.push(
+      eq(runs.status, opts.status as (typeof VALID_STATUSES)[number]),
+    );
   }
   if (opts.agentName) {
     whereParts.push(eq(agents.name, opts.agentName));
@@ -240,6 +259,12 @@ export async function listRecentRuns(
       correlationId: runs.correlationId,
       errorMessage: runs.errorMessage,
       logPath: runs.logPath,
+      codeRan: runs.codeRan,
+      codeExecuted: runs.codeExecuted,
+      codeIsolation: runs.codeIsolation,
+      codeSha256: runs.codeSha256,
+      codeAttestation: runs.codeAttestation,
+      codeExecutionFailure: runs.codeExecutionFailure,
       // Surfacing parentRunId lets the list render a REPLAY/child badge and
       // lets the trace tree fetch a run's children via ?parentRunId=.
       parentRunId: runs.parentRunId,
@@ -329,13 +354,22 @@ export async function listRunsPaged(
       correlationId: runs.correlationId,
       errorMessage: runs.errorMessage,
       logPath: runs.logPath,
+      codeRan: runs.codeRan,
+      codeExecuted: runs.codeExecuted,
+      codeIsolation: runs.codeIsolation,
+      codeSha256: runs.codeSha256,
+      codeAttestation: runs.codeAttestation,
+      codeExecutionFailure: runs.codeExecutionFailure,
       parentRunId: runs.parentRunId,
       isTest: runs.isTest,
     })
     .from(runs)
     .innerJoin(agents, eq(agents.id, runs.agentId))
     .leftJoin(events, eq(events.id, runs.triggerEventId))
-    .leftJoin(emittedEventsAlias, eq(emittedEventsAlias.id, runs.emittedEventId))
+    .leftJoin(
+      emittedEventsAlias,
+      eq(emittedEventsAlias.id, runs.emittedEventId),
+    )
     .where(and(...whereParts))
     .orderBy(desc(runs.startedAt))
     .limit(pageSize)
@@ -354,11 +388,7 @@ export async function listRunsPaged(
 }
 
 /** Outcome codes for {@link softDeleteRun} so the route can pick the HTTP status. */
-export type DeleteRunReason =
-  | "ok"
-  | "not_found"
-  | "active"
-  | "already_deleted";
+export type DeleteRunReason = "ok" | "not_found" | "active" | "already_deleted";
 
 /**
  * Soft-delete (tombstone) a single run — recoverable via {@link restoreRun}.
@@ -367,19 +397,33 @@ export type DeleteRunReason =
  * re-deleting an already-tombstoned run reports `already_deleted` (the route
  * treats it as a 200 no-op).
  */
-export function softDeleteRun(tenantId: string, runId: string): DeleteRunReason {
+export function softDeleteRun(
+  tenantId: string,
+  runId: string,
+): DeleteRunReason {
   const db = getDb();
   const row = db
-    .select({ tenantId: runs.tenantId, status: runs.status, deletedAt: runs.deletedAt })
+    .select({
+      tenantId: runs.tenantId,
+      status: runs.status,
+      deletedAt: runs.deletedAt,
+    })
     .from(runs)
     .where(eq(runs.id, runId))
     .all()[0];
   if (!row || row.tenantId !== tenantId) return "not_found";
-  if ((ACTIVE_STATUSES as readonly string[]).includes(row.status)) return "active";
+  if ((ACTIVE_STATUSES as readonly string[]).includes(row.status))
+    return "active";
   if (row.deletedAt) return "already_deleted";
   db.update(runs)
     .set({ deletedAt: new Date() })
-    .where(and(eq(runs.id, runId), eq(runs.tenantId, tenantId), isNull(runs.deletedAt)))
+    .where(
+      and(
+        eq(runs.id, runId),
+        eq(runs.tenantId, tenantId),
+        isNull(runs.deletedAt),
+      ),
+    )
     .run();
   return "ok";
 }
@@ -391,7 +435,13 @@ export function restoreRun(tenantId: string, runId: string): boolean {
   const res = db
     .update(runs)
     .set({ deletedAt: null })
-    .where(and(eq(runs.id, runId), eq(runs.tenantId, tenantId), isNotNull(runs.deletedAt)))
+    .where(
+      and(
+        eq(runs.id, runId),
+        eq(runs.tenantId, tenantId),
+        isNotNull(runs.deletedAt),
+      ),
+    )
     .run() as { changes?: number };
   return (res?.changes ?? 0) > 0;
 }
@@ -449,7 +499,7 @@ export function bulkSoftDeleteRuns(
  * HARD-delete every already-tombstoned run for a tenant (empty the recycle
  * bin). Irreversible: drops the run rows (FK cascade takes steps / tasks /
  * artifacts / short-term memory / llm_turns / run_summaries with them) and
- * best-effort unlinks each run's `.log` file, which no cascade covers. Never
+ * unlinks each run's `.log` file, which no cascade covers. Never
  * touches a live (non-deleted) run. Returns the number of run rows removed.
  */
 export async function purgeDeletedRuns(tenantId: string): Promise<number> {
@@ -461,12 +511,41 @@ export async function purgeDeletedRuns(tenantId: string): Promise<number> {
     .all();
   if (doomed.length === 0) return 0;
 
-  // Best-effort log-file cleanup before the rows go. A missing/locked file
-  // must not abort the purge — the DB rows are the source of truth.
+  // Log cleanup happens before deleting the recovery metadata. A genuinely
+  // absent file is already clean; permissions/I/O failures abort the purge so
+  // its path remains discoverable for a later retry.
   await Promise.all(
     doomed
       .filter((r) => r.logPath)
-      .map((r) => unlink(r.logPath as string).catch(() => undefined)),
+      .map(async (r) => {
+        try {
+          await unlink(r.logPath as string);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        }
+      }),
+  );
+
+  // Step artifacts and the standalone Reasoning audit contain raw business
+  // inputs (including résumés). A permanent purge must remove the entire run
+  // artifact directory as well as the append-only log, otherwise deleted PII
+  // remains readable on disk after the DB cascade has erased its references.
+  const artifactRoot = path.resolve(
+    process.env.AGENTIC_ARTIFACTS_DIR ?? "./artifacts",
+  );
+  await Promise.all(
+    doomed.map(async ({ id }) => {
+      if (!/^[A-Za-z0-9_-]{1,160}$/.test(id)) {
+        throw new Error(`refusing to purge malformed run artifact id '${id}'`);
+      }
+      const directory = path.resolve(artifactRoot, id);
+      if (path.dirname(directory) !== artifactRoot) {
+        throw new Error(
+          `run artifact path escapes configured root for '${id}'`,
+        );
+      }
+      await rm(directory, { recursive: true, force: true });
+    }),
   );
 
   const res = db
@@ -501,6 +580,12 @@ export async function getRun(
       correlationId: runs.correlationId,
       errorMessage: runs.errorMessage,
       logPath: runs.logPath,
+      codeRan: runs.codeRan,
+      codeExecuted: runs.codeExecuted,
+      codeIsolation: runs.codeIsolation,
+      codeSha256: runs.codeSha256,
+      codeAttestation: runs.codeAttestation,
+      codeExecutionFailure: runs.codeExecutionFailure,
       parentRunId: runs.parentRunId,
       isTest: runs.isTest,
       // Real payloads for the run-detail IO/Events tabs: the trigger event is
@@ -607,7 +692,10 @@ export async function listRunChain(
     .from(runs)
     .innerJoin(agents, eq(agents.id, runs.agentId))
     .leftJoin(events, eq(events.id, runs.triggerEventId))
-    .leftJoin(emittedEventsAlias, eq(emittedEventsAlias.id, runs.emittedEventId))
+    .leftJoin(
+      emittedEventsAlias,
+      eq(emittedEventsAlias.id, runs.emittedEventId),
+    )
     .where(
       and(
         eq(runs.tenantId, tenantId),
@@ -621,7 +709,10 @@ export async function listRunChain(
   return { correlationId: anchor.correlationId, runs: rows };
 }
 
-export async function listSteps(runId: string): Promise<StepRow[]> {
+export async function listSteps(
+  runId: string,
+  maxPayloadBytes = MAX_PAYLOAD_BYTES,
+): Promise<StepRow[]> {
   const db = getDb();
   const rows = db
     .select({
@@ -639,6 +730,12 @@ export async function listSteps(runId: string): Promise<StepRow[]> {
       tokensIn: steps.tokensIn,
       tokensOut: steps.tokensOut,
       attempts: steps.attempts,
+      codeRan: steps.codeRan,
+      codeExecuted: steps.codeExecuted,
+      codeIsolation: steps.codeIsolation,
+      codeSha256: steps.codeSha256,
+      codeAttestation: steps.codeAttestation,
+      codeExecutionFailure: steps.codeExecutionFailure,
       inputRef: steps.inputRef,
       outputRef: steps.outputRef,
     })
@@ -651,8 +748,8 @@ export async function listSteps(runId: string): Promise<StepRow[]> {
   return Promise.all(
     rows.map(async ({ inputRef, outputRef, ...step }) => ({
       ...step,
-      input: await resolvePayloadRef(inputRef),
-      output: await resolvePayloadRef(outputRef),
+      input: await resolvePayloadRef(inputRef, maxPayloadBytes),
+      output: await resolvePayloadRef(outputRef, maxPayloadBytes),
     })),
   ) as Promise<StepRow[]>;
 }
@@ -714,9 +811,7 @@ export async function listRecentEvents(
  * exact and respects test/replay semantics.
  */
 function hydrateEventConsumers(
-  rows: Array<
-    Omit<EventRow, "consumers"> & { id: string }
-  >,
+  rows: Array<Omit<EventRow, "consumers"> & { id: string }>,
 ): EventRow[] {
   if (rows.length === 0) return rows;
   const db = getDb();

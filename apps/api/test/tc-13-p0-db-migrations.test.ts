@@ -44,6 +44,15 @@ describe("TC-13: Phase 0 DB migrations + temporal columns", () => {
     expect(res.status).toBe(200);
   });
 
+  it("P0-CODEACT-AUTH: durable per-agent authorization ledger exists", () => {
+    const row = getDb().$client
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='factory_codeact_authorizations'",
+      )
+      .get() as { name?: string } | undefined;
+    expect(row?.name).toBe("factory_codeact_authorizations");
+  });
+
   for (const table of TABLES_WITH_TEMPORAL_COLUMNS) {
     it(`P0-DB-01: ${table} has created_at + updated_at columns`, () => {
       const db = getDb();

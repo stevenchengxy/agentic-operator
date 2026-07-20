@@ -20,10 +20,6 @@
  *   - Shared with @tenants/robohire: matchResumeApi, parseJdApi,
  *     inviteCandidateApi, robohireHealthApi — re-exported here so the
  *     manifest's `tool_use[]` advertises them under their canonical names.
- *
- * MCP servers: reuse the mock robohire-mcp from @tenants/robohire so the
- *   demo isn't sensitive to RoboHire API rate limits.
- *
  * Skills: jd-authoring, match-rubric, report-template (under `./skills/`).
  */
 
@@ -77,24 +73,7 @@ const prompts: TenantRegistry["prompts"] = {
   intakeAndParseResume,
 };
 
-// Reuse the existing mock RoboHire MCP server. Optional=true so a missing
-// bin doesn't block boot. The MCP tools surface under
-// `robohire-mcp.<tool>` and are picked up by the agent that advertises
-// them in its `tool_use[]`.
-const mcpServers: TenantRegistry["mcpServers"] = [
-  {
-    name: "robohire-mcp",
-    transport: "stdio",
-    command: "node",
-    args: [
-      join(here, "..", "..", "robohire", "mcp-server", "bin.mjs"),
-    ],
-    env: {},
-    optional: true,
-  },
-];
-
 const skills = loadSkillsFromDirectory(join(here, "skills"));
 
-const registry: TenantRegistry = { tools, prompts, mcpServers, skills };
+const registry: TenantRegistry = { tools, prompts, skills };
 export default registry;

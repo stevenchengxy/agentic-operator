@@ -1,25 +1,22 @@
 "use client";
 
-/**
- * ImportManifestModal — 6-step wizard for importing a workflow.json +
- * actions.json manifest pair. Shared by Workflows ("Import manifest") and
- * Agents ("Import manifest"). P2-FE-17.
- *
- * Steps: source → validate → diff → resolve → preview → deploy
- *
- * Ported from `agentic-operator_v1_1/views/import-manifest.jsx` (809 LOC).
- * Wired end-to-end against `POST /v1/tenants/:slug/manifest-import` (modes
- * validate | commit) and `POST /…/fetch-url`. 423 (pending lock), 409
- * (overwrite required) and 200 envelopes are all handled. The 1132-line
- * UI shape was preserved — only `startValidation` + a new `runCommit` were
- * added.
- */
-
-import { useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import type {
-  ManifestImportOverwriteRequired,
-  ManifestImportPreview,
+import {
+  ManifestImportCommit as ManifestImportCommitSchema,
+  ManifestImportOverwriteRequired as ManifestImportOverwriteRequiredSchema,
+  ManifestImportPreview as ManifestImportPreviewSchema,
+  type Conflict,
+  type ConflictResolution,
+  type ManifestImportBody,
+  type ManifestImportOverwriteRequired,
+  type ManifestImportPreview,
 } from "@agentic/contracts";
 import {
   Badge,
@@ -32,169 +29,137 @@ import {
   Stat,
   type IconName,
 } from "@/app/portal/components";
-import { fmtBytes } from "@/lib/format";
-import { useDag, type DagAgent } from "@/lib/hooks/useAgents";
-import { tenantHeader } from "@/lib/hooks/tenant-header";
-import { useTenant } from "@/app/portal/lib/use-tenant";
 import { toast } from "@/app/portal/components/toast";
 import { useI18n } from "@/app/portal/lib/preferences-context";
+import { useTenant } from "@/app/portal/lib/use-tenant";
+import { fmtBytes } from "@/lib/format";
 import { OverwriteConfirmModal } from "./OverwriteConfirmModal";
+import { ImportPreviewGraph } from "./ImportPreviewGraph";
 
-/**
- * Unwrap the standard apps/api envelope. 200 responses are
- * `{ ok: true, data: <T> }`. 423 / 409 are flat (not enveloped). This
- * helper returns the inner shape on the happy envelope and the raw body
- * otherwise — callers that branch on status code receive what they
- * expect from the design doc.
- */
-function unwrapEnvelope<T = unknown>(body: unknown): T {
+const MAX_FILE_BYTES = 1_000_000;
+
+const IMPORT_STEPS = [
+  { id: "source", icon: "upload" as IconName },
+  { id: "validate", icon: "check" as IconName },
+  { id: "diff", icon: "git" as IconName },
+  { id: "resolve", icon: "alert" as IconName },
+  { id: "preview", icon: "workflow" as IconName },
+  { id: "deploy", icon: "deploy" as IconName },
+] as const;
+
+type SourceKind = "file" | "paste" | "url" | "git";
+type ResolutionChoice = "auto_fix" | "skip";
+type DeployTarget = "staging" | "production";
+
+interface FileEntry {
+  name: string;
+  size: number;
+  ok: boolean;
+  error?: string;
+}
+
+interface ManifestPair {
+  workflow: unknown;
+  actions: unknown[] | null;
+}
+
+interface RepoSource {
+  repository: string;
+  ref: string;
+  path: string;
+}
+
+interface PendingLock {
+  locked_by?: string;
+  expires_at?: number;
+}
+
+interface CommitIssue {
+  path: string;
+  message: string;
+  severity: string;
+  code: string;
+}
+
+export interface ImportManifestModalProps {
+  onClose: () => void;
+  mode?: "workflow" | "agent";
+  tenantSlug?: string;
+}
+
+function manifestHeaders(slug: string): Record<string, string> {
+  return {
+    "content-type": "application/json",
+    "x-agentic-tenant": slug,
+  };
+}
+
+function unwrapEnvelope<T>(body: unknown): T {
   if (
     body &&
     typeof body === "object" &&
     (body as { ok?: boolean }).ok === true &&
-    "data" in (body as object)
+    "data" in body
   ) {
     return (body as { data: T }).data;
   }
   return body as T;
 }
 
-interface ConflictResolution {
-  path: string;
-  action: "accept_suggestion" | "skip" | "override";
-  override_value?: unknown;
+async function readResponseBody(response: Response): Promise<unknown> {
+  const text = await response.text();
+  if (!text) return {};
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return { error: { message: text.slice(0, 500) } };
+  }
 }
 
-const IMPORT_STEPS = [
-  { id: "source", label: "Source", icon: "upload" as IconName, hint: "Where the manifest comes from" },
-  { id: "validate", label: "Validate", icon: "check" as IconName, hint: "Parse + schema lint" },
-  { id: "diff", label: "Diff", icon: "git" as IconName, hint: "vs live workflow" },
-  { id: "resolve", label: "Resolve", icon: "alert" as IconName, hint: "Conflicts & gaps" },
-  { id: "preview", label: "Preview", icon: "workflow" as IconName, hint: "Imported graph" },
-  { id: "deploy", label: "Deploy", icon: "deploy" as IconName, hint: "Stage / prod" },
-];
-
-// Static workflow ontology labels — mirrors the dashboard funnel so the
-// preview mini-graph reads naturally for RAAS-style staged pipelines.
-const STAGE_LABELS: Record<number, string> = {
-  0: "Intake",
-  1: "Analyze",
-  2: "JD",
-  3: "Publish",
-  4: "Resume",
-  5: "Match & Interview",
-  6: "Package",
-  7: "Submit",
-};
-
-/**
- * UI-side projection of the real `ManifestImportPreview` from the api. The
- * wizard reads this object across every step — it carries the original
- * preview body so the commit phase can call back with `deployment_id` /
- * `conflict_resolutions` without re-fetching.
- */
-export interface ParsedManifest {
-  workflow: {
-    id: string;
-    name: string;
-    version: string;
-    agent_count: number;
-    event_count: number;
-    stages: number;
-  };
-  cycles: number;
-  orphans: number;
-  issues: Array<{ level: "err" | "warn" | "info"; msg: string }>;
-  diff: {
-    added: Array<{ id: string; name: string; reason: string }>;
-    modified: Array<{ id: string; name: string; was?: string; changes: string[] }>;
-    removed: Array<{ id: string; name: string }>;
-  };
-  conflicts: Array<{ kind: string; name: string; agent: string; note: string; resolved: string }>;
-  /** Pending-deployment session id — required by `commit`. */
-  deployment_id: string;
-  /** Raw preview from the api (used by the commit body + overwrite modal). */
-  raw: ManifestImportPreview;
+function responseError(body: unknown, status: number): string {
+  if (body && typeof body === "object") {
+    const error = (body as { error?: unknown }).error;
+    if (typeof error === "string" && error) return error;
+    if (error && typeof error === "object") {
+      const detail = error as { message?: unknown; code?: unknown };
+      if (typeof detail.message === "string" && detail.message) {
+        return detail.message;
+      }
+      if (typeof detail.code === "string" && detail.code) return detail.code;
+    }
+  }
+  return `HTTP ${status}`;
 }
 
-/**
- * Map the api `ManifestImportPreview` onto the UI's `ParsedManifest`. The
- * preview returns id-only arrays for diff and a richer `Conflict` shape;
- * we synthesize the labels the wizard already renders so we don't have to
- * rebuild the 1132-line UI.
- */
-function previewToParsed(
+function splitManifestPayload(payload: unknown): ManifestPair {
+  if (
+    payload &&
+    typeof payload === "object" &&
+    !Array.isArray(payload) &&
+    "workflow" in payload
+  ) {
+    const bundle = payload as { workflow: unknown; actions?: unknown };
+    return {
+      workflow: bundle.workflow,
+      actions: Array.isArray(bundle.actions) ? bundle.actions : null,
+    };
+  }
+  return { workflow: payload, actions: null };
+}
+
+function conflictKey(conflict: Conflict, index: number): string {
+  return `${index}:${conflict.path}:${conflict.type}`;
+}
+
+function buildConflictResolutions(
   preview: ManifestImportPreview,
-): ParsedManifest {
-  const errs = preview.issues.filter((i) => i.severity === "error");
-  // The preview returns id-only diff entries (strings). The wizard renders
-  // {id, name, reason} — we use the id as both because the api doesn't
-  // round-trip the display name in the preview shape (yet).
-  return {
-    workflow: {
-      id: preview.workflow_version_id ?? "imported",
-      name: preview.prior.version ?? "imported",
-      version: preview.workflow_version_id ?? "(pending)",
-      agent_count: preview.parsed.agents,
-      event_count: preview.parsed.events,
-      stages: 0,
-    },
-    // No graph cycle detection result is shipped; treat any error-severity
-    // issue as a "block deploy" signal by leaving cycles=0 when clean.
-    cycles: errs.length > 0 ? errs.length : 0,
-    orphans: 0,
-    issues: preview.issues.map((iss) => ({
-      level:
-        iss.severity === "error"
-          ? "err"
-          : iss.severity === "warning"
-            ? "warn"
-            : "info",
-      msg: iss.message,
-    })),
-    diff: {
-      added: preview.diff.added.map((id) => ({
-        id,
-        name: id,
-        reason: "added by manifest",
-      })),
-      modified: preview.diff.modified.map((id) => ({
-        id,
-        name: id,
-        changes: ["modified by manifest"],
-      })),
-      removed: preview.diff.removed.map((id) => ({
-        id,
-        name: id,
-      })),
-    },
-    conflicts: preview.conflicts.map((c) => ({
-      kind: c.type,
-      name: c.path,
-      agent: c.path,
-      note: c.detail ?? c.type,
-      resolved: c.auto_fix ? "accept_suggestion" : "skip",
-    })),
-    deployment_id: preview.deployment_id,
-    raw: preview,
-  };
-}
-
-interface FileEntry {
-  name: string;
-  size: number;
-  ok: boolean;
-}
-
-export interface ImportManifestModalProps {
-  onClose: () => void;
-  mode?: "workflow" | "agent";
-  /**
-   * Override the active tenant slug for the manifest-import calls. Used by
-   * the "+ New tenant" path in `TenantSwitcher`, which fires this modal
-   * before the URL has been switched to the freshly created tenant.
-   */
-  tenantSlug?: string;
+  choices: Record<string, ResolutionChoice>,
+): ConflictResolution[] {
+  return preview.conflicts.map((conflict, index) => {
+    const choice = choices[conflictKey(conflict, index)];
+    if (choice === "auto_fix" && conflict.auto_fix) return conflict.auto_fix;
+    return { path: conflict.path, action: "skip" };
+  });
 }
 
 export function ImportManifestModal({
@@ -203,13 +168,124 @@ export function ImportManifestModal({
   tenantSlug,
 }: ImportManifestModalProps) {
   const { t } = useI18n();
-  // Fallback to the tenant in the URL when the caller didn't override.
   const urlTenant = useTenant();
   const slug = tenantSlug ?? urlTenant;
   const queryClient = useQueryClient();
-  // After a successful commit, invalidate every query whose data the new
-  // manifest touches so the Workflows canvas, Agents list, and DAG
-  // reload without a hard refresh.
+
+  const [step, setStep] = useState(0);
+  const [source, setSource] = useState<SourceKind>("file");
+  const [files, setFiles] = useState<FileEntry[]>([]);
+  const [pasted, setPasted] = useState("");
+  const [url, setUrl] = useState("");
+  const [repo, setRepo] = useState<RepoSource>({
+    repository: "",
+    ref: "",
+    path: "",
+  });
+  const [workflowRaw, setWorkflowRaw] = useState<unknown>(null);
+  const [actionsRaw, setActionsRaw] = useState<unknown[] | null>(null);
+  const [preview, setPreview] = useState<ManifestImportPreview | null>(null);
+  const [resolutions, setResolutions] = useState<
+    Record<string, ResolutionChoice>
+  >({});
+  const [target, setTarget] = useState<DeployTarget>("staging");
+  const [noteText, setNoteText] = useState("");
+  const [validating, setValidating] = useState(false);
+  const [committing, setCommitting] = useState(false);
+  const [closing, setClosing] = useState(false);
+  const [validationError, setValidationError] = useState<string | null>(null);
+  const [commitError, setCommitError] = useState<string | null>(null);
+  const [commitIssues, setCommitIssues] = useState<CommitIssue[]>([]);
+  const [pendingLock, setPendingLock] = useState<PendingLock | null>(null);
+  const [overwriteRequired, setOverwriteRequired] =
+    useState<ManifestImportOverwriteRequired | null>(null);
+
+  const pendingDeploymentRef = useRef<string | null>(null);
+  const committedRef = useRef(false);
+  const dropRef = useRef<HTMLDivElement | null>(null);
+
+  const cancelPendingDeployment = useCallback(
+    async (deploymentId: string, keepalive = false) => {
+      const response = await fetch(
+        `/v1/tenants/${encodeURIComponent(slug)}/manifest-import/${encodeURIComponent(deploymentId)}`,
+        {
+          method: "DELETE",
+          credentials: "same-origin",
+          headers: manifestHeaders(slug),
+          keepalive,
+        },
+      );
+      if (!response.ok && response.status !== 404 && response.status !== 409) {
+        const body = await readResponseBody(response);
+        throw new Error(responseError(body, response.status));
+      }
+      if (pendingDeploymentRef.current === deploymentId) {
+        pendingDeploymentRef.current = null;
+      }
+    },
+    [slug],
+  );
+
+  useEffect(() => {
+    return () => {
+      const deploymentId = pendingDeploymentRef.current;
+      if (!deploymentId || committedRef.current) return;
+      void fetch(
+        `/v1/tenants/${encodeURIComponent(slug)}/manifest-import/${encodeURIComponent(deploymentId)}`,
+        {
+          method: "DELETE",
+          credentials: "same-origin",
+          headers: manifestHeaders(slug),
+          keepalive: true,
+        },
+      );
+    };
+  }, [slug]);
+
+  const canAdvance = useMemo(() => {
+    if (validating || committing || closing) return false;
+    if (step === 0) {
+      if (source === "file") return workflowRaw !== null;
+      if (source === "paste") return pasted.trim().length > 0;
+      if (source === "url") return /^https?:\/\//i.test(url.trim());
+      return Boolean(
+        repo.repository.trim() && repo.ref.trim() && repo.path.trim(),
+      );
+    }
+    if (step === 1) {
+      return Boolean(
+        preview && !preview.issues.some((issue) => issue.severity === "error"),
+      );
+    }
+    return preview !== null;
+  }, [
+    closing,
+    committing,
+    pasted,
+    preview,
+    repo,
+    source,
+    step,
+    url,
+    validating,
+    workflowRaw,
+  ]);
+
+  const commitBody = useMemo<ManifestImportBody | null>(() => {
+    if (!preview) return null;
+    const note = noteText.trim();
+    return {
+      mode: "commit",
+      workflow: workflowRaw,
+      ...(actionsRaw ? { actions: actionsRaw } : {}),
+      target,
+      deployment_id: preview.deployment_id,
+      conflict_resolutions: buildConflictResolutions(preview, resolutions),
+      confirm_overwrite: false,
+      ...(note ? { note: note.slice(0, 500) } : {}),
+    };
+  }, [actionsRaw, noteText, preview, resolutions, target, workflowRaw]);
+
   const refetchManifestDependents = () => {
     void queryClient.invalidateQueries({ queryKey: ["agents"] as const });
     void queryClient.invalidateQueries({ queryKey: ["workflows"] as const });
@@ -217,332 +293,217 @@ export function ImportManifestModal({
     void queryClient.invalidateQueries({ queryKey: ["deployments"] as const });
   };
 
-  const [step, setStep] = useState(0);
-  const [source, setSource] = useState<"file" | "paste" | "url" | "git">("file");
-  const [files, setFiles] = useState<FileEntry[]>([]);
-  const [pasted, setPasted] = useState("");
-  const [url, setUrl] = useState("");
-  const [validating, setValidating] = useState(false);
-  const [parsed, setParsed] = useState<ParsedManifest | null>(null);
-  const [resolution, setResolution] = useState<{ model: string }>({ model: "fallback" });
-  const [deployTarget, setDeployTarget] = useState({ staging: true, prod: false });
-  const [autoRollback, setAutoRollback] = useState(true);
-  // Raw manifest pair held between source-step parsing and the commit body.
-  const [workflowRaw, setWorkflowRaw] = useState<unknown>(null);
-  const [actionsRaw, setActionsRaw] = useState<unknown[] | null>(null);
-  // Note + commit lifecycle.
-  const [noteText, setNoteText] = useState("");
-  const [committing, setCommitting] = useState(false);
-  const [commitError, setCommitError] = useState<string | null>(null);
-  // Specific issues returned by a blocking_issues commit response — the api
-  // ships these alongside the top-level error so the operator can see WHICH
-  // agents need attention instead of the bare "commit refused" line.
-  const [commitIssues, setCommitIssues] = useState<
-    Array<{ path: string; message: string; severity: string; code: string }>
-  >([]);
-  const [overwriteRequired, setOverwriteRequired] =
-    useState<ManifestImportOverwriteRequired | null>(null);
-  // Validate-step error surface (replaces the silent mock).
-  const [validationError, setValidationError] = useState<string | null>(null);
-  // 423 LOCKED: another wizard owns the pending lock.
-  const [pendingLock, setPendingLock] = useState<{
-    locked_by?: string;
-    expires_at?: number;
-  } | null>(null);
-  const dropRef = useRef<HTMLDivElement | null>(null);
-
-  const canAdvance = useMemo(() => {
-    if (step === 0) {
-      if (source === "file") return files.length > 0;
-      if (source === "paste") return pasted.trim().length > 0;
-      if (source === "url") return /^https?:\/\//.test(url) || /^git@/.test(url);
-      if (source === "git") return true;
-    }
-    if (step === 1) return !!parsed && parsed.cycles === 0;
-    return true;
-  }, [step, source, files, pasted, url, parsed]);
-
-  /**
-   * Gather the manifest pair from whichever source the operator picked,
-   * then call `POST /v1/tenants/:slug/manifest-import` with `mode:
-   * "validate"`. Mirrors the legacy SPA's `startValidation` flow.
-   */
-  async function startValidation() {
-    setValidationError(null);
-    setPendingLock(null);
-    setParsed(null);
-
-    let nextWorkflow: unknown = null;
-    let nextActions: unknown[] | null = null;
-
-    // Build manifest from whichever source step the operator chose.
-    if (source === "paste") {
-      const trimmed = pasted.trim();
-      if (!trimmed) {
-        setValidationError(t("importManifestModal.errPasteFirst"));
-        return;
-      }
-      let parsedPaste: unknown;
-      try {
-        parsedPaste = JSON.parse(trimmed);
-      } catch (e) {
-        setValidationError(
-          `${t("importManifestModal.errInvalidJson")}: ${e instanceof Error ? e.message : t("importManifestModal.errParseError")}`,
-        );
-        return;
-      }
-      if (
-        parsedPaste &&
-        typeof parsedPaste === "object" &&
-        !Array.isArray(parsedPaste) &&
-        "workflow" in parsedPaste
-      ) {
-        const bundle = parsedPaste as { workflow: unknown; actions?: unknown };
-        nextWorkflow = bundle.workflow;
-        nextActions = Array.isArray(bundle.actions)
-          ? (bundle.actions as unknown[])
-          : null;
-      } else {
-        nextWorkflow = parsedPaste;
-      }
-    } else if (source === "url") {
-      try {
-        const res = await fetch(
-          `/v1/tenants/${encodeURIComponent(slug)}/manifest-import/fetch-url`,
-          {
-            method: "POST",
-            credentials: "same-origin",
-            headers: {
-              "content-type": "application/json",
-              ...tenantHeader(),
-            },
-            body: JSON.stringify({ url }),
-          },
-        );
-        const body = (await res.json().catch(() => ({}))) as unknown;
-        if (!res.ok) {
-          const errObj =
-            body && typeof body === "object"
-              ? (body as { error?: { code?: string; message?: string } })
-              : {};
-          const code =
-            errObj.error?.code ??
-            errObj.error?.message ??
-            `HTTP ${res.status}`;
-          setValidationError(`${t("importManifestModal.errUrlFetchFailed")}: ${code}`);
-          return;
-        }
-        const unwrapped = unwrapEnvelope<{
-          workflow: unknown;
-          actions?: unknown[];
-        }>(body);
-        nextWorkflow = unwrapped.workflow;
-        nextActions = Array.isArray(unwrapped.actions)
-          ? unwrapped.actions
-          : null;
-      } catch (e) {
-        setValidationError(
-          `${t("importManifestModal.errUrlFetchFailed")}: ${e instanceof Error ? e.message : t("importManifestModal.errNetwork")}`,
-        );
-        return;
-      }
-    } else if (source === "file") {
-      // Re-read each File the operator dropped — `files` only carries
-      // metadata (size + name), so we need the underlying File handles
-      // back. We stash them on the modal's hidden <input> change handler
-      // (handleFilesContent below). The source-step UI passes the raw
-      // file content via setWorkflowRaw / setActionsRaw at pick time.
-      nextWorkflow = workflowRaw;
-      nextActions = actionsRaw;
-      if (!nextWorkflow) {
-        setValidationError(t("importManifestModal.errDropFirst"));
-        return;
-      }
-    } else if (source === "git") {
-      setValidationError(t("importManifestModal.errRepoComingSoon"));
-      return;
-    }
-
-    if (!nextWorkflow) {
-      setValidationError(t("importManifestModal.errNoManifest"));
-      return;
-    }
-
-    setWorkflowRaw(nextWorkflow);
-    setActionsRaw(nextActions);
-
-    setValidating(true);
-    setStep(1);
+  async function requestClose() {
+    if (committing || closing) return;
+    setClosing(true);
+    const deploymentId = pendingDeploymentRef.current;
     try {
-      const res = await fetch(
+      if (deploymentId && !committedRef.current) {
+        await cancelPendingDeployment(deploymentId);
+      }
+      onClose();
+    } catch (error) {
+      setValidationError(
+        `${t("importManifestModal.cancelFailed")}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    } finally {
+      setClosing(false);
+    }
+  }
+
+  async function fetchRemotePair(): Promise<ManifestPair> {
+    const endpoint =
+      source === "git"
+        ? `/v1/tenants/${encodeURIComponent(slug)}/manifest-import/fetch-repo`
+        : `/v1/tenants/${encodeURIComponent(slug)}/manifest-import/fetch-url`;
+    const requestBody =
+      source === "git"
+        ? {
+            repository: repo.repository.trim(),
+            ref: repo.ref.trim(),
+            path: repo.path.trim(),
+          }
+        : { url: url.trim() };
+    const response = await fetch(endpoint, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: manifestHeaders(slug),
+      body: JSON.stringify(requestBody),
+    });
+    const body = await readResponseBody(response);
+    if (!response.ok) throw new Error(responseError(body, response.status));
+    const fetched = unwrapEnvelope<{
+      workflow: unknown;
+      actions?: unknown[];
+    }>(body);
+    if (!fetched || typeof fetched !== "object" || !("workflow" in fetched)) {
+      throw new Error(t("importManifestModal.errInvalidFetchResponse"));
+    }
+    return {
+      workflow: fetched.workflow,
+      actions: Array.isArray(fetched.actions) ? fetched.actions : null,
+    };
+  }
+
+  async function startValidation() {
+    if (validating) return;
+    setValidationError(null);
+    setCommitError(null);
+    setPendingLock(null);
+    setPreview(null);
+    setValidating(true);
+
+    try {
+      const previousDeployment = pendingDeploymentRef.current;
+      if (previousDeployment && !committedRef.current) {
+        await cancelPendingDeployment(previousDeployment);
+      }
+
+      let pair: ManifestPair;
+      if (source === "paste") {
+        try {
+          pair = splitManifestPayload(JSON.parse(pasted.trim()) as unknown);
+        } catch (error) {
+          throw new Error(
+            `${t("importManifestModal.errInvalidJson")}: ${error instanceof Error ? error.message : t("importManifestModal.errParseError")}`,
+          );
+        }
+      } else if (source === "url" || source === "git") {
+        pair = await fetchRemotePair();
+      } else {
+        pair = { workflow: workflowRaw, actions: actionsRaw };
+      }
+
+      if (pair.workflow === null || pair.workflow === undefined) {
+        throw new Error(t("importManifestModal.errNoManifest"));
+      }
+      setWorkflowRaw(pair.workflow);
+      setActionsRaw(pair.actions);
+      setStep(1);
+
+      const response = await fetch(
         `/v1/tenants/${encodeURIComponent(slug)}/manifest-import`,
         {
           method: "POST",
           credentials: "same-origin",
-          headers: {
-            "content-type": "application/json",
-            ...tenantHeader(),
-          },
+          headers: manifestHeaders(slug),
           body: JSON.stringify({
             mode: "validate",
-            workflow: nextWorkflow,
-            actions: nextActions ?? undefined,
+            workflow: pair.workflow,
+            ...(pair.actions ? { actions: pair.actions } : {}),
           }),
         },
       );
-      const body = (await res.json().catch(() => ({}))) as unknown;
-      if (res.status === 423) {
-        const flat = body as { locked_by?: string; expires_at?: number };
+      const body = await readResponseBody(response);
+      if (response.status === 423) {
+        const lock = body as PendingLock;
         setPendingLock({
-          locked_by: flat.locked_by,
-          expires_at: flat.expires_at,
+          locked_by: lock.locked_by,
+          expires_at: lock.expires_at,
         });
-        setValidating(false);
         return;
       }
-      if (!res.ok) {
-        const errObj =
-          body && typeof body === "object"
-            ? (body as { error?: { code?: string; message?: string } })
-            : {};
-        const detail =
-          errObj.error?.message ??
-          errObj.error?.code ??
-          `HTTP ${res.status}`;
-        setValidationError(detail);
-        setValidating(false);
-        return;
-      }
-      const preview = unwrapEnvelope<ManifestImportPreview>(body);
-      setParsed(previewToParsed(preview));
-      setValidating(false);
-    } catch (e) {
-      setValidationError(
-        e instanceof Error ? e.message : t("importManifestModal.errNetworkValidate"),
+      if (!response.ok) throw new Error(responseError(body, response.status));
+
+      const result = ManifestImportPreviewSchema.safeParse(
+        unwrapEnvelope<unknown>(body),
       );
+      if (!result.success) {
+        throw new Error(
+          `${t("importManifestModal.errInvalidPreview")}: ${result.error.issues[0]?.message ?? "unknown schema error"}`,
+        );
+      }
+      committedRef.current = false;
+      pendingDeploymentRef.current = result.data.deployment_id;
+      setPreview(result.data);
+      setResolutions(
+        Object.fromEntries(
+          result.data.conflicts.map((conflict, index) => [
+            conflictKey(conflict, index),
+            conflict.auto_fix ? "auto_fix" : "skip",
+          ]),
+        ),
+      );
+    } catch (error) {
+      setValidationError(
+        error instanceof Error
+          ? error.message
+          : t("importManifestModal.errNetworkValidate"),
+      );
+      setStep(0);
+    } finally {
       setValidating(false);
     }
   }
 
-  /**
-   * Commit the parsed manifest. Triggered by the Deploy button on the last
-   * step. Re-validates with the in-memory manifest if `deployment_id` is
-   * missing (shouldn't happen on the happy path, but the legacy SPA's
-   * self-heal pattern stays useful). 409 → OverwriteConfirmModal.
-   */
-  async function runCommit({ confirmOverwrite }: { confirmOverwrite: boolean }) {
-    if (!parsed || !parsed.deployment_id) {
+  function actualCommitBody(confirmOverwrite: boolean): ManifestImportBody | null {
+    if (!commitBody) return null;
+    return { ...commitBody, confirm_overwrite: confirmOverwrite };
+  }
+
+  async function runCommit(confirmOverwrite: boolean) {
+    const bodyToSend = actualCommitBody(confirmOverwrite);
+    if (!preview || !bodyToSend) {
       setCommitError(t("importManifestModal.errNoDeploySession"));
       return;
     }
     setCommitError(null);
     setCommitIssues([]);
     setCommitting(true);
-
-    // Map the resolve-step UI's single `resolution.model` into the
-    // per-conflict resolution rows the api expects. The legacy wizard
-    // keeps one selection across all conflicts in v1.
-    const resolutions: ConflictResolution[] = (parsed.raw.conflicts ?? []).map(
-      (c) => ({
-        path: c.path,
-        action:
-          resolution.model === "fallback"
-            ? c.auto_fix
-              ? "accept_suggestion"
-              : "skip"
-            : resolution.model === "skip"
-              ? "skip"
-              : c.auto_fix
-                ? "accept_suggestion"
-                : "skip",
-      }),
-    );
-
     try {
-      const res = await fetch(
+      const response = await fetch(
         `/v1/tenants/${encodeURIComponent(slug)}/manifest-import`,
         {
           method: "POST",
           credentials: "same-origin",
-          headers: {
-            "content-type": "application/json",
-            ...tenantHeader(),
-          },
-          body: JSON.stringify({
-            mode: "commit",
-            workflow: workflowRaw,
-            actions: actionsRaw ?? undefined,
-            target: deployTarget.prod ? "production" : "staging",
-            deployment_id: parsed.deployment_id,
-            conflict_resolutions: resolutions,
-            confirm_overwrite: !!confirmOverwrite,
-            note: noteText ? noteText.slice(0, 500) : undefined,
-          }),
+          headers: manifestHeaders(slug),
+          body: JSON.stringify(bodyToSend),
         },
       );
-      const body = (await res.json().catch(() => ({}))) as unknown;
-      if (res.status === 409) {
-        setOverwriteRequired(body as ManifestImportOverwriteRequired);
-        setCommitting(false);
+      const body = await readResponseBody(response);
+      if (response.status === 409) {
+        const overwrite = ManifestImportOverwriteRequiredSchema.safeParse(body);
+        if (!overwrite.success) {
+          throw new Error(t("importManifestModal.errInvalidOverwriteResponse"));
+        }
+        setOverwriteRequired(overwrite.data);
         return;
       }
-      if (!res.ok) {
-        const errObj =
-          body && typeof body === "object"
-            ? (body as {
-                error?: { code?: string; message?: string; hint?: string };
-                issues?: Array<{
-                  path: string;
-                  message: string;
-                  severity: string;
-                  code: string;
-                }>;
-              })
-            : {};
-        const detail =
-          errObj.error?.message ??
-          errObj.error?.code ??
-          `HTTP ${res.status}`;
-        setCommitError(detail);
-        setCommitIssues(
-          Array.isArray(errObj.issues) ? errObj.issues : [],
+      if (!response.ok) {
+        if (body && typeof body === "object") {
+          const issues = (body as { issues?: unknown }).issues;
+          if (Array.isArray(issues)) setCommitIssues(issues as CommitIssue[]);
+        }
+        throw new Error(responseError(body, response.status));
+      }
+      const committed = ManifestImportCommitSchema.safeParse(
+        unwrapEnvelope<unknown>(body),
+      );
+      if (!committed.success) {
+        throw new Error(
+          `${t("importManifestModal.errInvalidCommitResponse")}: ${committed.error.issues[0]?.message ?? "unknown schema error"}`,
         );
-        setCommitting(false);
-        return;
       }
-      const committed = unwrapEnvelope<{ version?: string; workflow_version_id?: string }>(body);
-      const versionLabel = committed.version ?? committed.workflow_version_id;
+      committedRef.current = true;
+      pendingDeploymentRef.current = null;
+      setOverwriteRequired(null);
       toast({
         tone: "green",
         title: t("importManifestModal.toastDeployedTitle"),
-        description: versionLabel
-          ? t("importManifestModal.toastVersionLive", { version: versionLabel, slug })
-          : t("importManifestModal.toastManifestLive", { slug }),
+        description: t("importManifestModal.toastVersionLive", {
+          version: committed.data.version,
+          slug,
+        }),
       });
-      setOverwriteRequired(null);
-      setCommitting(false);
-      // Invalidate dependent TanStack caches so the Workflows canvas and
-      // Agents list reflect the freshly committed manifest without a hard
-      // refresh.
       refetchManifestDependents();
-      // Legacy SPA exposes `window.refreshWorkflowsView` — call it when
-      // we're mounted on top of the SPA, otherwise let the App Router
-      // page refresh on its own (TanStack Query invalidations downstream).
-      try {
-        const w = window as unknown as {
-          refreshWorkflowsView?: () => void;
-        };
-        if (typeof w.refreshWorkflowsView === "function") {
-          w.refreshWorkflowsView();
-        }
-      } catch {
-        // best-effort
-      }
       onClose();
-    } catch (e) {
+    } catch (error) {
       setCommitError(
-        e instanceof Error ? e.message : t("importManifestModal.errNetworkDeploy"),
+        error instanceof Error
+          ? error.message
+          : t("importManifestModal.errNetworkDeploy"),
       );
+    } finally {
       setCommitting(false);
     }
   }
@@ -552,106 +513,121 @@ export function ImportManifestModal({
       void startValidation();
       return;
     }
-    setStep((s) => Math.min(IMPORT_STEPS.length - 1, s + 1));
+    setStep((current) => Math.min(IMPORT_STEPS.length - 1, current + 1));
   }
+
   function back() {
-    setStep((s) => Math.max(0, s - 1));
+    setStep((current) => Math.max(0, current - 1));
   }
 
   async function handleFiles(list: FileList | null) {
     if (!list) return;
-    const arr: FileEntry[] = Array.from(list).map((f) => ({
-      name: f.name,
-      size: f.size,
-      ok: /workflow.*\.json$/i.test(f.name) || /actions.*\.json$/i.test(f.name),
-    }));
-    setFiles(arr);
-    // Read each file's content into memory so the commit body can re-use it
-    // without bouncing through the browser File handle (which is unreadable
-    // post-React-re-render).
     let nextWorkflow: unknown = null;
     let nextActions: unknown[] | null = null;
-    const fileArr = Array.from(list);
-    await Promise.all(
-      fileArr.map(async (f) => {
-        try {
-          const text = await f.text();
-          const parsed = JSON.parse(text) as unknown;
-          if (/actions.*\.json$/i.test(f.name)) {
-            if (Array.isArray(parsed)) nextActions = parsed as unknown[];
-          } else if (/workflow.*\.json$/i.test(f.name)) {
-            nextWorkflow = parsed;
-          } else {
-            // Unknown filename — best-guess: array w/ first item.kind==='action'
-            // is actions; everything else is workflow.
-            if (
-              Array.isArray(parsed) &&
-              parsed.length > 0 &&
-              typeof parsed[0] === "object" &&
-              (parsed[0] as { kind?: string })?.kind === "action"
-            ) {
-              nextActions = parsed as unknown[];
-            } else if (nextWorkflow == null) {
-              nextWorkflow = parsed;
-            }
+    const entries: FileEntry[] = [];
+
+    for (const file of Array.from(list)) {
+      if (file.size > MAX_FILE_BYTES) {
+        entries.push({
+          name: file.name,
+          size: file.size,
+          ok: false,
+          error: t("importManifestModal.errFileTooLarge"),
+        });
+        continue;
+      }
+      try {
+        const parsed = JSON.parse(await file.text()) as unknown;
+        if (/actions.*\.json$/i.test(file.name)) {
+          if (!Array.isArray(parsed)) {
+            throw new Error(t("importManifestModal.errActionsMustBeArray"));
           }
-        } catch {
-          // Leave file marked as ok=false; the validation error path
-          // surfaces this with a clearer message at validate time.
+          nextActions = parsed;
+        } else if (/workflow.*\.json$/i.test(file.name)) {
+          const pair = splitManifestPayload(parsed);
+          nextWorkflow = pair.workflow;
+          if (pair.actions) nextActions = pair.actions;
+        } else {
+          throw new Error(t("importManifestModal.errUnknownFileRole"));
         }
-      }),
-    );
+        entries.push({ name: file.name, size: file.size, ok: true });
+      } catch (error) {
+        entries.push({
+          name: file.name,
+          size: file.size,
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    setFiles(entries);
     setWorkflowRaw(nextWorkflow);
     setActionsRaw(nextActions);
+    const firstError = entries.find((entry) => !entry.ok)?.error;
+    setValidationError(firstError ?? null);
   }
-  function onDragOver(e: React.DragEvent) {
-    e.preventDefault();
+
+  function onDragOver(event: React.DragEvent) {
+    event.preventDefault();
     dropRef.current?.classList.add("drop-hot");
   }
+
   function onDragLeave() {
     dropRef.current?.classList.remove("drop-hot");
   }
-  function onDrop(e: React.DragEvent) {
-    e.preventDefault();
+
+  function onDrop(event: React.DragEvent) {
+    event.preventDefault();
     dropRef.current?.classList.remove("drop-hot");
-    void handleFiles(e.dataTransfer.files);
+    void handleFiles(event.dataTransfer.files);
   }
 
-  const title = mode === "agent" ? t("importManifestModal.titleAgent") : t("importManifestModal.titleWorkflow");
+  const title =
+    mode === "agent"
+      ? t("importManifestModal.titleAgent")
+      : t("importManifestModal.titleWorkflow");
 
   return (
-    <ModalOverlay onClose={onClose}>
-      <div
-        style={{
-          width: 980,
-          maxHeight: "90vh",
-          background: "var(--panel)",
-          border: "1px solid var(--border-2)",
-          borderRadius: 8,
-          overflow: "hidden",
-          boxShadow: "0 24px 60px -20px rgba(0,0,0,0.6)",
-          display: "flex",
-          flexDirection: "column",
-        }}
-      >
-        <header style={{ display: "flex", alignItems: "center", gap: 10, padding: "14px 18px", borderBottom: "1px solid var(--border)" }}>
+    <ModalOverlay onClose={() => void requestClose()}>
+      <div style={modalStyle}>
+        <header style={headerStyle}>
           <Icon name="upload" size={14} style={{ color: "var(--accent-text)" }} />
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 14, color: "var(--text)", fontWeight: 500 }}>{title}</div>
+            <div style={{ fontSize: 14, color: "var(--text)", fontWeight: 500 }}>
+              {title}
+            </div>
             <div style={{ fontSize: 11, color: "var(--text-3)" }}>
               {t("importManifestModal.headerAccepts")}{" "}
-              <span className="mono" style={{ color: "var(--text-2)" }}>workflow.json</span> +{" "}
-              <span className="mono" style={{ color: "var(--text-2)" }}>actions.json</span>. {t("importManifestModal.headerValidates")}
+              <span className="mono" style={{ color: "var(--text-2)" }}>
+                workflow.json
+              </span>{" "}
+              +{" "}
+              <span className="mono" style={{ color: "var(--text-2)" }}>
+                actions.json
+              </span>
+              . {t("importManifestModal.headerValidates")}
             </div>
           </div>
-          <button onClick={onClose} style={{ color: "var(--text-3)" }}>
+          <button
+            onClick={() => void requestClose()}
+            disabled={committing || closing}
+            aria-label={t("importManifestModal.cancel")}
+            style={{ color: "var(--text-3)" }}
+          >
             <Icon name="x" size={13} />
           </button>
         </header>
 
-        <div style={{ display: "flex", padding: "10px 18px", borderBottom: "1px solid var(--border)", background: "var(--bg-2)", gap: 4 }}>
-          {IMPORT_STEPS.map((s, i) => (
-            <ImportStepDot key={s.id} step={s} idx={i} active={step === i} done={i < step} />
+        <div style={stepsStyle}>
+          {IMPORT_STEPS.map((item, index) => (
+            <ImportStepDot
+              key={item.id}
+              step={item}
+              idx={index}
+              active={step === index}
+              done={index < step}
+            />
           ))}
         </div>
 
@@ -666,75 +642,97 @@ export function ImportManifestModal({
               setPasted={setPasted}
               url={url}
               setUrl={setUrl}
+              repo={repo}
+              setRepo={setRepo}
               dropRef={dropRef}
               onDragOver={onDragOver}
               onDragLeave={onDragLeave}
               onDrop={onDrop}
             />
           )}
-          {step === 1 && (validating ? <ValidatingState /> : <ValidateStep parsed={parsed} />)}
-          {step === 2 && parsed && <DiffStep parsed={parsed} />}
-          {step === 3 && parsed && (
+          {step === 1 &&
+            (validating ? (
+              <ValidatingState />
+            ) : (
+              <ValidateStep preview={preview} />
+            ))}
+          {step === 2 && preview && <DiffStep preview={preview} />}
+          {step === 3 && preview && (
             <ResolveStep
-              parsed={parsed}
-              resolution={resolution}
-              setResolution={setResolution}
-              workflowRaw={workflowRaw}
+              preview={preview}
+              resolutions={resolutions}
+              setResolutions={setResolutions}
             />
           )}
-          {step === 4 && parsed && <PreviewStep parsed={parsed} />}
-          {step === 5 && parsed && (
+          {step === 4 && preview && (
+            <PreviewStep preview={preview} manifest={workflowRaw} />
+          )}
+          {step === 5 && preview && commitBody && (
             <DeployStep
-              parsed={parsed}
-              target={deployTarget}
-              setTarget={setDeployTarget}
-              autoRollback={autoRollback}
-              setAutoRollback={setAutoRollback}
-              mode={mode}
+              slug={slug}
+              target={target}
+              setTarget={setTarget}
+              noteText={noteText}
+              setNoteText={setNoteText}
+              commitBody={commitBody}
             />
           )}
         </div>
 
-        <footer style={{ display: "flex", alignItems: "center", gap: 8, padding: "12px 18px", borderTop: "1px solid var(--border)", background: "var(--panel-2)" }}>
+        {(validationError || pendingLock || commitError) && (
+          <ErrorSurface
+            validationError={validationError}
+            pendingLock={pendingLock}
+            commitError={commitError}
+            commitIssues={commitIssues}
+          />
+        )}
+
+        <footer style={footerStyle}>
           {step > 0 && (
             <Button tone="ghost" icon="chevron-left" onClick={back}>
               {t("importManifestModal.back")}
             </Button>
           )}
           <span style={{ fontSize: 11, color: "var(--text-3)" }}>
-            {t("importManifestModal.stepCounter", { current: step + 1, total: IMPORT_STEPS.length })}
+            {t("importManifestModal.stepCounter", {
+              current: step + 1,
+              total: IMPORT_STEPS.length,
+            })}
           </span>
-          {step === 2 && parsed && (
-            <span style={{ marginLeft: 14, fontSize: 11, fontFamily: "var(--mono)", color: "var(--text-3)" }}>
-              <span style={{ color: "var(--green)" }}>+{parsed.diff.added.length}</span>{" "}
-              <span style={{ color: "var(--amber)" }}>~{parsed.diff.modified.length}</span>{" "}
-              <span style={{ color: "var(--red)" }}>−{parsed.diff.removed.length}</span>
-            </span>
-          )}
           <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
-            <Button tone="ghost" onClick={onClose}>
-              {t("importManifestModal.cancel")}
+            <Button
+              tone="ghost"
+              onClick={() => void requestClose()}
+              disabled={committing || closing}
+            >
+              {closing
+                ? t("importManifestModal.cancelling")
+                : t("importManifestModal.cancel")}
             </Button>
             {step < IMPORT_STEPS.length - 1 ? (
-              <Button tone="primary" icon="chevron-right" onClick={next} disabled={!canAdvance}>
-                {step === 0 ? t("importManifestModal.validate") : t("importManifestModal.continue")}
+              <Button
+                tone="primary"
+                icon="chevron-right"
+                onClick={next}
+                disabled={!canAdvance}
+              >
+                {step === 0
+                  ? validating
+                    ? t("importManifestModal.validatingManifest")
+                    : t("importManifestModal.validate")
+                  : t("importManifestModal.continue")}
               </Button>
             ) : (
               <Button
                 tone="primary"
                 icon="deploy"
-                onClick={
-                  committing
-                    ? undefined
-                    : () => {
-                        void runCommit({ confirmOverwrite: false });
-                      }
-                }
-                disabled={committing || !parsed?.deployment_id}
+                onClick={() => void runCommit(false)}
+                disabled={committing || !commitBody}
               >
                 {committing
                   ? t("importManifestModal.deploying")
-                  : deployTarget.prod
+                  : target === "production"
                     ? t("importManifestModal.deployToProd")
                     : t("importManifestModal.deployToStaging")}
               </Button>
@@ -743,108 +741,22 @@ export function ImportManifestModal({
         </footer>
 
         <style>{`.drop-hot { background: var(--panel-2) !important; border-color: var(--signal) !important; }`}</style>
-
-        {/* Inline validation / commit error surfaces. The wizard's step
-            bodies don't carry a global error chrome — these slips below
-            the footer are the legacy SPA's pattern. */}
-        {validationError && step === 0 && (
-          <div
-            style={{
-              padding: "10px 18px",
-              background: "color-mix(in srgb, var(--red) 8%, transparent)",
-              borderTop: "1px solid color-mix(in srgb, var(--red) 32%, transparent)",
-              fontSize: 12,
-              color: "var(--red)",
-            }}
-          >
-            {validationError}
-          </div>
-        )}
-        {pendingLock && step === 1 && (
-          <div
-            style={{
-              padding: "10px 18px",
-              background: "color-mix(in srgb, var(--amber) 8%, transparent)",
-              borderTop: "1px solid color-mix(in srgb, var(--amber) 32%, transparent)",
-              fontSize: 12,
-              color: "var(--amber)",
-            }}
-          >
-            {t("importManifestModal.lockInProgress")}
-            {pendingLock.locked_by ? ` (${pendingLock.locked_by})` : ""}. {t("importManifestModal.lockWait")}
-          </div>
-        )}
-        {commitError && step === IMPORT_STEPS.length - 1 && (
-          <div
-            style={{
-              padding: "10px 18px",
-              background: "color-mix(in srgb, var(--red) 8%, transparent)",
-              borderTop: "1px solid color-mix(in srgb, var(--red) 32%, transparent)",
-              fontSize: 12,
-              color: "var(--red)",
-              maxHeight: 220,
-              overflow: "auto",
-            }}
-          >
-            <div style={{ fontWeight: 500, marginBottom: commitIssues.length ? 6 : 0 }}>
-              {commitError}
-            </div>
-            {commitIssues.length > 0 && (
-              <ul style={{ margin: 0, paddingLeft: 18, lineHeight: 1.5 }}>
-                {commitIssues.map((iss, i) => (
-                  <li key={i} style={{ marginBottom: 2 }}>
-                    <span
-                      className="mono"
-                      style={{ color: "var(--text-3)", marginRight: 6 }}
-                    >
-                      {iss.path}
-                    </span>
-                    <span style={{ color: "var(--text-2)" }}>{iss.message}</span>
-                    <span
-                      className="mono"
-                      style={{ color: "var(--text-3)", marginLeft: 6 }}
-                    >
-                      [{iss.code}]
-                    </span>
-                  </li>
-                ))}
-                {commitIssues.length > 0 && (
-                  <li
-                    style={{
-                      listStyle: "none",
-                      marginTop: 6,
-                      color: "var(--amber)",
-                    }}
-                  >
-                    {t("importManifestModal.commitIssueHintPart1")}{" "}
-                    <strong>{t("importManifestModal.stepResolveBold")}</strong>{" "}
-                    {t("importManifestModal.commitIssueHintPart2")}{" "}
-                    <strong>{t("importManifestModal.skipAgentBold")}</strong>{" "}
-                    {t("importManifestModal.commitIssueHintPart3")}
-                  </li>
-                )}
-              </ul>
-            )}
-          </div>
-        )}
       </div>
 
       {overwriteRequired && (
         <OverwriteConfirmModal
           payload={{
             ...overwriteRequired,
-            prior: parsed?.raw.prior
+            prior: preview
               ? {
-                  version_label: parsed.raw.prior.version,
-                  agents: parsed.raw.prior.agents,
+                  version_label: preview.prior.version,
+                  agents: preview.prior.agents,
                 }
               : undefined,
           }}
           committing={committing}
           onCancel={() => setOverwriteRequired(null)}
-          onConfirm={() => {
-            void runCommit({ confirmOverwrite: true });
-          }}
+          onConfirm={() => void runCommit(true)}
         />
       )}
     </ModalOverlay>
@@ -864,49 +776,16 @@ function ImportStepDot({
 }) {
   const { t } = useI18n();
   return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 8,
-        padding: "5px 12px",
-        background: active ? "var(--panel)" : "transparent",
-        border: `1px solid ${active ? "var(--signal)" : "transparent"}`,
-        borderRadius: 4,
-        opacity: active ? 1 : done ? 0.95 : 0.5,
-      }}
-    >
-      <span
-        style={{
-          width: 18,
-          height: 18,
-          borderRadius: "50%",
-          background: done ? "var(--signal)" : "transparent",
-          border: `1px solid ${done || active ? "var(--signal)" : "var(--border-2)"}`,
-          color: done ? "var(--on-signal)" : active ? "var(--accent-text)" : "var(--text-3)",
-          fontSize: 10,
-          fontFamily: "var(--mono)",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-        }}
-      >
-        {done ? "✓" : idx + 1}
-      </span>
+    <div style={stepDotStyle(active, done)}>
+      <span style={stepNumberStyle(active, done)}>{done ? "✓" : idx + 1}</span>
+      <Icon name={step.icon} size={10} style={{ color: "var(--text-3)" }} />
       <div>
-        <div
-          style={{
-            fontSize: 11,
-            fontFamily: "var(--mono)",
-            textTransform: "uppercase",
-            letterSpacing: "0.06em",
-            color: active ? "var(--text)" : "var(--text-3)",
-            lineHeight: 1.1,
-          }}
-        >
+        <div style={stepLabelStyle(active)}>
           {t(`importManifestModal.step_${step.id}`)}
         </div>
-        <div style={{ fontSize: 10, color: "var(--text-3)" }}>{t(`importManifestModal.stepHint_${step.id}`)}</div>
+        <div style={{ fontSize: 10, color: "var(--text-3)" }}>
+          {t(`importManifestModal.stepHint_${step.id}`)}
+        </div>
       </div>
     </div>
   );
@@ -921,56 +800,82 @@ function SourceStep({
   setPasted,
   url,
   setUrl,
+  repo,
+  setRepo,
   dropRef,
   onDragOver,
   onDragLeave,
   onDrop,
 }: {
-  source: "file" | "paste" | "url" | "git";
-  setSource: (s: "file" | "paste" | "url" | "git") => void;
+  source: SourceKind;
+  setSource: (source: SourceKind) => void;
   files: FileEntry[];
-  handleFiles: (list: FileList | null) => void | Promise<void>;
+  handleFiles: (files: FileList | null) => void | Promise<void>;
   pasted: string;
-  setPasted: (v: string) => void;
+  setPasted: (value: string) => void;
   url: string;
-  setUrl: (v: string) => void;
+  setUrl: (value: string) => void;
+  repo: RepoSource;
+  setRepo: (value: RepoSource) => void;
   dropRef: React.RefObject<HTMLDivElement | null>;
-  onDragOver: (e: React.DragEvent) => void;
+  onDragOver: (event: React.DragEvent) => void;
   onDragLeave: () => void;
-  onDrop: (e: React.DragEvent) => void;
+  onDrop: (event: React.DragEvent) => void;
 }) {
   const { t } = useI18n();
   return (
     <div>
-      <div style={{ fontSize: 11, fontFamily: "var(--mono)", textTransform: "uppercase", color: "var(--text-3)", letterSpacing: "0.08em", marginBottom: 10 }}>{t("importManifestModal.source")}</div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, marginBottom: 18 }}>
-        <SourceCard active={source === "file"} onClick={() => setSource("file")} icon="upload" title={t("importManifestModal.srcUploadTitle")} sub={t("importManifestModal.srcUploadSub")} />
-        <SourceCard active={source === "paste"} onClick={() => setSource("paste")} icon="code" title={t("importManifestModal.srcPasteTitle")} sub={t("importManifestModal.srcPasteSub")} />
-        <SourceCard active={source === "url"} onClick={() => setSource("url")} icon="external" title={t("importManifestModal.srcUrlTitle")} sub={t("importManifestModal.srcUrlSub")} />
-        <SourceCard active={source === "git"} onClick={() => setSource("git")} icon="git" title={t("importManifestModal.srcRepoTitle")} sub="agentic/raas-workflows" />
+      <div style={eyebrowStyle}>{t("importManifestModal.source")}</div>
+      <div style={sourceGridStyle}>
+        <SourceCard
+          active={source === "file"}
+          onClick={() => setSource("file")}
+          icon="upload"
+          title={t("importManifestModal.srcUploadTitle")}
+          sub={t("importManifestModal.srcUploadSub")}
+        />
+        <SourceCard
+          active={source === "paste"}
+          onClick={() => setSource("paste")}
+          icon="code"
+          title={t("importManifestModal.srcPasteTitle")}
+          sub={t("importManifestModal.srcPasteSub")}
+        />
+        <SourceCard
+          active={source === "url"}
+          onClick={() => setSource("url")}
+          icon="external"
+          title={t("importManifestModal.srcUrlTitle")}
+          sub={t("importManifestModal.srcUrlSub")}
+        />
+        <SourceCard
+          active={source === "git"}
+          onClick={() => setSource("git")}
+          icon="git"
+          title={t("importManifestModal.srcRepoTitle")}
+          sub={t("importManifestModal.srcRepoSub")}
+        />
       </div>
 
       {source === "file" && (
-        <div>
+        <>
           <div
             ref={dropRef}
             onDragOver={onDragOver}
             onDragLeave={onDragLeave}
             onDrop={onDrop}
-            style={{
-              padding: 32,
-              textAlign: "center",
-              background: "var(--bg-2)",
-              border: "1px dashed var(--border-3)",
-              borderRadius: 6,
-              transition: "background 0.12s, border-color 0.12s",
-            }}
+            style={dropStyle}
           >
             <Icon name="upload" size={22} style={{ color: "var(--text-3)" }} />
             <div style={{ marginTop: 8, fontSize: 13, color: "var(--text-2)" }}>
               {t("importManifestModal.dropPrefix")}{" "}
-              <span className="mono" style={{ color: "var(--text)" }}>workflow.json</span> {t("importManifestModal.dropAnd")}{" "}
-              <span className="mono" style={{ color: "var(--text)" }}>actions.json</span>
+              <span className="mono" style={{ color: "var(--text)" }}>
+                workflow.json
+              </span>{" "}
+              {t("importManifestModal.dropAnd")}{" "}
+              <span className="mono" style={{ color: "var(--text)" }}>
+                actions.json
+              </span>
             </div>
             <div style={{ marginTop: 4, fontSize: 11.5, color: "var(--text-3)" }}>
               {t("importManifestModal.or")}{" "}
@@ -981,94 +886,108 @@ function SourceStep({
                   multiple
                   accept=".json,application/json"
                   style={{ display: "none" }}
-                  onChange={(e) => handleFiles(e.target.files)}
+                  onChange={(event) => void handleFiles(event.target.files)}
                 />
               </label>{" "}
               {t("importManifestModal.maxFileSize")}
             </div>
           </div>
-
           {files.length > 0 && (
             <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 4 }}>
-              {files.map((f, i) => (
-                <div
-                  key={i}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 10,
-                    padding: "7px 12px",
-                    background: "var(--panel-2)",
-                    border: `1px solid ${f.ok ? "var(--border)" : "color-mix(in srgb, var(--amber) 30%, transparent)"}`,
-                    borderRadius: 4,
-                  }}
-                >
-                  <Icon name="code" size={12} style={{ color: f.ok ? "var(--green)" : "var(--amber)" }} />
-                  <span className="mono" style={{ fontSize: 12, color: "var(--text)" }}>{f.name}</span>
-                  <span style={{ marginLeft: "auto", fontSize: 11, fontFamily: "var(--mono)", color: "var(--text-3)" }}>{fmtBytes(f.size)}</span>
-                  {f.ok ? <Badge tone="green">{t("importManifestModal.badgeDetected")}</Badge> : <Badge tone="amber">{t("importManifestModal.badgeUnknownRole")}</Badge>}
+              {files.map((file, index) => (
+                <div key={`${file.name}:${index}`} style={fileRowStyle(file.ok)}>
+                  <Icon
+                    name={file.ok ? "check" : "alert"}
+                    size={12}
+                    style={{ color: file.ok ? "var(--green)" : "var(--amber)" }}
+                  />
+                  <span className="mono" style={{ fontSize: 12, color: "var(--text)" }}>
+                    {file.name}
+                  </span>
+                  {file.error && (
+                    <span style={{ fontSize: 11, color: "var(--amber)" }}>
+                      {file.error}
+                    </span>
+                  )}
+                  <span style={{ marginLeft: "auto", fontSize: 11, fontFamily: "var(--mono)", color: "var(--text-3)" }}>
+                    {fmtBytes(file.size)}
+                  </span>
+                  <Badge tone={file.ok ? "green" : "amber"}>
+                    {file.ok
+                      ? t("importManifestModal.badgeDetected")
+                      : t("importManifestModal.badgeUnknownRole")}
+                  </Badge>
                 </div>
               ))}
             </div>
           )}
-        </div>
+        </>
       )}
 
-      {source === "paste" && <MonacoEditor value={pasted} onChange={setPasted} language="json" height={320} />}
+      {source === "paste" && (
+        <MonacoEditor
+          value={pasted}
+          onChange={setPasted}
+          language="json"
+          height={320}
+        />
+      )}
 
       {source === "url" && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          <div>
-            <label style={{ display: "block", fontSize: 11, color: "var(--text-2)", marginBottom: 4 }}>{t("importManifestModal.manifestUrlLabel")}</label>
-            <input
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
-              placeholder="https://raw.githubusercontent.com/your-org/raas-workflows/main/dist/manifest.zip"
-              style={{
-                width: "100%",
-                padding: "8px 12px",
-                background: "var(--panel-2)",
-                border: "1px solid var(--border-2)",
-                borderRadius: 4,
-                color: "var(--text)",
-                fontFamily: "var(--mono)",
-                fontSize: 12,
-                outline: "none",
-              }}
-            />
-            <div style={{ marginTop: 6, fontSize: 11, color: "var(--text-3)" }}>
-              {t("importManifestModal.urlHelpPart1")} <span className="mono">GET</span> {t("importManifestModal.urlHelpPart2")}{" "}
-              <span className="mono">manifest.zip</span> {t("importManifestModal.urlHelpPart3")}
-            </div>
-          </div>
-          <div style={{ padding: "10px 12px", background: "var(--panel-2)", border: "1px solid var(--border)", borderRadius: 4 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-              <Icon name="alert" size={11} style={{ color: "var(--amber)" }} />
-              <span style={{ fontSize: 12, color: "var(--text)" }}>{t("importManifestModal.egressTitle")}</span>
-            </div>
-            <div style={{ fontSize: 11.5, color: "var(--text-3)", lineHeight: 1.55 }}>
-              {t("importManifestModal.egressPart1")}{" "}
-              <span className="mono">github.com</span> {t("importManifestModal.egressAnd")} <span className="mono">*.amazonaws.com</span> {t("importManifestModal.egressPart2")}
-            </div>
-          </div>
+        <div>
+          <FieldLabel>{t("importManifestModal.manifestUrlLabel")}</FieldLabel>
+          <input
+            type="url"
+            value={url}
+            onChange={(event) => setUrl(event.target.value)}
+            placeholder="https://example.com/workflow.json"
+            style={inputStyle}
+          />
+          <div style={helpStyle}>{t("importManifestModal.urlJsonOnly")}</div>
         </div>
       )}
 
       {source === "git" && (
-        <div>
-          <div style={{ marginBottom: 8, fontSize: 11, fontFamily: "var(--mono)", textTransform: "uppercase", color: "var(--text-3)", letterSpacing: "0.08em" }}>{t("importManifestModal.connectedRepos")}</div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            <RepoOption name="agentic/raas-workflows" branch="main" path="dist/manifest.zip" connected lastBuilt={t("importManifestModal.repoBuilt3min")} />
-            <RepoOption name="agentic/raas-workflows" branch="v2-rewrite" path="dist/manifest.zip" connected lastBuilt={`${t("importManifestModal.repoBuilt11hr")} · ✓ green`} recommended />
-            <RepoOption name="agentic/supportflow" branch="main" path="dist/manifest.zip" connected lastBuilt={t("importManifestModal.repoBuilt2days")} />
-            <button style={{ padding: "8px 12px", textAlign: "left", background: "var(--panel-2)", border: "1px dashed var(--border-2)", borderRadius: 4, fontSize: 11.5, color: "var(--text-3)" }}>
-              <Icon name="plus" size={11} style={{ marginRight: 6 }} />
-              {t("importManifestModal.connectAnotherRepo")}
-            </button>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 180px", gap: 12 }}>
+          <div>
+            <FieldLabel>{t("importManifestModal.repoRepositoryLabel")}</FieldLabel>
+            <input
+              value={repo.repository}
+              onChange={(event) => setRepo({ ...repo, repository: event.target.value })}
+              placeholder="https://github.com/organization/repository"
+              style={inputStyle}
+            />
+          </div>
+          <div>
+            <FieldLabel>{t("importManifestModal.repoRefLabel")}</FieldLabel>
+            <input
+              value={repo.ref}
+              onChange={(event) => setRepo({ ...repo, ref: event.target.value })}
+              placeholder={t("importManifestModal.repoRefPlaceholder")}
+              style={inputStyle}
+            />
+          </div>
+          <div style={{ gridColumn: "1 / -1" }}>
+            <FieldLabel>{t("importManifestModal.repoPathLabel")}</FieldLabel>
+            <input
+              value={repo.path}
+              onChange={(event) => setRepo({ ...repo, path: event.target.value })}
+              placeholder="path/to/workflow.json"
+              style={inputStyle}
+            />
+            <div style={helpStyle}>{t("importManifestModal.repoHelp")}</div>
           </div>
         </div>
       )}
     </div>
+  );
+}
+
+function FieldLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <label style={{ display: "block", fontSize: 11, color: "var(--text-2)", marginBottom: 4 }}>
+      {children}
+    </label>
   );
 }
 
@@ -1086,68 +1005,21 @@ function SourceCard({
   sub: string;
 }) {
   return (
-    <button
-      onClick={onClick}
-      style={{
-        padding: "12px 14px",
-        background: active ? "var(--panel-3)" : "var(--panel-2)",
-        border: `1px solid ${active ? "var(--signal)" : "var(--border)"}`,
-        borderRadius: 5,
-        textAlign: "left",
-        cursor: "pointer",
-        transition: "background 0.12s, border-color 0.12s",
-      }}
-    >
+    <button onClick={onClick} style={sourceCardStyle(active)}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 5 }}>
-        <Icon name={icon} size={12} style={{ color: active ? "var(--accent-text)" : "var(--text-2)" }} />
-        <span style={{ fontSize: 12.5, color: "var(--text)", fontWeight: 500 }}>{title}</span>
+        <Icon
+          name={icon}
+          size={12}
+          style={{ color: active ? "var(--accent-text)" : "var(--text-2)" }}
+        />
+        <span style={{ fontSize: 12.5, color: "var(--text)", fontWeight: 500 }}>
+          {title}
+        </span>
       </div>
-      <div style={{ fontSize: 11, color: "var(--text-3)", lineHeight: 1.45 }}>{sub}</div>
+      <div style={{ fontSize: 11, color: "var(--text-3)", lineHeight: 1.45 }}>
+        {sub}
+      </div>
     </button>
-  );
-}
-
-function RepoOption({
-  name,
-  branch,
-  path,
-  connected,
-  lastBuilt,
-  recommended,
-}: {
-  name: string;
-  branch: string;
-  path: string;
-  connected?: boolean;
-  lastBuilt: string;
-  recommended?: boolean;
-}) {
-  const { t } = useI18n();
-  return (
-    <label
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 10,
-        padding: "10px 12px",
-        background: recommended ? "color-mix(in srgb, var(--signal) 4%, transparent)" : "var(--panel-2)",
-        border: `1px solid ${recommended ? "color-mix(in srgb, var(--signal) 30%, transparent)" : "var(--border)"}`,
-        borderRadius: 4,
-        cursor: "pointer",
-      }}
-    >
-      <input type="radio" name="repo" defaultChecked={recommended} style={{ accentColor: "var(--signal)" }} />
-      <Icon name="git" size={12} style={{ color: "var(--text-3)" }} />
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <span className="mono" style={{ fontSize: 12, color: "var(--text)" }}>{name}</span>
-          <Badge tone="muted">{branch}</Badge>
-          {recommended && <Badge tone="signal">{t("importManifestModal.badgeRecommended")}</Badge>}
-        </div>
-        <div style={{ fontSize: 10.5, color: "var(--text-3)", fontFamily: "var(--mono)", marginTop: 2 }}>{path} · {lastBuilt}</div>
-      </div>
-      {connected && <span style={{ fontSize: 10, color: "var(--green)", fontFamily: "var(--mono)" }}>● {t("importManifestModal.badgeConnected")}</span>}
-    </label>
   );
 }
 
@@ -1155,18 +1027,10 @@ function ValidatingState() {
   const { t } = useI18n();
   return (
     <div style={{ padding: "60px 20px", textAlign: "center" }}>
-      <div
-        style={{
-          display: "inline-block",
-          width: 22,
-          height: 22,
-          border: "3px solid var(--border-2)",
-          borderTopColor: "var(--signal)",
-          borderRadius: "50%",
-          animation: "spin 0.8s linear infinite",
-        }}
-      />
-      <div style={{ marginTop: 16, fontSize: 13, color: "var(--text)" }}>{t("importManifestModal.validatingManifest")}</div>
+      <div style={spinnerStyle} />
+      <div style={{ marginTop: 16, fontSize: 13, color: "var(--text)" }}>
+        {t("importManifestModal.validatingManifest")}
+      </div>
       <div style={{ marginTop: 6, fontSize: 11.5, color: "var(--text-3)" }}>
         {t("importManifestModal.validatingSteps")}
       </div>
@@ -1174,638 +1038,644 @@ function ValidatingState() {
   );
 }
 
-function ValidateStep({ parsed }: { parsed: ParsedManifest | null }) {
+function ValidateStep({ preview }: { preview: ManifestImportPreview | null }) {
   const { t } = useI18n();
-  if (!parsed) return null;
+  if (!preview) return null;
   return (
     <div>
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(5, 1fr)",
-          gap: 0,
-          border: "1px solid var(--border)",
-          borderRadius: 6,
-          marginBottom: 14,
-          background: "var(--panel)",
-        }}
-      >
-        <ValidateCell label={t("importManifestModal.cellWorkflow")} value={parsed.workflow.id} mono />
-        <ValidateCell label={t("importManifestModal.cellVersion")} value={parsed.workflow.version} mono accent="var(--signal)" />
-        <ValidateCell label={t("importManifestModal.cellAgents")} value={parsed.workflow.agent_count} mono />
-        <ValidateCell label={t("importManifestModal.cellEvents")} value={parsed.workflow.event_count} mono />
-        <ValidateCell
-          label={t("importManifestModal.cellCycles")}
-          value={parsed.cycles}
-          mono
-          accent={parsed.cycles === 0 ? "var(--green)" : "var(--red)"}
-        />
+      <div style={metricsGridStyle}>
+        <MetricCell label={t("importManifestModal.cellSchemaVersion")} value={preview.schema_version} />
+        <MetricCell label={t("importManifestModal.cellAgents")} value={preview.parsed.agents} />
+        <MetricCell label={t("importManifestModal.cellEvents")} value={preview.parsed.events} />
+        <MetricCell label={t("importManifestModal.cellActions")} value={preview.parsed.actions} />
+        <MetricCell label={t("importManifestModal.cellElapsed")} value={`${preview.elapsed_ms} ms`} />
       </div>
-
-      <Panel title={t("importManifestModal.validationResults")} padded={false}>
-        {parsed.issues.map((iss, i) => (
-          <div
-            key={i}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 10,
-              padding: "8px 14px",
-              borderBottom: i < parsed.issues.length - 1 ? "1px solid var(--border)" : "none",
-            }}
-          >
-            <Icon
-              name={iss.level === "err" ? "alert" : iss.level === "warn" ? "alert" : "check"}
-              size={11}
-              style={{ color: iss.level === "err" ? "var(--red)" : iss.level === "warn" ? "var(--amber)" : "var(--green)" }}
-            />
-            <span style={{ fontSize: 12, color: "var(--text-2)" }}>{iss.msg}</span>
-            <span style={{ marginLeft: "auto", fontSize: 10, fontFamily: "var(--mono)", textTransform: "uppercase", color: "var(--text-3)" }}>{iss.level}</span>
-          </div>
-        ))}
-      </Panel>
+      <IssuesPanel issues={preview.issues} />
     </div>
   );
 }
 
-function ValidateCell({
-  label,
-  value,
-  mono,
-  accent,
-}: {
-  label: string;
-  value: string | number;
-  mono?: boolean;
-  accent?: string;
-}) {
+function MetricCell({ label, value }: { label: string; value: string | number }) {
   return (
     <div style={{ padding: "10px 14px", borderRight: "1px solid var(--border)" }}>
-      <div style={{ fontSize: 10, fontFamily: "var(--mono)", textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--text-3)" }}>{label}</div>
-      <div style={{ marginTop: 4, fontSize: 16, fontFamily: mono ? "var(--mono)" : "var(--sans)", color: accent ?? "var(--text)" }}>{value}</div>
+      <div style={metricLabelStyle}>{label}</div>
+      <div style={{ marginTop: 4, fontSize: 16, fontFamily: "var(--mono)", color: "var(--text)" }}>
+        {value}
+      </div>
     </div>
   );
 }
 
-function DiffStep({ parsed }: { parsed: ParsedManifest }) {
+function IssuesPanel({ issues }: { issues: ManifestImportPreview["issues"] }) {
   const { t } = useI18n();
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-      <Panel
-        title={t("importManifestModal.agentDiffTitle")}
-        subtitle={`${t("importManifestModal.diffLiveLabel")}: raas@2026.05.16-a → ${t("importManifestModal.diffImportedLabel")}: ${parsed.workflow.version}`}
-        padded={false}
-      >
-        <DiffGroup
-          label="Added"
-          tone="green"
-          items={parsed.diff.added.map((a) => ({ key: a.id, name: a.name, sub: a.reason }))}
-        />
-        <DiffGroup
-          label="Modified"
-          tone="amber"
-          items={parsed.diff.modified.map((a) => ({
-            key: a.id,
-            name: a.name,
-            sub: (a.was ? `id ${a.was} → ${a.id} · ` : "") + a.changes.join(", "),
-          }))}
-        />
-        <DiffGroup
-          label="Removed"
-          tone="red"
-          items={parsed.diff.removed.map((a) => ({ key: a.id, name: a.name, sub: "" }))}
-        />
-      </Panel>
-
-      <Panel title={t("importManifestModal.schemaDiffTitle")} padded>
-        <div style={{ fontSize: 12, color: "var(--text-2)", lineHeight: 1.6, marginBottom: 10 }}>
-          {t("importManifestModal.schemaDiffDesc")}
-        </div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 8 }}>
-          {["input_data", "ontology_instructions", "tool_use", "typescript_code"].map((p) => (
-            <div
-              key={p}
+    <Panel title={t("importManifestModal.validationResults")} padded={false}>
+      {issues.length === 0 ? (
+        <div style={emptyRowStyle}>{t("importManifestModal.noIssues")}</div>
+      ) : (
+        issues.map((issue, index) => (
+          <div key={`${issue.path}:${issue.code}:${index}`} style={issueRowStyle(index, issues.length)}>
+            <Icon
+              name={issue.severity === "info" ? "check" : "alert"}
+              size={11}
               style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                padding: "8px 12px",
-                background: "var(--panel-2)",
-                border: "1px solid color-mix(in srgb, var(--signal) 20%, transparent)",
-                borderRadius: 4,
+                color:
+                  issue.severity === "error"
+                    ? "var(--red)"
+                    : issue.severity === "warning"
+                      ? "var(--amber)"
+                      : "var(--green)",
               }}
-            >
-              <Icon name="plus" size={11} style={{ color: "var(--accent-text)" }} />
-              <span className="mono" style={{ fontSize: 12, color: "var(--text)" }}>{p}</span>
-              <span style={{ marginLeft: "auto", fontSize: 10.5, color: "var(--text-3)" }}>{t("importManifestModal.onNAgents", { count: 22 })}</span>
-            </div>
-          ))}
+            />
+            <span className="mono" style={{ fontSize: 11, color: "var(--text-3)" }}>
+              {issue.path || "/"}
+            </span>
+            <span style={{ fontSize: 12, color: "var(--text-2)" }}>
+              {issue.message}
+            </span>
+            <Badge tone={issue.severity === "error" ? "red" : issue.severity === "warning" ? "amber" : "muted"}>
+              {issue.code}
+            </Badge>
+          </div>
+        ))
+      )}
+    </Panel>
+  );
+}
+
+function DiffStep({ preview }: { preview: ManifestImportPreview }) {
+  const { t } = useI18n();
+  const subtitle = preview.prior.version
+    ? t("importManifestModal.diffPrior", {
+        version: preview.prior.version,
+        prior: preview.prior.agents,
+        imported: preview.parsed.agents,
+      })
+    : t("importManifestModal.diffNoPrior", {
+        imported: preview.parsed.agents,
+      });
+  return (
+    <Panel title={t("importManifestModal.diffTitle")} subtitle={subtitle} padded={false}>
+      {preview.prior.live_deployment_id && (
+        <div style={{ padding: "8px 14px", borderBottom: "1px solid var(--border)", fontSize: 11, color: "var(--text-3)" }}>
+          {t("importManifestModal.priorDeploymentId")}{" "}
+          <span className="mono">{preview.prior.live_deployment_id}</span>
         </div>
-      </Panel>
-    </div>
+      )}
+      <DiffGroup label="added" ids={preview.diff.added} />
+      <DiffGroup label="modified" ids={preview.diff.modified} />
+      <DiffGroup label="removed" ids={preview.diff.removed} />
+    </Panel>
   );
 }
 
 function DiffGroup({
   label,
-  tone,
-  items,
+  ids,
 }: {
-  label: "Added" | "Modified" | "Removed";
-  tone: "green" | "amber" | "red";
-  items: Array<{ key: string; name: string; sub: string }>;
+  label: "added" | "modified" | "removed";
+  ids: string[];
 }) {
   const { t } = useI18n();
-  const sigil = label === "Added" ? "+" : label === "Removed" ? "−" : "~";
-  const toneVar = tone === "green" ? "var(--green)" : tone === "amber" ? "var(--amber)" : "var(--red)";
+  const color =
+    label === "added"
+      ? "var(--green)"
+      : label === "modified"
+        ? "var(--amber)"
+        : "var(--red)";
+  const sigil = label === "added" ? "+" : label === "modified" ? "~" : "−";
   const labelText =
-    label === "Added"
+    label === "added"
       ? t("importManifestModal.diffAdded")
-      : label === "Removed"
-        ? t("importManifestModal.diffRemoved")
-        : t("importManifestModal.diffModified");
-  if (items.length === 0) {
-    return (
-      <div style={{ padding: "8px 14px", borderBottom: "1px solid var(--border)", fontSize: 11.5, color: "var(--text-3)" }}>
-        <span style={{ color: toneVar, fontFamily: "var(--mono)", marginRight: 8 }}>{sigil}</span>
-        {labelText}: {t("importManifestModal.diffNone")}
-      </div>
-    );
-  }
+      : label === "modified"
+        ? t("importManifestModal.diffModified")
+        : t("importManifestModal.diffRemoved");
   return (
     <div style={{ borderBottom: "1px solid var(--border)" }}>
-      <div style={{ padding: "8px 14px", display: "flex", alignItems: "center", gap: 8, background: "var(--panel-2)" }}>
-        <span style={{ color: toneVar, fontFamily: "var(--mono)", fontSize: 13, fontWeight: 700, width: 12, textAlign: "center" }}>{sigil}</span>
-        <span style={{ fontSize: 11, fontFamily: "var(--mono)", textTransform: "uppercase", letterSpacing: "0.08em", color: "var(--text-2)" }}>{labelText} · {items.length}</span>
+      <div style={diffHeaderStyle}>
+        <span style={{ color, fontFamily: "var(--mono)", fontWeight: 700 }}>
+          {sigil}
+        </span>
+        <span style={diffLabelStyle}>
+          {labelText} · {ids.length}
+        </span>
       </div>
-      {items.map((it) => (
-        <div
-          key={it.key}
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 10,
-            padding: "8px 14px 8px 36px",
-            borderTop: "1px solid var(--border)",
-          }}
-        >
-          <Badge tone="muted">{it.key}</Badge>
-          <span className="mono" style={{ fontSize: 12, color: "var(--text)" }}>{it.name}</span>
-          <span
-            style={{
-              marginLeft: "auto",
-              fontSize: 11,
-              color: "var(--text-3)",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-              maxWidth: 480,
-            }}
-          >
-            {it.sub}
-          </span>
-        </div>
-      ))}
+      {ids.length === 0 ? (
+        <div style={emptyRowStyle}>{t("importManifestModal.diffNone")}</div>
+      ) : (
+        ids.map((id) => (
+          <div key={id} style={diffItemStyle}>
+            <Badge tone="muted">{id}</Badge>
+          </div>
+        ))
+      )}
     </div>
   );
 }
 
 function ResolveStep({
-  parsed,
-  resolution,
-  setResolution,
-  workflowRaw,
+  preview,
+  resolutions,
+  setResolutions,
 }: {
-  parsed: ParsedManifest;
-  resolution: { model: string };
-  setResolution: (r: { model: string }) => void;
-  workflowRaw: unknown;
+  preview: ManifestImportPreview;
+  resolutions: Record<string, ResolutionChoice>;
+  setResolutions: (value: Record<string, ResolutionChoice>) => void;
 }) {
   const { t } = useI18n();
-  // Map agent indices that the current resolution mode will drop. Skip
-  // mode drops every conflicted agent; fallback drops only the
-  // block-severity conflicts that have no auto-fix (since fallback maps
-  // them to skip server-side).
-  const rawConflicts = parsed.raw.conflicts ?? [];
-  const dropIdx = new Set<number>();
-  for (const c of rawConflicts) {
-    const m = c.path.match(/^agents\[(\d+)\]/);
-    if (!m) continue;
-    const idx = Number(m[1]);
-    if (resolution.model === "skip") {
-      dropIdx.add(idx);
-    } else if (
-      resolution.model === "fallback" &&
-      c.severity === "block" &&
-      !c.auto_fix
-    ) {
-      dropIdx.add(idx);
-    }
-  }
-  const workflowArr = Array.isArray(workflowRaw)
-    ? (workflowRaw as Array<{ id?: string; name?: string; title?: string }>)
-    : [];
-  const dropNames: string[] = [];
-  for (const idx of Array.from(dropIdx).sort((a, b) => a - b)) {
-    const a = workflowArr[idx];
-    if (!a) continue;
-    dropNames.push(a.name ?? a.id ?? `agents[${idx}]`);
-  }
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-      {dropNames.length > 0 && (
-        <div
-          role="status"
-          style={{
-            display: "flex",
-            alignItems: "flex-start",
-            gap: 10,
-            padding: "10px 12px",
-            background: "color-mix(in srgb, var(--amber) 8%, transparent)",
-            border: "1px solid color-mix(in srgb, var(--amber) 32%, transparent)",
-            borderRadius: 4,
-            fontSize: 11.5,
-            color: "var(--text-2)",
-          }}
-        >
-          <Icon name="alert" size={11} style={{ color: "var(--amber)", marginTop: 2 }} />
-          <div>
-            <div style={{ color: "var(--text)", fontWeight: 500, marginBottom: 2 }}>
-              {dropNames.length === 1
-                ? t("importManifestModal.dropWarnOne", { count: dropNames.length })
-                : t("importManifestModal.dropWarnMany", { count: dropNames.length })}
+    <Panel
+      title={t("importManifestModal.conflictsTitle", { count: preview.conflicts.length })}
+      subtitle={t("importManifestModal.conflictsSubtitle")}
+      padded={false}
+    >
+      {preview.conflicts.length === 0 ? (
+        <div style={emptyRowStyle}>{t("importManifestModal.noConflicts")}</div>
+      ) : (
+        preview.conflicts.map((conflict, index) => {
+          const key = conflictKey(conflict, index);
+          const current = resolutions[key] ?? "skip";
+          return (
+            <div key={key} style={conflictRowStyle(index, preview.conflicts.length)}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <Badge tone={conflict.severity === "block" ? "red" : "amber"}>
+                  {conflict.type}
+                </Badge>
+                <span className="mono" style={{ fontSize: 12, color: "var(--text)" }}>
+                  {conflict.path}
+                </span>
+              </div>
+              <div style={{ marginTop: 6, fontSize: 11.5, color: "var(--text-2)" }}>
+                {conflict.detail}
+              </div>
+              <div style={{ display: "flex", gap: 6, marginTop: 10 }}>
+                {conflict.auto_fix && (
+                  <ResolveOption
+                    active={current === "auto_fix"}
+                    onClick={() =>
+                      setResolutions({ ...resolutions, [key]: "auto_fix" })
+                    }
+                    label={t("importManifestModal.conflictAutoFix")}
+                    hint={
+                      conflict.suggestion ??
+                      t("importManifestModal.conflictAutoFixHint", {
+                        action: conflict.auto_fix.action,
+                      })
+                    }
+                  />
+                )}
+                <ResolveOption
+                  active={current === "skip"}
+                  onClick={() => setResolutions({ ...resolutions, [key]: "skip" })}
+                  label={t("importManifestModal.conflictSkip")}
+                  hint={t("importManifestModal.conflictSkipHint")}
+                />
+              </div>
             </div>
-            <div style={{ color: "var(--text-3)", fontFamily: "var(--mono)", fontSize: 11 }}>
-              {dropNames.slice(0, 8).join(", ")}
-              {dropNames.length > 8 ? ` · ${t("importManifestModal.dropMore", { count: dropNames.length - 8 })}` : ""}
-            </div>
-            <div style={{ color: "var(--text-3)", marginTop: 4 }}>
-              {resolution.model === "skip"
-                ? t("importManifestModal.dropExplainSkip")
-                : t("importManifestModal.dropExplainFallback")}
-            </div>
-          </div>
-        </div>
+          );
+        })
       )}
-      <Panel
-        title={t("importManifestModal.conflictsTitle", { count: parsed.conflicts.length })}
-        subtitle={t("importManifestModal.conflictsSubtitle")}
-        padded={false}
-      >
-        {parsed.conflicts.map((c, i) => (
-          <div
-            key={i}
-            style={{
-              padding: "12px 14px",
-              borderBottom: i < parsed.conflicts.length - 1 ? "1px solid var(--border)" : "none",
-            }}
-          >
-            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-              <Badge tone="amber">{c.kind}</Badge>
-              <span className="mono" style={{ fontSize: 12, color: "var(--text)" }}>{c.name}</span>
-              <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--text-3)" }}>
-                {t("importManifestModal.referencedBy")} <span className="mono">{c.agent}</span>
-              </span>
-            </div>
-            <div style={{ fontSize: 11.5, color: "var(--text-2)", marginBottom: 10 }}>{c.note}</div>
-            <div style={{ display: "flex", gap: 0, border: "1px solid var(--border-2)", borderRadius: 4, overflow: "hidden", width: "fit-content" }}>
-              <ResolveOption value="fallback" current={resolution.model} setCurrent={(v) => setResolution({ ...resolution, model: v })} label={t("importManifestModal.optUseFallback")} hint="claude-sonnet-4-5" />
-              <ResolveOption value="connect" current={resolution.model} setCurrent={(v) => setResolution({ ...resolution, model: v })} label={t("importManifestModal.optConnectOpenai")} hint={t("importManifestModal.optConnectOpenaiHint")} />
-              <ResolveOption value="skip" current={resolution.model} setCurrent={(v) => setResolution({ ...resolution, model: v })} label={t("importManifestModal.optSkipAgent")} hint={t("importManifestModal.optSkipAgentHint")} />
-            </div>
-          </div>
-        ))}
-      </Panel>
-
-      <Panel title={t("importManifestModal.idConflictsTitle")} padded>
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          <ResolveLine ok label="matchResume" hint={t("importManifestModal.idConflictHint1")} />
-          <ResolveLine ok label="recallStockCandidates" hint={t("importManifestModal.idConflictHint2")} />
-          <ResolveLine ok label={t("importManifestModal.allEventsMatch")} hint={t("importManifestModal.idConflictHint3")} />
-        </div>
-      </Panel>
-    </div>
+    </Panel>
   );
 }
 
 function ResolveOption({
-  value,
-  current,
-  setCurrent,
+  active,
+  onClick,
   label,
   hint,
 }: {
-  value: string;
-  current: string;
-  setCurrent: (v: string) => void;
+  active: boolean;
+  onClick: () => void;
   label: string;
   hint: string;
 }) {
-  const active = current === value;
   return (
-    <button
-      onClick={() => setCurrent(value)}
-      style={{
-        padding: "6px 12px",
-        background: active ? "var(--panel-3)" : "var(--panel-2)",
-        color: active ? "var(--text)" : "var(--text-3)",
-        fontSize: 11.5,
-        borderRight: "1px solid var(--border-2)",
-        borderBottom: active ? "2px solid var(--signal)" : "2px solid transparent",
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "flex-start",
-        gap: 1,
-      }}
-    >
+    <button onClick={onClick} style={resolveOptionStyle(active)}>
       <span>{label}</span>
-      <span style={{ fontSize: 10, fontFamily: "var(--mono)", color: "var(--text-3)" }}>{hint}</span>
+      <span style={{ fontSize: 10, fontFamily: "var(--mono)", color: "var(--text-3)" }}>
+        {hint}
+      </span>
     </button>
   );
 }
 
-function ResolveLine({ ok, label, hint }: { ok: boolean; label: string; hint: string }) {
-  return (
-    <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0", fontSize: 12 }}>
-      <Icon name={ok ? "check" : "alert"} size={11} style={{ color: ok ? "var(--green)" : "var(--amber)" }} />
-      <span className="mono" style={{ color: "var(--text-2)" }}>{label}</span>
-      <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--text-3)" }}>{hint}</span>
-    </div>
-  );
-}
-
-function PreviewStep({ parsed }: { parsed: ParsedManifest }) {
+function PreviewStep({
+  preview,
+  manifest,
+}: {
+  preview: ManifestImportPreview;
+  manifest: unknown;
+}) {
   const { t } = useI18n();
-  // Source of truth for the preview mini-graph: the live workflow DAG.
-  // Stages are derived from the indices actually used by tenant agents
-  // (mirrors the dashboard funnel logic) so non-RAAS tenants render too.
-  const { data: dag } = useDag();
-  const dagAgents: DagAgent[] = dag?.agents ?? [];
-  const stages = useMemo(() => {
-    const used = new Set<number>();
-    for (const a of dagAgents) used.add(a.stage);
-    return Array.from(used)
-      .sort((x, y) => x - y)
-      .map((id) => ({
-        id,
-        label:
-          id in STAGE_LABELS
-            ? t(`importManifestModal.stage_${id}`)
-            : t("importManifestModal.stageGeneric", { id }),
-      }));
-  }, [dagAgents, t]);
-  // Mini-graph wants {id, name, actor, stage}; DagAgent already carries
-  // these fields (with the id from the kebabId form).
-  const agents = dagAgents.map((a) => ({
-    id: a.kebabId,
-    name: a.name,
-    actor: a.actor,
-    stage: a.stage,
-  }));
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-      <Panel title={t("importManifestModal.importedWorkflow")} subtitle={parsed.workflow.version} padded>
-        <PreviewMiniGraph stages={stages} agents={agents} />
-        <div style={{ display: "flex", gap: 14, marginTop: 14, fontSize: 11.5, color: "var(--text-3)" }}>
-          <span>
-            <span style={{ display: "inline-block", width: 8, height: 8, background: "var(--signal)", marginRight: 5, borderRadius: 1 }} />
-            {t("importManifestModal.legendExisting")}
-          </span>
-          <span>
-            <span style={{ display: "inline-block", width: 8, height: 8, background: "var(--green)", marginRight: 5, borderRadius: 1 }} />
-            {t("importManifestModal.legendAdded", { count: 1 })}
-          </span>
-          <span>
-            <span style={{ display: "inline-block", width: 8, height: 8, background: "var(--amber)", marginRight: 5, borderRadius: 1 }} />
-            {t("importManifestModal.legendModified", { count: 22 })}
-          </span>
-          <span>
-            <span style={{ display: "inline-block", width: 8, height: 8, background: "var(--violet)", marginRight: 5, borderRadius: 1 }} />
-            {t("importManifestModal.legendHumanTask")}
-          </span>
+      <Panel
+        title={t("importManifestModal.previewTitle")}
+        subtitle={`${t("importManifestModal.sessionLabel")} ${preview.deployment_id}`}
+        padded
+      >
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 12 }}>
+          <Stat label={t("importManifestModal.cellAgents")} value={preview.parsed.agents} mono />
+          <Stat label={t("importManifestModal.cellEvents")} value={preview.parsed.events} mono />
+          <Stat label={t("importManifestModal.cellActions")} value={preview.parsed.actions} mono />
+          <Stat label={t("importManifestModal.statIssues")} value={preview.issues.length} mono />
+          <Stat label={t("importManifestModal.statValidationTime")} value={`${preview.elapsed_ms} ms`} mono />
         </div>
       </Panel>
-
       <Panel title={t("importManifestModal.summaryTitle")} padded>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
-          <Stat
-            label={t("importManifestModal.statNetAgents")}
-            value={`+${parsed.diff.added.length - parsed.diff.removed.length}`}
-            mono
-            accent="var(--signal)"
-          />
-          <Stat label={t("importManifestModal.statModified")} value={parsed.diff.modified.length} mono accent="var(--amber)" />
-          <Stat label={t("importManifestModal.statNewProperties")} value="4" mono sub={t("importManifestModal.statNewPropertiesSub")} />
-          <Stat label={t("importManifestModal.statEstimatedRollout")} value="~ 4 s" mono />
+          <Stat label={t("importManifestModal.diffAdded")} value={preview.diff.added.length} mono accent="var(--green)" />
+          <Stat label={t("importManifestModal.diffModified")} value={preview.diff.modified.length} mono accent="var(--amber)" />
+          <Stat label={t("importManifestModal.diffRemoved")} value={preview.diff.removed.length} mono accent="var(--red)" />
+          <Stat label={t("importManifestModal.statConflicts")} value={preview.conflicts.length} mono />
         </div>
       </Panel>
+      <Panel title={t("importPreviewGraph.title")} padded>
+        <ImportPreviewGraph manifest={manifest} diff={preview.diff} />
+      </Panel>
+      <IssuesPanel issues={preview.issues} />
     </div>
-  );
-}
-
-function PreviewMiniGraph({
-  stages,
-  agents,
-}: {
-  stages: Array<{ id: number; label: string }>;
-  agents: Array<{ id: string; name: string; actor: "Agent" | "Human"; stage: number }>;
-}) {
-  const COL = 100;
-  const NODE_H = 22;
-  const NODE_W = 90;
-  const ROW_GAP = 28;
-  const PAD = 16;
-  const byStage: Record<number, typeof agents> = {};
-  agents.forEach((a) => {
-    (byStage[a.stage] = byStage[a.stage] || []).push(a);
-  });
-  const maxLanes = Math.max(1, ...stages.map((s) => (byStage[s.id] || []).length));
-  const W = PAD * 2 + stages.length * COL;
-  const H = PAD * 2 + maxLanes * ROW_GAP;
-
-  return (
-    <svg width={W} height={H} style={{ display: "block", width: "100%", maxWidth: "100%" }} viewBox={`0 0 ${W} ${H}`}>
-      {stages.map((s, i) => (
-        <line key={i} x1={PAD + i * COL} x2={PAD + i * COL} y1={4} y2={H - 4} stroke="var(--border)" opacity="0.6" />
-      ))}
-      {stages.map((s, i) => (
-        <text key={"l" + i} x={PAD + i * COL + 4} y={12} fill="var(--text-3)" fontSize="8" fontFamily="var(--mono)">
-          {String(i).padStart(2, "0")} {s.label.toUpperCase()}
-        </text>
-      ))}
-      {stages.map((s, i) => {
-        const list = byStage[s.id] || [];
-        return list.map((a, lane) => {
-          const x = PAD + i * COL + 4;
-          const y = PAD + lane * ROW_GAP;
-          const isNew = a.id === "10-1";
-          const isModified = a.id === "10-2" || a.id === "2" || a.id === "12" || a.id === "14-1";
-          const color = a.actor === "Human" ? "var(--violet)" : isNew ? "var(--green)" : isModified ? "var(--amber)" : "var(--signal)";
-          return (
-            <g key={a.id}>
-              <rect
-                x={x}
-                y={y}
-                width={NODE_W}
-                height={NODE_H}
-                rx={2}
-                fill={isNew ? "color-mix(in srgb, var(--green) 10%, transparent)" : "var(--panel-2)"}
-                stroke={color}
-                strokeWidth={isNew ? 1.5 : 1}
-                strokeDasharray={isModified && !isNew ? "3 2" : "0"}
-              />
-              <text x={x + 5} y={y + 13} fill="var(--text)" fontSize="9" fontFamily="var(--mono)">{a.id}</text>
-              <text x={x + 5} y={y + 13 + 8} fill="var(--text-3)" fontSize="7.5" fontFamily="var(--mono)">
-                {a.name.length > 16 ? a.name.slice(0, 14) + "…" : a.name}
-              </text>
-            </g>
-          );
-        });
-      })}
-    </svg>
   );
 }
 
 function DeployStep({
-  parsed,
+  slug,
   target,
   setTarget,
-  autoRollback,
-  setAutoRollback,
+  noteText,
+  setNoteText,
+  commitBody,
 }: {
-  parsed: ParsedManifest;
-  target: { staging: boolean; prod: boolean };
-  setTarget: (v: { staging: boolean; prod: boolean }) => void;
-  autoRollback: boolean;
-  setAutoRollback: (v: boolean) => void;
-  mode: "workflow" | "agent";
+  slug: string;
+  target: DeployTarget;
+  setTarget: (target: DeployTarget) => void;
+  noteText: string;
+  setNoteText: (note: string) => void;
+  commitBody: ManifestImportBody;
 }) {
   const { t } = useI18n();
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+    <div style={{ display: "grid", gridTemplateColumns: "360px 1fr", gap: 14 }}>
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        <Panel title={t("importManifestModal.deployTarget")} padded>
-          <DeployTargetIM
-            on={target.staging}
-            onToggle={() => setTarget({ ...target, staging: !target.staging })}
-            label={`${t("importManifestModal.targetStaging")} · raas-stage`}
+        <Panel
+          title={t("importManifestModal.deployTarget")}
+          subtitle={t("importManifestModal.currentTenant", { slug })}
+          padded
+        >
+          <DeployTargetOption
+            value="staging"
+            current={target}
+            onChange={setTarget}
+            label={t("importManifestModal.targetStaging")}
             sub={t("importManifestModal.targetStagingSub")}
-            recommended
           />
-          <DeployTargetIM
-            on={target.prod}
-            onToggle={() => setTarget({ ...target, prod: !target.prod })}
-            label={`${t("importManifestModal.targetProduction")} · raas`}
+          <DeployTargetOption
+            value="production"
+            current={target}
+            onChange={setTarget}
+            label={t("importManifestModal.targetProduction")}
             sub={t("importManifestModal.targetProductionSub")}
-            warn
           />
         </Panel>
-
-        <Panel title={t("importManifestModal.safetyTitle")} padded>
-          <label style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "8px 0", cursor: "pointer" }}>
-            <input
-              type="checkbox"
-              checked={autoRollback}
-              onChange={(e) => setAutoRollback(e.target.checked)}
-              style={{ accentColor: "var(--signal)", marginTop: 3 }}
-            />
-            <div>
-              <div style={{ fontSize: 12.5, color: "var(--text)" }}>{t("importManifestModal.safetyAutoRollback")}</div>
-              <div style={{ fontSize: 11, color: "var(--text-3)" }}>
-                {t("importManifestModal.safetyAutoRollbackDesc")}
-              </div>
-            </div>
-          </label>
-          <label style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "8px 0", cursor: "pointer" }}>
-            <input type="checkbox" defaultChecked style={{ accentColor: "var(--signal)", marginTop: 3 }} />
-            <div>
-              <div style={{ fontSize: 12.5, color: "var(--text)" }}>{t("importManifestModal.safetyDrain")}</div>
-              <div style={{ fontSize: 11, color: "var(--text-3)" }}>
-                {t("importManifestModal.safetyDrainDesc")}
-              </div>
-            </div>
-          </label>
-          <label style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "8px 0", cursor: "pointer" }}>
-            <input type="checkbox" style={{ accentColor: "var(--signal)", marginTop: 3 }} />
-            <div>
-              <div style={{ fontSize: 12.5, color: "var(--text)" }}>{t("importManifestModal.safetyReview")}</div>
-              <div style={{ fontSize: 11, color: "var(--text-3)" }}>
-                {t("importManifestModal.safetyReviewDesc")}
-              </div>
-            </div>
-          </label>
+        <Panel title={t("importManifestModal.noteLabel")} padded>
+          <textarea
+            value={noteText}
+            maxLength={500}
+            onChange={(event) => setNoteText(event.target.value)}
+            placeholder={t("importManifestModal.notePlaceholder")}
+            style={{ ...inputStyle, minHeight: 100, resize: "vertical" }}
+          />
+          <div style={{ ...helpStyle, textAlign: "right" }}>
+            {t("importManifestModal.noteCounter", { count: noteText.length })}
+          </div>
         </Panel>
       </div>
-
       <Panel
         title={t("importManifestModal.finalManifest")}
         subtitle={t("importManifestModal.finalManifestSubtitle")}
         padded={false}
       >
-        <CodeBlock>
-          {JSON.stringify(
-            {
-              workflow: parsed.workflow,
-              source: "imported",
-              deploy_target: target.prod ? "prod" : "staging",
-              summary: {
-                added: parsed.diff.added.length,
-                modified: parsed.diff.modified.length,
-                removed: parsed.diff.removed.length,
-                new_properties: ["input_data", "ontology_instructions", "tool_use", "typescript_code"],
-              },
-              auto_rollback: autoRollback,
-              tenant: "raas",
-              tag: "imported-via-ui",
-            },
-            null,
-            2,
-          )}
-        </CodeBlock>
+        <CodeBlock>{JSON.stringify(commitBody, null, 2)}</CodeBlock>
       </Panel>
     </div>
   );
 }
 
-function DeployTargetIM({
-  on,
-  onToggle,
+function DeployTargetOption({
+  value,
+  current,
+  onChange,
   label,
   sub,
-  recommended,
-  warn,
 }: {
-  on: boolean;
-  onToggle: () => void;
+  value: DeployTarget;
+  current: DeployTarget;
+  onChange: (value: DeployTarget) => void;
   label: string;
   sub: string;
-  recommended?: boolean;
-  warn?: boolean;
 }) {
-  const { t } = useI18n();
+  const active = current === value;
   return (
-    <label
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 10,
-        padding: "10px 12px",
-        background: on ? "var(--panel-2)" : "transparent",
-        border: `1px solid ${on ? "var(--signal)" : "var(--border)"}`,
-        borderRadius: 4,
-        cursor: "pointer",
-        marginBottom: 6,
-      }}
-    >
-      <input type="checkbox" checked={on} onChange={onToggle} style={{ accentColor: "var(--signal)" }} />
-      <div style={{ flex: 1 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <span style={{ fontSize: 12.5, color: "var(--text)" }}>{label}</span>
-          {recommended && <Badge tone="signal">{t("importManifestModal.badgeRecommended")}</Badge>}
-        </div>
+    <label style={deployTargetStyle(active)}>
+      <input
+        type="radio"
+        name="manifest-deploy-target"
+        value={value}
+        checked={active}
+        onChange={() => onChange(value)}
+        style={{ accentColor: "var(--signal)" }}
+      />
+      <div>
+        <div style={{ fontSize: 12.5, color: "var(--text)" }}>{label}</div>
         <div style={{ fontSize: 11, color: "var(--text-3)" }}>{sub}</div>
       </div>
-      {warn && <Badge tone="amber">{t("importManifestModal.requiresApproval")}</Badge>}
     </label>
   );
+}
+
+function ErrorSurface({
+  validationError,
+  pendingLock,
+  commitError,
+  commitIssues,
+}: {
+  validationError: string | null;
+  pendingLock: PendingLock | null;
+  commitError: string | null;
+  commitIssues: CommitIssue[];
+}) {
+  const { t } = useI18n();
+  const tone = commitError || validationError ? "var(--red)" : "var(--amber)";
+  return (
+    <div style={{ padding: "10px 18px", borderTop: `1px solid ${tone}`, color: tone, fontSize: 12, maxHeight: 180, overflow: "auto" }}>
+      {validationError && <div>{validationError}</div>}
+      {pendingLock && (
+        <div>
+          {t("importManifestModal.lockInProgress")}
+          {pendingLock.locked_by ? ` (${pendingLock.locked_by})` : ""}.{" "}
+          {t("importManifestModal.lockWait")}
+        </div>
+      )}
+      {commitError && <div>{commitError}</div>}
+      {commitIssues.length > 0 && (
+        <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
+          {commitIssues.map((issue, index) => (
+            <li key={`${issue.path}:${issue.code}:${index}`}>
+              <span className="mono">{issue.path}</span> — {issue.message} [{issue.code}]
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+const modalStyle: React.CSSProperties = {
+  width: 980,
+  maxHeight: "90vh",
+  background: "var(--panel)",
+  border: "1px solid var(--border-2)",
+  borderRadius: 8,
+  overflow: "hidden",
+  boxShadow: "0 24px 60px -20px rgba(0,0,0,0.6)",
+  display: "flex",
+  flexDirection: "column",
+};
+
+const headerStyle: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 10,
+  padding: "14px 18px",
+  borderBottom: "1px solid var(--border)",
+};
+
+const stepsStyle: React.CSSProperties = {
+  display: "flex",
+  padding: "10px 18px",
+  borderBottom: "1px solid var(--border)",
+  background: "var(--bg-2)",
+  gap: 4,
+};
+
+const footerStyle: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+  padding: "12px 18px",
+  borderTop: "1px solid var(--border)",
+  background: "var(--panel-2)",
+};
+
+const sourceGridStyle: React.CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "repeat(4, 1fr)",
+  gap: 8,
+  marginBottom: 18,
+};
+
+const eyebrowStyle: React.CSSProperties = {
+  fontSize: 11,
+  fontFamily: "var(--mono)",
+  textTransform: "uppercase",
+  color: "var(--text-3)",
+  letterSpacing: "0.08em",
+  marginBottom: 10,
+};
+
+const dropStyle: React.CSSProperties = {
+  padding: 32,
+  textAlign: "center",
+  background: "var(--bg-2)",
+  border: "1px dashed var(--border-3)",
+  borderRadius: 6,
+  transition: "background 0.12s, border-color 0.12s",
+};
+
+const inputStyle: React.CSSProperties = {
+  width: "100%",
+  padding: "8px 12px",
+  background: "var(--panel-2)",
+  border: "1px solid var(--border-2)",
+  borderRadius: 4,
+  color: "var(--text)",
+  fontFamily: "var(--mono)",
+  fontSize: 12,
+  outline: "none",
+  boxSizing: "border-box",
+};
+
+const helpStyle: React.CSSProperties = {
+  marginTop: 6,
+  fontSize: 11,
+  color: "var(--text-3)",
+  lineHeight: 1.5,
+};
+
+const spinnerStyle: React.CSSProperties = {
+  display: "inline-block",
+  width: 22,
+  height: 22,
+  border: "3px solid var(--border-2)",
+  borderTopColor: "var(--signal)",
+  borderRadius: "50%",
+  animation: "spin 0.8s linear infinite",
+};
+
+const metricsGridStyle: React.CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "repeat(5, 1fr)",
+  border: "1px solid var(--border)",
+  borderRadius: 6,
+  marginBottom: 14,
+  background: "var(--panel)",
+};
+
+const metricLabelStyle: React.CSSProperties = {
+  fontSize: 10,
+  fontFamily: "var(--mono)",
+  textTransform: "uppercase",
+  letterSpacing: "0.08em",
+  color: "var(--text-3)",
+};
+
+const emptyRowStyle: React.CSSProperties = {
+  padding: "12px 14px",
+  fontSize: 11.5,
+  color: "var(--text-3)",
+};
+
+const diffHeaderStyle: React.CSSProperties = {
+  padding: "8px 14px",
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+  background: "var(--panel-2)",
+};
+
+const diffLabelStyle: React.CSSProperties = {
+  fontSize: 11,
+  fontFamily: "var(--mono)",
+  textTransform: "uppercase",
+  letterSpacing: "0.08em",
+  color: "var(--text-2)",
+};
+
+const diffItemStyle: React.CSSProperties = {
+  padding: "7px 14px 7px 36px",
+  borderTop: "1px solid var(--border)",
+};
+
+function stepDotStyle(active: boolean, done: boolean): React.CSSProperties {
+  return {
+    display: "flex",
+    alignItems: "center",
+    gap: 7,
+    padding: "5px 10px",
+    background: active ? "var(--panel)" : "transparent",
+    border: `1px solid ${active ? "var(--signal)" : "transparent"}`,
+    borderRadius: 4,
+    opacity: active ? 1 : done ? 0.95 : 0.5,
+  };
+}
+
+function stepNumberStyle(active: boolean, done: boolean): React.CSSProperties {
+  return {
+    width: 18,
+    height: 18,
+    borderRadius: "50%",
+    background: done ? "var(--signal)" : "transparent",
+    border: `1px solid ${done || active ? "var(--signal)" : "var(--border-2)"}`,
+    color: done
+      ? "var(--on-signal)"
+      : active
+        ? "var(--accent-text)"
+        : "var(--text-3)",
+    fontSize: 10,
+    fontFamily: "var(--mono)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+  };
+}
+
+function stepLabelStyle(active: boolean): React.CSSProperties {
+  return {
+    fontSize: 11,
+    fontFamily: "var(--mono)",
+    textTransform: "uppercase",
+    letterSpacing: "0.06em",
+    color: active ? "var(--text)" : "var(--text-3)",
+    lineHeight: 1.1,
+  };
+}
+
+function sourceCardStyle(active: boolean): React.CSSProperties {
+  return {
+    padding: "12px 14px",
+    background: active ? "var(--panel-3)" : "var(--panel-2)",
+    border: `1px solid ${active ? "var(--signal)" : "var(--border)"}`,
+    borderRadius: 5,
+    textAlign: "left",
+    cursor: "pointer",
+  };
+}
+
+function fileRowStyle(ok: boolean): React.CSSProperties {
+  return {
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    padding: "7px 12px",
+    background: "var(--panel-2)",
+    border: `1px solid ${ok ? "var(--border)" : "color-mix(in srgb, var(--amber) 30%, transparent)"}`,
+    borderRadius: 4,
+  };
+}
+
+function issueRowStyle(index: number, count: number): React.CSSProperties {
+  return {
+    display: "grid",
+    gridTemplateColumns: "16px minmax(100px, 220px) 1fr auto",
+    alignItems: "center",
+    gap: 10,
+    padding: "8px 14px",
+    borderBottom: index < count - 1 ? "1px solid var(--border)" : "none",
+  };
+}
+
+function conflictRowStyle(index: number, count: number): React.CSSProperties {
+  return {
+    padding: "12px 14px",
+    borderBottom: index < count - 1 ? "1px solid var(--border)" : "none",
+  };
+}
+
+function resolveOptionStyle(active: boolean): React.CSSProperties {
+  return {
+    padding: "6px 12px",
+    background: active ? "var(--panel-3)" : "var(--panel-2)",
+    color: active ? "var(--text)" : "var(--text-3)",
+    border: `1px solid ${active ? "var(--signal)" : "var(--border-2)"}`,
+    borderRadius: 4,
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "flex-start",
+    gap: 1,
+  };
+}
+
+function deployTargetStyle(active: boolean): React.CSSProperties {
+  return {
+    display: "flex",
+    alignItems: "flex-start",
+    gap: 10,
+    padding: "10px 12px",
+    background: active ? "var(--panel-2)" : "transparent",
+    border: `1px solid ${active ? "var(--signal)" : "var(--border)"}`,
+    borderRadius: 4,
+    cursor: "pointer",
+    marginBottom: 6,
+  };
 }

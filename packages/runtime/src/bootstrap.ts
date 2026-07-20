@@ -26,11 +26,16 @@ import {
   factoryTools,
   getDb,
 } from "@agentic/db";
-import { buildDeclarativeOverlay } from "@agentic/tools";
+import {
+  buildDeclarativeOverlay,
+  globalToolRegistry,
+  isToolExecutionPolicy,
+} from "@agentic/tools";
 import { makeId } from "@agentic/shared";
 import { and, eq } from "drizzle-orm";
 import {
   loadModelsFromDisk,
+  flattenActionSpecs,
   tenantSlugFromFolder,
   type LoadedModels,
   type WorkflowManifest,
@@ -40,8 +45,28 @@ import {
   formatMissingPromptsError,
   registerAgent,
 } from "./register";
+import {
+  authorizeProductionGeneratedAgent,
+  productionCodeActManifestSha256,
+  type ProductionCodeActCapability,
+} from "./production-codeact-authorization";
 import type { TenantRegistry, ToolDescriptor } from "@agentic/agent-kit";
 import type { InngestFunction } from "inngest";
+import { resolveModelsRoot, shouldDiscoverModelFolder } from "./models-root";
+import { isFactorySandboxTenant } from "./sandbox-mode";
+import {
+  canonicalWorkflowVersionId,
+  legacyWorkflowVersionId,
+  workflowVersionContentMatches,
+} from "./workflow-version-identity";
+import {
+  assertCronManifestValid,
+  clearRuntimeScheduleStatusForTenant,
+  InvalidCronExpressionError,
+  registerCronTriggers,
+} from "./scheduler";
+import { resolveTenantEventAdapter } from "./event-adapter";
+import { commitTenantEventAdapter } from "./event-name";
 
 /**
  * What `bootstrapTenant` returns. Spelled out so TS 6 doesn't try to infer
@@ -54,6 +79,9 @@ export interface BootstrapTenantResult {
   functions: InngestFunction.Any[];
   agentCount: number;
   registeredCount: number;
+  cronCount: number;
+  scheduleUnconfiguredCount: number;
+  scheduleDisabledCount: number;
   eventTypeCount: number;
   entityTypeCount: number;
   tenantTools: number;
@@ -78,27 +106,371 @@ export interface BootstrapTenantResult {
  */
 export type TenantRegistries = Record<string, TenantRegistry | undefined>;
 
-function modelsRoot(): string {
+type FactoryToolRow = typeof factoryTools.$inferSelect;
+
+/** Marker for a boot failure that must escape per-tenant isolation.  Continuing
+ * would make the process report healthy while a declared runtime capability is
+ * absent or unreadable. */
+export class FatalRuntimeBootstrapError extends Error {
+  constructor(message: string, cause?: unknown) {
+    super(message, cause === undefined ? undefined : { cause });
+    this.name = "FatalRuntimeBootstrapError";
+  }
+}
+
+/** An active database tenant is part of the advertised runtime surface. Skipping its broken
+ * manifest would let /health report green while that tenant has zero executable functions. */
+export class ActiveTenantBootstrapError extends FatalRuntimeBootstrapError {
+  constructor(tenantSlug: string, modelFolder: string, cause: unknown) {
+    super(
+      `[bootstrap] active tenant ${tenantSlug} could not load model folder ${modelFolder}; refusing partial runtime readiness`,
+      cause,
+    );
+    this.name = "ActiveTenantBootstrapError";
+  }
+}
+
+/** One tenant slug must resolve to one canonical model folder. Concatenating version folders
+ * registers duplicate Inngest identities and makes readdir order decide which manifest is live. */
+export class DuplicateTenantModelFolderError extends FatalRuntimeBootstrapError {
+  constructor(tenantSlug: string, folders: string[]) {
+    super(
+      `[bootstrap] tenant ${tenantSlug} maps to multiple model folders (${folders.sort().join(", ")}); retain one canonical folder and version workflow files inside it`,
+    );
+    this.name = "DuplicateTenantModelFolderError";
+  }
+}
+
+export class PersistedFactoryToolLoadError extends FatalRuntimeBootstrapError {
+  constructor(tenantSlug: string, cause: unknown) {
+    super(
+      `[bootstrap] tenant ${tenantSlug}: failed to read persisted factory tools; runtime tool resolution cannot be verified`,
+      cause,
+    );
+    this.name = "PersistedFactoryToolLoadError";
+  }
+}
+
+export class PersistedFactoryToolDescriptorError extends FatalRuntimeBootstrapError {
+  constructor(tenantSlug: string, cause: unknown) {
+    super(
+      `[bootstrap] tenant ${tenantSlug}: persisted factory tool descriptors are invalid and cannot be registered`,
+      cause,
+    );
+    this.name = "PersistedFactoryToolDescriptorError";
+  }
+}
+
+export interface ManifestToolRef {
+  agentId: string;
+  agentName: string;
+  toolName: string;
+  source: "action" | "tool_use";
+  actionOrder?: string;
+}
+
+export class ManifestToolResolutionError extends FatalRuntimeBootstrapError {
+  readonly tenantSlug: string;
+  readonly unresolved: ManifestToolRef[];
+
+  constructor(tenantSlug: string, unresolved: ManifestToolRef[]) {
+    const detail = unresolved
+      .map(
+        (ref) =>
+          `${ref.agentId}/${ref.agentName} ${ref.source}${ref.actionOrder ? `#${ref.actionOrder}` : ""} -> ${ref.toolName}`,
+      )
+      .join("; ");
+    super(
+      `[bootstrap] tenant ${tenantSlug}: ${unresolved.length} manifest tool reference(s) do not resolve to a callable tenant, persisted, or global descriptor: ${detail}`,
+    );
+    this.name = "ManifestToolResolutionError";
+    this.tenantSlug = tenantSlug;
+    this.unresolved = unresolved;
+  }
+}
+
+export interface ManifestInvokeIssue {
+  agentId: string;
+  agentName: string;
+  actionName: string;
+  actionOrder: string;
+  target: string;
+  reason: string;
+}
+
+export class ManifestInvokeConfigurationError extends FatalRuntimeBootstrapError {
+  readonly tenantSlug: string;
+  readonly issues: ManifestInvokeIssue[];
+
+  constructor(tenantSlug: string, issues: ManifestInvokeIssue[]) {
+    super(
+      `[bootstrap] tenant ${tenantSlug}: invalid invoke configuration — ${issues
+        .map(
+          (issue) =>
+            `${issue.agentId}/${issue.agentName} action#${issue.actionOrder} ${issue.actionName} -> ${issue.target || "<missing>"}: ${issue.reason}`,
+        )
+        .join("; ")}`,
+    );
+    this.name = "ManifestInvokeConfigurationError";
+    this.tenantSlug = tenantSlug;
+    this.issues = issues;
+  }
+}
+
+/** A tenant-level runtime registry cannot safely host two different persisted
+ * implementations under the same tool name. Surface the ambiguity at boot
+ * instead of depending on DB row order (or silently starting without tools). */
+export class FactoryToolDomainConflictError extends FatalRuntimeBootstrapError {
+  constructor(message: string) {
+    super(message);
+    this.name = "FactoryToolDomainConflictError";
+  }
+}
+
+function manifestToolRefs(manifest: WorkflowManifest): ManifestToolRef[] {
+  const refs: ManifestToolRef[] = [];
+  for (const agent of manifest) {
+    for (const entry of agent.tool_use ?? []) {
+      const name = typeof entry === "string" ? entry : entry?.name;
+      if (name?.trim()) {
+        refs.push({
+          agentId: agent.id,
+          agentName: agent.name,
+          toolName: name.trim(),
+          source: "tool_use",
+        });
+      }
+    }
+    for (const action of flattenActionSpecs(agent.actions ?? [])) {
+      if (action.type === "tool" && action.name?.trim()) {
+        refs.push({
+          agentId: agent.id,
+          agentName: agent.name,
+          toolName: action.name.trim(),
+          source: "action",
+          actionOrder: action.order,
+        });
+      }
+    }
+  }
+  return refs;
+}
+
+function isCallableToolDescriptor(value: unknown): value is ToolDescriptor {
   return (
-    process.env.AGENTIC_MODELS_DIR ??
-    "/Users/kenny/CSI-AICOE/agentic-operator/models"
+    !!value &&
+    typeof value === "object" &&
+    typeof (value as { handler?: unknown }).handler === "function"
   );
 }
 
-async function discoverTenantFolders(): Promise<
-  Array<{ folder: string; slug: string; dir: string }>
-> {
-  const root = modelsRoot();
+/** Boot-time mirror of the step-engine's real resolution chain.  This checks
+ * both directly dispatched `type:"tool"` actions and LLM-advertised
+ * `tool_use[]` entries, including aliases already materialised in the global
+ * registry. */
+export function assertManifestToolsResolvable(spec: {
+  tenantSlug: string;
+  manifest: WorkflowManifest;
+  tenantRegistry?: TenantRegistry;
+  declarativeTools?: Record<string, ToolDescriptor>;
+  globalRegistry?: ReadonlyMap<string, ToolDescriptor>;
+}): void {
+  const globals = spec.globalRegistry ?? globalToolRegistry;
+  const unresolved = manifestToolRefs(spec.manifest).filter((ref) => {
+    // register.ts constructs the effective tenant map as tenant first,
+    // declarative overlay second, so a persisted descriptor wins on collision.
+    const descriptor =
+      spec.declarativeTools?.[ref.toolName] ??
+      spec.tenantRegistry?.tools?.[ref.toolName] ??
+      globals.get(ref.toolName);
+    return !isCallableToolDescriptor(descriptor);
+  });
+  if (unresolved.length > 0) {
+    throw new ManifestToolResolutionError(spec.tenantSlug, unresolved);
+  }
+}
+
+/** Validate the exact synchronous invoke surface that bootstrap's fnRegistry
+ * can resolve. Invokes are terminal by default; soft continuation is legal
+ * only when the author explicitly supplies a fallback value. */
+export function assertManifestInvokesValid(spec: {
+  tenantSlug: string;
+  manifest: WorkflowManifest;
+}): void {
+  const callableTargets = new Set<string>();
+  for (const agent of spec.manifest) {
+    // registerAgent returns null for trigger-less agents, so such an entry
+    // cannot be a real step.invoke target in the current runtime.
+    if ((agent.trigger ?? []).length === 0) continue;
+    callableTargets.add(agent.name);
+    callableTargets.add(`${spec.tenantSlug}.${agent.name}`);
+  }
+
+  const issues: ManifestInvokeIssue[] = [];
+  for (const agent of spec.manifest) {
+    for (const action of flattenActionSpecs(agent.actions ?? [])) {
+      if (action.type !== "invoke") continue;
+      const target = action.invoke?.trim() ?? "";
+      const hasDefault = Object.prototype.hasOwnProperty.call(
+        action,
+        "default_result",
+      );
+      const legacyPolicy =
+        typeof action.on_error === "string" ? action.on_error : undefined;
+      const ladderPolicy = Array.isArray(action.on_error)
+        ? action.on_error
+        : undefined;
+      let reason = "";
+      if (!target) reason = "invoke target is required";
+      else if (!callableTargets.has(target))
+        reason = "target is not an enabled, trigger-backed manifest function";
+      else if (legacyPolicy === "soft" && !hasDefault)
+        reason = "on_error=soft requires an explicit default_result";
+      else if (legacyPolicy && legacyPolicy !== "soft" && hasDefault)
+        reason =
+          "default_result is only valid with on_error=soft or an error-policy continue rule";
+      else if (!legacyPolicy && !ladderPolicy && hasDefault)
+        reason =
+          "default_result requires on_error=soft or an error-policy continue rule";
+      if (reason) {
+        issues.push({
+          agentId: agent.id,
+          agentName: agent.name,
+          actionName: action.name,
+          actionOrder: action.order,
+          target,
+          reason,
+        });
+      }
+    }
+  }
+  if (issues.length > 0) {
+    throw new ManifestInvokeConfigurationError(spec.tenantSlug, issues);
+  }
+}
+
+function factoryToolRank(
+  row: FactoryToolRow,
+  tenantId: string,
+  domainId: string | null,
+): number {
+  const owner =
+    row.scopeKey === tenantId ? 20 : row.scopeKey === "shared" ? 10 : 0;
+  const specificity =
+    domainId && row.domainKey === domainId ? 2 : row.domainKey === "" ? 1 : 0;
+  return owner + specificity;
+}
+
+function manifestToolNames(agent: WorkflowManifest[number]): Set<string> {
+  const names = new Set<string>();
+  for (const entry of agent.tool_use ?? []) {
+    const name = typeof entry === "string" ? entry : entry?.name;
+    if (name?.trim()) names.add(name.trim());
+  }
+  for (const action of flattenActionSpecs(agent.actions ?? [])) {
+    if (action.type === "tool" && action.name?.trim())
+      names.add(action.name.trim());
+  }
+  return names;
+}
+
+/** Resolve only the declarative rows actually declared by live agents.
+ *
+ * - marked factory agents see exact-domain + general rows;
+ * - old/unmarked agents see general rows only;
+ * - tenant rows override shared rows;
+ * - if two live agents resolve one name to different rows, boot fails closed
+ *   and the author must namespace the tools.
+ */
+export function selectFactoryToolsForManifest(
+  rows: FactoryToolRow[],
+  manifest: WorkflowManifest,
+  tenantId: string,
+  opts: { sandboxCloneOnly?: boolean } = {},
+): FactoryToolRow[] {
+  // Factory sandboxes receive content-addressed tenant-owned clones before
+  // manifest commit. They must not resolve a production/shared source row
+  // directly, even when the name/domain would otherwise match.
+  const owned = rows.filter(
+    (row) =>
+      row.scopeKey === tenantId ||
+      (!opts.sandboxCloneOnly && row.scopeKey === "shared"),
+  );
+  const selected = new Map<
+    string,
+    { row: FactoryToolRow; agentId: string; domainId: string | null }
+  >();
+
+  for (const agent of manifest) {
+    const marker = agent.factory_domain_id?.trim();
+    const domainId = marker || null;
+    for (const name of manifestToolNames(agent)) {
+      const candidates = owned.filter((row) => row.name === name);
+      if (!candidates.length) continue; // built-in/global/tenant-code tool
+      const eligible = candidates
+        .filter(
+          (row) =>
+            row.domainKey === "" || (!!domainId && row.domainKey === domainId),
+        )
+        .sort(
+          (a, b) =>
+            factoryToolRank(b, tenantId, domainId) -
+            factoryToolRank(a, tenantId, domainId),
+        );
+      const chosen = eligible[0];
+      if (!chosen) {
+        const available = [
+          ...new Set(candidates.map((row) => row.domainKey || "<general>")),
+        ].join(", ");
+        throw new FactoryToolDomainConflictError(
+          `[bootstrap] agent ${agent.id} (${domainId ?? "unmarked/general"}) declares tool ${name}, ` +
+            `but the persisted implementations belong to other ontology domains: ${available}`,
+        );
+      }
+      const prior = selected.get(name);
+      if (prior && prior.row.id !== chosen.id) {
+        throw new FactoryToolDomainConflictError(
+          `[bootstrap] declarative tool ${name} is ambiguous across live agents: ` +
+            `${prior.agentId} (${prior.domainId ?? "unmarked/general"}) resolves ${prior.row.id}, ` +
+            `while ${agent.id} (${domainId ?? "unmarked/general"}) resolves ${chosen.id}. ` +
+            `Use ontology-namespaced tool names before booting this additive manifest.`,
+        );
+      }
+      selected.set(name, { row: chosen, agentId: agent.id, domainId });
+    }
+  }
+
+  return [...selected.values()].map((entry) => entry.row);
+}
+
+async function discoverTenantFolders(
+  options: { includeScopedSandboxSlug?: string } = {},
+): Promise<Array<{ folder: string; slug: string; dir: string }>> {
+  const root = resolveModelsRoot();
+  if (!root) {
+    throw new FatalRuntimeBootstrapError(
+      "[bootstrap] no models root found: configure AGENTIC_MODELS_DIR or run inside a pnpm workspace containing ./models",
+    );
+  }
   let entries: string[];
   try {
     entries = await readdir(root);
   } catch (err) {
-    console.warn(`[bootstrap] AGENTIC_MODELS_DIR not readable: ${root}`, err);
-    return [];
+    throw new FatalRuntimeBootstrapError(
+      `[bootstrap] AGENTIC_MODELS_DIR is not readable: ${root}`,
+      err,
+    );
   }
   const found: Array<{ folder: string; slug: string; dir: string }> = [];
   for (const folder of entries) {
-    if (folder.startsWith(".")) continue;
+    const folderSlug = tenantSlugFromFolder(folder);
+    const isExactActiveSandbox =
+      isFactorySandboxTenant(options.includeScopedSandboxSlug) &&
+      folderSlug === options.includeScopedSandboxSlug;
+    // Ordinary startup must not resurrect stale sandbox artifacts. A scoped
+    // re-register for the exact active sandbox is different: it is the real
+    // execution path immediately after deploy and must be discoverable.
+    if (!isExactActiveSandbox && !shouldDiscoverModelFolder(folder)) continue;
     const dir = path.join(root, folder);
     try {
       const st = await stat(dir);
@@ -106,7 +478,7 @@ async function discoverTenantFolders(): Promise<
     } catch {
       continue;
     }
-    found.push({ folder, slug: tenantSlugFromFolder(folder), dir });
+    found.push({ folder, slug: folderSlug, dir });
   }
   return found;
 }
@@ -146,15 +518,156 @@ export async function bootstrapTenant(spec: {
     );
   }
 
+  // Resolve the complete runtime tool surface BEFORE writing workflow/version/
+  // deployment rows. A failed registry validation must leave no half-promoted
+  // deployment behind.
+  const tenantRegistry = spec.tenantRegistry;
+  const eventAdapter = resolveTenantEventAdapter({ tenantRegistry });
+  let persistedFactoryTools: FactoryToolRow[];
+  try {
+    persistedFactoryTools = db.select().from(factoryTools).all();
+  } catch (err) {
+    throw new PersistedFactoryToolLoadError(spec.tenantSlug, err);
+  }
+  const matched = selectFactoryToolsForManifest(
+    persistedFactoryTools,
+    manifest,
+    tenant.id,
+    { sandboxCloneOnly: isFactorySandboxTenant(spec.tenantSlug) },
+  );
+  let declarativeTools: Record<string, ToolDescriptor> | undefined;
+  if (matched.length > 0) {
+    try {
+      declarativeTools = buildDeclarativeOverlay(
+        matched.map((r) => {
+          const executionPolicy = {
+            operation: r.operation,
+            effectScope: r.effectScope,
+            sandboxPolicy: r.sandboxPolicy,
+          };
+          if (!isToolExecutionPolicy(executionPolicy)) {
+            throw new Error(
+              `persisted factory tool ${r.name} is missing a valid operation/effectScope/sandboxPolicy; migrate the tool explicitly before execution`,
+            );
+          }
+          return {
+            name: r.name,
+            description: r.description ?? undefined,
+            method: r.method,
+            urlTemplate: r.urlTemplate,
+            headers: (r.headers as Record<string, string> | null) ?? undefined,
+            bodyTemplate: r.bodyTemplate ?? undefined,
+            requestSpec: (r.requestSpec as never) ?? undefined,
+            responseSpec: (r.responseSpec as never) ?? undefined,
+            examples: (r.examples as never) ?? undefined,
+            sideEffect: r.sideEffect,
+            ...executionPolicy,
+            paramsSchema:
+              (r.paramsSchema as Record<string, unknown> | null) ?? undefined,
+            returnsSchema:
+              (r.returnsSchema as Record<string, unknown> | null) ?? undefined,
+          };
+        }),
+      );
+    } catch (err) {
+      throw new PersistedFactoryToolDescriptorError(spec.tenantSlug, err);
+    }
+  }
+  assertManifestToolsResolvable({
+    tenantSlug: spec.tenantSlug,
+    manifest,
+    tenantRegistry,
+    declarativeTools,
+  });
+  assertManifestInvokesValid({ tenantSlug: spec.tenantSlug, manifest });
+
+  // Resolve every generated production agent before writing/upserting runtime
+  // catalog rows or registering functions. The resolver verifies durable
+  // promotion state and immutable evidence; manifest provenance strings are
+  // deliberately not authority. CodeAct receives the opaque capability at its
+  // final action boundary; every generated Agent is also revalidated before
+  // each real run, after this bootstrap check succeeds for its exact manifest.
+  const productionCodeActCapabilities = new Map<
+    string,
+    ProductionCodeActCapability
+  >();
+  const productionCodeActManifestHashes = new Map<string, string>();
+  const productionGeneratedAgentCapabilities = new Map<
+    string,
+    ProductionCodeActCapability
+  >();
+  const productionGeneratedAgentManifestHashes = new Map<string, string>();
+  const productionWorkflowManifestSha256 =
+    productionCodeActManifestSha256(manifest);
+  if (!isFactorySandboxTenant(spec.tenantSlug)) {
+    for (const agent of manifest) {
+      if (agent.generated !== true) continue;
+      if (
+        !agent.factory_domain_id ||
+        agent.factory_target_domain_id !== agent.factory_domain_id ||
+        !agent.factory_promotion_version_id ||
+        !agent.factory_regression_suite_fingerprint ||
+        agent.factory_execution_scope?.kind !== "production" ||
+        agent.factory_execution_scope.target_domain_id !==
+          agent.factory_domain_id
+      ) {
+        throw new Error(
+          `[bootstrap] generated production Agent provenance is incomplete for ${spec.tenantSlug}/${agent.id}`,
+        );
+      }
+      const agentManifestSha256 = productionCodeActManifestSha256(agent);
+      if (agent.codeExecuted === true && !agent.typescript_code) {
+        throw new Error(
+          `[bootstrap] production CodeAct handler is missing for ${spec.tenantSlug}/${agent.id}`,
+        );
+      }
+      const executionKind = agent.codeExecuted === true
+        ? "codeact" as const
+        : "declarative" as const;
+      const codeSha256 = agent.codeExecuted === true
+        ? crypto
+            .createHash("sha256")
+            .update(agent.typescript_code!, "utf8")
+            .digest("hex")
+        : agentManifestSha256;
+      const capability = await authorizeProductionGeneratedAgent({
+        executionKind,
+        tenantId: tenant.id,
+        tenantSlug: spec.tenantSlug,
+        domainId: agent.factory_domain_id,
+        agentSlug: agent.id,
+        promotionVersionId: agent.factory_promotion_version_id,
+        regressionSuiteFingerprint: agent.factory_regression_suite_fingerprint,
+        codeSha256,
+        agentManifestSha256,
+        workflowManifestSha256: productionWorkflowManifestSha256,
+      });
+      productionGeneratedAgentCapabilities.set(agent.id, capability);
+      productionGeneratedAgentManifestHashes.set(
+        agent.id,
+        agentManifestSha256,
+      );
+      if (executionKind === "codeact") {
+        productionCodeActCapabilities.set(agent.id, capability);
+        productionCodeActManifestHashes.set(agent.id, agentManifestSha256);
+      }
+    }
+  }
+
+  // Validate schedules before DB promotion. Registration happens after the
+  // enabled/disabled state has been read, so disabled agents do not keep a
+  // live cron producer behind them.
+  assertCronManifestValid({
+    tenantSlug: spec.tenantSlug,
+    manifest,
+  });
+
   const workflowSlug = `${spec.tenantSlug}-default`;
   let workflow = db
     .select()
     .from(workflows)
     .where(
-      and(
-        eq(workflows.tenantId, tenant.id),
-        eq(workflows.slug, workflowSlug),
-      ),
+      and(eq(workflows.tenantId, tenant.id), eq(workflows.slug, workflowSlug)),
     )
     .all()[0];
   if (!workflow) {
@@ -167,10 +680,15 @@ export async function bootstrapTenant(spec: {
         name: workflowSlug,
       })
       .run();
-    workflow = db.select().from(workflows).where(eq(workflows.id, id)).all()[0]!;
+    workflow = db
+      .select()
+      .from(workflows)
+      .where(eq(workflows.id, id))
+      .all()[0]!;
   }
 
-  const versionStr = `auto-${hashManifest(manifest)}`;
+  const versionStr = canonicalWorkflowVersionId(manifest, loaded.actionsExt);
+  const legacyVersionStr = legacyWorkflowVersionId(manifest);
   const forceRebootstrap = process.env.AGENTIC_REBOOTSTRAP === "force";
   let deploymentInserted = false;
   let workflowVersion = db
@@ -183,6 +701,32 @@ export async function bootstrapTenant(spec: {
       ),
     )
     .all()[0];
+  if (
+    workflowVersion &&
+    !workflowVersionContentMatches(workflowVersion, manifest, loaded.actionsExt)
+  ) {
+    throw new FatalRuntimeBootstrapError(
+      `[bootstrap] full workflow version digest collision for ${spec.tenantSlug}`,
+    );
+  }
+  if (!workflowVersion) {
+    const legacy = db
+      .select()
+      .from(workflowVersions)
+      .where(
+        and(
+          eq(workflowVersions.workflowId, workflow.id),
+          eq(workflowVersions.version, legacyVersionStr),
+        ),
+      )
+      .all()[0];
+    if (
+      legacy &&
+      workflowVersionContentMatches(legacy, manifest, loaded.actionsExt)
+    ) {
+      workflowVersion = legacy;
+    }
+  }
   const isNewVersion = !workflowVersion;
   if (!workflowVersion) {
     const wfvId = makeId("wfv");
@@ -202,85 +746,25 @@ export async function bootstrapTenant(spec: {
       .all()[0]!;
   }
 
-  // P0-RT-07: insert a fresh deployment row only when (a) we just made a new
-  // version, OR (b) the operator explicitly forced a re-bootstrap. A no-op
-  // reboot must leave the existing live row in place — never tombstone it.
-  if (isNewVersion || forceRebootstrap) {
-    db.update(deployments)
-      .set({ status: "rolled_back" })
-      .where(
-        and(
-          eq(deployments.tenantId, tenant.id),
-          eq(deployments.target, "workflow"),
-          eq(deployments.status, "live"),
-        ),
-      )
-      .run();
-    db.insert(deployments)
-      .values({
-        id: makeId("dpl"),
-        tenantId: tenant.id,
-        target: "workflow",
-        versionId: workflowVersion.id,
-        status: "live",
-        note: `auto-bootstrapped from ${path.basename(spec.modelDir)}${
-          forceRebootstrap ? " (forced)" : ""
-        }`,
-      })
-      .run();
-    deploymentInserted = true;
-  }
-
   // Tenant code registry comes from the caller (api server). Pure-declarative
   // tenants pass nothing; that's expected.
-  const tenantRegistry = spec.tenantRegistry;
   const toolCount = Object.keys(tenantRegistry?.tools ?? {}).length;
   const promptCount = Object.keys(tenantRegistry?.prompts ?? {}).length;
 
   // Upsert agents + agent_versions + event_listeners
-  // Phase 2 — fold brain-authored declarative HTTP tools (factory_tools) into this tenant's
-  // runtime resolution, so a deployed agent can actually CALL a tool the brain DECLARED (the
-  // create_tool → DrizzleToolStore → here → step-engine path). Domain-scoped (the tenant slug, or
-  // the factory domain it was derived from: "<domain>-sb") + globals (domain null). Best-effort:
-  // a load failure never blocks boot, and the name-collision guard in create_tool keeps these from
-  // shadowing real global tools.
-  let declarativeTools: Record<string, ToolDescriptor> | undefined;
-  try {
-    const slug = spec.tenantSlug;
-    const baseDomain = slug.replace(/-sb$/, "");
-    const rows = db.select().from(factoryTools).all();
-    const matched = rows.filter((r) => r.domain == null || r.domain === slug || r.domain === baseDomain);
-    if (matched.length) {
-      declarativeTools = buildDeclarativeOverlay(
-        matched.map((r) => ({
-          name: r.name,
-          description: r.description ?? undefined,
-          method: r.method,
-          urlTemplate: r.urlTemplate,
-          headers: (r.headers as Record<string, string> | null) ?? undefined,
-          bodyTemplate: r.bodyTemplate ?? undefined,
-          sideEffect: r.sideEffect,
-          returnsSchema: (r.returnsSchema as Record<string, unknown> | null) ?? undefined,
-        })),
-      );
-    }
-  } catch {
-    /* declarative tool overlay is best-effort — never block boot */
-  }
-
   const registered = [];
+  const enabledManifest: WorkflowManifest = [];
   // Phase 1a — sibling-function registry for synchronous `type:"invoke"` steps. Populated as
   // each function is built; the resolver closure reads it lazily at handler-run time (after boot
   // finishes), so an invoke action can resolve a sibling agent registered later in this loop.
   const fnRegistry = new Map<string, InngestFunction.Any>();
-  const resolveFunction = (ref: string): InngestFunction.Any | undefined => fnRegistry.get(ref);
+  const resolveFunction = (ref: string): InngestFunction.Any | undefined =>
+    fnRegistry.get(ref);
   for (const a of manifest) {
     let agentRow = db
       .select()
       .from(agents)
-      .where(
-        and(eq(agents.workflowId, workflow.id), eq(agents.kebabId, a.id)),
-      )
+      .where(and(eq(agents.workflowId, workflow.id), eq(agents.kebabId, a.id)))
       .all()[0];
     if (!agentRow) {
       const agentId = makeId("agt");
@@ -349,19 +833,36 @@ export async function bootstrapTenant(spec: {
     // re-enabled and the tenant re-registers. `enabled` defaults to true, so
     // this is a no-op for every agent that was never explicitly disabled.
     if (agentRow.enabled !== false) {
+      enabledManifest.push(a);
       const fn = registerAgent(a, {
         tenantId: tenant.id,
         tenantSlug: spec.tenantSlug,
         workflowVersionId: workflowVersion.id,
         tenantRegistry: tenantRegistry ?? undefined,
+        eventAdapter,
         resolveFunction,
         declarativeTools,
+        productionCodeActCapability: productionCodeActCapabilities.get(a.id),
+        productionCodeActManifestSha256: productionCodeActManifestHashes.get(
+          a.id,
+        ),
+        productionCodeActWorkflowManifestSha256:
+          productionWorkflowManifestSha256,
+        productionGeneratedAgentCapability:
+          productionGeneratedAgentCapabilities.get(a.id),
+        productionGeneratedAgentManifestSha256:
+          productionGeneratedAgentManifestHashes.get(a.id),
+        productionGeneratedWorkflowManifestSha256:
+          productionWorkflowManifestSha256,
       });
       if (fn) {
         registered.push(fn);
         // Index by agent name + namespaced fn id so an invoke step can target either.
         fnRegistry.set(a.name, fn as InngestFunction.Any);
-        fnRegistry.set(`${spec.tenantSlug}.${a.name}`, fn as InngestFunction.Any);
+        fnRegistry.set(
+          `${spec.tenantSlug}.${a.name}`,
+          fn as InngestFunction.Any,
+        );
       }
     }
   }
@@ -370,13 +871,63 @@ export async function bootstrapTenant(spec: {
   upsertEventTypes(tenant.id, loaded);
   upsertEntityTypes(tenant.id, loaded);
 
+  const cronTriggers = registerCronTriggers({
+    tenantSlug: spec.tenantSlug,
+    manifest: enabledManifest,
+    eventAdapter,
+  });
+  // Re-check against enabled functions. This catches an enabled parent whose
+  // sibling target was disabled in the DB after the manifest was authored.
+  assertManifestInvokesValid({
+    tenantSlug: spec.tenantSlug,
+    manifest: enabledManifest,
+  });
+
+  // P0-RT-07: promote only after every enabled function, tool, invoke target,
+  // and schedule has validated. A no-op reboot leaves the existing live row
+  // in place; a failed validation never tombstones the last-good deployment.
+  if (isNewVersion || forceRebootstrap) {
+    db.update(deployments)
+      .set({ status: "rolled_back" })
+      .where(
+        and(
+          eq(deployments.tenantId, tenant.id),
+          eq(deployments.target, "workflow"),
+          eq(deployments.status, "live"),
+        ),
+      )
+      .run();
+    db.insert(deployments)
+      .values({
+        id: makeId("dpl"),
+        tenantId: tenant.id,
+        target: "workflow",
+        versionId: workflowVersion.id,
+        status: "live",
+        note: `auto-bootstrapped from ${path.basename(spec.modelDir)}${
+          forceRebootstrap ? " (forced)" : ""
+        }`,
+      })
+      .run();
+    deploymentInserted = true;
+  }
+
+  // Publish transport naming only after the complete tenant bootstrap has
+  // validated and committed. A failed hot load must keep HTTP producers and
+  // recovery workers on the same last-good adapter as the still-served
+  // Inngest function set.
+  commitTenantEventAdapter(spec.tenantSlug, eventAdapter);
+
   return {
     tenant,
     workflow,
     workflowVersion,
-    functions: registered,
+    functions: [...registered, ...cronTriggers.functions],
     agentCount: manifest.length,
     registeredCount: registered.length,
+    cronCount: cronTriggers.functions.length,
+    scheduleUnconfiguredCount: cronTriggers.unconfiguredAgents.length,
+    scheduleDisabledCount: cronTriggers.disabledAgents.length,
     eventTypeCount: loaded.events.events?.length ?? 0,
     entityTypeCount: loaded.objects.payload?.length ?? 0,
     tenantTools: toolCount,
@@ -393,7 +944,9 @@ function upsertEventTypes(tenantId: string, loaded: LoadedModels) {
     const existing = db
       .select()
       .from(eventTypes)
-      .where(and(eq(eventTypes.tenantId, tenantId), eq(eventTypes.name, e.name)))
+      .where(
+        and(eq(eventTypes.tenantId, tenantId), eq(eventTypes.name, e.name)),
+      )
       .all()[0];
     const row = {
       tenantId,
@@ -424,10 +977,7 @@ function upsertEntityTypes(tenantId: string, loaded: LoadedModels) {
       .select()
       .from(entityTypes)
       .where(
-        and(
-          eq(entityTypes.tenantId, tenantId),
-          eq(entityTypes.entityId, o.id),
-        ),
+        and(eq(entityTypes.tenantId, tenantId), eq(entityTypes.entityId, o.id)),
       )
       .all()[0];
     const row = {
@@ -470,33 +1020,80 @@ function archivedSlugSet(): Set<string> {
  * Bootstrap every discovered tenant, returning their Inngest functions GROUPED
  * BY slug. This is the per-app boot path: one Inngest app per tenant, so the
  * api boot (`apps/api/src/bootstrap.ts`) hands each slug's functions to its own
- * `serve()` handler. A tenant whose manifest throws is logged and skipped (its
- * map entry is simply absent) — exactly the per-tenant fault isolation that the
- * single-app boot already had, now extended to the per-app registry.
+ * `serve()` handler. Folders with no database tenant are inert artifacts and
+ * ignored. A declared, non-archived tenant whose manifest throws blocks
+ * startup; otherwise /health would advertise a real runtime while that tenant
+ * silently has no executable functions.
  */
+export interface BootstrapAllByTenantOptions {
+  enabledTenantSlugs?: Iterable<string>;
+}
+
 export async function bootstrapAllByTenant(
   tenantRegistries: TenantRegistries = {},
+  options: BootstrapAllByTenantOptions = {},
 ): Promise<Map<string, InngestFunction.Any[]>> {
   const byTenant = new Map<string, InngestFunction.Any[]>();
+  const enabledTenantSlugs = options.enabledTenantSlugs
+    ? new Set([...options.enabledTenantSlugs].filter(Boolean))
+    : null;
   const folders = await discoverTenantFolders();
   if (folders.length === 0) {
-    console.warn(
-      `[bootstrap] no tenant model folders found in ${modelsRoot()}`,
+    const root = resolveModelsRoot();
+    throw new FatalRuntimeBootstrapError(
+      `[bootstrap] no tenant model folders found in ${root ?? "<unconfigured models root>"}`,
     );
-    return byTenant;
   }
+
+  const tenantRows = getDb()
+    .select({ slug: tenants.slug, archivedAt: tenants.archivedAt })
+    .from(tenants)
+    .all();
+  const knownSlugs = new Set(tenantRows.map((row) => row.slug));
 
   // archive (tenant-level 下线): an archived tenant is taken fully offline —
   // none of its agents register, so its app serves zero functions. The rows
   // stay in the DB; clearing `archived_at` (restore) + a re-register brings it
   // back. Read once per bootstrap so a re-register reflects the latest state.
-  const archivedSlugs = archivedSlugSet();
+  const archivedSlugs = new Set(
+    tenantRows.filter((row) => row.archivedAt != null).map((row) => row.slug),
+  );
+
+  const activeFolders = folders.filter((folder) => {
+    if (!knownSlugs.has(folder.slug)) {
+      console.log(
+        `[bootstrap] ${folder.folder}: no database tenant ${folder.slug} — inert model artifact ignored`,
+      );
+      return false;
+    }
+    if (enabledTenantSlugs && !enabledTenantSlugs.has(folder.slug)) {
+      clearRuntimeScheduleStatusForTenant(folder.slug);
+      console.log(
+        `[bootstrap] ${folder.slug} (${folder.folder}): outside enabled tenant deployment scope — skipped`,
+      );
+      return false;
+    }
+    return !archivedSlugs.has(folder.slug);
+  });
+  const foldersBySlug = new Map<string, string[]>();
+  for (const folder of activeFolders) {
+    const grouped = foldersBySlug.get(folder.slug) ?? [];
+    grouped.push(folder.folder);
+    foldersBySlug.set(folder.slug, grouped);
+  }
+  for (const [slug, grouped] of foldersBySlug) {
+    if (grouped.length > 1)
+      throw new DuplicateTenantModelFolderError(slug, grouped);
+  }
 
   for (const f of folders) {
+    if (enabledTenantSlugs && !enabledTenantSlugs.has(f.slug)) continue;
     if (archivedSlugs.has(f.slug)) {
+      clearRuntimeScheduleStatusForTenant(f.slug);
       console.log(`[bootstrap] ${f.slug} (${f.folder}): archived — skipped`);
       continue;
     }
+    if (!knownSlugs.has(f.slug)) continue;
     try {
       const result = await bootstrapTenant({
         tenantSlug: f.slug,
@@ -510,10 +1107,20 @@ export async function bootstrapAllByTenant(
         ? `· tenant pkg: ${result.tenantTools} tools, ${result.tenantPrompts} prompts`
         : "· no tenant pkg (declarative)";
       console.log(
-        `[bootstrap] ${f.slug} (${f.folder}): ${result.registeredCount}/${result.agentCount} agents · ${result.eventTypeCount} event types · ${result.entityTypeCount} entities ${tenantPkgNote}`,
+        `[bootstrap] ${f.slug} (${f.folder}): ${result.registeredCount}/${result.agentCount} agents · ${result.cronCount} cron triggers` +
+          `${result.scheduleUnconfiguredCount ? ` · ${result.scheduleUnconfiguredCount} schedule(s) unconfigured` : ""}` +
+          `${result.scheduleDisabledCount ? ` · ${result.scheduleDisabledCount} schedule(s) disabled` : ""}` +
+          ` · ${result.eventTypeCount} event types · ${result.entityTypeCount} entities ${tenantPkgNote}`,
       );
     } catch (err) {
       console.error(`[bootstrap] failed to load ${f.folder}:`, err);
+      if (
+        err instanceof FatalRuntimeBootstrapError ||
+        err instanceof InvalidCronExpressionError
+      ) {
+        throw err;
+      }
+      throw new ActiveTenantBootstrapError(f.slug, f.folder, err);
     }
   }
   return byTenant;
@@ -544,17 +1151,40 @@ export async function bootstrapAll(
  *     that was previously live). One tenant's bad deploy cannot affect another:
  *     this only ever reads/rebuilds the requested slug.
  *
- * A slug may map from multiple version folders (e.g. `raas-v1`, `raas-v2`);
- * all matching folders are bootstrapped and their functions concatenated,
- * mirroring `bootstrapAllByTenant`.
+ * A slug must map to exactly one canonical model folder. Workflow revisions
+ * live as versioned files inside that folder; multiple folders are rejected
+ * rather than concatenated into duplicate Inngest function identities.
  */
 export async function bootstrapTenantBySlug(
   slug: string,
   tenantRegistries: TenantRegistries = {},
 ): Promise<InngestFunction.Any[]> {
-  const folders = (await discoverTenantFolders()).filter((f) => f.slug === slug);
-  if (folders.length === 0) return [];
-  if (archivedSlugSet().has(slug)) return [];
+  const folders = (
+    await discoverTenantFolders({ includeScopedSandboxSlug: slug })
+  ).filter((f) => f.slug === slug);
+  if (folders.length === 0) {
+    clearRuntimeScheduleStatusForTenant(slug);
+    return [];
+  }
+  if (archivedSlugSet().has(slug)) {
+    clearRuntimeScheduleStatusForTenant(slug);
+    return [];
+  }
+  const tenantExists = getDb()
+    .select({ slug: tenants.slug })
+    .from(tenants)
+    .where(eq(tenants.slug, slug))
+    .all()[0];
+  if (!tenantExists) {
+    clearRuntimeScheduleStatusForTenant(slug);
+    return [];
+  }
+  if (folders.length > 1) {
+    throw new DuplicateTenantModelFolderError(
+      slug,
+      folders.map((folder) => folder.folder),
+    );
+  }
   const fns: InngestFunction.Any[] = [];
   for (const f of folders) {
     const result = await bootstrapTenant({
@@ -565,12 +1195,4 @@ export async function bootstrapTenantBySlug(
     fns.push(...result.functions);
   }
   return fns;
-}
-
-function hashManifest(m: WorkflowManifest): string {
-  return crypto
-    .createHash("sha256")
-    .update(JSON.stringify(m))
-    .digest("hex")
-    .slice(0, 8);
 }

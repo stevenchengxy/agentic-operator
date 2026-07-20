@@ -11,7 +11,7 @@
  * test runs (`is_test = 1`) never contribute.
  */
 
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { getDb, runs, tenants } from "@agentic/db";
 import type { ThroughputResult } from "@agentic/contracts";
 import { getDag } from "./workflows";
@@ -55,7 +55,7 @@ export async function getThroughput(
       isTest: runs.isTest,
     })
     .from(runs)
-    .where(eq(runs.tenantId, tenant.id))
+    .where(and(eq(runs.tenantId, tenant.id), isNull(runs.deletedAt)))
     .all();
 
   const subjectsByAgent = new Map<string, Set<string>>();

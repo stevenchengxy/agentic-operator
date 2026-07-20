@@ -8,6 +8,13 @@
 // durability. The optional LLM-judge / real-model layers are non-reproducible by construction and
 // are advisory-only (gated by env), never the blocking verdict — see verificationPolicy().
 
+import {
+  canonicalHttpCassetteKey,
+  cassetteHash,
+  type CanonicalCassetteDocument,
+  type CanonicalCassetteEntry,
+} from "@agentic/shared/cassette";
+
 export type CaseKind = "pass" | "reject" | "edge" | "fault";
 
 export interface CaseRunOutcome {
@@ -18,13 +25,21 @@ export interface CaseRunOutcome {
   reachedFailTerminal: boolean;
   /** unhandled error, or no terminal reached at all */
   crashed: boolean;
-  /** an agent degraded (e.g. tool-less / mock) */
+  /** an agent carried an explicit degraded shell or failed executable evidence */
   degraded?: boolean;
+  /** Exact event assertion for structured rule boundary cases. */
+  expectedEvent?: string;
+  expectedEventMatched?: boolean;
 }
 
 /** Verdict for ONE test case, by its declared kind. */
 export function caseVerdict(o: CaseRunOutcome): { pass: boolean; reason: string } {
   if (o.crashed) return { pass: false, reason: "crashed / no terminal reached" };
+  if (o.expectedEvent) {
+    return o.expectedEventMatched === true && !o.degraded
+      ? { pass: true, reason: `reached expected event ${o.expectedEvent}` }
+      : { pass: false, reason: o.degraded ? `reached ${o.expectedEvent} but an agent degraded` : `did not reach expected event ${o.expectedEvent}` };
+  }
   switch (o.kind) {
     case "pass":
       return o.reachedSuccessTerminal && !o.degraded
@@ -75,15 +90,6 @@ export function chainVerdictByKind(outcomes: CaseRunOutcome[]): ChainVerdict {
 
 // ── deterministic cassettes ─────────────────────────────────────────────────
 
-function hashStr(s: string): string {
-  let h = 2166136261 >>> 0;
-  for (let i = 0; i < s.length; i++) {
-    h ^= s.charCodeAt(i);
-    h = Math.imul(h, 16777619) >>> 0;
-  }
-  return h.toString(16).padStart(8, "0");
-}
-
 export interface CassetteEntry {
   key: string;
   method: string;
@@ -96,27 +102,51 @@ export interface CassetteEntry {
  *  vendor responses; in REPLAY mode (CI) the recorded tape answers, so a sandbox run is free +
  *  reproducible. The fetchFn() plugs straight into makeDeclarativeTool({ fetchFn }). */
 export class Cassette {
-  private map = new Map<string, CassetteEntry>();
+  private map = new Map<string, CanonicalCassetteEntry>();
 
-  constructor(entries?: CassetteEntry[]) {
-    for (const e of entries ?? []) this.map.set(e.key, e);
+  constructor(input?: CassetteEntry[] | CanonicalCassetteDocument) {
+    if (Array.isArray(input)) {
+      for (const entry of input) {
+        const key = canonicalHttpCassetteKey(entry.method, entry.url);
+        this.map.set(key, {
+          key,
+          request: { kind: "http", method: entry.method, url: entry.url, bodyHash: cassetteHash("") },
+          response: { status: entry.status, body: entry.body },
+        });
+      }
+    } else {
+      for (const entry of input?.entries ?? []) this.map.set(entry.key, entry);
+    }
   }
 
   static keyFor(method: string, url: string, body?: string): string {
-    return hashStr(`${(method || "GET").toUpperCase()} ${url} ${body ?? ""}`);
+    return canonicalHttpCassetteKey(method, url, body);
   }
 
   record(method: string, url: string, body: string | undefined, status: number, responseBody: string): void {
     const key = Cassette.keyFor(method, url, body);
-    this.map.set(key, { key, method: (method || "GET").toUpperCase(), url, status, body: responseBody });
+    this.map.set(key, {
+      key,
+      request: { kind: "http", method: (method || "GET").toUpperCase(), url, bodyHash: cassetteHash(body ?? "") },
+      response: { status, body: responseBody },
+      recordedAt: new Date().toISOString(),
+    });
   }
 
   replay(method: string, url: string, body?: string): CassetteEntry | undefined {
-    return this.map.get(Cassette.keyFor(method, url, body));
+    const entry = this.map.get(Cassette.keyFor(method, url, body));
+    if (!entry || entry.request.kind !== "http") return undefined;
+    return {
+      key: entry.key,
+      method: entry.request.method,
+      url: entry.request.url,
+      status: entry.response.status,
+      body: typeof entry.response.body === "string" ? entry.response.body : JSON.stringify(entry.response.body),
+    };
   }
 
-  toJSON(): CassetteEntry[] {
-    return [...this.map.values()];
+  toJSON(): CanonicalCassetteDocument {
+    return { version: 1, entries: [...this.map.values()] };
   }
 
   /** A fetch-compatible fn that answers from the tape (REPLAY). A miss throws (fail-closed: a CI
@@ -156,11 +186,11 @@ export function duplicateSideEffectSteps(steps: StepRowLike[]): string[] {
 // ── verification policy (determinism + cost) ────────────────────────────────
 
 export interface VerificationPolicy {
-  /** use a real LLM in the sandbox (default false — mock-model-v1 keeps runs free + deterministic) */
+  /** use a real LLM in production sandboxes; tests may opt into the deterministic adapter */
   realModel: boolean;
   /** tool dispatch mode: "mock" (dry stubs), "replay" (cassettes), "live" (real vendor sandbox) */
   toolMode: "mock" | "replay" | "live" | "gated";
-  /** hard aggregate output-token budget for one factory verification run (0 = unbounded/mock) */
+  /** hard aggregate output-token budget for one factory verification run (0 = unbounded) */
   budgetTokens: number;
   /** the LLM cite-the-field judge is advisory only — never the blocking CI verdict */
   judgeIsBlocking: boolean;
@@ -170,16 +200,20 @@ export interface VerificationPolicy {
  *  #REDESIGN P1b — REAL by default (拒绝 mock): the sandbox uses the REAL gateway model so the
  *  reasoning that runs in verification is the same that runs in production. LLM calls have no
  *  external side-effects, so this is safe to default on. TESTS (NODE_ENV=test) keep the mock model
- *  for free, deterministic, offline CI. Escape hatch: FACTORY_SANDBOX_REAL_MODEL=0 forces mock.
- *  Tool side-effects stay gated (write-gating is the next P1b step): default tool mode is still
- *  "mock" for external WRITES until the read-live / write-gated split lands. */
+ *  for free, deterministic, offline CI. Production cannot force the mock model.
+ *  Tool side-effects stay gated: production reads call live handlers, while writes are captured at
+ *  the boundary unless the operator explicitly enables sandbox writes. */
 export function verificationPolicy(env: Record<string, string | undefined> = process.env): VerificationPolicy {
   const isTest = env.NODE_ENV === "test";
-  const realModel = isTest ? env.FACTORY_SANDBOX_REAL_MODEL === "1" : env.FACTORY_SANDBOX_REAL_MODEL !== "0";
+  const realModel = isTest ? env.FACTORY_SANDBOX_REAL_MODEL === "1" : true;
   // Mirror runtime sandboxToolMode: default "gated" in production (read live / write gated), "mock"
-  // in tests. Explicit replay/live/mock honoured.
+  // in tests. Production coerces mock/replay to gated so verification can
+  // never be promoted on synthetic evidence.
   const toolModeRaw = (env.FACTORY_SANDBOX_TOOL_MODE ?? (isTest ? "mock" : "gated")).toLowerCase();
-  const toolMode = ["replay", "live", "mock", "gated"].includes(toolModeRaw) ? (toolModeRaw as VerificationPolicy["toolMode"]) : (isTest ? "mock" : "gated");
+  const requestedToolMode = ["replay", "live", "mock", "gated"].includes(toolModeRaw) ? (toolModeRaw as VerificationPolicy["toolMode"]) : (isTest ? "mock" : "gated");
+  const toolMode = !isTest && (requestedToolMode === "mock" || requestedToolMode === "replay")
+    ? "gated"
+    : requestedToolMode;
   const budgetTokens = Number(env.FACTORY_SANDBOX_BUDGET_TOKENS ?? "0") || 0;
   return {
     realModel,

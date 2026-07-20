@@ -15,8 +15,7 @@
   "dependencies": {
     "@agentic/agent-kit": "workspace:*",
     "@agentic/skills": "workspace:*",
-    "@agentic/tools": "workspace:*",
-    "zod": "^4.4.3"
+    "@agentic/tools": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^25.8.0",

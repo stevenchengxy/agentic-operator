@@ -8,6 +8,13 @@
 import { defineTool } from "@agentic/agent-kit";
 import type { ToolContext, ToolDescriptor } from "@agentic/agent-kit";
 import { safeFetch } from "./ssrf";
+import { validateToolSchema } from "./schema-validation";
+import {
+  isToolExecutionPolicy,
+  type ToolEffectScope,
+  type ToolOperation,
+  type ToolSandboxPolicy,
+} from "../registry";
 
 /** Structural shape of a persisted declarative tool (matches agent-factory's DeclarativeTool /
  *  the factory_tools row — kept local so packages/tools needs no cross-package type import). */
@@ -18,15 +25,68 @@ export interface DeclarativeToolDef {
   urlTemplate: string;
   headers?: Record<string, string>;
   bodyTemplate?: string;
+  requestSpec?: DeclarativeRequestSpec;
+  responseSpec?: DeclarativeResponseSpec;
+  examples?: DeclarativeExchangeExample[];
   sideEffect?: string;
+  operation?: ToolOperation;
+  effectScope?: ToolEffectScope;
+  sandboxPolicy?: ToolSandboxPolicy;
   paramsSchema?: Record<string, unknown>;
   returnsSchema?: Record<string, unknown>;
 }
 
+export interface DeclarativeMultipartFileSpec {
+  field: string;
+  base64Path: string;
+  filename?: string;
+  filenamePath?: string;
+  mime?: string;
+  mimePath?: string;
+  required?: boolean;
+}
+
+export interface DeclarativeRequestSpec {
+  encoding: "json" | "multipart";
+  bodyPath?: string;
+  fields?: Record<string, string>;
+  files?: DeclarativeMultipartFileSpec[];
+  maxBytes?: number;
+}
+
+export interface DeclarativeResponseAssertion {
+  path: string;
+  op: "exists" | "non_empty" | "eq" | "neq" | "in" | "not_in";
+  value?: unknown;
+  values?: unknown[];
+  failure: "retryable" | "terminal";
+  code: string;
+  message?: string;
+}
+
+export interface DeclarativeResponseSpec {
+  unwrapPath?: string;
+  mappings?: Record<string, string>;
+  assertions?: DeclarativeResponseAssertion[];
+}
+
+export interface DeclarativeExchangeExample {
+  request: Record<string, unknown>;
+  response: unknown;
+  note?: string;
+  source?: "human" | "probe" | "documentation";
+}
+
+export interface DeclarativeObservedExchange {
+  request: { method: string; url: string; body: unknown };
+  response: { status: number; body: unknown };
+}
+
 function readPath(obj: unknown, path: string): unknown {
-  if (obj == null || !path) return undefined;
+  const normalized = path.replace(/^\$\.?/, "");
+  if (obj == null || !normalized) return normalized ? undefined : obj;
   let cur: unknown = obj;
-  for (const part of path.split(".")) {
+  for (const part of normalized.split(".")) {
     if (cur == null || typeof cur !== "object") return undefined;
     cur = (cur as Record<string, unknown>)[part];
   }
@@ -43,19 +103,198 @@ function fillTemplate(tpl: string, scope: Record<string, unknown>, encode: boole
   });
 }
 
-/** When returnsSchema declares `required: string[]` (JSON-schema style), assert those top-level
- *  keys are present in the response. Lenient otherwise (field-map schemas aren't enforced). */
-function missingRequired(parsed: unknown, returnsSchema?: Record<string, unknown>): string[] {
-  const required = returnsSchema?.required;
-  if (!Array.isArray(required) || !required.length) return [];
-  if (parsed == null || typeof parsed !== "object") return required.map(String);
-  const obj = parsed as Record<string, unknown>;
-  return required.map(String).filter((k) => !(k in obj) || obj[k] === undefined);
+export type DeclarativeToolFailureKind =
+  | "network"
+  | "http_4xx"
+  | "rate_limit"
+  | "http_5xx"
+  | "empty_200"
+  | "invalid_json"
+  | "schema_mismatch"
+  | "response_assertion";
+
+export class DeclarativeToolExecutionError extends Error {
+  readonly retryable: boolean;
+  readonly terminal: boolean;
+  readonly code: string;
+
+  constructor(
+    public readonly kind: DeclarativeToolFailureKind,
+    message: string,
+    public readonly status?: number,
+    opts: { retryable?: boolean; code?: string } = {},
+  ) {
+    super(`${kind}: ${message}`);
+    this.name = "DeclarativeToolExecutionError";
+    this.retryable = opts.retryable ?? new Set<DeclarativeToolFailureKind>(["network", "rate_limit", "http_5xx", "empty_200", "invalid_json"]).has(kind);
+    this.terminal = !this.retryable;
+    this.code = opts.code ?? kind;
+  }
+}
+
+function redactSensitiveText(value: string): string {
+  return value
+    .replace(/\bBearer\s+[^\s,"'}]+/gi, "Bearer [REDACTED]")
+    .replace(/(["']?(?:api[_-]?key|token|authorization|secret|password)["']?\s*[:=]\s*["']?)[^\s,"'}]+/gi, "$1[REDACTED]");
+}
+
+function schemaSummary(issues: ReturnType<typeof validateToolSchema>): string {
+  return issues.slice(0, 5).map((issue) => `${issue.path}: ${issue.expected} (got ${issue.actual})`).join("; ");
 }
 
 export interface MakeDeclarativeToolOpts {
   /** Inject a fetch implementation (tests / cassette replay). Defaults to global fetch via safeFetch. */
   fetchFn?: typeof fetch;
+  /** Probe-only observation hook. Callers must redact before persistence. */
+  onExchange?: (exchange: DeclarativeObservedExchange) => void;
+}
+
+/** Resolve non-secret `*_env` references at the last possible moment. The
+ * persisted manifest contains only an environment variable NAME; the secret is
+ * never copied into the tool definition, cassette, transcript, or error text. */
+export function resolveDeclarativeToolConfig(
+  config: Record<string, unknown> = {},
+  env: Record<string, string | undefined> = process.env,
+): { resolved: Record<string, unknown>; missingEnv: string[] } {
+  const resolved = { ...config };
+  const missingEnv: string[] = [];
+  for (const [key, value] of Object.entries(config)) {
+    if (!/_env$/i.test(key) || typeof value !== "string" || !value.trim()) continue;
+    const envName = value.trim();
+    const secret = env[envName];
+    if (typeof secret === "string" && secret.length > 0) {
+      const target = key.replace(/_env$/i, "");
+      if (!(target in resolved)) resolved[target] = secret;
+    } else {
+      missingEnv.push(envName);
+    }
+  }
+  return { resolved, missingEnv: [...new Set(missingEnv)] };
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function strictBase64(value: unknown, label: string, maxBytes: number): Uint8Array {
+  if (typeof value !== "string" || !value.length || value.length % 4 !== 0 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) {
+    throw new DeclarativeToolExecutionError("schema_mismatch", `${label} must be canonical padded base64`);
+  }
+  const bytes = Buffer.from(value, "base64");
+  if (bytes.toString("base64") !== value) {
+    throw new DeclarativeToolExecutionError("schema_mismatch", `${label} is not canonical base64`);
+  }
+  if (bytes.byteLength > maxBytes) {
+    throw new DeclarativeToolExecutionError("schema_mismatch", `${label} exceeds ${maxBytes} bytes`);
+  }
+  return new Uint8Array(bytes);
+}
+
+function equalValue(left: unknown, right: unknown): boolean {
+  if (Object.is(left, right)) return true;
+  try {
+    return JSON.stringify(left) === JSON.stringify(right);
+  } catch {
+    return false;
+  }
+}
+
+function isNonEmpty(value: unknown): boolean {
+  if (value === null || value === undefined) return false;
+  if (typeof value === "string") return value.trim().length > 0;
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === "object") return Object.keys(value as Record<string, unknown>).length > 0;
+  return true;
+}
+
+function assertionPass(value: unknown, assertion: DeclarativeResponseAssertion): boolean {
+  const values = assertion.values ?? (Array.isArray(assertion.value) ? assertion.value : []);
+  switch (assertion.op) {
+    case "exists": return value !== undefined;
+    case "non_empty": return isNonEmpty(value);
+    case "eq": return equalValue(value, assertion.value);
+    case "neq": return !equalValue(value, assertion.value);
+    case "in": return values.some((candidate) => equalValue(value, candidate));
+    case "not_in": return !values.some((candidate) => equalValue(value, candidate));
+  }
+}
+
+function applyResponseSpec(raw: unknown, spec: DeclarativeResponseSpec | undefined): unknown {
+  if (!spec) return raw;
+  for (const assertion of spec.assertions ?? []) {
+    const value = readPath(raw, assertion.path);
+    if (assertionPass(value, assertion)) continue;
+    const retryable = assertion.failure === "retryable";
+    throw new DeclarativeToolExecutionError(
+      "response_assertion",
+      assertion.message ?? `response assertion ${assertion.path} ${assertion.op} failed`,
+      retryable ? 502 : 422,
+      { retryable, code: assertion.code },
+    );
+  }
+  if (spec.mappings && Object.keys(spec.mappings).length > 0) {
+    return Object.fromEntries(
+      Object.entries(spec.mappings).map(([field, path]) => [field, readPath(raw, path)]),
+    );
+  }
+  return spec.unwrapPath ? readPath(raw, spec.unwrapPath) : raw;
+}
+
+function buildRequestBody(
+  def: DeclarativeToolDef,
+  method: string,
+  scope: Record<string, unknown>,
+  args: Record<string, unknown>,
+  config: Record<string, unknown>,
+): { body?: BodyInit; preview: unknown; multipart: boolean } {
+  if (method === "GET" || method === "HEAD") return { preview: null, multipart: false };
+  const request = def.requestSpec;
+  if (request?.encoding === "multipart") {
+    const form = new FormData();
+    const preview: Record<string, unknown> = { fields: {}, files: [] };
+    for (const [field, template] of Object.entries(request.fields ?? {})) {
+      const value = fillTemplate(template, scope, false);
+      form.append(field, value);
+      (preview.fields as Record<string, unknown>)[field] = value;
+    }
+    const configuredMax = typeof config.max_upload_bytes === "number" && Number.isFinite(config.max_upload_bytes)
+      ? Math.max(1, Math.floor(config.max_upload_bytes))
+      : undefined;
+    const maxBytes = Math.min(request.maxBytes ?? 10 * 1024 * 1024, configuredMax ?? Number.MAX_SAFE_INTEGER);
+    for (const file of request.files ?? []) {
+      const encoded = readPath(scope, file.base64Path);
+      if ((encoded === undefined || encoded === null || encoded === "") && file.required !== true) continue;
+      const bytes = strictBase64(encoded, file.base64Path, maxBytes);
+      const filenameValue = file.filenamePath ? readPath(scope, file.filenamePath) : undefined;
+      const mimeValue = file.mimePath ? readPath(scope, file.mimePath) : undefined;
+      const filename = typeof filenameValue === "string" && filenameValue.trim()
+        ? filenameValue.trim()
+        : file.filename?.trim() || "upload.bin";
+      const mime = typeof mimeValue === "string" && mimeValue.trim()
+        ? mimeValue.trim()
+        : file.mime?.trim() || "application/octet-stream";
+      const blobBytes = new Uint8Array(bytes.byteLength);
+      blobBytes.set(bytes);
+      form.append(file.field, new Blob([blobBytes.buffer as ArrayBuffer], { type: mime }), filename);
+      (preview.files as unknown[]).push({ field: file.field, filename, mime, bytes: bytes.byteLength });
+    }
+    return { body: form, preview, multipart: true };
+  }
+  if (def.bodyTemplate) {
+    const body = fillTemplate(def.bodyTemplate, scope, false);
+    return { body, preview: body, multipart: false };
+  }
+  if (request?.encoding === "json") {
+    const value = request.bodyPath ? readPath(scope, request.bodyPath) : args;
+    if (value === undefined) {
+      throw new DeclarativeToolExecutionError("schema_mismatch", `request body path ${request.bodyPath} is missing`);
+    }
+    const body = JSON.stringify(value);
+    return { body, preview: value, multipart: false };
+  }
+  return { preview: null, multipart: false };
 }
 
 /** Build a runtime ToolDescriptor from a declarative tool definition. The handler reads the
@@ -64,6 +303,19 @@ export interface MakeDeclarativeToolOpts {
  *  SSRF-guarded fetch, and validates required return fields. Throws on failure so the runtime
  *  surfaces tool_result:is_error and the LLM can self-correct. */
 export function makeDeclarativeTool(def: DeclarativeToolDef, opts?: MakeDeclarativeToolOpts): ToolDescriptor {
+  if (def.sideEffect !== "read" && def.sideEffect !== "write" && def.sideEffect !== "dual") {
+    throw new Error(`declarative tool ${def.name || "(unnamed)"} must declare sideEffect as read, write, or dual`);
+  }
+  const executionPolicy = {
+    operation: def.operation,
+    effectScope: def.effectScope,
+    sandboxPolicy: def.sandboxPolicy,
+  };
+  if (!isToolExecutionPolicy(executionPolicy) || executionPolicy.effectScope !== "external") {
+    throw new Error(
+      `declarative tool ${def.name || "(unnamed)"} must declare a valid external operation/effectScope/sandboxPolicy; legacy sideEffect or HTTP method is never used as a default`,
+    );
+  }
   const fetchFn = opts?.fetchFn ?? fetch;
   return defineTool({
     name: def.name,
@@ -71,32 +323,81 @@ export function makeDeclarativeTool(def: DeclarativeToolDef, opts?: MakeDeclarat
     async handler(ctx: ToolContext) {
       const args = (ctx.event?.data ?? {}) as Record<string, unknown>;
       // config supplies creds/paths; LLM args win on key collision.
-      const scope = { ...(ctx.config ?? {}), ...args };
+      const materialized = resolveDeclarativeToolConfig((ctx.config ?? {}) as Record<string, unknown>);
+      if (materialized.missingEnv.length) {
+        throw new DeclarativeToolExecutionError(
+          "schema_mismatch",
+          `required credential environment variable is not configured: ${materialized.missingEnv.join(", ")}`,
+        );
+      }
+      const lastResult = asRecord(ctx.lastResult) ?? {};
+      const scope = {
+        ...materialized.resolved,
+        ...lastResult,
+        ...args,
+        args,
+        config: materialized.resolved,
+        lastResult,
+      };
+      const argIssues = validateToolSchema(scope, def.paramsSchema);
+      if (argIssues.length) {
+        throw new DeclarativeToolExecutionError("schema_mismatch", `request schema mismatch: ${schemaSummary(argIssues)}`);
+      }
       const method = (def.method || "GET").toUpperCase();
       const url = fillTemplate(def.urlTemplate, scope, true);
       const headers: Record<string, string> = {};
       for (const [k, v] of Object.entries(def.headers ?? {})) headers[k] = fillTemplate(v, scope, false);
-      const init: RequestInit = { method, headers };
-      if (def.bodyTemplate && method !== "GET" && method !== "HEAD") {
-        init.body = fillTemplate(def.bodyTemplate, scope, false);
-        if (!headers["content-type"] && !headers["Content-Type"]) headers["content-type"] = "application/json";
+      const requestBody = buildRequestBody(def, method, scope, args, materialized.resolved);
+      const init: RequestInit = { method, headers, ...(requestBody.body !== undefined ? { body: requestBody.body } : {}) };
+      if (requestBody.body !== undefined && !requestBody.multipart && !headers["content-type"] && !headers["Content-Type"]) {
+        headers["content-type"] = "application/json";
       }
-      const res = await safeFetch(url, init, fetchFn);
+      if (requestBody.multipart) {
+        // The fetch implementation must add the boundary-bearing Content-Type.
+        delete headers["content-type"];
+        delete headers["Content-Type"];
+      }
+      let res: Response;
+      try {
+        res = await safeFetch(url, init, fetchFn);
+      } catch (error) {
+        if (error instanceof DeclarativeToolExecutionError) throw error;
+        throw new DeclarativeToolExecutionError("network", redactSensitiveText((error as Error).message));
+      }
       const text = await res.text();
       let parsed: unknown = text;
+      let parsedJson = false;
       try {
         parsed = JSON.parse(text);
+        parsedJson = true;
       } catch {
         /* non-JSON response — keep raw text */
       }
+      try {
+        opts?.onExchange?.({
+          request: { method, url, body: requestBody.preview },
+          response: { status: res.status, body: parsed },
+        });
+      } catch {
+        // Observation is probe telemetry and must never change tool behavior.
+      }
       if (!res.ok) {
-        throw new Error(`declarative tool ${def.name} HTTP ${res.status}: ${String(text).slice(0, 200)}`);
+        const kind: DeclarativeToolFailureKind = res.status === 429 ? "rate_limit" : res.status >= 500 ? "http_5xx" : "http_4xx";
+        throw new DeclarativeToolExecutionError(kind, `declarative tool ${def.name} HTTP ${res.status}: ${redactSensitiveText(String(text)).slice(0, 200)}`, res.status);
       }
-      const missing = missingRequired(parsed, def.returnsSchema);
-      if (missing.length) {
-        throw new Error(`declarative tool ${def.name} response missing required field(s): ${missing.join(", ")}`);
+      if (!text.trim() && def.returnsSchema && Object.keys(def.returnsSchema).length) {
+        throw new DeclarativeToolExecutionError("empty_200", `declarative tool ${def.name} returned an empty successful response`, res.status);
       }
-      return { data: parsed, meta: { declarative: true, tool: def.name, status: res.status } };
+      const normalizedReturnType = typeof def.returnsSchema?.type === "string" ? def.returnsSchema.type : undefined;
+      if (!parsedJson && normalizedReturnType && /object|array/i.test(normalizedReturnType)) {
+        throw new DeclarativeToolExecutionError("invalid_json", `declarative tool ${def.name} returned non-JSON for ${normalizedReturnType}`, res.status);
+      }
+      const normalized = applyResponseSpec(parsed, def.responseSpec);
+      const returnIssues = validateToolSchema(normalized, def.returnsSchema);
+      if (returnIssues.length) {
+        throw new DeclarativeToolExecutionError("schema_mismatch", `declarative tool ${def.name} response schema mismatch: ${schemaSummary(returnIssues)}`, res.status);
+      }
+      return { data: normalized, meta: { declarative: true, tool: def.name, status: res.status } };
     },
   });
 }

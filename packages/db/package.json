@@ -11,10 +11,13 @@
     "./client": "./src/client.ts"
   },
   "scripts": {
+    "backup": "node --import tsx ../../apps/api/scripts/sqlite-writer-supervisor.ts --db-command backup",
     "generate": "drizzle-kit generate",
-    "migrate": "tsx src/migrate.ts",
-    "seed": "tsx src/seed.ts",
-    "studio": "drizzle-kit studio",
+    "migrate": "node --import tsx ../../apps/api/scripts/sqlite-writer-supervisor.ts --migrate-only",
+    "seed": "node --import tsx ../../apps/api/scripts/sqlite-writer-supervisor.ts --db-command seed",
+    "wipe-runtime": "node --import tsx ../../apps/api/scripts/sqlite-writer-supervisor.ts --db-command wipe-runtime",
+    "prune-deployments": "node --import tsx ../../apps/api/scripts/sqlite-writer-supervisor.ts --db-command prune-deployments",
+    "studio": "node --import tsx ../../apps/api/scripts/sqlite-writer-supervisor.ts --db-command studio",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist .turbo drizzle/*.sql"
   },

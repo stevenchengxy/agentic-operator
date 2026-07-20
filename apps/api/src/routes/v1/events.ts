@@ -1,11 +1,15 @@
 import type { FastifyInstance } from "fastify";
 import { readFile } from "node:fs/promises";
 import { and, eq } from "drizzle-orm";
-import { appendToLedger, getTenantInngest } from "@agentic/runtime";
-import { events, eventTypes, getDb } from "@agentic/db";
+import {
+  appendToLedger,
+  getTenantInngest,
+  publishStreamEvent,
+  tenantEventName,
+} from "@agentic/runtime";
+import { auditLog, events, eventTypes, getDb } from "@agentic/db";
 import { makeId } from "@agentic/shared";
 import { IngestEventBody, ListEventsQuery } from "@agentic/contracts";
-import { requireAuth } from "../../plugins/auth";
 import { requirePermission } from "../../plugins/rbac";
 import { listRecentEvents } from "../../queries/runs";
 import {
@@ -19,6 +23,9 @@ import {
   readIdempotencyKey,
   storeIdempotency,
 } from "../../services/idempotency";
+import { normalizeEventIngestBody } from "../../services/raas-ingress";
+import { materializeRaasResume } from "../../services/raas-resume-fetch";
+import { writeAudit } from "../../plugins/audit";
 
 /**
  * SSE limits for `GET /v1/events/stream` per docs/design/event-tester.md §4.2:
@@ -33,11 +40,92 @@ const SSE_POLL_MS = 250;
 const SSE_HEARTBEAT_MS = 15_000;
 const SSE_TIMEOUT_MS = 30 * 60_000;
 
+interface PendingEventEnqueue {
+  __agentic_pending_event_enqueue: 1;
+  route: "events";
+  event: {
+    id: string;
+    name: string;
+    data: Record<string, unknown>;
+  };
+  successBody: {
+    ok: true;
+    data: { event_id: string; name: string };
+  };
+  audit?: {
+    name: string;
+    subject: string | null;
+    test: boolean;
+    source: string;
+    fields: string[];
+  };
+}
+
+function pendingEventEnqueue(value: unknown): PendingEventEnqueue | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const candidate = value as Partial<PendingEventEnqueue>;
+  if (
+    candidate.__agentic_pending_event_enqueue !== 1 ||
+    candidate.route !== "events" ||
+    !candidate.event ||
+    typeof candidate.event.id !== "string" ||
+    typeof candidate.event.name !== "string" ||
+    !candidate.event.data ||
+    typeof candidate.event.data !== "object" ||
+    Array.isArray(candidate.event.data) ||
+    !candidate.successBody
+  ) {
+    return null;
+  }
+  return candidate as PendingEventEnqueue;
+}
+
 function sseFrame(event: string, data: string): string {
   const lines = [`event: ${event}`];
   for (const ln of data.split("\n")) lines.push(`data: ${ln}`);
   lines.push("", "");
   return lines.join("\n");
+}
+
+function ensureEventPublishAudit(input: {
+  tenantId: string;
+  userId: string | null | undefined;
+  authVia: string | null | undefined;
+  eventId: string;
+  name: string;
+  subject: string | null;
+  test: boolean;
+  source: string;
+  fields: string[];
+}): void {
+  const existing = getDb()
+    .select({ id: auditLog.id })
+    .from(auditLog)
+    .where(
+      and(
+        eq(auditLog.tenantId, input.tenantId),
+        eq(auditLog.action, "event.publish"),
+        eq(auditLog.targetId, input.eventId),
+      ),
+    )
+    .all()[0];
+  if (existing) return;
+  writeAudit({
+    tenantId: input.tenantId,
+    actorUserId: input.userId ?? undefined,
+    action: "event.publish",
+    targetType: "event",
+    targetId: input.eventId,
+    meta: {
+      name: input.name,
+      subject: input.subject,
+      test: input.test,
+      source: input.source,
+      auth_via: input.authVia ?? null,
+      // Field names only: payload values may contain secrets or PII.
+      fields: input.fields,
+    },
+  });
 }
 
 export async function eventsRoutes(app: FastifyInstance) {
@@ -46,33 +134,132 @@ export async function eventsRoutes(app: FastifyInstance) {
   // payload shapes by routing them through the same Zod schema.
   app.post("/events", async (req, reply) => {
     const auth = requirePermission(req, "events.publish");
-    const parsed = IngestEventBody.parse(req.body);
+    // The RAAS-backed recruitment tenant also accepts the old shared-Inngest
+    // contract `{name,data:{entity_*,event_id,payload,trace}}`. Normalization
+    // is tenant-gated: no other tenant gets recruitment-specific coercions.
+    const normalized = normalizeEventIngestBody(req.body, auth.tenantSlug);
+    const parsed = IngestEventBody.parse(normalized.body);
 
     // UC-V11-32 / PF-GAP-10 — idempotency replay. If the caller supplied
     // an Idempotency-Key header AND we previously serviced the same
     // (tenant, key) pair, return the cached body byte-for-byte without
     // re-emitting the Inngest event or inserting a new `events` row.
-    const idemKey = readIdempotencyKey(req);
+    // RAAS historically did not send Idempotency-Key. Its canonical event_id
+    // (then etag/upload_id) is a safe tenant-scoped fallback; an explicit
+    // standard header always wins.
+    const idemKey = readIdempotencyKey(req) ?? normalized.idempotencyKey;
     if (idemKey) {
       const cached = lookupIdempotency(auth.tenantId, idemKey);
       if (cached) {
+        const pending = pendingEventEnqueue(cached.body);
+        if (pending) {
+          const fallbackFields = Object.keys(pending.event.data).filter(
+            (key) => key !== "subject" && !key.startsWith("__"),
+          );
+          try {
+            ensureEventPublishAudit({
+              tenantId: auth.tenantId,
+              userId: auth.userId,
+              authVia: auth.via,
+              eventId: pending.event.id,
+              name:
+                pending.audit?.name ??
+                pending.event.name.split("/").slice(1).join("/"),
+              subject:
+                pending.audit?.subject ??
+                (typeof pending.event.data.subject === "string"
+                  ? pending.event.data.subject
+                  : null),
+              test: pending.audit?.test ?? pending.event.data.__test === true,
+              source: pending.audit?.source ?? "authenticated_retry",
+              fields: pending.audit?.fields ?? fallbackFields,
+            });
+          } catch (err) {
+            req.log.error(
+              { err, eventId: pending.event.id },
+              "event.publish: pending audit write failed",
+            );
+            return reply.fail(
+              "audit_failed",
+              `event ${pending.event.id} is durably stored, but its audit record could not be written; retry with the same idempotency key`,
+              500,
+            );
+          }
+          try {
+            // The event row/ledger entry already exists. Retry only the
+            // broker hand-off with the same Inngest event id, so an ambiguous
+            // prior timeout cannot duplicate a broker event either.
+            await getTenantInngest(auth.tenantSlug).send({
+              id: pending.event.id,
+              name: pending.event.name as `${string}/${string}`,
+              data: pending.event.data,
+            });
+          } catch (err) {
+            req.log.error(
+              { err, eventId: pending.event.id },
+              "event.publish: pending Inngest enqueue retry failed",
+            );
+            return reply.fail(
+              "enqueue_failed",
+              `event ${pending.event.id} is durably stored, but Inngest is still unreachable; retry with the same idempotency key`,
+              502,
+            );
+          }
+          try {
+            publishStreamEvent({
+              type: "event.emitted",
+              tenantId: auth.tenantId,
+              at: Date.now(),
+              eventId: pending.event.id,
+              name:
+                pending.audit?.name ??
+                pending.event.name.split("/").slice(1).join("/"),
+              subject:
+                pending.audit?.subject ??
+                (typeof pending.event.data.subject === "string"
+                  ? pending.event.data.subject
+                  : null),
+              sourceRunId: null,
+            });
+          } catch {
+            /* broker acceptance + durable event row remain authoritative */
+          }
+          try {
+            storeIdempotency(auth.tenantId, idemKey, {
+              status: 200,
+              body: pending.successBody,
+            });
+          } catch (err) {
+            req.log.warn(
+              { err, eventId: pending.event.id },
+              "idempotency: pending event completed but cache update failed",
+            );
+          }
+          return reply.code(200).send(pending.successBody);
+        }
         return reply.code(cached.status).send(cached.body);
       }
     }
 
     const eventId = makeId("evt");
-    const tenantNamespacedName = parsed.name.includes("/")
-      ? parsed.name
-      : `${auth.tenantSlug}/${parsed.name}`;
-    const bareName = tenantNamespacedName.includes("/")
-      ? tenantNamespacedName.split("/").slice(1).join("/")
-      : tenantNamespacedName;
+    const wireEventName = tenantEventName(auth.tenantSlug, parsed.name);
+    const bareName = parsed.name.includes("/")
+      ? parsed.name.split("/").slice(1).join("/")
+      : parsed.name;
+
+    // Legacy RESUME_DOWNLOADED points at RAAS/MinIO, while processResume's
+    // first tool reads the local zhaopin inbox. Materialize before writing the
+    // event: missing credentials, unsafe keys, 404s, and oversized files fail
+    // loudly and never leave a durable event that can only fail downstream.
+    const eventPayload = normalized.raasTenant
+      ? await materializeRaasResume(bareName, parsed.payload ?? {})
+      : (parsed.payload ?? {});
 
     const payloadRef = await appendToLedger(auth.tenantSlug, {
       id: eventId,
       name: bareName,
       subject: parsed.subject,
-      data: parsed.payload ?? {},
+      data: eventPayload,
       ts: Date.now(),
     });
 
@@ -103,56 +290,118 @@ export async function eventsRoutes(app: FastifyInstance) {
         payloadRef,
       })
       .run();
-
     // Only stamp __test when the caller explicitly opted in. We never inject
     // it on payloads that didn't ask — that would silently flag production
     // traffic as test, breaking dashboards in the opposite direction.
     const inngestData: Record<string, unknown> = {
-      ...(parsed.payload ?? {}),
+      ...eventPayload,
       subject: parsed.subject,
       __triggerEventId: eventId,
     };
+    if (normalized.raasTenant) {
+      // The legacy Inngest concurrency/cancel expressions cannot use CEL
+      // macros. Keep a mandatory, normalized wire key for both canonical and
+      // HTTP-ingested recruitment events.
+      inngestData.entity_id = parsed.subject ?? eventId;
+    }
     if (parsed.test === true) {
       inngestData.__test = true;
     }
 
-    await getTenantInngest(auth.tenantSlug).send({
-      name: tenantNamespacedName as `${string}/${string}`,
-      data: inngestData,
-    });
-
-    // Audit every non-`external` publish (NFR-6). Reviewer guidance: the
-    // `source` body field is a hint, not a trust boundary — the auth context
-    // is. We always log `auth_via` so a post-hoc forensics pass can tell a
-    // real-operator publish (via: "token") from a dev-bypass publish
-    // (via: "dev"). External webhook ingest stays unaudited here because
-    // those callers already have dedicated audit on their own routes.
-    // Field *names* only — never values — so PII in payloads stays out of
-    // the audit log.
-    const auditedSource = parsed.source ?? "external";
-    if (auditedSource !== "external") {
+    const okBody = { event_id: eventId, name: wireEventName };
+    const successBody = { ok: true as const, data: okBody };
+    const pending: PendingEventEnqueue = {
+      __agentic_pending_event_enqueue: 1,
+      route: "events",
+      event: { id: eventId, name: wireEventName, data: inngestData },
+      successBody,
+      audit: {
+        name: bareName,
+        subject: parsed.subject ?? null,
+        test: parsed.test === true,
+        source: parsed.source ?? "authenticated_api",
+        fields: Object.keys(eventPayload),
+      },
+    };
+    // Persist the replay recipe before handing off to the broker. If send()
+    // times out after the broker accepted the event, the retry uses this same
+    // event id; if it failed before acceptance, the retry completes the handoff
+    // without inserting another local event row.
+    if (idemKey) {
       try {
-        const audit = await import("../../plugins/audit");
-        audit.writeAudit({
-          tenantId: auth.tenantId,
-          action: "event.publish",
-          targetType: "event",
-          targetId: eventId,
-          meta: {
-            name: bareName,
-            subject: parsed.subject ?? null,
-            test: parsed.test === true,
-            source: auditedSource,
-            auth_via: auth.via ?? null,
-            fields: Object.keys(parsed.payload ?? {}),
-          },
+        storeIdempotency(auth.tenantId, idemKey, {
+          status: 503,
+          body: pending,
         });
       } catch (err) {
-        req.log.warn({ err }, "event.publish: audit write failed");
+        req.log.error(
+          { err, eventId },
+          "idempotency: failed to persist pending event enqueue recipe",
+        );
+        return reply.fail(
+          "idempotency_store_failed",
+          "event was stored but not enqueued because its retry recipe could not be persisted",
+          500,
+        );
       }
     }
+    // This route is authenticated and permission-gated. Its body-level
+    // `source` is descriptive metadata, never a reason to omit an operation
+    // audit. Dedicated unauthenticated webhook ingress uses separate routes.
+    // Audit persistence is a prerequisite for a success response and broker
+    // handoff, so an operator action can never succeed invisibly.
+    try {
+      ensureEventPublishAudit({
+        tenantId: auth.tenantId,
+        userId: auth.userId,
+        authVia: auth.via,
+        eventId,
+        name: bareName,
+        subject: parsed.subject ?? null,
+        test: parsed.test === true,
+        source: parsed.source ?? "authenticated_api",
+        fields: Object.keys(eventPayload),
+      });
+    } catch (err) {
+      req.log.error({ err, eventId }, "event.publish: audit write failed");
+      return reply.fail(
+        "audit_failed",
+        `event ${eventId} is durably stored, but its audit record could not be written`,
+        500,
+      );
+    }
 
-    const okBody = { event_id: eventId, name: tenantNamespacedName };
+    try {
+      await getTenantInngest(auth.tenantSlug).send({
+        id: eventId,
+        name: wireEventName as `${string}/${string}`,
+        data: inngestData,
+      });
+    } catch (err) {
+      req.log.error({ err, eventId }, "event.publish: Inngest enqueue failed");
+      return reply.fail(
+        "enqueue_failed",
+        `event ${eventId} is durably stored, but Inngest rejected the enqueue; retry with the same idempotency key`,
+        502,
+      );
+    }
+    // The live Event/Terminal stream represents broker-accepted traffic. The local events row above
+    // is a durable pending outbox entry until send() succeeds, so publishing before this point made a
+    // rejected enqueue look live in the operator UI.
+    try {
+      publishStreamEvent({
+        type: "event.emitted",
+        tenantId: auth.tenantId,
+        at: Date.now(),
+        eventId,
+        name: bareName,
+        subject: parsed.subject ?? null,
+        sourceRunId: null,
+      });
+    } catch {
+      /* broker acceptance + durable event row remain authoritative */
+    }
+
     if (idemKey) {
       // Cache the envelope-wrapped body so a retry replays the same shape
       // the client originally received (the error plugin wraps `reply.ok`
@@ -160,7 +409,7 @@ export async function eventsRoutes(app: FastifyInstance) {
       try {
         storeIdempotency(auth.tenantId, idemKey, {
           status: 200,
-          body: { ok: true, data: okBody },
+          body: successBody,
         });
       } catch (err) {
         req.log.warn({ err }, "idempotency: cache write failed (event)");
@@ -184,47 +433,120 @@ export async function eventsRoutes(app: FastifyInstance) {
       let payload: unknown = null;
       if (row.payloadRef) {
         const [filePath, offsetStr] = row.payloadRef.split("#");
-        if (filePath && offsetStr != null) {
-          try {
-            const buf = await readFile(filePath);
-            const offset = parseInt(offsetStr, 10);
-            const nl = buf.indexOf(0x0a, offset);
-            const line = buf.toString(
-              "utf8",
-              offset,
-              nl === -1 ? undefined : nl,
-            );
-            payload = JSON.parse(line).data;
-          } catch {}
+        if (
+          !filePath ||
+          offsetStr == null ||
+          !Number.isSafeInteger(Number(offsetStr))
+        ) {
+          return reply.fail(
+            "payload_unreadable",
+            "event payload reference is malformed",
+            409,
+          );
+        }
+        try {
+          const buf = await readFile(filePath);
+          const offset = Number(offsetStr);
+          const nl = buf.indexOf(0x0a, offset);
+          const line = buf.toString("utf8", offset, nl === -1 ? undefined : nl);
+          payload = JSON.parse(line).data;
+        } catch (err) {
+          req.log.error(
+            { err, eventId: id, payloadRef: row.payloadRef },
+            "event.replay: payload read failed",
+          );
+          return reply.fail(
+            "payload_unreadable",
+            "original event payload cannot be read; replay was not enqueued",
+            409,
+          );
         }
       }
 
       // P0-API-01 — use makeId("evt") so same-millisecond replays cannot
       // collide on the legacy `${id}-replay-${Date.now()}` pattern.
       const newId = makeId("evt");
-      try {
-        await getTenantInngest(auth.tenantSlug).send({
-          name: `${auth.tenantSlug}/${row.name}` as `${string}/${string}`,
-          data: {
-            ...((payload as Record<string, unknown>) ?? {}),
-            __triggerEventId: newId,
-            __replayOf: id,
-          },
-        });
-      } catch (err) {
-        req.log.warn({ err }, "event.replay: inngest.send failed");
-      }
-      try {
-        const audit = await import("../../plugins/audit");
-        audit.writeAudit({
+      // A replay is a new durable event, not just an Inngest message. Without
+      // this row the manifest runtime's runs.trigger_event_id foreign key
+      // points at a missing event and the replayed run never starts.
+      const replayData = {
+        ...((payload as Record<string, unknown>) ?? {}),
+        subject: row.subject ?? undefined,
+        ...(auth.tenantSlug === "zhaopin"
+          ? { entity_id: row.subject ?? newId }
+          : {}),
+        __triggerEventId: newId,
+        __replayOf: id,
+      };
+      const replayRef = await appendToLedger(auth.tenantSlug, {
+        id: newId,
+        name: row.name,
+        subject: row.subject ?? undefined,
+        data: replayData,
+        ts: Date.now(),
+      });
+      db.insert(events)
+        .values({
+          id: newId,
           tenantId: auth.tenantId,
+          name: row.name,
+          category: row.category ?? null,
+          subject: row.subject ?? null,
+          payloadRef: replayRef,
+        })
+        .run();
+      try {
+        writeAudit({
+          tenantId: auth.tenantId,
+          actorUserId: auth.userId ?? undefined,
           action: "event.replay",
           targetType: "event",
           targetId: id,
           meta: { new_event_id: newId },
         });
+      } catch (err) {
+        req.log.error(
+          { err, eventId: newId },
+          "event.replay: audit write failed",
+        );
+        return reply.fail(
+          "audit_failed",
+          `replay event was persisted as ${newId}, but its audit record could not be written`,
+          500,
+        );
+      }
+      try {
+        await getTenantInngest(auth.tenantSlug).send({
+          id: newId,
+          name: tenantEventName(
+            auth.tenantSlug,
+            row.name,
+          ) as `${string}/${string}`,
+          data: replayData,
+        });
+      } catch (err) {
+        req.log.error(
+          { err, eventId: newId },
+          "event.replay: inngest.send failed",
+        );
+        return reply.fail(
+          "enqueue_failed",
+          `replay event was persisted as ${newId}, but Inngest rejected the enqueue`,
+          502,
+        );
+      }
+      try {
+        publishStreamEvent({
+          type: "event.emitted",
+          tenantId: auth.tenantId,
+          at: Date.now(),
+          eventId: newId,
+          name: row.name,
+          subject: row.subject ?? null,
+          sourceRunId: null,
+        });
       } catch {
-        /* audit best-effort */
+        /* broker acceptance + durable replay row remain authoritative */
       }
       return reply.ok({ replayed: id, new_event_id: newId });
     },
@@ -273,9 +595,7 @@ export async function eventsRoutes(app: FastifyInstance) {
       const out = await fetchCausality(auth.tenantSlug, req.query.seed);
       return reply.ok(out);
     }
-    const limit = req.query.limit
-      ? parseInt(req.query.limit, 10)
-      : undefined;
+    const limit = req.query.limit ? parseInt(req.query.limit, 10) : undefined;
     const rows = await listRecentEvents(auth.tenantSlug, {
       limit,
       name: req.query.name,
@@ -304,15 +624,14 @@ export async function eventsRoutes(app: FastifyInstance) {
     // SQLite `unixepoch()` second-boundary: `receivedAt` is stamped at
     // floor(now() in seconds) * 1000, so a cursor of exactly `Date.now()`
     // would miss any row inserted in the current wall-clock second.
-    const sinceParam = req.query.since
-      ? parseInt(req.query.since, 10)
-      : NaN;
-    let cursor = Number.isFinite(sinceParam)
-      ? sinceParam
-      : Date.now() - 1000;
+    const sinceParam = req.query.since ? parseInt(req.query.since, 10) : NaN;
+    let cursor = Number.isFinite(sinceParam) ? sinceParam : Date.now() - 1000;
     const names =
       req.query.names && req.query.names.length > 0
-        ? req.query.names.split(",").map((s) => s.trim()).filter(Boolean)
+        ? req.query.names
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean)
         : null;
 
     let closed = false;
@@ -340,7 +659,20 @@ export async function eventsRoutes(app: FastifyInstance) {
           reply.raw.write(sseFrame("event", JSON.stringify(r)));
         }
       } catch (err) {
-        req.log.warn({ err }, "events/stream: poll failed");
+        req.log.error(
+          { err },
+          "events/stream: poll failed; closing stale stream",
+        );
+        try {
+          reply.raw.write(
+            sseFrame(
+              "error",
+              JSON.stringify({ code: "event_stream_poll_failed" }),
+            ),
+          );
+        } finally {
+          close();
+        }
       }
     }, SSE_POLL_MS);
 

@@ -142,6 +142,69 @@ describe("manifest-import: validate mode", () => {
     expect(typeof out.data.schema_version).toBe("number");
   });
 
+  it("rejects production generated code with no structured attestation", async () => {
+    const workflow = await loadFixture("happy-v1.json") as Array<Record<string, unknown>>;
+    workflow[0] = {
+      ...workflow[0],
+      generated: true,
+      codeExecuted: true,
+      typescript_code:
+        "export const generatedAgent = defineAgent({ name: 'x', async handler(input) { return input; } });",
+    };
+
+    const out = await post({ mode: "validate", target: "production", workflow });
+    expect(out.data.ok).toBe(false);
+    expect(out.data.issues).toContainEqual(
+      expect.objectContaining({
+        path: "agents.0.code_attestation",
+        severity: "error",
+        code: "production_generated_code_attestation_missing",
+      }),
+    );
+  });
+
+  it("rejects a hand-imported exact hash because no verified Factory receipt capability exists", async () => {
+    const workflow = await loadFixture("happy-v1.json") as Array<Record<string, unknown>>;
+    const code = "export const generatedAgent = defineAgent({ name: 'x', async handler(input) { return input; } });";
+    workflow[0] = {
+      ...workflow[0],
+      generated: true,
+      codeExecuted: true,
+      typescript_code: code,
+      code_attestation: {
+        allow_production: true,
+        expected_sha256: createHash("sha256").update(code, "utf8").digest("hex"),
+      },
+    };
+
+    const out = await post({ mode: "validate", target: "production", workflow });
+    expect(out.data.ok).toBe(false);
+    expect(out.data.issues).toContainEqual(expect.objectContaining({
+      path: "agents.0.code_attestation",
+      severity: "error",
+      code: "production_generated_code_attestation_untrusted",
+    }));
+  });
+
+  it("rejects a production attestation whose hash is not the exact typescript_code bytes", async () => {
+    const workflow = await loadFixture("happy-v1.json") as Array<Record<string, unknown>>;
+    workflow[0] = {
+      ...workflow[0],
+      generated: true,
+      codeExecuted: true,
+      typescript_code: "export const generatedAgent = defineAgent({ async handler() { return { ok: true }; } });",
+      code_attestation: { allow_production: true, expected_sha256: "0".repeat(64) },
+    };
+
+    const out = await post({ mode: "validate", target: "production", workflow });
+    expect(out.data.ok).toBe(false);
+    expect(out.data.issues).toContainEqual(expect.objectContaining({
+      path: "agents.0.code_attestation.expected_sha256",
+      severity: "error",
+      code: "production_generated_code_hash_mismatch",
+    }));
+  });
+
   it("missing-actor manifest reports a Zod error", async () => {
     const workflow = await loadFixture("missing-actor.json");
     const out = await post({ mode: "validate", workflow });

@@ -8,25 +8,15 @@
 
 import { useQuery } from "@tanstack/react-query";
 import type { UseQueryResult } from "@tanstack/react-query";
+import { readApiData } from "@/lib/api-response";
 import { tenantHeader } from "./tenant-header";
-
-interface ApiOk<T> {
-  ok: true;
-  data: T;
-}
-interface ApiErr {
-  ok: false;
-  error: { code: string; message: string };
-}
 
 async function callV1<T>(path: string): Promise<T> {
   const res = await fetch(path, {
     credentials: "same-origin",
     headers: { Accept: "application/json", ...tenantHeader() },
   });
-  const body = (await res.json()) as ApiOk<T> | ApiErr;
-  if (!body.ok) throw new Error(`${path}: ${body.error.code} — ${body.error.message}`);
-  return body.data;
+  return readApiData<T>(res, path);
 }
 
 export interface ReasoningTurn {

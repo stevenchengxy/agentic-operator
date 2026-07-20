@@ -56,8 +56,32 @@ const META_KEYS = new Set([
   "subject",
 ]);
 
+/** Keys whose value controls the next emitted event. A selector belongs to
+ * the step that produced it; carrying an older selector into a later step can
+ * silently route on a stale decision. */
+const EMIT_SELECTOR_KEYS = ["_emit", "event", "next_event", "outcome_event"] as const;
+
 function asRecord(v: unknown): Record<string, unknown> | null {
   return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
+}
+
+/**
+ * Accumulate structured outputs across steps in one agent run.
+ *
+ * Plain objects are shallow-merged (the current step wins), which keeps an
+ * earlier JD/identity/invitation field available to later tools and to the
+ * emitted envelope. Arrays, strings, null and other values retain the legacy
+ * replacement semantics. Old branch selectors are removed before merging so
+ * only the current step may choose the outgoing event.
+ */
+export function mergeStepResults(previous: unknown, current: unknown): unknown {
+  const prev = asRecord(previous);
+  const next = asRecord(current);
+  if (!prev || !next) return current;
+
+  const merged: Record<string, unknown> = { ...prev };
+  for (const key of EMIT_SELECTOR_KEYS) delete merged[key];
+  return Object.assign(merged, next);
 }
 
 /**
@@ -89,6 +113,11 @@ export interface AssembleInput {
   /** OPTIONAL declared contract fields (the emit event's event_data) that MUST be present — a
    *  missing one is reported as a data-gap, not silently dropped. */
   contractFields?: string[];
+  /** Full Agent Factory output contract. Validation happens against the
+   * pre-offload business payload so a content-addressed BlobRef cannot turn a
+   * valid string/object into a false type mismatch. `required` defaults to
+   * true, matching Factory contract reconciliation. */
+  contractSchema?: RuntimeContractField[];
   /** offloader: given (fieldPath, value) return a BlobRef to replace an oversized value, else null.
    *  Injected so the size policy + content-addressed store live outside this pure module. */
   offload?: (fieldPath: string, value: unknown) => BlobRef | null;
@@ -105,6 +134,70 @@ export interface AssembleResult {
   offloaded: string[];
   /** declared contract fields missing from the assembled payload (a data gap). */
   missing: string[];
+  /** Runtime contract failures. Callers must fail the run before persisting or
+   * dispatching an event whenever this list is non-empty. */
+  contractErrors: RuntimeContractError[];
+}
+
+export interface RuntimeContractField {
+  field: string;
+  type: string;
+  required?: boolean;
+}
+
+export interface RuntimeContractError {
+  field: string;
+  kind: "missing" | "type_mismatch";
+  expectedType: string;
+  actualType?: string;
+}
+
+function normalizedContractType(value: string): string {
+  const type = value.trim().toLowerCase();
+  if (type.endsWith("[]") || type.startsWith("array") || type === "list" || type === "arr") return "array";
+  if (["string", "str", "text", "varchar", "char"].includes(type)) return "string";
+  if (["number", "num", "int", "integer", "float", "double", "decimal", "numeric", "long", "bigint"].includes(type)) return "number";
+  if (["bool", "boolean"].includes(type)) return "boolean";
+  if (["object", "json", "map", "record", "dict", "dictionary", "struct"].includes(type)) return "object";
+  return "unknown";
+}
+
+function runtimeContractType(value: unknown): string {
+  if (Array.isArray(value)) return "array";
+  if (value === null) return "null";
+  return typeof value === "object" ? "object" : typeof value;
+}
+
+/** Validate the exact business payload that will be emitted. Unknown domain
+ * types remain presence-only; known primitive/container types fail closed. */
+export function validateRuntimeContractPayload(
+  payload: Record<string, unknown>,
+  schema: RuntimeContractField[],
+): RuntimeContractError[] {
+  const errors: RuntimeContractError[] = [];
+  for (const field of schema) {
+    if (!field?.field) continue;
+    const present = Object.prototype.hasOwnProperty.call(payload, field.field)
+      && payload[field.field] !== undefined
+      && payload[field.field] !== null;
+    const expectedType = normalizedContractType(field.type);
+    if (!present) {
+      if (field.required !== false) {
+        errors.push({ field: field.field, kind: "missing", expectedType });
+      }
+      continue;
+    }
+    const actualType = runtimeContractType(payload[field.field]);
+    if (expectedType !== "unknown" && actualType !== expectedType) {
+      errors.push({
+        field: field.field,
+        kind: "type_mismatch",
+        expectedType,
+        actualType,
+      });
+    }
+  }
+  return errors;
 }
 
 /** Assemble the outbound event payload: carry-forward ⊕ overlay, unify to top-level, offload big
@@ -114,6 +207,10 @@ export function assembleEmitPayload(input: AssembleInput): AssembleResult {
   const lrFields = asRecord(input.lastResult) ?? {};
   // Business fields = carried-forward inputs, overlaid by THIS agent's outputs (the producer wins).
   const merged: Record<string, unknown> = { ...carriedSource, ...lrFields };
+  const contractErrors = validateRuntimeContractPayload(
+    merged,
+    input.contractSchema ?? [],
+  );
   const carried = Object.keys(carriedSource).filter((k) => !(k in lrFields));
   // #W1-6 — COLLISION visibility: the producer's output intentionally wins over a same-named inbound
   // field, but that shadowing was silent. Report which inbound fields were overwritten (and whether
@@ -168,8 +265,11 @@ export function assembleEmitPayload(input: AssembleInput): AssembleResult {
     },
   };
 
-  const missing = (input.contractFields ?? []).filter((f) => !(f in merged) || merged[f] == null);
-  return { payload, carried, shadowed, offloaded, missing };
+  const missing = [...new Set([
+    ...(input.contractFields ?? []).filter((f) => !(f in merged) || merged[f] == null),
+    ...contractErrors.filter((error) => error.kind === "missing").map((error) => error.field),
+  ])];
+  return { payload, carried, shadowed, offloaded, missing, contractErrors };
 }
 
 /** Async twin of rehydratePayload — for resolvers that can fall back to a SHARED backend on local

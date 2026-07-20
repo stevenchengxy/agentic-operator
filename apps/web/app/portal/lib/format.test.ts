@@ -2,6 +2,11 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import { fmtAgo, fmtDur, fmtBytes, fmtNum } from "./format";
 
 describe("fmtAgo", () => {
+  it("renders an em dash for missing or invalid timestamps", () => {
+    expect(fmtAgo(0)).toBe("—");
+    expect(fmtAgo(Number.NaN)).toBe("—");
+  });
+
   afterEach(() => vi.useRealTimers());
 
   it("returns Ns ago under one minute", () => {

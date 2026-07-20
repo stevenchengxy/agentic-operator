@@ -10,6 +10,9 @@ import {
   activeBlobBackend,
   setBlobRemoteBackend,
   resetBlobBackendCache,
+  blobBackendHealth,
+  BlobBackendConfigurationError,
+  BlobBackendRequestError,
   putBlob,
   getBlob,
   fetchBlobRemote,
@@ -81,24 +84,69 @@ describe("S3 backend request shape", () => {
     expect(got).toBe("ok");
   });
 
-  it("returns null (not throw) on a non-2xx get", async () => {
+  it("returns null only for a real 404", async () => {
     globalThis.fetch = (async () => new Response("nope", { status: 404 })) as typeof fetch;
     const b = makeS3Backend({ AGENTIC_BLOB_S3_BUCKET: "b", AWS_ACCESS_KEY_ID: "A", AWS_SECRET_ACCESS_KEY: "S" })!;
     expect(await b.get("missing")).toBeNull();
   });
+
+  it("fails closed on non-2xx PUT and non-404 GET responses", async () => {
+    globalThis.fetch = (async (_url: unknown, init?: { method?: string }) =>
+      new Response("upstream unavailable", { status: init?.method === "PUT" ? 503 : 500 })) as typeof fetch;
+    const b = makeS3Backend({ AGENTIC_BLOB_S3_BUCKET: "b", AWS_ACCESS_KEY_ID: "A", AWS_SECRET_ACCESS_KEY: "S" })!;
+    await expect(b.put("hash", "bytes")).rejects.toBeInstanceOf(BlobBackendRequestError);
+    await expect(b.get("hash")).rejects.toMatchObject({ status: 500, operation: "GET" });
+  });
+});
+
+describe("HTTP blob backend response truthfulness", () => {
+  const origFetch = globalThis.fetch;
+  afterEach(() => { globalThis.fetch = origFetch; });
+
+  it("throws on failed writes/server reads and reserves null for 404", async () => {
+    const b = makeHttpBackend({ AGENTIC_BLOB_HTTP_BASE: "https://blob.example" })!;
+    globalThis.fetch = (async () => new Response("denied", { status: 403 })) as typeof fetch;
+    await expect(b.put("h", "x")).rejects.toMatchObject({ status: 403, operation: "PUT" });
+    await expect(b.get("h")).rejects.toMatchObject({ status: 403, operation: "GET" });
+    globalThis.fetch = (async () => new Response("missing", { status: 404 })) as typeof fetch;
+    await expect(b.get("h")).resolves.toBeNull();
+  });
 });
 
 describe("backend selection", () => {
-  it("S3 wins over HTTP when both configured; HTTP alone; none → null", () => {
+  it("selects one complete backend, rejects ambiguous/partial config, and allows unconfigured fs", () => {
     const both = { AGENTIC_BLOB_S3_BUCKET: "b", AWS_ACCESS_KEY_ID: "A", AWS_SECRET_ACCESS_KEY: "S", AGENTIC_BLOB_HTTP_BASE: "https://x" };
     resetBlobBackendCache();
-    expect(activeBlobBackend(both)?.name).toBe("s3");
+    expect(() => activeBlobBackend(both)).toThrow(BlobBackendConfigurationError);
+    resetBlobBackendCache();
+    expect(activeBlobBackend({ AGENTIC_BLOB_S3_BUCKET: "b", AWS_ACCESS_KEY_ID: "A", AWS_SECRET_ACCESS_KEY: "S" })?.name).toBe("s3");
     resetBlobBackendCache();
     expect(activeBlobBackend({ AGENTIC_BLOB_HTTP_BASE: "https://x/" })?.name).toBe("http");
     resetBlobBackendCache();
     expect(activeBlobBackend({})).toBeNull();
     expect(makeHttpBackend({})).toBeNull();
     expect(makeS3Backend({ AGENTIC_BLOB_S3_BUCKET: "b" })).toBeNull(); // creds missing → inert
+    resetBlobBackendCache();
+    expect(() => activeBlobBackend({ AGENTIC_BLOB_S3_BUCKET: "b" })).toThrow(/AWS_ACCESS_KEY_ID/);
+    resetBlobBackendCache();
+    expect(() => activeBlobBackend({ AGENTIC_BLOB_HTTP_TOKEN: "token-only" })).toThrow(/AGENTIC_BLOB_HTTP_BASE/);
+  });
+
+  it("health performs a real read/write probe and exposes failure", async () => {
+    const values = new Map<string, string>();
+    setBlobRemoteBackend({
+      name: "probe",
+      put: async (hash, bytes) => { values.set(hash, bytes); },
+      get: async (hash) => values.get(hash) ?? null,
+    });
+    await expect(blobBackendHealth()).resolves.toMatchObject({ configured: true, ok: true, driver: "fs+probe" });
+
+    setBlobRemoteBackend({
+      name: "broken",
+      put: async () => { throw new Error("write denied"); },
+      get: async () => null,
+    });
+    await expect(blobBackendHealth()).resolves.toMatchObject({ configured: true, ok: false, driver: "fs+broken" });
   });
 });
 

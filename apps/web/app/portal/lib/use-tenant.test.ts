@@ -8,7 +8,6 @@ import { describe, expect, it } from "vitest";
 import {
   resolveTenantParam,
   rewriteTenantInPath,
-  DEFAULT_TENANT,
 } from "./use-tenant";
 
 describe("resolveTenantParam", () => {
@@ -16,16 +15,30 @@ describe("resolveTenantParam", () => {
     expect(resolveTenantParam("support")).toBe("support");
   });
 
-  it("falls back to the default when the param is undefined", () => {
-    expect(resolveTenantParam(undefined)).toBe(DEFAULT_TENANT);
+  it("uses only an explicitly supplied verified-session fallback", () => {
+    expect(resolveTenantParam(undefined, "acme")).toBe("acme");
+    expect(() => resolveTenantParam(undefined)).toThrow(
+      "Tenant route parameter is required",
+    );
   });
 
   it("returns the first element of an array param", () => {
     expect(resolveTenantParam(["foo", "bar"])).toBe("foo");
   });
 
-  it("falls back to the default when the array is empty", () => {
-    expect(resolveTenantParam([])).toBe(DEFAULT_TENANT);
+  it("fails closed when an array param is empty", () => {
+    expect(() => resolveTenantParam([])).toThrow(
+      "Tenant route parameter is required",
+    );
+  });
+
+  it("rejects malformed route and session tenant slugs", () => {
+    expect(() => resolveTenantParam("../admin")).toThrow(
+      "Tenant route parameter is required",
+    );
+    expect(() => resolveTenantParam(undefined, "bad/slug")).toThrow(
+      "Tenant route parameter is required",
+    );
   });
 });
 
@@ -36,21 +49,39 @@ describe("rewriteTenantInPath", () => {
     );
   });
 
-  it("preserves the trailing detail segment", () => {
+  it("drops tenant-scoped detail ids", () => {
     expect(
       rewriteTenantInPath("/portal/raas/runs/run-abc", "support"),
-    ).toBe("/portal/support/runs/run-abc");
+    ).toBe("/portal/support/runs");
   });
 
   it("treats /portal alone as no-rest", () => {
-    expect(rewriteTenantInPath("/portal", "support")).toBe("/portal/support");
+    expect(rewriteTenantInPath("/portal", "support")).toBe(
+      "/portal/support/dashboard",
+    );
+  });
+
+  it("preserves the settings usage view", () => {
+    expect(rewriteTenantInPath("/portal/raas/settings/usage", "support")).toBe(
+      "/portal/support/settings/usage",
+    );
   });
 
   it("falls back to /portal/<tenant> when not under /portal", () => {
-    expect(rewriteTenantInPath("/sign-in", "support")).toBe("/portal/support");
+    expect(rewriteTenantInPath("/sign-in", "support")).toBe(
+      "/portal/support/dashboard",
+    );
   });
 
   it("handles an empty path", () => {
-    expect(rewriteTenantInPath("/", "support")).toBe("/portal/support");
+    expect(rewriteTenantInPath("/", "support")).toBe(
+      "/portal/support/dashboard",
+    );
+  });
+
+  it("rejects malformed tenant slugs", () => {
+    expect(() => rewriteTenantInPath("/portal/raas/runs", "../admin")).toThrow(
+      "Invalid tenant slug",
+    );
   });
 });

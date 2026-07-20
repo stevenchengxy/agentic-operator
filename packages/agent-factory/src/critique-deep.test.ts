@@ -32,11 +32,28 @@ function bigPlanCtx(): { ctx: BrainCtx; events: BrainEvent[] } {
 
 beforeEach(() => {
   process.env.CUSTOM_LLM_API_KEY = "test-key"; // gateway configured → deep review reachable
+  process.env.FACTORY_AI_MODEL = "test/real-model";
+  // Keep the intentional fallback failure local and deterministic. Hitting
+  // api.openai.com with a fake key made the full monorepo suite timing-sensitive.
+  process.env.FACTORY_GATEWAY_BASE_URL = "http://127.0.0.1:1";
   vi.mocked(runSpecialists).mockReset();
 });
 afterEach(() => {
   delete process.env.CUSTOM_LLM_API_KEY;
+  delete process.env.FACTORY_AI_MODEL;
+  delete process.env.FACTORY_GATEWAY_BASE_URL;
+  delete process.env.FACTORY_PERSPECTIVES;
 });
+
+const PERSPECTIVES_CTX = {
+  selected: [
+    { id: "operation", label: "运营视角", focus: "…", adapted: true },
+    { id: "backoffice", label: "后台对账视角", focus: "…", adapted: false },
+  ],
+  okCount: 2,
+  total: 2,
+  source: "llm" as const,
+};
 
 describe("critique_plan — 三视角分治评审", () => {
   it("三视角 issues 去重合并，含高危 → verdict=revise", async () => {
@@ -54,6 +71,55 @@ describe("critique_plan — 三视角分治评审", () => {
     expect(out.issues.some((i) => i.perspective === "链路完整视角")).toBe(true);
     expect(vi.mocked(runSpecialists)).toHaveBeenCalledTimes(1);
     const tasks = vi.mocked(runSpecialists).mock.calls[0]![1] as Array<{ id: string }>;
+    expect(tasks.map((t) => t.id)).toEqual(["chain", "rules", "contract"]);
+  });
+
+  // #PERSPECTIVES P2 — 理解阶段有镜头结论时，深评追加一个「业务视角」挑战者：只提计划层面的
+  // 新问题（agent 边界/合并/交接承接），明令禁止复述理解层发现；无镜头数据或开关关闭时保持三件套。
+  it("ctx 有镜头结论 → 追加第 4 个 stakeholder 挑战任务（含标签与不复述禁令）", async () => {
+    vi.mocked(runSpecialists).mockResolvedValue([
+      { id: "chain", role: "链路完整视角", ok: true, output: { issues: [] }, summary: "" },
+      { id: "rules", role: "规则合规视角", ok: true, output: { issues: [] }, summary: "" },
+      { id: "contract", role: "IO 契约视角", ok: true, output: { issues: [] }, summary: "" },
+      { id: "stakeholder", role: "业务视角", ok: true, output: { issues: [{ severity: "high", problem: "候选人拒绝后的交接点没有 agent 承接", fix: "补一个承接 agent" }] }, summary: "" },
+    ] as never);
+    const { ctx } = bigPlanCtx();
+    ctx.ontologyPerspectives = PERSPECTIVES_CTX;
+    ctx.ontologyUnderstanding = "深读理解（含业务视角结论）";
+    const r = await critique.execute({ deep: true }, ctx);
+    const tasks = vi.mocked(runSpecialists).mock.calls[0]![1] as Array<{ id: string; role: string; system: string; user: string }>;
+    expect(tasks.map((t) => t.id)).toEqual(["chain", "rules", "contract", "stakeholder"]);
+    const st = tasks[3]!;
+    expect(st.role).toBe("业务视角");
+    expect(st.system).toContain("运营视角、后台对账视角"); // 带上理解阶段实际选配的镜头标签
+    expect(st.user).toContain("不要复述"); // 只提计划层新问题
+    const out = r.output as { issues: Array<{ perspective: string }> };
+    expect(out.issues.some((i) => i.perspective === "业务视角")).toBe(true);
+  });
+
+  it("镜头全败（okCount=0）或开关关闭 → 保持三件套", async () => {
+    vi.mocked(runSpecialists).mockResolvedValue([
+      { id: "chain", role: "链路完整视角", ok: true, output: { issues: [] }, summary: "" },
+      { id: "rules", role: "规则合规视角", ok: true, output: { issues: [] }, summary: "" },
+      { id: "contract", role: "IO 契约视角", ok: true, output: { issues: [] }, summary: "" },
+    ] as never);
+    const { ctx } = bigPlanCtx();
+    ctx.ontologyPerspectives = { ...PERSPECTIVES_CTX, okCount: 0 };
+    await critique.execute({ deep: true }, ctx);
+    let tasks = vi.mocked(runSpecialists).mock.calls[0]![1] as Array<{ id: string }>;
+    expect(tasks.map((t) => t.id)).toEqual(["chain", "rules", "contract"]);
+
+    vi.mocked(runSpecialists).mockClear();
+    vi.mocked(runSpecialists).mockResolvedValue([
+      { id: "chain", role: "链路完整视角", ok: true, output: { issues: [] }, summary: "" },
+      { id: "rules", role: "规则合规视角", ok: true, output: { issues: [] }, summary: "" },
+      { id: "contract", role: "IO 契约视角", ok: true, output: { issues: [] }, summary: "" },
+    ] as never);
+    process.env.FACTORY_PERSPECTIVES = "0";
+    const { ctx: c2 } = bigPlanCtx();
+    c2.ontologyPerspectives = PERSPECTIVES_CTX;
+    await critique.execute({ deep: true }, c2);
+    tasks = vi.mocked(runSpecialists).mock.calls[0]![1] as Array<{ id: string }>;
     expect(tasks.map((t) => t.id)).toEqual(["chain", "rules", "contract"]);
   });
 
@@ -78,8 +144,8 @@ describe("critique_plan — 三视角分治评审", () => {
     const { ctx, events } = bigPlanCtx();
     const r = await critique.execute({ deep: true }, ctx);
     expect(events.some((e) => e.t === "reflect" && String((e as { lesson: string }).lesson).includes("降级"))).toBe(true);
-    // 假 key 下单跳 chatJson 失败 → 工具自身的"网关错误已跳过"兜底
-    expect(r.ok).toBe(true);
-    expect(r.summary).toContain("跳过");
+    // 假 key 下单跳 chatJson 失败 → 明确阻断，不能伪装成 issues:[] 通过。
+    expect(r.ok).toBe(false);
+    expect(r.summary).toContain("阻断");
   });
 });

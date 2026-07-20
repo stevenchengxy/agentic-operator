@@ -14,7 +14,6 @@ export const buildReport: PromptDescriptor = definePrompt({
   name: "buildReport",
   description:
     "Assemble a complete HTML hiring-funnel report from BATCH_MATCH_COMPLETED, persist via writeReportToDisk.",
-  model: "anthropic/claude-haiku-4-5",
   system: [
     "你是 reportAgent,生成可读性强的 HTML 招聘漏斗报告。",
     "",

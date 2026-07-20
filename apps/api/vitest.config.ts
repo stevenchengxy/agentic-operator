@@ -4,6 +4,20 @@ import { defineConfig } from "vitest/config";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, "..", "..");
+// Every Vitest invocation owns all mutable state. Fixed `data/test-models` and
+// `data/agentic.test.db` paths let a delayed teardown from an interrupted or
+// concurrent run delete the active suite's fixtures halfway through, turning
+// real bootstrap assertions into misleading ENOENT/SQLite failures.
+const TEST_RUN_ROOT =
+  process.env.AGENTIC_API_TEST_RUN_ROOT?.trim() ||
+  path.join(
+    REPO_ROOT,
+    "data",
+    "test-runs",
+    `${process.pid}-${Date.now().toString(36)}`,
+  );
+const TEST_MODELS_DIR = path.join(TEST_RUN_ROOT, "models");
+process.env.AGENTIC_API_TEST_RUN_ROOT = TEST_RUN_ROOT;
 
 export default defineConfig({
   test: {
@@ -11,22 +25,22 @@ export default defineConfig({
     globals: true,
     testTimeout: 30_000,
     hookTimeout: 30_000,
+    globalSetup: ["./test/global-setup.ts"],
     setupFiles: ["./test/setup.ts"],
     pool: "forks", // ensures the better-sqlite3 binding isn't shared across worker threads
     sequence: { concurrent: false }, // tests use the same SQLite — serialize to avoid lock contention
-    // `sequence.concurrent: false` only serializes within a worker. Without
-    // `singleFork: true`, vitest spawns one worker per test file and they
-    // race for SQLite's exclusive writer lock — the manifest-import commit
-    // tx is heavy enough that two parallel runs trip SQLITE_BUSY (5 s
-    // timeout) before either finishes. Pin to one worker.
-    poolOptions: { forks: { singleFork: true } },
-    // Pin `AGENTIC_MODELS_DIR` to the repo-root `models/` so tests that read
-    // the RAAS-v1 fixtures (TC-11, TC-33, …) don't depend on the developer
-    // setting it in the shell. Setting via `env` makes it visible to test
-    // code at module-top-level — `setup.ts` runs after import resolution,
-    // which is too late for tests that read the env in a top-level const.
+    // `sequence.concurrent: false` only serializes within a worker. Vitest 4
+    // removed poolOptions.singleFork; top-level fileParallelism:false is the
+    // supported equivalent and forces one worker. Every suite intentionally
+    // shares one isolated SQLite snapshot, so parallel files would race while
+    // cloning/applying migrations and could corrupt the test fixture.
+    fileParallelism: false,
+    // Point every reader/writer at the cloned fixture tree prepared by
+    // global-setup. Setting via `env` makes the value visible to test code at
+    // module-top-level; setupFiles would be too late for those imports.
     env: {
-      AGENTIC_MODELS_DIR: path.join(REPO_ROOT, "models"),
+      AGENTIC_MODELS_DIR: TEST_MODELS_DIR,
+      AGENTIC_API_TEST_RUN_ROOT: TEST_RUN_ROOT,
     },
   },
 });

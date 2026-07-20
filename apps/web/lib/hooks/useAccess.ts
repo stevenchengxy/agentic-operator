@@ -22,16 +22,8 @@ import type {
   MemberRow,
   TenantRole,
 } from "@agentic/contracts";
+import { readApiData } from "@/lib/api-response";
 import { tenantHeader } from "./tenant-header";
-
-interface ApiOk<T> {
-  ok: true;
-  data: T;
-}
-interface ApiErr {
-  ok: false;
-  error: { code: string; message: string };
-}
 
 async function callV1<T>(path: string, init: RequestInit = {}): Promise<T> {
   const { headers: initHeaders, ...rest } = init;
@@ -48,15 +40,7 @@ async function callV1<T>(path: string, init: RequestInit = {}): Promise<T> {
       ...(initHeaders as Record<string, string> | undefined),
     },
   });
-  const body = (await res.json()) as ApiOk<T> | ApiErr;
-  if (!body.ok) {
-    const e = new Error(`${body.error.code} — ${body.error.message}`) as Error & {
-      code?: string;
-    };
-    e.code = body.error.code;
-    throw e;
-  }
-  return body.data;
+  return readApiData<T>(res, path);
 }
 
 export const ACCESS_KEYS = {

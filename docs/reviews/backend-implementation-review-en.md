@@ -388,7 +388,7 @@ The code-agent path lives in `packages/agents` (~700 LOC) and is the synchronous
 - `run-engine.ts` (301 LOC) — orchestrates the run row, step rows, gateway call, log writer, and SSE publish.
 - `registry.ts` (42 LOC) — `agentRegistry.register(name, factory)` import-time.
 - `bootstrap.ts` (221 LOC) — `bootstrapCodeAgents()` writes the `__system` tenant + workflow + version + agent rows for every registered code agent.
-- `system/` — built-in code agents (`testAgent`, etc.).
+- `system/` — built-in code agents; `testAgent` is registered only by the explicit test harness.
 - `gateway-host.ts` (29 LOC) — module-global `setGateway` / `getGateway` for LLM dispatch.
 
 `agent.run(input, ctx)` writes a per-line `.log` file via `log-writer.ts` and emits `run.started`/`run.step.*`/`run.completed|failed` through the broadcast channel so `/v1/stream` subscribers (and the `useStream` hook) invalidate React-Query keys live.
@@ -444,7 +444,7 @@ The cookie flow uses `jose@5` HS256. The shared secret is read from `AUTH_SESSIO
 ### 9.2 Boot-time guard
 
 `assertAuthModeSafe()` (auth.ts:205) refuses to return when:
-1. `AUTH_MODE=dev` + `NODE_ENV=production` — would silently bypass bearer auth and authenticate every request as the seeded admin tenant.
+1. `AUTH_MODE=dev` + `NODE_ENV=production` — would bypass bearer auth and authenticate every request as the explicitly configured real development user; this combination is rejected.
 2. `AUTH_MODE=dev` + `AGENTIC_DEV_TENANT` references a non-existent slug — silent every-request-null.
 
 The guard runs inside `registerAuth()` so an unsafe env crashes boot rather than going to production.

@@ -60,14 +60,19 @@ export async function safeFetch(
   init: RequestInit = {},
   fetchFn: typeof fetch = fetch,
   maxHops = 3,
+  validateUrl?: (url: URL) => void,
 ): Promise<Response> {
-  let url = assertPublicUrl(raw).toString();
+  let parsed = assertPublicUrl(raw);
+  validateUrl?.(parsed);
+  let url = parsed.toString();
   for (let hop = 0; hop <= maxHops; hop++) {
     const res = await fetchFn(url, { ...init, redirect: "manual" });
     if (res.status >= 300 && res.status < 400) {
       const loc = res.headers.get("location");
       if (!loc) return res;
-      url = assertPublicUrl(new URL(loc, url).toString()).toString();
+      parsed = assertPublicUrl(new URL(loc, url).toString());
+      validateUrl?.(parsed);
+      url = parsed.toString();
       continue;
     }
     return res;

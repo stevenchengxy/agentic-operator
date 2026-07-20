@@ -19,7 +19,6 @@
     "@agentic/shared": "workspace:*",
     "@anthropic-ai/sdk": "^0.39.0",
     "@google/generative-ai": "^0.21.0",
-    "drizzle-orm": "^0.45.2",
     "openai": "^4.85.0",
     "zod": "^4.4.3"
   },

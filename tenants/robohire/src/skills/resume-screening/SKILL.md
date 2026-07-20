@@ -11,11 +11,11 @@ Use this skill when you have a shortlist from sourcing and need to produce a ran
 ## Inputs
 
 - The `CANDIDATES_SOURCED` event payload (shortlist + `job_requisition_id`).
-- The req's `must_have` and `nice_to_have` arrays (refetch via `robohire-mcp.get_job_requisition` if not in the event).
+- The real requisition `jd` plus `must_have` and `nice_to_have` fields supplied in the event. Missing fields are an integration gap, not permission to synthesize them.
 
 ## Procedure
 
-1. For each candidate, call `matchResumeApi` with `{ candidate_id, resume_id, job_requisition_ids: [<the one>] }`.
+1. For each candidate, call `matchResumeApi` with the exact `{ resume, jd }` strings supplied by the event.
 2. Translate the upstream `overall_status` to one of `STRONG_FIT | POSSIBLE_FIT | WEAK_FIT`:
    - `pass` or score ≥ 80 → `STRONG_FIT`
    - `partial` or score 65-79 → `POSSIBLE_FIT`

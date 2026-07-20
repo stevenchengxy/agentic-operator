@@ -122,10 +122,20 @@ function PaletteInner({
   const router = useRouter();
   const [q, setQ] = useState("");
   const [cursor, setCursor] = useState(0);
-  const { data: agents = [] } = useAgents();
-  const { data: events = [] } = useEvents({ limit: 50 });
-  const { data: runs = [] } = useRuns({ limit: 50 });
-  const { data: tasks = [] } = useTasks();
+  const agentsQuery = useAgents();
+  const eventsQuery = useEvents({ limit: 50 });
+  const runsQuery = useRuns({ limit: 50 });
+  const tasksQuery = useTasks();
+  const agents = agentsQuery.data ?? [];
+  const events = eventsQuery.data ?? [];
+  const runs = runsQuery.data ?? [];
+  const tasks = tasksQuery.data ?? [];
+  const dynamicSourcesUnavailable = [
+    agentsQuery,
+    eventsQuery,
+    runsQuery,
+    tasksQuery,
+  ].some((query) => query.isError);
 
   const commands = useMemo<Command[]>(() => {
     const tenanted = VIEW_LINKS.map((c) => ({
@@ -163,13 +173,16 @@ function PaletteInner({
       };
     });
 
-    const taskCommands: Command[] = tasks.slice(0, 20).map((t) => ({
+    const taskCommands: Command[] = tasks
+      .filter((task) => task.status === "open")
+      .slice(0, 20)
+      .map((t) => ({
       id: `t:${t.id}`,
       group: "Tasks",
       label: t.id,
       hint: t.type,
-      href: `/portal/${tenant}/tasks/${t.id}`,
-    }));
+      href: `/portal/${tenant}/tasks?selected=${encodeURIComponent(t.id)}`,
+      }));
 
     return [
       ...tenanted,
@@ -300,6 +313,19 @@ function PaletteInner({
             renderGrouped(filtered, cursor, activate, t)
           )}
         </div>
+        {dynamicSourcesUnavailable ? (
+          <div
+            role="alert"
+            style={{
+              padding: "8px 14px",
+              borderTop: "1px solid var(--border)",
+              color: "var(--amber)",
+              fontSize: 11,
+            }}
+          >
+            {t("cmdk.dynamicResultsUnavailable")}
+          </div>
+        ) : null}
       </div>
     </div>
   );

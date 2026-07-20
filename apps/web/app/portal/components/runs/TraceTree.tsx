@@ -34,7 +34,7 @@ const STATUS_TO_DOT: Record<string, StatusName> = {
   waiting: "waiting",
   ok: "ok",
   failed: "failed",
-  cancelled: "paused",
+  cancelled: "cancelled",
   paused: "paused",
   idle: "idle",
 };
@@ -83,12 +83,24 @@ interface TraceTreeProps {
 export function TraceTree({ node, depth = 0, tenant }: TraceTreeProps) {
   const { t } = useI18n();
   // Fetch direct children for this run (one query per visible level).
-  const { data: children = [] } = useRuns({
+  const childrenQuery = useRuns({
     parentRunId: node.run.id,
     limit: 50,
   });
+  const children = childrenQuery.data ?? [];
 
   const entries = composeTrace(node.steps, children);
+  if (childrenQuery.isError) {
+    return (
+      <Empty
+        title={t("traceTree.loadFailed")}
+        hint={childrenQuery.error.message}
+      />
+    );
+  }
+  if (childrenQuery.isLoading && !childrenQuery.data && node.steps.length === 0) {
+    return <Empty title={t("traceTree.loading")} hint={node.run.id} />;
+  }
   if (entries.length === 0) {
     return (
       <Empty
@@ -106,6 +118,11 @@ export function TraceTree({ node, depth = 0, tenant }: TraceTreeProps) {
         paddingLeft: depth > 0 ? 12 : 0,
       }}
     >
+      {childrenQuery.isLoading && !childrenQuery.data ? (
+        <div role="status" style={{ padding: "6px 8px", color: "var(--text-3)", fontSize: 11 }}>
+          {t("traceTree.loadingChildren")}
+        </div>
+      ) : null}
       {entries.map((e, i) => {
         if (e.kind === "step" && e.step) {
           return <StepRowItem key={`s-${e.step.id}-${i}`} step={e.step} />;
@@ -200,7 +217,8 @@ function ChildRunBlock({
   const [open, setOpen] = useState(depth <= 1);
 
   // Lazy load this child's steps when expanded.
-  const { data: childDetail } = useRun(open ? child.id : null);
+  const childQuery = useRun(open ? child.id : null);
+  const childDetail = childQuery.data;
   const childSteps = childDetail?.steps ?? [];
 
   const tone =
@@ -208,7 +226,11 @@ function ChildRunBlock({
       ? "var(--red)"
       : child.status === "running"
         ? "var(--signal)"
-        : "var(--green)";
+        : child.status === "ok"
+          ? "var(--green)"
+          : child.status === "queued" || child.status === "waiting"
+            ? "var(--amber)"
+            : "var(--text-3)";
 
   return (
     <div
@@ -284,11 +306,17 @@ function ChildRunBlock({
 
       {open && depth < MAX_DEPTH && (
         <div style={{ padding: "6px 10px" }}>
-          <TraceTree
-            node={{ run: child, steps: childSteps }}
-            depth={depth}
-            tenant={tenant}
-          />
+          {childQuery.isError ? (
+            <Empty title={t("traceTree.loadFailed")} hint={childQuery.error.message} />
+          ) : childQuery.isLoading && !childDetail ? (
+            <Empty title={t("traceTree.loading")} hint={child.id} />
+          ) : (
+            <TraceTree
+              node={{ run: child, steps: childSteps }}
+              depth={depth}
+              tenant={tenant}
+            />
+          )}
         </div>
       )}
       {open && depth >= MAX_DEPTH && (

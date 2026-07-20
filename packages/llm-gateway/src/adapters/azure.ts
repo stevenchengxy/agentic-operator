@@ -10,9 +10,12 @@
 import { AzureOpenAI } from "openai";
 import {
   flattenContentToText,
+  type ChatContentBlock,
   type ChatRequest,
   type ChatResponse,
   type ProviderAdapter,
+  type ToolCall,
+  type ToolDef,
 } from "../types";
 import { LLMError, classifyHttpError } from "../errors";
 
@@ -32,6 +35,85 @@ function mapFinishReason(reason: string | null | undefined): ChatResponse["finis
     default:
       return reason ? "unknown" : "stop";
   }
+}
+
+function encodeToolName(name: string): string {
+  return name.replace(/\./g, "__");
+}
+
+function decodeToolName(name: string): string {
+  return name.replace(/__/g, ".");
+}
+
+type AzureMessage =
+  | { role: "system" | "user" | "assistant"; content: string }
+  | {
+      role: "assistant";
+      content: string;
+      tool_calls: Array<{
+        id: string;
+        type: "function";
+        function: { name: string; arguments: string };
+      }>;
+    }
+  | { role: "tool"; tool_call_id: string; content: string };
+
+function mapStructuredMessage(
+  role: ChatRequest["messages"][number]["role"],
+  content: ChatContentBlock[],
+): AzureMessage[] {
+  if (role === "tool") {
+    return content
+      .filter((block) => block.type === "tool_result")
+      .map((block) => ({
+        role: "tool" as const,
+        tool_call_id: block.tool_use_id,
+        content: block.content,
+      }));
+  }
+  if (role === "assistant") {
+    const text = content
+      .filter((block) => block.type === "text")
+      .map((block) => block.text)
+      .join("");
+    const toolCalls = content
+      .filter((block) => block.type === "tool_use")
+      .map((block) => ({
+        id: block.id,
+        type: "function" as const,
+        function: {
+          name: encodeToolName(block.name),
+          arguments: JSON.stringify(block.input),
+        },
+      }));
+    return toolCalls.length > 0
+      ? [{ role: "assistant", content: text, tool_calls: toolCalls }]
+      : [{ role: "assistant", content: text }];
+  }
+  return [{ role, content: flattenContentToText(content) }];
+}
+
+function mapMessages(messages: ChatRequest["messages"]): AzureMessage[] {
+  return messages.flatMap((message) =>
+    typeof message.content === "string"
+      ? [{
+          role: message.role === "tool" ? "assistant" as const : message.role,
+          content: message.content,
+        }]
+      : mapStructuredMessage(message.role, message.content),
+  );
+}
+
+function mapTools(tools: ToolDef[] | undefined) {
+  if (!tools || tools.length === 0) return undefined;
+  return tools.map((tool) => ({
+    type: "function" as const,
+    function: {
+      name: encodeToolName(tool.name),
+      description: tool.description,
+      parameters: tool.input_schema,
+    },
+  }));
 }
 
 export function createAzureAdapter(config: AzureAdapterConfig): ProviderAdapter {
@@ -78,13 +160,13 @@ export function createAzureAdapter(config: AzureAdapterConfig): ProviderAdapter 
         const completion = await c.chat.completions.create(
           {
             model: deployment,
-            messages: req.messages.map((m) => ({
-              role: m.role === "tool" ? "assistant" : m.role,
-              content: flattenContentToText(m.content),
-            })),
+            messages: mapMessages(req.messages) as Parameters<
+              typeof c.chat.completions.create
+            >[0]["messages"],
             temperature: req.temperature,
             max_tokens: req.maxTokens,
             stop: req.stop,
+            ...(mapTools(req.tools) ? { tools: mapTools(req.tools) } : {}),
             ...(req.jsonMode ? { response_format: { type: "json_object" as const } } : {}),
           },
           {
@@ -95,6 +177,28 @@ export function createAzureAdapter(config: AzureAdapterConfig): ProviderAdapter 
         const choice = completion.choices[0];
         const text = choice?.message?.content ?? "";
         const usage = completion.usage;
+        const toolCalls: ToolCall[] = [];
+        for (const call of choice?.message?.tool_calls ?? []) {
+          if (call.type !== "function") continue;
+          let input: Record<string, unknown> = {};
+          try {
+            const value = JSON.parse(call.function.arguments) as unknown;
+            if (value && typeof value === "object" && !Array.isArray(value)) {
+              input = value as Record<string, unknown>;
+            }
+          } catch {
+            throw new LLMError(
+              `Azure OpenAI returned invalid JSON arguments for tool '${call.function.name}'`,
+              "provider_error",
+              "azure",
+            );
+          }
+          toolCalls.push({
+            id: call.id,
+            name: decodeToolName(call.function.name),
+            input,
+          });
+        }
 
         return {
           text,
@@ -104,6 +208,7 @@ export function createAzureAdapter(config: AzureAdapterConfig): ProviderAdapter 
           tokensOut: usage?.completion_tokens ?? null,
           finishReason: mapFinishReason(choice?.finish_reason),
           latencyMs: Date.now() - start,
+          toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
           raw: completion,
         };
       } catch (err) {

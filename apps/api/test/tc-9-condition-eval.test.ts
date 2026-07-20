@@ -7,9 +7,9 @@
  *   - Logical chain (&& / ||) evaluates.
  *   - `event.data.X` reads from the event payload.
  *   - Missing condition returns true (default-run).
- *   - Malformed condition fails OPEN (returns true + logs a warning).
- *   - Forbidden syntax (function expr, assignment, indexing) is rejected
- *     pre-eval (fails open + logs).
+ *   - Malformed condition fails CLOSED (returns false + logs a warning).
+ *   - Forbidden syntax (function expr, assignment, global access) is rejected
+ *     before evaluation (fails closed + logs).
  */
 
 import { describe, it, expect, vi } from "vitest";
@@ -86,37 +86,36 @@ describe("TC-9: condition evaluator (P0-RT-05)", () => {
     );
   });
 
-  it("fails OPEN on malformed expressions (returns true, logs)", () => {
+  it("fails CLOSED on malformed expressions (returns false, logs)", () => {
     const log = vi.fn();
-    expect(evaluateCondition("lastResult.a +++ b", ctx({}), log)).toBe(true);
+    expect(evaluateCondition("lastResult.a +++ b", ctx({}), log)).toBe(false);
     expect(log).toHaveBeenCalled();
   });
 
-  it("rejects forbidden syntax pre-eval (fail-open)", () => {
+  it("rejects forbidden executable syntax before evaluation", () => {
     const log = vi.fn();
     // assignment, semicolons, function decl, indexing — all banned
-    expect(evaluateCondition("lastResult.a = 1", ctx({}), log)).toBe(true);
-    expect(evaluateCondition("(function(){})()", ctx({}), log)).toBe(true);
-    expect(evaluateCondition("lastResult['evil']", ctx({}), log)).toBe(true);
-    expect(evaluateCondition("eval('1')", ctx({}), log)).toBe(true);
-    // every call should have logged a warning
-    expect(log.mock.calls.length).toBeGreaterThanOrEqual(4);
+    expect(evaluateCondition("lastResult.a = 1", ctx({}), log)).toBe(false);
+    expect(evaluateCondition("(function(){})()", ctx({}), log)).toBe(false);
+    expect(evaluateCondition("eval('1')", ctx({}), log)).toBe(false);
+    // Safe quoted-bracket paths are part of the canonical runtime dialect.
+    expect(evaluateCondition("lastResult['evil']", ctx({ evil: true }), log)).toBe(true);
+    expect(log.mock.calls.length).toBeGreaterThanOrEqual(3);
   });
 
   it("rejects identifiers outside the allowed top-level set", () => {
     const log = vi.fn();
     // `process` is not a permitted top-level identifier
-    expect(evaluateCondition("process.env.FOO == 'bar'", ctx({}), log)).toBe(true);
+    expect(evaluateCondition("process.env.FOO == 'bar'", ctx({}), log)).toBe(false);
     expect(log).toHaveBeenCalled();
   });
 
-  it("undefined deep chain throws → fail-open returns true", () => {
-    // Deep access on undefined throws → caught → fails open.
+  it("undefined deep chains resolve safely to false", () => {
     const log = vi.fn();
     expect(
       evaluateCondition("lastResult.does.not.exist > 5", ctx({}), log),
-    ).toBe(true);
-    expect(log).toHaveBeenCalled();
+    ).toBe(false);
+    expect(log).not.toHaveBeenCalled();
   });
 
   it("shallow undefined field compares as expected (no throw)", () => {

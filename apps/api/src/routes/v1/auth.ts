@@ -13,7 +13,7 @@
  */
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { and, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import {
   getDb,
   hashPassword,
@@ -62,9 +62,10 @@ function rateLimited(key: string, max: number): boolean {
 }
 
 function clientIp(req: FastifyRequest): string {
-  const fwd = req.headers["x-forwarded-for"];
-  const first = Array.isArray(fwd) ? fwd[0] : fwd?.split(",")[0];
-  return (first ?? req.ip ?? "unknown").trim();
+  // Fastify derives this from the socket (or from trusted proxy hops when
+  // `trustProxy` is explicitly configured). Never trust a caller-supplied
+  // x-forwarded-for value directly or the auth rate limit is trivially bypassed.
+  return req.ip;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -92,7 +93,7 @@ function preferredTenantSlug(userId: string, hint?: string): string {
   const mine = membershipsFor(userId);
   if (hint && mine.some((m) => m.tenantSlug === hint)) return hint;
   if (mine[0]) return mine[0].tenantSlug;
-  return hint ?? process.env.AGENTIC_DEV_TENANT ?? "raas";
+  return hint ?? process.env.AGENTIC_DEV_TENANT?.trim() ?? "";
 }
 
 async function issueSession(
@@ -155,35 +156,39 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
 
     const userId = makeId("usr");
     const now = new Date();
-    db.insert(users)
-      .values({
-        id: userId,
-        email,
-        name: body.name,
-        passwordHash: hashPassword(body.password),
-        platformRole: "none",
-        status: "active",
-        createdAt: now,
-        updatedAt: now,
-      })
-      .run();
+    // The account and its required supervision record commit together. Issuing a
+    // cookie before either write completed previously let a 500 response carry a
+    // valid session, or leave an unaudited account behind.
+    db.transaction((tx) => {
+      tx.insert(users)
+        .values({
+          id: userId,
+          email,
+          name: body.name,
+          passwordHash: hashPassword(body.password),
+          platformRole: "none",
+          status: "active",
+          createdAt: now,
+          updatedAt: now,
+        })
+        .run();
+      writeAudit(
+        {
+          userId,
+          email,
+          name: body.name,
+          platformRole: "none",
+          tenantId: "",
+          tenantSlug: "",
+          role: null,
+          via: "cookie",
+        },
+        { action: "user.register", targetType: "user", targetId: userId, meta: { email } },
+      );
+    });
 
     const tenantSlug = preferredTenantSlug(userId);
     await issueSession(reply, { id: userId, name: body.name }, tenantSlug);
-
-    writeAudit(
-      {
-        userId,
-        email,
-        name: body.name,
-        platformRole: "none",
-        tenantId: "",
-        tenantSlug: "",
-        role: null,
-        via: "cookie",
-      },
-      { action: "user.register", targetType: "user", targetId: userId, meta: { email } },
-    );
 
     // New self-registered users have no memberships yet — the portal shows a
     // "request access" state until an admin grants one.
@@ -212,8 +217,6 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const tenantSlug = preferredTenantSlug(u.id, body.tenant);
-    await issueSession(reply, { id: u.id, name: u.name }, tenantSlug);
-
     writeAudit(
       {
         userId: u.id,
@@ -227,6 +230,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       },
       { action: "user.login", targetType: "user", targetId: u.id },
     );
+    await issueSession(reply, { id: u.id, name: u.name }, tenantSlug);
 
     return reply.ok({
       user: {
@@ -267,13 +271,13 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     if (!u || !verifyPassword(body.currentPassword, u.passwordHash)) {
       return reply.fail("invalid_credentials", "current password is incorrect", 401);
     }
-    db.update(users)
-      .set({ passwordHash: hashPassword(body.newPassword), updatedAt: new Date() })
-      .where(eq(users.id, ctx.userId))
-      .run();
-    writeAudit(ctx, { action: "user.password_change", targetType: "user", targetId: ctx.userId });
+    db.transaction((tx) => {
+      tx.update(users)
+        .set({ passwordHash: hashPassword(body.newPassword), updatedAt: new Date() })
+        .where(eq(users.id, ctx.userId!))
+        .run();
+      writeAudit(ctx, { action: "user.password_change", targetType: "user", targetId: ctx.userId });
+    });
     return reply.ok({ ok: true });
   });
-
-  void and;
 }

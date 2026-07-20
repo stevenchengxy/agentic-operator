@@ -1,4 +1,4 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import { getDb, tasks, tenants } from "@agentic/db";
 import type { TaskRow } from "@agentic/contracts";
 
@@ -16,9 +16,19 @@ const TASK_COLS = {
   createdAt: tasks.createdAt,
   resolvedAt: tasks.resolvedAt,
   runId: tasks.runId,
+  originEventId: tasks.originEventId,
+  originEventName: tasks.originEventName,
+  waitStepId: tasks.waitStepId,
   awaitingRole: tasks.awaitingRole,
   payloadJson: tasks.payloadJson,
   resolutionJson: tasks.resolutionJson,
+  resumeMarker: tasks.resumeMarker,
+  resumeState: tasks.resumeState,
+  resumeAttempts: tasks.resumeAttempts,
+  resolutionRequestedAt: tasks.resolutionRequestedAt,
+  resumeDispatchedAt: tasks.resumeDispatchedAt,
+  resumeAcknowledgedAt: tasks.resumeAcknowledgedAt,
+  resumeError: tasks.resumeError,
 };
 
 export async function listOpenTasks(
@@ -31,7 +41,13 @@ export async function listOpenTasks(
   return db
     .select(TASK_COLS)
     .from(tasks)
-    .where(and(eq(tasks.tenantId, tenantId), eq(tasks.status, "open")))
+    .where(
+      and(
+        eq(tasks.tenantId, tenantId),
+        inArray(tasks.status, ["open", "resolving"]),
+        isNull(tasks.deletedAt),
+      ),
+    )
     .orderBy(desc(tasks.createdAt))
     .limit(opts.limit ?? 20)
     .all();
@@ -47,7 +63,7 @@ export async function listAllTasks(
   return db
     .select(TASK_COLS)
     .from(tasks)
-    .where(eq(tasks.tenantId, tenantId))
+    .where(and(eq(tasks.tenantId, tenantId), isNull(tasks.deletedAt)))
     .orderBy(desc(tasks.createdAt))
     .limit(opts.limit ?? 100)
     .all();
@@ -63,7 +79,13 @@ export async function getTask(
   const row = db
     .select(TASK_COLS)
     .from(tasks)
-    .where(and(eq(tasks.tenantId, tenantId), eq(tasks.id, taskId)))
+    .where(
+      and(
+        eq(tasks.tenantId, tenantId),
+        eq(tasks.id, taskId),
+        isNull(tasks.deletedAt),
+      ),
+    )
     .all()[0];
   return row ?? null;
 }

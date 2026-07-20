@@ -7,7 +7,7 @@
  * panel within a tab.
  *
  * The theme button's icon reflects the *resolved* palette, read from the
- * live `data-theme` attribute via a MutationObserver (mirrors useDensity).
+ * live `data-theme` attribute via a MutationObserver.
  * Starting from "dark" matches the server-rendered `<html data-theme="dark">`
  * so there is no hydration mismatch; it then tracks explicit toggles and OS
  * `system`-mode flips.

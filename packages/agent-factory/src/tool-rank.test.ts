@@ -10,6 +10,7 @@ const REAL: RealTool[] = [
   { name: "robohire.matchResumeApi", summary: "Score a resume against a job description", category: "robohire" },
   { name: "fs.readFromInbox", summary: "Read a file from the inbox folder", category: "fs" },
   { name: "ontology.fetchActionRules", summary: "Fetch the executor=Agent rules for an action", category: "ontology" },
+  { name: "records.upsert", summary: "Persist candidate resume application and job posting business records", category: "records" },
 ];
 const action = (name: string, objs: string[], declared: string[] = []): OntologyAction =>
   ({ id: name, name, target_objects: objs, tool_use: declared, actor: ["Agent"], trigger: [], triggered_event: [], system_prompt: "", user_prompt: "" });
@@ -23,6 +24,19 @@ describe("rankRealTools (#C)", () => {
   });
   it("returns [] gracefully when there is no real registry", () => {
     expect(rankRealTools(action("parseResume", ["Resume"]), [])).toEqual([]);
+  });
+  it("uses action_steps/integration/side_effects to discover read and persistence boundaries", () => {
+    const rich = action("processResume", []);
+    rich.action_steps = [{ name: "parseResume", type: "tool" }, { name: "persistCandidate", type: "tool" }];
+    rich.integration = { systems: [
+      { name: "MinIO", role: "reads", capability: "read resume file from inbox" },
+      { name: "Partner PG", role: "writes", capability: "persist candidate resume application records" },
+    ] };
+    rich.side_effects = { data_changes: [{ object_type: "Candidate" }, { object_type: "Resume" }, { object_type: "Application" }] };
+    const ranked = rankRealTools(rich, REAL);
+    expect(ranked).toContain("fs.readFromInbox");
+    expect(ranked).toContain("records.upsert");
+    expect(ranked).toContain("robohire.parseResumeApi");
   });
 });
 
@@ -49,8 +63,8 @@ describe("searchRealTools (#P3 — progressive tool discovery)", () => {
     expect(searchRealTools("quantum teleportation", REAL)).toEqual([]);
   });
   it("derives side-effect class from name/category", () => {
-    expect(toolSideEffect({ name: "robohire.parseResumeApi" })).toBe("read");
-    expect(toolSideEffect({ name: "robohire.inviteCandidateApi" })).toBe("write");
-    expect(toolSideEffect({ name: "fs.readFromInbox" })).toBe("read");
+    expect(toolSideEffect({ sideEffect: "read" })).toBe("read");
+    expect(toolSideEffect({ sideEffect: "write" })).toBe("write");
+    expect(toolSideEffect({})).toBe("unknown");
   });
 });
