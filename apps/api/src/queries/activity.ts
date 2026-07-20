@@ -21,7 +21,7 @@ import {
   eventStore,
   events,
   getDb,
-  llmCalls,
+  llmCallTelemetry,
   runs,
   steps,
   tasks,
@@ -458,9 +458,9 @@ export async function getRecentActivity(
   // ── Provider telemetry → llm.call.completed ───────────────────────────────
   const llmRows = db
     .select()
-    .from(llmCalls)
-    .where(eq(llmCalls.tenantId, tid))
-    .orderBy(desc(llmCalls.createdAt))
+    .from(llmCallTelemetry)
+    .where(eq(llmCallTelemetry.tenantId, tid))
+    .orderBy(desc(llmCallTelemetry.createdAt))
     .limit(LLM_CAP)
     .all();
   for (const row of llmRows) {

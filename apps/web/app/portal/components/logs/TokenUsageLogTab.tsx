@@ -113,13 +113,15 @@ export function TokenUsageLogTab() {
   }
 
   const totals = data.totals;
-  const costComplete = data.coverage.costComplete;
-  const provenanceComplete = data.coverage.tokenCoverageComplete;
-  const costPrefix = !costComplete
-    ? "≥"
-    : data.coverage.costEstimated
-      ? "≈"
-      : "";
+  // Legacy provenance block — the ledger-based /v1/usage may omit it. When
+  // absent, completeness degrades to the ledger signal (zero unpriced calls)
+  // and the provenance-only pills/hints are hidden rather than fabricated.
+  const coverage = data.coverage ?? null;
+  const costComplete = coverage
+    ? coverage.costComplete
+    : totals.unpricedCalls === 0;
+  const provenanceComplete = coverage ? coverage.tokenCoverageComplete : true;
+  const costPrefix = !costComplete ? "≥" : coverage?.costEstimated ? "≈" : "";
   const totalTokens = totals.tokensIn + totals.tokensOut;
   return (
     <LogPane
@@ -136,41 +138,45 @@ export function TokenUsageLogTab() {
               </FilterChip>
             ))}
           </div>
-          <MetaPill>
-            {t("logsExplorer.providerTokenCount", {
-              n: fmtNum(data.coverage.exactProviderTokens),
-            })}
-          </MetaPill>
-          {totals.testRuns > 0 && (
+          {coverage && (
             <MetaPill>
-              {t("logsExplorer.testRunsCount", { n: totals.testRuns })}
+              {t("logsExplorer.providerTokenCount", {
+                n: fmtNum(coverage.exactProviderTokens),
+              })}
             </MetaPill>
           )}
-          {data.coverage.auxiliaryCallTokens > 0 && (
+          {(totals.testRuns ?? 0) > 0 && (
+            <MetaPill>
+              {t("logsExplorer.testRunsCount", { n: totals.testRuns ?? 0 })}
+            </MetaPill>
+          )}
+          {coverage && coverage.auxiliaryCallTokens > 0 && (
             <MetaPill>
               {t("logsExplorer.auxiliaryTokens", {
-                n: fmtNum(data.coverage.auxiliaryCallTokens),
+                n: fmtNum(coverage.auxiliaryCallTokens),
               })}
             </MetaPill>
           )}
-          {data.coverage.estimatedTokens > 0 && (
+          {coverage && coverage.estimatedTokens > 0 && (
             <MetaPill>
               {t("logsExplorer.estimatedTokenCount", {
-                n: fmtNum(data.coverage.estimatedTokens),
+                n: fmtNum(coverage.estimatedTokens),
               })}
             </MetaPill>
           )}
-          {data.coverage.ambiguousRuntimeCallTokens > 0 && (
+          {coverage && coverage.ambiguousRuntimeCallTokens > 0 && (
             <MetaPill>
               {t("logsExplorer.ambiguousTokenCount", {
-                n: fmtNum(data.coverage.ambiguousRuntimeCallTokens),
+                n: fmtNum(coverage.ambiguousRuntimeCallTokens),
               })}
             </MetaPill>
           )}
           {!costComplete && (
             <MetaPill>
               {t("logsExplorer.unpricedTokens", {
-                n: fmtNum(data.coverage.unpricedTokens),
+                n: fmtNum(
+                  coverage ? coverage.unpricedTokens : totals.unpricedCalls,
+                ),
               })}
             </MetaPill>
           )}
@@ -193,7 +199,7 @@ export function TokenUsageLogTab() {
           gap: 14,
         }}
       >
-        {!costComplete && (
+        {!costComplete && coverage && (
           <div
             role="note"
             style={{
@@ -207,11 +213,11 @@ export function TokenUsageLogTab() {
             }}
           >
             {t("logsExplorer.costIncompleteHint", {
-              n: fmtNum(data.coverage.unpricedTokens),
+              n: fmtNum(coverage.unpricedTokens),
             })}
           </div>
         )}
-        {!provenanceComplete && (
+        {!provenanceComplete && coverage && (
           <div
             role="alert"
             style={{
@@ -225,15 +231,15 @@ export function TokenUsageLogTab() {
             }}
           >
             {t("logsExplorer.tokenProvenanceIncompleteHint", {
-              ambiguous: fmtNum(data.coverage.ambiguousRuntimeCallTokens),
-              unknown: fmtNum(data.coverage.unknownSourceTokens),
-              ambiguousCalls: fmtNum(data.coverage.ambiguousRuntimeCalls),
-              unknownCalls: fmtNum(data.coverage.unknownSourceCalls),
-              unmeasuredCalls: fmtNum(data.coverage.unmeasuredRuntimeCalls),
+              ambiguous: fmtNum(coverage.ambiguousRuntimeCallTokens),
+              unknown: fmtNum(coverage.unknownSourceTokens),
+              ambiguousCalls: fmtNum(coverage.ambiguousRuntimeCalls),
+              unknownCalls: fmtNum(coverage.unknownSourceCalls),
+              unmeasuredCalls: fmtNum(coverage.unmeasuredRuntimeCalls),
             })}
           </div>
         )}
-        {data.coverage.costEstimated && (
+        {coverage?.costEstimated && (
           <div
             role="note"
             style={{
@@ -246,8 +252,8 @@ export function TokenUsageLogTab() {
             }}
           >
             {t("logsExplorer.tokenEstimationHint", {
-              estimated: fmtNum(data.coverage.estimatedTokens),
-              legacy: fmtNum(data.coverage.legacyRunTokens),
+              estimated: fmtNum(coverage?.estimatedTokens ?? 0),
+              legacy: fmtNum(coverage?.legacyRunTokens ?? 0),
             })}
           </div>
         )}

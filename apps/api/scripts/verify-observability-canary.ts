@@ -16,7 +16,7 @@
 
 import { access, readFile } from "node:fs/promises";
 import path from "node:path";
-import { getDb, llmCalls, runs, users } from "@agentic/db";
+import { getDb, llmCallTelemetry, runs, users } from "@agentic/db";
 import { and, eq } from "drizzle-orm";
 import { initialsFor, signSessionJwt } from "../src/plugins/auth";
 
@@ -367,19 +367,19 @@ async function main(): Promise<void> {
   );
   const callRows = db
     .select({
-      provider: llmCalls.provider,
-      servedModel: llmCalls.servedModel,
-      tokensIn: llmCalls.approxTokensIn,
-      tokensOut: llmCalls.approxTokensOut,
-      tokenSource: llmCalls.tokenSource,
-      ok: llmCalls.ok,
-      purpose: llmCalls.purpose,
+      provider: llmCallTelemetry.provider,
+      servedModel: llmCallTelemetry.servedModel,
+      tokensIn: llmCallTelemetry.approxTokensIn,
+      tokensOut: llmCallTelemetry.approxTokensOut,
+      tokenSource: llmCallTelemetry.tokenSource,
+      ok: llmCallTelemetry.ok,
+      purpose: llmCallTelemetry.purpose,
     })
-    .from(llmCalls)
+    .from(llmCallTelemetry)
     .where(
       and(
-        eq(llmCalls.tenantId, run.tenantId),
-        eq(llmCalls.runId, invocation.runId),
+        eq(llmCallTelemetry.tenantId, run.tenantId),
+        eq(llmCallTelemetry.runId, invocation.runId),
       ),
     )
     .all();

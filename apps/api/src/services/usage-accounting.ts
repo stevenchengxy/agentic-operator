@@ -1,8 +1,18 @@
-/** Shared token/cost accounting used by usage charts and budget reads. */
+/**
+ * Shared token/cost accounting for the FACTORY TELEMETRY plane
+ * (`llm_call_telemetry` + legacy run aggregates). The billing-authoritative
+ * ledger is `llm_calls` (usage-ledger); this module only reconstructs
+ * observability estimates for dashboards that predate the ledger.
+ */
 
-import { and, eq, gte, lt } from "drizzle-orm";
-import { getDb, llmCalls, runs, tenantBudgets } from "@agentic/db";
-import { estimateTokenCostCents } from "@agentic/llm-gateway";
+import { and, gte, lt, eq } from "drizzle-orm";
+import { getDb, llmCallTelemetry, runs } from "@agentic/db";
+import { calculateCost, USD_NANOS_PER_CENT } from "@agentic/llm-gateway";
+import { PROVIDER_IDS, findCatalogModel, type ProviderId } from "@agentic/contracts";
+
+function isProviderId(s: string): s is ProviderId {
+  return (PROVIDER_IDS as readonly string[]).includes(s);
+}
 
 /** Returns null when provider+model pricing is unknown. Callers must expose
  * that incompleteness; there is intentionally no plausible-looking default. */
@@ -12,10 +22,38 @@ export function estimateCostCents(
   tokensOut: number,
   provider?: string | null,
 ): number | null {
-  return (
-    estimateTokenCostCents({ provider, model, tokensIn, tokensOut })
-      ?.usdCents ?? null
-  );
+  if (!model) return null;
+  // Telemetry rows may lack provider attribution (legacy run aggregates).
+  // Search the catalog across providers in that case; pricing is keyed on
+  // (provider, model) in the merged catalog.
+  const candidates: ProviderId[] =
+    provider && isProviderId(provider)
+      ? [provider]
+      : (PROVIDER_IDS as readonly ProviderId[]).filter((id) =>
+          Boolean(findCatalogModel(id, model)),
+        );
+  for (const candidate of candidates) {
+    const cost = calculateCost({
+      provider: candidate,
+      model,
+      usage: {
+        inputTokens: tokensIn,
+        outputTokens: tokensOut,
+        totalTokens: tokensIn + tokensOut,
+        cachedInputTokens: 0,
+        cacheWriteInputTokens: 0,
+        cacheWrite5mInputTokens: 0,
+        cacheWrite1hInputTokens: 0,
+        reasoningTokens: 0,
+        inputAudioTokens: 0,
+        outputAudioTokens: 0,
+      },
+    });
+    if (cost.totalUsdNanos != null) {
+      return cost.totalUsdNanos / USD_NANOS_PER_CENT;
+    }
+  }
+  return null;
 }
 
 export interface AccountedUsage {
@@ -49,58 +87,6 @@ export interface AccountedUsage {
   unpricedTokens: number;
   costComplete: boolean;
   costEstimated: boolean;
-}
-
-function utcMonthStart(at = new Date()): Date {
-  return new Date(Date.UTC(at.getUTCFullYear(), at.getUTCMonth(), 1));
-}
-
-/** Materialize the budget row and advance stale rows to the current calendar
- * month. A manual reset later in the current month remains intact because its
- * periodStart is newer than the month boundary. */
-export function ensureBudgetRow(tenantId: string) {
-  const db = getDb();
-  let row = db
-    .select()
-    .from(tenantBudgets)
-    .where(eq(tenantBudgets.tenantId, tenantId))
-    .all()[0];
-  const monthStart = utcMonthStart();
-  if (!row) {
-    db.insert(tenantBudgets)
-      .values({
-        tenantId,
-        monthlyTokenCap: null,
-        monthlyUsdCap: null,
-        usedTokensMonth: 0,
-        usedUsdMonth: 0,
-        periodStart: monthStart,
-      })
-      .onConflictDoNothing({ target: tenantBudgets.tenantId })
-      .run();
-    row = db
-      .select()
-      .from(tenantBudgets)
-      .where(eq(tenantBudgets.tenantId, tenantId))
-      .all()[0]!;
-  } else if (row.periodStart.getTime() < monthStart.getTime()) {
-    db.update(tenantBudgets)
-      .set({
-        periodStart: monthStart,
-        usedTokensMonth: 0,
-        usedUsdMonth: 0,
-        updatedAt: new Date(),
-      })
-      .where(eq(tenantBudgets.tenantId, tenantId))
-      .run();
-    row = {
-      ...row,
-      periodStart: monthStart,
-      usedTokensMonth: 0,
-      usedUsdMonth: 0,
-    };
-  }
-  return row;
 }
 
 /**
@@ -137,21 +123,21 @@ export function calculateTenantUsage(
     .all();
   const callRows = db
     .select({
-      runId: llmCalls.runId,
-      conversationId: llmCalls.conversationId,
-      provider: llmCalls.provider,
-      model: llmCalls.servedModel,
-      requestedModel: llmCalls.requestedModel,
-      tokensIn: llmCalls.approxTokensIn,
-      tokensOut: llmCalls.approxTokensOut,
-      tokenSource: llmCalls.tokenSource,
+      runId: llmCallTelemetry.runId,
+      conversationId: llmCallTelemetry.conversationId,
+      provider: llmCallTelemetry.provider,
+      model: llmCallTelemetry.servedModel,
+      requestedModel: llmCallTelemetry.requestedModel,
+      tokensIn: llmCallTelemetry.approxTokensIn,
+      tokensOut: llmCallTelemetry.approxTokensOut,
+      tokenSource: llmCallTelemetry.tokenSource,
     })
-    .from(llmCalls)
+    .from(llmCallTelemetry)
     .where(
       and(
-        eq(llmCalls.tenantId, tenantId),
-        gte(llmCalls.createdAt, since),
-        lt(llmCalls.createdAt, until),
+        eq(llmCallTelemetry.tenantId, tenantId),
+        gte(llmCallTelemetry.createdAt, since),
+        lt(llmCallTelemetry.createdAt, until),
       ),
     )
     .all();
@@ -312,22 +298,5 @@ export function calculateTenantUsage(
     unpricedTokens,
     costComplete: unpricedTokens === 0,
     costEstimated: estimatedTokens > 0 || legacyRunTokens > 0,
-  };
-}
-
-/** Read the authoritative gateway-enforcement counters alongside telemetry.
- * This function intentionally performs no reconciliation write. Provider
- * settlement/lease expiry owns those counters transactionally; reconstructing
- * and writing them from partially joinable read models can reopen or invent
- * budget usage. */
-export function reconcileBudgetUsage(
-  row: typeof tenantBudgets.$inferSelect,
-  until: Date = new Date(),
-): AccountedUsage {
-  const usage = calculateTenantUsage(row.tenantId, row.periodStart, until);
-  return {
-    ...usage,
-    tokens: row.usedTokensMonth,
-    usdCents: row.usedUsdMonth,
   };
 }

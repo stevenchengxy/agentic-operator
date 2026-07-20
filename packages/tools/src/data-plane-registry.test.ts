@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  getGlobalToolCatalogEntry,
   globalToolExecutionPolicy,
   globalToolRegistry,
   isToolExecutionPolicy,
@@ -70,28 +71,49 @@ describe("generic data-plane registry", () => {
     });
   });
 
-  it("allows non-mutating RoboHire calls only with an independent sandbox profile", () => {
-    const byName = new Map(listGlobalTools().map((tool) => [tool.name, tool]));
-    for (const name of ["robohireHealthApi", "parseJdApi", "generateJdApi", "parseResumeApi", "matchResumeApi"]) {
-      expect(byName.get(name)).toMatchObject({
+  it("allows non-mutating recruitment calls only with an independent sandbox profile", () => {
+    // Legacy RoboHire names alias to the canonical GoHire implementations;
+    // the reviewed policy must resolve identically through either name.
+    for (const name of [
+      "robohireHealthApi",
+      "gohireHealthApi",
+      "parseJdApi",
+      "gohireParseJdApi",
+      "generateJdApi",
+      "parseResumeApi",
+      "gohireParseResumeApi",
+      "matchResumeApi",
+      "gohireMatchResumeApi",
+    ]) {
+      expect(getGlobalToolCatalogEntry(name)).toMatchObject({
         effectScope: "external",
         sandboxPolicy: "live_external",
       });
     }
-    expect(byName.get("inviteCandidateApi")).toMatchObject({
-      operation: "write",
-      effectScope: "external",
-      sandboxPolicy: "requires_attempt_grant",
-    });
-    expect(byName.get("inviteCandidateApi")?.capabilities?.[0]?.roles).toEqual(
-      expect.arrayContaining(["write", "writes"]),
-    );
-    for (const name of ["robohireHealthApi", "parseJdApi", "generateJdApi", "parseResumeApi", "matchResumeApi", "inviteCandidateApi"]) {
-      const tool = byName.get(name);
-      expect(tool?.configSchema).toMatchObject({
-        api_key_env: { required: true },
-        base_url_env: { required: true },
+    for (const name of ["inviteCandidateApi", "gohireInviteCandidateApi"]) {
+      const invite = getGlobalToolCatalogEntry(name);
+      expect(invite).toMatchObject({
+        operation: "write",
+        effectScope: "external",
+        sandboxPolicy: "requires_attempt_grant",
       });
+      expect(invite?.capabilities?.[0]?.roles).toEqual(
+        expect.arrayContaining(["write", "writes"]),
+      );
+    }
+    // generateJdApi still rides the env-reference-only RoboHire helper: both
+    // env references stay REQUIRED and nothing implicit may stand in.
+    expect(getGlobalToolCatalogEntry("generateJdApi")?.configSchema).toMatchObject({
+      api_key_env: { required: true },
+      base_url_env: { required: true },
+    });
+    for (const name of ["robohireHealthApi", "parseJdApi", "generateJdApi", "parseResumeApi", "matchResumeApi", "inviteCandidateApi"]) {
+      const tool = getGlobalToolCatalogEntry(name);
+      // The canonical GoHire family resolves credentials via the Settings →
+      // Integrations store with fail-closed env-reference overrides; the
+      // catalog must still document both override knobs for every entry.
+      expect(tool?.configSchema?.api_key_env).toBeDefined();
+      expect(tool?.configSchema?.base_url_env).toBeDefined();
       // The profile decides the env-var names; the registry must not smuggle
       // one tenant's/bootstrap variable in as an implicit alternative.
       expect(tool?.credentialEnv).toBeUndefined();

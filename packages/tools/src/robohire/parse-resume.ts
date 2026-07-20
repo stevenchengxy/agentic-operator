@@ -81,7 +81,7 @@ export class ParseResumeApiError extends Error {
   }
 }
 
-type ResumeContentKind =
+export type ResumeContentKind =
   | "raw_text"
   | "name"
   | "contact"
@@ -270,7 +270,7 @@ function collectPayloadCandidates(
   });
 }
 
-function selectResumePayload(value: unknown): {
+export function selectResumePayload(value: unknown): {
   payload: Record<string, unknown>;
   content: ResumeContentKind[];
   depth: number;
@@ -317,7 +317,7 @@ const FAILURE_CONTAINER_FIELDS = new Set([
   "stages",
 ]);
 
-function collectDiagnostics(
+export function collectDiagnostics(
   value: unknown,
   output: string[] = [],
   seen = new Set<unknown>(),
@@ -348,7 +348,7 @@ function collectDiagnostics(
   return [...new Set(output)];
 }
 
-function hasExplicitFailure(
+export function hasExplicitFailure(
   value: unknown,
   seen = new Set<unknown>(),
   depth = 0,
@@ -387,7 +387,7 @@ function hasExplicitFailure(
   return false;
 }
 
-function terminalDocumentEvidence(diagnostics: readonly string[]): string | null {
+export function terminalDocumentEvidence(diagnostics: readonly string[]): string | null {
   for (const diagnostic of diagnostics) {
     const value = diagnostic.trim();
     const token = value.toLowerCase().replace(/[^a-z0-9]+/g, "_");
@@ -433,7 +433,7 @@ function terminalDocumentEvidence(diagnostics: readonly string[]): string | null
   return null;
 }
 
-function failureDetails(
+export function failureDetails(
   upstreamStatus: number,
   diagnostics: readonly string[],
 ): Record<string, unknown> {

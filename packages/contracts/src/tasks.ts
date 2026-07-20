@@ -42,14 +42,14 @@ export const TaskRow = z.object({
 export type TaskRow = z.infer<typeof TaskRow>;
 
 export const ResolveTaskBody = z.object({
-  decision: z.enum(["approve", "reject"]),
+  decision: z.enum(["approve", "reject", "supplement"]),
   payload: z.unknown().optional(),
 });
 export type ResolveTaskBody = z.infer<typeof ResolveTaskBody>;
 
 export const ResolveTaskResponse = z.object({
   task_id: z.string(),
-  decision: z.enum(["approve", "reject"]),
+  decision: z.enum(["approve", "reject", "supplement"]),
   status: z.enum(["resolving", "resolved"]),
   resume_marker: z.string(),
 });

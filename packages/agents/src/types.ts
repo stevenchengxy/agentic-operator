@@ -5,7 +5,11 @@
  * AgentResult is what run() returns to the caller.
  */
 
-import type { ProviderId } from "@agentic/contracts";
+import type {
+  ProviderId,
+  ReasoningConfig,
+  TextVerbosity,
+} from "@agentic/contracts";
 
 export type AgentKind = "manifest" | "code";
 export type AgentScope = "tenant" | "system";
@@ -41,6 +45,14 @@ export interface AgentContext {
    * instead of allocating a second, untrackable run.
    */
   runId?: string;
+  /**
+   * AI-settings task category for this invocation. When omitted, the agent's
+   * `taskClass` is used (which defaults to `tool.loop`).
+   */
+  taskClass?: string;
+  reasoning?: ReasoningConfig;
+  verbosity?: TextVerbosity;
+  store?: boolean;
   /**
    * P2-FE-18: test-run flag. When true the run engine sets `runs.is_test=true`
    * and the broadcast `run.started` event carries `testRun: true` so SSE

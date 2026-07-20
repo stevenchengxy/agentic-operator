@@ -64,6 +64,8 @@ export interface ButtonProps {
    * should always pass `ariaLabel` for icon-only invocations.
    */
   ariaLabel?: string;
+  ariaControls?: string;
+  ariaExpanded?: boolean;
 }
 
 export function Button({
@@ -77,6 +79,8 @@ export function Button({
   type = "button",
   disabled,
   ariaLabel,
+  ariaControls,
+  ariaExpanded,
 }: ButtonProps) {
   const t = TONES[tone];
   const [hov, setHov] = useState(false);
@@ -84,7 +88,7 @@ export function Button({
   // When `children` is non-empty we let the rendered text serve as the
   // accessible name (no aria-label needed); only icon-only buttons get
   // an explicit aria-label.
-  const accessibleLabel = !children ? ariaLabel ?? title : ariaLabel;
+  const accessibleLabel = !children ? (ariaLabel ?? title) : ariaLabel;
   return (
     <button
       type={type}
@@ -94,6 +98,8 @@ export function Button({
       title={title}
       disabled={disabled}
       aria-label={accessibleLabel}
+      aria-controls={ariaControls}
+      aria-expanded={ariaExpanded}
       style={{
         display: "inline-flex",
         alignItems: "center",

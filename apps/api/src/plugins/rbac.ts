@@ -100,3 +100,55 @@ export function requireSuperadmin(req: FastifyRequest): AuthedContext {
   });
   forbidden("platform.superadmin");
 }
+
+// ─── Enterprise-route guards (merge-compat shims over requirePermission) ─────
+
+/** Token scopes that grant workspace write without a browser session. */
+const WORKSPACE_WRITE_SCOPES = new Set([
+  "*",
+  "workspace:all",
+  "tenant:write",
+  "workflow:write",
+  "workflows:write",
+]);
+
+/**
+ * "Workspace writer" (Kenny's enterprise routes): the caller may create/edit
+ * workflow-authoring artifacts. Session/dev callers must hold the
+ * `workflows.write` permission (tenant admin / superadmin under our matrix);
+ * an API token qualifies via an explicit write-capable scope so scoped machine
+ * credentials keep working without being promoted to full tenant admin.
+ */
+export function requireWorkspaceWriter(req: FastifyRequest): AuthedContext {
+  const ctx = requireAuth(req);
+  if (
+    ctx.via === "token" &&
+    (ctx.scopes ?? []).some((scope) => WORKSPACE_WRITE_SCOPES.has(scope))
+  ) {
+    return ctx;
+  }
+  return requirePermission(req, "workflows.write");
+}
+
+/**
+ * Tenant administrator (credential/settings administration). Wraps
+ * `requirePermission("settings.write")` — admin-level in our matrix — while
+ * preserving Kenny's invariant: an API token must never be able to mint,
+ * rotate, or revoke workspace-wide credentials, even with broad scopes.
+ */
+export function requireTenantAdmin(req: FastifyRequest): AuthedContext {
+  const ctx = requirePermission(req, "settings.write");
+  if (ctx.via === "token") {
+    writeAudit(ctx, {
+      action: "settings.write",
+      decision: "deny",
+      meta: {
+        method: req.method,
+        url: req.url,
+        reason: "api_token_cannot_administer_credentials",
+      },
+    });
+    forbidden("settings.write (api tokens cannot administer tenant credentials)");
+  }
+  return ctx;
+}

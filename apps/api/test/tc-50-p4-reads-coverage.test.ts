@@ -235,15 +235,21 @@ describe("TC-50: P4-TEST-07 read-side coverage uplift", () => {
       const res = await env.fetch("/v1/budgets");
       expect(res.status).toBe(200);
       const body = (await res.json()) as OkEnvelope<{
-        monthlyTokenCap: number;
-        monthlyUsdCap: number;
+        monthlyTokenCap: number | null;
+        monthlyUsdCap: number | null;
         usedTokensMonth: number;
         usedUsdMonth: number;
         periodStart: number;
       }>;
       expect(body.ok).toBe(true);
-      expect(typeof body.data.monthlyTokenCap).toBe("number");
-      expect(typeof body.data.monthlyUsdCap).toBe("number");
+      expect(
+        body.data.monthlyTokenCap === null ||
+          typeof body.data.monthlyTokenCap === "number",
+      ).toBe(true);
+      expect(
+        body.data.monthlyUsdCap === null ||
+          typeof body.data.monthlyUsdCap === "number",
+      ).toBe(true);
     });
   });
 

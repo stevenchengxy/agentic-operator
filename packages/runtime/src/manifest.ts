@@ -12,6 +12,13 @@ import path from "node:path";
 import { validateErrorPredicateSyntax } from "./error-policy";
 import { validateConditionSyntax } from "./action-plan";
 import type { DecisionTable } from "@agentic/shared";
+import {
+  ProviderIdSchema,
+  ReasoningConfigSchema,
+  TaskClassIdSchema,
+  TextVerbositySchema,
+  WorkflowManifestCompatSchema,
+} from "@agentic/contracts";
 
 export const ActorEnum = z.enum(["Agent", "Human"]);
 
@@ -242,10 +249,42 @@ export const ErrorPolicyLadderSchema = z.array(
 });
 
 const ActionFields = {
+  /** Optional stable action id (Agent Studio v2 authored). Branching targets
+   * (`true_action_id`/`false_action_id`) resolve against it, else the name. */
+  id: z.string().optional(),
   order: z.string(),
   name: z.string(),
   description: z.string().optional().default(""),
   type: StepTypeEnum,
+  /** Authored per-action LLM objective (v2). Overrides `description` as the
+   * logic prompt objective when present. */
+  action_prompt: z.string().optional(),
+  /**
+   * Optional per-step model controls (v2 contract). An omitted value inherits
+   * the agent runtime setting; an authored value overrides it for this action
+   * only. Shared losslessly with Agent Studio via @agentic/contracts.
+   */
+  provider: ProviderIdSchema.optional(),
+  model: z.string().trim().min(1).max(240).optional(),
+  task_class: TaskClassIdSchema.optional(),
+  reasoning: ReasoningConfigSchema.optional(),
+  verbosity: TextVerbositySchema.optional(),
+  store: z.boolean().optional(),
+  temperature: z.number().min(0).max(2).optional(),
+  max_tokens: z.number().int().positive().max(1_048_576).optional(),
+  /** Explicit tool identifier for `type:"tool"` actions (v2). Legacy manifests
+   * keep `name === toolName`; when present this wins for dispatch. */
+  tool: z.string().optional(),
+  /** v2 condition branch targets (action `id`/name of a LATER action). */
+  true_action_id: z.string().optional(),
+  false_action_id: z.string().optional(),
+  /** v2 manual-step operator contract. */
+  form_schema: z.record(z.string(), z.unknown()).optional(),
+  awaiting_role: z.string().optional(),
+  /** v2 subflow scheduling + declarative per-action I/O mappings. */
+  wait_policy: z.enum(["wait", "detach"]).optional(),
+  input_mapping: z.record(z.string(), z.unknown()).optional(),
+  output_mapping: z.record(z.string(), z.unknown()).optional(),
   /**
    * Optional action-local capability boundary. Omission is reserved for
    * backwards compatibility with hand-written manifests; Agent Factory
@@ -446,6 +485,10 @@ const ForeachBodyActionSchema: z.ZodTypeAny = z.lazy(() =>
   ),
 );
 
+// `.passthrough()` is deliberate (v2 parity): Agent Studio's authored action
+// fields must survive a round-trip through the legacy runtime parser — a
+// Guided edit or import must never silently discard fields owned by a newer
+// producer. All declared safety validation still runs via superRefine.
 export const ActionSchema = z.object({
   ...ActionFields,
   items_from: safeDataPath.optional(),
@@ -453,7 +496,7 @@ export const ActionSchema = z.object({
   item_key_from: safeDataPath.optional(),
   foreach_mode: z.literal("sequential").optional(),
   foreach_actions: z.array(ForeachBodyActionSchema).min(1).optional(),
-}).superRefine((action, ctx) => {
+}).passthrough().superRefine((action, ctx) => {
   validateActionFailurePolicy(action, ctx);
   validateActionTimeout(action, ctx);
   validateActionInputBinding(action, ctx);
@@ -630,6 +673,17 @@ const emptyStringToUndef = z
   .optional();
 
 /**
+ * Agent Studio's v2 contract uses `null` as the explicit "disabled" value
+ * for schedule fields. Normalized v2 manifests pass through this legacy
+ * runtime parser during import, so accept that v2 sentinel here as well as
+ * the legacy empty string. Both normalize to an omitted schedule.
+ */
+const disabledScheduleToUndef = z
+  .union([z.string(), z.null(), z.undefined()])
+  .transform((v) => (v === "" || v === null ? undefined : v))
+  .optional();
+
+/**
  * Tolerant `tool_use` schema: accepts either an array of canonical entries
  * OR a legacy empty string (coerced to undefined). Any other shape is
  * rejected so we catch authoring mistakes. The inner `.transform(() => undefined)`
@@ -731,6 +785,20 @@ const AgentObjectSchema = z
     // agent's ontology_instructions are its system prompt) and advertises GLOBAL tools in the
     // tool-use loop. Opt-in per agent → zero effect on hand-authored tenants (RAAS et al.).
     generated: z.boolean().optional(),
+    /**
+     * Agent-level AI runtime settings (v2 contract, additive). Declared here
+     * so the runtime reads them typed (register.ts threads them into the
+     * step-engine's gateway calls); per-action overrides live on ActionSchema.
+     */
+    provider: ProviderIdSchema.optional(),
+    model: z.string().trim().min(1).max(240).optional(),
+    task_class: TaskClassIdSchema.optional(),
+    reasoning: ReasoningConfigSchema.optional(),
+    verbosity: TextVerbositySchema.optional(),
+    store: z.boolean().optional(),
+    temperature: z.number().min(0).max(2).optional(),
+    max_tokens: z.number().int().positive().max(1_048_576).optional(),
+    timeout_s: z.number().int().positive().max(86_400).optional(),
     // Ontology provenance for an Agent-Factory-generated agent. Promotion is
     // additive, so one live manifest can legitimately contain several values.
     // Runtime declarative-tool resolution uses this identity to avoid loading
@@ -798,9 +866,10 @@ const AgentObjectSchema = z
     // `.passthrough()` would let the raw empty string flow through and the
     // scheduler would try (and fail) to parse it as a cron expression.
     // Real cron strings like "0 9 * * *" pass through unchanged because
-    // `emptyStringToUndef` only intercepts the empty string.
-    cron: emptyStringToUndef,
-    cron_timezone: emptyStringToUndef,
+    // `disabledScheduleToUndef` only intercepts empty-string/null sentinels
+    // (v2 serializes a disabled schedule as `null`).
+    cron: disabledScheduleToUndef,
+    cron_timezone: disabledScheduleToUndef,
     // Config-driven schedule references. The manifest declares only the env
     // variable names; scheduler.ts resolves the operator-owned cadence and
     // timezone at boot. A missing value is reported as unconfigured rather
@@ -1122,9 +1191,21 @@ export async function loadManifestFromDisk(
     );
   }
   const actionsPath = await resolveModelFile(workflowDir, ["actions.json"]);
-  const manifest = WorkflowManifestSchema.parse(
-    JSON.parse(await readFile(workflowPath, "utf8")),
-  );
+  const rawWorkflow = JSON.parse(
+    await readFile(workflowPath, "utf8"),
+  ) as unknown;
+  // Canonical compatibility boundary (v2): a bare array stays on the legacy
+  // parser so registration behavior does not change merely because a loader
+  // was upgraded. A versioned Studio/import envelope (`{$schemaVersion,
+  // agents}`) is first normalized through the canonical v2 compat schema
+  // (defaults + refinements), then re-validated by the legacy runtime schema —
+  // passthrough preserves every authored v2 field while all runtime safety
+  // validation (plan scopes, error policies, emit declarations) still runs.
+  const manifest = Array.isArray(rawWorkflow)
+    ? WorkflowManifestSchema.parse(rawWorkflow)
+    : WorkflowManifestSchema.parse(
+        WorkflowManifestCompatSchema.parse(rawWorkflow).agents,
+      );
   const actionsExt = await readJsonFileOptional(
     actionsPath,
     ActionsManifestSchema,

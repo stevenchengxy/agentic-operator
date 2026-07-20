@@ -31,10 +31,11 @@
 #     --env-file .env.production \
 #     agentic-api:dev
 
-# Local builds retain the convenient major tag. Supply-chain releases override
-# this global arg with a reviewed docker.io/library/node@sha256:<index digest>,
-# which pins the build, runtime and sandbox-common roots to the same bytes.
-ARG NODE_BASE_IMAGE=node:26-slim
+# Local builds retain a convenient exact-version tag. Supply-chain releases
+# override this global arg with a reviewed docker.io/library/node@sha256:<index
+# digest>, which pins the build, runtime and sandbox-common roots to the same
+# bytes.
+ARG NODE_BASE_IMAGE=node:26.5.0-slim
 
 # --- base ----------------------------------------------------------------
 FROM ${NODE_BASE_IMAGE} AS base
@@ -50,7 +51,7 @@ RUN apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=60 update \
       ca-certificates \
       tini \
  && rm -rf /var/lib/apt/lists/*
-# node:26-slim does NOT ship corepack; install pnpm via npm to keep the
+# node:26.5.0-slim does NOT ship corepack; install pnpm via npm to keep the
 # layer reproducible (avoids `corepack: not found`).
 RUN npm install --global pnpm@11.3.0
 WORKDIR /app

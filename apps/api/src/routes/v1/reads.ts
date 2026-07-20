@@ -40,10 +40,19 @@ export async function readsRoutes(app: FastifyInstance) {
     );
   });
 
-  app.get("/workflows/dag", async (req, reply) => {
-    const auth = requirePermission(req, "dashboard.read");
-    return reply.ok(await getDag(auth.tenantSlug));
-  });
+  // ?workflow=<slug> selects one of the tenant's workflows (workflow
+  // authoring can hold several); omitted → the live default workflow.
+  app.get<{ Querystring: { workflow?: string } }>(
+    "/workflows/dag",
+    async (req, reply) => {
+      const auth = requirePermission(req, "dashboard.read");
+      const workflow =
+        typeof req.query?.workflow === "string" && req.query.workflow.trim()
+          ? req.query.workflow.trim()
+          : undefined;
+      return reply.ok(await getDag(auth.tenantSlug, workflow));
+    },
+  );
 
   app.get("/event-types", async (req, reply) => {
     const auth = requirePermission(req, "dashboard.read");

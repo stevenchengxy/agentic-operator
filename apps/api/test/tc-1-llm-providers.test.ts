@@ -2,14 +2,14 @@
  * TC-1 — Provider listing reflects env state.
  *
  * Boots the API, ensures GET /v1/llm/providers returns every adapter that is
- * actually installed in this process, and that hasKey accurately reflects
- * which env vars are set. Roadmap-only presets must not be manufactured as
- * runnable providers merely to preserve an old count.
+ * actually registered in this process (bedrock/vertex are catalog presets with
+ * no adapter and must not be reported), and that hasKey accurately reflects
+ * which env vars are set.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { PROVIDER_PRESETS } from "@agentic/contracts";
 import { buildTestEnv, type TestEnv } from "./harness";
+import { PROVIDER_IDS } from "@agentic/contracts";
 
 const ENV_BEFORE = {
   ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
@@ -31,7 +31,7 @@ describe("TC-1: /v1/llm/providers", () => {
     await env.cleanup();
   });
 
-  it("returns exactly the adapters installed in the test process", async () => {
+  it("returns exactly the adapters registered in this process", async () => {
     const res = await env.fetch("/v1/llm/providers");
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
@@ -40,14 +40,31 @@ describe("TC-1: /v1/llm/providers", () => {
     };
     expect(body.ok).toBe(true);
     expect(body.data).toBeInstanceOf(Array);
-    // Mock is intentionally available only in tests. Bedrock and Vertex are
-    // catalog presets with no signed adapter in this build and therefore must
-    // not be reported as runnable.
-    const expectedIds = PROVIDER_PRESETS
-      .filter((provider) => provider.installed || provider.id === "mock")
-      .map((provider) => provider.id)
-      .sort();
+    // registerAllProviders() wires 13 real adapters; the deterministic mock is
+    // added only in the test process. bedrock/vertex are catalog presets with
+    // no adapter in this build and must not be reported as runnable, so this
+    // is intentionally NOT PROVIDER_IDS.length.
+    const expectedIds = [
+      "anthropic",
+      "azure",
+      "custom",
+      "deepseek",
+      "gemini",
+      "groq",
+      "mistral",
+      "mock",
+      "moonshot",
+      "openai",
+      "openrouter",
+      "qwen",
+      "together",
+      "zai",
+    ];
     expect(body.data.map((provider) => provider.id).sort()).toEqual(expectedIds);
+    expect(body.data.map((provider) => provider.id)).toEqual(
+      expect.arrayContaining(["moonshot", "zai"]),
+    );
+    expect(PROVIDER_IDS).toEqual(expect.arrayContaining(expectedIds.filter((id) => id !== "mock")));
   });
 
   it("includes the openrouter entry", async () => {

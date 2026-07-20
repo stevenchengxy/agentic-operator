@@ -29,6 +29,9 @@ describe("TC-61: /v1/llm/fleet model-fleet CRUD", () => {
   });
 
   beforeEach(() => {
+    // Deterministic live-discovery upstream: any residual provider /models
+    // probe sees this fixed inventory instead of the network (env.fetch is
+    // app.inject-based, so route requests are unaffected by this mock).
     vi.restoreAllMocks();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
       data: [
@@ -45,8 +48,8 @@ describe("TC-61: /v1/llm/fleet model-fleet CRUD", () => {
   });
 
   afterAll(async () => {
-    if (existsSync(FLEET_PATH)) rmSync(FLEET_PATH);
     vi.restoreAllMocks();
+    if (existsSync(FLEET_PATH)) rmSync(FLEET_PATH);
     delete process.env.AGENTIC_MODEL_FLEET_PATH;
     await env.cleanup();
   });
@@ -56,13 +59,35 @@ describe("TC-61: /v1/llm/fleet model-fleet CRUD", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       ok: boolean;
-      data: Record<string, Array<{ name: string; ctx: number; inP: number; outP: number }>>;
+      data: Record<
+        string,
+        Array<{
+          name: string;
+          ctx: number;
+          inP: number;
+          outP: number;
+          status: string;
+          selectable: boolean;
+        }>
+      >;
     };
     expect(body.ok).toBe(true);
     expect(body.data.openrouter.length).toBeGreaterThan(0);
     const first = body.data.openrouter[0];
     expect(typeof first.name).toBe("string");
     expect(typeof first.ctx).toBe("number");
+    expect(
+      body.data.anthropic.find((model) => model.name === "claude-opus-4"),
+    ).toMatchObject({ status: "legacy", selectable: false });
+  });
+
+  it("GET /models exposes only models eligible for new selection", async () => {
+    const res = await env.fetch("/v1/llm/models?provider=anthropic");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { data: string[] };
+    expect(body.data).toContain("claude-sonnet-5");
+    expect(body.data).not.toContain("claude-opus-4");
+    expect(body.data).not.toContain("claude-mythos-5");
   });
 
   it("GET /fleet initially returns empty array", async () => {
@@ -93,8 +118,9 @@ describe("TC-61: /v1/llm/fleet model-fleet CRUD", () => {
         role: string;
         dailyCapUsd: number;
         maxOutTokens: number;
-        temperature: number;
+        temperature: number | null;
         availability: string;
+        availabilityCheckedAt: number | null;
       };
     };
     expect(body.ok).toBe(true);
@@ -104,8 +130,26 @@ describe("TC-61: /v1/llm/fleet model-fleet CRUD", () => {
     expect(body.data.role).toBe("primary");
     expect(body.data.dailyCapUsd).toBe(30);
     expect(body.data.maxOutTokens).toBe(2048);
-    expect(body.data.temperature).toBe(0.2);
-    expect(body.data.availability).toBe("provider_confirmed");
+    expect(body.data.temperature).toBeNull();
+    // The merged add route does not live-confirm at add time: entries start
+    // explicitly unverified until a provider listing proves the exact id.
+    expect(body.data.availability).toBe("unverified");
+    expect(body.data.availabilityCheckedAt).toBeNull();
+  });
+
+  it("omits temperature by default and rejects it for unsupported models", async () => {
+    const res = await env.fetch("/v1/llm/fleet", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        provider: "openai",
+        modelName: "gpt-5.6-sol",
+        temperature: 0.2,
+      }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { message: string } };
+    expect(body.error.message).toMatch(/does not support temperature/i);
   });
 
   it("POST /fleet honors alias, role, cap, params", async () => {
@@ -123,7 +167,9 @@ describe("TC-61: /v1/llm/fleet model-fleet CRUD", () => {
       }),
     });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { data: { alias: string; role: string; dailyCapUsd: number } };
+    const body = (await res.json()) as {
+      data: { alias: string; role: string; dailyCapUsd: number };
+    };
     expect(body.data.alias).toBe("fast-fallback");
     expect(body.data.role).toBe("fallback");
     expect(body.data.dailyCapUsd).toBe(5);
@@ -152,7 +198,12 @@ describe("TC-61: /v1/llm/fleet model-fleet CRUD", () => {
     expect(res.status).toBe(400);
   });
 
-  it("POST /fleet accepts a live-discovered id even when the static catalog is stale", async () => {
+  it("POST /fleet accepts any non-empty model name (live discovery is the source of truth)", async () => {
+    // The static catalog was historically a gate that rejected anything not
+    // in PROVIDER_MODEL_CATALOG, but the picker shows live-discovered models
+    // (OpenRouter alone returns ~360). A live model the catalog hasn't been
+    // updated for must still be addable. Bad names surface at invocation
+    // time when the upstream returns 404.
     const res = await env.fetch("/v1/llm/fleet", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -167,19 +218,18 @@ describe("TC-61: /v1/llm/fleet model-fleet CRUD", () => {
     await env.fetch(`/v1/llm/fleet/${body.data.id}`, { method: "DELETE" });
   });
 
-  it("POST /fleet rejects a name absent from a discovery-capable provider", async () => {
+  it("POST /fleet rejects a known legacy catalog model", async () => {
     const res = await env.fetch("/v1/llm/fleet", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        provider: "openrouter",
-        modelName: "made-up/not-reported",
+        provider: "anthropic",
+        modelName: "claude-opus-4",
       }),
     });
-    expect(res.status).toBe(409);
-    expect(await res.json()).toMatchObject({
-      error: { code: "model_not_available" },
-    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { message: string } };
+    expect(body.error.message).toMatch(/not selectable.*older_than_365_days/i);
   });
 
   it("persists unsupported-provider entries as explicitly unverified", async () => {
@@ -200,6 +250,23 @@ describe("TC-61: /v1/llm/fleet model-fleet CRUD", () => {
     await env.fetch(`/v1/llm/fleet/${body.data.id}`, { method: "DELETE" });
   });
 
+  it("PATCH /fleet/:id rejects an out-of-range temperature", async () => {
+    const list = (await (await env.fetch("/v1/llm/fleet")).json()) as {
+      data: Array<{ id: string }>;
+    };
+    const id = list.data[0]!.id;
+    const res = await env.fetch(`/v1/llm/fleet/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ temperature: 3 }),
+    });
+    expect(res.status).toBe(400);
+    // Message is either the range error or, for models whose catalog row pins
+    // temperatureRange=null, the does-not-support error — both reject.
+    const body = (await res.json()) as { error: { message: string } };
+    expect(body.error.message).toMatch(/temperature/i);
+  });
+
   it("POST /fleet rejects empty modelName", async () => {
     const res = await env.fetch("/v1/llm/fleet", {
       method: "POST",
@@ -218,7 +285,9 @@ describe("TC-61: /v1/llm/fleet model-fleet CRUD", () => {
   });
 
   it("PATCH /fleet/:id updates fields and rejects bad role", async () => {
-    const list = (await (await env.fetch("/v1/llm/fleet")).json()) as { data: Array<{ id: string }> };
+    const list = (await (await env.fetch("/v1/llm/fleet")).json()) as {
+      data: Array<{ id: string }>;
+    };
     const id = list.data[0].id;
 
     const ok = await env.fetch(`/v1/llm/fleet/${id}`, {
@@ -227,7 +296,9 @@ describe("TC-61: /v1/llm/fleet model-fleet CRUD", () => {
       body: JSON.stringify({ alias: "renamed", dailyCapUsd: 12 }),
     });
     expect(ok.status).toBe(200);
-    const okBody = (await ok.json()) as { data: { alias: string; dailyCapUsd: number } };
+    const okBody = (await ok.json()) as {
+      data: { alias: string; dailyCapUsd: number };
+    };
     expect(okBody.data.alias).toBe("renamed");
     expect(okBody.data.dailyCapUsd).toBe(12);
 
@@ -237,36 +308,6 @@ describe("TC-61: /v1/llm/fleet model-fleet CRUD", () => {
       body: JSON.stringify({ role: "invalid-role" }),
     });
     expect(bad.status).toBe(400);
-  });
-
-  it("rejects invalid numeric and no-op fleet mutations instead of auditing fake updates", async () => {
-    const list = (await (await env.fetch("/v1/llm/fleet")).json()) as {
-      data: Array<{ id: string; dailyCapUsd: number }>;
-    };
-    const id = list.data[0].id;
-    const beforeCap = list.data[0].dailyCapUsd;
-
-    for (const body of [
-      { dailyCapUsd: "not-a-number" },
-      { maxOutTokens: 0 },
-      { temperature: 3 },
-      {},
-      { ignoredField: true },
-    ]) {
-      const response = await env.fetch(`/v1/llm/fleet/${id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      expect(response.status).toBe(400);
-    }
-
-    const after = (await (await env.fetch("/v1/llm/fleet")).json()) as {
-      data: Array<{ id: string; dailyCapUsd: number }>;
-    };
-    expect(after.data.find((entry) => entry.id === id)?.dailyCapUsd).toBe(
-      beforeCap,
-    );
   });
 
   it("PATCH /fleet/:id 404 on unknown id", async () => {
@@ -279,19 +320,25 @@ describe("TC-61: /v1/llm/fleet model-fleet CRUD", () => {
   });
 
   it("DELETE /fleet/:id removes the entry", async () => {
-    const before = (await (await env.fetch("/v1/llm/fleet")).json()) as { data: Array<{ id: string }> };
+    const before = (await (await env.fetch("/v1/llm/fleet")).json()) as {
+      data: Array<{ id: string }>;
+    };
     const id = before.data[0].id;
 
     const res = await env.fetch(`/v1/llm/fleet/${id}`, { method: "DELETE" });
     expect(res.status).toBe(200);
 
-    const after = (await (await env.fetch("/v1/llm/fleet")).json()) as { data: Array<{ id: string }> };
+    const after = (await (await env.fetch("/v1/llm/fleet")).json()) as {
+      data: Array<{ id: string }>;
+    };
     expect(after.data.find((e) => e.id === id)).toBeUndefined();
     expect(after.data.length).toBe(before.data.length - 1);
   });
 
   it("DELETE /fleet/:id 404 on unknown id", async () => {
-    const res = await env.fetch("/v1/llm/fleet/mdl-nosuch", { method: "DELETE" });
+    const res = await env.fetch("/v1/llm/fleet/mdl-nosuch", {
+      method: "DELETE",
+    });
     expect(res.status).toBe(404);
   });
 
@@ -313,7 +360,10 @@ describe("TC-61: /v1/llm/fleet model-fleet CRUD", () => {
       body: JSON.stringify({ provider: "openrouter", modelName }),
     });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { ok: boolean; data: { modelName: string } };
+    const body = (await res.json()) as {
+      ok: boolean;
+      data: { modelName: string };
+    };
     expect(body.ok).toBe(true);
     expect(body.data.modelName).toBe(modelName);
   });

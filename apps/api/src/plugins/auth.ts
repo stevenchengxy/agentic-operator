@@ -25,6 +25,10 @@ export interface AuthedContext {
   tenantSlug: string;
   role: TenantRole | null;
   via: "token" | "dev" | "cookie";
+  /** Bearer-token capabilities. Browser/dev sessions do not use token scopes. */
+  scopes?: string[];
+  /** Stable credential record id; never contains bearer-token material. */
+  credentialId?: string;
 }
 
 const COOKIE_NAME = "agentic_session";
@@ -277,6 +281,7 @@ function authenticateBearer(token: string): AuthedContext | null {
   db.update(apiTokens).set({ lastUsedAt: new Date() }).where(eq(apiTokens.id, row.id)).run();
   const t = db.select().from(tenants).where(eq(tenants.id, row.tenantId)).all()[0];
   if (!t) return null;
+  const scopes = (row.scopes as string[] | null) ?? [];
   return {
     userId: null,
     email: null,
@@ -284,8 +289,10 @@ function authenticateBearer(token: string): AuthedContext | null {
     platformRole: "none",
     tenantId: t.id,
     tenantSlug: t.slug,
-    role: roleFromScopes((row.scopes as string[] | null) ?? []),
+    role: roleFromScopes(scopes),
     via: "token",
+    scopes,
+    credentialId: row.id,
   };
 }
 
@@ -390,3 +397,12 @@ export function requireAuth(req: FastifyRequest): AuthedContext {
   }
   return req.auth;
 }
+
+// ─── Enterprise-route guards (merge-compat shims) ────────────────────────────
+// Kenny's routes import `requireWorkspaceWriter` / `requireTenantAdmin` from
+// this module. They are implemented as thin wrappers over `requirePermission`
+// in plugins/rbac.ts so tenant RBAC + deny-audit stay single-sourced; the
+// re-export keeps the historical import path stable. The auth↔rbac cycle is
+// call-time only (both modules just reference each other's functions inside
+// handler bodies), which ESM live bindings resolve safely.
+export { requireTenantAdmin, requireWorkspaceWriter } from "./rbac";

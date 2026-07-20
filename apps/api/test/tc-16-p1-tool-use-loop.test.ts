@@ -6,6 +6,9 @@
  *   - P1-RT-02: `BaseAgent.getTools(ctx)` hook is consulted.
  *   - P1-RT-06: `req.providers` chain is honoured (passed through to gateway).
  *   - P1-RT-07: structured-output validate + repair retry loop.
+ *   - Routing: the engine stamps `routing.taskType` from ctx.taskClass ??
+ *     agent.taskClass (default "tool.loop") and passes explicit provider/model
+ *     overrides through to the gateway request.
  *
  * The test installs a captured-call mock gateway via `setGateway()` and a
  * trivial `Echo` code agent that declares one tool. The mock dictates the
@@ -42,10 +45,12 @@ interface CapturedCall {
   tools?: ToolDef[];
   providers?: string[];
   provider?: string;
+  model?: string;
   jsonMode?: boolean;
   maxTokens?: number;
   tenantId?: string;
   purpose?: string;
+  routing?: ChatRequest["routing"];
 }
 
 /** Programmable mock gateway: per-call queue of responses. */
@@ -74,10 +79,14 @@ class ProgrammableGateway {
       tools: req.tools ? (JSON.parse(JSON.stringify(req.tools)) as ToolDef[]) : undefined,
       providers: req.providers as string[] | undefined,
       provider: req.provider,
+      model: req.model,
       jsonMode: req.jsonMode,
       maxTokens: req.maxTokens,
       tenantId: req.tenantId,
       purpose: req.purpose,
+      routing: req.routing
+        ? (JSON.parse(JSON.stringify(req.routing)) as ChatRequest["routing"])
+        : undefined,
     });
     const next = this.queue.shift();
     if (!next) {
@@ -239,6 +248,8 @@ describe("TC-16: Phase 1 tool-use loop (P1-RT-01..02 + RT-06..07)", () => {
       tenantId: expect.stringMatching(/^ten/),
       purpose: "agent:weatherAgent/role:primary/turn:0",
     });
+    // Default task-class routing: BaseAgent.taskClass = "tool.loop".
+    expect(gw.captured[0]!.routing?.taskType).toBe("tool.loop");
 
     // Turn 2: seed + assistant(tool_use) + tool(tool_result) = 4 messages
     const t2messages = gw.captured[1]!.messages;
@@ -360,9 +371,66 @@ describe("TC-16: Phase 1 tool-use loop (P1-RT-01..02 + RT-06..07)", () => {
       tenantId: expect.stringMatching(/^ten/),
       purpose: "agent:scorerAgent/role:primary/repair",
     });
+    // Primary turn is task-class routed; the repair turn intentionally sends
+    // no explicit routing (the gateway derives it), so pin that contract here.
+    expect(gw.captured[0]!.routing?.taskType).toBe("tool.loop");
+    expect(gw.captured[1]!.routing).toBeUndefined();
     // Tokens summed across both turns
     expect(result.tokensIn).toBe(10);
     expect(result.tokensOut).toBe(10);
+  });
+
+  it("routes by task class while preserving explicit provider/model overrides", async () => {
+    // Adapted from the enterprise-runtime suite: the merged run engine stamps
+    // routing.taskType from ctx.taskClass and forwards ctx.provider/ctx.model
+    // verbatim; route planning (requestedRoute/bypassTaskPolicy) happens
+    // inside the real LLMGateway, which this programmable mock replaces.
+    const agent = agentRegistry.get("scorerAgent") as ScorerAgent;
+    const validResponse = (): ChatResponse => ({
+      text: JSON.stringify({ score: 0.8, label: "good" }),
+      provider: "mock",
+      model: "mock-model-v1",
+      tokensIn: 1,
+      tokensOut: 1,
+      finishReason: "stop",
+      latencyMs: 1,
+    });
+
+    gw.captured = [];
+    gw.queueResponse(validResponse());
+    await agent.run(
+      { text: "normal" },
+      {
+        ...ctxFor(),
+        taskClass: "evaluation",
+        provider: "openai" as never,
+        model: "gpt-test",
+      },
+    );
+    expect(gw.captured[0]!.routing?.taskType).toBe("evaluation");
+    expect(gw.captured[0]).toMatchObject({
+      provider: "openai",
+      model: "gpt-test",
+    });
+
+    // testRun invocations keep the same routing + explicit overrides.
+    gw.captured = [];
+    gw.queueResponse(validResponse());
+    await agent.run(
+      { text: "test" },
+      {
+        ...ctxFor(),
+        taskClass: "evaluation",
+        provider: "openai" as never,
+        model: "gpt-test",
+        testRun: true,
+      },
+    );
+    expect(gw.captured[0]!.routing?.taskType).toBe("evaluation");
+    expect(gw.captured[0]).toMatchObject({
+      provider: "openai",
+      model: "gpt-test",
+    });
   });
 
   it("structured output: two consecutive failures throws output_parse_error", async () => {

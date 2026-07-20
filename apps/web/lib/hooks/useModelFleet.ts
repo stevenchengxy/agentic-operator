@@ -14,16 +14,17 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { UseQueryResult } from "@tanstack/react-query";
-import { tenantHeader } from "./tenant-header";
-
-interface ApiOk<T> {
-  ok: true;
-  data: T;
-}
-interface ApiErr {
-  ok: false;
-  error: { code: string; message: string };
-}
+import { usePathname } from "next/navigation";
+import type {
+  CatalogModelStatus,
+  ModelTier,
+  ReasoningEffort,
+  ReasoningMode,
+  TemperatureRange,
+  TextVerbosity,
+} from "@agentic/contracts";
+import { readApiData } from "@/lib/api-response";
+import { tenantFromPathname, tenantHeader } from "./tenant-header";
 
 async function callV1<T>(path: string, init: RequestInit = {}): Promise<T> {
   const { headers: initHeaders, ...rest } = init;
@@ -36,7 +37,11 @@ async function callV1<T>(path: string, init: RequestInit = {}): Promise<T> {
     ...tenantHeader(),
     ...(initHeaders as Record<string, string> | undefined),
   };
-  if (rest.body !== undefined && rest.body !== null && !headers["Content-Type"]) {
+  if (
+    rest.body !== undefined &&
+    rest.body !== null &&
+    !headers["Content-Type"]
+  ) {
     headers["Content-Type"] = "application/json";
   }
   const res = await fetch(path, {
@@ -44,20 +49,7 @@ async function callV1<T>(path: string, init: RequestInit = {}): Promise<T> {
     ...rest,
     headers,
   });
-  const text = await res.text();
-  let body: ApiOk<T> | ApiErr | null = null;
-  try {
-    body = text ? (JSON.parse(text) as ApiOk<T> | ApiErr) : null;
-  } catch {
-    body = null;
-  }
-  if (!res.ok || !body || !body.ok) {
-    const detail = body && !body.ok
-      ? `${body.error.code} — ${body.error.message}`
-      : text.replace(/\s+/g, " ").trim().slice(0, 240) || res.statusText || "invalid response";
-    throw new Error(`${path}: HTTP ${res.status} — ${detail}`);
-  }
-  return body.data;
+  return readApiData<T>(res, path);
 }
 
 export type FleetRole = "primary" | "fallback" | "shadow";
@@ -71,7 +63,8 @@ export interface FleetEntry {
   role: FleetRole;
   dailyCapUsd: number;
   maxOutTokens: number;
-  temperature: number;
+  /** null means the parameter is omitted and the provider/model default wins. */
+  temperature: number | null;
   addedAt: number;
   addedBy: string | null;
   availability: "provider_confirmed" | "unverified";
@@ -87,6 +80,22 @@ export interface AvailableModel {
   vision: boolean;
   tools: boolean;
   reasoning: boolean;
+  reasoningEfforts: ReasoningEffort[];
+  reasoningModes: ReasoningMode[];
+  defaultReasoningEffort: ReasoningEffort | null;
+  defaultReasoningMode: ReasoningMode | null;
+  reasoningMandatory: boolean;
+  reasoningDefaultEnabled: boolean;
+  textVerbosities: TextVerbosity[];
+  /** null=unsupported, object=supported range, absent=unknown */
+  temperatureRange?: TemperatureRange | null;
+  tier: ModelTier | null;
+  status: CatalogModelStatus;
+  selectable: boolean;
+  unavailableReason: string | null;
+  releaseDate: string | null;
+  providerCatalogCreatedAt: string | null;
+  expiresAt: string | null;
   inFleet: boolean;
   origin: "live" | "catalog";
 }
@@ -132,11 +141,22 @@ export interface DeleteProviderKeyResult {
 }
 
 export const FLEET_KEYS = {
-  list: ["llm", "fleet"] as const,
-  available: (provider: string) => ["llm", "available-models", provider] as const,
+  root: ["llm", "fleet"] as const,
+  list: (tenant: string) => ["llm", "fleet", tenant] as const,
+  availableRoot: (tenant: string) =>
+    ["llm", "available-models", tenant] as const,
+  available: (tenant: string, provider: string) =>
+    ["llm", "available-models", tenant, provider] as const,
+  // Provider identity + workspace credentials are workspace-scoped (shared
+  // across tenants), so these two keys deliberately carry no tenant segment.
   providers: ["llm", "providers"] as const,
   providerKeys: ["llm", "provider-keys"] as const,
 };
+
+function useTenantQueryScope(): string {
+  const pathname = usePathname() ?? "";
+  return tenantFromPathname(pathname) ?? "default";
+}
 
 /** Runtime-backed providers only; unavailable stubs and mock are filtered by the API. */
 export function useModelProviders(): UseQueryResult<ProviderInfo[]> {
@@ -157,6 +177,7 @@ export function useProviderKeys(): UseQueryResult<ProviderKeyMeta[]> {
 
 export function useSaveProviderKey() {
   const client = useQueryClient();
+  const tenant = useTenantQueryScope();
   return useMutation({
     mutationFn: ({ provider, apiKey }: { provider: string; apiKey: string }) =>
       callV1<ProviderKeyMeta>(`/v1/llm/providers/${encodeURIComponent(provider)}/key`, {
@@ -167,7 +188,9 @@ export function useSaveProviderKey() {
       await Promise.all([
         client.invalidateQueries({ queryKey: FLEET_KEYS.providers }),
         client.invalidateQueries({ queryKey: FLEET_KEYS.providerKeys }),
-        client.invalidateQueries({ queryKey: FLEET_KEYS.available(vars.provider) }),
+        client.invalidateQueries({
+          queryKey: FLEET_KEYS.available(tenant, vars.provider),
+        }),
       ]);
     },
   });
@@ -181,6 +204,7 @@ export function useSaveProviderKey() {
  */
 export function useDeleteProviderKey() {
   const client = useQueryClient();
+  const tenant = useTenantQueryScope();
   return useMutation({
     mutationFn: (provider: string) =>
       callV1<DeleteProviderKeyResult>(
@@ -191,7 +215,9 @@ export function useDeleteProviderKey() {
       await Promise.all([
         client.invalidateQueries({ queryKey: FLEET_KEYS.providers }),
         client.invalidateQueries({ queryKey: FLEET_KEYS.providerKeys }),
-        client.invalidateQueries({ queryKey: FLEET_KEYS.available(provider) }),
+        client.invalidateQueries({
+          queryKey: FLEET_KEYS.available(tenant, provider),
+        }),
       ]);
     },
   });
@@ -208,8 +234,9 @@ export function useTestProviderKey() {
 }
 
 export function useFleet(): UseQueryResult<FleetEntry[]> {
+  const tenant = useTenantQueryScope();
   return useQuery({
-    queryKey: FLEET_KEYS.list,
+    queryKey: FLEET_KEYS.list(tenant),
     queryFn: () => callV1<FleetEntry[]>("/v1/llm/fleet"),
     staleTime: 5_000,
   });
@@ -224,8 +251,9 @@ export function useFleet(): UseQueryResult<FleetEntry[]> {
 export function useAvailableModels(
   provider: string,
 ): UseQueryResult<AvailableModelsPayload> {
+  const tenant = useTenantQueryScope();
   return useQuery({
-    queryKey: FLEET_KEYS.available(provider),
+    queryKey: FLEET_KEYS.available(tenant, provider),
     queryFn: () =>
       callV1<AvailableModelsPayload>(
         `/v1/llm/providers/${encodeURIComponent(provider)}/available-models`,
@@ -243,11 +271,12 @@ export interface AddFleetInput {
   role?: FleetRole;
   dailyCapUsd?: number;
   maxOutTokens?: number;
-  temperature?: number;
+  temperature?: number | null;
 }
 
 export function useAddFleetEntry() {
   const client = useQueryClient();
+  const tenant = useTenantQueryScope();
   return useMutation({
     mutationFn: (input: AddFleetInput) =>
       callV1<FleetEntry>("/v1/llm/fleet", {
@@ -255,10 +284,10 @@ export function useAddFleetEntry() {
         body: JSON.stringify(input),
       }),
     onSettled: (_data, _err, vars) => {
-      void client.invalidateQueries({ queryKey: FLEET_KEYS.list });
+      void client.invalidateQueries({ queryKey: FLEET_KEYS.list(tenant) });
       if (vars?.provider) {
         void client.invalidateQueries({
-          queryKey: FLEET_KEYS.available(vars.provider),
+          queryKey: FLEET_KEYS.available(tenant, vars.provider),
         });
       }
     },
@@ -272,12 +301,13 @@ export interface UpdateFleetInput {
     role?: FleetRole;
     dailyCapUsd?: number;
     maxOutTokens?: number;
-    temperature?: number;
+    temperature?: number | null;
   };
 }
 
 export function useUpdateFleetEntry() {
   const client = useQueryClient();
+  const tenant = useTenantQueryScope();
   return useMutation({
     mutationFn: ({ id, patch }: UpdateFleetInput) =>
       callV1<FleetEntry>(`/v1/llm/fleet/${encodeURIComponent(id)}`, {
@@ -285,13 +315,14 @@ export function useUpdateFleetEntry() {
         body: JSON.stringify(patch),
       }),
     onSettled: () => {
-      void client.invalidateQueries({ queryKey: FLEET_KEYS.list });
+      void client.invalidateQueries({ queryKey: FLEET_KEYS.list(tenant) });
     },
   });
 }
 
 export function useDeleteFleetEntry() {
   const client = useQueryClient();
+  const tenant = useTenantQueryScope();
   return useMutation({
     mutationFn: (id: string) =>
       callV1<{ id: string; deleted: true }>(
@@ -305,8 +336,10 @@ export function useDeleteFleetEntry() {
     // entry came from) — bedrock/vertex/custom never fetch anyway.
     onSettled: async () => {
       await Promise.all([
-        client.invalidateQueries({ queryKey: FLEET_KEYS.list }),
-        client.invalidateQueries({ queryKey: ["llm", "available-models"] }),
+        client.invalidateQueries({ queryKey: FLEET_KEYS.list(tenant) }),
+        client.invalidateQueries({
+          queryKey: FLEET_KEYS.availableRoot(tenant),
+        }),
       ]);
     },
   });

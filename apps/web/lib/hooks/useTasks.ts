@@ -48,9 +48,13 @@ export function useTasks(): UseQueryResult<TaskRow[]> {
   });
 }
 
-export function useTask(id: string | null | undefined): UseQueryResult<TaskRow> {
+export function useTask(
+  id: string | null | undefined,
+): UseQueryResult<TaskRow> {
   return useQuery({
-    queryKey: id ? TASK_KEYS.detail(id) : (["tasks", "detail", "__none__"] as const),
+    queryKey: id
+      ? TASK_KEYS.detail(id)
+      : (["tasks", "detail", "__none__"] as const),
     queryFn: () => callV1<TaskRow>(`/v1/tasks/${encodeURIComponent(id!)}`),
     enabled: Boolean(id),
   });
@@ -62,7 +66,7 @@ export function useResolveTask() {
   return useMutation({
     mutationFn: async (vars: {
       id: string;
-      decision: "approve" | "reject";
+      decision: "approve" | "reject" | "supplement";
       payload?: unknown;
     }) => {
       const result = await callV1<{ task_id?: unknown; decision?: unknown }>(
@@ -70,7 +74,10 @@ export function useResolveTask() {
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ decision: vars.decision, payload: vars.payload }),
+          body: JSON.stringify({
+            decision: vars.decision,
+            payload: vars.payload,
+          }),
         },
       );
       if (result.task_id !== vars.id || result.decision !== vars.decision) {

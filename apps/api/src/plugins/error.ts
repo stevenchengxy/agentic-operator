@@ -11,14 +11,23 @@ import { ZodError } from "zod";
 declare module "fastify" {
   interface FastifyReply {
     ok<T>(data: T, status?: number): FastifyReply;
-    fail(code: string, message: string, status?: number, hint?: string): FastifyReply;
+    fail(
+      code: string,
+      message: string,
+      status?: number,
+      hint?: string,
+      details?: unknown,
+    ): FastifyReply;
   }
 }
 
 export async function registerEnvelope(app: FastifyInstance) {
-  app.decorateReply("ok", function (this: FastifyReply, data: unknown, status = 200) {
-    return this.status(status).send({ ok: true, data });
-  });
+  app.decorateReply(
+    "ok",
+    function (this: FastifyReply, data: unknown, status = 200) {
+      return this.status(status).send({ ok: true, data });
+    },
+  );
 
   app.decorateReply(
     "fail",
@@ -28,10 +37,11 @@ export async function registerEnvelope(app: FastifyInstance) {
       message: string,
       status = 400,
       hint?: string,
+      details?: unknown,
     ) {
       return this.status(status).send({
         ok: false,
-        error: { code, message, hint },
+        error: { code, message, hint, details },
       });
     },
   );

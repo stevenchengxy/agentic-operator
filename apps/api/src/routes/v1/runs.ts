@@ -5,11 +5,20 @@ import { agents, auditLog, events, getDb, runs, tasks } from "@agentic/db";
 import {
   appendToLedger,
   getTenantInngest,
+  privateUsageAttributionMetadata,
   publishStreamEvent,
   tenantEventName,
 } from "@agentic/runtime";
+import {
+  currentUsageAttribution,
+  mergeUsageAttribution,
+} from "@agentic/llm-gateway";
 import { makeId } from "@agentic/shared";
-import { ListRunsQuery } from "@agentic/contracts";
+import {
+  CreateAgentRunResponseSchema,
+  ListRunsQuery,
+  ReplayStudioRunBodySchema,
+} from "@agentic/contracts";
 import { requirePermission } from "../../plugins/rbac";
 import { writeAudit } from "../../plugins/audit";
 import {
@@ -28,6 +37,11 @@ import {
   generateRunSummary,
   RunSummaryGenerationError,
 } from "../../services/run-summary";
+import {
+  finalizeCancelledStudioRun,
+  replayStudioRun,
+  StudioRunInputError,
+} from "../../services/studio-runner";
 
 export async function runsRoutes(app: FastifyInstance) {
   // GET /v1/runs — list.
@@ -165,6 +179,39 @@ export async function runsRoutes(app: FastifyInstance) {
       if (!run) return reply.fail("not_found", "run not found", 404);
       if (run.tenantId !== auth.tenantId)
         return reply.fail("forbidden", "forbidden", 403);
+      if (["studio", "replay"].includes(run.invocationSource)) {
+        const body = ReplayStudioRunBodySchema.parse(req.body ?? {});
+        try {
+          const replay = CreateAgentRunResponseSchema.parse(
+            await replayStudioRun(auth, run.id, body),
+          );
+          writeAudit({
+            tenantId: auth.tenantId,
+            action: "run.replay",
+            targetType: "run",
+            targetId: replay.runId,
+            meta: {
+              replay_of_run: run.id,
+              version: body.version,
+              session_id: replay.sessionId,
+            },
+          });
+          return reply.ok(replay, 202);
+        } catch (error) {
+          if (error instanceof StudioRunInputError) {
+            return reply.fail(
+              error.code,
+              error.message,
+              error.code.endsWith("missing") || error.code.endsWith("expired")
+                ? 410
+                : 400,
+              undefined,
+              error.issues,
+            );
+          }
+          throw error;
+        }
+      }
       if (!run.triggerEventId)
         return reply.fail("no_trigger", "run has no trigger event", 400);
 
@@ -209,6 +256,7 @@ export async function runsRoutes(app: FastifyInstance) {
       }
 
       const newEventId = makeId("evt");
+      const correlationId = makeId("cor");
       const replayData = {
         ...payload,
         subject: evt.subject ?? undefined,
@@ -216,7 +264,15 @@ export async function runsRoutes(app: FastifyInstance) {
           ? { entity_id: evt.subject ?? newEventId }
           : {}),
         __triggerEventId: newEventId,
+        __correlationId: correlationId,
         __replayOfRun: run.id,
+        ...privateUsageAttributionMetadata(
+          mergeUsageAttribution(currentUsageAttribution(), {
+            billingAccountId: auth.tenantId,
+            correlationId,
+            invocationSource: "replay",
+          }),
+        ),
       };
       const payloadRef = await appendToLedger(auth.tenantSlug, {
         id: newEventId,
@@ -317,6 +373,24 @@ export async function runsRoutes(app: FastifyInstance) {
       if (!run) return reply.fail("not_found", "run not found", 404);
       if (run.tenantId !== auth.tenantId)
         return reply.fail("forbidden", "forbidden", 403);
+      const ensureStudioCancellationEvidence = async () => {
+        if (
+          run.invocationSource !== "studio" &&
+          run.invocationSource !== "replay"
+        ) {
+          return;
+        }
+        await finalizeCancelledStudioRun({
+          tenantId: auth.tenantId,
+          tenantSlug: auth.tenantSlug,
+          runId: run.id,
+        }).catch((err) => {
+          req.log.warn(
+            { err, runId: run.id, action: "run.cancel.evidence_failed" },
+            "cancel: Studio terminal evidence could not be persisted",
+          );
+        });
+      };
 
       // Idempotent no-op when the run already reached a terminal state.
       // `cancelled` is terminal too — re-cancelling an already-cancelled
@@ -324,6 +398,11 @@ export async function runsRoutes(app: FastifyInstance) {
       // re-emit the Inngest cancel event or re-write the audit row.
       const TERMINAL = new Set(["ok", "failed", "cancelled"]);
       if (TERMINAL.has(run.status)) {
+        if (run.status === "cancelled") {
+          // A repeated cancel also self-heals a prior transient artifact
+          // failure while remaining idempotent when evidence already exists.
+          await ensureStudioCancellationEvidence();
+        }
         req.log.info(
           {
             runId: run.id,
@@ -406,6 +485,7 @@ export async function runsRoutes(app: FastifyInstance) {
             status: "cancelled",
             endedAt,
             durationMs,
+            outputValid: false,
             errorMessage: "cancelled_by_operator",
           })
           .where(
@@ -442,6 +522,11 @@ export async function runsRoutes(app: FastifyInstance) {
           .from(runs)
           .where(and(eq(runs.id, run.id), eq(runs.tenantId, auth.tenantId)))
           .all()[0];
+        if (current?.status === "cancelled") {
+          // The race winner was another cancel; self-heal missing Studio
+          // terminal evidence while remaining idempotent.
+          await ensureStudioCancellationEvidence();
+        }
         return reply.ok({
           runId: run.id,
           status: current?.status ?? run.status,
@@ -449,6 +534,10 @@ export async function runsRoutes(app: FastifyInstance) {
           note: `Run reached status=${current?.status ?? "unknown"} before cancellation was committed; no row was overwritten.`,
         });
       }
+
+      // Studio/replay runs additionally persist terminal cancellation
+      // evidence (artifacts + session state) once the row is committed.
+      await ensureStudioCancellationEvidence();
 
       try {
         publishStreamEvent({

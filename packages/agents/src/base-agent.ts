@@ -22,7 +22,11 @@
  */
 
 import type { ChatMessage, ToolDef } from "@agentic/llm-gateway";
-import type { ProviderId } from "@agentic/contracts";
+import type {
+  ProviderId,
+  ReasoningConfig,
+  TextVerbosity,
+} from "@agentic/contracts";
 import type { ZodType } from "zod";
 import type {
   AgentContext,
@@ -71,6 +75,12 @@ export abstract class BaseAgent<TInput = unknown, TOutput = string> {
    * Agents with predictably short output should set this instead of reserving
    * the model catalog's entire maximum response on every retry attempt. */
   readonly maxOutputTokens?: number;
+  /** Task-routing category used by the tenant AI settings policy. */
+  readonly taskClass: string = "tool.loop";
+  /** Optional provider-neutral reasoning defaults for every invocation. */
+  readonly defaultReasoning?: ReasoningConfig;
+  readonly defaultVerbosity?: TextVerbosity;
+  readonly storeResponses?: boolean;
 
   /** Maximum provider turns in the tool-use loop (repair is one extra turn). */
   readonly maxSteps: number = 1;

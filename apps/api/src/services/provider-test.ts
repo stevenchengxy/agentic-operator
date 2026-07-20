@@ -8,7 +8,12 @@
  * shapes. Errors are caught and folded into `{ ok: false, ... }` so the
  * frontend can render one consistent UI.
  */
-import type { ProviderId } from "@agentic/contracts";
+import type { GatewayInstance, ProviderId } from "@agentic/contracts";
+import { redact } from "@agentic/llm-gateway";
+import {
+  assertSafeGatewayBaseUrl,
+  gatewayApiUrl,
+} from "./gateway-network-safety";
 
 export interface ProviderTestResult {
   ok: boolean;
@@ -27,7 +32,11 @@ async function fetchJson(
   const ac = new AbortController();
   const t = setTimeout(() => ac.abort(), TEST_TIMEOUT_MS);
   try {
-    const res = await fetch(url, { ...init, signal: ac.signal });
+    const res = await fetch(url, {
+      ...init,
+      redirect: "error",
+      signal: ac.signal,
+    });
     let body: unknown = null;
     try {
       body = await res.json();
@@ -67,7 +76,9 @@ const OPENAI_COMPATIBLE: Partial<Record<ProviderId, OpenAICompatibleConfig>> = {
   groq: { baseURL: "https://api.groq.com/openai/v1" },
   together: { baseURL: "https://api.together.xyz/v1" },
   mistral: { baseURL: "https://api.mistral.ai/v1" },
-  deepseek: { baseURL: "https://api.deepseek.com/v1" },
+  deepseek: { baseURL: "https://api.deepseek.com" },
+  moonshot: { baseURL: "https://api.moonshot.ai/v1" },
+  zai: { baseURL: "https://api.z.ai/api/paas/v4" },
   qwen: { baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1" },
 };
 
@@ -367,4 +378,101 @@ export async function testProviderKey(
     modelCount: null,
     message: `Provider ${provider} cannot be tested over the public API (requires SDK-specific auth)`,
   };
+}
+
+/** Non-billable authentication/model-discovery probe for dynamic gateways. */
+export async function testGatewayConnection(args: {
+  instance: GatewayInstance;
+  apiKey: string;
+  timeoutMs?: number;
+}): Promise<
+  ProviderTestResult & { endpoint: string | null; testedAt: number }
+> {
+  const startedAt = Date.now();
+  const timeoutMs = Math.max(
+    1_000,
+    Math.min(
+      args.timeoutMs ?? args.instance.timeouts?.connectTimeoutMs ?? 15_000,
+      120_000,
+    ),
+  );
+  try {
+    if (args.instance.kind === "mock") {
+      return {
+        ok: true,
+        statusCode: 200,
+        latencyMs: 1,
+        modelCount: 1,
+        message: "Mock gateway — always reachable",
+        endpoint: "internal",
+        testedAt: Date.now(),
+      };
+    }
+    if (!args.instance.baseUrl) {
+      return {
+        ok: false,
+        statusCode: null,
+        latencyMs: 0,
+        modelCount: null,
+        message: "Gateway instance has no base URL",
+        endpoint: null,
+        testedAt: Date.now(),
+      };
+    }
+    await assertSafeGatewayBaseUrl(args.instance.baseUrl);
+    const endpoint = gatewayApiUrl(
+      args.instance.baseUrl,
+      "/models",
+      args.instance.kind === "newapi",
+    );
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(endpoint, {
+        redirect: "error",
+        headers: {
+          Accept: "application/json",
+          ...(args.apiKey
+            ? { Authorization: `Bearer ${args.apiKey.trim()}` }
+            : {}),
+        },
+        signal: controller.signal,
+      });
+      let body: unknown = null;
+      try {
+        body = await response.json();
+      } catch {
+        // Error pages may be non-JSON; status remains sufficient.
+      }
+      const latencyMs = Date.now() - startedAt;
+      const modelCount = response.ok ? countModels(body) : null;
+      return {
+        ok: response.ok,
+        statusCode: response.status,
+        latencyMs,
+        modelCount,
+        message: response.ok
+          ? `${response.status} OK · ${latencyMs} ms${modelCount === null ? "" : ` · returned ${modelCount} models`}`
+          : redact(errorMessageFromStatus(response.status, body)),
+        endpoint,
+        testedAt: Date.now(),
+      };
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch (error) {
+    const latencyMs = Date.now() - startedAt;
+    const timedOut = (error as { name?: string })?.name === "AbortError";
+    return {
+      ok: false,
+      statusCode: null,
+      latencyMs,
+      modelCount: null,
+      message: timedOut
+        ? `Timed out after ${timeoutMs} ms — gateway unreachable`
+        : redact(error instanceof Error ? error.message : String(error)),
+      endpoint: args.instance.baseUrl ?? null,
+      testedAt: Date.now(),
+    };
+  }
 }

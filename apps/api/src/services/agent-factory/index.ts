@@ -17,6 +17,7 @@ import { CompositeOntologySource } from "./composite-ontology-source";
 import { ManifestSandboxDeployer, ProbingSandboxDeployer } from "./sandbox-deployer";
 import { DrizzleConversationStore, DrizzleDomainInsightStore, DrizzleReflectionWriter, DrizzleSkillStore, DrizzleToolStore, DrizzleAcceptanceRecorder, DrizzleToolStatsStore } from "./stores";
 import { FsAgentDraftStore } from "./agent-draft-store";
+import { FsConversationArchiveStore } from "./conversation-archive-store";
 import { FsPolicyStatsStore } from "./policy-stats-store";
 import { UploadedOntologySource, UploadedFirstOntologySource } from "./uploaded-ontology-source";
 import { listGlobalTools } from "@agentic/tools";
@@ -250,6 +251,11 @@ export function makeFactoryPorts(
         ),
     sandbox: makeSandboxDeployer(tenantScope),
     conversation: new DrizzleConversationStore(tenantId, ontologyDomainId),
+    // #CONV-ARCHIVE — durable verbatim retention for compaction-dropped turns (+ recall tool).
+    // Tenant+domain scoped like the conversation itself; absent scope → no archive (legacy fold).
+    conversationArchive: tenantId && ontologyDomainId
+      ? new FsConversationArchiveStore(tenantId, ontologyDomainId)
+      : undefined,
     fixtureAssets: fixtureAssetStore && tenantId && ontologyDomainId
       ? {
           readExact: async ({ assetId, domainId, conversationId }) => {

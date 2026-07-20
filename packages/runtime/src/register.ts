@@ -41,7 +41,31 @@ import {
 import { selectEmittedEvents, type EmitIntent } from "./emit-select";
 import { appendToLedger } from "./event-ledger";
 import { publish } from "./broadcast";
-import { writeArtifact } from "./artifacts";
+import {
+  createFilesystemArtifactSink,
+  writeArtifact,
+  type RuntimeArtifactSink,
+  type RuntimePersistedArtifact,
+} from "./artifacts";
+import {
+  AgentInputValidationError,
+  OutputSchemaValidationError,
+  bindTriggerInputs,
+  canonicalJson,
+  normalizeAgentForExecution,
+  parseValidateAndRepairOutput,
+  resolveAgentEmissions,
+  validateAgentInputs,
+} from "./agent-execution";
+import {
+  createFilteredTraceSink,
+  type RuntimeTraceSink,
+} from "./execution-trace";
+import { stripPrivateEventMetadata } from "./event-envelope";
+import {
+  privateUsageAttributionMetadata,
+  usageAttributionFromDeliveryData,
+} from "./usage-attribution-envelope";
 import { logPathFor, writeRunLog } from "./log-writer";
 import { correlationFromEvent, withCorrelation } from "./correlation";
 import {
@@ -71,16 +95,31 @@ import { makeId, materializeInvokePayload } from "@agentic/shared";
 import {
   agents,
   agentVersions,
+  artifacts,
   events,
   eventStore,
   llmTurns,
+  runEmittedEvents,
+  runTraceEvents,
   runs,
   steps,
   tasks as tasksTable,
   workflows,
   getDb,
 } from "@agentic/db";
-import { eq, and } from "drizzle-orm";
+import { eq, and, desc } from "drizzle-orm";
+import {
+  mergeUsageAttribution,
+  type UsageAttribution,
+} from "@agentic/llm-gateway";
+import type {
+  AgentRunRecord,
+  ProviderId,
+  RunArtifactMetadata,
+  RunEmittedEvent,
+  WorkflowManualTaskResolution,
+} from "@agentic/contracts";
+import { WorkflowManualTaskResolutionSchema } from "@agentic/contracts";
 
 /**
  * #W0 — is raw LLM-turn capture enabled? Default ON. Set
@@ -112,6 +151,7 @@ import {
 } from "./message-envelope";
 import { makeDurableBlobOffloader, resolveBlobRefAsync } from "./blob-store";
 import {
+  bareTenantEventName,
   scheduledAgentTriggerName,
   tenantEventName,
   tenantFunctionId,
@@ -170,6 +210,228 @@ export interface RegisterContext {
   productionGeneratedAgentCapability?: ProductionCodeActCapability;
   productionGeneratedAgentManifestSha256?: string;
   productionGeneratedWorkflowManifestSha256?: string;
+  /** Optional override; defaults to the runtime DB trace sink (run_trace_events). */
+  traceSink?: RuntimeTraceSink;
+  /** Optional tenant-authorized artifact service for this run. */
+  artifactSinkFactory?: (context: {
+    tenantId: string;
+    runId: string;
+  }) => RuntimeArtifactSink;
+}
+
+export function buildManualTaskPayload(input: {
+  agent: Pick<AgentSpec, "name">;
+  action: ActionSpec;
+  subject: string | null;
+  preparedContext: unknown;
+}): Record<string, unknown> {
+  return {
+    agentName: input.agent.name,
+    actionName: input.action.name,
+    description: input.action.description,
+    subject: input.subject,
+    condition: input.action.condition ?? null,
+    preparedContext: input.preparedContext ?? null,
+    formSchema: input.action.form_schema ?? null,
+    awaitingRole: input.action.awaiting_role ?? "operator",
+  };
+}
+
+export type ManualTaskDecision = "approve" | "reject" | "supplement";
+export type ManualTaskOutcome = "approved" | "rejected" | "supplemented";
+
+export type ManualTaskResolution = WorkflowManualTaskResolution;
+
+/**
+ * Turn the resume event into the stable value exposed to later actions,
+ * output validation, artifacts, and authored event bindings. A rejection is
+ * a successful operator decision, not an infrastructure failure, so callers
+ * can finalize and fan out it exactly like approve/supplement.
+ */
+export function buildManualTaskResolution(input: {
+  taskId: string;
+  decision?: unknown;
+  payload?: unknown;
+}): ManualTaskResolution {
+  const decision = input.decision ?? "approve";
+  if (
+    decision !== "approve" &&
+    decision !== "reject" &&
+    decision !== "supplement"
+  ) {
+    throw new Error(`invalid manual task decision: ${String(decision)}`);
+  }
+  const outcome: ManualTaskOutcome =
+    decision === "approve"
+      ? "approved"
+      : decision === "reject"
+        ? "rejected"
+        : "supplemented";
+  return WorkflowManualTaskResolutionSchema.parse({
+    task_id: input.taskId,
+    status: "resolved",
+    decision,
+    outcome,
+    payload: input.payload ?? null,
+  });
+}
+
+/** Default persistence for Studio/operator structured trace rows. */
+function createDbTraceSink(tenantId: string): RuntimeTraceSink {
+  return {
+    append(event) {
+      const db = getDb();
+      const latest = db
+        .select({ seq: runTraceEvents.seq })
+        .from(runTraceEvents)
+        .where(eq(runTraceEvents.runId, event.runId))
+        .orderBy(desc(runTraceEvents.seq))
+        .limit(1)
+        .all()[0];
+      db.insert(runTraceEvents)
+        .values({
+          id: makeId("trc"),
+          tenantId,
+          runId: event.runId,
+          stepId: event.stepId ?? null,
+          parentId: event.parentId ?? null,
+          seq: (latest?.seq ?? 0) + 1,
+          kind: event.kind,
+          level: event.level,
+          name: event.name,
+          status: event.status,
+          startedAt: event.startedAt ?? null,
+          endedAt: event.endedAt ?? null,
+          durationMs: event.durationMs ?? null,
+          summary: event.summary ?? null,
+          dataJson: event.data ?? null,
+          artifactId: event.artifactId ?? null,
+          visibility: event.visibility,
+        })
+        .run();
+    },
+  };
+}
+
+/**
+ * Generic events fan out to every function sharing their trigger. An
+ * agent-scoped publish stamps `__invokedAgent`; sibling subscribers must
+ * acknowledge the event without allocating a run. Unscoped events preserve
+ * the original fanout behavior.
+ */
+export function eventTargetsAgent(
+  data: Record<string, unknown>,
+  agentName: string,
+): boolean {
+  const target = data.__invokedAgent;
+  return typeof target !== "string" || target === "" || target === agentName;
+}
+
+/**
+ * Add transport-only metadata to a canonical downstream payload. Keeping
+ * this boundary explicit guarantees that stripping private keys from the
+ * delivered data reproduces the exact object persisted in the event ledger.
+ */
+export function buildManifestEventDeliveryData(args: {
+  logicalPayload: Record<string, unknown>;
+  eventId: string;
+  correlationId: string;
+  usageAttribution?: UsageAttribution;
+}): Record<string, unknown> {
+  return {
+    ...withCorrelation(args.correlationId, {
+      ...stripPrivateEventMetadata(args.logicalPayload),
+      __triggerEventId: args.eventId,
+    }),
+    ...privateUsageAttributionMetadata(args.usageAttribution),
+  };
+}
+
+type RunInvocationSource = "studio" | "event" | "api" | "replay" | "demo";
+
+function runInvocationSource(value: string | undefined): RunInvocationSource {
+  switch (value) {
+    case "studio":
+    case "api":
+    case "replay":
+    case "demo":
+      return value;
+    default:
+      return "event";
+  }
+}
+
+export interface ResolvedAgentConcurrency {
+  limit: number;
+  key: string;
+}
+
+/**
+ * Compile Studio concurrency settings into Inngest's expression language.
+ * Only simple event-data JSON paths are accepted; this keeps authored values
+ * data-only and prevents arbitrary expression injection. `enabled:false`
+ * disables the per-subject limit entirely (returns undefined).
+ */
+export function resolveAgentConcurrency(
+  agent: unknown,
+  tenantSlug: string,
+): ResolvedAgentConcurrency | undefined {
+  const config =
+    agent && typeof agent === "object"
+      ? (
+          agent as {
+            concurrency?: {
+              enabled?: boolean;
+              max_concurrent_executions?: number;
+              key?: string;
+            };
+          }
+        ).concurrency
+      : undefined;
+  if (config?.enabled === false) return undefined;
+  if (
+    config?.max_concurrent_executions !== undefined &&
+    (!Number.isInteger(config.max_concurrent_executions) ||
+      config.max_concurrent_executions < 1 ||
+      config.max_concurrent_executions > 1_000)
+  ) {
+    throw new TypeError(
+      "concurrency.max_concurrent_executions must be an integer from 1 to 1000",
+    );
+  }
+  const path = config?.key?.trim() || "$.subject";
+  if (!/^\$(?:\.[A-Za-z_][A-Za-z0-9_]*)+$/.test(path)) {
+    throw new TypeError(
+      `concurrency.key must be a restricted event-data path such as '$.subject' or '$.inputs.candidate.id'`,
+    );
+  }
+  const eventExpression = `event.data.${path.slice(2)}`;
+  return {
+    limit:
+      typeof config?.max_concurrent_executions === "number"
+        ? config.max_concurrent_executions
+        : 8,
+    key: `${JSON.stringify(`${tenantSlug}:`)} + ${eventExpression}`,
+  };
+}
+
+/**
+ * Canonical trigger list for one agent: its business triggers, else the
+ * synthetic schedule event when a cron (or config-driven cron_env) schedule
+ * is declared. Used by registration AND the bootstrap event-listener upsert
+ * so cron-only agents stay visible in the catalog graph.
+ */
+export function resolveAgentTriggerNames(agent: {
+  name: string;
+  trigger: string[];
+  cron?: string | null;
+  cron_env?: string | null;
+}): string[] {
+  if (agent.trigger.length > 0) return [...agent.trigger];
+  const scheduleDeclared =
+    (typeof agent.cron === "string" && agent.cron.trim().length > 0) ||
+    (typeof agent.cron_env === "string" && agent.cron_env.trim().length > 0);
+  return scheduleDeclared ? [scheduledAgentTriggerName(agent.name)] : [];
 }
 
 /**
@@ -505,18 +767,33 @@ export function registerAgent(
   const eventAdapter = resolveTenantEventAdapter(ctx);
   const fnId = tenantFunctionId(tenantSlug, agent.name, eventAdapter);
 
+  // Agent Studio v2 compatibility boundary. Normalization is deterministic and
+  // side-effect free; a legacy agent that cannot normalize simply stays on the
+  // v1 path (never a boot failure — the raw manifest already validated).
+  let normalizedExecution: ReturnType<typeof normalizeAgentForExecution> | null =
+    null;
+  try {
+    normalizedExecution = normalizeAgentForExecution(agent);
+  } catch {
+    normalizedExecution = null;
+  }
+  const usesV2Definition = normalizedExecution?.compatibilityMode === "v2";
+  const observability = normalizedExecution?.definition.observability;
+  const traceSinkForRun = (): RuntimeTraceSink =>
+    createFilteredTraceSink(ctx.traceSink ?? createDbTraceSink(ctx.tenantId), {
+      traceLevel: observability?.trace_level,
+      reasoningSummary: observability?.reasoning_summary,
+    });
+  const definitionHash = `sha256:${createHash("sha256")
+    .update(canonicalJson(agent))
+    .digest("hex")}`;
+
   // A pure-schedule agent has no business event trigger, but scheduler.ts
   // emits this canonical synthetic event on every cron tick. Registering the
   // matching listener is load-bearing: previously registerAgent returned
   // null here while the cron producer still emitted, creating a convincing
   // but permanently dead schedule.
-  const scheduleDeclared = Boolean(agent.cron || agent.cron_env);
-  const triggerNames =
-    agent.trigger.length > 0
-      ? agent.trigger
-      : scheduleDeclared
-        ? [scheduledAgentTriggerName(agent.name)]
-        : [];
+  const triggerNames = resolveAgentTriggerNames(agent);
 
   // No event or schedule trigger (e.g. manual-only entry) → no autonomous
   // Inngest function is registered.
@@ -531,22 +808,33 @@ export function registerAgent(
   // Per review M2: prior to this change `register.ts` hardcoded `limit: 8`
   // and never read `agent.concurrency.max_concurrent_executions`, which made
   // the lint check `concurrency_excess` a no-op (checking dead config). The
-  // cap is now honoured at registration time. A missing / disabled
-  // `concurrency` block falls back to the historical default of 8.
-  const concurrencyConfig = (
-    agent as AgentSpec & {
-      concurrency?: { enabled?: boolean; max_concurrent_executions?: number };
-    }
-  ).concurrency;
-  const concurrencyCap =
-    concurrencyConfig?.enabled !== false &&
-    typeof concurrencyConfig?.max_concurrent_executions === "number"
-      ? concurrencyConfig.max_concurrent_executions
-      : 8;
+  // cap is honoured at registration time via resolveAgentConcurrency, which
+  // also compiles Studio-authored restricted key paths and honours an
+  // explicit `enabled:false` (no limit). A missing `concurrency` block keeps
+  // the historical default of 8, keyed on the tenant-prefixed subject.
   const triggerSubjectExpr =
     eventAdapter.subjectExpressions?.trigger ?? "event.data.subject";
   const cancelSubjectExpr =
     eventAdapter.subjectExpressions?.cancel ?? "async.data.subject";
+  const authoredConcurrency = resolveAgentConcurrency(agent, tenantSlug);
+  const authoredConcurrencyKey = Boolean(
+    (
+      agent as AgentSpec & { concurrency?: { key?: string } }
+    ).concurrency?.key?.trim(),
+  );
+  // P5-TEN-01 (G7) — the default key composes the tenant slug with the
+  // ADAPTER's subject expression. Without the tenant prefix, two tenants
+  // whose agents both process subject="REQ-2041" would share one Inngest
+  // slot bucket. An authored restricted key wins verbatim (already
+  // tenant-prefixed by resolveAgentConcurrency).
+  const concurrency = authoredConcurrency
+    ? {
+        limit: authoredConcurrency.limit,
+        key: authoredConcurrencyKey
+          ? authoredConcurrency.key
+          : `"${tenantSlug}:" + ${triggerSubjectExpr}`,
+      }
+    : undefined;
 
   // One Inngest app per tenant: bind this agent's function to the tenant's own
   // client (`agentic-operator-<slug>`). Normal tenants keep `${slug}.${agent}`;
@@ -556,16 +844,9 @@ export function registerAgent(
     {
       id: fnId,
       name: agent.title ?? agent.name,
-      // P5-TEN-01 (G7) — concurrency key now composes the tenant slug with
-      // the subject. Without the tenant prefix, two tenants whose agents
-      // both process subject="REQ-2041" would share the same Inngest slot
-      // bucket — one heavy tenant could starve another. With the prefix,
-      // each tenant gets its own bucket per subject, and the per-agent
-      // `concurrencyCap` only counts that tenant's traffic.
-      concurrency: {
-        limit: concurrencyCap,
-        key: `"${tenantSlug}:" + ${triggerSubjectExpr}`,
-      },
+      // Every enabled key is tenant-prefixed (see resolution above). Studio
+      // may author a restricted event-data path, or disable this limit.
+      ...(concurrency ? { concurrency } : {}),
       // Per-agent retry budget from the manifest (`retries`, 0–10); defaults
       // to the historical 3 when the agent doesn't declare one.
       retries: functionRetries(agent),
@@ -618,6 +899,21 @@ export function registerAgent(
         eventName: event.name,
         data: rehydratedData,
       });
+      // Agent-scoped publish (Studio "run this agent"): sibling subscribers
+      // sharing the trigger acknowledge without allocating a run.
+      if (!eventTargetsAgent(rehydratedData, agent.name)) {
+        return {
+          skipped: true,
+          reason: "targeted_event_for_another_agent",
+          targetAgent: rehydratedData.__invokedAgent,
+        };
+      }
+      // Sanitized account/request attribution recovered from the private
+      // Inngest envelope. It is never exposed to prompts or tools.
+      const deliveredUsageAttribution = usageAttributionFromDeliveryData(
+        rehydratedData,
+        ctx.tenantId,
+      );
       // #COMMS — offloader for oversized OUTBOUND fields (content-addressed, dedup by sha256).
       const durableOffloader = makeDurableBlobOffloader();
       const offloader = durableOffloader.offload;
@@ -705,6 +1001,18 @@ export function registerAgent(
           },
           new Date(startedAt),
         );
+        // Non-sensitive billing/product attribution merged with server truth
+        // (authenticated context wins for account fields).
+        const initUsageAttribution = mergeUsageAttribution(
+          deliveredUsageAttribution,
+          {
+            billingAccountId: ctx.tenantId,
+            correlationId: cid,
+            invocationSource: runInvocationSource(
+              deliveredUsageAttribution.invocationSource,
+            ),
+          },
+        );
         db.insert(runs)
           .values({
             id: rid,
@@ -717,9 +1025,45 @@ export function registerAgent(
             correlationId: cid,
             subject,
             isTest,
+            invocationSource: runInvocationSource(
+              initUsageAttribution.invocationSource,
+            ),
+            requestId: initUsageAttribution.requestId,
+            interactionId: initUsageAttribution.interactionId,
+            productSurface: initUsageAttribution.productSurface,
+            productAction: initUsageAttribution.productAction,
+            requestedBy:
+              initUsageAttribution.actorType === "user"
+                ? initUsageAttribution.actorId
+                : undefined,
+            definitionHash,
+            outputValid: null,
+            sideEffectMode: isTest ? "suppressed" : "live",
             logPath: runLogPath,
           })
           .run();
+        // Structured run.start trace (run_trace_events) — best-effort: trace
+        // IO must never abort a real run. Inside `init` ⇒ exactly-once.
+        try {
+          await traceSinkForRun().append({
+            runId: rid,
+            kind: "run",
+            level: "minimal",
+            name: "run.start",
+            status: "running",
+            startedAt: new Date(startedAt),
+            summary: `Started ${isTest ? "test" : "event"} run for ${agent.name}`,
+            data: {
+              agentName: agent.name,
+              eventName: event.name,
+              definitionHash,
+              testRun: isTest,
+            },
+            visibility: "user",
+          });
+        } catch (err) {
+          logger.warn("run.start trace failed", { err: String(err) });
+        }
         // Live feed: broadcast run.started so the portal's stream (LIVE pill,
         // dashboards, Logs → live terminal) reflects manifest-agent activity in
         // real time. Inside `init`'s step.run ⇒ exactly-once across replays.
@@ -743,6 +1087,7 @@ export function registerAgent(
           runId: rid,
           correlationId: cid,
           agentDbId: agentRow.id,
+          agentVersionId: agentVersionRow?.id ?? null,
           startedAt,
           runLogPath,
         };
@@ -753,6 +1098,23 @@ export function registerAgent(
       const startedAtMs = init.startedAt;
       const startedAt = new Date(startedAtMs);
       const db = getDb();
+      const usageAttribution = mergeUsageAttribution(
+        deliveredUsageAttribution,
+        {
+          billingAccountId: ctx.tenantId,
+          correlationId,
+          invocationSource: runInvocationSource(
+            deliveredUsageAttribution.invocationSource,
+          ),
+        },
+      );
+      const traceSink = traceSinkForRun();
+      const artifactSink = ctx.artifactSinkFactory?.({
+        tenantId: ctx.tenantId,
+        runId,
+      });
+      const terminalArtifactSink =
+        artifactSink ?? createFilesystemArtifactSink(runId);
 
       const logCtx = {
         tenantSlug,
@@ -829,6 +1191,12 @@ export function registerAgent(
       // #REDESIGN P1b — the REAL model that served this run (last step that reported one), so the run
       // records the actual model instead of a hardcoded "mock-model-v1".
       let runModel: string | null = null;
+      let runProvider: string | null = null;
+      // Agent Studio v2 structured-output receipts: validity of the final
+      // authored output and the exact raw model response for diagnostics.
+      let lastOutputValid: boolean | null = null;
+      let lastRawResponse: string | undefined;
+      let inputValid = !usesV2Definition;
       // Phase 1a — real branching: a condition step records its boolean here; a downstream
       // action that dependsOn a false condition (or a skipped step) is SKIPPED, not run.
       const gate: GateState = { conditionTrue: {}, skipped: new Set<string>() };
@@ -861,6 +1229,53 @@ export function registerAgent(
           reason: reason.slice(0, 200),
         });
       };
+
+      // Agent-level AI runtime settings (always threaded — a legacy manifest
+      // may author agent-level provider/model too) + the v2 authoring carrier
+      // (ports, output config/bindings, tool_loop, observability) that the
+      // step-engine's v2 execution path reads via normalizeAgentForExecution.
+      const agentAiSettings = {
+        provider: agent.provider,
+        model: agent.model,
+        task_class: agent.task_class,
+        reasoning: agent.reasoning,
+        verbosity: agent.verbosity,
+        store: agent.store,
+        temperature: agent.temperature,
+        max_tokens: agent.max_tokens,
+        timeout_s: agent.timeout_s,
+        tenantId: ctx.tenantId,
+      } as const;
+      const agentRecord = agent as unknown as Record<string, unknown>;
+      const v2AgentCarrier = usesV2Definition
+        ? {
+            actor: agentRecord.actor,
+            trigger: agentRecord.trigger,
+            actions: agentRecord.actions,
+            inputs: agentRecord.inputs,
+            input_data: agentRecord.input_data as
+              | Record<string, unknown>
+              | undefined,
+            user_prompt_template: agentRecord.user_prompt_template as
+              | string
+              | undefined,
+            outputs: agentRecord.outputs,
+            output_config: agentRecord.output_config,
+            output_bindings: agentRecord.output_bindings,
+            trigger_bindings: agentRecord.trigger_bindings,
+            tool_loop: agentRecord.tool_loop as
+              | { max_iterations?: number }
+              | undefined,
+            observability: agentRecord.observability as
+              | {
+                  trace_level?: "minimal" | "standard" | "debug";
+                  reasoning_summary?: boolean;
+                  persist_rendered_prompts?: boolean;
+                }
+              | undefined,
+            extensions: agentRecord.extensions,
+          }
+        : {};
 
       const factoryInputBindings = (agent.factory_input_bindings ??
         []) as FactoryInputBinding[];
@@ -897,6 +1312,60 @@ export function registerAgent(
         await abortForInputBindings(initializedBindings.issues);
       }
 
+      // Agent Studio v2 — bind + validate every named input against its port
+      // schema BEFORE any model/tool call. The validated set is exposed to
+      // every action as event.data.inputs. Legacy manifests skip this.
+      let executionInputs: Record<string, unknown> = boundData;
+      if (usesV2Definition) {
+        try {
+          executionInputs = await step.run("validate-inputs", async () => {
+            const bound = bindTriggerInputs(agent, {
+              name: bareTenantEventName(tenantSlug, event.name),
+              data: boundData,
+              subject,
+            });
+            const validated = validateAgentInputs(agent, bound);
+            try {
+              await traceSink.append({
+                runId,
+                kind: "input",
+                level: "standard",
+                name: "input.validation",
+                status: "ok",
+                summary: `Validated ${Object.keys(validated.values).length} named input(s)`,
+                data: { inputIds: Object.keys(validated.values) },
+                visibility: "user",
+              });
+            } catch (err) {
+              logger.warn("input.validation trace failed", {
+                err: String(err),
+              });
+            }
+            return validated.values;
+          });
+          inputValid = true;
+        } catch (error) {
+          if (error instanceof AgentInputValidationError) {
+            try {
+              await traceSink.append({
+                runId,
+                kind: "input",
+                level: "minimal",
+                name: "input.validation",
+                status: "failed",
+                summary: "Named input validation failed before execution",
+                data: { issues: error.issues },
+                visibility: "user",
+              });
+            } catch {
+              // The original validation error is the operator-facing cause.
+            }
+            await failRun(runId, error.message, startedAt, error.code);
+          }
+          throw error;
+        }
+      }
+
       for (let i = 0; i < agent.actions.length; i++) {
         const action = agent.actions[i]!;
         const ord = i + 1;
@@ -911,7 +1380,10 @@ export function registerAgent(
           await abortForInputBindings(availableStepBindings);
 
         const actionBinding = action.input_binding;
-        let actionData: Record<string, unknown> = boundData;
+        // v2 agents see the validated named-input set on every action.
+        let actionData: Record<string, unknown> = usesV2Definition
+          ? { ...boundData, inputs: executionInputs }
+          : boundData;
         if (actionBinding?.kind === "object_lookup") {
           const prepared = prepareObjectLookupArguments(
             inputBindingState,
@@ -1597,6 +2069,8 @@ export function registerAgent(
                           ctx.productionCodeActManifestSha256,
                         productionCodeActWorkflowManifestSha256:
                           ctx.productionCodeActWorkflowManifestSha256,
+                        ...agentAiSettings,
+                        ...v2AgentCarrier,
                         triggeredEvents: agent.triggered_event,
                         tool_use: Array.isArray(agent.tool_use)
                           ? (agent.tool_use as Array<{
@@ -1609,6 +2083,8 @@ export function registerAgent(
                       tenantRegistry: effectiveTenantRegistry,
                       autoResolveManual: true,
                       memory: runMemory,
+                      trace: traceSink,
+                      usageAttribution,
                       deadlineAt: foreachDeadlineAt,
                       durableStepId: childStepId,
                       durableActionRuntime,
@@ -1804,14 +2280,20 @@ export function registerAgent(
                   resumeState: "pending",
                   type: action.task_type ?? action.name,
                   title: `${agent.title ?? agent.name} · ${action.name}`,
+                  awaitingRole: action.awaiting_role ?? "operator",
                   priority: "medium",
                   status: "open",
+                  // A preceding logic/tool step often prepares the decision
+                  // brief. Persist it (plus the authored operator form
+                  // contract) so the operator sees the evidence that caused
+                  // the HITL checkpoint.
                   payloadJson: {
-                    agentName: agent.name,
-                    actionName: action.name,
-                    description: action.description,
-                    subject,
-                    condition: action.condition ?? null,
+                    ...buildManualTaskPayload({
+                      agent,
+                      action,
+                      subject,
+                      preparedContext: lastResult,
+                    }),
                     ...(actionBinding?.kind === "human_input"
                       ? {
                           inputBinding: {
@@ -1920,6 +2402,19 @@ export function registerAgent(
             resumeMarker?: string;
             actorUserId?: string | null;
           };
+          // Canonical manual-decision envelope (v2 contract). Unknown decision
+          // values from the transport degrade to "approve" (historical
+          // behavior) instead of poisoning the durable resume with a throw.
+          const manualDecision: ManualTaskDecision =
+            resolution.decision === "reject" ||
+            resolution.decision === "supplement"
+              ? resolution.decision
+              : "approve";
+          const manualResolutionEnvelope = buildManualTaskResolution({
+            taskId: initStep.taskId,
+            decision: manualDecision,
+            payload: resolution.payload,
+          });
 
           if (
             resolution.decision !== "reject" &&
@@ -1965,8 +2460,14 @@ export function registerAgent(
           await step.run(`close-task-${ord}`, async () => {
             const dbInner = getDb();
             const sEnded = Date.now();
+            // v2 (Studio) semantics: a human rejection is a valid domain
+            // outcome — the durable step completed successfully and the
+            // resolution envelope flows through output validation and
+            // authored emissions. Legacy manifests keep reject=failed.
             const stepStatus =
-              resolution.decision === "reject" ? "failed" : "ok";
+              manualDecision === "reject" && !usesV2Definition
+                ? "failed"
+                : "ok";
             dbInner.transaction((tx) => {
               const taskUpdate = tx
                 .update(tasksTable)
@@ -1974,7 +2475,10 @@ export function registerAgent(
                   status: "resolved",
                   resolvedAt: new Date(sEnded),
                   resolvedBy: resolution.actorUserId ?? null,
-                  resolutionJson: resolution as never,
+                  resolutionJson: {
+                    ...resolution,
+                    ...manualResolutionEnvelope,
+                  } as never,
                   resumeState: "acknowledged",
                   resumeAcknowledgedAt: new Date(sEnded),
                   resumeError: null,
@@ -2035,22 +2539,44 @@ export function registerAgent(
             }
           });
 
-          if (resolution.decision === "reject") {
+          if (manualDecision === "reject") {
+            if (usesV2Definition) {
+              // v2: a reject terminates remaining work but intentionally
+              // proceeds through output validation, artifact persistence and
+              // every authored emitted event with the resolution envelope.
+              lastResult = manualResolutionEnvelope;
+              stepResults[actionKey] = manualResolutionEnvelope;
+              await writeRunLog(logCtx, "WARN", "step.ok", {
+                name: action.name,
+                type: action.type,
+                taskId: initStep.taskId,
+                decision: manualDecision,
+                outcome: manualResolutionEnvelope.outcome,
+              });
+              break;
+            }
             await failRun(runId, "human rejected", startedAt);
             throw new Error("rejected by human");
           }
 
-          const manualResult =
-            actionBinding?.kind === "human_input"
+          // v2 exposes the stable resolution envelope EXACTLY (strict output
+          // contracts validate against it); legacy manifests keep the
+          // historical payload/binding carry-forward shape.
+          const manualResult = usesV2Definition
+            ? manualResolutionEnvelope
+            : actionBinding?.kind === "human_input"
               ? { [actionBinding.field]: boundData[actionBinding.field] }
               : (resolution.payload ?? null);
-          lastResult = mergeStepResults(lastResult, manualResult);
+          lastResult = usesV2Definition
+            ? manualResolutionEnvelope
+            : mergeStepResults(lastResult, manualResult);
           stepResults[actionKey] = manualResult;
           await writeRunLog(logCtx, "INFO", "step.ok", {
             name: action.name,
             type: action.type,
             taskId: initStep.taskId,
-            decision: resolution.decision ?? "approve",
+            decision: manualDecision,
+            outcome: manualResolutionEnvelope.outcome,
           });
           continue;
         }
@@ -2222,6 +2748,8 @@ export function registerAgent(
                         ctx.productionCodeActManifestSha256,
                       productionCodeActWorkflowManifestSha256:
                         ctx.productionCodeActWorkflowManifestSha256,
+                      ...agentAiSettings,
+                      ...v2AgentCarrier,
                       triggeredEvents: agent.triggered_event,
                       tool_use: Array.isArray(agent.tool_use)
                         ? (agent.tool_use as Array<{
@@ -2235,6 +2763,12 @@ export function registerAgent(
                     autoResolveManual: true,
                     // #REDESIGN FU1 — real durable memory for generated-code execution (delivered tier).
                     memory: runMemory,
+                    // Studio/operator structured trace + terminal-output
+                    // validation contract (v2) + billing attribution.
+                    stepId: sid,
+                    trace: traceSink,
+                    finalOutput: i === agent.actions.length - 1,
+                    usageAttribution,
                   }),
               ); // #SCALE-TRACE — ambient correlationId/agentName/tenantSlug/runId for nested tools/logs
               codeReceipt = codeActExecutionReceiptFromMeta(res.meta);
@@ -2466,6 +3000,8 @@ export function registerAgent(
                 tokensIn: res.tokensIn ?? 0,
                 tokensOut: res.tokensOut ?? 0,
                 durationMs: sEnded - sStarted,
+                model: res.model,
+                provider: res.provider,
                 meta: res.meta,
               };
               return res.ok
@@ -2594,6 +3130,20 @@ export function registerAgent(
         }
         tokensIn += stepOutcome.tokensIn;
         tokensOut += stepOutcome.tokensOut;
+        // Replay-safe model/provider + v2 structured-output receipts (a failed
+        // turn still consumed tokens and can carry the raw response needed for
+        // terminal diagnostics).
+        if (stepOutcome.model) runModel = stepOutcome.model;
+        if (stepOutcome.provider) runProvider = stepOutcome.provider;
+        const outcomeMeta = stepOutcome.meta as
+          | { outputValid?: unknown; rawResponse?: unknown }
+          | undefined;
+        if (typeof outcomeMeta?.outputValid === "boolean") {
+          lastOutputValid = outcomeMeta.outputValid;
+        }
+        if (typeof outcomeMeta?.rawResponse === "string") {
+          lastRawResponse = outcomeMeta.rawResponse;
+        }
         const emitted = (
           stepOutcome.meta as { emitted?: EmitIntent[] } | undefined
         )?.emitted;
@@ -2611,9 +3161,35 @@ export function registerAgent(
 
         // Phase 1a — record a condition step's verdict so downstream depends_on actions branch on it.
         if (action.type === "condition") {
-          gate.conditionTrue[actionKey] = Boolean(
+          const conditionEvaluated = Boolean(
             (stepOutcome.data as { evaluated?: boolean } | null)?.evaluated,
           );
+          gate.conditionTrue[actionKey] = conditionEvaluated;
+          // Agent Studio v2 — explicit branch targets. A condition may name a
+          // LATER action (by `id`, else name) to jump to; the target must be
+          // forward-only so replays cannot loop.
+          const conditionAction = action as {
+            true_action_id?: unknown;
+            false_action_id?: unknown;
+          };
+          const branchTarget = conditionEvaluated
+            ? conditionAction.true_action_id
+            : conditionAction.false_action_id;
+          if (typeof branchTarget === "string" && branchTarget.length > 0) {
+            const targetIndex = agent.actions.findIndex(
+              (candidate) =>
+                ((candidate as { id?: unknown }).id ?? candidate.name) ===
+                branchTarget,
+            );
+            if (targetIndex <= i) {
+              const reason = `condition ${action.name} selected invalid target ${branchTarget}`;
+              await failRun(runId, reason, startedAt, "condition_target_invalid");
+              throw new Error(
+                `condition target '${branchTarget}' must be a later action`,
+              );
+            }
+            i = targetIndex - 1;
+          }
         }
 
         // A soft/default policy permits the workflow to continue; it does
@@ -2643,6 +3219,85 @@ export function registerAgent(
       if (unresolvedBindings.length)
         await abortForInputBindings(unresolvedBindings);
 
+      // Agent Studio v2 — validate (and once repair) the terminal output
+      // against the compiled output-port schema when no step already did.
+      if (usesV2Definition && lastOutputValid !== true) {
+        try {
+          const finalValidation = await step.run(
+            "validate-final-output",
+            async () =>
+              parseValidateAndRepairOutput({
+                definition: agent,
+                candidate: lastResult,
+                trace: traceSink,
+                runId,
+              }),
+          );
+          lastResult = finalValidation.value;
+          lastOutputValid = finalValidation.valid;
+          lastRawResponse = finalValidation.rawResponse;
+        } catch (error) {
+          if (error instanceof OutputSchemaValidationError) {
+            lastOutputValid = false;
+            lastRawResponse = error.invalidResponse;
+            await failRun(runId, error.message, startedAt, error.code);
+          }
+          throw error;
+        }
+      }
+
+      // Agent Studio v2 — authored output bindings decide WHICH events fire
+      // and their exact payload field mapping; test mode suppresses them.
+      // Legacy manifests keep the explicit-emit/first-declared selection.
+      const v2SuppressedEmissions: string[] = [];
+      const v2PortsByEvent: Record<string, string[]> = {};
+      if (usesV2Definition) {
+        const resolvedEmissions = resolveAgentEmissions({
+          definition: agent,
+          inputs: executionInputs,
+          outputs: lastResult,
+          source: {
+            agentName: agent.name,
+            runId,
+            subject,
+            correlationId,
+          },
+          suppress: isTest,
+        });
+        for (const emission of resolvedEmissions) {
+          if (emission.suppressed) {
+            v2SuppressedEmissions.push(emission.name);
+            await writeRunLog(logCtx, "INFO", "event.suppressed", {
+              name: emission.name,
+              reason: "test_mode",
+            });
+            try {
+              await traceSink.append({
+                runId,
+                kind: "event",
+                level: "standard",
+                name: emission.name,
+                status: "skipped",
+                summary: `Suppressed downstream event '${emission.name}' in test mode`,
+                data: { outputPortIds: emission.outputPortIds },
+                visibility: "user",
+              });
+            } catch {
+              // Event persistence remains authoritative when trace is absent.
+            }
+            continue;
+          }
+          emitIntents.push({
+            event: emission.name,
+            payload: emission.payload,
+          });
+          v2PortsByEvent[emission.name] = emission.outputPortIds;
+        }
+        // v2 emissions are fully authored; the implicit triggered_event[0]
+        // fallback must not double-fire beside them.
+        suppressImplicitEmit = true;
+      }
+
       // Preserve all explicit emit intents (including repeated names from foreach). If no step
       // emitted explicitly, selectEmittedEvents retains the historical exactly-one branch routing.
       const selectedEmits = selectEmittedEvents(
@@ -2655,8 +3310,10 @@ export function registerAgent(
         intent,
         // An explicit emit payload is authoritative for that event. The incoming envelope is still
         // carried forward, while the aggregate foreach receipt stays internal unless selected.
+        // v2 payloads are fully authored by output bindings — no inbound
+        // carry-forward may pollute the exact mapped shape.
         assembled: assembleEmitPayload({
-          incoming: data,
+          incoming: usesV2Definition ? {} : data,
           lastResult: intent.payload ?? lastResult,
           meta: {
             subject: subject ?? undefined,
@@ -2724,6 +3381,7 @@ export function registerAgent(
           name: string;
           index: number;
         }> = [];
+        const emittedRecordRows: RunEmittedEvent[] = [];
         for (let index = 0; index < outbound.length; index++) {
           const item = outbound[index]!;
           const emittedEventId = makeId("evt");
@@ -2775,6 +3433,34 @@ export function registerAgent(
               })(),
             })
             .run();
+          // Studio run views join emissions to authored output ports. Legacy
+          // manifests link under the wildcard port.
+          const emittedAt = new Date();
+          const portIds =
+            usesV2Definition && v2PortsByEvent[emittedName]?.length
+              ? v2PortsByEvent[emittedName]!
+              : ["*"];
+          for (const outputPortId of portIds) {
+            const linkId = makeId("ree");
+            dbInner
+              .insert(runEmittedEvents)
+              .values({
+                id: linkId,
+                tenantId: ctx.tenantId,
+                runId,
+                eventId: emittedEventId,
+                outputPortId,
+                createdAt: emittedAt,
+              })
+              .run();
+            emittedRecordRows.push({
+              id: linkId,
+              eventId: emittedEventId,
+              eventName: emittedName,
+              outputPortId,
+              createdAt: emittedAt,
+            });
+          }
           emittedEvents.push({ id: emittedEventId, name: emittedName, index });
         }
 
@@ -2799,7 +3485,7 @@ export function registerAgent(
           })
           .where(eq(runs.id, runId))
           .run();
-        return { emittedEventId, emittedEvents, persistedAtMs };
+        return { emittedEventId, emittedEvents, emittedRecordRows, persistedAtMs };
       });
 
       // The actual inngest.send must be outside step.run (step results are
@@ -2810,9 +3496,15 @@ export function registerAgent(
         if (!item) continue;
         const emittedName = persisted.name;
         const emittedEventId = persisted.id;
-        const flatWireData = withCorrelation(correlationId, {
-          ...item.assembled.payload,
-          __triggerEventId: emittedEventId,
+        // Canonical delivery envelope: correlation + trigger lineage + the
+        // private (strippable) usage-attribution block so chained runs bill
+        // to the same interaction. Stripping `__` keys from this object
+        // reproduces the exact ledger payload.
+        const flatWireData = buildManifestEventDeliveryData({
+          logicalPayload: item.assembled.payload,
+          eventId: emittedEventId,
+          correlationId,
+          usageAttribution,
         });
         const wireData = eventAdapter.outbound({
           eventId: emittedEventId,
@@ -2865,15 +3557,162 @@ export function registerAgent(
       const completion = await step.run("finalize-dispatched", async () => {
         const dbInner = getDb();
         const endedAtMs = Date.now();
+        const endedAt = new Date(endedAtMs);
+
+        // ── Terminal run evidence (Agent Studio contract) ──────────────────
+        // Persist the exact terminal output + a typed run record BEFORE the
+        // run flips to ok. Failure here keeps the run running so this
+        // memoized step retries; the event sends above are idempotent.
+        const outputFilename =
+          (
+            agent as AgentSpec & {
+              output_config?: { artifact?: { filename?: string } };
+            }
+          ).output_config?.artifact?.filename ?? "output.json";
+        const persistedOutput = await terminalArtifactSink.persist({
+          role: "output",
+          logicalName: outputFilename,
+          contentType: "application/json",
+          payload: lastResult,
+        });
+        const outputArtifactId = registerPersistedArtifact(persistedOutput);
+        let persistedRawResponse: RuntimePersistedArtifact | null = null;
+        let rawResponseArtifactId: string | null = null;
+        const persistRawResponse =
+          (
+            agent as AgentSpec & {
+              output_config?: { artifact?: { persist_raw_response?: boolean } };
+            }
+          ).output_config?.artifact?.persist_raw_response === true;
+        if (persistRawResponse && lastRawResponse !== undefined) {
+          persistedRawResponse = await terminalArtifactSink.persist({
+            role: "raw_response",
+            logicalName: "raw-response.txt",
+            contentType: "text/plain; charset=utf-8",
+            payload: lastRawResponse,
+          });
+          rawResponseArtifactId = registerPersistedArtifact(persistedRawResponse);
+        }
+        const emittedRecordRows: RunEmittedEvent[] = (
+          finalize.emittedRecordRows ?? []
+        ).map(
+          (row: {
+            id: string;
+            eventId: string;
+            eventName: string;
+            outputPortId: string;
+            createdAt: string | number | Date;
+          }) => ({
+            id: row.id,
+            eventId: row.eventId,
+            eventName: row.eventName,
+            outputPortId: row.outputPortId,
+            createdAt: new Date(row.createdAt),
+          }),
+        );
+        const outputMetadata = outputArtifactId
+          ? toRunArtifactMetadata(outputArtifactId, persistedOutput, endedAt)
+          : null;
+        const rawResponseMetadata =
+          rawResponseArtifactId && persistedRawResponse
+            ? toRunArtifactMetadata(
+                rawResponseArtifactId,
+                persistedRawResponse,
+                endedAt,
+              )
+            : null;
+        const runRecord: AgentRunRecord = {
+          schemaVersion: 1,
+          runId,
+          tenantId: ctx.tenantId,
+          agentId: init.agentDbId,
+          status: "ok",
+          invocationSource: runInvocationSource(
+            usageAttribution.invocationSource,
+          ),
+          target: {
+            kind: "live",
+            agentVersionId: init.agentVersionId ?? "unversioned",
+          },
+          definitionHash,
+          sessionId: null,
+          correlationId,
+          subject,
+          validation: {
+            inputValid,
+            outputValid: lastOutputValid,
+            issues: [],
+          },
+          artifacts: [outputMetadata, rawResponseMetadata].filter(
+            (value): value is RunArtifactMetadata => value !== null,
+          ),
+          emittedEvents: emittedRecordRows,
+          model:
+            runProvider || runModel
+              ? {
+                  ...(runProvider
+                    ? { provider: runProvider as ProviderId }
+                    : {}),
+                  ...(runModel ? { model: runModel } : {}),
+                  tokensIn,
+                  tokensOut,
+                }
+              : undefined,
+          timing: {
+            queuedAt: null,
+            startedAt,
+            endedAt,
+            durationMs: endedAtMs - startedAtMs,
+          },
+          error: null,
+        };
+        const persistedRunRecord = await terminalArtifactSink.persist({
+          role: "run_record",
+          logicalName: "run-record.json",
+          contentType: "application/json",
+          payload: runRecord,
+        });
+        registerPersistedArtifact(persistedRunRecord);
+        // Existing consumers still expect run-output.json. Keep the legacy
+        // envelope as a compatibility artifact while output.json remains the
+        // exact authored shape. Best-effort — never blocks the terminal flip.
+        try {
+          await writeArtifact(runId, "run-output.json", {
+            run_id: runId,
+            agent: agent.name,
+            title: agent.title ?? agent.name,
+            tenant: tenantSlug,
+            status: "ok",
+            trigger: { name: event.name, subject, data },
+            output: lastResult,
+            emitted_events: finalize.emittedEvents.map(
+              (item: { name: string }) => item.name,
+            ),
+            tokens: {
+              in: tokensIn,
+              out: tokensOut,
+              provider: runProvider,
+              model: runModel,
+            },
+            started_at: startedAt.toISOString(),
+            ended_at: endedAt.toISOString(),
+          });
+        } catch (error) {
+          logger.warn("legacy run-output artifact failed", {
+            err: String(error),
+          });
+        }
+
         const updated = dbInner
           .update(runs)
           .set({
             status: "ok",
-            endedAt: new Date(endedAtMs),
+            endedAt,
             durationMs: endedAtMs - startedAtMs,
             tokensIn,
             tokensOut,
             model: runModel ?? "unknown",
+            outputValid: lastOutputValid,
             emittedEventId: finalize.emittedEventId,
           })
           .where(and(eq(runs.id, runId), eq(runs.status, "running")))
@@ -2926,6 +3765,39 @@ export function registerAgent(
             agent: agent.name,
           });
         }
+        // Structured terminal traces — best-effort; terminal DB state and
+        // artifacts must not be rolled back by trace IO.
+        try {
+          await traceSink.append({
+            runId,
+            kind: "artifact",
+            level: "standard",
+            name: "terminal.artifacts",
+            status: "ok",
+            endedAt,
+            summary: "Persisted mandatory output.json and run-record.json",
+            data: { outputArtifactId, rawResponseArtifactId },
+            visibility: "user",
+          });
+          await traceSink.append({
+            runId,
+            kind: "run",
+            level: "minimal",
+            name: "run.end",
+            status: "ok",
+            startedAt,
+            endedAt,
+            durationMs: endedAtMs - startedAtMs,
+            summary: "Agent run completed successfully",
+            data: {
+              emittedEventCount: finalize.emittedEvents.length,
+              suppressedEventCount: v2SuppressedEmissions.length,
+            },
+            visibility: "user",
+          });
+        } catch {
+          /* trace best-effort */
+        }
         return { endedAtMs };
       });
 
@@ -2966,10 +3838,68 @@ export function registerAgent(
         ),
       };
 
+      /** Persist a terminal artifact's DB row (filesystem sink) or trust the
+       * tenant-authorized sink's own id. Returns the artifacts row id. */
+      function registerPersistedArtifact(
+        persisted: RuntimePersistedArtifact,
+      ): string | null {
+        if (artifactSink) return persisted.id ?? null;
+        if (!persisted.path) {
+          throw new Error(
+            `artifact_persistence_failed: '${persisted.logicalName}' has no storage path`,
+          );
+        }
+        const artifactId = persisted.id ?? makeId("art");
+        getDb()
+          .insert(artifacts)
+          .values({
+            id: artifactId,
+            tenantId: ctx.tenantId,
+            runId,
+            stepId: persisted.stepId ?? null,
+            kind: persisted.contentType,
+            role: persisted.role,
+            logicalName: persisted.logicalName,
+            contentType: persisted.contentType,
+            sha256: persisted.sha256,
+            schemaId: persisted.schemaId ?? null,
+            metadataJson: (persisted.metadata ?? null) as never,
+            redacted: persisted.redacted,
+            retentionUntil: persisted.retentionUntil ?? null,
+            path: persisted.path,
+            size: persisted.size,
+          })
+          .run();
+        return artifactId;
+      }
+
+      function toRunArtifactMetadata(
+        id: string,
+        persisted: RuntimePersistedArtifact,
+        createdAt: Date,
+      ): RunArtifactMetadata {
+        return {
+          id,
+          runId,
+          stepId: persisted.stepId ?? null,
+          role: persisted.role,
+          logicalName: persisted.logicalName,
+          contentType: persisted.contentType,
+          size: persisted.size,
+          sha256: persisted.sha256,
+          schemaId: persisted.schemaId ?? null,
+          metadata: persisted.metadata ?? null,
+          redacted: persisted.redacted,
+          createdAt,
+          retentionUntil: persisted.retentionUntil ?? null,
+        };
+      }
+
       async function failRun(
         rid: string,
         message: string,
         started: Date,
+        errorCode?: string,
       ): Promise<void> {
         // UC-V11-35 / PF-GAP-15 — wrap the run-status flip in `step.run`
         // so Inngest's exactly-once contract serializes it with any
@@ -2979,15 +3909,139 @@ export function registerAgent(
         // recovered.
         await step.run(`finalize-fail-${rid}`, async () => {
           const ended = new Date();
+          let terminalMessage = message;
+          // Terminal failure evidence (Agent Studio contract): the typed
+          // run record + optional raw model response. Best-effort — an
+          // artifact failure annotates the message but never masks the
+          // original run failure being recorded.
+          const failureArtifacts: RunArtifactMetadata[] = [];
+          const persistRawResponse =
+            (
+              agent as AgentSpec & {
+                output_config?: {
+                  artifact?: { persist_raw_response?: boolean };
+                };
+              }
+            ).output_config?.artifact?.persist_raw_response === true;
+          if (persistRawResponse && lastRawResponse !== undefined) {
+            try {
+              const persistedRawResponse = await terminalArtifactSink.persist({
+                role: "raw_response",
+                logicalName: "raw-response.txt",
+                contentType: "text/plain; charset=utf-8",
+                payload: lastRawResponse,
+              });
+              const artifactId = registerPersistedArtifact(persistedRawResponse);
+              if (artifactId) {
+                failureArtifacts.push(
+                  toRunArtifactMetadata(artifactId, persistedRawResponse, ended),
+                );
+              }
+            } catch (error) {
+              terminalMessage = `${terminalMessage}; artifact_persistence_failed: ${
+                error instanceof Error ? error.message : String(error)
+              }`;
+            }
+          }
+          const failedRecord: AgentRunRecord = {
+            schemaVersion: 1,
+            runId: rid,
+            tenantId: ctx.tenantId,
+            agentId: init.agentDbId,
+            status: "failed",
+            invocationSource: runInvocationSource(
+              usageAttribution.invocationSource,
+            ),
+            target: {
+              kind: "live",
+              agentVersionId: init.agentVersionId ?? "unversioned",
+            },
+            definitionHash,
+            sessionId: null,
+            correlationId,
+            subject,
+            validation: {
+              inputValid: errorCode !== "input_schema_invalid" && inputValid,
+              outputValid:
+                errorCode === "output_schema_invalid"
+                  ? false
+                  : (lastOutputValid ?? null),
+              issues: [],
+            },
+            artifacts: failureArtifacts,
+            emittedEvents: [],
+            model:
+              runProvider || runModel
+                ? {
+                    ...(runProvider
+                      ? { provider: runProvider as ProviderId }
+                      : {}),
+                    ...(runModel ? { model: runModel } : {}),
+                    tokensIn,
+                    tokensOut,
+                  }
+                : undefined,
+            timing: {
+              queuedAt: null,
+              startedAt: started,
+              endedAt: ended,
+              durationMs: ended.getTime() - started.getTime(),
+            },
+            error: {
+              ...(errorCode ? { code: errorCode } : {}),
+              message: terminalMessage,
+            },
+          };
+          try {
+            const persistedRunRecord = await terminalArtifactSink.persist({
+              role: "run_record",
+              logicalName: "run-record.json",
+              contentType: "application/json",
+              payload: failedRecord,
+            });
+            registerPersistedArtifact(persistedRunRecord);
+          } catch (error) {
+            terminalMessage = `${terminalMessage}; artifact_persistence_failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`;
+          }
           db.update(runs)
             .set({
               status: "failed",
               endedAt: ended,
               durationMs: ended.getTime() - started.getTime(),
-              errorMessage: message,
+              tokensIn,
+              tokensOut,
+              model: runModel ?? "unknown",
+              outputValid:
+                errorCode === "output_schema_invalid"
+                  ? false
+                  : (lastOutputValid ?? null),
+              errorMessage: terminalMessage,
             })
             .where(eq(runs.id, rid))
             .run();
+          // Structured run.end (failed) trace — best-effort.
+          try {
+            await traceSink.append({
+              runId: rid,
+              kind: "run",
+              level: "minimal",
+              name: "run.end",
+              status: "failed",
+              startedAt: started,
+              endedAt: ended,
+              durationMs: ended.getTime() - started.getTime(),
+              summary: "Agent run failed",
+              data: {
+                ...(errorCode ? { code: errorCode } : {}),
+                message: terminalMessage,
+              },
+              visibility: "user",
+            });
+          } catch {
+            /* trace best-effort */
+          }
           const failedReceipt = db
             .select(codeActRunReceiptSelection)
             .from(runs)

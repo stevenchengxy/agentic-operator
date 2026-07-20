@@ -168,21 +168,21 @@ describe("production interfaces do not silently substitute fake success", () => 
     expect(source).not.toContain("demoMode");
   });
 
-  it("agent detail tabs render the deployed source contract without empty stand-ins", () => {
+  it("agent detail delegates to Agent Studio with the real route identity", () => {
+    // The agent detail route is the Agent Studio experience: a thin wrapper
+    // that forwards the URL identity. It must not fabricate agent fields —
+    // Studio loads the live editor payload itself (useAgentEditor).
     const source = read("app/portal/[tenant]/(views)/agents/[id]/page.tsx");
 
-    for (const field of [
-      "input_data: detail.input_data",
-      "ontology_instructions: detail.ontology_instructions",
-      "tool_use: detail.tool_use",
-      "typescript_code: detail.typescript_code",
-      "sourceUnavailable: detail.sourceUnavailable",
-      "deployedSource: detail.deployedSource",
-    ]) {
-      expect(source).toContain(field);
-    }
+    expect(source).toContain("<AgentStudio");
+    expect(source).toContain('agentId={params?.id ?? ""}');
     expect(source).not.toContain("input_data: {}");
     expect(source).not.toContain('typescript_code: ""');
+
+    // The deployed-source honesty contract now lives in the run detail's
+    // agent tab, which still renders the exact deployed snapshot fields.
+    const runDetail = read("app/portal/[tenant]/(views)/runs/[id]/page.tsx");
+    expect(runDetail).toContain("sourceUnavailable: agentDetail.sourceUnavailable");
   });
 
   it("run agent tab uses the same deployed source snapshot", () => {
@@ -210,11 +210,13 @@ describe("production interfaces do not silently substitute fake success", () => 
     expect(view).toContain('t("models.envKeyRemovalHint")');
   });
 
-  it("workflow edits deploy to the runtime's canonical workflow identity", () => {
+  it("workflow edits deploy to the explicitly selected workflow identity", () => {
+    // Multi-workflow authoring: every save/run targets the slug the operator
+    // selected in the catalog — never the bare tenant slug (which would
+    // silently write a different workflow than the one on screen).
     const source = read("app/portal/[tenant]/(views)/workflows/page.tsx");
 
-    expect(source).toContain("const runtimeWorkflowSlug = `${tenant}-default`");
-    expect(source).toContain("workflowSlug: runtimeWorkflowSlug");
+    expect(source).toContain("workflowSlug: selectedWorkflow");
     expect(source).not.toContain("workflowSlug: tenant,");
   });
 

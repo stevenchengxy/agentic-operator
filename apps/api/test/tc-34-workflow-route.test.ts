@@ -41,6 +41,13 @@ let env: any;
 beforeAll(async () => {
   vi.stubEnv("AGENTIC_MODELS_DIR", TMP_ROOT);
   vi.stubEnv("AGENTIC_DEV_TENANT", "raas");
+  // The committed RAAS manifests bind platform-shared vendor/env references
+  // (ROBOHIRE_*/RAAS_CLIENT_*); without this allowlist the tenant-secret-scope
+  // policy rejects the round-tripped manifest and every PUT below 400s.
+  vi.stubEnv(
+    "AGENTIC_WORKFLOW_SHARED_ENV_ALLOWLIST",
+    "ROBOHIRE_API_KEY,ROBOHIRE_API_BASE_URL,RAAS_CLIENT_REQUIREMENTS_API_URL,RAAS_CLIENT_REQUIREMENTS_API_TOKEN,RAAS_REQUIREMENTS_SYNC_CRON,RAAS_REQUIREMENTS_SYNC_TIMEZONE",
+  );
 
   // Copy the real RAAS-v1 folder into the temp models dir so the route's
   // findTenantDirs() finds something to read/write.
@@ -82,10 +89,13 @@ describe("TC-34: workflow route", () => {
     const body = await res.json();
     expect(body.ok).toBe(true);
     expect(body.data.folder).toBe("RAAS-v1");
-    // Version-agnostic: the route returns the HIGHEST workflow_vN.json present. Asserting a fixed v1
-    // breaks whenever dev/manifest-import writes a newer version (disk drift). Validate the shape.
-    expect(body.data.file).toMatch(/^workflow_v\d+\.json$/);
-    expect(body.data.file_version).toBeGreaterThanOrEqual(1);
+    const versions = (await readdir(path.join(TMP_ROOT, "RAAS-v1")))
+      .map((file) => file.match(/^workflow_v(\d+)\.json$/)?.[1])
+      .filter((version): version is string => Boolean(version))
+      .map(Number);
+    const latestVersion = Math.max(...versions);
+    expect(body.data.file).toBe(`workflow_v${latestVersion}.json`);
+    expect(body.data.file_version).toBe(latestVersion);
     expect(body.data.schema_version).toBeTypeOf("number");
     expect(Array.isArray(body.data.manifest)).toBe(true);
     expect(body.data.manifest.length).toBeGreaterThan(0);

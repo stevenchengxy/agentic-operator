@@ -43,7 +43,9 @@ function read(rel: string): string {
 
 describe("regression: production wizard wiring", () => {
   describe("ImportManifestModal — must call the real backend", () => {
-    const src = read("app/portal/components/import-manifest/ImportManifestModal.tsx");
+    const src = read(
+      "app/portal/components/import-manifest/ImportManifestModal.tsx",
+    );
 
     it("posts to /v1/tenants/:slug/manifest-import", () => {
       // Either a literal /v1/tenants/.../manifest-import or a template that
@@ -81,12 +83,72 @@ describe("regression: production wizard wiring", () => {
       if (usage.test(src)) {
         // Allow `function buildSampleParse(` definitions; only flag calls.
         // Strip definitions first.
-        const stripped = src.replace(/function\s+buildSampleParse\s*\([^]*?\n\}/g, "");
+        const stripped = src.replace(
+          /function\s+buildSampleParse\s*\([^]*?\n\}/g,
+          "",
+        );
         expect(
           /\bbuildSampleParse\s*\(/.test(stripped),
           "ImportManifestModal calls the mock helper buildSampleParse(). Revert detected.",
         ).toBe(false);
       }
+    });
+
+    it("keeps validate failures on the Validate step and makes only supported source claims", () => {
+      expect(src).toContain("validationError && (step === 0 || step === 1)");
+      expect(src).not.toMatch(
+        /Stage \/ prod|git\+ssh|manifest\.zip|Egress allow-list|egress proxy|pre-allowed/,
+      );
+      expect(src).toContain('hint: "Production only"');
+    });
+
+    it("creates New Workflow imports as normalized drafts without calling production commit", () => {
+      expect(src).toContain("draftTarget");
+      expect(src).toContain("draft_only: true");
+      expect(src).toContain("normalized.normalized_workflow");
+      expect(src).toContain('fetch("/v1/workflows"');
+      expect(src).toContain("onDraftCreated?.(workflow)");
+      expect(src).toContain("if (draftTarget) void createImportedDraft()");
+    });
+  });
+
+  describe("DeployAgentModal — new event authoring", () => {
+    const src = read("app/portal/components/agents/DeployAgentModal.tsx");
+
+    it("loads the tenant event catalog and offers an explicit create action", () => {
+      expect(/\buseEventCatalog\s*\(/.test(src)).toBe(true);
+      expect(src).toContain("Create new event");
+    });
+
+    it("marks draft events and reports created catalog entries after deploy", () => {
+      expect(src).toContain("newEvents={draftNewEvents}");
+      expect(src).toContain("result.events.created.length");
+    });
+  });
+
+  describe("Agent detail — send a trigger event and observe its run", () => {
+    const page = read("app/portal/[tenant]/(views)/agents/[id]/page.tsx");
+    const modal = read("app/portal/components/events/PublishEventModal.tsx");
+    const hooks = read("lib/hooks/useEvents.ts");
+
+    it("routes the selected agent into the production Studio test section", () => {
+      expect(page).toContain("<AgentStudio");
+      expect(page).toContain('agentId={params?.id ?? ""}');
+      expect(page).toContain('searchParams.get("section") === "test"');
+    });
+
+    it("publishes as the operator and waits for the exact event causality link", () => {
+      expect(modal).toContain('source: "operator"');
+      expect(modal).toContain("targetAgent: targetAgent?.name");
+      expect(/useEventCausality\s*\(/.test(modal)).toBe(true);
+      expect(modal).toContain("run.triggerEventId === submitted.id");
+      expect(modal).toContain("✓ Agent started");
+      expect(modal).toContain("Open run");
+    });
+
+    it("polls the exact event seed rather than guessing by name or subject", () => {
+      expect(hooks).toContain("/v1/events/recent?causality=1&seed=");
+      expect(hooks).toContain("refetchInterval: eventId ? 1_000 : false");
     });
   });
 
@@ -113,7 +175,9 @@ describe("regression: production wizard wiring", () => {
       // Either via the exported TENANTS_KEYS constant or a literal
       // ["tenants"] queryKey — accept both.
       const invalidatesViaKeys = /invalidateQueries[^)]*TENANTS_KEYS/.test(src);
-      const invalidatesViaLiteral = /invalidateQueries[^)]*\["tenants"\]/.test(src);
+      const invalidatesViaLiteral = /invalidateQueries[^)]*\["tenants"\]/.test(
+        src,
+      );
       expect(
         invalidatesViaKeys || invalidatesViaLiteral,
         "After tenant create, TanStack ['tenants'] must be invalidated so the sidebar refreshes",
@@ -140,4 +204,34 @@ describe("regression: production wizard wiring", () => {
     });
   });
 
+  describe("workflow canvas — selection must survive workflow transitions", () => {
+    const src = read("app/portal/[tenant]/(views)/workflows/page.tsx");
+
+    it("never substitutes the first node when a selected node is temporarily absent", () => {
+      expect(src).toContain("selectedAgentRecord");
+      expect(src).toContain("selectedAgent && editing && selectedAgentRecord");
+      expect(src).not.toContain("?? agents[0]!");
+    });
+
+    it("serializes publish across validate, save, and publish and targets imports by identity", () => {
+      expect(src).toContain("publishInFlight.current");
+      expect(src).toContain("setPublishing(true)");
+      expect(src).toContain("draftTarget={importTarget ?? undefined}");
+      expect(src).toContain("onDraftCreated={selectCreatedWorkflow}");
+    });
+  });
+
+  describe("New Workflow import identity", () => {
+    const src = read("app/portal/components/workflows/NewWorkflowModal.tsx");
+
+    it("requires name and slug and passes both to the draft importer", () => {
+      expect(src).toContain(
+        'setError("Display name and workflow slug are required.")',
+      );
+      expect(src).toContain(
+        "onImport?.({ slug: slug.trim(), name: name.trim() })",
+      );
+      expect(src).toContain("create an editable server-backed draft");
+    });
+  });
 });

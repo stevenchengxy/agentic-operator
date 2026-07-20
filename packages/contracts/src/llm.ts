@@ -8,9 +8,36 @@
  */
 
 import { z } from "zod";
-import { PROVIDER_IDS } from "./providers";
+import {
+  PROVIDER_IDS,
+  REASONING_CONTEXTS,
+  REASONING_EFFORTS,
+  REASONING_MODES,
+  REASONING_SUMMARIES,
+  TEXT_VERBOSITIES,
+} from "./providers";
 
-export const ProviderIdSchema = z.enum(PROVIDER_IDS as unknown as [string, ...string[]]);
+export const ProviderIdSchema = z.enum(PROVIDER_IDS);
+
+export const ReasoningEffortSchema = z.enum(REASONING_EFFORTS);
+export const ReasoningModeSchema = z.enum(REASONING_MODES);
+export const ReasoningSummarySchema = z.enum(REASONING_SUMMARIES);
+export const ReasoningContextSchema = z.enum(REASONING_CONTEXTS);
+export const TextVerbositySchema = z.enum(TEXT_VERBOSITIES);
+export const ReasoningConfigSchema = z
+  .object({
+    effort: ReasoningEffortSchema.optional(),
+    mode: ReasoningModeSchema.optional(),
+    summary: ReasoningSummarySchema.optional(),
+    context: ReasoningContextSchema.optional(),
+  })
+  .strict()
+  .refine(
+    (value) => Object.values(value).some((entry) => entry !== undefined),
+    { message: "reasoning must set at least one control" },
+  );
+
+export type ReasoningConfigDTO = z.infer<typeof ReasoningConfigSchema>;
 
 // P1-CON-01 — typed content blocks for multi-modal and tool-use.
 // `tool` is the SDK's role for tool-result messages (matches Anthropic's
@@ -86,6 +113,10 @@ export const InvokeAgentBody = z.object({
   input: z.unknown().optional(),
   provider: ProviderIdSchema.optional(),
   model: z.string().optional(),
+  reasoning: ReasoningConfigSchema.optional(),
+  verbosity: TextVerbositySchema.optional(),
+  /** Whether the upstream provider may retain the response for retrieval. */
+  store: z.boolean().optional(),
   async: z.boolean().optional().default(false),
 });
 export type InvokeAgentBody = z.infer<typeof InvokeAgentBody>;

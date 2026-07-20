@@ -245,16 +245,25 @@ export async function listRecentRuns(
     .select({
       id: runs.id,
       status: runs.status,
+      sessionId: runs.sessionId,
+      agentVersionId: runs.agentVersionId,
+      draftRevisionId: runs.draftRevisionId,
+      invocationSource: runs.invocationSource,
+      definitionHash: runs.definitionHash,
+      outputValid: runs.outputValid,
+      sideEffectMode: runs.sideEffectMode,
       agentName: agents.name,
       agentTitle: agents.title,
       subject: runs.subject,
       triggerEvent: events.name,
       emittedEvent: emittedEventsAlias.name,
+      queuedAt: runs.queuedAt,
       startedAt: runs.startedAt,
       endedAt: runs.endedAt,
       durationMs: runs.durationMs,
       tokensIn: runs.tokensIn,
       tokensOut: runs.tokensOut,
+      provider: runs.provider,
       model: runs.model,
       correlationId: runs.correlationId,
       errorMessage: runs.errorMessage,
@@ -281,7 +290,7 @@ export async function listRecentRuns(
       eq(emittedEventsAlias.id, runs.emittedEventId),
     )
     .where(and(...whereParts))
-    .orderBy(desc(runs.startedAt))
+    .orderBy(desc(runs.queuedAt))
     .limit(opts.limit ?? 50)
     .all()
     .map((r) => ({
@@ -566,16 +575,25 @@ export async function getRun(
     .select({
       id: runs.id,
       status: runs.status,
+      sessionId: runs.sessionId,
+      agentVersionId: runs.agentVersionId,
+      draftRevisionId: runs.draftRevisionId,
+      invocationSource: runs.invocationSource,
+      definitionHash: runs.definitionHash,
+      outputValid: runs.outputValid,
+      sideEffectMode: runs.sideEffectMode,
       agentName: agents.name,
       agentTitle: agents.title,
       subject: runs.subject,
       triggerEvent: events.name,
       emittedEvent: emittedEventsAlias.name,
+      queuedAt: runs.queuedAt,
       startedAt: runs.startedAt,
       endedAt: runs.endedAt,
       durationMs: runs.durationMs,
       tokensIn: runs.tokensIn,
       tokensOut: runs.tokensOut,
+      provider: runs.provider,
       model: runs.model,
       correlationId: runs.correlationId,
       errorMessage: runs.errorMessage,
@@ -724,6 +742,8 @@ export async function listSteps(
       startedAt: steps.startedAt,
       endedAt: steps.endedAt,
       durationMs: steps.durationMs,
+      inputRef: steps.inputRef,
+      outputRef: steps.outputRef,
       error: steps.error,
       provider: steps.provider,
       model: steps.model,
@@ -736,8 +756,6 @@ export async function listSteps(
       codeSha256: steps.codeSha256,
       codeAttestation: steps.codeAttestation,
       codeExecutionFailure: steps.codeExecutionFailure,
-      inputRef: steps.inputRef,
-      outputRef: steps.outputRef,
     })
     .from(steps)
     .where(eq(steps.runId, runId))

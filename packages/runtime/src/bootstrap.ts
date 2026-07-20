@@ -44,6 +44,7 @@ import {
   findMissingTenantPrompts,
   formatMissingPromptsError,
   registerAgent,
+  resolveAgentTriggerNames,
 } from "./register";
 import {
   authorizeProductionGeneratedAgent,
@@ -80,6 +81,10 @@ export interface BootstrapTenantResult {
   agentCount: number;
   registeredCount: number;
   cronCount: number;
+  /** Agents whose declared cron expression was rejected as malformed. Always 0
+   * on a successful bootstrap — `assertCronManifestValid` throws first — but
+   * kept in the result contract for authoring-side status consumers. */
+  invalidCronCount: number;
   scheduleUnconfiguredCount: number;
   scheduleDisabledCount: number;
   eventTypeCount: number;
@@ -662,14 +667,68 @@ export async function bootstrapTenant(spec: {
     manifest,
   });
 
-  const workflowSlug = `${spec.tenantSlug}-default`;
-  let workflow = db
-    .select()
-    .from(workflows)
+  const versionStr = canonicalWorkflowVersionId(manifest, loaded.actionsExt);
+  const legacyVersionStr = legacyWorkflowVersionId(manifest);
+
+  // Authoring can publish a NAMED workflow into the tenant's single live
+  // runtime lane. If a live deployment's version already matches the disk
+  // manifest (by version identity or exact content), keep that named
+  // workflow/version as the bootstrap owner. Falling back to
+  // `<tenant>-default` here used to immediately supersede a successful named
+  // publish during hot registration.
+  const liveCandidates = db
+    .select({
+      workflowId: workflows.id,
+      workflowVersionId: workflowVersions.id,
+    })
+    .from(deployments)
+    .innerJoin(workflowVersions, eq(workflowVersions.id, deployments.versionId))
+    .innerJoin(workflows, eq(workflows.id, workflowVersions.workflowId))
     .where(
-      and(eq(workflows.tenantId, tenant.id), eq(workflows.slug, workflowSlug)),
+      and(
+        eq(deployments.tenantId, tenant.id),
+        eq(deployments.target, "workflow"),
+        eq(deployments.status, "live"),
+      ),
     )
-    .all()[0];
+    .all();
+  let matchingLive:
+    | { workflowId: string; workflowVersionId: string }
+    | undefined;
+  for (const candidate of liveCandidates) {
+    const liveVersion = db
+      .select()
+      .from(workflowVersions)
+      .where(eq(workflowVersions.id, candidate.workflowVersionId))
+      .all()[0];
+    if (!liveVersion) continue;
+    if (
+      liveVersion.version === versionStr ||
+      liveVersion.version === legacyVersionStr ||
+      workflowVersionContentMatches(liveVersion, manifest, loaded.actionsExt)
+    ) {
+      matchingLive = candidate;
+      break;
+    }
+  }
+
+  const workflowSlug = `${spec.tenantSlug}-default`;
+  let workflow = matchingLive
+    ? db
+        .select()
+        .from(workflows)
+        .where(eq(workflows.id, matchingLive.workflowId))
+        .all()[0]
+    : db
+        .select()
+        .from(workflows)
+        .where(
+          and(
+            eq(workflows.tenantId, tenant.id),
+            eq(workflows.slug, workflowSlug),
+          ),
+        )
+        .all()[0];
   if (!workflow) {
     const id = makeId("wf");
     db.insert(workflows)
@@ -687,20 +746,24 @@ export async function bootstrapTenant(spec: {
       .all()[0]!;
   }
 
-  const versionStr = canonicalWorkflowVersionId(manifest, loaded.actionsExt);
-  const legacyVersionStr = legacyWorkflowVersionId(manifest);
   const forceRebootstrap = process.env.AGENTIC_REBOOTSTRAP === "force";
   let deploymentInserted = false;
-  let workflowVersion = db
-    .select()
-    .from(workflowVersions)
-    .where(
-      and(
-        eq(workflowVersions.workflowId, workflow.id),
-        eq(workflowVersions.version, versionStr),
-      ),
-    )
-    .all()[0];
+  let workflowVersion = matchingLive
+    ? db
+        .select()
+        .from(workflowVersions)
+        .where(eq(workflowVersions.id, matchingLive.workflowVersionId))
+        .all()[0]
+    : db
+        .select()
+        .from(workflowVersions)
+        .where(
+          and(
+            eq(workflowVersions.workflowId, workflow.id),
+            eq(workflowVersions.version, versionStr),
+          ),
+        )
+        .all()[0];
   if (
     workflowVersion &&
     !workflowVersionContentMatches(workflowVersion, manifest, loaded.actionsExt)
@@ -809,7 +872,10 @@ export async function bootstrapTenant(spec: {
         .run();
     }
 
-    for (const trigger of a.trigger) {
+    // Cron-only agents register a listener for their synthetic schedule
+    // event too, so the catalog graph shows them as reachable instead of
+    // orphaned (resolveAgentTriggerNames mirrors registerAgent's triggers).
+    for (const trigger of resolveAgentTriggerNames(a)) {
       const exists = db
         .select()
         .from(eventListeners)
@@ -926,6 +992,7 @@ export async function bootstrapTenant(spec: {
     agentCount: manifest.length,
     registeredCount: registered.length,
     cronCount: cronTriggers.functions.length,
+    invalidCronCount: cronTriggers.invalidCron,
     scheduleUnconfiguredCount: cronTriggers.unconfiguredAgents.length,
     scheduleDisabledCount: cronTriggers.disabledAgents.length,
     eventTypeCount: loaded.events.events?.length ?? 0,

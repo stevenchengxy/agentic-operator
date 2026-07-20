@@ -669,6 +669,41 @@ describe("generation readiness gates", () => {
     expect(String((result.output as { toolSelectionSource?: string }).toolSelectionSource)).toContain("integration_binding");
   });
 
+  // #TOOLUSE-ECHO — a model that COPIES the ontology's tool_use into design_agent.tools has not made
+  // a deliberate novel choice; the ungranted names substitute exactly like ontology suggestions.
+  // (Live regression: fleet members echoed tool_use every run → the same templated
+  // tool_execution_policy_missing ask re-parked every run.) A name the model invents BEYOND the
+  // ontology still hard-asks.
+  it("explicit tools ECHOING ungranted tool_use names substitute instead of hard-asking; a novel invented name still asks", async () => {
+    const ontology = validOntology();
+    ontology.actions[0]!.tool_use = ["legacyVendorReader"];
+    const ctx = context(ontology);
+    await readOntology.execute({}, ctx);
+    const echoed = await designAgent.execute({
+      action: "doWork",
+      system_prompt: "按契约读取真实 Vendor 数据。",
+      decision_logic: "成功 emit WORK_DONE；失败终止。",
+      tools: ["legacyVendorReader"], // echo of tool_use, NOT a novel invention
+      plan: [{ stepId: "fetch", kind: "tool", tool: "vendor.lookup", idempotencyKeyFrom: "work_id", onError: "terminal" }],
+    }, ctx);
+    expect(echoed.ok).toBe(true);
+    expect((echoed.output as { reason?: string }).reason).not.toBe("tool_execution_policy_missing");
+    expect(ctx.specs[0]?.tools).toEqual(["vendor.lookup"]); // substituted granted transport
+    expect(ctx.specs[0]?.unresolvedTools).toContain("legacyVendorReader");
+
+    const invented = await designAgent.execute({
+      action: "doWork",
+      system_prompt: "按契约读取真实 Vendor 数据。",
+      decision_logic: "成功 emit WORK_DONE；失败终止。",
+      // MIXED pick: an echoed ontology name AND a novel invention — the ask must name ONLY the invention.
+      tools: ["legacyVendorReader", "magicDataFetcher9000"],
+    }, ctx);
+    expect(invented.ok).toBe(false);
+    expect((invented.output as { reason?: string }).reason).toBe("tool_execution_policy_missing");
+    expect(String(invented.summary)).toContain("magicDataFetcher9000");
+    expect(String(invented.summary)).not.toContain("legacyVendorReader"); // asks ONLY about the novel name
+  });
+
   // #TOOLUSE-AS-SUGGESTION coherence — the READINESS INSPECTOR must agree with design_agent on the
   // same fixture: an ungranted tool_use name whose requirement IS covered by a granted transport is
   // a reported substitution, NOT an authoring blocker. (The live regression: the inspector said

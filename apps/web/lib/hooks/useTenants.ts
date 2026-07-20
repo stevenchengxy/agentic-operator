@@ -13,7 +13,13 @@
 
 "use client";
 
-import { useQuery, type UseQueryResult } from "@tanstack/react-query";
+import type { TenantDetail, TenantUpdateBody } from "@agentic/contracts";
+import {
+  useMutation,
+  useQuery,
+  useQueryClient,
+  type UseQueryResult,
+} from "@tanstack/react-query";
 import { readApiData } from "@/lib/api-response";
 import { tenantHeader } from "./tenant-header";
 
@@ -54,8 +60,7 @@ interface TenantsListResponse {
 
 export const TENANTS_KEYS = {
   all: ["tenants"] as const,
-  list: (includeArchived: boolean) =>
-    ["tenants", { includeArchived }] as const,
+  list: (includeArchived: boolean) => ["tenants", { includeArchived }] as const,
 };
 
 export function useTenants(opts?: {
@@ -71,5 +76,33 @@ export function useTenants(opts?: {
     // Tenants change rarely; 30s stale time is enough for the sidebar to
     // feel live without hammering the api. Mutations explicitly invalidate.
     staleTime: 30_000,
+  });
+}
+
+export interface UpdateTenantInput {
+  slug: string;
+  patch: TenantUpdateBody;
+}
+
+/**
+ * Update the mutable identity fields of a tenant. Exported separately from
+ * the React mutation so the request contract can be unit-tested without a
+ * browser/query-client harness.
+ */
+export function updateTenant(input: UpdateTenantInput): Promise<TenantDetail> {
+  return callV1<TenantDetail>(`/v1/tenants/${encodeURIComponent(input.slug)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input.patch),
+  });
+}
+
+export function useUpdateTenant() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: updateTenant,
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: TENANTS_KEYS.all });
+    },
   });
 }

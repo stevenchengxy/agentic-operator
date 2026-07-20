@@ -289,7 +289,10 @@ function publicKey(value: string | Buffer | KeyObject): KeyObject {
   try {
     key = value instanceof KeyObject && value.type === "public"
       ? value
-      : createPublicKey(value);
+      // Node's runtime accepts a KeyObject here; @types/node 26 narrowed the
+      // declared input union, so bridge the KeyObject case through the
+      // function's own parameter type.
+      : createPublicKey(value as Parameters<typeof createPublicKey>[0]);
   } catch {
     throw new FactoryProductionImageTrustError(
       "public_key_invalid",
@@ -380,7 +383,11 @@ export function signFactoryProductionImageAttestation(
     throw new Error("production image attestation private key is invalid");
   }
   if (key.asymmetricKeyType !== "ed25519") throw new Error("production image attestation private key must use Ed25519");
-  const derivedKeyId = productionImageAttestationKeyId(createPublicKey(key));
+  const derivedKeyId = productionImageAttestationKeyId(
+    // Runtime accepts a private KeyObject to derive its public half; bridge
+    // the @types/node 26 narrowed input union.
+    createPublicKey(key as unknown as Parameters<typeof createPublicKey>[0]),
+  );
   if (body.keyId !== derivedKeyId) throw new Error("production image attestation key id does not match private key");
   const evidenceHash = hash(body);
   const signature = sign(

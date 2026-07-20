@@ -31,6 +31,14 @@ import {
   type TaskRow as ApiTaskRow,
 } from "@/lib/hooks/useTasks";
 import { useDag, type DagAgent } from "@/lib/hooks/useAgents";
+import { TaskFormFields } from "@/app/portal/components/tasks/TaskFormFields";
+import {
+  buildTaskFormDefinition,
+  buildTaskResolutionPayload,
+  initialTaskFormValues,
+  type TaskDecisionOption,
+  type TaskFormRawValue,
+} from "@/app/portal/components/tasks/task-form";
 
 // Local narrow types for the task records the page renders.
 interface TaskItem {
@@ -43,6 +51,31 @@ interface TaskItem {
   awaitingFrom: string | null;
   payload: Record<string, unknown>;
   payloadAvailable: boolean;
+  formSchema: unknown;
+  preparedContext: unknown;
+  description: string | null;
+}
+
+/**
+ * Task types with bespoke payload renderers + decision flows below. Anything
+ * else is a generated manual step: it renders the authored form schema
+ * (TaskFormFields) and prepared context instead of a hardcoded flow.
+ */
+const LEGACY_TASK_TYPES = new Set([
+  "jdReview",
+  "packageReview",
+  "resumeFix",
+  "requirementReClarification",
+  "packageSupplement",
+  "manualPublish",
+]);
+
+function payloadString(
+  payload: Record<string, unknown>,
+  key: string,
+): string | null {
+  const value = payload[key];
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 interface HumanInputDescriptor {
@@ -110,9 +143,14 @@ function fromApi(t: ApiTaskRow): TaskItem {
     priority: t.priority === "medium" ? "med" : (t.priority ?? "unknown"),
     status: t.status,
     createdAt: Number.isFinite(createdAt) ? createdAt : null,
-    awaitingFrom: t.awaitingRole,
+    // Generated runtime tasks carry this on payloadJson today. Prefer the
+    // indexed DB column once populated, but never lose the authored role.
+    awaitingFrom: t.awaitingRole ?? payloadString(payload, "awaitingRole"),
     payload,
     payloadAvailable,
+    formSchema: payload.formSchema ?? null,
+    preparedContext: payload.preparedContext ?? null,
+    description: payloadString(payload, "description"),
   };
 }
 
@@ -383,6 +421,11 @@ function TaskDetail({
   const [clarificationAnswers, setClarificationAnswers] = useState<string[]>([]);
   const [humanInputAnswer, setHumanInputAnswer] = useState("");
   const inputDescriptor = humanInputDescriptor(task.payload);
+  // Generated manual steps (authored formSchema, or unknown types without a
+  // human-input binding) resolve through the schema-driven form.
+  const useSchemaForm =
+    Boolean(task.formSchema) ||
+    (!LEGACY_TASK_TYPES.has(task.type) && !inputDescriptor);
   // /v1/tasks payload doesn't carry an agent reference today; surface the
   // closest match by `awaitingRole` (if a Human agent with that title
   // exists). Otherwise the panel falls back to the literal role string.
@@ -553,9 +596,21 @@ function TaskDetail({
         "requirementReClarification",
         "packageSupplement",
         "manualPublish",
-      ].includes(task.type) && !inputDescriptor && <GenericTaskPayload payload={task.payload} />}
+      ].includes(task.type) && !inputDescriptor && !task.formSchema && (
+        <GenericTaskPayload payload={task.payload} />
+      )}
 
-      {/* Decision actions */}
+      {/* Generated manual steps: authored description + prepared context. */}
+      {!LEGACY_TASK_TYPES.has(task.type) || task.formSchema ? (
+        <GenericTaskContext task={task} />
+      ) : null}
+
+      {/* Decision actions. Generated manual steps resolve through the
+        * authored form schema; the bespoke legacy flows (clarification
+        * answers, human-input binding) keep their dedicated panel. */}
+      {useSchemaForm ? (
+        <TaskDecisionPanel task={task} />
+      ) : (
       <div
         style={{
           marginTop: 20,
@@ -606,6 +661,7 @@ function TaskDetail({
           </div>
         ) : null}
       </div>
+      )}
 
       {/* Run context */}
       <Panel title={t("tasks.workflowContext")} padded style={{ marginTop: 16 }}>
@@ -698,6 +754,196 @@ function decisionLabel(
   return (
     map[type]?.[slot] ??
     (slot === "primary" ? t("tasks.decision.default.primary") : null)
+  );
+}
+
+// ─── Generated manual steps: authored context + schema-driven decision ───────
+
+function GenericTaskContext({ task }: { task: TaskItem }) {
+  const { t } = useI18n();
+  const agentName = payloadString(task.payload, "agentName");
+  const actionName = payloadString(task.payload, "actionName");
+  const hasContext =
+    task.preparedContext !== null && task.preparedContext !== undefined;
+  return (
+    <Panel
+      title={t("tasks.decisionContext")}
+      subtitle={actionName ?? task.type}
+      padded
+      style={{ marginTop: 12 }}
+    >
+      {task.description ? (
+        <p
+          style={{
+            margin: "0 0 12px",
+            color: "var(--text-2)",
+            fontSize: 12.5,
+            lineHeight: 1.55,
+          }}
+        >
+          {task.description}
+        </p>
+      ) : null}
+      {agentName ? (
+        <div style={{ marginBottom: 10, fontSize: 11, color: "var(--text-3)" }}>
+          {t("tasks.createdBy")} <span className="mono">{agentName}</span>
+        </div>
+      ) : null}
+      {hasContext ? (
+        <pre
+          aria-label="Prepared decision context"
+          style={{
+            margin: 0,
+            maxHeight: 320,
+            overflow: "auto",
+            padding: 12,
+            borderRadius: 4,
+            border: "1px solid var(--border)",
+            background: "var(--panel-2)",
+            color: "var(--text-2)",
+            fontFamily: "var(--mono)",
+            fontSize: 11.5,
+            whiteSpace: "pre-wrap",
+          }}
+        >
+          {typeof task.preparedContext === "string"
+            ? task.preparedContext
+            : JSON.stringify(task.preparedContext, null, 2)}
+        </pre>
+      ) : (
+        <div style={{ color: "var(--text-3)", fontSize: 12 }}>
+          {t("tasks.noPreparedContext")}
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+function TaskDecisionPanel({ task }: { task: TaskItem }) {
+  const { t } = useI18n();
+  const definition = useMemo(
+    () => buildTaskFormDefinition(task.formSchema),
+    [task.formSchema],
+  );
+  const [values, setValues] = useState<Record<string, TaskFormRawValue>>(() =>
+    initialTaskFormValues(definition),
+  );
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const resolveTask = useResolveTask();
+
+  function changeField(name: string, value: TaskFormRawValue) {
+    setValues((current) => ({ ...current, [name]: value }));
+    setErrors((current) => {
+      if (!current[name]) return current;
+      const next = { ...current };
+      delete next[name];
+      return next;
+    });
+    if (resolveTask.error) resolveTask.reset();
+  }
+
+  async function submit(option: TaskDecisionOption) {
+    const result = buildTaskResolutionPayload(definition, values, option);
+    if (!result.ok) {
+      setErrors(result.errors);
+      return;
+    }
+    setErrors({});
+    try {
+      await resolveTask.mutateAsync({
+        id: task.id,
+        decision: option.decision,
+        payload: result.payload,
+      });
+    } catch {
+      // React Query exposes the request error below and retains the form so
+      // the operator can correct or retry without re-entering their values.
+    }
+  }
+
+  return (
+    <div
+      style={{
+        marginTop: 20,
+        padding: 16,
+        background: "var(--panel)",
+        border: "1px solid var(--border)",
+        borderRadius: 6,
+      }}
+    >
+      <div
+        style={{
+          fontSize: 10.5,
+          fontFamily: "var(--mono)",
+          textTransform: "uppercase",
+          color: "var(--text-3)",
+          letterSpacing: "0.08em",
+          marginBottom: 10,
+        }}
+      >
+        {t("tasks.decide")}
+      </div>
+      <TaskFormFields
+        definition={definition}
+        values={values}
+        errors={errors}
+        disabled={resolveTask.isPending}
+        onChange={changeField}
+      />
+      <div
+        style={{
+          display: "flex",
+          gap: 8,
+          alignItems: "center",
+          flexWrap: "wrap",
+        }}
+      >
+        {definition.decisions.map((option) => (
+          <Button
+            key={`${option.decision}:${option.formValue}`}
+            tone={
+              option.decision === "approve"
+                ? "primary"
+                : option.decision === "reject"
+                  ? "danger"
+                  : "default"
+            }
+            icon={
+              option.decision === "approve"
+                ? "check"
+                : option.decision === "reject"
+                  ? "x"
+                  : undefined
+            }
+            disabled={resolveTask.isPending}
+            onClick={() => void submit(option)}
+          >
+            {task.formSchema
+              ? option.label
+              : option.decision === "approve"
+                ? decisionLabel(task.type, "primary", t)
+                : (decisionLabel(task.type, "secondary", t) ?? option.label)}
+          </Button>
+        ))}
+        <span
+          style={{ marginLeft: "auto", fontSize: 11, color: "var(--text-3)" }}
+        >
+          {resolveTask.isPending
+            ? t("tasks.submittingDecision")
+            : t("tasks.formBecomesOutput")}
+        </span>
+      </div>
+      {resolveTask.error ? (
+        <div
+          role="alert"
+          style={{ marginTop: 10, color: "var(--red)", fontSize: 11.5 }}
+        >
+          {resolveTask.error instanceof Error
+            ? resolveTask.error.message
+            : t("tasks.resolveFailed")}
+        </div>
+      ) : null}
+    </div>
   );
 }
 

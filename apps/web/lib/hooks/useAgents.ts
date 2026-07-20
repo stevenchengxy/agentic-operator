@@ -10,6 +10,7 @@
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import type { UseQueryResult } from "@tanstack/react-query";
+import type { AgentSpec } from "@agentic/contracts";
 import { AGENT_KEYS, COUNT_KEYS } from "./useStream";
 import { readApiData } from "@/lib/api-response";
 import { tenantHeader } from "./tenant-header";
@@ -127,15 +128,28 @@ export interface DagAgent {
   stage: number;
   recentRunCount: number;
   isLive: boolean;
+  definition?: AgentSpec;
+  position?: { x: number; y: number };
 }
 
 export interface DagPayload {
   agents: DagAgent[];
-  edges: Array<{ fromAgent: string; toAgent: string; event: string; active: boolean }>;
+  edges: Array<{
+    fromAgent: string;
+    toAgent: string;
+    event: string;
+    active: boolean;
+  }>;
   workflowVersion: string;
+  workflowVersionId: string | null;
+  workflowSlug: string | null;
+  workflowName: string | null;
+  workflowIsLive: boolean;
 }
 
-export function useAgents(opts?: { kind?: "code" | "manifest" | "all" }): UseQueryResult<AgentListRow[]> {
+export function useAgents(opts?: {
+  kind?: "code" | "manifest" | "all";
+}): UseQueryResult<AgentListRow[]> {
   const kind = opts?.kind ?? "all";
   return useQuery({
     queryKey: [...AGENT_KEYS.list, kind] as const,
@@ -144,7 +158,9 @@ export function useAgents(opts?: { kind?: "code" | "manifest" | "all" }): UseQue
   });
 }
 
-export function useAgent(kebab: string | null | undefined): UseQueryResult<AgentDetail> {
+export function useAgent(
+  kebab: string | null | undefined,
+): UseQueryResult<AgentDetail> {
   return useQuery({
     queryKey: kebab
       ? AGENT_KEYS.detail(kebab)
@@ -162,10 +178,15 @@ export function useCounts(): UseQueryResult<TenantCounts> {
   });
 }
 
-export function useDag(): UseQueryResult<DagPayload> {
+export function useDag(
+  workflowSlug?: string | null,
+): UseQueryResult<DagPayload> {
+  const query = workflowSlug
+    ? `?workflow=${encodeURIComponent(workflowSlug)}`
+    : "";
   return useQuery({
-    queryKey: ["workflows", "dag"] as const,
-    queryFn: () => callV1<DagPayload>("/v1/workflows/dag"),
+    queryKey: ["workflows", "dag", workflowSlug ?? "__live__"] as const,
+    queryFn: () => callV1<DagPayload>(`/v1/workflows/dag${query}`),
     staleTime: 5_000,
   });
 }

@@ -24,7 +24,8 @@ Both run under the same runtime, write to the same ledger, and surface in the sa
 ```bash
 # 1. Clone + install
 git clone <your-fork> agentic-operator && cd agentic-operator
-nvm use                                 # picks Node 26 from .nvmrc
+nvm install 26.5.0                      # one-time installation
+nvm use 26.5.0                          # exact version required by scripts
 pnpm install
 
 # 2. Configure (one-time)
@@ -49,7 +50,7 @@ You should land on the dashboard with the seeded RAAS workflow (23 manifest agen
 
 | Requirement | Version | Notes |
 |---|---|---|
-| Node | **26 LTS** (`.nvmrc`) | Hard requirement; `better-sqlite3` is pinned to the matching ABI. `nvm use` after every shell switch. |
+| Node | **26.5.0 Current** (`.nvmrc`) | Hard requirement; `better-sqlite3` is pinned to the matching ABI. `nvm use` after every shell switch. |
 | pnpm | **11+** | Workspaces + Turbo. |
 | Docker | optional | Only needed for `pnpm dev:docker` or production builds. |
 | Disk | ~2 GB | Node modules, `data/` (SQLite + artifacts + tenant code). |
@@ -461,7 +462,7 @@ Multi-step runs (tool-use loops, sub-flows) appear as a **trace tree** in the ru
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `ERR_DLOPEN_FAILED` | Wrong Node major | `nvm use` (picks up `.nvmrc` → Node 26) |
+| `ERR_DLOPEN_FAILED` | Wrong Node major | `nvm use` (picks up `.nvmrc` → Node 26.5.0) |
 | Bootstrap reports `0/N agents` | `AGENTIC_MODELS_DIR` not set or wrong | `export AGENTIC_MODELS_DIR="$(pwd)/models"` |
 | `api: SyntaxError: ... 'hostname'` | Stale build | `rm -rf node_modules .turbo && pnpm install` |
 | `pnpm dev` hangs on port `:3599` | Stale dev process | `lsof -ti:3599,3501,8288,50052,50053 \| xargs kill -9` |

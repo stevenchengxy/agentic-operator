@@ -17,11 +17,13 @@
 
 import { describe, it, expect } from "vitest";
 import { MockAdapter, _resetMockIdSeq } from "@agentic/llm-gateway";
-import { ChatMessageSchema, ToolDefSchema, ToolUseBlockSchema, ToolResultBlockSchema } from "@agentic/contracts";
-import type {
-  ChatMessage,
-  ToolDef,
-} from "@agentic/llm-gateway";
+import {
+  ChatMessageSchema,
+  ToolDefSchema,
+  ToolUseBlockSchema,
+  ToolResultBlockSchema,
+} from "@agentic/contracts";
+import type { ChatMessage, ToolDef } from "@agentic/llm-gateway";
 
 describe("TC-15: Phase 1 adapter tool-use round-trip", () => {
   describe("P1-CON-01: ChatMessage content union parses both shapes", () => {
@@ -47,7 +49,7 @@ describe("TC-15: Phase 1 adapter tool-use round-trip", () => {
       const parsed = ChatMessageSchema.parse({
         role: "tool",
         content: [
-          { type: "tool_result", tool_use_id: "t1", content: "{\"v\":1}" },
+          { type: "tool_result", tool_use_id: "t1", content: '{"v":1}' },
         ],
       });
       expect(parsed.role).toBe("tool");
@@ -67,7 +69,10 @@ describe("TC-15: Phase 1 adapter tool-use round-trip", () => {
       const ok = ToolDefSchema.parse({
         name: "lookupWeather",
         description: "Look up weather",
-        input_schema: { type: "object", properties: { city: { type: "string" } } },
+        input_schema: {
+          type: "object",
+          properties: { city: { type: "string" } },
+        },
       });
       expect(ok.name).toBe("lookupWeather");
       const bad = ToolDefSchema.safeParse({ name: "x" /* missing schema */ });
@@ -85,7 +90,7 @@ describe("TC-15: Phase 1 adapter tool-use round-trip", () => {
       const tr = ToolResultBlockSchema.parse({
         type: "tool_result",
         tool_use_id: "id-1",
-        content: "{\"ok\":true}",
+        content: '{"ok":true}',
         is_error: false,
       });
       expect(tr.tool_use_id).toBe("id-1");
@@ -110,12 +115,18 @@ describe("TC-15: Phase 1 adapter tool-use round-trip", () => {
         { role: "system", content: "You answer weather questions." },
         { role: "user", content: "use lookupWeather to find Tokyo's weather" },
       ];
-      const res = await m.chat({ messages, tools, tenantSlug: "__system" } as never);
+      const res = await m.chat({
+        messages,
+        tools,
+        tenantSlug: "__system",
+      } as never);
       expect(res.finishReason).toBe("tool_calls");
       expect(res.toolCalls).toBeDefined();
       expect(res.toolCalls![0]!.name).toBe("lookupWeather");
       expect(typeof res.toolCalls![0]!.id).toBe("string");
-      expect(res.toolCalls![0]!.input).toEqual(expect.objectContaining({ prompt: expect.any(String) }));
+      expect(res.toolCalls![0]!.input).toEqual(
+        expect.objectContaining({ prompt: expect.any(String) }),
+      );
     });
 
     it("falls back to text when no tool advertised", async () => {
@@ -144,21 +155,79 @@ describe("TC-15: Phase 1 adapter tool-use round-trip", () => {
         {
           role: "assistant",
           content: [
-            { type: "tool_use", id: "mock_tool_1", name: "lookupWeather", input: {} },
+            {
+              type: "tool_use",
+              id: "mock_tool_1",
+              name: "lookupWeather",
+              input: {},
+            },
           ],
         },
         {
           role: "tool",
           content: [
-            { type: "tool_result", tool_use_id: "mock_tool_1", content: "{\"tempC\":18}" },
+            {
+              type: "tool_result",
+              tool_use_id: "mock_tool_1",
+              content: '{"tempC":18}',
+            },
           ],
         },
       ];
-      const res = await m.chat({ messages, tools, tenantSlug: "__system" } as never);
+      const res = await m.chat({
+        messages,
+        tools,
+        tenantSlug: "__system",
+      } as never);
       // The mock now finishes with text once a tool_result is present.
       expect(res.finishReason).toBe("stop");
       expect(res.toolCalls).toBeUndefined();
       expect(res.text).toContain("tool_result_seen");
+    });
+
+    it("returns deterministic schema-valid JSON when jsonMode includes an output contract", async () => {
+      const m = new MockAdapter();
+      const schema = {
+        type: "object",
+        required: ["label", "confidence", "evidence"],
+        properties: {
+          label: { type: "string", minLength: 1 },
+          confidence: { type: "number", minimum: 0, maximum: 1 },
+          evidence: {
+            type: "array",
+            minItems: 1,
+            items: {
+              type: "object",
+              required: ["url"],
+              properties: { url: { type: "string", format: "uri" } },
+              additionalProperties: false,
+            },
+          },
+        },
+        additionalProperties: false,
+      };
+      const res = await m.chat({
+        messages: [
+          {
+            role: "system",
+            content: [
+              "Return only one JSON value that validates against this output contract. Do not wrap it in Markdown fences or add prose.",
+              "```json",
+              JSON.stringify(schema),
+              "```",
+            ].join("\n"),
+          },
+          { role: "user", content: "Classify this request." },
+        ],
+        jsonMode: true,
+        tenantSlug: "__system",
+      } as never);
+
+      expect(JSON.parse(res.text)).toEqual({
+        label: "mock",
+        confidence: 0,
+        evidence: [{ url: "https://example.test/mock" }],
+      });
     });
   });
 });

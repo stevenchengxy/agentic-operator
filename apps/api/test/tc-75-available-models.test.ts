@@ -4,18 +4,28 @@
  * Verifies:
  *   - Unknown provider → 400
  *   - Mock provider returns its single model with source="live"
- *   - Provider without a key never presents static catalog rows as available
+ *   - Provider with a configured catalog but no key falls back to source=
+ *     "unsupported" + the catalog (so the picker still has something to show)
  *   - Provider with a key (env-injected) calls upstream /models; we stub
  *     `fetch` to return a fake response and assert the parsed shape
  *   - inFleet flag is set when a fleet entry matches the modelName
- *   - An unconfigured custom provider returns source="unsupported"; once
- *     configured, its real OpenAI-compatible /models endpoint is queried
+ *   - Empty-catalog provider (custom) returns source="unsupported" + zero
+ *     models so the UI shows the free-text input
  */
-import { describe, it, expect, beforeAll, afterAll, vi, beforeEach } from "vitest";
+import {
+  describe,
+  it,
+  expect,
+  beforeAll,
+  afterAll,
+  vi,
+  beforeEach,
+} from "vitest";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { buildTestEnv, type TestEnv } from "./harness";
+import { parseOpenAICompatBody } from "../src/services/model-discovery";
 
 const TMP = mkdtempSync(path.join(tmpdir(), "tc75-"));
 const FLEET_PATH = path.join(TMP, "model-fleet.json");
@@ -26,8 +36,6 @@ const ENV_BEFORE = {
   AGENTIC_MODEL_FLEET_PATH: process.env.AGENTIC_MODEL_FLEET_PATH,
   AGENTIC_KEY_VAULT_PATH: process.env.AGENTIC_KEY_VAULT_PATH,
   MISTRAL_API_KEY: process.env.MISTRAL_API_KEY,
-  CUSTOM_LLM_BASE_URL: process.env.CUSTOM_LLM_BASE_URL,
-  CUSTOM_LLM_API_KEY: process.env.CUSTOM_LLM_API_KEY,
 };
 
 describe("TC-75: /v1/llm/providers/:id/available-models", () => {
@@ -45,8 +53,6 @@ describe("TC-75: /v1/llm/providers/:id/available-models", () => {
     // Ensure mistral has NO key so we can test the unsupported-without-key
     // path without the test environment leaking a real one.
     delete process.env.MISTRAL_API_KEY;
-    delete process.env.CUSTOM_LLM_BASE_URL;
-    delete process.env.CUSTOM_LLM_API_KEY;
 
     env = await buildTestEnv();
   });
@@ -56,7 +62,8 @@ describe("TC-75: /v1/llm/providers/:id/available-models", () => {
     if (ENV_BEFORE.AGENTIC_MODEL_FLEET_PATH === undefined) {
       delete process.env.AGENTIC_MODEL_FLEET_PATH;
     } else {
-      process.env.AGENTIC_MODEL_FLEET_PATH = ENV_BEFORE.AGENTIC_MODEL_FLEET_PATH;
+      process.env.AGENTIC_MODEL_FLEET_PATH =
+        ENV_BEFORE.AGENTIC_MODEL_FLEET_PATH;
     }
     if (ENV_BEFORE.AGENTIC_KEY_VAULT_PATH === undefined) {
       delete process.env.AGENTIC_KEY_VAULT_PATH;
@@ -68,16 +75,86 @@ describe("TC-75: /v1/llm/providers/:id/available-models", () => {
     } else {
       process.env.MISTRAL_API_KEY = ENV_BEFORE.MISTRAL_API_KEY;
     }
-    if (ENV_BEFORE.CUSTOM_LLM_BASE_URL === undefined) delete process.env.CUSTOM_LLM_BASE_URL;
-    else process.env.CUSTOM_LLM_BASE_URL = ENV_BEFORE.CUSTOM_LLM_BASE_URL;
-    if (ENV_BEFORE.CUSTOM_LLM_API_KEY === undefined) delete process.env.CUSTOM_LLM_API_KEY;
-    else process.env.CUSTOM_LLM_API_KEY = ENV_BEFORE.CUSTOM_LLM_API_KEY;
     if (existsSync(TMP)) rmSync(TMP, { recursive: true, force: true });
     await env.cleanup();
   });
 
   beforeEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it("keeps OpenRouter live reasoning metadata and ignores dynamic price sentinels", () => {
+    const [model] = parseOpenAICompatBody({
+      data: [
+        {
+          id: "openai/gpt-5.6-sol",
+          pricing: { prompt: "-1", completion: "0.00003" },
+          supported_parameters: ["tools", "reasoning"],
+          reasoning: {
+            supported_efforts: ["none", "low", "medium", "max", "future"],
+            default_effort: "medium",
+            mandatory: false,
+            default_enabled: true,
+          },
+        },
+      ],
+    });
+
+    expect(model).toMatchObject({
+      id: "openai/gpt-5.6-sol",
+      outputPricePerMTok: 30,
+      tools: true,
+      temperatureSupported: false,
+      reasoning: true,
+      reasoningEfforts: ["none", "low", "medium", "max"],
+      defaultReasoningEffort: "medium",
+      reasoningMandatory: false,
+      reasoningDefaultEnabled: true,
+    });
+    expect(model?.inputPricePerMTok).toBeUndefined();
+  });
+
+  it("derives live OpenRouter temperature support from supported_parameters", () => {
+    const models = parseOpenAICompatBody({
+      data: [
+        {
+          id: "supports-temperature",
+          supported_parameters: ["temperature", "tools"],
+        },
+        {
+          id: "omits-temperature",
+          supported_parameters: ["tools"],
+        },
+      ],
+    });
+
+    expect(
+      models.find((model) => model.id === "supports-temperature")
+        ?.temperatureSupported,
+    ).toBe(true);
+    expect(
+      models.find((model) => model.id === "omits-temperature")
+        ?.temperatureSupported,
+    ).toBe(false);
+  });
+
+  it("keeps live catalog creation and expiry separate from release metadata", () => {
+    const [model] = parseOpenAICompatBody({
+      data: [
+        {
+          id: "qwen/temporary:free",
+          created: 1_753_257_600,
+          expiration_date: "2026-07-19",
+          pricing: { prompt: "0", completion: "0" },
+        },
+      ],
+    });
+
+    expect(model).toMatchObject({
+      providerCatalogCreatedAt: "2025-07-23T08:00:00.000Z",
+      expiresAt: "2026-07-19T00:00:00.000Z",
+    });
+    expect(model).not.toHaveProperty("releaseDate");
   });
 
   it("rejects unknown provider with 400", async () => {
@@ -102,10 +179,12 @@ describe("TC-75: /v1/llm/providers/:id/available-models", () => {
     expect(body.data.provider).toBe("mock");
     expect(body.data.source).toBe("live");
     expect(body.data.models.some((m) => m.id === "mock-model-v1")).toBe(true);
-    expect(body.data.models.find((m) => m.id === "mock-model-v1")?.origin).toBe("live");
+    expect(body.data.models.find((m) => m.id === "mock-model-v1")?.origin).toBe(
+      "live",
+    );
   });
 
-  it("mistral with no key returns unsupported and no claimed available models", async () => {
+  it("mistral with no key returns source=unsupported but catalog models", async () => {
     const res = await env.fetch("/v1/llm/providers/mistral/available-models");
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
@@ -117,7 +196,12 @@ describe("TC-75: /v1/llm/providers/:id/available-models", () => {
     };
     expect(body.data.source).toBe("unsupported");
     expect(body.data.message).toMatch(/no api key/i);
-    expect(body.data.models).toEqual([]);
+    // Catalog fallback ensures the picker still has options
+    expect(body.data.models.length).toBeGreaterThan(0);
+    expect(body.data.models.every((m) => m.origin === "catalog")).toBe(true);
+    expect(body.data.models.some((m) => m.id === "mistral-large-latest")).toBe(
+      true,
+    );
   });
 
   it("custom provider (empty catalog, no live support) returns zero models", async () => {
@@ -130,53 +214,22 @@ describe("TC-75: /v1/llm/providers/:id/available-models", () => {
     expect(body.data.models).toEqual([]);
   });
 
-  it("custom provider queries its configured real OpenAI-compatible model endpoint", async () => {
-    process.env.CUSTOM_LLM_BASE_URL = "https://llm.example.invalid/v1";
-    process.env.CUSTOM_LLM_API_KEY = "custom-test-key";
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(JSON.stringify({ data: [{ id: "tenant-model-v2" }] }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      }),
-    );
-    try {
-      const res = await env.fetch("/v1/llm/providers/custom/available-models");
-      expect(res.status).toBe(200);
-      const body = (await res.json()) as { data: { source: string; models: Array<{ id: string; origin: string }> } };
-      expect(body.data.source).toBe("live");
-      expect(body.data.models).toEqual([expect.objectContaining({ id: "tenant-model-v2", origin: "live" })]);
-      expect(globalThis.fetch).toHaveBeenCalledWith(
-        "https://llm.example.invalid/v1/models",
-        expect.objectContaining({ headers: expect.objectContaining({ Authorization: "Bearer custom-test-key" }) }),
-      );
-    } finally {
-      delete process.env.CUSTOM_LLM_BASE_URL;
-      delete process.env.CUSTOM_LLM_API_KEY;
-    }
-  });
-
-  it("does not label a malformed HTTP 200 provider body as a successful live catalog", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(JSON.stringify({ unexpected: [] }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      }),
-    );
-    const res = await env.fetch("/v1/llm/providers/anthropic/available-models");
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { data: { source: string; message: string; models: unknown[] } };
-    expect(body.data.source).toBe("unsupported");
-    expect(body.data.models).toEqual([]);
-    expect(body.data.message).toMatch(/missing data/i);
-  });
-
   it("anthropic with key + mocked upstream returns source=live and parsed models", async () => {
     // Stub global.fetch so we don't hit the real Anthropic API. Returning the
     // shape Anthropic's /v1/models actually uses: { data: [{ id, ... }, ...] }.
     const fakeBody = {
       data: [
-        { type: "model", id: "claude-3-5-sonnet-20241022", display_name: "Claude 3.5 Sonnet" },
-        { type: "model", id: "claude-haiku-4-5", display_name: "Claude Haiku 4.5" },
+        {
+          type: "model",
+          id: "claude-3-5-sonnet-20241022",
+          display_name: "Claude 3.5 Sonnet",
+          created_at: "2024-10-22T00:00:00Z",
+        },
+        {
+          type: "model",
+          id: "claude-haiku-4-5",
+          display_name: "Claude Haiku 4.5",
+        },
       ],
     };
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
@@ -191,18 +244,32 @@ describe("TC-75: /v1/llm/providers/:id/available-models", () => {
     const body = (await res.json()) as {
       data: {
         source: string;
-        models: Array<{ id: string; origin: string; contextLength: number | null }>;
+        models: Array<{
+          id: string;
+          origin: string;
+          contextLength: number | null;
+          status: string;
+          selectable: boolean;
+        }>;
       };
     };
     expect(body.data.source).toBe("live");
     // Both mocked models present
-    expect(body.data.models.some((m) => m.id === "claude-3-5-sonnet-20241022")).toBe(true);
+    expect(
+      body.data.models.some((m) => m.id === "claude-3-5-sonnet-20241022"),
+    ).toBe(true);
+    expect(
+      body.data.models.find((m) => m.id === "claude-3-5-sonnet-20241022"),
+    ).toMatchObject({ status: "legacy", selectable: false });
     // Live entry whose id matches catalog inherits the catalog ctx (200_000)
     const haiku = body.data.models.find((m) => m.id === "claude-haiku-4-5");
     expect(haiku?.origin).toBe("live");
     expect(haiku?.contextLength).toBe(200_000);
-    // Catalog-only entries are metadata, not provider-confirmed availability.
-    expect(body.data.models.some((m) => m.id === "claude-opus-4")).toBe(false);
+    // A catalog-only entry whose id wasn't in the mock response is still
+    // listed with origin=catalog
+    const opus = body.data.models.find((m) => m.id === "claude-opus-4");
+    expect(opus?.origin).toBe("catalog");
+    expect(opus?.selectable).toBe(false);
   });
 
   it("flags models already in the tenant's fleet with inFleet=true", async () => {

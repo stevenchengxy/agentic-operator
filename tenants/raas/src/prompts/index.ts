@@ -39,6 +39,56 @@ function ctxBundle(ctx: ToolContext): string {
 
 // ── syncFromClientSystem ─────────────────────────────────────────────────────
 
+// Prompt fallbacks for logic-typed manifest versions. Newer manifests convert
+// checkDeduplicatedRequisition/persistRequisitionData to deterministic tenant
+// TOOLS (tools/requirement-sync.ts); these prompts keep older logic-typed
+// versions bootable and are unused by tool-typed actions.
+export const checkDeduplicatedRequisition = definePrompt({
+  name: "checkDeduplicatedRequisition",
+  description:
+    "Deduplicate inbound recruiting requisitions against existing records.",
+  system:
+    "You are a recruiting-operations assistant. Inspect a client recruiting requisition and decide whether it is a NEW requisition, an UPDATE to an existing one, or a TERMINATION. Use the client_role_unique_id and client_role_name fields to match.",
+  template: (ctx) =>
+    `Determine whether this requisition is new, an update, or terminated.\n\n${ctxBundle(ctx)}\n\nReturn JSON: { "decision": "new" | "update" | "terminate", "matched_requisition_id": string | null, "reason": string }.`,
+});
+
+export const persistRequisitionData = definePrompt({
+  name: "persistRequisitionData",
+  description:
+    "Plan the database writes that persist or update a recruiting requisition.",
+  system:
+    "You are a recruiting-operations data steward. Given a dedup decision, decide which fields to write to the recruiting_requirement and recruiting_role records, and what change-log entry to emit.",
+  template: (ctx) =>
+    `Plan persistence actions for this requisition.\n\n${ctxBundle(ctx)}\n\nReturn JSON: { "writes": [...], "change_log": string, "failed_items": [...] }.`,
+});
+
+export const notifyRecruiter = definePrompt({
+  name: "notifyRecruiter",
+  description:
+    "Generate a recruiter-facing handoff message for the interview invite.",
+  system:
+    "You are a recruiter-ops assistant. Compose a short message the recruiter can forward via WeCom to the candidate, including a copy-paste script and the interview link.",
+  template: (ctx) =>
+    `Compose recruiter-facing handoff.\n\n${ctxBundle(ctx)}\n\nReturn JSON: { "recruiter_id": string, "wecom_message": string, "interview_link": string }.`,
+});
+
+export const generateInterviewInvitation = definePrompt({
+  name: "generateInterviewInvitation",
+  description:
+    "Compose a personalized interview invitation (recipient + subject + body) for delivery.",
+  system:
+    "你是面试协调助理。为通过匹配的候选人撰写个性化的面试邀请。" +
+    "可调用 inviteCandidateApi 生成邀请正文初稿（仅生成、不投递）再润色。" +
+    "邀请需包含：称呼、岗位与公司、面试形式（线上 / 线下 / AI 面试）、时间窗口与截止日期、参与方式或链接占位、以及礼貌的确认请求。" +
+    "语气专业友好；从上下文提取候选人邮箱或手机号作为收件人；不要编造未提供的时间或地点（缺失则用占位并注明需确认）。",
+  template: (ctx) =>
+    `撰写面试邀请。\n\n${ctxBundle(ctx)}\n\n` +
+    `只返回 JSON（字段名固定，供下一步投递读取）：\n` +
+    `{ "to": string, "subject": string, "body": string, "deadline_days": number, "invite_link_placeholder": string }`,
+});
+
+
 // ── analyzeRequirement ───────────────────────────────────────────────────────
 
 export const assessFeasibilityAndDifficulty = definePrompt({
@@ -404,6 +454,11 @@ export const raasPrompts: Record<string, PromptDescriptor> = {
   handleRequisitionMapping,
   // assignRecruitTasks
   assignRecruitTasks,
+  // syncFromClientSystem / inviteInternalInterview (fallbacks; see above)
+  checkDeduplicatedRequisition,
+  persistRequisitionData,
+  generateInterviewInvitation,
+  notifyRecruiter,
   // processResume
   validateCompleteness,
   validateCandidacy,

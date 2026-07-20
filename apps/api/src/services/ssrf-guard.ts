@@ -12,15 +12,18 @@
  *
  *   1. Require `https:` — or `http:` + hostname `localhost` only when
  *      `AGENTIC_FETCH_ALLOW_HTTP_LOCALHOST=1` (dev opt-in).
- *   2. Resolve the hostname via `dns.promises.lookup({ family: 0 })`.
- *      Reject if the resolved address is:
+ *   2. Resolve every hostname address via
+ *      `dns.promises.lookup({ family: 0, all: true })`. Reject the whole hop
+ *      when any answer is non-public, then pin one validated answer into the
+ *      HTTP(S) socket lookup so DNS cannot change between policy and connect.
+ *      Reject if any resolved address is:
  *        - loopback (`127.0.0.0/8`)
  *        - RFC1918 private (`10/8`, `172.16/12`, `192.168/16`)
  *        - link-local (`169.254.0.0/16`) including AWS metadata
  *        - IPv6 loopback (`::1`), link-local (`fe80::/10`), or ULA (`fd00::/8`)
  *        - the zero address (`0.0.0.0`)
- *   3. Use `fetch(url, { redirect: 'manual' })`. Follow up to 3 hops,
- *      re-validating each `Location` URL through `assertSafeOutboundUrl`.
+ *   3. Use the built-in HTTP(S) client with redirects disabled. Follow up to
+ *      3 hops, resolving, validating, and pinning each `Location` separately.
  *   4. Stream-count body bytes; abort on > MAX_BYTES (do NOT trust
  *      `Content-Length` — a malicious server can lie or stream forever).
  *   5. Validate content-type against an allow-list before reading the body
@@ -32,7 +35,13 @@
  */
 
 import dns from "node:dns/promises";
+import http, {
+  type IncomingHttpHeaders,
+  type IncomingMessage,
+} from "node:http";
+import https, { type RequestOptions } from "node:https";
 import net from "node:net";
+import type { LookupFunction } from "node:net";
 
 const FETCH_CONNECT_TIMEOUT_MS = Number(
   process.env.AGENTIC_FETCH_URL_CONNECT_TIMEOUT_MS ?? "5000",
@@ -43,7 +52,9 @@ const FETCH_BODY_TIMEOUT_MS = Number(
 const FETCH_MAX_BYTES_DEFAULT = Number(
   process.env.AGENTIC_FETCH_URL_MAX_BYTES ?? String(5 * 1024 * 1024),
 );
-const FETCH_MAX_REDIRECTS = Number(process.env.AGENTIC_FETCH_URL_MAX_REDIRECTS ?? "3");
+const FETCH_MAX_REDIRECTS = Number(
+  process.env.AGENTIC_FETCH_URL_MAX_REDIRECTS ?? "3",
+);
 
 export class SsrfError extends Error {
   constructor(
@@ -67,15 +78,65 @@ export class SsrfError extends Error {
  * Decide whether an IPv4/IPv6 literal points at an internal/restricted
  * target. Conservative: when in doubt, reject.
  */
+function parseIpv6Words(input: string): number[] | null {
+  let value = input.toLowerCase();
+  if (value.includes(".")) {
+    const colon = value.lastIndexOf(":");
+    if (colon < 0) return null;
+    const octets = value
+      .slice(colon + 1)
+      .split(".")
+      .map((part) => Number(part));
+    if (
+      octets.length !== 4 ||
+      octets.some((part) => !Number.isInteger(part) || part < 0 || part > 255)
+    ) {
+      return null;
+    }
+    value = `${value.slice(0, colon)}:${((octets[0]! << 8) | octets[1]!).toString(16)}:${((octets[2]! << 8) | octets[3]!).toString(16)}`;
+  }
+
+  if (value.indexOf("::") !== value.lastIndexOf("::")) return null;
+  const compressed = value.includes("::");
+  const [leftRaw, rightRaw = ""] = compressed ? value.split("::") : [value, ""];
+  const parseSide = (side: string): number[] | null => {
+    if (!side) return [];
+    const words = side.split(":").map((part) => Number.parseInt(part, 16));
+    return words.some(
+      (word, index) =>
+        !/^[0-9a-f]{1,4}$/.test(side.split(":")[index]!) ||
+        !Number.isInteger(word) ||
+        word < 0 ||
+        word > 0xffff,
+    )
+      ? null
+      : words;
+  };
+  const left = parseSide(leftRaw ?? "");
+  const right = parseSide(rightRaw);
+  if (!left || !right) return null;
+  if (!compressed) return left.length === 8 ? left : null;
+  const zeroCount = 8 - left.length - right.length;
+  if (zeroCount < 1) return null;
+  return [...left, ...Array<number>(zeroCount).fill(0), ...right];
+}
+
 function isBlockedAddress(address: string): boolean {
   if (!address) return true;
-  const ipVersion = net.isIP(address);
+  const normalized = address.split("%")[0]!.toLowerCase();
+  const ipVersion = net.isIP(normalized);
   if (ipVersion === 4) {
-    // Parse octets; reject the zero address, loopback, RFC1918, link-local,
-    // and AWS metadata in particular.
-    const parts = address.split(".").map((x) => Number(x));
-    if (parts.length !== 4 || parts.some((n) => !Number.isFinite(n))) return true;
-    const [a, b] = parts as [number, number, number, number];
+    // Reject IANA special-purpose ranges in addition to the conventional
+    // private ranges. Documentation and benchmarking networks are not valid
+    // production fetch targets and must fail closed.
+    const parts = normalized.split(".").map((x) => Number(x));
+    if (
+      parts.length !== 4 ||
+      parts.some((n) => !Number.isInteger(n) || n < 0 || n > 255)
+    ) {
+      return true;
+    }
+    const [a, b, c] = parts as [number, number, number, number];
     if (a === 0) return true; // 0.0.0.0/8
     if (a === 127) return true; // 127.0.0.0/8 (loopback)
     if (a === 10) return true; // 10.0.0.0/8 (RFC1918)
@@ -83,31 +144,62 @@ function isBlockedAddress(address: string): boolean {
     if (a === 172 && b >= 16 && b <= 31) return true; // 172.16.0.0/12 (RFC1918)
     if (a === 169 && b === 254) return true; // 169.254.0.0/16 (link-local, includes AWS metadata 169.254.169.254)
     if (a === 100 && b >= 64 && b <= 127) return true; // 100.64.0.0/10 (CGNAT)
+    if (a === 192 && b === 0 && c === 0) return true; // 192.0.0.0/24 (IETF protocol assignments)
+    if (a === 192 && b === 0 && c === 2) return true; // 192.0.2.0/24 (TEST-NET-1)
+    if (a === 192 && b === 88 && c === 99) return true; // deprecated 6to4 relay anycast
+    if (a === 198 && (b === 18 || b === 19)) return true; // 198.18.0.0/15 (benchmarking)
+    if (a === 198 && b === 51 && c === 100) return true; // TEST-NET-2
+    if (a === 203 && b === 0 && c === 113) return true; // TEST-NET-3
     if (a >= 224) return true; // 224/4 multicast + 240/4 reserved
     return false;
   }
   if (ipVersion === 6) {
-    // Normalize: drop zone-id if any, lowercase.
-    const lower = address.split("%")[0]!.toLowerCase();
-    if (lower === "::" || lower === "::1") return true; // unspecified / loopback
-    if (lower.startsWith("fe80:") || lower.startsWith("fe80::")) return true; // link-local
-    if (lower.startsWith("fc") || lower.startsWith("fd")) return true; // ULA (fc00::/7)
-    if (lower.startsWith("ff")) return true; // multicast (ff00::/8)
-    // IPv4-mapped (::ffff:a.b.c.d) — strip the prefix and re-check.
-    const v4MapMatch = lower.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
-    if (v4MapMatch) return isBlockedAddress(v4MapMatch[1]!);
+    const words = parseIpv6Words(normalized);
+    if (!words) return true;
+    const mapped =
+      words.slice(0, 5).every((word) => word === 0) && words[5] === 0xffff;
+    if (mapped) {
+      const high = words[6]!;
+      const low = words[7]!;
+      return isBlockedAddress(
+        `${high >> 8}.${high & 0xff}.${low >> 8}.${low & 0xff}`,
+      );
+    }
+    // Globally routable IPv6 unicast currently lives in 2000::/3. Reject
+    // every other class, then remove non-routable special allocations inside
+    // that block (documentation, benchmarking, ORCHID, Teredo, and 6to4).
+    if ((words[0]! & 0xe000) !== 0x2000) return true;
+    if (
+      words[0] === 0x2001 &&
+      (words[1] === 0x0000 ||
+        (words[1] === 0x0002 && words[2] === 0) ||
+        words[1] === 0x0db8 ||
+        (words[1]! & 0xfff0) === 0x0010 ||
+        (words[1]! & 0xfff0) === 0x0020)
+    ) {
+      return true;
+    }
+    if (words[0] === 0x2002) return true;
+    if (words[0] === 0x3fff && (words[1]! & 0xf000) === 0) return true;
     return false;
   }
   // Unknown format — treat as blocked.
   return true;
 }
 
-/**
- * Parse + validate a URL for outbound fetch. Resolves DNS and rejects any
- * internal target. Returns the parsed URL on success; throws SsrfError on
- * any policy violation.
- */
-export async function assertSafeOutboundUrl(raw: string): Promise<URL> {
+interface ResolvedAddress {
+  address: string;
+  family: 4 | 6;
+}
+
+interface ValidatedOutboundUrl {
+  url: URL;
+  hostname: string;
+  addresses: ResolvedAddress[];
+  pinned: ResolvedAddress;
+}
+
+function parseOutboundUrl(raw: string): URL {
   let u: URL;
   try {
     u = new URL(raw);
@@ -134,27 +226,164 @@ export async function assertSafeOutboundUrl(raw: string): Promise<URL> {
       );
     }
   }
-  // DNS-resolve. Strip IPv6 brackets for `dns.lookup`.
-  const hostname = u.hostname.replace(/^\[|\]$/g, "");
-  // If hostname is already an IP literal, lookup will echo it back; either
-  // way we apply the same address policy.
-  let address: string;
+  return u;
+}
+
+async function resolveSafeOutboundUrl(
+  raw: string,
+): Promise<ValidatedOutboundUrl> {
+  const url = parseOutboundUrl(raw);
+  // URL.hostname retains brackets around IPv6 literals; socket and DNS APIs
+  // take the bare address while Host retains URL.host below.
+  const hostname = url.hostname.replace(/^\[|\]$/g, "");
+  let answers: unknown;
   try {
-    const resolved = await dns.lookup(hostname, { family: 0 });
-    address = resolved.address;
+    answers = await dns.lookup(hostname, {
+      family: 0,
+      all: true,
+      verbatim: true,
+    });
   } catch (err) {
     throw new SsrfError(
       "dns_resolution_failed",
       `dns lookup failed for "${hostname}": ${(err as Error).message}`,
     );
   }
-  if (isBlockedAddress(address)) {
+
+  // `all: true` always returns an array in Node. Normalize an object as well
+  // so older embedders/test doubles cannot accidentally bypass validation.
+  const rawAnswers = Array.isArray(answers) ? answers : [answers];
+  const addresses: ResolvedAddress[] = [];
+  const seen = new Set<string>();
+  for (const answer of rawAnswers) {
+    if (!answer || typeof answer !== "object") {
+      throw new SsrfError(
+        "dns_resolution_failed",
+        `dns lookup returned an invalid answer for "${hostname}"`,
+      );
+    }
+    const address = (answer as { address?: unknown }).address;
+    const family = typeof address === "string" ? net.isIP(address) : 0;
+    if (typeof address !== "string" || (family !== 4 && family !== 6)) {
+      throw new SsrfError(
+        "dns_resolution_failed",
+        `dns lookup returned an invalid address for "${hostname}"`,
+      );
+    }
+    if (isBlockedAddress(address)) {
+      throw new SsrfError(
+        "blocked_target",
+        `target "${hostname}" resolves to ${address}, which is not a public address`,
+      );
+    }
+    const key = `${family}:${address}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      addresses.push({ address, family });
+    }
+  }
+  if (addresses.length === 0) {
     throw new SsrfError(
-      "blocked_target",
-      `target "${hostname}" resolves to ${address}, which is a private/loopback/link-local/metadata address`,
+      "dns_resolution_failed",
+      `dns lookup returned no addresses for "${hostname}"`,
     );
   }
-  return u;
+  return { url, hostname, addresses, pinned: addresses[0]! };
+}
+
+/**
+ * Parse + validate a URL for outbound fetch. Every DNS answer must be public.
+ * `safeFetch` uses the richer internal result to pin the selected address;
+ * external validation callers retain the historical URL return value.
+ */
+export async function assertSafeOutboundUrl(raw: string): Promise<URL> {
+  return (await resolveSafeOutboundUrl(raw)).url;
+}
+
+function createPinnedLookup(pinned: ResolvedAddress): LookupFunction {
+  return (_hostname, options, callback) => {
+    const requestedFamily = options.family;
+    if (
+      typeof requestedFamily === "number" &&
+      requestedFamily !== 0 &&
+      requestedFamily !== pinned.family
+    ) {
+      const error = Object.assign(
+        new Error(
+          `validated address family ${pinned.family} does not satisfy requested family ${requestedFamily}`,
+        ),
+        { code: "EAI_ADDRFAMILY" },
+      ) as NodeJS.ErrnoException;
+      callback(error, "", 0);
+      return;
+    }
+    if (options.all) {
+      callback(null, [{ ...pinned }]);
+      return;
+    }
+    callback(null, pinned.address, pinned.family);
+  };
+}
+
+function outboundHeaders(
+  url: URL,
+  supplied: Record<string, string> | undefined,
+): Record<string, string> {
+  const headers: Record<string, string> = {};
+  for (const [name, value] of Object.entries(
+    supplied ?? { accept: "application/json, text/plain" },
+  )) {
+    if (name.toLowerCase() !== "host") headers[name] = value;
+  }
+  // Never let a forwarded Host disagree with the hostname whose DNS and TLS
+  // identity were validated. URL.host includes a non-default explicit port.
+  headers.host = url.host;
+  return headers;
+}
+
+function pinnedRequestOptions(
+  target: ValidatedOutboundUrl,
+  headers: Record<string, string> | undefined,
+  signal?: AbortSignal,
+): RequestOptions {
+  return {
+    protocol: target.url.protocol,
+    hostname: target.hostname,
+    port: target.url.port || undefined,
+    path: `${target.url.pathname}${target.url.search}`,
+    method: "GET",
+    headers: outboundHeaders(target.url, headers),
+    lookup: createPinnedLookup(target.pinned),
+    family: target.pinned.family,
+    // Do not reuse a process-global socket whose connection predates this
+    // hop's validation and pinning decision.
+    agent: false,
+    ...(target.url.protocol === "https:" && net.isIP(target.hostname) === 0
+      ? { servername: target.hostname }
+      : {}),
+    ...(signal ? { signal } : {}),
+  };
+}
+
+function requestPinnedHop(
+  target: ValidatedOutboundUrl,
+  headers: Record<string, string> | undefined,
+  signal: AbortSignal,
+): Promise<IncomingMessage> {
+  const transport = target.url.protocol === "https:" ? https : http;
+  return new Promise((resolve, reject) => {
+    const request = transport.request(
+      pinnedRequestOptions(target, headers, signal),
+      resolve,
+    );
+    request.once("error", reject);
+    request.end();
+  });
+}
+
+function headerValue(headers: IncomingHttpHeaders, name: string): string {
+  const value = headers[name];
+  return Array.isArray(value) ? (value[0] ?? "") : (value ?? "");
 }
 
 export interface SafeFetchOptions {
@@ -190,75 +419,91 @@ export async function safeFetch(
   const maxBytes = opts.maxBytes ?? FETCH_MAX_BYTES_DEFAULT;
   const allowed = opts.allowedContentTypes;
 
-  let currentUrl = await assertSafeOutboundUrl(raw);
+  let current = await resolveSafeOutboundUrl(raw);
   for (let hop = 0; hop <= FETCH_MAX_REDIRECTS; hop += 1) {
     const ac = new AbortController();
-    const connectTimer = setTimeout(
-      () => ac.abort(new SsrfError("timeout", "connect timeout")),
-      FETCH_CONNECT_TIMEOUT_MS,
-    );
+    let timeoutPhase: "connect" | "body" | null = null;
+    const connectTimer = setTimeout(() => {
+      timeoutPhase = "connect";
+      ac.abort(new SsrfError("timeout", "connect timeout"));
+    }, FETCH_CONNECT_TIMEOUT_MS);
     // Chain user abort.
     const userSignal = opts.signal;
     const userAbortListener = userSignal
       ? () => ac.abort(userSignal.reason ?? new Error("aborted"))
       : null;
     if (userSignal && userAbortListener) {
-      if (userSignal.aborted) ac.abort(userSignal.reason ?? new Error("aborted"));
-      else userSignal.addEventListener("abort", userAbortListener, { once: true });
+      if (userSignal.aborted)
+        ac.abort(userSignal.reason ?? new Error("aborted"));
+      else
+        userSignal.addEventListener("abort", userAbortListener, { once: true });
     }
 
-    let res: Response;
+    let res: IncomingMessage;
     try {
-      res = await fetch(currentUrl.toString(), {
-        method: "GET",
-        headers: opts.headers ?? { accept: "application/json, text/plain" },
-        signal: ac.signal,
-        redirect: "manual",
-      });
+      res = await requestPinnedHop(current, opts.headers, ac.signal);
     } catch (err) {
       clearTimeout(connectTimer);
-      if (userSignal && userAbortListener) userSignal.removeEventListener("abort", userAbortListener);
-      if ((err as Error).name === "AbortError" || (err as Error).message?.includes("aborted")) {
-        throw new SsrfError("timeout", `connect timed out after ${FETCH_CONNECT_TIMEOUT_MS}ms`);
+      if (userSignal && userAbortListener) {
+        userSignal.removeEventListener("abort", userAbortListener);
+      }
+      if (timeoutPhase === "connect") {
+        throw new SsrfError(
+          "timeout",
+          `connect timed out after ${FETCH_CONNECT_TIMEOUT_MS}ms`,
+        );
       }
       throw err;
     }
     clearTimeout(connectTimer);
 
-    // Manual redirect handling. fetch with redirect:'manual' surfaces the
-    // raw status; 3xx with a Location requires re-validation through the
-    // SSRF guard.
-    if (res.status >= 300 && res.status < 400) {
-      const loc = res.headers.get("location");
+    // Raw 3xx responses require a new all-address validation and a fresh
+    // pinned socket decision for the next hop.
+    const status = res.statusCode ?? 0;
+    if (status >= 300 && status < 400) {
+      const loc = headerValue(res.headers, "location");
+      res.destroy();
       if (!loc) {
-        if (userSignal && userAbortListener) userSignal.removeEventListener("abort", userAbortListener);
-        throw new Error(`upstream_status_${res.status}`);
+        if (userSignal && userAbortListener) {
+          userSignal.removeEventListener("abort", userAbortListener);
+        }
+        throw new Error(`upstream_status_${status}`);
       }
       if (hop >= FETCH_MAX_REDIRECTS) {
-        if (userSignal && userAbortListener) userSignal.removeEventListener("abort", userAbortListener);
+        if (userSignal && userAbortListener) {
+          userSignal.removeEventListener("abort", userAbortListener);
+        }
         throw new SsrfError(
           "redirect_limit_exceeded",
           `more than ${FETCH_MAX_REDIRECTS} redirects`,
         );
       }
-      const nextRaw = new URL(loc, currentUrl).toString();
-      currentUrl = await assertSafeOutboundUrl(nextRaw);
-      if (userSignal && userAbortListener) userSignal.removeEventListener("abort", userAbortListener);
+      const nextRaw = new URL(loc, current.url).toString();
+      if (userSignal && userAbortListener) {
+        userSignal.removeEventListener("abort", userAbortListener);
+      }
+      current = await resolveSafeOutboundUrl(nextRaw);
       continue;
     }
 
-    if (!res.ok) {
-      if (userSignal && userAbortListener) userSignal.removeEventListener("abort", userAbortListener);
-      throw new Error(`upstream_status_${res.status}`);
+    if (status < 200 || status >= 300) {
+      res.destroy();
+      if (userSignal && userAbortListener) {
+        userSignal.removeEventListener("abort", userAbortListener);
+      }
+      throw new Error(`upstream_status_${status || 502}`);
     }
 
     // Content-type check #1 (before body).
-    const ctRaw = (res.headers.get("content-type") ?? "")
+    const ctRaw = headerValue(res.headers, "content-type")
       .split(";")[0]!
       .trim()
       .toLowerCase();
     if (allowed && !allowed.has(ctRaw)) {
-      if (userSignal && userAbortListener) userSignal.removeEventListener("abort", userAbortListener);
+      res.destroy();
+      if (userSignal && userAbortListener) {
+        userSignal.removeEventListener("abort", userAbortListener);
+      }
       throw new Error(
         `content_type_not_allowed: "${ctRaw}" not in {${[...allowed].join(", ")}}`,
       );
@@ -267,45 +512,43 @@ export async function safeFetch(
     // Stream-count the body. We do NOT trust the Content-Length header — a
     // malicious server can omit it or lie about it. Re-arm the abort timer
     // for the body phase.
-    const bodyTimer = setTimeout(
-      () => ac.abort(new SsrfError("timeout", "body timeout")),
-      FETCH_BODY_TIMEOUT_MS,
-    );
+    const bodyTimer = setTimeout(() => {
+      timeoutPhase = "body";
+      ac.abort(new SsrfError("timeout", "body timeout"));
+    }, FETCH_BODY_TIMEOUT_MS);
     const chunks: Buffer[] = [];
     let total = 0;
     try {
-      if (!res.body) {
-        if (userSignal && userAbortListener) userSignal.removeEventListener("abort", userAbortListener);
-        clearTimeout(bodyTimer);
-        return { finalUrl: currentUrl, contentType: ctRaw, body: Buffer.alloc(0) };
-      }
-      const reader = res.body.getReader();
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        if (!value) continue;
-        total += value.byteLength;
+      for await (const value of res) {
+        const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
+        total += chunk.byteLength;
         if (total > maxBytes) {
-          try {
-            await reader.cancel();
-          } catch {
-            /* ignore */
-          }
+          res.destroy();
           throw new SsrfError(
             "body_too_large",
             `body exceeded ${maxBytes} bytes (read ${total})`,
           );
         }
-        chunks.push(Buffer.from(value));
+        chunks.push(chunk);
       }
+    } catch (err) {
+      if (timeoutPhase === "body") {
+        throw new SsrfError(
+          "timeout",
+          `body timed out after ${FETCH_BODY_TIMEOUT_MS}ms`,
+        );
+      }
+      throw err;
     } finally {
       clearTimeout(bodyTimer);
-      if (userSignal && userAbortListener) userSignal.removeEventListener("abort", userAbortListener);
+      if (userSignal && userAbortListener) {
+        userSignal.removeEventListener("abort", userAbortListener);
+      }
     }
 
     // Content-type check #2 (after body — some servers update headers in
     // trailers; cheap defense in depth).
-    const ctAfter = (res.headers.get("content-type") ?? "")
+    const ctAfter = headerValue(res.headers, "content-type")
       .split(";")[0]!
       .trim()
       .toLowerCase();
@@ -315,16 +558,37 @@ export async function safeFetch(
       );
     }
     return {
-      finalUrl: currentUrl,
+      finalUrl: current.url,
       contentType: ctAfter || ctRaw,
       body: Buffer.concat(chunks),
     };
   }
   // The loop returns or throws; unreachable in practice.
-  throw new SsrfError("redirect_limit_exceeded", "redirect loop exited unexpectedly");
+  throw new SsrfError(
+    "redirect_limit_exceeded",
+    "redirect loop exited unexpectedly",
+  );
 }
 
-/** Exposed for unit tests — pure address predicate, no IO. */
+/** Focused test surfaces for address policy and pinned socket construction. */
 export const __test = {
   isBlockedAddress,
+  pinnedRequestOptions(
+    raw: string,
+    address: string,
+    family: 4 | 6,
+    headers?: Record<string, string>,
+  ): RequestOptions {
+    const url = new URL(raw);
+    const pinned = { address, family };
+    return pinnedRequestOptions(
+      {
+        url,
+        hostname: url.hostname.replace(/^\[|\]$/g, ""),
+        addresses: [pinned],
+        pinned,
+      },
+      headers,
+    );
+  },
 };

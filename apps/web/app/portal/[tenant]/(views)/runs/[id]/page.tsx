@@ -29,10 +29,12 @@ import {
   useRun,
   useReplayRun,
   useCancelRun,
+  useRunArtifacts,
   type RunListRow,
   type StepRow,
   type RunWaitingTask,
 } from "@/lib/hooks/useRuns";
+import { tenantHeader } from "@/lib/hooks/tenant-header";
 import { useAgents, useAgent } from "@/lib/hooks/useAgents";
 import {
   getCodeActReceiptView,
@@ -64,6 +66,7 @@ type Tab =
   | "chain"
   | "logs"
   | "io"
+  | "artifacts"
   | "events"
   | "agent";
 
@@ -134,6 +137,7 @@ function RunDetail({ run, steps, waitingTask, tab, setTab, tenant }: RunDetailPr
   );
   const agentDetailQuery = useAgent(agentRow?.kebabId ?? null);
   const agentDetail = agentDetailQuery.data ?? null;
+  const { data: artifacts = [] } = useRunArtifacts(run.id);
   const testRun = (run as { testRun?: boolean }).testRun === true;
   const isReplay = Boolean(run.parentRunId);
   const codeActReceipt = getCodeActReceiptView(run);
@@ -150,6 +154,19 @@ function RunDetail({ run, steps, waitingTask, tab, setTab, tenant }: RunDetailPr
   async function handleReplay() {
     try {
       const data = await replay.mutateAsync(run.id);
+      // Studio runs return the freshly-queued run id — jump straight to it.
+      // Legacy manifest runs return the re-fired event instead.
+      if ("runId" in data) {
+        toast({
+          tone: "signal",
+          title: t("runDetail.replayStarted"),
+          description: t("runDetail.replayStartedDesc", { runId: data.runId }),
+        });
+        router.push(
+          `/portal/${tenant}/runs/${encodeURIComponent(data.runId)}` as never,
+        );
+        return;
+      }
       toast({
         tone: "signal",
         title: t("runDetail.replayQueued"),
@@ -394,7 +411,7 @@ function RunDetail({ run, steps, waitingTask, tab, setTab, tenant }: RunDetailPr
           flexShrink: 0,
         }}
       >
-        {(["summary", "timeline", "trace", "chain", "logs", "io", "events", "agent"] as const).map((tabId) => (
+        {(["summary", "timeline", "trace", "chain", "logs", "io", "artifacts", "events", "agent"] as const).map((tabId) => (
           <button
             key={tabId}
             onClick={() => setTab(tabId)}
@@ -475,6 +492,11 @@ function RunDetail({ run, steps, waitingTask, tab, setTab, tenant }: RunDetailPr
       )}
       {tab === "logs" && <LogsTab runId={run.id} tenant={tenant} />}
       {tab === "io" && <IOTab run={run} />}
+      {tab === "artifacts" && (
+        <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
+          <ArtifactsTab runId={run.id} artifacts={artifacts} />
+        </div>
+      )}
       {tab === "events" && <RunEventsTab run={run} />}
 
       {/* Failed-run error panel (any tab except agent) */}
@@ -519,6 +541,121 @@ function RunDetail({ run, steps, waitingTask, tab, setTab, tenant }: RunDetailPr
         </Panel>
       )}
     </div>
+  );
+}
+
+function ArtifactsTab({
+  runId,
+  artifacts,
+}: {
+  runId: string;
+  artifacts: Array<{
+    id: string;
+    kind: string;
+    size: number;
+    createdAt: string;
+    downloadPath: string;
+  }>;
+}) {
+  const { t } = useI18n();
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [content, setContent] = useState<string>("");
+  const [error, setError] = useState<string | null>(null);
+  const selected = artifacts.find(
+    (artifact) => artifact.id === (selectedId ?? artifacts[0]?.id),
+  );
+  const selectedArtifactId = selected?.id;
+  const selectedDownloadPath = selected?.downloadPath;
+
+  useEffect(() => {
+    if (!selectedDownloadPath) return;
+    let cancelled = false;
+    setError(null);
+    setContent("");
+    void fetch(selectedDownloadPath, {
+      credentials: "same-origin",
+      headers: { Accept: "application/json", ...tenantHeader() },
+    })
+      .then(async (response) => {
+        if (!response.ok)
+          throw new Error(`artifact request failed (${response.status})`);
+        return response.text();
+      })
+      .then((text) => {
+        if (!cancelled) setContent(text);
+      })
+      .catch((err) => {
+        if (!cancelled)
+          setError(
+            err instanceof Error ? err.message : "Could not load artifact",
+          );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedArtifactId, selectedDownloadPath]);
+
+  if (artifacts.length === 0) {
+    return (
+      <Empty
+        title={t("runDetail.artifactsEmpty")}
+        hint={t("runDetail.artifactsEmptyHint", { runId })}
+      />
+    );
+  }
+  return (
+    <Panel
+      title={t("runDetail.artifactsTitle")}
+      subtitle={t("runDetail.artifactsSubtitle")}
+      padded={false}
+    >
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "220px 1fr",
+          minHeight: 340,
+        }}
+      >
+        <div style={{ borderRight: "1px solid var(--border)", padding: 10 }}>
+          {artifacts.map((artifact) => (
+            <button
+              key={artifact.id}
+              onClick={() => setSelectedId(artifact.id)}
+              style={{
+                display: "block",
+                width: "100%",
+                textAlign: "left",
+                padding: "9px 10px",
+                borderRadius: 4,
+                background:
+                  selected?.id === artifact.id
+                    ? "var(--panel-3)"
+                    : "transparent",
+                color: "var(--text)",
+              }}
+            >
+              <div className="mono" style={{ fontSize: 11 }}>
+                {artifact.kind}
+              </div>
+              <div
+                style={{ marginTop: 3, fontSize: 10.5, color: "var(--text-3)" }}
+              >
+                {Math.round((artifact.size / 1024) * 10) / 10} KB
+              </div>
+            </button>
+          ))}
+        </div>
+        <div style={{ padding: 14, overflow: "auto" }}>
+          {error && <div style={{ color: "var(--red)" }}>{error}</div>}
+          {!error && !content && (
+            <div style={{ color: "var(--text-3)" }}>
+              {t("runDetail.artifactsLoading")}
+            </div>
+          )}
+          {content && <CodeBlock>{content}</CodeBlock>}
+        </div>
+      </div>
+    </Panel>
   );
 }
 

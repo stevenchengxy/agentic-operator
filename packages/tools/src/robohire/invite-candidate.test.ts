@@ -1,7 +1,7 @@
 import type { ToolContext } from "@agentic/agent-kit";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { listGlobalTools } from "../registry";
+import { getGlobalToolCatalogEntry } from "../registry";
 import {
   InviteCandidateApiError,
   inviteCandidateApi,
@@ -197,14 +197,15 @@ describe("inviteCandidateApi canonical adapter", () => {
   });
 
   it("publishes the exact request boundary and fail-closed write policy", () => {
-    const catalog = listGlobalTools().find(
-      (tool) => tool.name === "inviteCandidateApi",
-    );
+    // The legacy name aliases to the canonical GoHire implementation whose
+    // credentials resolve via the trusted integration store (with fail-closed
+    // env-reference overrides) — the write policy itself is unchanged.
+    const catalog = getGlobalToolCatalogEntry("inviteCandidateApi");
     expect(catalog).toMatchObject({
       operation: "write",
       effectScope: "external",
       sandboxPolicy: "requires_attempt_grant",
-      credentialPosture: "environment_reference_only",
+      credentialPosture: "server_managed",
       probeRequired: true,
     });
     expect(catalog?.probeSafety).toBeUndefined();

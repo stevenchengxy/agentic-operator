@@ -386,6 +386,55 @@
       "when": 1785945600000,
       "tag": "0054_factory_domain_insights",
       "breakpoints": true
+    },
+    {
+      "idx": 55,
+      "version": "6",
+      "when": 1785945601000,
+      "tag": "0055_rename_llm_call_telemetry",
+      "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "6",
+      "when": 1785945602000,
+      "tag": "0056_integrations",
+      "breakpoints": true
+    },
+    {
+      "idx": 57,
+      "version": "6",
+      "when": 1785945603000,
+      "tag": "0057_agent_studio_foundation",
+      "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "6",
+      "when": 1785945604000,
+      "tag": "0058_llm_usage_ledger",
+      "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "6",
+      "when": 1785945605000,
+      "tag": "0059_llm_reasoning_controls",
+      "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "6",
+      "when": 1785945606000,
+      "tag": "0060_usage_attribution_events",
+      "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "6",
+      "when": 1785945607000,
+      "tag": "0061_llm_routing_observability",
+      "breakpoints": true
     }
   ]
 }

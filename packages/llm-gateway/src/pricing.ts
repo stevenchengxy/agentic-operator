@@ -1,209 +1,172 @@
-/**
- * Provider + served-model pricing resolution.
- *
- * This is the only runtime price resolver used by gateway budget deduction
- * and API usage reconciliation. It deliberately has no provider-average or
- * unknown-model fallback: applying a plausible-looking default price makes a
- * USD budget unenforceable while presenting the result as real accounting.
- *
- * Operators can override or add authoritative prices without a code release:
- *
- *   AGENTIC_LLM_MODEL_PRICING_JSON='{
- *     "custom/my-model":{"inCents":120,"outCents":480},
- *     "openrouter/*":{"inCents":200,"outCents":800}
- *   }'
- *
- * Values are integer/fractional USD cents per one million tokens. Exact
- * provider/model entries win over provider wildcards, which win over the
- * shared catalog. Unknown models remain unpriced unless explicitly configured.
- */
-
 import {
-  PROVIDER_IDS,
-  PROVIDER_MODEL_CATALOG,
+  findCatalogModel,
+  type CatalogPricing,
   type ProviderId,
 } from "@agentic/contracts";
+import type { ChatResponse, CostBreakdown, TokenUsage } from "./types";
 
-export interface ModelTokenPricing {
+const USD_NANOS = 1_000_000_000;
+
+function nonNegative(value: number | null | undefined): number {
+  return Number.isFinite(value) ? Math.max(0, Math.trunc(value ?? 0)) : 0;
+}
+
+/** Fill the detailed usage shape for legacy adapters while retaining raw data. */
+export function normalizeUsage(response: ChatResponse): TokenUsage {
+  if (response.usage) {
+    const usage = response.usage;
+    const inputTokens = nonNegative(usage.inputTokens);
+    const outputTokens = nonNegative(usage.outputTokens);
+    return {
+      available: true,
+      inputTokens,
+      outputTokens,
+      totalTokens: nonNegative(usage.totalTokens) || inputTokens + outputTokens,
+      cachedInputTokens: nonNegative(usage.cachedInputTokens),
+      cacheWriteInputTokens: nonNegative(usage.cacheWriteInputTokens),
+      cacheWrite5mInputTokens: nonNegative(usage.cacheWrite5mInputTokens),
+      cacheWrite1hInputTokens: nonNegative(usage.cacheWrite1hInputTokens),
+      reasoningTokens: nonNegative(usage.reasoningTokens),
+      inputAudioTokens: nonNegative(usage.inputAudioTokens),
+      outputAudioTokens: nonNegative(usage.outputAudioTokens),
+      raw: usage.raw,
+    };
+  }
+  const inputTokens = nonNegative(response.tokensIn);
+  const outputTokens = nonNegative(response.tokensOut);
+  return {
+    available: response.tokensIn !== null && response.tokensOut !== null,
+    inputTokens,
+    outputTokens,
+    totalTokens: inputTokens + outputTokens,
+    cachedInputTokens: 0,
+    cacheWriteInputTokens: 0,
+    cacheWrite5mInputTokens: 0,
+    cacheWrite1hInputTokens: 0,
+    reasoningTokens: 0,
+    inputAudioTokens: 0,
+    outputAudioTokens: 0,
+  };
+}
+
+function activePrice(
+  prices: CatalogPricing[],
+  at: Date,
+): CatalogPricing | undefined {
+  const timestamp = at.getTime();
+  return prices.find((price) => {
+    const from = price.effectiveFrom
+      ? Date.parse(price.effectiveFrom)
+      : -Infinity;
+    const to = price.effectiveTo ? Date.parse(price.effectiveTo) : Infinity;
+    return timestamp >= from && timestamp <= to;
+  });
+}
+
+function nanos(tokens: number, usdPerMillionTokens: number): number {
+  // USD/Mtoken × tokens × 1e9 nanos/USD ÷ 1e6 tokens = ×1000.
+  return Math.round(tokens * usdPerMillionTokens * 1_000);
+}
+
+export function calculateCost(args: {
   provider: ProviderId;
   model: string;
-  inCentsPerMTok: number;
-  outCentsPerMTok: number;
-  source: "operator_override" | "catalog";
-}
-
-export interface EstimatedTokenCost {
-  usdCents: number;
-  pricing: ModelTokenPricing;
-}
-
-interface PricePair {
-  inCents: number;
-  outCents: number;
-}
-
-const PROVIDER_SET = new Set<string>(PROVIDER_IDS);
-let cachedRaw: string | undefined;
-let cachedOverrides = new Map<string, PricePair>();
-
-function pricingEnvRaw(): string | undefined {
-  const raw = process.env.AGENTIC_LLM_MODEL_PRICING_JSON;
-  return raw?.trim() ? raw.trim() : undefined;
-}
-
-function overrideKey(provider: ProviderId, model: string): string {
-  return `${provider}/${model}`;
-}
-
-function parseOverrideKey(raw: string): { provider: ProviderId; model: string } {
-  const slash = raw.indexOf("/");
-  const provider = slash > 0 ? raw.slice(0, slash).trim() : "";
-  const model = slash > 0 ? raw.slice(slash + 1).trim() : "";
-  if (!PROVIDER_SET.has(provider) || !model) {
-    throw new Error(
-      `AGENTIC_LLM_MODEL_PRICING_JSON key '${raw}' must be '<provider>/<served-model>' or '<provider>/*'`,
-    );
-  }
-  return { provider: provider as ProviderId, model };
-}
-
-function overrides(): Map<string, PricePair> {
-  const raw = pricingEnvRaw();
-  if (raw === cachedRaw) return cachedOverrides;
-  if (!raw) {
-    cachedRaw = undefined;
-    cachedOverrides = new Map();
-    return cachedOverrides;
-  }
-
-  let decoded: unknown;
-  try {
-    decoded = JSON.parse(raw);
-  } catch (error) {
-    throw new Error("AGENTIC_LLM_MODEL_PRICING_JSON must be valid JSON", {
-      cause: error,
-    });
-  }
-  if (!decoded || typeof decoded !== "object" || Array.isArray(decoded)) {
-    throw new Error("AGENTIC_LLM_MODEL_PRICING_JSON must be a JSON object");
-  }
-
-  const next = new Map<string, PricePair>();
-  for (const [rawKey, rawValue] of Object.entries(decoded)) {
-    const { provider, model } = parseOverrideKey(rawKey);
-    if (!rawValue || typeof rawValue !== "object" || Array.isArray(rawValue)) {
-      throw new Error(`pricing override '${rawKey}' must be an object`);
-    }
-    const value = rawValue as Record<string, unknown>;
-    const inCents = Number(value.inCents);
-    const outCents = Number(value.outCents);
-    if (
-      !Number.isFinite(inCents) ||
-      inCents < 0 ||
-      !Number.isFinite(outCents) ||
-      outCents < 0
-    ) {
-      throw new Error(
-        `pricing override '${rawKey}' requires finite non-negative inCents/outCents`,
-      );
-    }
-    next.set(overrideKey(provider, model), { inCents, outCents });
-  }
-  cachedRaw = raw;
-  cachedOverrides = next;
-  return cachedOverrides;
-}
-
-function providerId(value: string | null | undefined): ProviderId | null {
-  const normalized = value?.trim().toLowerCase() ?? "";
-  return PROVIDER_SET.has(normalized) ? (normalized as ProviderId) : null;
-}
-
-function fromProvider(
-  provider: ProviderId,
-  model: string,
-  allowWildcard = true,
-): ModelTokenPricing | null {
-  const configured = overrides();
-  const exact = configured.get(overrideKey(provider, model));
-  const wildcard = allowWildcard
-    ? configured.get(overrideKey(provider, "*"))
-    : undefined;
-  const override = exact ?? wildcard;
-  if (override) {
+  usage: TokenUsage;
+  providerReportedCostUsd?: number;
+  at?: Date;
+}): CostBreakdown {
+  if (
+    args.providerReportedCostUsd !== undefined &&
+    Number.isFinite(args.providerReportedCostUsd) &&
+    args.providerReportedCostUsd >= 0
+  ) {
     return {
-      provider,
-      model,
-      inCentsPerMTok: override.inCents,
-      outCentsPerMTok: override.outCents,
-      source: "operator_override",
+      totalUsdNanos: Math.round(args.providerReportedCostUsd * USD_NANOS),
+      inputUsdNanos: null,
+      cachedInputUsdNanos: null,
+      cacheWriteUsdNanos: null,
+      outputUsdNanos: null,
+      source: "provider",
     };
   }
 
-  const catalog = PROVIDER_MODEL_CATALOG[provider].find(
-    (candidate) => candidate.name === model,
-  );
-  if (!catalog) return null;
-  return {
-    provider,
-    model,
-    inCentsPerMTok: catalog.inP * 100,
-    outCentsPerMTok: catalog.outP * 100,
-    source: "catalog",
-  };
-}
-
-/** Resolve an exact provider + served model. When provider is unavailable
- * (legacy runs), a model is accepted only if every matching provider has the
- * same price; ambiguous model names remain unpriced. */
-export function resolveModelTokenPricing(args: {
-  provider?: string | null;
-  model?: string | null;
-}): ModelTokenPricing | null {
-  const model = args.model?.trim() ?? "";
-  if (!model) return null;
-  const provider = providerId(args.provider);
-  if (provider) return fromProvider(provider, model);
-
-  const matches: ModelTokenPricing[] = [];
-  for (const candidateProvider of PROVIDER_IDS) {
-    // A provider wildcard is authoritative only when that provider identity
-    // is present. Applying it to a legacy provider-less run would guess which
-    // upstream served the model and recreate the very fake fallback this
-    // resolver exists to remove.
-    const match = fromProvider(candidateProvider, model, false);
-    if (match) matches.push(match);
+  if (args.usage.available === false) {
+    return {
+      totalUsdNanos: null,
+      inputUsdNanos: null,
+      cachedInputUsdNanos: null,
+      cacheWriteUsdNanos: null,
+      outputUsdNanos: null,
+      source: "unpriced",
+    };
   }
-  if (matches.length === 0) return null;
-  const first = matches[0]!;
-  const unambiguous = matches.every(
-    (match) =>
-      match.inCentsPerMTok === first.inCentsPerMTok &&
-      match.outCentsPerMTok === first.outCentsPerMTok,
-  );
-  return unambiguous ? first : null;
-}
 
-/** Estimate using the exact resolved price. Null means pricing is unknown;
- * callers must surface that incompleteness or fail closed for a USD cap. */
-export function estimateTokenCostCents(args: {
-  provider?: string | null;
-  model?: string | null;
-  tokensIn: number;
-  tokensOut: number;
-}): EstimatedTokenCost | null {
-  const pricing = resolveModelTokenPricing(args);
-  if (!pricing) return null;
-  const tokensIn = Number.isFinite(args.tokensIn) ? Math.max(0, args.tokensIn) : 0;
-  const tokensOut = Number.isFinite(args.tokensOut) ? Math.max(0, args.tokensOut) : 0;
+  const model = findCatalogModel(args.provider, args.model);
+  const price = model?.pricing
+    ? activePrice(model.pricing, args.at ?? new Date())
+    : undefined;
+  if (!model || !price) {
+    return {
+      totalUsdNanos: null,
+      inputUsdNanos: null,
+      cachedInputUsdNanos: null,
+      cacheWriteUsdNanos: null,
+      outputUsdNanos: null,
+      source: "unpriced",
+    };
+  }
+
+  const usage = args.usage;
+  const selected =
+    price.longContext && usage.inputTokens > price.longContext.inputTokensAbove
+      ? { ...price, ...price.longContext }
+      : price;
+  const cached = Math.min(usage.inputTokens, usage.cachedInputTokens);
+  const write5m = Math.min(
+    Math.max(usage.inputTokens - cached, 0),
+    usage.cacheWrite5mInputTokens,
+  );
+  const write1h = Math.min(
+    Math.max(usage.inputTokens - cached - write5m, 0),
+    usage.cacheWrite1hInputTokens,
+  );
+  const genericWrite = Math.min(
+    Math.max(usage.inputTokens - cached - write5m - write1h, 0),
+    Math.max(usage.cacheWriteInputTokens - write5m - write1h, 0),
+  );
+  const uncached = Math.max(
+    usage.inputTokens - cached - write5m - write1h - genericWrite,
+    0,
+  );
+
+  const inputUsdNanos = nanos(uncached, selected.input);
+  const cachedInputUsdNanos = nanos(
+    cached,
+    selected.cachedInput ?? selected.input,
+  );
+  const cacheWriteUsdNanos =
+    nanos(genericWrite, selected.cacheWrite ?? selected.input) +
+    nanos(
+      write5m,
+      selected.cacheWrite5m ?? selected.cacheWrite ?? selected.input,
+    ) +
+    nanos(
+      write1h,
+      selected.cacheWrite1h ?? selected.cacheWrite ?? selected.input,
+    );
+  const outputUsdNanos = nanos(usage.outputTokens, selected.output);
+
   return {
-    // Round each durable accounting unit upward so repeated small calls do not
-    // systematically evade a cents-denominated budget.
-    usdCents: Math.ceil(
-      (tokensIn * pricing.inCentsPerMTok +
-        tokensOut * pricing.outCentsPerMTok) /
-        1_000_000,
-    ),
-    pricing,
+    totalUsdNanos:
+      inputUsdNanos + cachedInputUsdNanos + cacheWriteUsdNanos + outputUsdNanos,
+    inputUsdNanos,
+    cachedInputUsdNanos,
+    cacheWriteUsdNanos,
+    outputUsdNanos,
+    source: "catalog",
+    priceSource: model.priceSource,
+    priceAsOf: model.priceAsOf,
   };
 }
+
+export const USD_NANOS_PER_CENT = 10_000_000;

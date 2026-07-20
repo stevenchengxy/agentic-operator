@@ -18,7 +18,8 @@
     "@agentic/tools": "workspace:*"
   },
   "devDependencies": {
-    "@types/node": "^25.8.0",
+    "@types/node": "^26.1.1",
+    "tsx": "^4.22.0",
     "typescript": "^6.0.3"
   }
 }

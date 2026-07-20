@@ -761,6 +761,11 @@ export interface FactoryPorts {
    * enter the model transcript or persisted TestCase payload; supply_test_data
    * stores only a content-addressed binding returned by this port. */
   fixtureAssets?: import("./test-fixture-assets").FactoryTestFixtureAssetReader;
+  /** #CONV-ARCHIVE optional: durable verbatim archive of compaction-dropped conversation turns.
+   * When configured, maybeCompact archives BEFORE folding and DEFERS the fold if the write fails
+   * (silent loss is never an outcome); recall_conversation searches it on demand. Absent →
+   * folds keep today's summary-only behavior. */
+  conversationArchive?: import("./conversation-archive").FactoryConversationArchive;
   /** optional: the REAL global tool registry (@agentic/tools listGlobalTools), injected by the api
    *  so the pure factory package can recommend real tools (parseResumeApi, fs.*) by semantic rank
    *  even when the ontology declared none. Absent → falls back to ontology-declared tools only. */

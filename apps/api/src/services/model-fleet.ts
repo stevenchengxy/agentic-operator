@@ -21,12 +21,18 @@ import {
 } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
-import { PROVIDER_IDS, type ProviderId } from "@agentic/contracts";
+import {
+  catalogModelPolicy,
+  findCatalogModel,
+  PROVIDER_IDS,
+  type ProviderId,
+} from "@agentic/contracts";
 import { makeId } from "@agentic/shared";
 
 export type FleetRole = "primary" | "fallback" | "shadow";
-export type ModelAvailability = "provider_confirmed" | "unverified";
 const FLEET_ROLES: readonly FleetRole[] = ["primary", "fallback", "shadow"];
+
+export type ModelAvailability = "provider_confirmed" | "unverified";
 
 export interface ModelFleetEntry {
   id: string;
@@ -39,7 +45,8 @@ export interface ModelFleetEntry {
   role: FleetRole;
   dailyCapUsd: number;
   maxOutTokens: number;
-  temperature: number;
+  /** null means use the provider/model default and omit the parameter. */
+  temperature: number | null;
   /** provider_confirmed means the exact id appeared in a live upstream
    * listing at add time. Unsupported providers remain explicitly unverified. */
   availability: ModelAvailability;
@@ -75,6 +82,8 @@ function load(): FleetFile {
   try {
     const parsed = JSON.parse(readFileSync(fleetPath, "utf8")) as FleetFile;
     if (!Array.isArray(parsed.entries)) throw new Error("malformed fleet file");
+    // Legacy entries predate availability tracking; surface them explicitly
+    // as unverified instead of silently presenting them as confirmed.
     const normalized: FleetFile = {
       entries: parsed.entries.map((entry) => ({
         ...entry,
@@ -89,14 +98,16 @@ function load(): FleetFile {
         availabilityMessage:
           typeof entry.availabilityMessage === "string"
             ? entry.availabilityMessage
-            : "Legacy entry was not provider-confirmed",
+            : entry.availability === "provider_confirmed"
+              ? null
+              : "Legacy entry was not provider-confirmed",
       })),
     };
     cache = { path: fleetPath, file: normalized };
     return normalized;
   } catch (err) {
     throw new Error(
-      `model-fleet file at ${fleetPath} is unreadable: ${(err as Error).message}`,
+      `model-fleet file at ${defaultPath()} is unreadable: ${(err as Error).message}`,
     );
   }
 }
@@ -104,6 +115,8 @@ function load(): FleetFile {
 function persist(file: FleetFile): void {
   const fleetPath = defaultPath();
   mkdirSync(dirname(fleetPath), { recursive: true });
+  // Atomic replace: write-fsync-rename so a crash mid-write can never leave a
+  // truncated fleet file behind.
   const temp = `${fleetPath}.${process.pid}.${randomUUID()}.tmp`;
   let fd: number | undefined;
   try {
@@ -134,8 +147,13 @@ function isFleetRole(s: unknown): s is FleetRole {
 
 export function listFleet(tenantSlug: string): ModelFleetEntry[] {
   return load()
-    .entries.filter((e) => e.tenantSlug === tenantSlug)
-    .sort((a, b) => b.addedAt - a.addedAt);
+    .entries.map((entry, index) => ({ entry, index }))
+    .filter(({ entry }) => entry.tenantSlug === tenantSlug)
+    // Date.now() can repeat for back-to-back writes. File order is the
+    // authoritative insertion order, so use the later array position as a
+    // deterministic newest-first tie-breaker.
+    .sort((a, b) => b.entry.addedAt - a.entry.addedAt || b.index - a.index)
+    .map(({ entry }) => entry);
 }
 
 export interface AddFleetInput {
@@ -146,7 +164,7 @@ export interface AddFleetInput {
   role?: string;
   dailyCapUsd?: number;
   maxOutTokens?: number;
-  temperature?: number;
+  temperature?: number | null;
   addedBy?: string | null;
   availability?: ModelAvailability;
   availabilityCheckedAt?: number | null;
@@ -164,36 +182,48 @@ export function addFleetEntry(input: AddFleetInput): ModelFleetEntry {
   if (!isProviderId(input.provider)) {
     throw new FleetValidationError(`unknown provider: ${input.provider}`);
   }
-  if (typeof input.modelName !== "string") {
-    throw new FleetValidationError("modelName must be a string");
-  }
-  const modelName = input.modelName.trim();
+  const modelName = (input.modelName ?? "").trim();
   if (!modelName) {
     throw new FleetValidationError("modelName is required");
   }
-  // We used to reject any modelName not in PROVIDER_MODEL_CATALOG, but the
-  // catalog is a curated subset (≤6 per provider) while live discovery
-  // returns the provider's full inventory — OpenRouter alone serves ~360.
-  // The picker shows live results; rejecting them at add-time was a
-  // permanent footgun. The catalog now serves UI metadata only; bad
-  // modelNames surface at invocation time when the upstream returns 404.
-  if (input.role !== undefined && !isFleetRole(input.role)) {
-    throw new FleetValidationError(`invalid role: ${String(input.role)}`);
+  // Known legacy/restricted catalog rows cannot be newly added. Unknown IDs
+  // remain valid because live discovery inventories are larger than the
+  // checked-in catalog, and custom/private deployments cannot be curated.
+  // Existing fleet rows are never revalidated here, preserving configured
+  // historical models for replay and controlled migration.
+  const catalogModel = findCatalogModel(input.provider, modelName);
+  if (catalogModel) {
+    const policy = catalogModelPolicy(catalogModel);
+    if (!policy.selectable) {
+      throw new FleetValidationError(
+        `${input.provider}/${modelName} is not selectable (${policy.reason})`,
+      );
+    }
   }
-  if (input.alias !== undefined && typeof input.alias !== "string") {
-    throw new FleetValidationError("alias must be a string");
-  }
-  const role: FleetRole = input.role ?? "primary";
+  const role: FleetRole = isFleetRole(input.role) ? input.role : "primary";
   const alias = (input.alias ?? "").trim() || modelName;
-  const dailyCapUsd = input.dailyCapUsd === undefined
-    ? 30
-    : requireFiniteRange("dailyCapUsd", input.dailyCapUsd, 0, Number.MAX_SAFE_INTEGER);
-  const maxOutTokens = input.maxOutTokens === undefined
-    ? 2048
-    : requirePositiveInteger("maxOutTokens", input.maxOutTokens);
-  const temperature = input.temperature === undefined
-    ? 0.2
-    : requireFiniteRange("temperature", input.temperature, 0, 2);
+  const dailyCapUsd = Number.isFinite(input.dailyCapUsd) ? Math.max(0, Number(input.dailyCapUsd)) : 30;
+  const maxOutTokens = Number.isInteger(input.maxOutTokens) && input.maxOutTokens! > 0
+    ? input.maxOutTokens!
+    : 2048;
+  let temperature: number | null = null;
+  if (input.temperature !== undefined && input.temperature !== null) {
+    if (!Number.isFinite(input.temperature)) {
+      throw new FleetValidationError("temperature must be a finite number or null");
+    }
+    if (catalogModel?.temperatureRange === null) {
+      throw new FleetValidationError(
+        `${input.provider}/${modelName} does not support temperature; leave it unset`,
+      );
+    }
+    const range = catalogModel?.temperatureRange ?? { min: 0, max: 2 };
+    if (input.temperature < range.min || input.temperature > range.max) {
+      throw new FleetValidationError(
+        `temperature must be between ${range.min} and ${range.max}`,
+      );
+    }
+    temperature = input.temperature;
+  }
 
   const file = load();
   // Duplicate guard: same tenant + provider + modelName means it's already in
@@ -247,37 +277,7 @@ export interface UpdateFleetInput {
   role?: string;
   dailyCapUsd?: number;
   maxOutTokens?: number;
-  temperature?: number;
-}
-
-function requireFiniteRange(
-  name: string,
-  value: unknown,
-  min: number,
-  max: number,
-): number {
-  if (
-    typeof value !== "number" ||
-    !Number.isFinite(value) ||
-    value < min ||
-    value > max
-  ) {
-    throw new FleetValidationError(
-      `${name} must be a finite number between ${min} and ${max}`,
-    );
-  }
-  return value;
-}
-
-function requirePositiveInteger(name: string, value: unknown): number {
-  if (
-    typeof value !== "number" ||
-    !Number.isSafeInteger(value) ||
-    value <= 0
-  ) {
-    throw new FleetValidationError(`${name} must be a positive integer`);
-  }
-  return value;
+  temperature?: number | null;
 }
 
 export function updateFleetEntry(
@@ -285,26 +285,6 @@ export function updateFleetEntry(
   id: string,
   patch: UpdateFleetInput,
 ): ModelFleetEntry | null {
-  if (!patch || typeof patch !== "object" || Array.isArray(patch)) {
-    throw new FleetValidationError("update body must be an object");
-  }
-  const allowed = new Set([
-    "alias",
-    "role",
-    "dailyCapUsd",
-    "maxOutTokens",
-    "temperature",
-  ]);
-  const keys = Object.keys(patch as Record<string, unknown>);
-  const unknown = keys.filter((key) => !allowed.has(key));
-  if (unknown.length > 0) {
-    throw new FleetValidationError(
-      `unknown fleet update field(s): ${unknown.join(", ")}`,
-    );
-  }
-  if (keys.length === 0) {
-    throw new FleetValidationError("at least one fleet field is required");
-  }
   const file = load();
   const idx = file.entries.findIndex(
     (e) => e.id === id && e.tenantSlug === tenantSlug,
@@ -312,10 +292,7 @@ export function updateFleetEntry(
   if (idx < 0) return null;
   const cur = file.entries[idx]!;
   const next: ModelFleetEntry = { ...cur };
-  if (patch.alias !== undefined) {
-    if (typeof patch.alias !== "string") {
-      throw new FleetValidationError("alias must be a string");
-    }
+  if (typeof patch.alias === "string") {
     const alias = patch.alias.trim() || cur.modelName;
     const dup = file.entries.find(
       (e) => e.id !== cur.id && e.tenantSlug === tenantSlug && e.alias === alias,
@@ -331,27 +308,35 @@ export function updateFleetEntry(
     }
     next.role = patch.role;
   }
-  if (patch.dailyCapUsd !== undefined) {
-    next.dailyCapUsd = requireFiniteRange(
-      "dailyCapUsd",
-      patch.dailyCapUsd,
-      0,
-      Number.MAX_SAFE_INTEGER,
-    );
+  if (patch.dailyCapUsd !== undefined && Number.isFinite(patch.dailyCapUsd)) {
+    next.dailyCapUsd = Math.max(0, patch.dailyCapUsd);
   }
-  if (patch.maxOutTokens !== undefined) {
-    next.maxOutTokens = requirePositiveInteger(
-      "maxOutTokens",
-      patch.maxOutTokens,
-    );
+  if (patch.maxOutTokens !== undefined && Number.isInteger(patch.maxOutTokens) && patch.maxOutTokens > 0) {
+    next.maxOutTokens = patch.maxOutTokens;
   }
   if (patch.temperature !== undefined) {
-    next.temperature = requireFiniteRange(
-      "temperature",
-      patch.temperature,
-      0,
-      2,
-    );
+    if (patch.temperature === null) {
+      next.temperature = null;
+    } else {
+      if (!Number.isFinite(patch.temperature)) {
+        throw new FleetValidationError(
+          "temperature must be a finite number or null",
+        );
+      }
+      const catalog = findCatalogModel(cur.provider, cur.modelName);
+      if (catalog?.temperatureRange === null) {
+        throw new FleetValidationError(
+          `${cur.provider}/${cur.modelName} does not support temperature; leave it unset`,
+        );
+      }
+      const range = catalog?.temperatureRange ?? { min: 0, max: 2 };
+      if (patch.temperature < range.min || patch.temperature > range.max) {
+        throw new FleetValidationError(
+          `temperature must be between ${range.min} and ${range.max}`,
+        );
+      }
+      next.temperature = patch.temperature;
+    }
   }
   const entries = [...file.entries];
   entries[idx] = next;

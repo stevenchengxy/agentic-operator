@@ -6,12 +6,14 @@
  *   - chat() dispatch with provider resolution, failover, timeout, retry
  *   - Surface configured providers (for /v1/llm/providers)
  *
- * Not responsible for: persistence (BaseAgent + step engine handle that),
- * audit logging (caller writes to audit_log with the response metadata),
- * cost calculation (derived elsewhere from tokens × prices).
+ * Every attributed provider attempt is persisted before dispatch and then
+ * finalized with normalized usage and exact/dated cost information.
  */
 
-import { PROVIDER_MODEL_CATALOG, type ProviderId } from "@agentic/contracts";
+import {
+  selectableModelsForProvider,
+  type ProviderId,
+} from "@agentic/contracts";
 import type {
   ChatRequest,
   ChatResponse,
@@ -20,15 +22,30 @@ import type {
   ProviderInfo,
 } from "./types";
 import { LLMError, isLLMError } from "./errors";
+import { assertBudgetAvailable } from "./budget";
+import { calculateCost, normalizeUsage } from "./pricing";
 import {
-  releaseBudgetReservation,
-  reserveBudget,
-  settleBudgetReservation,
-} from "./budget";
+  assertModelControls,
+  assertModelSelectable,
+  isUnsupportedTemperatureError,
+  normalizeModelRequest,
+  omitTemperature,
+} from "./capabilities";
+import {
+  failAttempt,
+  finishAttempt,
+  newLogicalCallId,
+  startAttempt,
+} from "./usage-ledger";
+import {
+  currentUsageAttribution,
+  mergeUsageAttribution,
+} from "./usage-attribution";
 
-// ── G6 双推理面统一遥测（附录 B）——系统 B 的推理面也进 llm_calls ────────────────────
+// ── G6 双推理面统一遥测（附录 B）——系统 B 的推理面也进耐久遥测层 ────────────────────
 // stream-gateway（系统 A）早已全量落表；这里给运行时面同款钩子：apps/api 在构造单例时
 // setGatewayCallSink(writeLlmCall 适配器)，每次 chat() 成/败都必须进入一个耐久存储层。
+// （账单/成本的权威账本是 usage-ledger 的 llm_calls；本 sink 服务 Factory 观测脊柱。）
 
 export interface GatewayCallRecord {
   provider: string;
@@ -54,6 +71,7 @@ export function setGatewayCallSink(
 
 export class LLMGateway {
   private readonly providers = new Map<ProviderId, ProviderAdapter>();
+  private readonly learnedTemperatureUnsupported = new Set<string>();
 
   constructor(private readonly config: GatewayConfig) {}
 
@@ -90,7 +108,7 @@ export class LLMGateway {
   listProviders(): ProviderInfo[] {
     const out: ProviderInfo[] = [];
     for (const [id, adapter] of this.providers) {
-      const catalog = PROVIDER_MODEL_CATALOG[id] ?? [];
+      const catalog = selectableModelsForProvider(id);
       out.push({
         id,
         name: adapter.name,
@@ -159,10 +177,24 @@ export class LLMGateway {
 
   private async chatInner(req: ChatRequest): Promise<ChatResponse> {
     const providers = this.resolveProviderChain(req);
+    if (this.config.requireUsageAttribution && !req.tenantId) {
+      throw new LLMError(
+        "tenantId is required for durable LLM usage accounting",
+        "accounting_error",
+        providers[0] ?? this.config.defaultProvider,
+      );
+    }
     const timeoutMs = req.timeoutMs ?? this.config.timeoutMs;
-    // Env-supplied model wins over adapter's catalog default when caller didn't specify.
-    const resolvedModel = req.model ?? this.config.defaultModel ?? undefined;
     let lastError: unknown = null;
+    const logicalCallId = req.routing?.logicalCallId ?? newLogicalCallId();
+    let attemptNumber = req.routing?.attemptBase ?? 0;
+    const attribution = mergeUsageAttribution(
+      req.tenantId ? { billingAccountId: req.tenantId } : undefined,
+      req.attribution,
+      // Authenticated server context wins over caller-supplied account and
+      // principal dimensions whenever a call originates in an API request.
+      currentUsageAttribution(),
+    );
 
     for (const id of providers) {
       const adapter = this.providers.get(id);
@@ -175,15 +207,72 @@ export class LLMGateway {
         continue;
       }
 
+      // A gateway-global default belongs only to its configured provider.
+      // Fallback providers use their own catalog default unless the caller
+      // explicitly supplied a model.
+      const resolvedModel =
+        req.model ??
+        (id === this.config.defaultProvider
+          ? this.config.defaultModel
+          : null) ??
+        adapter.defaultModel ??
+        undefined;
+
+      const temperatureCapabilityKey = resolvedModel
+        ? `${id}:${resolvedModel.replace(/^~/, "")}`
+        : null;
+      let effectiveReq = resolvedModel
+        ? normalizeModelRequest(id, resolvedModel, req)
+        : req;
+      if (
+        temperatureCapabilityKey &&
+        this.learnedTemperatureUnsupported.has(temperatureCapabilityKey)
+      ) {
+        effectiveReq = omitTemperature(effectiveReq);
+      }
+      if (resolvedModel) {
+        assertModelSelectable(id, resolvedModel);
+        assertModelControls(id, resolvedModel, effectiveReq);
+      }
+      assertBudgetAvailable(req.tenantId, id);
+
       const signal = combineSignals(req.signal, timeoutMs);
       const subReq: ChatRequest = {
-        ...req,
+        ...effectiveReq,
         model: resolvedModel,
         signal,
         providers: undefined,
         provider: id,
+        routing: {
+          ...req.routing,
+          effectiveTimeoutMs: timeoutMs,
+          controls: {
+            ...(effectiveReq.temperature !== undefined
+              ? { temperature: effectiveReq.temperature }
+              : {}),
+            ...(effectiveReq.maxTokens !== undefined
+              ? { maxTokens: effectiveReq.maxTokens }
+              : {}),
+            ...(effectiveReq.jsonMode !== undefined
+              ? { jsonMode: effectiveReq.jsonMode }
+              : {}),
+            ...(effectiveReq.reasoning !== undefined
+              ? { reasoning: effectiveReq.reasoning }
+              : {}),
+            ...(effectiveReq.verbosity !== undefined
+              ? { verbosity: effectiveReq.verbosity }
+              : {}),
+            ...(effectiveReq.store !== undefined
+              ? { store: effectiveReq.store }
+              : {}),
+          },
+        },
       };
 
+      // Response-integrity gate (ours): a provider adapter must return its own
+      // provider id, a non-empty served model, and sane token counts. Violations
+      // are provider_errors and go through the same ledger fail path as any
+      // other adapter failure.
       const validate = (response: ChatResponse): ChatResponse => {
         if (response.provider !== id) {
           throw new LLMError(
@@ -214,92 +303,140 @@ export class LLMGateway {
         return response;
       };
 
-      // Reserve two complete attempt envelopes before touching the provider.
-      // A timed-out first attempt can still be billed upstream before retry.
-      const reservation = reserveBudget({
-        tenantId: req.tenantId,
-        provider: id,
-        model: resolvedModel ?? adapter.defaultModel,
-        request: subReq,
-        timeoutMs,
-        maxAttempts: 2,
-      });
-      let settled = false;
-      let preserveLease = false;
-      let releaseOutcome = "provider_failed";
-      let uncertainAttempts = 0;
-
-      const settle = (args: {
-        servedModel: string;
-        tokensIn: number;
-        tokensOut: number;
-      }): void => {
+      const executeAttempt = async (
+        attemptReq: ChatRequest,
+      ): Promise<ChatResponse> => {
+        attemptNumber += 1;
+        const attemptAttribution = mergeUsageAttribution(
+          attribution,
+          this.config.resolveProviderAttribution?.(id, req.tenantId),
+        );
+        let ledgerAttempt;
         try {
-          settleBudgetReservation({
-            reservation,
-            ...args,
-            uncertainAttempts,
+          ledgerAttempt = startAttempt({
+            logicalCallId,
+            attempt: attemptNumber,
+            tenantId: req.tenantId,
+            runId: req.runId,
+            stepId: req.stepId,
+            purpose: req.purpose,
+            provider: id,
+            requestedModel: resolvedModel ?? "<unspecified>",
+            reasoning: attemptReq.reasoning,
+            verbosity: attemptReq.verbosity,
+            store: attemptReq.store,
+            attribution: attemptAttribution,
+            routing: attemptReq.routing,
           });
         } catch (error) {
-          // A provider may already have billed the call. If durable settlement
-          // is unavailable, leave the lease active so expiry accounts the full
-          // envelope; releasing it here would silently reopen spend capacity.
-          if (isLLMError(error) && error.code === "budget_storage") {
-            preserveLease = true;
-          }
-          throw error;
+          throw new LLMError(
+            `could not start durable LLM accounting: ${error instanceof Error ? error.message : String(error)}`,
+            "accounting_error",
+            id,
+            error,
+          );
         }
-        settled = true;
-      };
 
-      const finish = (response: ChatResponse): ChatResponse => {
-        settle({
-          servedModel: response.model,
-          tokensIn: response.tokensIn ?? 0,
-          tokensOut: response.tokensOut ?? 0,
+        let response: ChatResponse;
+        try {
+          response = validate(await adapter.chat(attemptReq));
+        } catch (error) {
+          const providerError = toLLMError(error, id);
+          try {
+            failAttempt(ledgerAttempt, providerError);
+          } catch (ledgerError) {
+            throw new LLMError(
+              `could not record failed LLM attempt: ${ledgerError instanceof Error ? ledgerError.message : String(ledgerError)}`,
+              "accounting_error",
+              id,
+              ledgerError,
+            );
+          }
+          throw providerError;
+        }
+
+        const usage = normalizeUsage(response);
+        const cost = calculateCost({
+          provider: id,
+          model: response.model || resolvedModel || "<unspecified>",
+          usage,
+          providerReportedCostUsd: response.providerReportedCostUsd,
         });
-        return response;
+        const normalized: ChatResponse = {
+          ...response,
+          tokensIn: usage.available === false ? null : usage.inputTokens,
+          tokensOut: usage.available === false ? null : usage.outputTokens,
+          usage,
+          cost,
+          routing: attemptReq.routing,
+        };
+        try {
+          finishAttempt(ledgerAttempt, normalized, usage, cost);
+        } catch (error) {
+          // This is deliberately non-transient: the provider already ran, so
+          // an accounting failure must never trigger an internal model retry.
+          throw new LLMError(
+            `could not finalize durable LLM accounting: ${error instanceof Error ? error.message : String(error)}`,
+            "accounting_error",
+            id,
+            error,
+          );
+        }
+        return normalized;
       };
 
       try {
-        try {
-          return finish(validate(await adapter.chat(subReq)));
-        } catch (err1) {
-          const e1 = toLLMError(err1, id);
-          releaseOutcome = e1.code;
-          if (!e1.transient) throw e1;
-          if (couldHaveBeenBilled(e1)) uncertainAttempts += 1;
-          // One retry with backoff. Both potentially billable attempts have a
-          // separate envelope inside the same atomic reservation.
-          await delay(250);
+        return await executeAttempt(subReq);
+      } catch (err1) {
+        let e1 = toLLMError(err1, id);
+        let retryReq = subReq;
+        if (
+          retryReq.temperature !== undefined &&
+          isUnsupportedTemperatureError(e1)
+        ) {
+          if (temperatureCapabilityKey) {
+            this.learnedTemperatureUnsupported.add(temperatureCapabilityKey);
+          }
+          retryReq = omitTemperature(retryReq);
           try {
-            const signal2 = combineSignals(req.signal, timeoutMs);
-            return finish(
-              validate(await adapter.chat({ ...subReq, signal: signal2 })),
-            );
-          } catch (err2) {
-            const e2 = toLLMError(err2, id);
-            releaseOutcome = e2.code;
-            if (couldHaveBeenBilled(e2)) uncertainAttempts += 1;
-            if (uncertainAttempts > 0) {
-              // Both failure and fallback paths must account for requests
-              // that may have completed upstream after our connection died.
-              settle({
-                servedModel: reservation?.model ?? resolvedModel ?? "",
-                tokensIn: 0,
-                tokensOut: 0,
-              });
-            }
-            lastError = e2;
-            if (!e2.transient) throw e2;
-            // Continue to next provider after finally releases this provider's
-            // capacity; the next candidate gets its own priced reservation.
+            return await executeAttempt({
+              ...retryReq,
+              routing: {
+                ...retryReq.routing,
+                retryReason: "unsupported_temperature_parameter",
+              },
+            });
+          } catch (compatibilityErr) {
+            e1 = toLLMError(compatibilityErr, id);
           }
         }
-      } finally {
-        if (!settled && !preserveLease) {
-          releaseBudgetReservation(reservation, releaseOutcome);
+        if (!e1.transient) throw e1;
+        const maxAttempts = boundedAttempts(
+          req.retryPolicy?.maxAttempts ?? this.config.maxAttempts ?? 2,
+        );
+        const baseBackoffMs = boundedBackoff(
+          req.retryPolicy?.baseBackoffMs ?? this.config.baseBackoffMs ?? 250,
+        );
+        lastError = e1;
+        for (let transientAttempt = 2; transientAttempt <= maxAttempts; transientAttempt += 1) {
+          await delay(baseBackoffMs * 2 ** (transientAttempt - 2));
+          try {
+            const signal2 = combineSignals(req.signal, timeoutMs);
+            return await executeAttempt({
+              ...retryReq,
+              signal: signal2,
+              routing: {
+                ...retryReq.routing,
+                retryReason: `transient_${e1.code}`,
+              },
+            });
+          } catch (retryError) {
+            const normalizedRetry = toLLMError(retryError, id);
+            lastError = normalizedRetry;
+            if (!normalizedRetry.transient) throw normalizedRetry;
+          }
         }
+        // Continue to the next provider after this provider's policy is spent.
       }
     }
 
@@ -330,14 +467,6 @@ export class LLMGateway {
   }
 }
 
-function couldHaveBeenBilled(error: LLMError): boolean {
-  return (
-    error.code === "timeout" ||
-    error.code === "network" ||
-    error.code === "provider_error"
-  );
-}
-
 function toLLMError(err: unknown, provider: ProviderId): LLMError {
   if (isLLMError(err)) return err;
   const msg = err instanceof Error ? err.message : String(err);
@@ -346,6 +475,14 @@ function toLLMError(err: unknown, provider: ProviderId): LLMError {
 
 function delay(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+function boundedAttempts(value: number): number {
+  return Number.isInteger(value) ? Math.max(1, Math.min(5, value)) : 2;
+}
+
+function boundedBackoff(value: number): number {
+  return Number.isFinite(value) ? Math.max(0, Math.min(30_000, value)) : 250;
 }
 
 /**

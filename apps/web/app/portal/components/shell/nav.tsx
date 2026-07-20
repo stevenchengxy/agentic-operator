@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Icon, type IconName } from "../Icon";
+import styles from "./sidebar.module.css";
 
 /**
  * Sidebar nav primitives — NavGroup + NavItem.
@@ -21,22 +22,11 @@ export function NavGroup({
   children: ReactNode;
 }) {
   return (
-    <div style={{ marginBottom: 16 }}>
-      <div
-        style={{
-          padding: "6px 10px 4px 10px",
-          fontSize: 10,
-          fontFamily: "var(--mono)",
-          textTransform: "uppercase",
-          color: "var(--text-3)",
-          letterSpacing: "0.12em",
-        }}
-      >
+    <div className={styles.navGroup} role="group" aria-label={label}>
+      <div className={styles.navGroupLabel} aria-hidden="true">
         {label}
       </div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
-        {children}
-      </div>
+      <div className={styles.navItems}>{children}</div>
     </div>
   );
 }
@@ -51,6 +41,7 @@ export interface NavItemProps {
   liveCount?: number | null;
   /** Tint the count pill amber to indicate user-attention. */
   highlight?: boolean;
+  disabled?: boolean;
   /**
    * Match the URL with startsWith() instead of equality. Useful for nav
    * items that have detail sub-routes (`/portal/raas/runs/run-…`).
@@ -65,51 +56,37 @@ export function NavItem({
   count,
   liveCount,
   highlight,
+  disabled,
   matchPrefix,
 }: NavItemProps) {
   const pathname = usePathname() ?? "";
-  const active = matchPrefix
-    ? pathname.startsWith(href)
-    : pathname === href;
+  const active = matchPrefix ? pathname.startsWith(href) : pathname === href;
 
+  const accessibleLabel = liveCount
+    ? `${label}, ${liveCount} currently running`
+    : count != null
+      ? `${label}, ${count}`
+      : label;
+
+  // Conditional render is OK because we pass tabIndex=-1 to keep the
+  // disabled item out of the tab order without falling out of a List.
   const body = (
     <>
-      <Icon
-        name={icon}
-        size={13}
-        style={{ color: active ? "var(--text)" : "var(--text-3)" }}
-      />
-      <span style={{ flex: 1 }}>{label}</span>
+      <span className={styles.navIcon} aria-hidden="true">
+        <Icon name={icon} size={16} />
+      </span>
+      <span className={styles.navLabel}>{label}</span>
       {liveCount != null && liveCount > 0 && (
-        <span
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 4,
-            fontSize: 10.5,
-            fontFamily: "var(--mono)",
-            color: "var(--accent-text)",
-          }}
-        >
+        <span className={styles.navLive} aria-hidden="true">
           <span className="live-dot" style={{ width: 5, height: 5 }} />
           {liveCount}
         </span>
       )}
       {count != null && (
         <span
-          style={{
-            fontSize: 10,
-            fontFamily: "var(--mono)",
-            padding: "1px 6px",
-            background: highlight
-              ? "color-mix(in srgb, var(--amber) 12%, transparent)"
-              : "var(--panel-2)",
-            color: highlight ? "var(--amber)" : "var(--text-3)",
-            borderRadius: 8,
-            border: highlight
-              ? "1px solid color-mix(in srgb, var(--amber) 30%, transparent)"
-              : "1px solid var(--border)",
-          }}
+          className={styles.navCount}
+          data-highlight={highlight === true}
+          aria-hidden="true"
         >
           {count}
         </span>
@@ -117,24 +94,32 @@ export function NavItem({
     </>
   );
 
-  const baseStyle = {
-    display: "flex",
-    alignItems: "center",
-    gap: 9,
-    padding: "6px 10px",
-    background: active ? "var(--panel-2)" : "transparent",
-    borderLeft: active
-      ? "2px solid var(--signal)"
-      : "2px solid transparent",
-    color: active ? "var(--text)" : "var(--text-2)",
-    fontSize: 12.5,
-    textAlign: "left" as const,
-    cursor: "pointer",
-    transition: "background 0.1s",
-  };
+  if (disabled) {
+    return (
+      <div
+        className={styles.navItem}
+        data-active={active}
+        data-disabled="true"
+        data-sidebar-tooltip={accessibleLabel}
+        role="link"
+        aria-disabled="true"
+        aria-label={accessibleLabel}
+      >
+        {body}
+      </div>
+    );
+  }
 
   return (
-    <Link href={href as never} style={baseStyle} tabIndex={0}>
+    <Link
+      href={href as never}
+      className={styles.navItem}
+      data-active={active}
+      data-disabled="false"
+      data-sidebar-tooltip={accessibleLabel}
+      aria-current={active ? "page" : undefined}
+      aria-label={accessibleLabel}
+    >
       {body}
     </Link>
   );

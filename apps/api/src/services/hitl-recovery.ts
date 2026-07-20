@@ -11,7 +11,7 @@ import {
 } from "@agentic/db";
 import { getTenantInngest, inputBindingValueMatchesType, tenantEventName } from "@agentic/runtime";
 
-export type HumanDecision = "approve" | "reject";
+export type HumanDecision = "approve" | "reject" | "supplement";
 
 interface StoredResolution {
   taskId: string;
@@ -166,7 +166,9 @@ function resolutionFrom(value: unknown): StoredResolution | null {
   const row = value as Record<string, unknown>;
   if (
     typeof row.taskId !== "string" ||
-    (row.decision !== "approve" && row.decision !== "reject") ||
+    (row.decision !== "approve" &&
+      row.decision !== "reject" &&
+      row.decision !== "supplement") ||
     typeof row.resumeMarker !== "string"
   ) {
     return null;
@@ -187,7 +189,13 @@ function storedResolutionRequestKey(
 ): string | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const row = value as Record<string, unknown>;
-  if (row.decision !== "approve" && row.decision !== "reject") return null;
+  if (
+    row.decision !== "approve" &&
+    row.decision !== "reject" &&
+    row.decision !== "supplement"
+  ) {
+    return null;
+  }
   return humanResolutionRequestKey({
     tenantId,
     taskId,

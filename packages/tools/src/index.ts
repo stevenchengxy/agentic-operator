@@ -23,6 +23,7 @@ export {
   globalWriteProbeLifecycleSourceIdentity,
   globalToolExecutionPolicy,
   globalToolSideEffect,
+  getGlobalToolCatalogEntry,
   isToolExecutionPolicy,
   toolExecutionPoliciesEqual,
   listGlobalTools,
@@ -55,9 +56,11 @@ export { validateToolSchema, type SchemaValidationIssue } from "./declarative/sc
 // Re-export the category sub-packages so external consumers can import
 // the descriptors directly when they want (e.g. for tests).
 export * as robohire from "./robohire";
+export * as gohire from "./gohire";
 export * as fs from "./fs";
 export * as http from "./http";
 export * as meta from "./meta";
+export * as search from "./search";
 export * as ontology from "./ontology";
 export * as records from "./records";
 export * as viz from "./viz";
@@ -66,6 +69,17 @@ export * as objectStore from "./object-store";
 export * as postgres from "./postgres";
 export * as crypto from "./crypto";
 export * as document from "./document";
+
+// DI seam: apps/api injects a resolver at boot so DB-backed integration
+// credentials (configured in Settings → Integrations) reach the GoHire tool
+// family without `@agentic/tools` importing the database layer.
+export {
+  setIntegrationResolver,
+  hasIntegrationResolver,
+  resolveIntegrationCreds,
+  type IntegrationCreds,
+  type IntegrationResolver,
+} from "./integrations";
 
 // Named exports for server-side (non-tool) reuse — the report pipeline in
 // apps/api renders charts + prints PDFs through these directly.

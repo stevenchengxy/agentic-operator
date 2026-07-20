@@ -33,8 +33,9 @@
  * without tearing down the global subscription.
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   ActorTag,
   Badge,
@@ -71,6 +72,7 @@ import {
   type BudgetRow,
   type UsageResponse,
 } from "@/lib/hooks/useUsage";
+import { useStartOperatorCheck } from "@/lib/hooks/useOperatorChecks";
 
 /** Narrowed view of an event row for the ticker. */
 interface EventItem {
@@ -324,9 +326,16 @@ function DashboardView({
   }, [eventStream, eventsReady]);
 
   // Spend — single source of truth: /v1/usage totals (same as the cost panel).
+  // `coverage` is the legacy provenance block; the ledger-based endpoint may
+  // not serve it, in which case completeness degrades to "no unpriced calls".
   const spendCents = usageReady ? usage.totals.usdCents : null;
-  const costComplete = usageReady ? usage.coverage.costComplete : null;
-  const unpricedTokens = usageReady ? usage.coverage.unpricedTokens : null;
+  const costComplete = usageReady
+    ? (usage.coverage?.costComplete ?? usage.totals.unpricedCalls === 0)
+    : null;
+  const unpricedTokens = usageReady
+    ? (usage.coverage?.unpricedTokens ?? null)
+    : null;
+  const unpricedCalls = usageReady ? usage.totals.unpricedCalls : null;
   const capCents = budgetReady ? budget.monthlyUsdCap : null;
   const budgetPct =
     spendCents != null && capCents != null && capCents > 0
@@ -458,6 +467,33 @@ function DashboardView({
     });
   }, [active, cancelRun, toast, t]);
 
+  // One-click two-agent system check. The guard ref makes the launch
+  // idempotent across double-clicks even before React re-renders with
+  // `isPending`; navigation goes to the API-provided detail URL so the
+  // check page owns its own polling lifecycle.
+  const router = useRouter();
+  const startOperatorCheck = useStartOperatorCheck();
+  const operatorCheckStartGuard = useRef(false);
+  const [operatorCheckLaunching, setOperatorCheckLaunching] = useState(false);
+  async function handleStartOperatorCheck() {
+    if (operatorCheckStartGuard.current || startOperatorCheck.isPending) return;
+    operatorCheckStartGuard.current = true;
+    setOperatorCheckLaunching(true);
+    try {
+      const result = await startOperatorCheck.mutateAsync();
+      router.push(result.detailUrl as never);
+    } catch (error) {
+      operatorCheckStartGuard.current = false;
+      setOperatorCheckLaunching(false);
+      toast({
+        tone: "red",
+        title: "System check could not start",
+        description:
+          error instanceof Error ? error.message : "Unknown startup error",
+      });
+    }
+  }
+
   if (!hasMounted) {
     return (
       <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
@@ -492,6 +528,21 @@ function DashboardView({
                   ? t("dashboard.autoUpdating")
                   : t("dashboard.paused")}
           </Badge>
+        }
+        action={
+          <Button
+            small
+            icon="play"
+            onClick={() => void handleStartOperatorCheck()}
+            disabled={startOperatorCheck.isPending || operatorCheckLaunching}
+            ariaLabel="Run two-agent system check"
+          >
+            {startOperatorCheck.isPending
+              ? "Starting…"
+              : operatorCheckLaunching
+                ? "Opening check…"
+                : "Run full check"}
+          </Button>
         }
       />
 
@@ -615,9 +666,13 @@ function DashboardView({
                         <span
                           style={{ display: "block", color: "var(--amber)" }}
                         >
-                          {t("dashboard.costIncompleteBrief", {
-                            unpriced: fmtNum(unpricedTokens ?? 0),
-                          })}
+                          {unpricedTokens != null
+                            ? t("dashboard.costIncompleteBrief", {
+                                unpriced: fmtNum(unpricedTokens),
+                              })
+                            : t("dashboard.costIncompleteBriefCalls", {
+                                unpriced: fmtNum(unpricedCalls ?? 0),
+                              })}
                         </span>
                       ) : null}
                       <span style={{ display: "block" }}>
@@ -787,10 +842,15 @@ function DashboardView({
             title={t("dashboard.panelCost")}
             subtitle={
               costComplete === false
-                ? t("dashboard.costTotalIncompleteLabel", {
-                    total: `≥${usd(spendCents)}`,
-                    unpriced: fmtNum(unpricedTokens ?? 0),
-                  })
+                ? unpricedTokens != null
+                  ? t("dashboard.costTotalIncompleteLabel", {
+                      total: `≥${usd(spendCents)}`,
+                      unpriced: fmtNum(unpricedTokens),
+                    })
+                  : t("dashboard.costTotalIncompleteLabelCalls", {
+                      total: `≥${usd(spendCents)}`,
+                      unpriced: fmtNum(unpricedCalls ?? 0),
+                    })
                 : t("dashboard.costTotalLabel", { total: usd(spendCents) })
             }
             action={
@@ -803,7 +863,16 @@ function DashboardView({
             padded={false}
           >
             <CostByModel
-              rows={usageReady ? usage.byModel : []}
+              rows={
+                usageReady
+                  ? usage.byModel.map((r) => ({
+                      key: r.key,
+                      usdCents: r.usdCents,
+                      unpricedCalls: r.unpricedCalls,
+                      costComplete: r.unpricedCalls === 0,
+                    }))
+                  : []
+              }
               status={sources.usage}
             />
           </Panel>
@@ -1596,7 +1665,7 @@ function CostByModel({
   rows: Array<{
     key: string;
     usdCents: number;
-    unpricedTokens: number;
+    unpricedCalls: number;
     costComplete: boolean;
   }>;
   status: DashboardSourceStatus;
@@ -1636,8 +1705,8 @@ function CostByModel({
             title={
               r.costComplete
                 ? undefined
-                : t("dashboard.modelCostIncompleteTitle", {
-                    unpriced: fmtNum(r.unpricedTokens),
+                : t("dashboard.modelCostIncompleteTitleCalls", {
+                    unpriced: fmtNum(r.unpricedCalls),
                   })
             }
             style={{

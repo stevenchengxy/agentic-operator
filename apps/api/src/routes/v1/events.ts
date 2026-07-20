@@ -3,11 +3,17 @@ import { readFile } from "node:fs/promises";
 import { and, eq } from "drizzle-orm";
 import {
   appendToLedger,
+  buildCanonicalEventPayload,
   getTenantInngest,
+  privateUsageAttributionMetadata,
   publishStreamEvent,
   tenantEventName,
 } from "@agentic/runtime";
-import { auditLog, events, eventTypes, getDb } from "@agentic/db";
+import {
+  currentUsageAttribution,
+  mergeUsageAttribution,
+} from "@agentic/llm-gateway";
+import { agents, auditLog, events, eventTypes, getDb } from "@agentic/db";
 import { makeId } from "@agentic/shared";
 import { IngestEventBody, ListEventsQuery } from "@agentic/contracts";
 import { requirePermission } from "../../plugins/rbac";
@@ -26,6 +32,8 @@ import {
 import { normalizeEventIngestBody } from "../../services/raas-ingress";
 import { materializeRaasResume } from "../../services/raas-resume-fetch";
 import { writeAudit } from "../../plugins/audit";
+import { getDag } from "../../queries/workflows";
+import { isInngestFunctionRegistered } from "../../services/inngest-registry";
 
 /**
  * SSE limits for `GET /v1/events/stream` per docs/design/event-tester.md §4.2:
@@ -58,6 +66,7 @@ interface PendingEventEnqueue {
     test: boolean;
     source: string;
     fields: string[];
+    targetAgent?: string | null;
   };
 }
 
@@ -97,6 +106,7 @@ function ensureEventPublishAudit(input: {
   test: boolean;
   source: string;
   fields: string[];
+  targetAgent?: string | null;
 }): void {
   const existing = getDb()
     .select({ id: auditLog.id })
@@ -124,6 +134,7 @@ function ensureEventPublishAudit(input: {
       auth_via: input.authVia ?? null,
       // Field names only: payload values may contain secrets or PII.
       fields: input.fields,
+      target_agent: input.targetAgent ?? null,
     },
   });
 }
@@ -173,6 +184,7 @@ export async function eventsRoutes(app: FastifyInstance) {
               test: pending.audit?.test ?? pending.event.data.__test === true,
               source: pending.audit?.source ?? "authenticated_retry",
               fields: pending.audit?.fields ?? fallbackFields,
+              targetAgent: pending.audit?.targetAgent ?? null,
             });
           } catch (err) {
             req.log.error(
@@ -241,11 +253,79 @@ export async function eventsRoutes(app: FastifyInstance) {
       }
     }
 
+    // A caller may keep using the legacy same-tenant `slug/EVENT` spelling,
+    // but it may never choose another tenant's namespace. Previously a
+    // tenant-A token could POST `tenant-b/TRIGGER`: the row was stored under
+    // A while the Inngest envelope was delivered to B. Normalize only after
+    // enforcing that the optional prefix matches the authenticated tenant.
+    const slash = parsed.name.indexOf("/");
+    let bareName = parsed.name;
+    if (slash >= 0) {
+      const requestedTenant = parsed.name.slice(0, slash);
+      if (requestedTenant !== auth.tenantSlug) {
+        return reply.fail(
+          "forbidden_namespace",
+          `Event namespace '${requestedTenant}' does not match authenticated tenant '${auth.tenantSlug}'`,
+          403,
+        );
+      }
+      bareName = parsed.name.slice(slash + 1);
+    }
+    if (!bareName) {
+      return reply.fail("invalid_event_name", "Event name is required", 400);
+    }
+    const db = getDb();
+
+    // Agent-scoped sends are stronger than generic event fanout. Verify the
+    // target against the LIVE workflow version and the mutable Inngest
+    // registry before writing the ledger row. This prevents a 200 response
+    // for an agent that exists in history but is not loaded by this process.
+    if (parsed.targetAgent) {
+      const dag = await getDag(auth.tenantSlug);
+      const liveAgent = dag.agents.find(
+        (agent) => agent.name === parsed.targetAgent,
+      );
+      if (!liveAgent) {
+        return reply.fail(
+          "agent_not_live",
+          `Agent '${parsed.targetAgent}' is not in the live workflow`,
+          409,
+        );
+      }
+      const enabled = db
+        .select({ enabled: agents.enabled })
+        .from(agents)
+        .where(eq(agents.id, liveAgent.id))
+        .all()[0]?.enabled;
+      if (enabled !== true) {
+        return reply.fail(
+          "agent_disabled",
+          `Agent '${parsed.targetAgent}' is disabled`,
+          409,
+        );
+      }
+      if (!liveAgent.triggers.includes(bareName)) {
+        return reply.fail(
+          "agent_not_subscribed",
+          `Agent '${parsed.targetAgent}' does not listen for '${bareName}' in the live workflow`,
+          409,
+        );
+      }
+      const functionId = `${auth.tenantSlug}.${parsed.targetAgent}`;
+      if (!isInngestFunctionRegistered(functionId)) {
+        return reply.fail(
+          "agent_not_running",
+          `Agent '${parsed.targetAgent}' is not registered in the live runtime`,
+          409,
+        );
+      }
+    }
+
     const eventId = makeId("evt");
+    const correlationId = makeId("cor");
+    // Wire name goes through the tenant event adapter (broker contracts may
+    // rename); the namespace guard above already proved any prefix is ours.
     const wireEventName = tenantEventName(auth.tenantSlug, parsed.name);
-    const bareName = parsed.name.includes("/")
-      ? parsed.name.split("/").slice(1).join("/")
-      : parsed.name;
 
     // Legacy RESUME_DOWNLOADED points at RAAS/MinIO, while processResume's
     // first tool reads the local zhaopin inbox. Materialize before writing the
@@ -254,12 +334,22 @@ export async function eventsRoutes(app: FastifyInstance) {
     const eventPayload = normalized.raasTenant
       ? await materializeRaasResume(bareName, parsed.payload ?? {})
       : (parsed.payload ?? {});
+    // Canonical logical payload: runtime identity fields (event_id/request_id/
+    // subject/prompt aliases) are normalized once at the publish edge so every
+    // consumer sees the same envelope shape.
+    const logicalPayload = buildCanonicalEventPayload({
+      eventName: bareName,
+      eventId,
+      correlationId,
+      subject: parsed.subject,
+      payload: eventPayload,
+    });
 
     const payloadRef = await appendToLedger(auth.tenantSlug, {
       id: eventId,
       name: bareName,
       subject: parsed.subject,
-      data: eventPayload,
+      data: logicalPayload,
       ts: Date.now(),
     });
 
@@ -268,7 +358,6 @@ export async function eventsRoutes(app: FastifyInstance) {
     // expect the column to be populated; without this lookup, SSE rows
     // arrived with `category: null` even when the catalog declared one,
     // breaking the colour-coded category filter in the Events view.
-    const db = getDb();
     const catalogRow = db
       .select({ category: eventTypes.category })
       .from(eventTypes)
@@ -294,15 +383,29 @@ export async function eventsRoutes(app: FastifyInstance) {
     // it on payloads that didn't ask — that would silently flag production
     // traffic as test, breaking dashboards in the opposite direction.
     const inngestData: Record<string, unknown> = {
-      ...eventPayload,
+      ...logicalPayload,
       subject: parsed.subject,
       __triggerEventId: eventId,
+      __correlationId: correlationId,
+      ...privateUsageAttributionMetadata(
+        mergeUsageAttribution(currentUsageAttribution(), {
+          billingAccountId: auth.tenantId,
+          correlationId,
+          invocationSource: "event",
+        }),
+      ),
     };
     if (normalized.raasTenant) {
       // The legacy Inngest concurrency/cancel expressions cannot use CEL
       // macros. Keep a mandatory, normalized wire key for both canonical and
       // HTTP-ingested recruitment events.
       inngestData.entity_id = parsed.subject ?? eventId;
+    }
+    if (parsed.targetAgent) {
+      // Reuse the manifest-invoke metadata key. Runtime functions with the
+      // same trigger receive the envelope, but only this named agent is
+      // allowed to allocate a run row.
+      inngestData.__invokedAgent = parsed.targetAgent;
     }
     if (parsed.test === true) {
       inngestData.__test = true;
@@ -321,6 +424,7 @@ export async function eventsRoutes(app: FastifyInstance) {
         test: parsed.test === true,
         source: parsed.source ?? "authenticated_api",
         fields: Object.keys(eventPayload),
+        targetAgent: parsed.targetAgent ?? null,
       },
     };
     // Persist the replay recipe before handing off to the broker. If send()
@@ -361,6 +465,7 @@ export async function eventsRoutes(app: FastifyInstance) {
         test: parsed.test === true,
         source: parsed.source ?? "authenticated_api",
         fields: Object.keys(eventPayload),
+        targetAgent: parsed.targetAgent ?? null,
       });
     } catch (err) {
       req.log.error({ err, eventId }, "event.publish: audit write failed");
@@ -466,23 +571,39 @@ export async function eventsRoutes(app: FastifyInstance) {
       // P0-API-01 — use makeId("evt") so same-millisecond replays cannot
       // collide on the legacy `${id}-replay-${Date.now()}` pattern.
       const newId = makeId("evt");
+      const correlationId = makeId("cor");
+      const logicalPayload = buildCanonicalEventPayload({
+        eventName: row.name,
+        eventId: newId,
+        correlationId,
+        subject: row.subject,
+        payload,
+      });
       // A replay is a new durable event, not just an Inngest message. Without
       // this row the manifest runtime's runs.trigger_event_id foreign key
       // points at a missing event and the replayed run never starts.
       const replayData = {
-        ...((payload as Record<string, unknown>) ?? {}),
+        ...logicalPayload,
         subject: row.subject ?? undefined,
         ...(auth.tenantSlug === "zhaopin"
           ? { entity_id: row.subject ?? newId }
           : {}),
         __triggerEventId: newId,
+        __correlationId: correlationId,
         __replayOf: id,
+        ...privateUsageAttributionMetadata(
+          mergeUsageAttribution(currentUsageAttribution(), {
+            billingAccountId: auth.tenantId,
+            correlationId,
+            invocationSource: "replay",
+          }),
+        ),
       };
       const replayRef = await appendToLedger(auth.tenantSlug, {
         id: newId,
         name: row.name,
         subject: row.subject ?? undefined,
-        data: replayData,
+        data: logicalPayload,
         ts: Date.now(),
       });
       db.insert(events)
@@ -491,6 +612,7 @@ export async function eventsRoutes(app: FastifyInstance) {
           tenantId: auth.tenantId,
           name: row.name,
           category: row.category ?? null,
+          sourceAgentId: row.sourceAgentId,
           subject: row.subject ?? null,
           payloadRef: replayRef,
         })

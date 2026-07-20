@@ -3,9 +3,13 @@
 /**
  * Workflows view — DAG canvas of all agents wired by events. P2-FE-08.
  *
- * The canvas is derived from the live event graph for every tenant:
+ * Ported from `agentic-operator_v1_1/views/workflows.jsx` (999 LOC), preserves:
+ *   - the hand-tuned LAYOUT map (audit 01 §4.2 acceptance — see `./components/workflows/layout.ts`)
+ *   - 8 stage columns + 5-lane grid
  *   - cubic-bezier SVG edges with color-coded arrowheads
+ *   - animated travelling dots on live edges
  *   - edit-mode banner, toolbar, draft palette, node editor
+ *   - NewWorkflowModal (template / blank / import paths)
  *   - ImportManifestModal hook
  *
  * Data sources (all live, no bootstrap snapshot):
@@ -13,34 +17,52 @@
  *   - useEvents({limit})   → event catalog metadata (color/category) +
  *                            live event stream for the inspector
  *
- * Columns are topological depths derived from actual trigger/emit edges, so
- * no tenant-specific layout can misrepresent another workflow. Live updates
+ * Stages are derived from the live DAG's `stage` indices (see STAGE_LABELS
+ * below) so each tenant's funnel reflects its own agents. Live updates
  * (run.*, event.emitted) flow through useStream() at the layout root.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
+import type {
+  WorkflowDetail,
+  WorkflowValidationResponse,
+} from "@agentic/contracts";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   ActorTag,
   Badge,
   Button,
-  Empty,
   Icon,
+  Splitter,
   ViewHeader,
   useToast,
 } from "@/app/portal/components";
 import { useTenant } from "@/app/portal/lib/use-tenant";
-import { useI18n } from "@/app/portal/lib/preferences-context";
 import { useDirty } from "@/app/portal/lib/dirty-context";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 import {
   COL_W,
+  MAX_CANVAS_H,
+  MAX_CANVAS_W,
   NODE_H,
   NODE_W,
   PAD_X,
-  PAD_Y,
   ROW_H,
+  autoPackLayout,
+  clampCanvasPosition,
   colorVar,
-  topoLayout,
+  dynamicCanvasSize,
+  nodePos,
+  type CanvasPoint,
 } from "@/app/portal/components/workflows/layout";
 import {
   AgentInspector,
@@ -51,56 +73,164 @@ import {
   EventInspector,
   type EventCatalogItem,
 } from "@/app/portal/components/workflows/inspectors";
+import { NewWorkflowModal } from "@/app/portal/components/workflows/NewWorkflowModal";
 import { ImportManifestModal } from "@/app/portal/components/import-manifest/ImportManifestModal";
 import { AgentEditor } from "@/app/portal/components/workflows/AgentEditor";
+import { WorkflowHelp } from "@/app/portal/components/workflows/WorkflowHelp";
+import { WorkflowRunConsole } from "@/app/portal/components/workflows/WorkflowRunConsole";
 import {
   applyDraft,
+  addAgentToDraft,
+  connectAgents,
   countDraftChanges,
+  createAutomatedAgentDefinition,
+  createHumanAgentDefinition,
+  deriveEventEdges,
   deserializeDraft,
   draftStorageKey,
   emptyDraft,
+  mergeAgentDefinitionIntoDraft,
+  moveAgent,
   serializeDraft,
   toManifest,
   tryReadSerializedDraft,
-  type PreservedAgentBehavior,
+  type CompleteAgentDefinition,
   type WorkflowDraft,
 } from "@/app/portal/components/workflows/draft";
-import { useDeployManifest } from "@/lib/hooks/useManifest";
 import {
-  fetchAgentDetail,
-  useAgents,
-  useDag,
-} from "@/lib/hooks/useAgents";
+  WORKFLOW_INSPECTOR_DEFAULT_WIDTH,
+  WORKFLOW_INSPECTOR_MIN_WIDTH,
+  WORKFLOW_INSPECTOR_SPLITTER_WIDTH,
+  clampWorkflowInspectorWidth,
+  workflowInspectorMaxWidth,
+  workflowInspectorStorageKey,
+  workflowInspectorWideWidth,
+} from "@/app/portal/components/workflows/inspector-layout";
+import {
+  WORKFLOW_AGENT_DRAG_TYPE,
+  clientPointToCanvas,
+  connectionEventName,
+  nodePositionFromPointer,
+  workflowEdgePath,
+} from "@/app/portal/components/workflows/canvas-interactions";
+import {
+  readWorkflowReturnState,
+  workflowCanvasHref,
+} from "@/app/portal/components/workflows/workflow-navigation";
+import { useDag } from "@/lib/hooks/useAgents";
+import { useAgentEditor } from "@/lib/hooks/useAgentStudio";
 import { useEvents } from "@/lib/hooks/useEvents";
+import {
+  useDeleteWorkflow,
+  usePublishWorkflow,
+  useSaveWorkflow,
+  useValidateWorkflow,
+  useWorkflowCatalog,
+} from "@/lib/hooks/useWorkflowAuthoring";
+import styles from "./workflow.module.css";
 
-interface EdgeMeta {
-  src: string;
-  dst: string;
-  event: string;
+/**
+ * Stage label catalog — static workflow ontology. Mirrors the dashboard's
+ * STAGE_LABELS map (see `dashboard/page.tsx`) so the workflow funnel
+ * column headers match the dashboard funnel labels. Tenants whose agents
+ * use stage indices outside this map get a generic "Stage N" label.
+ */
+const STAGE_LABELS: Record<number, string> = {
+  0: "Intake",
+  1: "Analyze",
+  2: "JD",
+  3: "Publish",
+  4: "Resume",
+  5: "Match & Interview",
+  6: "Package",
+  7: "Submit",
+};
+
+interface NodeDragState {
+  id: string;
+  pointerId: number;
+  origin: CanvasPoint;
+  start: { clientX: number; clientY: number };
+  position: CanvasPoint;
+  moved: boolean;
+}
+
+interface LinkDragState {
+  sourceId: string;
+  pointerId: number;
+  point: CanvasPoint;
+  targetId: string | null;
 }
 
 export default function WorkflowsPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const tenant = useTenant();
-  // Runtime bootstrap and persisted workflow versions share this canonical
-  // identity. Using the bare tenant slug creates a second DB workflow that
-  // the runtime never executes.
-  const runtimeWorkflowSlug = `${tenant}-default`;
   const { t } = useI18n();
   const toast = useToast();
-  const deploy = useDeployManifest();
-  // Real DAG metadata (workflowVersion) — replaces the previously hardcoded
-  // "raas · v2026.05.16-a" badge so the header reflects the live tenant
-  // workflow. The DAG payload is also the source of truth for the agent
-  // list rendered on the canvas.
-  const dagQuery = useDag();
-  const agentCatalogQuery = useAgents({ kind: "manifest" });
+  const requestedWorkflow = searchParams.get("workflow");
+  const requestedMode = searchParams.get("mode");
+  const requestedAgent = searchParams.get("agent");
+  const resumeToken = searchParams.get("resume");
+  const returnedAgentDraftId = searchParams.get("agentDraft");
+  const catalogQuery = useWorkflowCatalog();
+  const workflows = useMemo(
+    () => catalogQuery.data?.workflows ?? [],
+    [catalogQuery.data?.workflows],
+  );
+  const [selectedWorkflow, setSelectedWorkflow] = useState<string | null>(
+    requestedWorkflow,
+  );
+  const editAfterSelectionRef = useRef<string | null>(null);
+  const requestedWorkflowAppliedRef = useRef<string | null>(null);
+  const requestedAgentAppliedRef = useRef<string | null>(null);
+
+  // Pick the live workflow first, then the most recently updated draft. A
+  // selection made by New Workflow is retained while the catalog refetches.
+  useEffect(() => {
+    if (catalogQuery.isLoading || workflows.length === 0) return;
+    const requested = requestedWorkflow
+      ? workflows.find((row) => row.slug === requestedWorkflow)
+      : null;
+    if (
+      requested &&
+      requestedWorkflowAppliedRef.current !== requestedWorkflow
+    ) {
+      requestedWorkflowAppliedRef.current = requestedWorkflow;
+      if (selectedWorkflow !== requested.slug) {
+        setSelectedWorkflow(requested.slug);
+        return;
+      }
+    }
+    if (
+      selectedWorkflow &&
+      workflows.some((row) => row.slug === selectedWorkflow)
+    ) {
+      return;
+    }
+    const preferred =
+      workflows.find((row) => row.liveVersionId !== null) ?? workflows[0];
+    setSelectedWorkflow(preferred?.slug ?? null);
+  }, [catalogQuery.isLoading, requestedWorkflow, selectedWorkflow, workflows]);
+
+  const selectedSummary = useMemo(
+    () => workflows.find((row) => row.slug === selectedWorkflow) ?? null,
+    [selectedWorkflow, workflows],
+  );
+  const dagQuery = useDag(selectedWorkflow);
+  const returnedAgentEditor = useAgentEditor(
+    returnedAgentDraftId ? requestedAgent : null,
+    returnedAgentDraftId,
+  );
+  const saveWorkflow = useSaveWorkflow(selectedWorkflow);
+  const validateWorkflow = useValidateWorkflow(selectedWorkflow);
+  const publishWorkflow = usePublishWorkflow(selectedWorkflow);
+  const deleteWorkflow = useDeleteWorkflow();
   const workflowVersion = dagQuery.data?.workflowVersion ?? "";
   const baseAgents = useMemo(
     () => dagQuery.data?.agents ?? [],
     [dagQuery.data?.agents],
   );
-  const dagReady = Boolean(dagQuery.data) && !dagQuery.isError && baseAgents.length > 0;
 
   // Live event catalog — `/v1/events` dedup'd by name so the workflow's
   // event-color map and inspector "available events" hint always reflect
@@ -108,6 +238,135 @@ export default function WorkflowsPage() {
   // surface their emit/trigger names through the DAG payload regardless of
   // whether the event has ever fired).
   const eventsQuery = useEvents({ limit: 200 });
+  const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
+  const [selectedEvent, setSelectedEvent] = useState<string | null>(null);
+  const [hoveredEdge, setHoveredEdge] = useState<number | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState<WorkflowDraft>(emptyDraft);
+  const [tool, setTool] = useState<"select" | "connect" | "add">("select");
+  const [connectFrom, setConnectFrom] = useState<string | null>(null);
+  const [nodeDrag, setNodeDrag] = useState<NodeDragState | null>(null);
+  const [linkDrag, setLinkDrag] = useState<LinkDragState | null>(null);
+  const [canvasDropActive, setCanvasDropActive] = useState(false);
+  const [canvasAnnouncement, setCanvasAnnouncement] = useState("");
+  const [validation, setValidation] =
+    useState<WorkflowValidationResponse | null>(null);
+  const [editorErrors, setEditorErrors] = useState<Record<string, string[]>>(
+    {},
+  );
+  const hasEditorErrors = Object.values(editorErrors).some(
+    (errors) => errors.length > 0,
+  );
+  const reportEditorValidity = useCallback(
+    (agentId: string, errors: string[]) => {
+      setEditorErrors((current) => {
+        const next = { ...current };
+        if (errors.length) next[agentId] = errors;
+        else delete next[agentId];
+        return next;
+      });
+    },
+    [],
+  );
+  const [zoom, setZoom] = useState(1);
+  const [showNewModal, setShowNewModal] = useState(false);
+  const [showImport, setShowImport] = useState(false);
+  const [importTarget, setImportTarget] = useState<{
+    slug: string;
+    name: string;
+  } | null>(null);
+  const publishInFlight = useRef(false);
+  const [publishing, setPublishing] = useState(false);
+  const [showHelp, setShowHelp] = useState(false);
+  const [showRunConsole, setShowRunConsole] = useState(false);
+  const restoredReturnRef = useRef<string | null>(null);
+  const appliedReturnedDraftRef = useRef<string | null>(null);
+  const suppressedNodeClickRef = useRef<string | null>(null);
+  const suppressedPortClickRef = useRef(false);
+  // Live stream — placeholder for tweaks-panel wiring (Phase 2).
+  const liveStream = true;
+  // Scroll container for the canvas viewport. The canvas is wider than the
+  // viewport when LAYOUT places nodes deep into the stage grid; this ref
+  // lets us scroll the leftmost node into view after data loads so the
+  // user actually sees their imported workflow.
+  const canvasScrollRef = useRef<HTMLDivElement | null>(null);
+  const workspaceRef = useRef<HTMLDivElement | null>(null);
+  const inspectorRestoreWidthRef = useRef(WORKFLOW_INSPECTOR_DEFAULT_WIDTH);
+  const [workspaceWidth, setWorkspaceWidth] = useState(0);
+  const [inspectorWidth, setInspectorWidth] = useState(
+    WORKFLOW_INSPECTOR_DEFAULT_WIDTH,
+  );
+  const inspectorStorageKey = useMemo(
+    () => workflowInspectorStorageKey(tenant),
+    [tenant],
+  );
+  const [hydratedInspectorKey, setHydratedInspectorKey] = useState<
+    string | null
+  >(null);
+
+  useEffect(() => {
+    const workspace = workspaceRef.current;
+    if (!workspace) return;
+    const measure = () => {
+      setWorkspaceWidth(Math.round(workspace.getBoundingClientRect().width));
+    };
+    measure();
+    if (typeof ResizeObserver !== "undefined") {
+      const observer = new ResizeObserver(measure);
+      observer.observe(workspace);
+      return () => observer.disconnect();
+    }
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, []);
+
+  useEffect(() => {
+    let next = WORKFLOW_INSPECTOR_DEFAULT_WIDTH;
+    try {
+      const stored = window.localStorage.getItem(inspectorStorageKey);
+      const parsed = stored == null ? Number.NaN : Number(stored);
+      if (Number.isFinite(parsed)) next = parsed;
+    } catch {
+      // Storage can be unavailable in locked-down enterprise browsers.
+    }
+    next = clampWorkflowInspectorWidth(next, 0);
+    inspectorRestoreWidthRef.current = Math.min(
+      next,
+      WORKFLOW_INSPECTOR_DEFAULT_WIDTH,
+    );
+    setInspectorWidth(next);
+    setHydratedInspectorKey(inspectorStorageKey);
+  }, [inspectorStorageKey]);
+
+  useEffect(() => {
+    if (hydratedInspectorKey !== inspectorStorageKey) return;
+    try {
+      window.localStorage.setItem(
+        inspectorStorageKey,
+        String(clampWorkflowInspectorWidth(inspectorWidth, 0)),
+      );
+    } catch {
+      // Resizing still works for the current session when storage is blocked.
+    }
+  }, [hydratedInspectorKey, inspectorStorageKey, inspectorWidth]);
+  const inspectorMaxWidth = workflowInspectorMaxWidth(workspaceWidth);
+  const renderedInspectorWidth = clampWorkflowInspectorWidth(
+    inspectorWidth,
+    workspaceWidth,
+  );
+  const preferredWideInspectorWidth =
+    workflowInspectorWideWidth(workspaceWidth);
+  const inspectorCanResize = workspaceWidth === 0 || workspaceWidth > 860;
+  const inspectorIsWide =
+    !inspectorCanResize ||
+    renderedInspectorWidth >= preferredWideInspectorWidth - 1;
+
+  // While editing, the canvas reads the *applied* draft so the operator
+  // sees their changes immediately. Outside edit mode it's the bootstrap.
+  const agents = useMemo(
+    () => (editing ? applyDraft(baseAgents, draft) : baseAgents),
+    [baseAgents, draft, editing],
+  );
   const events = useMemo<EventCatalogItem[]>(() => {
     const map = new Map<string, EventCatalogItem>();
     // Seed from the event ledger so colors/categories that the api has seen
@@ -120,49 +379,53 @@ export default function WorkflowsPage() {
         category: row.category ?? "agent",
       });
     }
-    // Also include every event referenced by an agent's triggers/emits —
-    // tenants whose workflow hasn't fired any events yet still need their
-    // event names available to the inspector legend.
-    for (const a of baseAgents) {
-      for (const n of [...a.triggers, ...a.emits]) {
-        if (map.has(n)) continue;
-        map.set(n, { name: n, color: "muted", category: "agent" });
+    // Use the effective agents, not only the last server snapshot. Trigger
+    // and emitted-event edits therefore appear in hints and edge colors on
+    // the same render that adds or removes their visual connection.
+    for (const agent of agents) {
+      for (const name of [...agent.triggers, ...agent.emits]) {
+        const normalized = name.trim();
+        if (!normalized || map.has(normalized)) continue;
+        map.set(normalized, {
+          name: normalized,
+          color: "muted",
+          category: "agent",
+        });
       }
     }
     return Array.from(map.values()).sort((a, b) =>
       a.name.localeCompare(b.name),
     );
-  }, [eventsQuery.data, baseAgents]);
-
-  // Column headers are derived from the resolved layout below (see `columns`),
-  // not from the kebab-derived `stage` hint — so the header coordinate system
-  // matches the node coordinate system exactly.
-
-  const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
-  const [selectedEvent, setSelectedEvent] = useState<string | null>(null);
-  const [hoveredEdge, setHoveredEdge] = useState<number | null>(null);
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState<WorkflowDraft>(emptyDraft);
-  const [tool, setTool] = useState<"select" | "connect" | "add">("select");
-  const [showImport, setShowImport] = useState(false);
-  // Scroll container for live DAGs wider than the viewport. This lets us
-  // scroll the leftmost node into view after data loads.
-  const canvasScrollRef = useRef<HTMLDivElement | null>(null);
-
-  // While editing, the canvas reads the *applied* draft so the operator
-  // sees their changes immediately. Outside edit mode it's the bootstrap.
-  const agents = useMemo(
-    () => (editing ? applyDraft(baseAgents, draft) : baseAgents),
-    [baseAgents, draft, editing],
+  }, [agents, eventsQuery.data]);
+  const selectedAgentRecord = useMemo(
+    () =>
+      selectedAgent
+        ? agents.find((agent) => agent.kebabId === selectedAgent)
+        : undefined,
+    [agents, selectedAgent],
   );
+  useEffect(() => {
+    // A workflow switch can render once with the previous node selection
+    // while the new DAG is loading. Never pass an undefined agent to the
+    // inspector/editor during that transition.
+    if (
+      selectedAgent &&
+      dagQuery.data &&
+      !dagQuery.isLoading &&
+      !selectedAgentRecord
+    ) {
+      setSelectedAgent(null);
+    }
+  }, [dagQuery.data, dagQuery.isLoading, selectedAgent, selectedAgentRecord]);
   const draftCounts = countDraftChanges(draft);
-  const dirty = draftCounts.added + draftCounts.modified + draftCounts.removed > 0;
+  const dirty =
+    draftCounts.added + draftCounts.modified + draftCounts.removed > 0;
   const dirtyApi = useDirty();
   // UC-V11-15: register the draft with the global Dirty context so
   // useTenantNavigate() and other guards can prompt before navigating away.
   useEffect(() => {
     const label = dirty
-      ? `workflow draft · +${draftCounts.added} ~${draftCounts.modified} −${draftCounts.removed}`
+      ? `${selectedWorkflow ?? "workflow"} draft · +${draftCounts.added} ~${draftCounts.modified} −${draftCounts.removed}`
       : null;
     dirtyApi.setDirty("workflow-draft", label);
     return () => dirtyApi.setDirty("workflow-draft", null);
@@ -172,51 +435,92 @@ export default function WorkflowsPage() {
     draftCounts.modified,
     draftCounts.removed,
     dirtyApi,
+    selectedWorkflow,
   ]);
 
-  // UC-V11-13: persist edit-mode draft to localStorage so refreshing the
-  // page or closing the tab without deploying preserves work-in-progress.
-  // The key is namespaced by tenant; multiple workflows per tenant would
-  // need a deeper key — today there's one workflow per tenant.
+  // Persist each workflow's browser edits independently. Switching the
+  // catalog selector never leaks one manifest patch into another workflow.
   const storageKey = useMemo(
-    () => draftStorageKey(tenant, runtimeWorkflowSlug),
-    [runtimeWorkflowSlug, tenant],
+    () => draftStorageKey(tenant, selectedWorkflow ?? "__none__"),
+    [selectedWorkflow, tenant],
   );
   // `restoredAt` non-null means we restored a saved draft on mount; show
   // a small banner with a Discard action so the operator can opt out.
   const [restoredAt, setRestoredAt] = useState<number | null>(null);
-  // First mount: restore any saved draft for this (tenant, workflow). Wrap
-  // in a Boolean ref-effect so a Next dev re-mount (StrictMode) doesn't
-  // double-trigger the restore.
-  const [hydrated, setHydrated] = useState(false);
+  const [draftBaseVersionId, setDraftBaseVersionId] = useState<string | null>(
+    null,
+  );
+  const [hydratedKey, setHydratedKey] = useState<string | null>(null);
   useEffect(() => {
-    if (hydrated) return;
-    setHydrated(true);
-    if (typeof window === "undefined") return;
+    const shouldOpenEditor =
+      editAfterSelectionRef.current === selectedWorkflow ||
+      (requestedMode === "edit" &&
+        (!requestedWorkflow || requestedWorkflow === selectedWorkflow));
+    setDraft(emptyDraft());
+    setEditing(false);
+    setSelectedAgent(null);
+    setSelectedEvent(null);
+    setConnectFrom(null);
+    setValidation(null);
+    setEditorErrors({});
+    setRestoredAt(null);
+    setDraftBaseVersionId(null);
+    if (typeof window === "undefined" || !selectedWorkflow) {
+      setHydratedKey(storageKey);
+      return;
+    }
     try {
       const raw = window.localStorage.getItem(storageKey);
-      if (!raw) return;
-      const parsed = tryReadSerializedDraft(raw);
-      if (!parsed) {
-        window.localStorage.removeItem(storageKey);
-        return;
+      if (raw) {
+        const parsed = tryReadSerializedDraft(raw);
+        if (!parsed) {
+          window.localStorage.removeItem(storageKey);
+        } else {
+          setDraft(deserializeDraft(parsed));
+          setDraftBaseVersionId(parsed.baseVersionId);
+          setEditing(true);
+          setRestoredAt(parsed.savedAt);
+        }
       }
-      // Restored — drop into edit mode so the user notices.
-      setDraft(deserializeDraft(parsed));
-      setEditing(true);
-      setRestoredAt(parsed.savedAt);
     } catch {
       // localStorage unavailable (private mode, quota) — silently skip.
+    } finally {
+      if (shouldOpenEditor) {
+        editAfterSelectionRef.current = null;
+        setEditing(true);
+      }
+      setHydratedKey(storageKey);
     }
-  }, [hydrated, storageKey]);
+  }, [requestedMode, requestedWorkflow, selectedWorkflow, storageKey]);
+  useEffect(() => {
+    if (
+      editing &&
+      draftBaseVersionId === null &&
+      dagQuery.data?.workflowVersionId &&
+      hydratedKey === storageKey
+    ) {
+      setDraftBaseVersionId(dagQuery.data.workflowVersionId);
+    }
+  }, [
+    dagQuery.data?.workflowVersionId,
+    draftBaseVersionId,
+    editing,
+    hydratedKey,
+    storageKey,
+  ]);
   // Save on every change while dirty; clear on clean state.
   useEffect(() => {
-    if (!hydrated || typeof window === "undefined") return;
+    if (hydratedKey !== storageKey || typeof window === "undefined") return;
     try {
       if (dirty) {
         window.localStorage.setItem(
           storageKey,
-          JSON.stringify(serializeDraft(draft)),
+          JSON.stringify(
+            serializeDraft(
+              draft,
+              draftBaseVersionId ?? dagQuery.data?.workflowVersionId ?? null,
+            ),
+          ),
         );
       } else {
         window.localStorage.removeItem(storageKey);
@@ -224,11 +528,19 @@ export default function WorkflowsPage() {
     } catch {
       // Persistence failure is best-effort; don't break the UI.
     }
-  }, [hydrated, dirty, draft, storageKey]);
+  }, [
+    dagQuery.data?.workflowVersionId,
+    draftBaseVersionId,
+    hydratedKey,
+    dirty,
+    draft,
+    storageKey,
+  ]);
   function discardRestored() {
     setDraft(emptyDraft());
     setEditing(false);
     setRestoredAt(null);
+    setDraftBaseVersionId(null);
     if (typeof window !== "undefined") {
       try {
         window.localStorage.removeItem(storageKey);
@@ -238,81 +550,124 @@ export default function WorkflowsPage() {
     }
   }
 
-  // Real-time layout derived only from this tenant's trigger/emit cascade.
-  const topo = useMemo(
+  // Auto-pack any agents whose kebab-id isn't in the hand-tuned LAYOUT map
+  // (the LAYOUT only covers RAAS). Pure derived state — same `agents` ->
+  // same fallback positions; existing LAYOUT entries always win in
+  // `getLayout` so RAAS visual fidelity is unaffected. We key entirely on
+  // `kebabId` so the LAYOUT map (whose keys are kebab slugs like "1-1" or
+  // "matcher-agent") and the auto-packed fallback share the same id space.
+  const autoFallback = useMemo(
     () =>
-      topoLayout(
+      autoPackLayout(
         agents.map((a) => ({
           id: a.kebabId,
+          stage: a.stage ?? 0,
           triggers: a.triggers ?? [],
           emits: a.emits ?? [],
         })),
       ),
     [agents],
   );
-  // Final (column, lane) for an agent under the active tenant's layout.
-  const layAt = useCallback(
-    (kebabId: string): { stage: number; lane: number } | null =>
-      topo[kebabId] ?? null,
-    [topo],
-  );
-  const posAt = useCallback(
-    (kebabId: string): { x: number; y: number } => {
-      const p = layAt(kebabId);
-      return p
-        ? { x: PAD_X + p.stage * COL_W, y: PAD_Y + p.lane * ROW_H }
-        : { x: 0, y: 0 };
-    },
-    [layAt],
-  );
-  // Canvas dimensions + column count derived from the resolved layout so the
-  // grid is exactly as wide/tall as this workflow needs, with no empty
-  // columns reserved for a different tenant.
-  const dims = useMemo(() => {
-    let maxCol = 0;
-    let maxLane = 0;
-    for (const a of agents) {
-      const p = layAt(a.kebabId);
-      if (!p) continue;
-      maxCol = Math.max(maxCol, p.stage);
-      maxLane = Math.max(maxLane, p.lane);
-    }
-    return {
-      cols: maxCol + 1,
-      lanes: maxLane + 1,
-      w: PAD_X * 2 + (maxCol + 1) * COL_W,
-      h: PAD_Y * 2 + (maxLane + 1) * ROW_H,
-    };
-  }, [agents, layAt]);
 
-  // One generic header per topological depth; business labels belong to the
-  // live ontology, not a hard-coded recruitment funnel.
-  const columns = useMemo(
-    () =>
-      Array.from({ length: dims.cols }, (_, i) => ({
-        index: i,
-        label: t("workflowsView.stageGeneric", { id: i + 1 }),
-      })),
-    [dims.cols, t],
+  const positions = useMemo(() => {
+    const out = new Map<string, { x: number; y: number }>();
+    for (const agent of agents) {
+      out.set(
+        agent.kebabId,
+        clampCanvasPosition(
+          agent.position ?? nodePos(agent.kebabId, autoFallback),
+        ),
+      );
+    }
+    return out;
+  }, [agents, autoFallback]);
+
+  const renderedPositions = useMemo(() => {
+    if (!nodeDrag) return positions;
+    const out = new Map(positions);
+    out.set(nodeDrag.id, nodeDrag.position);
+    return out;
+  }, [nodeDrag, positions]);
+
+  const canvasSize = useMemo(
+    () => dynamicCanvasSize(renderedPositions.values()),
+    [renderedPositions],
   );
+
+  // Derive headers from rendered columns rather than only declared stages.
+  // This keeps topology-packed stage-99 workflows and local draft additions
+  // aligned with their actual nodes.
+  const stages = useMemo(() => {
+    const byColumn = new Map<number, Set<number>>();
+    for (const agent of agents) {
+      const position = renderedPositions.get(agent.kebabId);
+      if (!position) continue;
+      const column = Math.max(0, Math.round((position.x - PAD_X) / COL_W));
+      const declared = byColumn.get(column) ?? new Set<number>();
+      declared.add(agent.stage);
+      byColumn.set(column, declared);
+    }
+    return Array.from(byColumn.entries())
+      .sort(([left], [right]) => left - right)
+      .map(([column, declared]) => {
+        const usable = Array.from(declared).filter((stage) => stage !== 99);
+        const stage = usable.length === 1 ? (usable[0] ?? column) : column;
+        return {
+          id: column,
+          column,
+          label: STAGE_LABELS[stage] ?? `Stage ${stage}`,
+        };
+      });
+  }, [agents, renderedPositions]);
 
   // Build edges: for each agent's emitted event, find listeners.
-  const edges = useMemo<EdgeMeta[]>(() => {
-    const out: EdgeMeta[] = [];
-    agents.forEach((src) => {
-      (src.emits || []).forEach((evName) => {
-        const listeners = agents.filter((a) => a.triggers.includes(evName));
-        listeners.forEach((dst) => {
-          // Edge only renders when BOTH endpoints have a resolved position
-          // under the active tenant's graph-derived layout.
-          if (layAt(src.kebabId) && layAt(dst.kebabId)) {
-            out.push({ src: src.kebabId, dst: dst.kebabId, event: evName });
-          }
-        });
-      });
-    });
-    return out;
-  }, [agents, layAt]);
+  const edges = useMemo(
+    () =>
+      deriveEventEdges(agents).filter(
+        (edge) =>
+          renderedPositions.has(edge.src) && renderedPositions.has(edge.dst),
+      ),
+    [agents, renderedPositions],
+  );
+  const previousDerivedEdgesRef = useRef<{
+    context: string;
+    edges: Map<string, (typeof edges)[number]>;
+  }>({ context: "", edges: new Map() });
+
+  useEffect(() => {
+    const context = `${selectedWorkflow ?? ""}:${editing ? "edit" : "view"}`;
+    const next = new Map(
+      edges.map((edge) => [
+        JSON.stringify([edge.src, edge.dst, edge.event]),
+        edge,
+      ]),
+    );
+    const previous = previousDerivedEdgesRef.current;
+    previousDerivedEdgesRef.current = { context, edges: next };
+    if (!editing || previous.context !== context) return;
+
+    const added = Array.from(next.entries())
+      .filter(([key]) => !previous.edges.has(key))
+      .map(([, edge]) => edge);
+    const removed = Array.from(previous.edges.entries())
+      .filter(([key]) => !next.has(key))
+      .map(([, edge]) => edge);
+    if (added.length > 0) {
+      const first = added[0]!;
+      setCanvasAnnouncement(
+        `Automatically linked ${first.src} to ${first.dst} with ${first.event}${
+          added.length > 1 ? ` and ${added.length - 1} more link(s)` : ""
+        }.`,
+      );
+    } else if (removed.length > 0) {
+      const first = removed[0]!;
+      setCanvasAnnouncement(
+        `Removed the automatic ${first.event} link from ${first.src} to ${first.dst}${
+          removed.length > 1 ? ` and ${removed.length - 1} more link(s)` : ""
+        }.`,
+      );
+    }
+  }, [edges, editing, selectedWorkflow]);
 
   const evColor = useMemo(() => {
     const m: Record<string, string> = {};
@@ -350,199 +705,989 @@ export default function WorkflowsPage() {
 
   const dim = Boolean(selectedAgent || selectedEvent);
 
-  // After data loads, scroll the canvas so the leftmost node is visible. With
-  // the dynamic canvas (columns always start at 0) this is normally a no-op,
-  // but it still guards the edge case where a layout's minimum column is > 0.
+  // After data loads, scroll the canvas so the leftmost node is visible.
+  // The canvas reserves room for all RAAS stages (0..7) at fixed COL_W;
+  // a small workflow with only stage-5 nodes would otherwise render past
+  // the viewport's right edge and look empty. Only nudges scroll when the
+  // canvas is still at the leftmost position so we don't clobber a
+  // user-initiated scroll on subsequent data updates.
   useEffect(() => {
     const el = canvasScrollRef.current;
     if (!el || el.scrollLeft !== 0) return;
-    const positioned = agents
-      .map((a) => layAt(a.kebabId))
-      .filter((p): p is { stage: number; lane: number } => Boolean(p));
+    const positioned = Array.from(renderedPositions.values());
     if (positioned.length === 0) return;
-    const minStage = positioned.reduce(
-      (acc, p) => Math.min(acc, p.stage),
+    const minX = positioned.reduce(
+      (acc, position) => Math.min(acc, position.x),
       Number.POSITIVE_INFINITY,
     );
-    const targetX = Math.max(0, PAD_X + minStage * COL_W - 40);
+    const targetX = Math.max(0, minX * zoom - 40);
     if (targetX > 0) el.scrollLeft = targetX;
-  }, [agents, layAt]);
+  }, [renderedPositions, zoom]);
 
-  function navAgent(id: string) {
-    router.push(`/portal/${tenant}/agents/${id}` as never);
+  useEffect(() => {
+    const requestKey = `${requestedWorkflow ?? selectedWorkflow ?? ""}:${requestedAgent ?? ""}:${resumeToken ?? ""}`;
+    if (
+      !requestedAgent ||
+      !editing ||
+      requestedAgentAppliedRef.current === requestKey ||
+      !agents.some((agent) => agent.kebabId === requestedAgent)
+    ) {
+      return;
+    }
+    requestedAgentAppliedRef.current = requestKey;
+    setSelectedAgent(requestedAgent);
+    setSelectedEvent(null);
+  }, [
+    agents,
+    editing,
+    requestedAgent,
+    requestedWorkflow,
+    resumeToken,
+    selectedWorkflow,
+  ]);
+
+  useEffect(() => {
+    if (
+      !resumeToken ||
+      restoredReturnRef.current === resumeToken ||
+      !selectedWorkflow
+    ) {
+      return;
+    }
+    const state = readWorkflowReturnState(resumeToken, tenant);
+    if (!state) {
+      restoredReturnRef.current = resumeToken;
+      return;
+    }
+    if (state.workflowSlug !== selectedWorkflow) {
+      setSelectedWorkflow(state.workflowSlug);
+      return;
+    }
+    restoredReturnRef.current = resumeToken;
+    setEditing(state.editing);
+    setTool(state.tool);
+    setZoom(state.zoom);
+    setSelectedAgent(state.selectedAgent);
+    setSelectedEvent(null);
+    requestAnimationFrame(() => {
+      canvasScrollRef.current?.scrollTo({
+        left: state.scrollLeft,
+        top: state.scrollTop,
+      });
+    });
+  }, [resumeToken, selectedWorkflow, tenant]);
+
+  useEffect(() => {
+    const returned = returnedAgentEditor.data?.draft;
+    const currentVersionId = dagQuery.data?.workflowVersionId;
+    if (
+      !returnedAgentDraftId ||
+      !returned ||
+      !requestedAgent ||
+      !selectedWorkflow ||
+      !currentVersionId ||
+      appliedReturnedDraftRef.current === returnedAgentDraftId
+    ) {
+      return;
+    }
+    appliedReturnedDraftRef.current = returnedAgentDraftId;
+    if (
+      returned.baseWorkflowVersionId &&
+      returned.baseWorkflowVersionId !== currentVersionId
+    ) {
+      toast({
+        tone: "red",
+        title: "Agent draft belongs to another workflow version",
+        description:
+          "Reload the workflow and reopen Agent Studio so changes are applied to the correct draft.",
+      });
+    } else {
+      setEditing(true);
+      setDraftBaseVersionId(currentVersionId);
+      setDraft((current) =>
+        mergeAgentDefinitionIntoDraft(
+          current,
+          returned.definition as CompleteAgentDefinition,
+        ),
+      );
+      setSelectedAgent(requestedAgent);
+      setSelectedEvent(null);
+      setValidation(null);
+      setCanvasAnnouncement(
+        `${returned.definition.title ?? requestedAgent} returned from Agent Studio and is ready to save in this workflow.`,
+      );
+      toast({
+        tone: "green",
+        title: "Agent changes returned to workflow",
+        description:
+          "Review the node and save the workflow draft when you are ready.",
+      });
+    }
+    router.replace(
+      workflowCanvasHref({
+        tenant,
+        workflowSlug: selectedWorkflow,
+        agentId: requestedAgent,
+        resumeToken,
+      }) as never,
+    );
+  }, [
+    dagQuery.data?.workflowVersionId,
+    requestedAgent,
+    resumeToken,
+    returnedAgentDraftId,
+    returnedAgentEditor.data?.draft,
+    router,
+    selectedWorkflow,
+    tenant,
+    toast,
+  ]);
+
+  useEffect(() => {
+    if (!returnedAgentDraftId || !returnedAgentEditor.isError) return;
+    if (appliedReturnedDraftRef.current === returnedAgentDraftId) return;
+    appliedReturnedDraftRef.current = returnedAgentDraftId;
+    toast({
+      tone: "red",
+      title: "Agent changes could not be restored",
+      description:
+        returnedAgentEditor.error instanceof Error
+          ? returnedAgentEditor.error.message
+          : "The returned Agent Studio draft is unavailable.",
+    });
+  }, [
+    returnedAgentDraftId,
+    returnedAgentEditor.error,
+    returnedAgentEditor.isError,
+    toast,
+  ]);
+
+  function expandAgentPanel(id: string) {
+    setSelectedAgent(id);
+    setSelectedEvent(null);
+    setInspectorWidth((current) => {
+      const rendered = clampWorkflowInspectorWidth(current, workspaceWidth);
+      if (rendered >= preferredWideInspectorWidth - 1) return current;
+      inspectorRestoreWidthRef.current = rendered;
+      return preferredWideInspectorWidth;
+    });
   }
+
+  function toggleAgentPanelWidth() {
+    setInspectorWidth((current) => {
+      const rendered = clampWorkflowInspectorWidth(current, workspaceWidth);
+      if (rendered >= preferredWideInspectorWidth - 1) {
+        return clampWorkflowInspectorWidth(
+          inspectorRestoreWidthRef.current,
+          workspaceWidth,
+        );
+      }
+      inspectorRestoreWidthRef.current = rendered;
+      return preferredWideInspectorWidth;
+    });
+  }
+
   function navEvents(eventName: string) {
-    router.push(`/portal/${tenant}/events?name=${encodeURIComponent(eventName)}` as never);
+    router.push(
+      `/portal/${tenant}/events?name=${encodeURIComponent(eventName)}` as never,
+    );
   }
 
   function discardDraft() {
     setDraft(emptyDraft());
     setEditing(false);
+    setConnectFrom(null);
+    setValidation(null);
+    setRestoredAt(null);
+    setDraftBaseVersionId(null);
+    setEditorErrors({});
   }
 
-  async function saveDraft() {
-    try {
-      if (!dagReady) {
-        throw new Error(t("workflowsView.deployGuardDag"));
-      }
-      if (draft.added.size > 0) {
-        throw new Error(
-          t("workflowsView.deployGuardAdded", { count: draft.added.size }),
-        );
-      }
+  function closeEditor() {
+    if (
+      dirty &&
+      !window.confirm(
+        "Close the editor and discard these unsaved browser changes? The last server-saved draft will be kept.",
+      )
+    ) {
+      return;
+    }
+    discardDraft();
+  }
 
-      const catalog = new Map(
-        (agentCatalogQuery.data ?? []).map((agent) => [agent.kebabId, agent]),
-      );
-      const behaviorEntries = await Promise.all(
-        agents.map(async (agent) => {
-          const row = catalog.get(agent.kebabId);
-          if (!row) {
-            throw new Error(
-              t("workflowsView.deployGuardMissing", { id: agent.kebabId }),
-            );
-          }
-          const detail = await fetchAgentDetail(agent.kebabId);
-          const behavior: PreservedAgentBehavior = {
-            description: row.description ?? "",
-            actions: detail.actions,
-          };
-          return [agent.kebabId, behavior] as const;
-        }),
-      );
-      const manifest = toManifest(agents, Object.fromEntries(behaviorEntries));
-      const data = await deploy.mutateAsync({
-        manifest,
-        workflowSlug: runtimeWorkflowSlug,
-        note: `In-portal edit · ${draftCounts.added}+/${draftCounts.modified}~/${draftCounts.removed}-`,
+  function editableManifest() {
+    return toManifest(agents).map((definition) => {
+      const position = positions.get(definition.id);
+      if (!position) return definition;
+      const extensions =
+        definition.extensions && typeof definition.extensions === "object"
+          ? definition.extensions
+          : {};
+      const priorCanvas =
+        extensions.canvas &&
+        typeof extensions.canvas === "object" &&
+        !Array.isArray(extensions.canvas)
+          ? extensions.canvas
+          : {};
+      return {
+        ...definition,
+        extensions: {
+          ...extensions,
+          canvas: { ...priorCanvas, position },
+        },
+      };
+    });
+  }
+
+  async function saveDraft(): Promise<WorkflowDetail | null> {
+    if (hasEditorErrors) {
+      toast({
+        tone: "red",
+        title: "Fix editor errors before saving",
+        description:
+          Object.values(editorErrors).flat()[0] ?? "A field is invalid.",
+      });
+      return null;
+    }
+    const baseVersionId =
+      draftBaseVersionId ?? dagQuery.data?.workflowVersionId ?? null;
+    if (!selectedWorkflow || !baseVersionId) {
+      toast({
+        tone: "red",
+        title: "Draft cannot be saved",
+        description: "The selected workflow version has not finished loading.",
+      });
+      return null;
+    }
+    try {
+      const detail = await saveWorkflow.mutateAsync({
+        baseVersionId,
+        manifest: editableManifest(),
       });
       toast({
         tone: "signal",
-        title: t("workflowsView.toastDeployedTitle"),
-        description: `${data.version} · +${data.diff.added.length} / ~${data.diff.modified.length} / −${data.diff.removed.length}`,
+        title: "Draft saved",
+        description: `${detail.latestVersion} is stored on the server. Live runs are unchanged.`,
       });
       setDraft(emptyDraft());
-      setEditing(false);
+      setDraftBaseVersionId(detail.latestVersionId);
+      setRestoredAt(null);
+      setValidation(null);
+      return detail;
     } catch (err) {
       toast({
         tone: "red",
-        title: t("workflowsView.toastDeployFailedTitle"),
-        description: err instanceof Error ? err.message : t("workflowsView.unknownError"),
+        title: "Draft save failed",
+        description: err instanceof Error ? err.message : "Unknown error",
+      });
+      return null;
+    }
+  }
+
+  async function validateCurrent(): Promise<WorkflowValidationResponse | null> {
+    if (hasEditorErrors) {
+      toast({
+        tone: "red",
+        title: "Fix editor errors before validating",
+        description:
+          Object.values(editorErrors).flat()[0] ?? "A field is invalid.",
+      });
+      return null;
+    }
+    if (!selectedWorkflow) return null;
+    try {
+      const result = await validateWorkflow.mutateAsync({
+        manifest: editableManifest(),
+      });
+      setValidation(result);
+      toast({
+        tone: result.valid ? "green" : "amber",
+        title: result.valid ? "Workflow is valid" : "Workflow needs changes",
+        description: result.valid
+          ? `${result.promptScores.length} agent prompts checked.`
+          : `${result.issues.filter((issue) => issue.severity === "error").length} blocking issue(s).`,
+      });
+      return result;
+    } catch (err) {
+      toast({
+        tone: "red",
+        title: "Validation failed",
+        description: err instanceof Error ? err.message : "Unknown error",
+      });
+      return null;
+    }
+  }
+
+  async function publishCurrent() {
+    if (!selectedWorkflow || publishInFlight.current) return;
+    publishInFlight.current = true;
+    setPublishing(true);
+    try {
+      const checked = await validateCurrent();
+      if (!checked?.valid) return;
+      let versionId = dagQuery.data?.workflowVersionId ?? undefined;
+      if (dirty) {
+        const saved = await saveDraft();
+        if (!saved) return;
+        versionId = saved.latestVersionId;
+      }
+      if (!versionId) {
+        toast({
+          tone: "red",
+          title: "Workflow cannot be published",
+          description: "No immutable workflow version is available.",
+        });
+        return;
+      }
+      const result = await publishWorkflow.mutateAsync({
+        versionId,
+        note: `Published from the workflow canvas (${selectedWorkflow}).`,
+      });
+      toast({
+        tone: "green",
+        title: "Workflow is live",
+        description: `${result.version} was published to production.`,
+      });
+      setDraft(emptyDraft());
+      setEditing(false);
+      setConnectFrom(null);
+      setRestoredAt(null);
+    } catch (err) {
+      toast({
+        tone: "red",
+        title: "Publish failed",
+        description: err instanceof Error ? err.message : "Unknown error",
+      });
+    } finally {
+      publishInFlight.current = false;
+      setPublishing(false);
+    }
+  }
+
+  function nextAgentId(actor: "Agent" | "Human"): string {
+    const prefix = actor === "Human" ? "human-review" : "automated-step";
+    const taken = new Set(agents.map((agent) => agent.kebabId));
+    let index = 1;
+    while (taken.has(`${prefix}-${index}`)) index += 1;
+    return `${prefix}-${index}`;
+  }
+
+  function viewportPosition(): { x: number; y: number } {
+    const canvas = canvasScrollRef.current;
+    if (!canvas) return { x: PAD_X, y: 90 };
+    return {
+      x: Math.max(
+        0,
+        Math.min(
+          Math.min(MAX_CANVAS_W - NODE_W, canvasSize.width + COL_W - NODE_W),
+          (canvas.scrollLeft + canvas.clientWidth * 0.45) / zoom,
+        ),
+      ),
+      y: Math.max(
+        0,
+        Math.min(
+          Math.min(MAX_CANVAS_H - NODE_H, canvasSize.height + ROW_H - NODE_H),
+          (canvas.scrollTop + canvas.clientHeight * 0.4) / zoom,
+        ),
+      ),
+    };
+  }
+
+  function addAgent(
+    actor: "Agent" | "Human",
+    requestedPosition = viewportPosition(),
+  ) {
+    const id = nextAgentId(actor);
+    const position = clampCanvasPosition(requestedPosition);
+    const options = {
+      id,
+      position,
+      stage: Math.max(0, Math.round((position.x - PAD_X) / COL_W)),
+    };
+    const definition =
+      actor === "Human"
+        ? createHumanAgentDefinition(options)
+        : createAutomatedAgentDefinition(options);
+    setDraft((current) => addAgentToDraft(current, definition));
+    setSelectedAgent(id);
+    setSelectedEvent(null);
+    setTool("select");
+    setValidation(null);
+    setCanvasAnnouncement(
+      `${definition.title ?? definition.name} added. Drag the node to position it, then use its output port to create a connection.`,
+    );
+  }
+
+  function connectPair(sourceId: string, targetId: string) {
+    if (sourceId === targetId) {
+      setConnectFrom(null);
+      setLinkDrag(null);
+      return;
+    }
+    const eventName = connectionEventName(sourceId, targetId);
+    try {
+      setDraft((current) =>
+        connectAgents(current, agents, sourceId, targetId, eventName),
+      );
+      setSelectedAgent(targetId);
+      setSelectedEvent(eventName);
+      setConnectFrom(null);
+      setLinkDrag(null);
+      setTool("select");
+      setValidation(null);
+      setCanvasAnnouncement(
+        `${sourceId} connected to ${targetId} with event ${eventName}.`,
+      );
+      toast({
+        tone: "signal",
+        title: "Agents connected",
+        description: `${eventName} is emitted by ${sourceId} and consumed by ${targetId}.`,
+      });
+    } catch (err) {
+      setLinkDrag(null);
+      toast({
+        tone: "red",
+        title: "Connection failed",
+        description: err instanceof Error ? err.message : "Unknown error",
       });
     }
   }
-  const selectedAgentRow = selectedAgent
-    ? agents.find((agent) => agent.kebabId === selectedAgent) ?? null
-    : null;
+
+  function connectNode(targetId: string) {
+    if (!connectFrom) {
+      setConnectFrom(targetId);
+      setSelectedAgent(targetId);
+      setCanvasAnnouncement(
+        `${targetId} selected as the connection source. Choose a target node.`,
+      );
+      return;
+    }
+    connectPair(connectFrom, targetId);
+  }
+
+  function canvasPoint(clientX: number, clientY: number): CanvasPoint | null {
+    const canvas = canvasScrollRef.current;
+    if (!canvas) return null;
+    const rect = canvas.getBoundingClientRect();
+    return clientPointToCanvas(
+      { clientX, clientY },
+      {
+        rectLeft: rect.left,
+        rectTop: rect.top,
+        scrollLeft: canvas.scrollLeft,
+        scrollTop: canvas.scrollTop,
+        zoom,
+      },
+    );
+  }
+
+  function findInputTarget(clientX: number, clientY: number): string | null {
+    if (typeof document === "undefined") return null;
+    const target = document
+      .elementFromPoint(clientX, clientY)
+      ?.closest<HTMLElement>("[data-workflow-input]");
+    const id = target?.dataset.workflowInput;
+    return id && agents.some((agent) => agent.kebabId === id) ? id : null;
+  }
+
+  function beginNodeDrag(
+    event: ReactPointerEvent<HTMLButtonElement>,
+    id: string,
+  ) {
+    if (!editing || tool !== "select" || event.button !== 0) return;
+    const origin = renderedPositions.get(id);
+    if (!origin) return;
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setNodeDrag({
+      id,
+      pointerId: event.pointerId,
+      origin,
+      start: { clientX: event.clientX, clientY: event.clientY },
+      position: origin,
+      moved: false,
+    });
+  }
+
+  function updateNodeDrag(event: ReactPointerEvent<HTMLButtonElement>) {
+    setNodeDrag((current) => {
+      if (!current || current.pointerId !== event.pointerId) return current;
+      const position = nodePositionFromPointer(
+        current.origin,
+        current.start,
+        { clientX: event.clientX, clientY: event.clientY },
+        zoom,
+      );
+      const distance = Math.hypot(
+        event.clientX - current.start.clientX,
+        event.clientY - current.start.clientY,
+      );
+      return {
+        ...current,
+        position,
+        moved: current.moved || distance >= 5,
+      };
+    });
+  }
+
+  function finishNodeDrag(event: ReactPointerEvent<HTMLButtonElement>) {
+    if (!nodeDrag || nodeDrag.pointerId !== event.pointerId) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    const completed = nodeDrag;
+    setNodeDrag(null);
+    if (!completed.moved) return;
+    suppressedNodeClickRef.current = completed.id;
+    setSelectedAgent(completed.id);
+    setSelectedEvent(null);
+    setDraft((current) => moveAgent(current, completed.id, completed.position));
+    setValidation(null);
+    setCanvasAnnouncement(
+      `${completed.id} moved to x ${Math.round(completed.position.x)}, y ${Math.round(completed.position.y)}.`,
+    );
+  }
+
+  function nudgeNode(event: ReactKeyboardEvent<HTMLButtonElement>, id: string) {
+    if (!editing || tool !== "select") return;
+    const direction: Record<string, CanvasPoint> = {
+      ArrowLeft: { x: -1, y: 0 },
+      ArrowRight: { x: 1, y: 0 },
+      ArrowUp: { x: 0, y: -1 },
+      ArrowDown: { x: 0, y: 1 },
+    };
+    const vector = direction[event.key];
+    if (!vector) return;
+    event.preventDefault();
+    const current = renderedPositions.get(id);
+    if (!current) return;
+    const step = event.shiftKey ? 24 : 8;
+    const position = clampCanvasPosition({
+      x: current.x + vector.x * step,
+      y: current.y + vector.y * step,
+    });
+    setDraft((value) => moveAgent(value, id, position));
+    setValidation(null);
+    setCanvasAnnouncement(
+      `${id} moved to x ${Math.round(position.x)}, y ${Math.round(position.y)}.`,
+    );
+  }
+
+  function beginLinkDrag(
+    event: ReactPointerEvent<HTMLButtonElement>,
+    sourceId: string,
+  ) {
+    if (!editing || event.button !== 0) return;
+    const point = canvasPoint(event.clientX, event.clientY);
+    if (!point) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setSelectedAgent(sourceId);
+    setSelectedEvent(null);
+    setLinkDrag({
+      sourceId,
+      pointerId: event.pointerId,
+      point,
+      targetId: null,
+    });
+    setCanvasAnnouncement(
+      `Creating a connection from ${sourceId}. Drag to another agent's input port.`,
+    );
+  }
+
+  function updateLinkDrag(event: ReactPointerEvent<HTMLButtonElement>) {
+    if (!linkDrag || linkDrag.pointerId !== event.pointerId) return;
+    const point = canvasPoint(event.clientX, event.clientY);
+    if (!point) return;
+    const targetId = findInputTarget(event.clientX, event.clientY);
+    setLinkDrag((current) =>
+      current && current.pointerId === event.pointerId
+        ? { ...current, point, targetId }
+        : current,
+    );
+  }
+
+  function finishLinkDrag(event: ReactPointerEvent<HTMLButtonElement>) {
+    if (!linkDrag || linkDrag.pointerId !== event.pointerId) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    const targetId =
+      findInputTarget(event.clientX, event.clientY) ?? linkDrag.targetId;
+    const sourceId = linkDrag.sourceId;
+    setLinkDrag(null);
+    suppressedPortClickRef.current = true;
+    requestAnimationFrame(() => {
+      suppressedPortClickRef.current = false;
+    });
+    if (targetId && targetId !== sourceId) {
+      connectPair(sourceId, targetId);
+      return;
+    }
+    setTool("connect");
+    setConnectFrom(sourceId);
+    setSelectedAgent(sourceId);
+    setCanvasAnnouncement(
+      `${sourceId} selected as the connection source. Choose a target input port or node.`,
+    );
+  }
+
+  useEffect(() => {
+    function cancelActiveInteraction(event: KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      if (!nodeDrag && !linkDrag && !connectFrom) return;
+      setNodeDrag(null);
+      setLinkDrag(null);
+      setConnectFrom(null);
+      setCanvasAnnouncement("Canvas interaction cancelled.");
+    }
+    window.addEventListener("keydown", cancelActiveInteraction);
+    return () => window.removeEventListener("keydown", cancelActiveInteraction);
+  }, [connectFrom, linkDrag, nodeDrag]);
+
+  function autoLayout() {
+    const byStage = new Map<number, typeof agents>();
+    for (const agent of agents) {
+      const bucket = byStage.get(agent.stage) ?? [];
+      bucket.push(agent);
+      byStage.set(agent.stage, bucket);
+    }
+    const orderedStages = Array.from(byStage.keys()).sort((a, b) => a - b);
+    setDraft((current) => {
+      let next = current;
+      orderedStages.forEach((stage, column) => {
+        const rows = [...(byStage.get(stage) ?? [])].sort((a, b) =>
+          a.kebabId.localeCompare(b.kebabId),
+        );
+        rows.forEach((agent, lane) => {
+          next = moveAgent(next, agent.kebabId, {
+            x: PAD_X + column * COL_W,
+            y: 30 + lane * 90,
+          });
+        });
+      });
+      return next;
+    });
+    setValidation(null);
+    toast({
+      tone: "signal",
+      title: "Canvas arranged",
+      description:
+        "Agent positions were packed by stage and saved in the draft.",
+    });
+  }
+
+  function zoomToFit() {
+    const canvas = canvasScrollRef.current;
+    const all = Array.from(positions.values());
+    if (!canvas || all.length === 0) return;
+    const minX = Math.min(...all.map((position) => position.x));
+    const minY = Math.min(...all.map((position) => position.y));
+    const maxX = Math.max(...all.map((position) => position.x + NODE_W));
+    const maxY = Math.max(...all.map((position) => position.y + NODE_H));
+    const nextZoom = Math.max(
+      0.35,
+      Math.min(
+        1,
+        (canvas.clientWidth - 48) / Math.max(1, maxX - minX),
+        (canvas.clientHeight - 72) / Math.max(1, maxY - minY),
+      ),
+    );
+    setZoom(nextZoom);
+    requestAnimationFrame(() => {
+      canvas.scrollTo({
+        left: Math.max(0, minX * nextZoom - 24),
+        top: Math.max(0, minY * nextZoom - 24),
+        behavior: "smooth",
+      });
+    });
+  }
+
+  async function deleteSelectedWorkflow() {
+    if (!selectedWorkflow || selectedSummary?.liveVersionId) return;
+    const confirmed = window.confirm(
+      `Delete the draft workflow "${selectedSummary?.name ?? selectedWorkflow}"? This cannot be undone.`,
+    );
+    if (!confirmed) return;
+    try {
+      await deleteWorkflow.mutateAsync(selectedWorkflow);
+      const next = workflows.find((row) => row.slug !== selectedWorkflow);
+      setSelectedWorkflow(next?.slug ?? null);
+      toast({ tone: "green", title: "Draft workflow deleted" });
+    } catch (err) {
+      toast({
+        tone: "red",
+        title: "Delete failed",
+        description: err instanceof Error ? err.message : "Unknown error",
+      });
+    }
+  }
+
+  function selectCreatedWorkflow(workflow: WorkflowDetail) {
+    editAfterSelectionRef.current = workflow.slug;
+    setSelectedWorkflow(workflow.slug);
+    setDraft(emptyDraft());
+    setRestoredAt(null);
+    setDraftBaseVersionId(workflow.latestVersionId);
+    setEditing(true);
+    setShowNewModal(false);
+  }
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+    <div className={styles.page}>
+      <div className={styles.srOnly} aria-live="polite" aria-atomic="true">
+        {canvasAnnouncement}
+      </div>
       <ViewHeader
         title={t("nav.workflows")}
         subtitle={
           editing ? (
             <>
-              {t("workflowsView.subtitleEditingPrefix")} <span className="mono" style={{ color: "var(--text)" }}>{tenant}</span> {t("workflowsView.subtitleEditingSuffix")}
+              Editing an unpublished draft of{" "}
+              <span className="mono" style={{ color: "var(--text)" }}>
+                {selectedWorkflow ?? "workflow"}
+              </span>{" "}
+              · Save creates an immutable draft version; Publish explicitly
+              promotes it to live.
             </>
           ) : (
-            t("workflowsView.subtitle")
+            "Select a tenant workflow, inspect its immutable version, or open the full draft editor."
           )
         }
         badge={
           editing ? (
             <Badge tone="amber">
-              <Icon name="alert" size={9} /> {t("workflowsView.draftBadge")} · {tenant}
+              <Icon name="alert" size={9} /> LOCAL DRAFT
+            </Badge>
+          ) : dagQuery.data?.workflowIsLive ? (
+            <Badge tone="green">
+              <Icon name="check" size={9} /> LIVE
             </Badge>
           ) : (
-            <Badge tone="muted">{tenant}{workflowVersion ? ` · ${workflowVersion}` : ""}</Badge>
+            <Badge tone="amber">DRAFT</Badge>
           )
         }
         action={
           editing
             ? [
-                <Button key="discard" small tone="ghost" onClick={discardDraft}>
-                  {t("workflowsView.discardDraft")}
+                <Button
+                  key="run"
+                  small
+                  icon="run"
+                  onClick={() => setShowRunConsole(true)}
+                  disabled={
+                    !selectedWorkflow ||
+                    dagQuery.isLoading ||
+                    agents.length === 0
+                  }
+                >
+                  Run
                 </Button>,
                 <Button
-                  key="dep"
+                  key="help"
+                  small
+                  icon="task"
+                  onClick={() => setShowHelp(true)}
+                >
+                  Help
+                </Button>,
+                <Button key="discard" small tone="ghost" onClick={closeEditor}>
+                  Close editor
+                </Button>,
+                <Button
+                  key="val"
+                  small
+                  icon="check"
+                  tone="ghost"
+                  onClick={() => void validateCurrent()}
+                  disabled={
+                    validateWorkflow.isPending ||
+                    dagQuery.isLoading ||
+                    !dagQuery.data?.workflowVersionId ||
+                    !selectedWorkflow ||
+                    hasEditorErrors
+                  }
+                >
+                  {validateWorkflow.isPending ? "Validating…" : "Validate"}
+                </Button>,
+                <Button
+                  key="save"
+                  small
+                  icon="code"
+                  onClick={() => void saveDraft()}
+                  disabled={!dirty || saveWorkflow.isPending || hasEditorErrors}
+                >
+                  {saveWorkflow.isPending
+                    ? "Saving…"
+                    : `Save draft${dirty ? ` (${draftCounts.added + draftCounts.modified + draftCounts.removed})` : ""}`}
+                </Button>,
+                <Button
+                  key="publish"
                   small
                   icon="deploy"
                   tone="primary"
-                  onClick={saveDraft}
+                  onClick={() => void publishCurrent()}
                   disabled={
-                    !dirty ||
-                    deploy.isPending ||
-                    agentCatalogQuery.isLoading ||
-                    agentCatalogQuery.isError ||
-                    !dagReady ||
-                    draft.added.size > 0
-                  }
-                  title={
-                    draft.added.size > 0
-                      ? t("workflowsView.deployGuardAdded", { count: draft.added.size })
-                      : agentCatalogQuery.isError
-                        ? t("workflowsView.deployGuardCatalog")
-                        : undefined
+                    publishing ||
+                    publishWorkflow.isPending ||
+                    saveWorkflow.isPending ||
+                    validateWorkflow.isPending ||
+                    dagQuery.isLoading ||
+                    !dagQuery.data?.workflowVersionId ||
+                    !selectedWorkflow ||
+                    hasEditorErrors
                   }
                 >
-                  {deploy.isPending
-                    ? t("workflowsView.deploying")
-                    : `${t("workflowsView.deployDraft")}${dirty ? ` (${draftCounts.added + draftCounts.modified + draftCounts.removed})` : ""}`}
+                  {publishing ? "Publishing…" : "Publish"}
                 </Button>,
               ]
             : [
                 <Button
+                  key="run"
+                  icon="run"
+                  tone="primary"
+                  small
+                  onClick={() => setShowRunConsole(true)}
+                  disabled={
+                    !selectedWorkflow ||
+                    dagQuery.isLoading ||
+                    agents.length === 0
+                  }
+                >
+                  Run workflow
+                </Button>,
+                <Button
+                  key="help"
+                  small
+                  icon="task"
+                  onClick={() => setShowHelp(true)}
+                >
+                  Help
+                </Button>,
+                <Button
                   key="edit"
                   icon="code"
                   small
-                  onClick={() => setEditing(true)}
-                  disabled={!dagReady}
-                  title={!dagReady ? t("workflowsView.deployGuardDag") : undefined}
+                  onClick={() => {
+                    setDraftBaseVersionId(
+                      dagQuery.data?.workflowVersionId ?? null,
+                    );
+                    setEditing(true);
+                  }}
+                  disabled={!selectedWorkflow || dagQuery.isLoading}
                 >
-                  {t("workflowsView.editWorkflow")}
+                  Edit workflow
                 </Button>,
-                <Button key="upload" icon="upload" small onClick={() => setShowImport(true)}>
-                  {t("workflowsView.importManifest")}
+                ...(selectedSummary?.hasUnpublishedChanges
+                  ? [
+                      <Button
+                        key="publish"
+                        icon="deploy"
+                        small
+                        tone="primary"
+                        onClick={() => void publishCurrent()}
+                        disabled={
+                          publishing ||
+                          publishWorkflow.isPending ||
+                          validateWorkflow.isPending ||
+                          saveWorkflow.isPending ||
+                          dagQuery.isLoading ||
+                          !dagQuery.data?.workflowVersionId
+                        }
+                      >
+                        {publishing ? "Publishing…" : "Publish draft"}
+                      </Button>,
+                    ]
+                  : []),
+                ...(selectedSummary?.status === "draft" && selectedWorkflow
+                  ? [
+                      <Button
+                        key="delete"
+                        icon="x"
+                        tone="danger"
+                        small
+                        onClick={() => void deleteSelectedWorkflow()}
+                        disabled={deleteWorkflow.isPending}
+                      >
+                        Delete draft
+                      </Button>,
+                    ]
+                  : []),
+                <Button
+                  key="new"
+                  icon="plus"
+                  small
+                  onClick={() => setShowNewModal(true)}
+                >
+                  New workflow
+                </Button>,
+                <Button
+                  key="upload"
+                  icon="upload"
+                  small
+                  onClick={() => setShowImport(true)}
+                >
+                  Import manifest
                 </Button>,
               ]
         }
       />
 
-      {dagQuery.isError ? (
-        <div role="alert" style={{ padding: "10px 24px", color: "var(--red)", borderBottom: "1px solid var(--border)" }}>
-          {t("workflowsView.loadFailed")}: {dagQuery.error.message}
-        </div>
-      ) : eventsQuery.isError ? (
-        <div role="alert" style={{ padding: "8px 24px", color: "var(--amber)", borderBottom: "1px solid var(--border)" }}>
-          {t("workflowsView.eventsUnavailable")}: {eventsQuery.error.message}
-        </div>
-      ) : null}
-
-      {editing && (
-        <EditDraftBanner
-          counts={draftCounts}
-          savedAt={restoredAt}
-        />
-      )}
-
-      {editing && draft.added.size > 0 ? (
-        <div
-          role="status"
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-            padding: "8px 24px",
-            color: "var(--amber)",
-            background: "color-mix(in srgb, var(--amber) 7%, var(--panel))",
-            borderBottom: "1px solid color-mix(in srgb, var(--amber) 25%, var(--border))",
-            fontSize: 11.5,
-          }}
+      <div className={styles.selectorBar}>
+        <span className={styles.selectorLabel}>Workflow</span>
+        <select
+          className={styles.workflowSelect}
+          aria-label="Selected workflow"
+          value={selectedWorkflow ?? ""}
+          onChange={(event) => setSelectedWorkflow(event.target.value || null)}
+          disabled={catalogQuery.isLoading || workflows.length === 0}
         >
-          <Icon name="alert" size={11} />
-          {t("workflowsView.deployGuardAdded", { count: draft.added.size })}
-        </div>
-      ) : null}
+          {workflows.length === 0 && <option value="">No workflows yet</option>}
+          {workflows.map((workflow) => (
+            <option key={workflow.id} value={workflow.slug}>
+              {workflow.name} ·{" "}
+              {workflow.liveVersionId
+                ? workflow.hasUnpublishedChanges
+                  ? "LIVE + DRAFT"
+                  : "LIVE"
+                : "DRAFT"}{" "}
+              · {workflow.latestVersion}
+            </option>
+          ))}
+        </select>
+        {selectedSummary && (
+          <>
+            <Badge tone={dagQuery.data?.workflowIsLive ? "green" : "amber"}>
+              {dagQuery.data?.workflowIsLive ? "LIVE VERSION" : "DRAFT VERSION"}
+            </Badge>
+            {selectedSummary.hasUnpublishedChanges && (
+              <Badge tone="amber">UNPUBLISHED CHANGES</Badge>
+            )}
+            <span
+              className="mono"
+              style={{ color: "var(--text-3)", fontSize: 10.5 }}
+            >
+              {workflowVersion || selectedSummary.latestVersion} ·{" "}
+              {selectedSummary.agentCount} agents
+            </span>
+          </>
+        )}
+        {catalogQuery.isError && (
+          <span role="alert" style={{ color: "var(--red)", fontSize: 11.5 }}>
+            {catalogQuery.error instanceof Error
+              ? catalogQuery.error.message
+              : "Workflow catalog unavailable"}
+          </span>
+        )}
+        {!catalogQuery.isLoading && workflows.length === 0 && (
+          <span style={{ color: "var(--text-3)", fontSize: 11.5 }}>
+            Create a workflow to begin.
+          </span>
+        )}
+      </div>
+
+      {editing && <EditDraftBanner counts={draftCounts} />}
 
       {restoredAt && (
         <div
@@ -560,7 +1705,7 @@ export default function WorkflowsPage() {
         >
           <Icon name="alert" size={11} style={{ color: "var(--amber)" }} />
           <span>
-            {t("workflowsView.restoredDraftFrom")}{" "}
+            Restored unsaved draft from{" "}
             <span className="mono" style={{ color: "var(--text)" }}>
               {new Date(restoredAt).toLocaleString()}
             </span>
@@ -571,311 +1716,543 @@ export default function WorkflowsPage() {
             onClick={discardRestored}
             style={{ marginLeft: "auto" }}
           >
-            {t("workflowsView.discard")}
+            Discard
           </Button>
         </div>
       )}
 
       <div
-        style={{
-          flex: 1,
-          display: "grid",
-          gridTemplateColumns: "1fr 280px",
-          minHeight: 0,
-        }}
+        className={styles.workspace}
+        ref={workspaceRef}
+        style={
+          {
+            "--workflow-inspector-width": `${renderedInspectorWidth}px`,
+            "--workflow-inspector-splitter-width": `${WORKFLOW_INSPECTOR_SPLITTER_WIDTH}px`,
+          } as CSSProperties
+        }
       >
         {/* Canvas */}
-        <div
-          ref={canvasScrollRef}
-          style={{
-            position: "relative",
-            overflow: "auto",
-            background: "var(--bg)",
-            backgroundImage:
-              "radial-gradient(circle, var(--border) 1px, transparent 1px)",
-            backgroundSize: "22px 22px",
-            backgroundPosition: "0 0",
-          }}
-        >
-          {dagQuery.isLoading && baseAgents.length === 0 ? (
-            <Empty title={t("workflowsView.loading")} hint="" />
-          ) : !dagQuery.isError && baseAgents.length === 0 ? (
-            <Empty title={t("workflowsView.emptyWorkflow")} hint={t("workflowsView.emptyWorkflowHint")} />
-          ) : null}
-          {editing && <EditToolbar tool={tool} setTool={(t) => setTool(t as typeof tool)} />}
-
-          {/* Stage headers row */}
+        <div className={styles.canvasShell} id="workflow-canvas-region">
+          {editing && (
+            <div className={styles.canvasCoach}>
+              <Icon name="workflow" size={12} />
+              <span>Drag nodes to move · drag output to input to connect</span>
+              <kbd>Esc</kbd>
+            </div>
+          )}
+          {canvasDropActive && (
+            <div className={styles.dropHint} aria-hidden="true">
+              <Icon name="plus" size={15} />
+              Release to add this agent
+            </div>
+          )}
           <div
-            style={{
-              position: "absolute",
-              left: 0,
-              right: 0,
-              top: 0,
-              height: 28,
-              display: "flex",
-              paddingLeft: PAD_X,
-              pointerEvents: "none",
+            className={styles.canvas}
+            ref={canvasScrollRef}
+            data-drop-active={canvasDropActive ? "true" : undefined}
+            onDragOver={(event) => {
+              if (
+                !editing ||
+                !Array.from(event.dataTransfer.types).includes(
+                  WORKFLOW_AGENT_DRAG_TYPE,
+                )
+              ) {
+                return;
+              }
+              event.preventDefault();
+              event.dataTransfer.dropEffect = "copy";
+              setCanvasDropActive(true);
+            }}
+            onDragLeave={(event) => {
+              if (
+                event.relatedTarget instanceof Node &&
+                event.currentTarget.contains(event.relatedTarget)
+              ) {
+                return;
+              }
+              setCanvasDropActive(false);
+            }}
+            onDrop={(event) => {
+              const actor = event.dataTransfer.getData(
+                WORKFLOW_AGENT_DRAG_TYPE,
+              );
+              setCanvasDropActive(false);
+              if (!editing || (actor !== "Agent" && actor !== "Human")) return;
+              event.preventDefault();
+              const point = canvasPoint(event.clientX, event.clientY);
+              if (!point) return;
+              addAgent(actor, {
+                x: point.x - NODE_W / 2,
+                y: point.y - NODE_H / 2,
+              });
+            }}
+            onClick={(event) => {
+              if (!editing || tool !== "add") return;
+              const target = event.target as HTMLElement;
+              if (target.closest("button,[role='button']")) return;
+              const point = canvasPoint(event.clientX, event.clientY);
+              if (!point) return;
+              addAgent("Agent", {
+                x: point.x - NODE_W / 2,
+                y: point.y - NODE_H / 2,
+              });
             }}
           >
-            {columns.map((c) => (
-              <div
-                key={c.index}
-                style={{
-                  width: COL_W,
-                  padding: "8px 0 0 6px",
-                  fontSize: 10,
-                  fontFamily: "var(--mono)",
-                  fontWeight: 500,
-                  textTransform: "uppercase",
-                  letterSpacing: "0.12em",
-                  color: "var(--text-3)",
+            {editing && (
+              <EditToolbar
+                tool={tool}
+                setTool={(t) => {
+                  setTool(t as typeof tool);
+                  if (t !== "connect") setConnectFrom(null);
                 }}
-              >
-                {String(c.index + 1).padStart(2, "0")} · {c.label}
-              </div>
-            ))}
-          </div>
+                onAddAgent={() => addAgent("Agent")}
+                onAutoLayout={autoLayout}
+                onZoomToFit={zoomToFit}
+              />
+            )}
 
-          <div style={{ width: dims.w, height: dims.h + 30, position: "relative", paddingTop: 30 }}>
-            {/* Stage column dividers */}
-            <div style={{ position: "absolute", inset: "30px 0 0 0", pointerEvents: "none" }}>
-              {columns.map((c) =>
-                c.index > 0 ? (
-                  <div
-                    key={c.index}
-                    style={{
-                      position: "absolute",
-                      top: 0,
-                      bottom: 0,
-                      left: PAD_X + c.index * COL_W - 8,
-                      width: 1,
-                      background: "var(--border)",
-                      opacity: 0.5,
-                    }}
-                  />
-                ) : null,
-              )}
+            {/* Stage headers row */}
+            <div
+              style={{
+                position: "absolute",
+                left: 0,
+                width: canvasSize.width,
+                top: 0,
+                height: 28,
+                pointerEvents: "none",
+                zoom,
+              }}
+            >
+              {stages.map((s) => (
+                <div
+                  key={s.id}
+                  style={{
+                    position: "absolute",
+                    left: PAD_X + s.column * COL_W,
+                    width: COL_W,
+                    padding: "8px 0 0 6px",
+                    fontSize: 10,
+                    fontFamily: "var(--mono)",
+                    fontWeight: 500,
+                    textTransform: "uppercase",
+                    letterSpacing: "0.12em",
+                    color: "var(--text-3)",
+                  }}
+                >
+                  {String(s.column).padStart(2, "0")} · {s.label}
+                </div>
+              ))}
             </div>
 
-            {/* SVG edges */}
-            <svg
-              width={dims.w}
-              height={dims.h}
-              role="img"
-              aria-label={t("workflowsView.dagAria", {
-                agents: agents.length,
-                edges: edges.length,
-              })}
-              style={{ position: "absolute", top: 30, left: 0, pointerEvents: "none" }}
+            <div
+              style={{
+                width: canvasSize.width,
+                height: canvasSize.height + 30,
+                position: "relative",
+                paddingTop: 30,
+                zoom,
+              }}
             >
-              <defs>
-                {["green", "blue", "amber", "red", "muted"].map((c) => (
-                  <marker
-                    key={c}
-                    id={`arrow-${c}`}
-                    viewBox="0 0 10 10"
-                    refX="8"
-                    refY="5"
-                    markerWidth="6"
-                    markerHeight="6"
-                    orient="auto"
-                  >
-                    <path d="M0,0 L10,5 L0,10 z" fill={colorVar(c)} />
-                  </marker>
-                ))}
-              </defs>
-              {edges.map((e, i) => {
-                const s = posAt(e.src);
-                const d = posAt(e.dst);
-                const sx = s.x + NODE_W;
-                const sy = s.y + NODE_H / 2;
-                const dx = d.x;
-                const dy = d.y + NODE_H / 2;
-                const c1x = sx + Math.max(40, (dx - sx) * 0.5);
-                const c2x = dx - Math.max(40, (dx - sx) * 0.5);
-                const path = `M ${sx} ${sy} C ${c1x} ${sy}, ${c2x} ${dy}, ${dx} ${dy}`;
-                const color = colorVar(evColor[e.event] ?? "muted");
-                const isHi = highlighted.edges.has(i) || hoveredEdge === i;
-                const opacity = dim ? (isHi ? 1 : 0.1) : isHi ? 1 : 0.55;
-                return (
-                  <g
-                    key={i}
-                    role="button"
-                    tabIndex={0}
-                    aria-label={t("workflowsView.edgeAria", {
-                      event: e.event,
-                      src: e.src,
-                      dst: e.dst,
-                    })}
-                    style={{ pointerEvents: "auto" }}
-                    onKeyDown={(ev) => {
-                      if (ev.key === "Enter" || ev.key === " ") {
-                        ev.preventDefault();
-                        setSelectedEvent(e.event);
-                      }
-                    }}
-                  >
-                    <path
-                      d={path}
-                      stroke={color}
-                      strokeWidth={isHi ? 2 : 1.25}
-                      fill="none"
-                      opacity={opacity}
-                      markerEnd={`url(#arrow-${evColor[e.event] ?? "muted"})`}
-                      style={{
-                        cursor: "pointer",
-                        transition: "opacity 0.15s, stroke-width 0.15s",
-                      }}
-                      onMouseEnter={() => setHoveredEdge(i)}
-                      onMouseLeave={() => setHoveredEdge(null)}
-                      onClick={() => setSelectedEvent(e.event)}
-                    />
-                  </g>
-                );
-              })}
-            </svg>
-
-            {/* Agent nodes */}
-            <div style={{ position: "absolute", top: 30, left: 0, width: dims.w, height: dims.h }}>
-              {agents.map((a) => {
-                const p = posAt(a.kebabId);
-                const isSel = selectedAgent === a.kebabId;
-                const isHi = highlighted.nodes.has(a.kebabId);
-                const showDim = dim && !isHi;
-                const isAdded = editing && draft.added.has(a.kebabId);
-                const isModified =
-                  editing &&
-                  !isAdded &&
-                  !draft.removed.has(a.kebabId) &&
-                  Boolean(draft.agents[a.kebabId]);
-                const borderColor = isSel
-                  ? "var(--signal)"
-                  : isAdded
-                    ? "var(--green)"
-                    : isModified
-                      ? "var(--amber)"
-                      : isHi
-                        ? "var(--border-3)"
-                        : "var(--border-2)";
-                const dashed = editing ? "dashed" : "solid";
-                const stateSuffix = isAdded
-                  ? t("workflowsView.nodeStateAdded")
-                  : isModified
-                    ? t("workflowsView.nodeStateModified")
-                    : "";
-                const nodeLabel = t("workflowsView.nodeAria", {
-                  actor: a.actor,
-                  title: a.title,
-                  id: a.kebabId,
-                  state: stateSuffix,
-                });
-                return (
-                  <button
-                    key={a.kebabId}
-                    aria-label={nodeLabel}
-                    aria-pressed={isSel}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setSelectedAgent(isSel ? null : a.kebabId);
-                      setSelectedEvent(null);
-                    }}
-                    style={{
-                      position: "absolute",
-                      left: p.x,
-                      top: p.y,
-                      width: NODE_W,
-                      height: NODE_H,
-                      background: a.actor === "Agent" ? "var(--panel)" : "var(--panel-2)",
-                      borderTop: `1px ${dashed} ${borderColor}`,
-                      borderRight: `1px ${dashed} ${borderColor}`,
-                      borderBottom: `1px ${dashed} ${borderColor}`,
-                      borderLeft: `3px solid ${a.actor === "Agent" ? "var(--signal)" : "var(--violet)"}`,
-                      borderRadius: 5,
-                      padding: "8px 10px",
-                      textAlign: "left",
-                      cursor: editing ? "move" : "pointer",
-                      opacity: showDim ? 0.3 : 1,
-                      transition: "opacity 0.15s, border-color 0.12s, box-shadow 0.12s",
-                      boxShadow: isSel ? "0 0 0 3px color-mix(in srgb, var(--signal) 12%, transparent)" : "none",
-                    }}
-                  >
-                    <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
-                      <ActorTag actor={a.actor} />
-                      {isAdded && <Badge tone="green">{t("workflowsView.badgeNew")}</Badge>}
-                      {isModified && <Badge tone="amber">{t("workflowsView.badgeMod")}</Badge>}
-                      <span
-                        style={{
-                          marginLeft: "auto",
-                          fontSize: 10,
-                          fontFamily: "var(--mono)",
-                          color: "var(--text-3)",
-                        }}
-                      >
-                        {a.kebabId}
-                      </span>
-                    </div>
+              {/* Stage column dividers */}
+              <div
+                style={{
+                  position: "absolute",
+                  inset: "30px 0 0 0",
+                  pointerEvents: "none",
+                }}
+              >
+                {stages.map((s) =>
+                  s.column > 0 ? (
                     <div
+                      key={s.id}
                       style={{
-                        fontSize: 12.5,
-                        color: "var(--text)",
-                        fontWeight: 500,
-                        lineHeight: 1.2,
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        display: "-webkit-box",
-                        WebkitLineClamp: 2,
-                        WebkitBoxOrient: "vertical",
+                        position: "absolute",
+                        top: 0,
+                        bottom: 0,
+                        left: PAD_X + s.column * COL_W - 8,
+                        width: 1,
+                        background: "var(--border)",
+                        opacity: 0.5,
+                      }}
+                    />
+                  ) : null,
+                )}
+              </div>
+
+              {/* SVG edges */}
+              <svg
+                width={canvasSize.width}
+                height={canvasSize.height}
+                role="img"
+                aria-label={`Workflow DAG: ${agents.length} agents wired by ${edges.length} event edges`}
+                style={{
+                  position: "absolute",
+                  top: 30,
+                  left: 0,
+                  pointerEvents: "none",
+                }}
+              >
+                <defs>
+                  {["green", "blue", "amber", "red", "muted"].map((c) => (
+                    <marker
+                      key={c}
+                      id={`arrow-${c}`}
+                      viewBox="0 0 10 10"
+                      refX="8"
+                      refY="5"
+                      markerWidth="6"
+                      markerHeight="6"
+                      orient="auto"
+                    >
+                      <path d="M0,0 L10,5 L0,10 z" fill={colorVar(c)} />
+                    </marker>
+                  ))}
+                </defs>
+                {edges.map((e, i) => {
+                  const s = renderedPositions.get(e.src) ?? { x: 0, y: 0 };
+                  const d = renderedPositions.get(e.dst) ?? { x: 0, y: 0 };
+                  const sx = s.x + NODE_W;
+                  const sy = s.y + NODE_H / 2;
+                  const dx = d.x;
+                  const dy = d.y + NODE_H / 2;
+                  const path = workflowEdgePath(
+                    { x: sx, y: sy },
+                    { x: dx, y: dy },
+                  );
+                  const color = colorVar(evColor[e.event] ?? "muted");
+                  const isHi = highlighted.edges.has(i) || hoveredEdge === i;
+                  const opacity = dim ? (isHi ? 1 : 0.1) : isHi ? 1 : 0.55;
+                  return (
+                    <g
+                      key={JSON.stringify([e.src, e.dst, e.event])}
+                      role="button"
+                      tabIndex={0}
+                      aria-label={`Event edge: ${e.event} from ${e.src} to ${e.dst}`}
+                      style={{ pointerEvents: "auto" }}
+                      onKeyDown={(ev) => {
+                        if (ev.key === "Enter" || ev.key === " ") {
+                          ev.preventDefault();
+                          setSelectedEvent(e.event);
+                        }
                       }}
                     >
-                      {a.title}
-                    </div>
-                    {editing && isSel && (
-                      <>
-                        {(["top", "right", "bottom", "left"] as const).map((s) => (
+                      <path
+                        d={path}
+                        stroke={color}
+                        strokeWidth={isHi ? 2 : 1.25}
+                        fill="none"
+                        opacity={opacity}
+                        markerEnd={`url(#arrow-${evColor[e.event] ?? "muted"})`}
+                        style={{
+                          cursor: "pointer",
+                          transition: "opacity 0.15s, stroke-width 0.15s",
+                        }}
+                        onMouseEnter={() => setHoveredEdge(i)}
+                        onMouseLeave={() => setHoveredEdge(null)}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setSelectedEvent(e.event);
+                        }}
+                      />
+                      {liveStream &&
+                        (isHi || (!dim && Math.abs((i * 37) % 7) === 0)) && (
+                          <circle
+                            className={styles.animatedEdgeDot}
+                            r="3"
+                            fill={color}
+                            opacity={isHi ? 1 : 0.85}
+                            aria-hidden="true"
+                          >
+                            <animateMotion
+                              dur={`${2.5 + (i % 5) * 0.4}s`}
+                              repeatCount="indefinite"
+                              begin={`${(i * 0.13) % 2}s`}
+                              path={path}
+                            />
+                          </circle>
+                        )}
+                    </g>
+                  );
+                })}
+                {linkDrag &&
+                  (() => {
+                    const source = renderedPositions.get(linkDrag.sourceId);
+                    if (!source) return null;
+                    const target = linkDrag.targetId
+                      ? renderedPositions.get(linkDrag.targetId)
+                      : null;
+                    const endpoint = target
+                      ? { x: target.x, y: target.y + NODE_H / 2 }
+                      : linkDrag.point;
+                    return (
+                      <path
+                        className={styles.connectionPreview}
+                        d={workflowEdgePath(
+                          {
+                            x: source.x + NODE_W,
+                            y: source.y + NODE_H / 2,
+                          },
+                          endpoint,
+                        )}
+                        markerEnd="url(#arrow-blue)"
+                      />
+                    );
+                  })()}
+              </svg>
+
+              {/* Agent nodes */}
+              <div
+                style={{
+                  position: "absolute",
+                  top: 30,
+                  left: 0,
+                  width: canvasSize.width,
+                  height: canvasSize.height,
+                }}
+              >
+                {agents.map((a) => {
+                  const p = renderedPositions.get(a.kebabId) ?? { x: 0, y: 0 };
+                  const isSel = selectedAgent === a.kebabId;
+                  const isConnectSource = connectFrom === a.kebabId;
+                  const isDropTarget = linkDrag?.targetId === a.kebabId;
+                  const isDragging = nodeDrag?.id === a.kebabId;
+                  const isHi = highlighted.nodes.has(a.kebabId);
+                  const showDim = dim && !isHi;
+                  const isAdded = editing && draft.added.has(a.kebabId);
+                  const isModified = Boolean(
+                    editing &&
+                    draft.agents[a.kebabId] &&
+                    !draft.added.has(a.kebabId) &&
+                    !draft.removed.has(a.kebabId),
+                  );
+                  const borderColor = isSel
+                    ? "var(--signal)"
+                    : isConnectSource
+                      ? "var(--blue)"
+                      : isAdded
+                        ? "var(--green)"
+                        : isModified
+                          ? "var(--amber)"
+                          : isHi
+                            ? "var(--border-3)"
+                            : "var(--border-2)";
+                  const dashed = editing ? "dashed" : "solid";
+                  const stateSuffix = isAdded
+                    ? ", draft addition"
+                    : isModified
+                      ? ", draft modification"
+                      : "";
+                  const nodeLabel = `${a.actor} node: ${a.title}, id ${a.kebabId}${stateSuffix}`;
+                  return (
+                    <div
+                      key={a.kebabId}
+                      className={`${styles.nodeFrame} ${
+                        isDragging ? styles.nodeFrameDragging : ""
+                      }`}
+                      style={{
+                        left: p.x,
+                        top: p.y,
+                        width: NODE_W,
+                        height: NODE_H,
+                        opacity: showDim ? 0.3 : 1,
+                      }}
+                    >
+                      <button
+                        type="button"
+                        className={styles.nodeButton}
+                        aria-label={nodeLabel}
+                        aria-pressed={isSel}
+                        onPointerDown={(event) =>
+                          beginNodeDrag(event, a.kebabId)
+                        }
+                        onPointerMove={updateNodeDrag}
+                        onPointerUp={finishNodeDrag}
+                        onPointerCancel={() => setNodeDrag(null)}
+                        onKeyDown={(event) => nudgeNode(event, a.kebabId)}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          if (suppressedNodeClickRef.current === a.kebabId) {
+                            suppressedNodeClickRef.current = null;
+                            return;
+                          }
+                          if (editing && tool === "connect") {
+                            connectNode(a.kebabId);
+                            return;
+                          }
+                          setSelectedAgent(isSel ? null : a.kebabId);
+                          setSelectedEvent(null);
+                        }}
+                        onDoubleClick={(event) => {
+                          event.stopPropagation();
+                          expandAgentPanel(a.kebabId);
+                        }}
+                        title={
+                          editing
+                            ? `Drag to move ${a.title}. Double-click to expand all agent settings.`
+                            : `Open ${a.title} details. Double-click to expand the detail panel.`
+                        }
+                        style={{
+                          background:
+                            a.actor === "Agent"
+                              ? "var(--panel)"
+                              : "var(--panel-2)",
+                          borderTop: `1px ${dashed} ${borderColor}`,
+                          borderRight: `1px ${dashed} ${borderColor}`,
+                          borderBottom: `1px ${dashed} ${borderColor}`,
+                          borderLeft: `3px solid ${
+                            a.actor === "Agent"
+                              ? "var(--signal)"
+                              : "var(--violet)"
+                          }`,
+                          cursor:
+                            editing && tool === "connect"
+                              ? "crosshair"
+                              : editing && tool === "select"
+                                ? isDragging
+                                  ? "grabbing"
+                                  : "grab"
+                                : "pointer",
+                          boxShadow: isSel
+                            ? "0 0 0 3px rgba(208,255,0,0.12)"
+                            : "none",
+                        }}
+                      >
+                        <div
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 6,
+                            marginBottom: 4,
+                          }}
+                        >
+                          <ActorTag actor={a.actor} />
+                          {isAdded && <Badge tone="green">NEW</Badge>}
+                          {isModified && <Badge tone="amber">MOD</Badge>}
                           <span
-                            key={s}
                             style={{
-                              position: "absolute",
-                              width: 8,
-                              height: 8,
-                              background: "var(--signal)",
-                              border: "1px solid var(--bg)",
-                              borderRadius: 1,
-                              top: s === "top" ? -4 : s === "bottom" ? "calc(100% - 4px)" : "calc(50% - 4px)",
-                              left: s === "left" ? -4 : s === "right" ? "calc(100% - 4px)" : "calc(50% - 4px)",
+                              marginLeft: "auto",
+                              fontSize: 10,
+                              fontFamily: "var(--mono)",
+                              color: "var(--text-3)",
+                            }}
+                          >
+                            {a.kebabId}
+                          </span>
+                        </div>
+                        <div
+                          style={{
+                            fontSize: 12.5,
+                            color: "var(--text)",
+                            fontWeight: 600,
+                            lineHeight: 1.2,
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            display: "-webkit-box",
+                            WebkitLineClamp: 2,
+                            WebkitBoxOrient: "vertical",
+                          }}
+                        >
+                          {a.title}
+                        </div>
+                      </button>
+                      {editing && (
+                        <>
+                          <button
+                            type="button"
+                            className={`${styles.nodePort} ${styles.nodePortInput} ${
+                              isDropTarget ? styles.nodePortActive : ""
+                            }`}
+                            data-workflow-input={a.kebabId}
+                            aria-label={`Connect into ${a.title}`}
+                            title={`Input port for ${a.title}`}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              if (connectFrom) {
+                                connectPair(connectFrom, a.kebabId);
+                                return;
+                              }
+                              setSelectedAgent(a.kebabId);
                             }}
                           />
-                        ))}
-                      </>
-                    )}
-                  </button>
-                );
-              })}
+                          <button
+                            type="button"
+                            className={`${styles.nodePort} ${styles.nodePortOutput} ${
+                              linkDrag?.sourceId === a.kebabId
+                                ? styles.nodePortActive
+                                : ""
+                            }`}
+                            aria-label={`Start a connection from ${a.title}`}
+                            title={`Drag to connect from ${a.title}`}
+                            onPointerDown={(event) =>
+                              beginLinkDrag(event, a.kebabId)
+                            }
+                            onPointerMove={updateLinkDrag}
+                            onPointerUp={finishLinkDrag}
+                            onPointerCancel={() => setLinkDrag(null)}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              if (suppressedPortClickRef.current) return;
+                              setTool("connect");
+                              setConnectFrom(a.kebabId);
+                              setSelectedAgent(a.kebabId);
+                              setSelectedEvent(null);
+                              setCanvasAnnouncement(
+                                `${a.kebabId} selected as the connection source. Choose a target input port or node.`,
+                              );
+                            }}
+                          />
+                        </>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           </div>
         </div>
 
-        {/* Right inspector aside */}
-        <aside
-          style={{
-            borderLeft: "1px solid var(--border)",
-            background: "var(--panel)",
-            display: "flex",
-            flexDirection: "column",
-            minHeight: 0,
-          }}
+        <div
+          className={styles.inspectorSplitter}
+          title="Drag to resize agent details. Double-click to expand or restore."
+          onDoubleClick={toggleAgentPanelWidth}
         >
-          {selectedAgent && editing && selectedAgentRow ? (
+          <Splitter
+            axis="x"
+            invert
+            hitSize={WORKFLOW_INSPECTOR_SPLITTER_WIDTH}
+            getValue={() => renderedInspectorWidth}
+            setValue={(next) =>
+              setInspectorWidth(
+                clampWorkflowInspectorWidth(next, workspaceWidth),
+              )
+            }
+            min={WORKFLOW_INSPECTOR_MIN_WIDTH}
+            max={inspectorMaxWidth}
+            ariaLabel="Resize workflow canvas and agent details"
+            ariaControls="workflow-canvas-region workflow-agent-inspector"
+          />
+        </div>
+
+        {/* Right inspector aside */}
+        <aside className={styles.inspector} id="workflow-agent-inspector">
+          {selectedAgent && editing && selectedAgentRecord ? (
             <AgentEditor
-              agent={selectedAgentRow}
+              agent={selectedAgentRecord}
+              workflowSlug={selectedWorkflow ?? undefined}
+              workflowAgents={agents}
               events={events}
               draft={draft.agents[selectedAgent]}
-              onChange={(next) =>
+              onChange={(next) => {
                 setDraft((prev) => ({
                   ...prev,
                   agents: { ...prev.agents, [selectedAgent]: next },
-                }))
-              }
+                }));
+                setValidation(null);
+              }}
+              onValidityChange={reportEditorValidity}
+              onToggleWidth={toggleAgentPanelWidth}
+              canResize={inspectorCanResize}
+              isWide={inspectorIsWide}
               onRemove={() => {
                 setDraft((prev) => {
                   const isAdded = prev.added.has(selectedAgent);
@@ -895,31 +2272,92 @@ export default function WorkflowsPage() {
                       : new Set([...prev.removed, selectedAgent]),
                   };
                 });
+                setValidation(null);
+                setEditorErrors((current) => {
+                  const next = { ...current };
+                  delete next[selectedAgent];
+                  return next;
+                });
                 setSelectedAgent(null);
               }}
               onClose={() => setSelectedAgent(null)}
             />
-          ) : selectedAgent ? (
+          ) : selectedAgent && selectedAgentRecord ? (
             <AgentInspector
-              agent={agents.find((a) => a.kebabId === selectedAgent)}
+              agent={selectedAgentRecord}
               onClose={() => setSelectedAgent(null)}
-              onOpenFull={() => navAgent(selectedAgent)}
+              onToggleWidth={toggleAgentPanelWidth}
+              canResize={inspectorCanResize}
+              isWide={inspectorIsWide}
+              workflowLabel={`${selectedWorkflow ?? "workflow"}${workflowVersion ? ` · ${workflowVersion}` : ""}`}
             />
           ) : selectedEvent ? (
             <EventInspector
               eventName={selectedEvent}
+              agents={agents}
               onClose={() => setSelectedEvent(null)}
-              onNavigateAgent={navAgent}
+              onNavigateAgent={(id) => {
+                setSelectedAgent(id);
+                setSelectedEvent(null);
+              }}
               onNavigateEvents={navEvents}
             />
           ) : editing ? (
-            <DraftPalette tenant={tenant} draft={draft} />
+            <DraftPalette
+              workflowName={
+                selectedSummary?.name ?? selectedWorkflow ?? "Workflow"
+              }
+              draft={draft}
+              connectFrom={connectFrom}
+              validation={validation}
+              onAddAutomated={() => addAgent("Agent")}
+              onAddHuman={() => addAgent("Human")}
+            />
           ) : (
-            <DefaultInspector events={events} agents={agents} onPick={setSelectedEvent} />
+            <DefaultInspector
+              events={events}
+              agents={agents}
+              onPick={setSelectedEvent}
+            />
           )}
         </aside>
       </div>
-      {showImport && <ImportManifestModal onClose={() => setShowImport(false)} mode="workflow" />}
+      {showNewModal && (
+        <NewWorkflowModal
+          onClose={() => setShowNewModal(false)}
+          onCreated={selectCreatedWorkflow}
+          onImport={(target) => {
+            setImportTarget(target);
+            setShowImport(true);
+          }}
+        />
+      )}
+      {showImport && (
+        <ImportManifestModal
+          onClose={() => {
+            setShowImport(false);
+            setImportTarget(null);
+            void catalogQuery.refetch();
+            void dagQuery.refetch();
+          }}
+          mode="workflow"
+          draftTarget={importTarget ?? undefined}
+          onDraftCreated={selectCreatedWorkflow}
+        />
+      )}
+      {showRunConsole && selectedWorkflow && agents.length > 0 && (
+        <WorkflowRunConsole
+          workflowSlug={selectedWorkflow}
+          workflowName={selectedSummary?.name ?? selectedWorkflow}
+          manifest={editableManifest()}
+          currentVersion={
+            workflowVersion || selectedSummary?.latestVersion || "draft"
+          }
+          liveVersionId={selectedSummary?.liveVersionId ?? null}
+          onClose={() => setShowRunConsole(false)}
+        />
+      )}
+      <WorkflowHelp open={showHelp} onClose={() => setShowHelp(false)} />
     </div>
   );
 }

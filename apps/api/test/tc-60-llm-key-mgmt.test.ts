@@ -13,6 +13,7 @@ import { existsSync, rmSync } from "node:fs";
 import path from "node:path";
 import { buildTestEnv, type TestEnv } from "./harness";
 import { and, eq } from "drizzle-orm";
+import { PROVIDER_IDS } from "@agentic/contracts";
 import { auditLog, getDb } from "@agentic/db";
 
 const VAULT_PATH = path.join(
@@ -46,7 +47,7 @@ describe("TC-60: /v1/llm/providers key management", () => {
       data: Array<{ provider: string; hasKey: boolean; source: string }>;
     };
     expect(body.ok).toBe(true);
-    expect(body.data).toHaveLength(14);
+    expect(body.data).toHaveLength(PROVIDER_IDS.length);
     const openrouter = body.data.find((m) => m.provider === "openrouter");
     expect(openrouter).toBeDefined();
   });

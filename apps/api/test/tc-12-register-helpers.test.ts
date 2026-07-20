@@ -15,6 +15,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import {
   AgentSchema,
+  eventTargetsAgent,
   functionRetries,
   registerAgent,
   type AgentSpec,
@@ -41,6 +42,18 @@ function manualTaskTimeout(action: {
 }
 
 describe("TC-12: register.ts helpers", () => {
+  describe("eventTargetsAgent (agent-scoped event delivery)", () => {
+    it("preserves generic fanout when no target metadata is present", () => {
+      expect(eventTargetsAgent({ subject: "REQ-1" }, "researcher")).toBe(true);
+    });
+
+    it("allows only the named agent when subscribers share a trigger", () => {
+      const data = { __invokedAgent: "researcher", subject: "REQ-2" };
+      expect(eventTargetsAgent(data, "researcher")).toBe(true);
+      expect(eventTargetsAgent(data, "reviewer")).toBe(false);
+    });
+  });
+
   describe("computeFunctionRetries (P0-RT-06)", () => {
     it("uses the action max when greater than the default", () => {
       expect(

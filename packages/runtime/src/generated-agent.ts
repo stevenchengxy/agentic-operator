@@ -9,28 +9,52 @@
 import type { PromptDescriptor, ToolContext } from "@agentic/agent-kit";
 
 /** Build the default prompt for a generated agent's logic action. Language-neutral + structural:
- *  it feeds the trigger event payload and defers ALL behaviour to the agent's ontology_instructions
- *  (system) + its tool roster. No business logic is hardcoded here. */
-export function makeGeneratedAgentPrompt(actionName: string): PromptDescriptor {
+ *  it feeds the trigger event payload + previous action result and defers ALL behaviour to the
+ *  agent's ontology_instructions (system) + its tool roster. No business logic hardcoded here. */
+export function makeGeneratedAgentPrompt(
+  actionName: string,
+  actionDescription = "",
+): PromptDescriptor {
   return {
     kind: "prompt",
     name: `generated:${actionName}`,
     template: (ctx: ToolContext) => {
-      const data = (ctx?.event?.data ?? {}) as Record<string, unknown>;
-      // The fenced block is explicitly labelled JSON.  If the event cannot
-      // be represented as JSON, fail the step instead of feeding the model a
-      // misleading "[object Object]" pseudo-payload.
-      const payload = JSON.stringify(data, null, 2);
+      const event = ctx.event ?? { name: "unknown", data: {} };
+      // The fenced block is explicitly labelled JSON. If the trigger event
+      // cannot be represented as JSON (circular, etc.), FAIL the step instead
+      // of feeding the model a misleading pseudo-payload. `lastResult` is
+      // best-effort context and may degrade via safeJson.
+      const payload = JSON.stringify(event.data ?? {}, null, 2);
+      const previous =
+        ctx.lastResult === undefined || ctx.lastResult === null
+          ? "(none)"
+          : safeJson(ctx.lastResult);
+
       return [
-        `Incoming event payload / 触发事件数据:`,
+        `Execute the workflow action "${actionName}".`,
+        actionDescription ? `Action objective: ${actionDescription}` : "",
+        `Trigger event: ${event.name}`,
+        "Incoming event payload / 触发事件数据:",
         "```json",
         payload,
         "```",
-        ``,
-        `You are the agent for action "${actionName}". Follow your system instructions, call the`,
-        `available tools when you need data or to act, then produce your result.`,
-        `按你的系统指令处理本次事件：需要数据或执行动作时调用可用工具，完成后给出结论。`,
-      ].join("\n");
+        "Previous action result:",
+        "```json",
+        previous,
+        "```",
+        "Follow the system prompt exactly. Use an available tool only when it is necessary, then return the final result for this workflow step.",
+        "按你的系统指令处理本次事件：需要数据或执行动作时调用可用工具，完成后给出结论。",
+      ]
+        .filter(Boolean)
+        .join("\n");
     },
   };
+}
+
+function safeJson(value: unknown): string {
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return String(value);
+  }
 }

@@ -109,9 +109,7 @@ export interface RunListRow extends CodeActReceiptFields {
   outputPayload?: unknown;
 }
 
-export function useRuns(
-  filter?: RunListFilter,
-): UseQueryResult<RunListRow[]> {
+export function useRuns(filter?: RunListFilter): UseQueryResult<RunListRow[]> {
   const query = buildQuery(filter);
   return useQuery({
     queryKey: filter
@@ -310,9 +308,13 @@ export interface RunDetail {
   waitingTask?: RunWaitingTask | null;
 }
 
-export function useRun(id: string | null | undefined): UseQueryResult<RunDetail> {
+export function useRun(
+  id: string | null | undefined,
+): UseQueryResult<RunDetail> {
   return useQuery({
-    queryKey: id ? RUN_KEYS.detail(id) : (["runs", "detail", "__none__"] as const),
+    queryKey: id
+      ? RUN_KEYS.detail(id)
+      : (["runs", "detail", "__none__"] as const),
     queryFn: () => callV1<RunDetail>(`/v1/runs/${encodeURIComponent(id!)}`),
     enabled: Boolean(id),
   });
@@ -348,15 +350,54 @@ export function useRunChain(id: string | null | undefined): UseQueryResult<RunCh
   });
 }
 
-/** Replay a run: `/v1/runs/:id/replay` */
+export interface RunArtifact {
+  id: string;
+  kind: string;
+  role?: string;
+  logicalName?: string | null;
+  contentType?: string | null;
+  size: number;
+  createdAt: string;
+  downloadPath: string;
+}
+
+export function useRunArtifacts(
+  id: string | null | undefined,
+): UseQueryResult<RunArtifact[]> {
+  return useQuery({
+    queryKey: id
+      ? [...RUN_KEYS.detail(id), "artifacts"]
+      : (["runs", "artifacts", "__none__"] as const),
+    queryFn: () =>
+      callV1<RunArtifact[]>(`/v1/runs/${encodeURIComponent(id!)}/artifacts`),
+    enabled: Boolean(id),
+  });
+}
+
+export interface LegacyReplayRunResult {
+  replayed_run: string;
+  new_event_id: string;
+}
+
+export interface StudioReplayRunResult {
+  runId: string;
+  sessionId: string;
+  status: "queued";
+  definitionHash: string;
+  traceUrl: string;
+  outputUrl: string;
+}
+
+export type ReplayRunResult = LegacyReplayRunResult | StudioReplayRunResult;
+
+/** Replay a run: Studio runs return the new run, legacy runs return the new event. */
 export function useReplayRun() {
   const client = useQueryClient();
   return useMutation({
     mutationFn: (id: string) =>
-      callV1<{ replayed_run: string; new_event_id: string }>(
-        `/v1/runs/${encodeURIComponent(id)}/replay`,
-        { method: "POST" },
-      ),
+      callV1<ReplayRunResult>(`/v1/runs/${encodeURIComponent(id)}/replay`, {
+        method: "POST",
+      }),
     onSettled: () => {
       void client.invalidateQueries({ queryKey: RUN_KEYS.all });
       void client.invalidateQueries({ queryKey: COUNT_KEYS.tenant });
@@ -386,10 +427,9 @@ export function useCancelRun() {
   const client = useQueryClient();
   return useMutation({
     mutationFn: (id: string) =>
-      callV1<CancelRunResult>(
-        `/v1/runs/${encodeURIComponent(id)}/cancel`,
-        { method: "POST" },
-      ),
+      callV1<CancelRunResult>(`/v1/runs/${encodeURIComponent(id)}/cancel`, {
+        method: "POST",
+      }),
     onSettled: (_data, _err, id) => {
       void client.invalidateQueries({ queryKey: RUN_KEYS.detail(id) });
       void client.invalidateQueries({ queryKey: RUN_KEYS.all });

@@ -30,6 +30,7 @@ import { useRuns } from "@/lib/hooks/useRuns";
 import { useTenant } from "@/app/portal/lib/use-tenant";
 import { useI18n } from "@/app/portal/lib/preferences-context";
 import { ImportManifestModal } from "@/app/portal/components/import-manifest/ImportManifestModal";
+import { DeployAgentModal } from "@/app/portal/components/agents/DeployAgentModal";
 import {
   buildAgentStats,
   type AgentStatsSnapshot,
@@ -46,6 +47,7 @@ export default function AgentsPage() {
   const [query, setQuery] = useState("");
   const [actorFilter, setActorFilter] = useState<"all" | "Agent" | "Human">("all");
   const [importOpen, setImportOpen] = useState(false);
+  const [newAgentOpen, setNewAgentOpen] = useState(false);
 
   const stats = useMemo(() => {
     return buildAgentStats(agents, runs);
@@ -94,11 +96,25 @@ export default function AgentsPage() {
           automated: automatedValue,
           human: humanValue,
         })}
-        action={
-          <Button icon="upload" small onClick={() => setImportOpen(true)}>
+        action={[
+          <Button
+            key="upload"
+            icon="upload"
+            small
+            onClick={() => setImportOpen(true)}
+          >
             {t("agents.importManifest")}
-          </Button>
-        }
+          </Button>,
+          <Button
+            key="new"
+            icon="plus"
+            tone="primary"
+            small
+            onClick={() => setNewAgentOpen(true)}
+          >
+            {t("agents.newAgent")}
+          </Button>,
+        ]}
       />
 
       {runsQuery.isError ? (
@@ -176,6 +192,9 @@ export default function AgentsPage() {
         </aside>
       </div>
 
+      {newAgentOpen && (
+        <DeployAgentModal onClose={() => setNewAgentOpen(false)} />
+      )}
       {importOpen && <ImportManifestModal onClose={() => setImportOpen(false)} mode="agent" />}
     </div>
   );

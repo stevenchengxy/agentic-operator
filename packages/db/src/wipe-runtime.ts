@@ -6,16 +6,20 @@
  * clean-slate primitive: run it to drop accumulated development/test traffic
  * before proving that dashboards and log tabs reflect only fresh live runs.
  *
- * Wiped: `runs`, `steps`, `events`, `tasks`, `audit_log`, `artifacts`,
+ * Wiped: `runs`, `steps`, `usage_events`, `llm_calls` (usage ledger),
+ *        `llm_call_telemetry`, `llm_turns`, `run_summaries`, `events`, `tasks`,
+ *        `audit_log`, `artifacts`, `run_trace_events`, `run_emitted_events`,
+ *        `run_messages`, `agent_run_sessions`,
  *        `event_listeners` (regenerated on bootstrap),
- *        `agent_memory_short`, `agent_memory_long`, `llm_calls`,
- *        `llm_budget_reservations`, `event_store`, `acceptance_scores`,
+ *        `agent_memory_short`, `agent_memory_long` (per-run scratch),
+ *        `llm_budget_reservations` (legacy), `event_store`, `acceptance_scores`,
  *        `tool_stats`, and `idempotency_keys`.
  *
  * KEPT:  `tenants`, `users`, `memberships`, `workflows`, `workflow_versions`,
  *        `deployments`, `agents`, `agent_versions`, `event_types`,
  *        `entity_types`, `api_tokens`, `webhook_subscriptions`,
- *        `tenant_budgets`, `_meta`. These are identity + configuration,
+ *        `agent_drafts`, `agent_draft_revisions`, `tenant_budgets`, `_meta`.
+ *        These are identity + configuration,
  *        not runtime traffic.
  *
  * Idempotent. Reports a summary of rows cleared per table.
@@ -42,6 +46,10 @@ import { closeDb, getRawSqlite } from "./client";
  */
 const TABLES_TO_WIPE = [
   "acceptance_scores",
+  "run_trace_events",
+  "run_emitted_events",
+  "run_messages",
+  "usage_events",
   "steps",
   "llm_turns",
   "run_summaries",
@@ -50,10 +58,12 @@ const TABLES_TO_WIPE = [
   "agent_memory_long",
   "tasks",
   "runs",
+  "agent_run_sessions",
   "events",
   "event_store",
   "event_listeners",
   "llm_calls",
+  "llm_call_telemetry",
   "llm_budget_reservations",
   "idempotency_keys",
   "tool_stats",
@@ -102,6 +112,28 @@ export function wipeRuntime(): WipeReport[] {
         afterRows: afterRow.n,
         cleared: beforeRow.n - afterRow.n,
       });
+    }
+    // Usage rows and budget projections are one accounting system. Keep the
+    // configured caps, but reset their projections when the source ledger is
+    // wiped so totals remain reconcilable.
+    const hasBudgets = sqlite
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='tenant_budgets'",
+      )
+      .get();
+    if (hasBudgets) {
+      const now = Date.now();
+      const date = new Date(now);
+      const periodStart = Date.UTC(
+        date.getUTCFullYear(),
+        date.getUTCMonth(),
+        1,
+      );
+      sqlite
+        .prepare(
+          "UPDATE tenant_budgets SET used_tokens_month=0, used_usd_month=0, used_usd_nanos=0, period_start=?, updated_at=?",
+        )
+        .run(periodStart, now);
     }
   });
   try {
@@ -203,7 +235,10 @@ async function main(): Promise<void> {
     "[wipe-runtime]          deployments, agents, agent_versions, event_types,",
   );
   console.log(
-    "[wipe-runtime]          entity_types, api_tokens, webhook_subscriptions, tenant_budgets, _meta",
+    "[wipe-runtime]          agent_drafts, agent_draft_revisions, entity_types, api_tokens,",
+  );
+  console.log(
+    "[wipe-runtime]          webhook_subscriptions, tenant_budgets, _meta",
   );
   const clearedRoots = wipeRuntimeFiles();
   const report = wipeRuntime();

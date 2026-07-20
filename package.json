@@ -4,18 +4,22 @@
   "private": true,
   "description": "Agentic Operator — event-driven agentic workflow runtime + admin portal",
   "engines": {
-    "node": ">=26.0.0"
+    "node": "26.5.0"
   },
   "packageManager": "pnpm@11.3.0",
   "scripts": {
-    "ensure:native": "node scripts/ensure-native-modules.mjs",
+    "ensure:node": "node scripts/ensure-node-version.mjs",
+    "ensure:native": "pnpm run ensure:node && node scripts/ensure-native-modules.mjs",
+    "preinstall": "node scripts/ensure-node-version.mjs",
     "predev": "pnpm run ensure:native && if [ \"${AGENTIC_SKIP_PREDEV_STOP:-0}\" != \"1\" ]; then bash scripts/stop-dev.sh; fi",
     "dev": "concurrently --kill-others-on-fail -n web,api,inngest -c blue,green,magenta \"pnpm --filter @agentic/web run dev\" \"pnpm --filter @agentic/api run dev\" \"pnpm dlx inngest-cli@latest dev -u http://localhost:3540/inngest -p 8488 --connect-gateway-port 8489 --connect-gateway-grpc-port 50152 --connect-executor-grpc-port 50153\"",
     "dev:restart": "bash scripts/restart-dev.sh",
     "restart": "bash scripts/restart-dev.sh",
     "prebuild": "pnpm run ensure:native",
     "build": "turbo run build",
+    "prelint": "pnpm run ensure:node",
     "lint": "turbo run lint",
+    "pretypecheck": "pnpm run ensure:node",
     "typecheck": "turbo run typecheck",
     "pretest": "pnpm run ensure:native",
     "test": "node --test scripts/run-db-command.test.mjs scripts/factory-sandbox-release-manifest.test.mjs scripts/allmeta-full-domain-release-client.test.mjs scripts/build-agents-generation-ontology.test.mjs deploy/factory-sandbox/validate-external-sandbox.test.mjs && turbo run test --concurrency=1",
@@ -29,8 +33,11 @@
     "preview:agents-generation-ontology-release": "node scripts/allmeta-full-domain-release-client.mjs",
     "test:agents-generation-ontology-release": "node --test scripts/allmeta-full-domain-release-client.test.mjs",
     "watch:factory-production-images": "pnpm --filter @agentic/api run watch:factory-production-images",
+    "preclean": "pnpm run ensure:node",
     "clean": "turbo run clean && rm -rf node_modules .turbo",
+    "preformat": "pnpm run ensure:node",
     "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md}\"",
+    "predb:generate": "pnpm run ensure:node",
     "predb:migrate": "pnpm run ensure:native",
     "db:generate": "node scripts/run-db-command.mjs generate",
     "db:migrate": "node scripts/run-db-command.mjs migrate",
@@ -44,11 +51,15 @@
     "db:prune-deployments": "node scripts/run-db-command.mjs prune-deployments",
     "db:studio": "node scripts/run-db-command.mjs studio",
     "db:recover-writer-lease": "node scripts/run-db-command.mjs recover-writer-lease",
-    "postinstall": "node scripts/ensure-native-modules.mjs"
+    "preseed:rich": "pnpm run ensure:native",
+    "seed:rich": "pnpm --filter @agentic/api run seed:rich",
+    "postinstall": "pnpm run ensure:native"
+
   },
   "devDependencies": {
-    "@types/node": "^25.8.0",
+    "@types/node": "^26.1.1",
     "concurrently": "^9.2.1",
+    "inngest-cli": "1.37.0",
     "prettier": "^3.8.3",
     "turbo": "^2.9.14",
     "typescript": "^6.0.3"

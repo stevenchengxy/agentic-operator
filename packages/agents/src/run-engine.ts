@@ -32,6 +32,7 @@ import { logPathFor, publishStreamEvent, writeRunLog } from "@agentic/runtime";
 import type { ProviderId } from "@agentic/contracts";
 import {
   LLMError,
+  currentUsageAttribution,
   isLLMError,
   type ChatContentBlock,
   type ChatMessage,
@@ -377,6 +378,9 @@ export async function executeAgentRun<TInput, TOutput>(
     logPath: runLogPath,
   };
   const testRun = ctx.testRun === true;
+  // Request-scoped usage attribution (Kenny's usage-ledger spine): stamp the
+  // originating API request/interaction onto the run row for billing joins.
+  const usageAttribution = currentUsageAttribution();
 
   const reserved = db
     .select({
@@ -421,6 +425,14 @@ export async function executeAgentRun<TInput, TOutput>(
         logPath: runLogPath,
         isTest: testRun,
         errorMessage: null,
+        requestId: usageAttribution?.requestId,
+        interactionId: usageAttribution?.interactionId,
+        productSurface: usageAttribution?.productSurface,
+        productAction: usageAttribution?.productAction,
+        requestedBy:
+          usageAttribution?.actorType === "user"
+            ? usageAttribution.actorId
+            : undefined,
       })
       .where(eq(runs.id, runId))
       .run();
@@ -439,6 +451,14 @@ export async function executeAgentRun<TInput, TOutput>(
         subject: null,
         logPath: runLogPath,
         isTest: testRun,
+        requestId: usageAttribution?.requestId,
+        interactionId: usageAttribution?.interactionId,
+        productSurface: usageAttribution?.productSurface,
+        productAction: usageAttribution?.productAction,
+        requestedBy:
+          usageAttribution?.actorType === "user"
+            ? usageAttribution.actorId
+            : undefined,
       })
       .run();
   }
@@ -600,6 +620,14 @@ export async function executeAgentRun<TInput, TOutput>(
         tenantId,
         runId,
         purpose: `agent:${agent.name}/role:${runtimeRole}/turn:${turn}`,
+        // AI-settings threading (merged from Kenny's runtime v2): per-invocation
+        // overrides win over the agent's declared defaults.
+        reasoning: effectiveCtx.reasoning ?? agent.defaultReasoning,
+        verbosity: effectiveCtx.verbosity ?? agent.defaultVerbosity,
+        store: effectiveCtx.store ?? agent.storeResponses,
+        routing: {
+          taskType: effectiveCtx.taskClass ?? agent.taskClass,
+        },
       });
 
       // Account as soon as the provider returns. Artifact writes, output

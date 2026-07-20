@@ -269,7 +269,7 @@ Agentic Operator is **self-host-first, code+config dual-authored, durable-by-def
 | NFR-DEP-3 | Env-var contract documented in `.env.example`; no hardcoded paths or keys. |
 | NFR-DEP-4 | Healthcheck endpoints: `GET /health` for API, `GET /api/health` for web. Both return `{ ok, version, dbReady, inngestReady }`. |
 | NFR-DEP-5 | Migrations versioned, run on boot before serving traffic. |
-| NFR-DEP-6 | Production target: Node 26 LTS, ESM-only packages, native modules pinned by ABI. |
+| NFR-DEP-6 | Production target: Node 26.5.0 Current, ESM-only packages, native modules pinned by ABI. |
 
 ---
 

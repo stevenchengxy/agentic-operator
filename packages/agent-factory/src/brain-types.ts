@@ -642,6 +642,9 @@ export interface BrainCtx {
   /** the conversation key (durability) + abort signal (client disconnect). */
   conversationId?: string;
   signal?: AbortSignal;
+  /** #CONV-ARCHIVE — how many compaction folds have archived turns for this conversation.
+   *  Persists via serializeCtx so archive batches stay attributable across restarts. */
+  compactionFolds?: number;
   /** sub-brain recursion depth (0 = main brain) — bounds spawn_subagent fan-out (R9). */
   subagentDepth?: number;
   /** #TREE-BUDGET — the spend ledger shared by reference across the whole spawn tree (see BudgetLedger).

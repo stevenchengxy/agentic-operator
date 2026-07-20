@@ -24,8 +24,10 @@ import {
   tenants,
 } from "@agentic/db";
 import { makeId } from "@agentic/shared";
+import { DeployAuthoredAgentBody } from "@agentic/contracts";
 import { createHash } from "node:crypto";
 import { buildTestEnv, type TestEnv } from "./harness";
+import { buildAuthoredManifestAgent } from "../src/services/agent-authoring";
 
 const FIXTURES = path.resolve(__dirname, "fixtures", "manifests");
 
@@ -125,7 +127,7 @@ describe("manifest-import: validate mode", () => {
     const out = await post({ mode: "validate", workflow });
     expect(out.ok).toBe(true);
     expect(out.data.ok).toBe(true);
-    expect(out.data.schema_version).toBe(1);
+    expect(out.data.schema_version).toBe(2);
     expect(out.data.parsed.agents).toBe(5);
     expect(out.data.parsed.events).toBeGreaterThan(0);
     // No blocking issues; the conflict listing is best-effort.
@@ -138,7 +140,7 @@ describe("manifest-import: validate mode", () => {
     const out = await post({ mode: "validate", workflow });
     expect(out.data.ok).toBe(true);
     expect(out.data.parsed.agents).toBe(5);
-    // Schema version is whatever migrate() returns; current is 1.
+    // Schema version is whatever migrate() returns; current is 2.
     expect(typeof out.data.schema_version).toBe("number");
   });
 
@@ -251,6 +253,46 @@ describe("manifest-import: validate mode", () => {
     const c = out.data.conflicts.find((c) => c.type === "orphan_actor");
     expect(c).toBeDefined();
     expect(c!.severity).toBe("block");
+  });
+
+  it("accepts a v2 Human agent with an inline manual-task contract", async () => {
+    const generated = buildAuthoredManifestAgent(
+      DeployAuthoredAgentBody.parse({
+        name: "inlineApprovalAgent",
+        title: "Inline approval agent",
+        description: "Uses the canonical action-local task definition.",
+        actor: "Human",
+        template: "human",
+        triggers: ["APPROVAL_REQUESTED"],
+        emits: ["APPROVAL_REQUESTED"],
+        systemPrompt: "Present the decision context without fabricating it.",
+        toolUse: [],
+      }),
+      {
+        provider: "mock",
+        model: "mock-model-v1",
+        profile: "human",
+        source: "template_default",
+        reason: "test selection",
+      },
+    );
+    expect(generated.actions[0]).toMatchObject({
+      type: "manual",
+      task_type: "approval",
+      awaiting_role: "operator",
+      form_schema: { required: ["decision"] },
+    });
+    expect(generated.tool_use).not.toContainEqual(
+      expect.objectContaining({ name: "taskDefinition" }),
+    );
+
+    // Drive the same parse/migrate/lint pipeline used by commit without
+    // writing a deployment or generated manifest file.
+    const out = await post({ mode: "validate", workflow: [generated] });
+    expect(out.data.ok).toBe(true);
+    expect(
+      out.data.conflicts.some((conflict) => conflict.type === "orphan_actor"),
+    ).toBe(false);
   });
 
   it("rejects cross-tenant requests with 403", async () => {

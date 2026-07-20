@@ -12,11 +12,13 @@ import {
   ManifestImportCommit as ManifestImportCommitSchema,
   ManifestImportOverwriteRequired as ManifestImportOverwriteRequiredSchema,
   ManifestImportPreview as ManifestImportPreviewSchema,
+  WorkflowDetailSchema,
   type Conflict,
   type ConflictResolution,
   type ManifestImportBody,
   type ManifestImportOverwriteRequired,
   type ManifestImportPreview,
+  type WorkflowDetail,
 } from "@agentic/contracts";
 import {
   Badge,
@@ -49,7 +51,8 @@ const IMPORT_STEPS = [
 
 type SourceKind = "file" | "paste" | "url" | "git";
 type ResolutionChoice = "auto_fix" | "skip";
-type DeployTarget = "staging" | "production";
+/** The merged manifest-import contract deploys straight to production. */
+type DeployTarget = "production";
 
 interface FileEntry {
   name: string;
@@ -85,6 +88,14 @@ export interface ImportManifestModalProps {
   onClose: () => void;
   mode?: "workflow" | "agent";
   tenantSlug?: string;
+  /**
+   * Workflow-authoring integration: when set, the wizard validates with
+   * `draft_only` and materializes the normalized manifest as a NEW editable
+   * workflow draft (`POST /v1/workflows`) instead of committing a deployment.
+   */
+  draftTarget?: { slug: string; name: string };
+  /** Called with the created workflow draft after a draft-mode import. */
+  onDraftCreated?: (workflow: WorkflowDetail) => void;
 }
 
 function manifestHeaders(slug: string): Record<string, string> {
@@ -166,6 +177,8 @@ export function ImportManifestModal({
   onClose,
   mode = "workflow",
   tenantSlug,
+  draftTarget,
+  onDraftCreated,
 }: ImportManifestModalProps) {
   const { t } = useI18n();
   const urlTenant = useTenant();
@@ -188,7 +201,9 @@ export function ImportManifestModal({
   const [resolutions, setResolutions] = useState<
     Record<string, ResolutionChoice>
   >({});
-  const [target, setTarget] = useState<DeployTarget>("staging");
+  // hint: "Production only" — the api's commit contract accepts a single
+  // target; there is no staging tier to silently claim.
+  const [target] = useState<DeployTarget>("production");
   const [noteText, setNoteText] = useState("");
   const [validating, setValidating] = useState(false);
   const [committing, setCommitting] = useState(false);
@@ -414,7 +429,7 @@ export function ImportManifestModal({
         );
       }
       committedRef.current = false;
-      pendingDeploymentRef.current = result.data.deployment_id;
+      pendingDeploymentRef.current = result.data.deployment_id ?? null;
       setPreview(result.data);
       setResolutions(
         Object.fromEntries(
@@ -502,6 +517,106 @@ export function ImportManifestModal({
         error instanceof Error
           ? error.message
           : t("importManifestModal.errNetworkDeploy"),
+      );
+    } finally {
+      setCommitting(false);
+    }
+  }
+
+  /**
+   * Draft-mode import (workflow authoring). Re-validates with `draft_only`
+   * so the api returns the canonical normalized payloads, then creates the
+   * workflow draft through the authoring surface. No deployment is committed
+   * and the pending validate session is left to the unmount cleanup.
+   */
+  async function createImportedDraft() {
+    if (!draftTarget || !preview) return;
+    setCommitError(null);
+    setCommitIssues([]);
+    setCommitting(true);
+    try {
+      const validateResponse = await fetch(
+        `/v1/tenants/${encodeURIComponent(slug)}/manifest-import`,
+        {
+          method: "POST",
+          credentials: "same-origin",
+          headers: manifestHeaders(slug),
+          body: JSON.stringify({
+            mode: "validate",
+            workflow: workflowRaw,
+            ...(actionsRaw ? { actions: actionsRaw } : {}),
+            draft_only: true,
+            workflow_slug: draftTarget.slug,
+            workflow_name: draftTarget.name,
+            conflict_resolutions: buildConflictResolutions(
+              preview,
+              resolutions,
+            ),
+          }),
+        },
+      );
+      const validateBody = await readResponseBody(validateResponse);
+      if (!validateResponse.ok) {
+        throw new Error(responseError(validateBody, validateResponse.status));
+      }
+      const normalizedResult = ManifestImportPreviewSchema.safeParse(
+        unwrapEnvelope<unknown>(validateBody),
+      );
+      if (!normalizedResult.success) {
+        throw new Error(
+          `${t("importManifestModal.errInvalidPreview")}: ${normalizedResult.error.issues[0]?.message ?? "unknown schema error"}`,
+        );
+      }
+      const normalized = normalizedResult.data;
+      const blockingIssues = normalized.issues.filter(
+        (issue) => issue.severity === "error",
+      );
+      const blockingConflicts = normalized.conflicts.filter(
+        (conflict) => conflict.severity === "block",
+      );
+      if (blockingIssues.length || blockingConflicts.length) {
+        setCommitError(
+          "Resolve every blocking validation issue before creating the draft.",
+        );
+        setCommitIssues(blockingIssues as CommitIssue[]);
+        return;
+      }
+      if (!normalized.normalized_workflow) {
+        throw new Error("Validation did not return a normalized workflow.");
+      }
+      const createResponse = await fetch("/v1/workflows", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: manifestHeaders(slug),
+        body: JSON.stringify({
+          slug: draftTarget.slug,
+          name: draftTarget.name,
+          description: "Created from an imported manifest.",
+          source: {
+            type: "manifest",
+            manifest: normalized.normalized_workflow,
+            actions: normalized.normalized_actions ?? undefined,
+          },
+        }),
+      });
+      const createBody = await readResponseBody(createResponse);
+      if (!createResponse.ok) {
+        throw new Error(responseError(createBody, createResponse.status));
+      }
+      const workflow = WorkflowDetailSchema.parse(
+        unwrapEnvelope<unknown>(createBody),
+      );
+      toast({
+        tone: "green",
+        title: "Workflow draft created",
+        description: `${workflow.name} is ready to edit.`,
+      });
+      refetchManifestDependents();
+      onDraftCreated?.(workflow);
+      onClose();
+    } catch (error) {
+      setCommitError(
+        error instanceof Error ? error.message : "Draft creation failed.",
       );
     } finally {
       setCommitting(false);
@@ -671,7 +786,6 @@ export function ImportManifestModal({
             <DeployStep
               slug={slug}
               target={target}
-              setTarget={setTarget}
               noteText={noteText}
               setNoteText={setNoteText}
               commitBody={commitBody}
@@ -679,7 +793,9 @@ export function ImportManifestModal({
           )}
         </div>
 
-        {(validationError || pendingLock || commitError) && (
+        {((validationError && (step === 0 || step === 1)) ||
+          pendingLock ||
+          commitError) && (
           <ErrorSurface
             validationError={validationError}
             pendingLock={pendingLock}
@@ -727,14 +843,19 @@ export function ImportManifestModal({
               <Button
                 tone="primary"
                 icon="deploy"
-                onClick={() => void runCommit(false)}
+                onClick={() => {
+                  if (draftTarget) void createImportedDraft();
+                  else void runCommit(false);
+                }}
                 disabled={committing || !commitBody}
               >
                 {committing
-                  ? t("importManifestModal.deploying")
-                  : target === "production"
-                    ? t("importManifestModal.deployToProd")
-                    : t("importManifestModal.deployToStaging")}
+                  ? draftTarget
+                    ? "Creating draft…"
+                    : t("importManifestModal.deploying")
+                  : draftTarget
+                    ? "Create workflow draft"
+                    : t("importManifestModal.deployToProd")}
               </Button>
             )}
           </div>
@@ -1302,14 +1423,12 @@ function PreviewStep({
 function DeployStep({
   slug,
   target,
-  setTarget,
   noteText,
   setNoteText,
   commitBody,
 }: {
   slug: string;
   target: DeployTarget;
-  setTarget: (target: DeployTarget) => void;
   noteText: string;
   setNoteText: (note: string) => void;
   commitBody: ManifestImportBody;
@@ -1323,17 +1442,11 @@ function DeployStep({
           subtitle={t("importManifestModal.currentTenant", { slug })}
           padded
         >
-          <DeployTargetOption
-            value="staging"
-            current={target}
-            onChange={setTarget}
-            label={t("importManifestModal.targetStaging")}
-            sub={t("importManifestModal.targetStagingSub")}
-          />
+          {/* Single supported tier — the api contract has no staging target,
+            * so the wizard makes no staging claim. */}
           <DeployTargetOption
             value="production"
             current={target}
-            onChange={setTarget}
             label={t("importManifestModal.targetProduction")}
             sub={t("importManifestModal.targetProductionSub")}
           />
@@ -1365,13 +1478,11 @@ function DeployStep({
 function DeployTargetOption({
   value,
   current,
-  onChange,
   label,
   sub,
 }: {
   value: DeployTarget;
   current: DeployTarget;
-  onChange: (value: DeployTarget) => void;
   label: string;
   sub: string;
 }) {
@@ -1383,7 +1494,7 @@ function DeployTargetOption({
         name="manifest-deploy-target"
         value={value}
         checked={active}
-        onChange={() => onChange(value)}
+        readOnly
         style={{ accentColor: "var(--signal)" }}
       />
       <div>

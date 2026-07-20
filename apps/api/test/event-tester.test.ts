@@ -21,6 +21,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { readFile } from "node:fs/promises";
 import { and, eq } from "drizzle-orm";
 import {
   agents,
@@ -227,6 +228,82 @@ describe("Event Tester backend", () => {
       }
     });
 
+    it("persists and delivers one canonical logical envelope with the exact prompt", async () => {
+      const cap = captureInngest();
+      let eventId: string | undefined;
+      try {
+        const exactPrompt = "  Investigate this request.\nKeep spacing.  ";
+        const subject = `canonical-${makeId("tag")}`;
+        const res = await env.fetch("/v1/events", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            name: "CLIENT_RULES_PASSED",
+            subject,
+            payload: {
+              event_type: "CALLER_CANNOT_OVERRIDE",
+              event_name: "CALLER_CANNOT_OVERRIDE",
+              event_id: "evt-caller",
+              request_id: "   ",
+              prompt: exactPrompt,
+              domain_field: "preserved",
+            },
+          }),
+        });
+
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as PublishResponse;
+        eventId = body.data.event_id;
+        expect(cap.calls).toHaveLength(1);
+        const delivered = cap.calls[0]!.data;
+        const correlationId = delivered.__correlationId;
+        expect(typeof correlationId).toBe("string");
+        const {
+          __triggerEventId: triggerEventId,
+          __correlationId: _privateCorrelationId,
+          __usageAttribution: _privateUsageAttribution,
+          ...deliveredLogical
+        } = delivered;
+        expect(triggerEventId).toBe(eventId);
+        expect(deliveredLogical).toEqual({
+          request_id: correlationId,
+          domain_field: "preserved",
+          event_type: "CLIENT_RULES_PASSED",
+          event_name: "CLIENT_RULES_PASSED",
+          event_id: eventId,
+          subject,
+          prompt: exactPrompt,
+          input: exactPrompt,
+          context: exactPrompt,
+        });
+
+        const persisted = getDb()
+          .select({ payloadRef: events.payloadRef })
+          .from(events)
+          .where(eq(events.id, eventId))
+          .all()[0];
+        expect(persisted?.payloadRef).toBeTruthy();
+        const [ledgerPath, offset = "0"] = persisted!.payloadRef!.split("#");
+        const ledgerBytes = await readFile(ledgerPath!);
+        const ledgerLine = ledgerBytes
+          .subarray(Number(offset))
+          .toString("utf8")
+          .split("\n")[0]!;
+        const ledgerRecord = JSON.parse(ledgerLine) as {
+          data: Record<string, unknown>;
+        };
+        expect(ledgerRecord.data).toEqual(deliveredLogical);
+        expect(
+          Object.keys(ledgerRecord.data).some((key) => key.startsWith("__")),
+        ).toBe(false);
+      } finally {
+        if (eventId) {
+          getDb().delete(events).where(eq(events.id, eventId)).run();
+        }
+        cap.restore();
+      }
+    });
+
     it("publish stamps events.category from the catalog row", async () => {
       // Round-2 review follow-up: the publish route looks up
       // eventTypes.category for (tenantId, bareName) and copies it onto the
@@ -316,6 +393,173 @@ describe("Event Tester backend", () => {
       expect(empty).toBeDefined();
       expect(empty!.fields).toEqual([]);
       expect(empty!.raw_payload_schema).toBeNull();
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // Ingest safety — tenant namespace, internal metadata, dispatch atomicity
+  // ─────────────────────────────────────────────────────────────────────
+
+  describe("ingest safety", () => {
+    it("rejects an event addressed to another tenant namespace", async () => {
+      const cap = captureInngest();
+      try {
+        const subject = `foreign-ns-${makeId("tag")}`;
+        const res = await env.fetch("/v1/events", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            name: `some-other-tenant/CLIENT_RULES_PASSED`,
+            subject,
+            payload: { client_id: "c1" },
+          }),
+        });
+
+        expect(res.status).toBe(403);
+        expect(cap.calls).toHaveLength(0);
+        expect(
+          getDb()
+            .select()
+            .from(events)
+            .where(
+              and(eq(events.tenantId, tenantId), eq(events.subject, subject)),
+            )
+            .all(),
+        ).toHaveLength(0);
+      } finally {
+        cap.restore();
+      }
+    });
+
+    it("rejects public payload keys reserved for runtime metadata", async () => {
+      const cap = captureInngest();
+      try {
+        const res = await env.fetch("/v1/events", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            name: "CLIENT_RULES_PASSED",
+            subject: "reserved-metadata",
+            payload: { __test: true, client_id: "c1" },
+          }),
+        });
+
+        expect(res.status).toBe(400);
+        expect(cap.calls).toHaveLength(0);
+      } finally {
+        cap.restore();
+      }
+    });
+
+    it("targets one registered live agent and rejects a trigger it does not subscribe to", async () => {
+      // buildTestEnv bootstraps the real northwind manifest functions into
+      // the mutable registry. Temporarily scope this request to that tenant
+      // so we exercise target preflight + envelope stamping without a live
+      // external Inngest process.
+      //
+      // On databases seeded by our explicit-admin-only policy the northwind
+      // tenant row does not exist, so its manifest folder is an inert artifact
+      // and jdAuthorAgent is never live — the preflight under test cannot run.
+      const northwindRow = getDb()
+        .select()
+        .from(tenants)
+        .where(eq(tenants.slug, "northwind"))
+        .all()[0];
+      if (!northwindRow) {
+        console.warn(
+          "[event-tester] skipping live-agent targeting case: tenant 'northwind' is not seeded in this database",
+        );
+        return;
+      }
+      const priorTenant = process.env.AGENTIC_DEV_TENANT;
+      process.env.AGENTIC_DEV_TENANT = "northwind";
+      const cap = captureInngest();
+      let publishedEventId: string | undefined;
+      try {
+        const subject = `targeted-${makeId("tag")}`;
+        const res = await env.fetch("/v1/events", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            name: "HIRING_REQUIREMENT_SUBMITTED",
+            targetAgent: "jdAuthorAgent",
+            subject,
+            payload: { requirement: "platform engineer" },
+          }),
+        });
+
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as PublishResponse;
+        publishedEventId = body.data.event_id;
+        expect(cap.calls).toHaveLength(1);
+        expect(cap.calls[0]).toEqual(
+          expect.objectContaining({
+            name: "northwind/HIRING_REQUIREMENT_SUBMITTED",
+            data: expect.objectContaining({
+              __triggerEventId: publishedEventId,
+              __invokedAgent: "jdAuthorAgent",
+              subject,
+            }),
+          }),
+        );
+
+        const wrongTrigger = await env.fetch("/v1/events", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            name: "RESUME_INTAKE_REQUESTED",
+            targetAgent: "jdAuthorAgent",
+            subject: `${subject}-wrong`,
+          }),
+        });
+        expect(wrongTrigger.status).toBe(409);
+        expect(cap.calls).toHaveLength(1);
+      } finally {
+        if (publishedEventId) {
+          getDb().delete(events).where(eq(events.id, publishedEventId)).run();
+        }
+        cap.restore();
+        if (priorTenant === undefined) delete process.env.AGENTIC_DEV_TENANT;
+        else process.env.AGENTIC_DEV_TENANT = priorTenant;
+      }
+    });
+
+    it("removes the provisional event row when runtime dispatch fails", async () => {
+      const original = inngest.send;
+      (inngest as unknown as { send: typeof inngest.send }).send =
+        (async () => {
+          throw new Error("simulated Inngest outage");
+        }) as typeof inngest.send;
+
+      const subject = `dispatch-failure-${makeId("tag")}`;
+      try {
+        const res = await env.fetch("/v1/events", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            name: "CLIENT_RULES_PASSED",
+            subject,
+            payload: { client_id: "c1" },
+          }),
+        });
+
+        // Ours-base events.ts maps a failed runtime dispatch to 502 (upstream
+        // dispatch failure) and KEEPS the event row: publishes go through a
+        // durable pending-outbox, so a dispatch failure leaves the event
+        // queued for retry instead of silently deleting the ledger row.
+        expect(res.status).toBe(502);
+        expect(
+          getDb()
+            .select()
+            .from(events)
+            .where(
+              and(eq(events.tenantId, tenantId), eq(events.subject, subject)),
+            )
+            .all(),
+        ).toHaveLength(1);
+      } finally {
+        (inngest as unknown as { send: typeof inngest.send }).send = original;
+      }
     });
   });
 
@@ -500,6 +744,244 @@ describe("Event Tester backend", () => {
         expect(second!.data.__test).toBeUndefined();
       } finally {
         cap.restore();
+      }
+    });
+  });
+
+  describe("private asynchronous usage attribution", () => {
+    it("propagates authenticated request dimensions without writing them to the ledger", async () => {
+      const cap = captureInngest();
+      let publishedEventId: string | undefined;
+      try {
+        const spoofed = await env.fetch("/v1/events", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            name: "CLIENT_RULES_PASSED",
+            payload: {
+              __usageAttribution: { billingAccountId: "ten-attacker" },
+            },
+          }),
+        });
+        expect(spoofed.status).toBe(400);
+        expect(cap.calls).toHaveLength(0);
+
+        const res = await env.fetch("/v1/events", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-agentic-product-surface": "agent-runtime",
+            "x-agentic-product-action": "event-tester.publish",
+            "x-agentic-interaction-id": "int-async-publish",
+          },
+          body: JSON.stringify({
+            name: "CLIENT_RULES_PASSED",
+            subject: "usage-attribution-private",
+            payload: { client_id: "c-usage" },
+          }),
+        });
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as PublishResponse;
+        publishedEventId = body.data.event_id;
+        expect(cap.calls).toHaveLength(1);
+
+        const privateAttribution = cap.calls[0]!.data
+          .__usageAttribution as Record<string, unknown>;
+        expect(privateAttribution).toEqual(
+          expect.objectContaining({
+            billingAccountId: tenantId,
+            actorType: "system",
+            product: "agentic-operator",
+            productSurface: "agent-runtime",
+            productAction: "event-tester.publish",
+            interactionId: "int-async-publish",
+            apiRoute: "/v1/events",
+            httpMethod: "POST",
+            invocationSource: "event",
+          }),
+        );
+        expect(privateAttribution.requestId).toEqual(expect.any(String));
+
+        const row = getDb()
+          .select()
+          .from(events)
+          .where(eq(events.id, publishedEventId))
+          .all()[0];
+        expect(row?.payloadRef).toBeTruthy();
+        const [ledgerPath, offsetText] = row!.payloadRef!.split("#");
+        const ledger = await readFile(ledgerPath!, "utf8");
+        const offset = Number(offsetText);
+        const record = JSON.parse(ledger.slice(offset).split("\n", 1)[0]!) as {
+          data: Record<string, unknown>;
+        };
+        expect(
+          Object.keys(record.data).some((key) => key.startsWith("__")),
+        ).toBe(false);
+      } finally {
+        if (publishedEventId) {
+          getDb().delete(events).where(eq(events.id, publishedEventId)).run();
+        }
+        cap.restore();
+      }
+    });
+
+    it("stamps fresh authenticated attribution on event replay", async () => {
+      const cap = captureInngest();
+      let sourceEventId: string | undefined;
+      let replayEventId: string | undefined;
+      try {
+        const published = await env.fetch("/v1/events", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ name: "CLIENT_RULES_PASSED" }),
+        });
+        expect(published.status).toBe(200);
+        sourceEventId = ((await published.json()) as PublishResponse).data
+          .event_id;
+        cap.calls.length = 0;
+
+        const replay = await env.fetch(`/v1/events/${sourceEventId}/replay`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-agentic-product-action": "event-tester.replay",
+            "x-agentic-interaction-id": "int-async-replay",
+          },
+          body: JSON.stringify({}),
+        });
+        expect(replay.status).toBe(200);
+        const replayBody = (await replay.json()) as {
+          data: { new_event_id: string };
+        };
+        replayEventId = replayBody.data.new_event_id;
+        expect(cap.calls).toHaveLength(1);
+        expect(cap.calls[0]!.data.__usageAttribution).toEqual(
+          expect.objectContaining({
+            billingAccountId: tenantId,
+            productAction: "event-tester.replay",
+            interactionId: "int-async-replay",
+            invocationSource: "replay",
+          }),
+        );
+      } finally {
+        for (const id of [replayEventId, sourceEventId]) {
+          if (id) getDb().delete(events).where(eq(events.id, id)).run();
+        }
+        cap.restore();
+      }
+    });
+
+    it("stamps fresh authenticated attribution on manifest run replay", async () => {
+      const cap = captureInngest();
+      const sourceEventId = makeId("evt");
+      const sourceRunId = makeId("run");
+      const agent = getDb().select().from(agents).limit(1).all()[0];
+      expect(agent).toBeDefined();
+      try {
+        getDb()
+          .insert(events)
+          .values({
+            id: sourceEventId,
+            tenantId,
+            name: "CLIENT_RULES_PASSED",
+            subject: "usage-run-replay",
+            payloadRef: null,
+          })
+          .run();
+        getDb()
+          .insert(runs)
+          .values({
+            id: sourceRunId,
+            tenantId,
+            agentId: agent!.id,
+            triggerEventId: sourceEventId,
+            status: "ok",
+            correlationId: makeId("cor"),
+            invocationSource: "event",
+          })
+          .run();
+
+        const replay = await env.fetch(`/v1/runs/${sourceRunId}/replay`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-agentic-product-action": "run-tester.replay",
+            "x-agentic-interaction-id": "int-async-run-replay",
+          },
+          body: JSON.stringify({}),
+        });
+        expect(replay.status).toBe(200);
+        expect(cap.calls).toHaveLength(1);
+        expect(cap.calls[0]!.data.__usageAttribution).toEqual(
+          expect.objectContaining({
+            billingAccountId: tenantId,
+            productAction: "run-tester.replay",
+            interactionId: "int-async-run-replay",
+            invocationSource: "replay",
+          }),
+        );
+        expect(cap.calls[0]!.data.__correlationId).toEqual(expect.any(String));
+      } finally {
+        getDb().delete(runs).where(eq(runs.id, sourceRunId)).run();
+        getDb().delete(events).where(eq(events.id, sourceEventId)).run();
+        cap.restore();
+      }
+    });
+
+    it("protects the manifest-invoke fallback from input spoofing", async () => {
+      const priorTenant = process.env.AGENTIC_DEV_TENANT;
+      process.env.AGENTIC_DEV_TENANT = "northwind";
+      const cap = captureInngest();
+      let eventId: string | undefined;
+      try {
+        const northwind = getDb()
+          .select()
+          .from(tenants)
+          .where(eq(tenants.slug, "northwind"))
+          .all()[0];
+        if (!northwind) {
+          console.warn(
+            "[event-tester] skipping manifest-invoke spoofing case: tenant 'northwind' is not seeded in this database",
+          );
+          return;
+        }
+        const res = await env.fetch("/v1/agents/jdAuthorAgent/invoke", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-agentic-product-action": "agent-tester.invoke",
+            "x-agentic-interaction-id": "int-async-invoke",
+          },
+          body: JSON.stringify({
+            input: {
+              subject: "usage-attribution-invoke",
+              prompt: "Draft the role.",
+              __usageAttribution: { billingAccountId: "ten-attacker" },
+            },
+          }),
+        });
+        expect(res.status).toBe(202);
+        const body = (await res.json()) as {
+          data: { eventId: string };
+        };
+        eventId = body.data.eventId;
+        expect(cap.calls).toHaveLength(1);
+        expect(cap.calls[0]!.data.__usageAttribution).toEqual(
+          expect.objectContaining({
+            billingAccountId: northwind!.id,
+            productAction: "agent-tester.invoke",
+            interactionId: "int-async-invoke",
+            invocationSource: "api",
+          }),
+        );
+        expect(cap.calls[0]!.data.__usageAttribution).not.toEqual(
+          expect.objectContaining({ billingAccountId: "ten-attacker" }),
+        );
+      } finally {
+        if (eventId) getDb().delete(events).where(eq(events.id, eventId)).run();
+        cap.restore();
+        if (priorTenant === undefined) delete process.env.AGENTIC_DEV_TENANT;
+        else process.env.AGENTIC_DEV_TENANT = priorTenant;
       }
     });
   });

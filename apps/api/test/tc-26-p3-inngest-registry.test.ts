@@ -23,26 +23,22 @@ describe("TC-26: P3-API-03 inngest-registry", () => {
 
   it("registry exposes the boot-time function counts", async () => {
     const mod = await import("../src/services/inngest-registry");
-    let counts;
-    try {
-      counts = mod._inspectRegistryForTests();
-    } catch (err) {
-      // Boot might have skipped registry init in some test paths; tolerate.
-      counts = { base: 0, codeAgent: 0, tenant: 0 };
-    }
-    // baseFns includes at least helloFn after boot.
-    expect(counts.base + counts.codeAgent + counts.tenant).toBeGreaterThanOrEqual(0);
+    const counts = mod._inspectRegistryForTests();
+
+    // Boot must initialize the registry with the platform function set and
+    // at least one manifest-backed tenant function. A zero-count snapshot is
+    // not a valid fallback: deploy hot-reload depends on this cache being the
+    // source of truth for the active /inngest handler.
+    expect(counts.base).toBeGreaterThan(0);
+    expect(counts.tenant).toBeGreaterThan(0);
+    expect(mod.listInngestFunctionIds()).toHaveLength(
+      counts.base + counts.codeAgent + counts.tenant,
+    );
   });
 
   it("getActiveHandler returns a callable when init has succeeded", async () => {
     const mod = await import("../src/services/inngest-registry");
-    try {
-      const handler = mod.getActiveHandler();
-      expect(typeof handler).toBe("function");
-    } catch (err) {
-      // If bootstrap didn't init the registry in this test path the API
-      // route's fallback path is exercised instead — this is acceptable.
-      expect((err as Error).message).toContain("not initialized");
-    }
+    const handler = mod.getActiveHandler();
+    expect(typeof handler).toBe("function");
   });
 });

@@ -6,10 +6,11 @@
  * Renders three views:
  *   1. Totals strip (runs · tokens in/out · USD this period)
  *   2. Per-day line chart (tokens or USD, user-toggled)
- *   3. Top agents + top models horizontal bar charts
+ *   3. Agent/model/reasoning charts plus account/product/API/function billing
+ *      attribution drilldowns.
  *
  * Reads:
- *   - GET /v1/usage     — aggregated runs/tokens/usdCents
+ *   - GET /v1/usage     — aggregated runs/tokens/exact USD nanodollars
  *   - GET /v1/budgets   — monthly cap + used totals
  *
  * If /v1/usage isn't available yet the page degrades to the budget row
@@ -31,18 +32,22 @@ import {
 import { useTenant } from "@/app/portal/lib/use-tenant";
 import { useI18n } from "@/app/portal/lib/preferences-context";
 import { fmtNum } from "@/app/portal/lib/format";
-import {
-  useBudget,
-  useUsage,
-  useUpdateBudget,
-  type BudgetRow as BudgetData,
-} from "@/lib/hooks/useUsage";
+import { useBudget, useUsage, useUpdateBudget } from "@/lib/hooks/useUsage";
+import { formatUsdNanos } from "@/lib/format-usd";
 import {
   HorizontalBarChart,
   LineChart,
 } from "@/app/portal/components/usage/charts";
 
 type Window = "24h" | "7d" | "30d";
+type AttributionDimension =
+  | "account"
+  | "provider"
+  | "surface"
+  | "action"
+  | "function"
+  | "api";
+type RoutingDimension = "task" | "gateway" | "route" | "actor" | "profile";
 
 const WINDOWS: Array<{ id: Window; label: string; ms: number }> = [
   { id: "24h", label: "24h", ms: 24 * 60 * 60 * 1000 },
@@ -50,11 +55,35 @@ const WINDOWS: Array<{ id: Window; label: string; ms: number }> = [
   { id: "30d", label: "30d", ms: 30 * 24 * 60 * 60 * 1000 },
 ];
 
+const ATTRIBUTION_DIMENSIONS: Array<{
+  id: AttributionDimension;
+  label: string;
+}> = [
+  { id: "account", label: "Account" },
+  { id: "provider", label: "Provider" },
+  { id: "surface", label: "Product surface" },
+  { id: "action", label: "Product action" },
+  { id: "function", label: "Function" },
+  { id: "api", label: "API call" },
+];
+
+const ROUTING_DIMENSIONS: Array<{ id: RoutingDimension; label: string }> = [
+  { id: "task", label: "Feature / task" },
+  { id: "gateway", label: "Gateway instance" },
+  { id: "route", label: "Model route" },
+  { id: "actor", label: "User / actor" },
+  { id: "profile", label: "Routing profile" },
+];
+
 export default function UsagePage() {
   const tenant = useTenant();
   const { t } = useI18n();
   const [win, setWin] = useState<Window>("7d");
   const [metric, setMetric] = useState<"tokens" | "usd" | "runs">("tokens");
+  const [attributionDimension, setAttributionDimension] =
+    useState<AttributionDimension>("surface");
+  const [routingDimension, setRoutingDimension] =
+    useState<RoutingDimension>("task");
   const since = useMemo(() => {
     const w = WINDOWS.find((w) => w.id === win) ?? WINDOWS[1]!;
     return Date.now() - w.ms;
@@ -64,14 +93,35 @@ export default function UsagePage() {
   const budget = useBudget();
 
   const total = usage.data?.totals;
+  const attempts = usage.data?.attempts;
   const byDay = usage.data?.byDay ?? [];
   const byAgent = usage.data?.byAgent ?? [];
   const byModel = usage.data?.byModel ?? [];
-  const budgetRow = budget.data ?? usage.data?.budget ?? null;
-  const usageUnavailable = !usage.data && (usage.error != null);
-  const usageLoading = !usage.data && usage.isLoading;
-  const costComplete = usage.data?.coverage.costComplete ?? true;
-  const unpricedTokens = usage.data?.coverage.unpricedTokens ?? 0;
+  const byReasoning = usage.data?.byReasoning ?? [];
+  const attributionRows =
+    attributionDimension === "account"
+      ? (usage.data?.byAccount ?? [])
+      : attributionDimension === "provider"
+        ? (usage.data?.byProvider ?? [])
+        : attributionDimension === "surface"
+          ? (usage.data?.byProductSurface ?? [])
+          : attributionDimension === "action"
+            ? (usage.data?.byProductAction ?? [])
+            : attributionDimension === "function"
+              ? (usage.data?.byFunction ?? [])
+              : (usage.data?.byApiCall ?? []);
+  const routingRows =
+    routingDimension === "task"
+      ? (usage.data?.byTask ?? [])
+      : routingDimension === "gateway"
+        ? (usage.data?.byGateway ?? [])
+        : routingDimension === "route"
+          ? (usage.data?.byRoute ?? [])
+          : routingDimension === "actor"
+            ? (usage.data?.byActor ?? [])
+            : (usage.data?.byRoutingProfile ?? []);
+  const budgetRow = usage.data?.budget ?? budget.data ?? null;
+  const usageUnavailable = !usage.data && usage.error != null;
 
   const series = useMemo(() => {
     if (byDay.length === 0) return { values: [], labels: [] };
@@ -80,7 +130,7 @@ export default function UsagePage() {
         metric === "tokens"
           ? d.tokensIn + d.tokensOut
           : metric === "usd"
-            ? d.usdCents
+            ? d.usdNanos
             : d.runs,
       ),
       labels: byDay.map((d) => d.key.slice(5)), // MM-DD
@@ -90,14 +140,14 @@ export default function UsagePage() {
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
       <ViewHeader
-        title={t("usage.title")}
+        title={t("settings.section.usage")}
         subtitle={
           <>
-            {t("usage.subtitleTenant")}{" "}
+            Tenant{" "}
             <span className="mono" style={{ color: "var(--text)" }}>
               {tenant}
             </span>{" "}
-            {t("usage.subtitleWindowed")}{" "}
+            · windowed read from{" "}
             <span className="mono" style={{ color: "var(--text)" }}>
               /v1/usage
             </span>
@@ -105,11 +155,9 @@ export default function UsagePage() {
         }
         badge={
           usageUnavailable ? (
-            <Badge tone="red">{t("usage.badgeUnavailable")}</Badge>
-          ) : usageLoading ? (
-            <Badge tone="muted">{t("usage.loading")}</Badge>
+            <Badge tone="amber">limited</Badge>
           ) : (
-            <Badge tone="muted">{t("usage.badgeLive")}</Badge>
+            <Badge tone="muted">live</Badge>
           )
         }
         action={[
@@ -119,16 +167,31 @@ export default function UsagePage() {
             style={{ textDecoration: "none" }}
           >
             <Button small icon="chevron-left" tone="ghost">
-              {t("usage.backToSettings")}
+              Back to Settings
             </Button>
           </Link>,
         ]}
       />
 
       <div style={{ flex: 1, overflow: "auto", minHeight: 0 }}>
-        <div style={{ padding: 24, maxWidth: 1180, display: "flex", flexDirection: "column", gap: 16 }}>
+        <div
+          style={{
+            padding: 24,
+            maxWidth: 1180,
+            display: "flex",
+            flexDirection: "column",
+            gap: 16,
+          }}
+        >
           {/* Window + metric chips */}
-          <div style={{ display: "flex", gap: 14, flexWrap: "wrap", alignItems: "center" }}>
+          <div
+            style={{
+              display: "flex",
+              gap: 14,
+              flexWrap: "wrap",
+              alignItems: "center",
+            }}
+          >
             <div style={{ display: "flex", gap: 6 }}>
               {WINDOWS.map((w) => (
                 <FilterChip
@@ -150,9 +213,9 @@ export default function UsagePage() {
             <div style={{ display: "flex", gap: 6 }}>
               {(
                 [
-                  { id: "tokens", label: t("usage.metricTokens") },
-                  { id: "usd", label: t("usage.metricUsd") },
-                  { id: "runs", label: t("usage.metricRuns") },
+                  { id: "tokens", label: "Tokens" },
+                  { id: "usd", label: "USD" },
+                  { id: "runs", label: "Runs" },
                 ] as const
               ).map((m) => (
                 <FilterChip
@@ -166,57 +229,47 @@ export default function UsagePage() {
             </div>
           </div>
 
-          {usage.data && !costComplete ? (
-            <div
-              role="note"
-              style={{
-                padding: "10px 12px",
-                border:
-                  "1px solid color-mix(in srgb, var(--amber) 35%, var(--border))",
-                borderRadius: 6,
-                color: "var(--amber)",
-                background:
-                  "color-mix(in srgb, var(--amber) 7%, transparent)",
-                fontSize: 11.5,
-              }}
-            >
-              <strong>{t("usage.costIncompleteTitle")}</strong>
-              {" · "}
-              {t("usage.costIncompleteHint", {
-                n: fmtNum(unpricedTokens),
-              })}
-            </div>
-          ) : null}
-
           {/* Totals strip */}
-          {usageLoading ? (
-            <Empty title={t("usage.loading")} hint="" />
-          ) : usageUnavailable ? (
-            <Empty
-              title={t("usage.emptyTitle")}
-              hint={usage.error instanceof Error ? usage.error.message : t("usage.emptyHint")}
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
+              gap: 0,
+              border: "1px solid var(--border)",
+              borderRadius: 6,
+              background: "var(--panel)",
+            }}
+          >
+            <Totals label="Runs" value={fmtNum(total?.runs ?? 0)} />
+            <Totals label="Tokens in" value={fmtNum(total?.tokensIn ?? 0)} />
+            <Totals label="Tokens out" value={fmtNum(total?.tokensOut ?? 0)} />
+            <Totals
+              label="USD this period"
+              value={formatUsdNanos(total?.usdNanos ?? 0)}
+              accent="var(--signal)"
             />
-          ) : total ? (
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(4, 1fr)",
-                gap: 0,
-                border: "1px solid var(--border)",
-                borderRadius: 6,
-                background: "var(--panel)",
-              }}
-            >
-              <Totals label={t("usage.totalsRuns")} value={fmtNum(total.runs)} />
-              <Totals label={t("usage.totalsTokensIn")} value={fmtNum(total.tokensIn)} />
-              <Totals label={t("usage.totalsTokensOut")} value={fmtNum(total.tokensOut)} />
-              <Totals
-                label={t("usage.totalsUsdPeriod")}
-                value={`${costComplete ? "" : "≥"}${fmtUsd(total.usdCents)}`}
-                accent="var(--signal)"
-              />
-            </div>
-          ) : null}
+            <Totals
+              label="Unpriced calls"
+              value={fmtNum(total?.unpricedCalls ?? 0)}
+              accent={
+                (total?.unpricedCalls ?? 0) > 0 ? "var(--red)" : undefined
+              }
+            />
+            <Totals label="Provider attempts" value={fmtNum(attempts?.attempts ?? 0)} />
+            <Totals
+              label="Failed / timed out"
+              value={`${fmtNum(attempts?.failed ?? 0)} / ${fmtNum(attempts?.timeouts ?? 0)}`}
+              accent={(attempts?.failed ?? 0) > 0 ? "var(--red)" : undefined}
+            />
+            <Totals
+              label="Retries / fallbacks"
+              value={`${fmtNum(attempts?.retries ?? 0)} / ${fmtNum(attempts?.fallbacks ?? 0)}`}
+            />
+            <Totals
+              label="Latency p50 / p95"
+              value={`${fmtLatency(attempts?.p50LatencyMs)} / ${fmtLatency(attempts?.p95LatencyMs)}`}
+            />
+          </div>
 
           {/* Budget row */}
           {budgetRow && (
@@ -228,24 +281,11 @@ export default function UsagePage() {
               }}
             />
           )}
-          {!budgetRow && budget.isError ? (
-            <Empty
-              title={t("usage.budgetUnavailable")}
-              hint={budget.error instanceof Error ? budget.error.message : ""}
-            />
-          ) : null}
 
           {/* Per-day line chart */}
-          {usage.data ? <Panel
-            title={t("usage.byDayTitle", { metric })}
-            subtitle={
-              metric === "usd" && !costComplete
-                ? t("usage.byDayCostIncomplete", {
-                    win,
-                    buckets: byDay.length,
-                  })
-                : t("usage.byDaySubtitle", { win, buckets: byDay.length })
-            }
+          <Panel
+            title={`Usage by day · ${metric}`}
+            subtitle={`Last ${win} · ${byDay.length} buckets`}
             padded={false}
           >
             <LineChart
@@ -253,51 +293,180 @@ export default function UsagePage() {
               labels={series.labels}
               formatY={(v) =>
                 metric === "usd"
-                  ? `${costComplete ? "" : "≥"}${fmtUsd(v)}`
+                  ? formatUsdNanos(v)
                   : metric === "tokens"
                     ? fmtNum(v)
                     : String(Math.round(v))
               }
             />
-          </Panel> : null}
+          </Panel>
 
           {/* Bar charts */}
-          {usage.data ? <div
+          <div
             style={{
               display: "grid",
               gridTemplateColumns: "1fr 1fr",
               gap: 16,
             }}
           >
-            <Panel title={t("usage.byAgentTitle")} subtitle={t("usage.barChartSubtitle")} padded={false}>
+            <Panel
+              title="By agent"
+              subtitle="Tokens in+out · top 10"
+              padded={false}
+            >
               <HorizontalBarChart
                 data={byAgent
                   .map((r) => ({
                     key: r.key,
                     value: r.tokensIn + r.tokensOut,
-                    secondary: r.usdCents,
+                    secondary: r.usdNanos,
                   }))
                   .sort((a, b) => b.value - a.value)}
                 formatValue={fmtNum}
               />
             </Panel>
-            <Panel title={t("usage.byModelTitle")} subtitle={t("usage.barChartSubtitle")} padded={false}>
+            <Panel
+              title="By model"
+              subtitle="Tokens in+out · top 10"
+              padded={false}
+            >
               <HorizontalBarChart
                 data={byModel
                   .map((r) => ({
                     key: r.key,
                     value: r.tokensIn + r.tokensOut,
-                    secondary: r.usdCents,
+                    secondary: r.usdNanos,
                   }))
                   .sort((a, b) => b.value - a.value)}
                 formatValue={fmtNum}
               />
             </Panel>
-          </div> : null}
+          </div>
+
+          <Panel
+            title="By reasoning configuration"
+            subtitle="Mode · effort · summary/context · verbosity/storage · tokens in+out"
+            padded={false}
+          >
+            <HorizontalBarChart
+              data={byReasoning
+                .map((row) => ({
+                  key: row.key,
+                  value: row.tokensIn + row.tokensOut,
+                  secondary: row.usdNanos,
+                }))
+                .sort((a, b) => b.value - a.value)}
+              formatValue={fmtNum}
+            />
+          </Panel>
+
+          <Panel
+            title="Routing & reliability"
+            subtitle="Attempts, failures, latency, retries, and failover by runtime decision"
+            padded={false}
+          >
+            <div
+              role="group"
+              aria-label="Routing usage dimension"
+              style={{
+                display: "flex",
+                flexWrap: "wrap",
+                gap: 6,
+                padding: "12px 14px",
+                borderBottom: "1px solid var(--border)",
+              }}
+            >
+              {ROUTING_DIMENSIONS.map((dimension) => (
+                <FilterChip
+                  key={dimension.id}
+                  active={routingDimension === dimension.id}
+                  onClick={() => setRoutingDimension(dimension.id)}
+                >
+                  {dimension.label}
+                </FilterChip>
+              ))}
+            </div>
+            <HorizontalBarChart
+              data={routingRows
+                .map((row) => ({
+                  key: row.key ?? "unattributed",
+                  value: row.attempts,
+                  secondary: row.failed,
+                }))
+                .sort((a, b) => b.value - a.value)}
+              formatValue={fmtNum}
+            />
+            <div
+              style={{
+                padding: "0 14px 12px",
+                color: "var(--text-3)",
+                fontSize: 11,
+              }}
+            >
+              Bar = provider attempts · secondary value = failed attempts.
+            </div>
+          </Panel>
+
+          <Panel
+            title="Billing attribution"
+            subtitle="Trace provider spend to an account, product interaction, server function, or API route"
+            padded={false}
+          >
+            <div
+              role="group"
+              aria-label="Billing attribution dimension"
+              style={{
+                display: "flex",
+                flexWrap: "wrap",
+                gap: 6,
+                padding: "12px 14px",
+                borderBottom: "1px solid var(--border)",
+              }}
+            >
+              {ATTRIBUTION_DIMENSIONS.map((dimension) => (
+                <FilterChip
+                  key={dimension.id}
+                  active={attributionDimension === dimension.id}
+                  onClick={() => setAttributionDimension(dimension.id)}
+                >
+                  {dimension.label}
+                </FilterChip>
+              ))}
+            </div>
+            <HorizontalBarChart
+              data={attributionRows
+                .map((row) => ({
+                  key: row.key,
+                  value:
+                    metric === "tokens"
+                      ? row.tokensIn + row.tokensOut
+                      : metric === "usd"
+                        ? row.usdNanos
+                        : row.runs,
+                  secondary: row.usdNanos,
+                }))
+                .sort((a, b) => b.value - a.value)}
+              formatValue={(value) =>
+                metric === "usd" ? formatUsdNanos(value) : fmtNum(value)
+              }
+            />
+          </Panel>
+
+          {usageUnavailable && (
+            <Empty
+              title="Live usage data unavailable"
+              hint="The /v1/usage endpoint did not respond. Showing budget row only."
+            />
+          )}
         </div>
       </div>
     </div>
   );
+}
+
+function fmtLatency(value: number | null | undefined): string {
+  if (value == null) return "—";
+  return value >= 1_000 ? `${(value / 1_000).toFixed(1)}s` : `${Math.round(value)}ms`;
 }
 
 function Totals({
@@ -310,7 +479,9 @@ function Totals({
   accent?: string;
 }) {
   return (
-    <div style={{ padding: "14px 18px", borderRight: "1px solid var(--border)" }}>
+    <div
+      style={{ padding: "14px 18px", borderRight: "1px solid var(--border)" }}
+    >
       <div
         style={{
           fontSize: 10,
@@ -340,10 +511,16 @@ function BudgetRow({
   row,
   onCapsChanged,
 }: {
-  row: BudgetData;
+  row: {
+    monthlyTokenCap: number | null;
+    monthlyUsdCap: number | null;
+    usedTokensMonth: number;
+    usedUsdMonth: number;
+    usedUsdNanos: number;
+    periodStart: number;
+  };
   onCapsChanged: () => void;
 }) {
-  const { t } = useI18n();
   const update = useUpdateBudget();
   const [tokenCap, setTokenCap] = useState(
     row.monthlyTokenCap?.toString() ?? "",
@@ -351,50 +528,32 @@ function BudgetRow({
   const [usdCap, setUsdCap] = useState(
     row.monthlyUsdCap != null ? (row.monthlyUsdCap / 100).toFixed(2) : "",
   );
-  const [feedback, setFeedback] = useState<{ ok: boolean; text: string } | null>(null);
   const tokenPct =
     row.monthlyTokenCap && row.monthlyTokenCap > 0
-      ? Math.min(100, ((row.usedTokensMonth + row.reservedTokens) / row.monthlyTokenCap) * 100)
+      ? Math.min(100, (row.usedTokensMonth / row.monthlyTokenCap) * 100)
       : null;
   const usdPct =
     row.monthlyUsdCap && row.monthlyUsdCap > 0
-      ? Math.min(100, ((row.usedUsdMonth + row.reservedUsdCents) / row.monthlyUsdCap) * 100)
+      ? Math.min(
+          100,
+          (row.usedUsdNanos / (row.monthlyUsdCap * 10_000_000)) * 100,
+        )
       : null;
 
   async function saveCaps() {
-    const tokenText = tokenCap.trim();
-    const usdText = usdCap.trim();
-    const tokenNumber = tokenText === "" ? null : Number(tokenText);
-    const usdNumber = usdText === "" ? null : Number(usdText);
-    if (
-      (tokenNumber != null && (!Number.isFinite(tokenNumber) || tokenNumber < 0)) ||
-      (usdNumber != null && (!Number.isFinite(usdNumber) || usdNumber < 0))
-    ) {
-      setFeedback({ ok: false, text: t("usage.invalidCap") });
-      return;
-    }
-    setFeedback(null);
-    try {
-      await update.mutateAsync({
-        monthlyTokenCap: tokenNumber == null ? null : Math.floor(tokenNumber),
-        monthlyUsdCap: usdNumber == null ? null : Math.round(usdNumber * 100),
-      });
-      setFeedback({ ok: true, text: t("usage.capsSaved") });
-      onCapsChanged();
-    } catch (error) {
-      setFeedback({
-        ok: false,
-        text: error instanceof Error ? error.message : t("usage.saveCapsFailed"),
-      });
-    }
+    const t = tokenCap.trim();
+    const u = usdCap.trim();
+    await update.mutateAsync({
+      monthlyTokenCap: t === "" ? null : Math.max(0, Math.floor(Number(t))),
+      monthlyUsdCap: u === "" ? null : Math.max(0, Math.round(Number(u) * 100)),
+    });
+    onCapsChanged();
   }
 
   return (
     <Panel
-      title={t("usage.budgetTitle")}
-      subtitle={t("usage.budgetPeriodStarted", {
-        date: new Date(row.periodStart).toLocaleDateString(),
-      })}
+      title="Monthly budget"
+      subtitle={`Period started ${new Date(row.periodStart).toLocaleDateString()}`}
       padded
       action={
         <Button
@@ -403,49 +562,10 @@ function BudgetRow({
           onClick={saveCaps}
           disabled={update.isPending}
         >
-          {update.isPending ? t("usage.saving") : t("usage.saveCaps")}
+          {update.isPending ? "Saving…" : "Save caps"}
         </Button>
       }
     >
-      {!row.costComplete ? (
-        <div
-          role="note"
-          style={{
-            marginBottom: 14,
-            padding: "8px 10px",
-            border:
-              "1px solid color-mix(in srgb, var(--amber) 35%, var(--border))",
-            borderRadius: 6,
-            color: "var(--amber)",
-            background: "color-mix(in srgb, var(--amber) 7%, transparent)",
-            fontSize: 11,
-          }}
-        >
-          {t("usage.budgetCostIncompleteHint", {
-            n: fmtNum(row.unpricedTokens),
-          })}
-        </div>
-      ) : null}
-      {row.activeReservations > 0 ? (
-        <div
-          role="status"
-          style={{
-            marginBottom: 14,
-            padding: "8px 10px",
-            border: "1px solid color-mix(in srgb, var(--signal) 30%, var(--border))",
-            borderRadius: 6,
-            color: "var(--text-2)",
-            background: "color-mix(in srgb, var(--signal) 6%, transparent)",
-            fontSize: 11,
-          }}
-        >
-          {t("usage.activeReservations", {
-            count: row.activeReservations,
-            tokens: fmtNum(row.reservedTokens),
-            usd: fmtUsd(row.reservedUsdCents),
-          })}
-        </div>
-      ) : null}
       <div
         style={{
           display: "grid",
@@ -454,37 +574,24 @@ function BudgetRow({
         }}
       >
         <CapInput
-          label={t("usage.tokenCapLabel")}
+          label="Monthly token cap"
           value={tokenCap}
           onChange={setTokenCap}
-          placeholder={t("usage.capUnlimited")}
+          placeholder="unlimited"
           used={row.usedTokensMonth}
           usedLabel={fmtNum(row.usedTokensMonth)}
-          reserved={row.reservedTokens}
-          reservedLabel={fmtNum(row.reservedTokens)}
           pct={tokenPct}
         />
         <CapInput
-          label={t("usage.usdCapLabel")}
+          label="Monthly USD cap"
           value={usdCap}
           onChange={setUsdCap}
-          placeholder={t("usage.capUnlimited")}
-          used={row.usedUsdMonth}
-          usedLabel={`${row.costComplete ? "" : "≥"}${fmtUsd(row.usedUsdMonth)}`}
-          reserved={row.reservedUsdCents}
-          reservedLabel={fmtUsd(row.reservedUsdCents)}
+          placeholder="unlimited"
+          used={row.usedUsdNanos}
+          usedLabel={formatUsdNanos(row.usedUsdNanos)}
           pct={usdPct}
-          minimum={!row.costComplete}
         />
       </div>
-      {feedback ? (
-        <div
-          role={feedback.ok ? "status" : "alert"}
-          style={{ marginTop: 12, color: feedback.ok ? "var(--green)" : "var(--red)", fontSize: 11.5 }}
-        >
-          {feedback.text}
-        </div>
-      ) : null}
     </Panel>
   );
 }
@@ -496,10 +603,7 @@ function CapInput({
   placeholder,
   used,
   usedLabel,
-  reserved,
-  reservedLabel,
   pct,
-  minimum = false,
 }: {
   label: string;
   value: string;
@@ -507,12 +611,8 @@ function CapInput({
   placeholder: string;
   used: number;
   usedLabel: string;
-  reserved: number;
-  reservedLabel: string;
   pct: number | null;
-  minimum?: boolean;
 }) {
-  const { t } = useI18n();
   return (
     <div>
       <div
@@ -527,9 +627,6 @@ function CapInput({
         {label}
       </div>
       <input
-        type="number"
-        min={0}
-        step="any"
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
@@ -555,9 +652,8 @@ function CapInput({
         }}
       >
         <span style={{ color: "var(--text-3)" }}>
-          {t("usage.used", { amount: usedLabel })}
-          {reserved > 0 ? ` · ${t("usage.reserved", { amount: reservedLabel })}` : ""}
-          {pct != null ? ` · ${minimum ? "≥" : ""}${pct.toFixed(0)}%` : ""}
+          Used {usedLabel}
+          {pct != null ? ` · ${pct.toFixed(0)}%` : ""}
         </span>
         <div
           style={{
@@ -583,7 +679,7 @@ function CapInput({
           />
         </div>
       </div>
-      {used + reserved > 0 && pct == null && (
+      {used > 0 && pct == null && (
         <div
           style={{
             marginTop: 4,
@@ -591,16 +687,9 @@ function CapInput({
             color: "var(--text-3)",
           }}
         >
-          {t("usage.noCapConfigured")}
+          (no cap configured — unlimited)
         </div>
       )}
     </div>
   );
-}
-
-function fmtUsd(cents: number): string {
-  const dollars = cents / 100;
-  if (Math.abs(dollars) < 1) return `$${dollars.toFixed(2)}`;
-  if (Math.abs(dollars) < 1000) return `$${dollars.toFixed(2)}`;
-  return `$${(dollars / 1000).toFixed(1)}k`;
 }

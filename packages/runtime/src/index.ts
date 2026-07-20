@@ -32,10 +32,20 @@ export type { InngestFunction } from "inngest";
 export {
   registerAgent,
   assertFactoryExecutionScope,
+  eventTargetsAgent,
+  resolveAgentConcurrency,
+  resolveAgentTriggerNames,
+  buildManualTaskPayload,
+  buildManualTaskResolution,
   findMissingTenantPrompts,
+  formatMissingPromptsError,
   functionRetries,
   type FunctionRetryCount,
   type RegisterContext,
+  type ResolvedAgentConcurrency,
+  type ManualTaskDecision,
+  type ManualTaskOutcome,
+  type ManualTaskResolution,
 } from "./register";
 export { makeGeneratedAgentPrompt } from "./generated-agent";
 export {
@@ -231,6 +241,7 @@ export {
   selectEmittedEvents,
   type EmitIntent,
 } from "./emit-select";
+
 export {
   bootstrapAll,
   bootstrapAllByTenant,
@@ -293,7 +304,79 @@ export {
   authorizedRunLogPath,
   type LogLevel,
 } from "./log-writer";
+export {
+  writeArtifact,
+  artifactsRoot,
+  createFilesystemArtifactSink,
+  persistTerminalRunArtifacts,
+  ArtifactPersistenceError,
+  type RuntimeArtifactPersistRequest,
+  type RuntimePersistedArtifact,
+  type RuntimeArtifactSink,
+  type PersistTerminalRunArtifactsInput,
+  type PersistedTerminalRunArtifacts,
+} from "./artifacts";
+export {
+  DEFAULT_PLATFORM_INSTRUCTIONS,
+  AgentInputValidationError,
+  OutputSchemaValidationError,
+  normalizeAgentForExecution,
+  compileAgentOutputSchema,
+  bindTriggerInputs,
+  validateValueAgainstJsonSchema,
+  validateJsonSchemaDocument,
+  validateAgentInputs,
+  compileAgentPrompts,
+  validateAgentUserPromptTemplate,
+  prepareAgentExecution,
+  parseValidateAndRepairOutput,
+  resolveAgentEmissions,
+  finalizeAgentExecution,
+  resolveRestrictedJsonPath,
+  canonicalJson,
+  type RuntimeValidationIssue,
+  type AgentConversationTurn,
+  type NormalizedAgentExecutionDefinition,
+  type ValidatedAgentInputs,
+  type CompileAgentPromptsOptions,
+  type CompiledAgentPrompts,
+  type AgentExecutionEvent,
+  type PrepareAgentExecutionInput,
+  type PreparedAgentExecution,
+  type OutputRepairRequest,
+  type OutputRepair,
+  type ParseValidateAndRepairOutputInput,
+  type StructuredOutputResult,
+  type EmissionSource,
+  type ResolvedAgentEmission,
+  type ResolveAgentEmissionsInput,
+  type FinalizeAgentExecutionInput,
+  type FinalizedAgentExecution,
+} from "./agent-execution";
+export {
+  appendRuntimeTrace,
+  createBufferedTraceSink,
+  createFilteredTraceSink,
+  shouldPersistRuntimeTrace,
+  type RuntimeTraceKind,
+  type RuntimeTraceLevel,
+  type RuntimeTraceVisibility,
+  type RuntimeTraceStatus,
+  type RuntimeTraceEventDraft,
+  type RuntimeTracePolicy,
+  type RuntimeTraceSink,
+} from "./execution-trace";
 export { appendToLedger, eventLedgerPath } from "./event-ledger";
+export {
+  buildCanonicalEventPayload,
+  stripPrivateEventMetadata,
+  type BuildCanonicalEventPayloadInput,
+} from "./event-envelope";
+export {
+  PRIVATE_USAGE_ATTRIBUTION_FIELD,
+  privateUsageAttributionMetadata,
+  usageAttributionFromDeliveryData,
+} from "./usage-attribution-envelope";
 export { correlationFromEvent, withCorrelation } from "./correlation";
 export {
   setRuntimeGateway,
@@ -423,3 +506,4 @@ export {
   workflowVersionIdentityKind,
   type StoredWorkflowVersionContent,
 } from "./workflow-version-identity";
+export { systemCronFns, __getCronFires, __resetCronFires } from "./system-cron";

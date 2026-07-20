@@ -7,8 +7,9 @@ export function makeDeepSeek(env: AdapterEnvSlice): ProviderAdapter {
   return createOpenAICompatibleAdapter({
     id: "deepseek",
     name: "DeepSeek",
-    baseURL: "https://api.deepseek.com/v1",
+    baseURL: "https://api.deepseek.com",
     apiKey: env.DEEPSEEK_API_KEY,
     defaultModel: defaultModelFor("deepseek"),
+    reasoningDialect: "deepseek",
   });
 }

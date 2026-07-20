@@ -7,17 +7,20 @@
   "types": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts",
+    "./agent-execution": "./src/agent-execution.ts",
     "./client": "./src/client.ts",
+    "./execution-trace": "./src/execution-trace.ts",
     "./manifest": "./src/manifest.ts",
     "./register": "./src/register.ts"
   },
   "scripts": {
-    "test": "vitest run",
+    "test": "vitest run && pnpm run test:node",
     "typecheck": "tsc --noEmit",
     "rotate-logs": "tsx src/log-rotate.ts",
     "gen:schema": "tsx src/generate-workflow-schema.ts",
     "gen:schema:check": "tsx src/generate-workflow-schema.ts --check",
-    "clean": "rm -rf dist .turbo"
+    "clean": "rm -rf dist .turbo",
+    "test:node": "node --test --import tsx src/action-model-overrides.test.ts src/agent-execution.test.ts src/event-envelope.test.ts src/execution-trace.test.ts src/lint.test.ts src/manifest-v2.test.ts src/manual-task-payload.test.ts src/register-config.test.ts src/step-engine-v2.test.ts src/usage-attribution-envelope.test.ts"
   },
   "dependencies": {
     "@agentic/agent-kit": "workspace:*",
@@ -27,6 +30,8 @@
     "@agentic/llm-gateway": "workspace:*",
     "@agentic/shared": "workspace:*",
     "@agentic/tools": "workspace:*",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
     "drizzle-orm": "^0.45.2",
     "inngest": "4.4.0",
     "zod": "^4.4.3"

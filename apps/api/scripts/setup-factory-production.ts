@@ -806,7 +806,11 @@ export function ensureProductionImageAttestationKeyPair(
   }
   chmodSync(privateKeyFile, 0o600);
 
-  const derivedPublic = createPublicKey(privateKey).export({
+  const derivedPublic = createPublicKey(
+    // Runtime accepts a private KeyObject to derive its public half; bridge
+    // the @types/node 26 narrowed input union.
+    privateKey as unknown as Parameters<typeof createPublicKey>[0],
+  ).export({
     type: "spki",
     format: "pem",
   }).toString();

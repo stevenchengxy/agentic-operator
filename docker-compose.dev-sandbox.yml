@@ -1,0 +1,23 @@
+# LOCAL DEV ONLY — overlay for running the HOST dev api (pnpm dev) against the containerized
+# factory-sandbox plane. Publishes the control runner's port to loopback so the host api can
+# reach `FACTORY_SB_RUNNER_URL=http://127.0.0.1:3560`.
+#
+# Production keeps the control/execution networks fully internal (docker-compose.yml publishes
+# nothing); this file must NEVER be used in production. Usage:
+#
+#   docker compose --env-file .env.production --env-file ~/.agentic/factory-sandbox.env \
+#     --profile factory-sandbox -f docker-compose.yml -f docker-compose.dev-sandbox.yml \
+#     up -d sandbox-inngest sandbox-workload sandbox-runner
+#
+# The workload/broker stay unpublished even here — the host api only ever talks to the signed
+# control API; workload/broker remain reachable solely on the internal execution network.
+services:
+  sandbox-runner:
+    ports:
+      - "127.0.0.1:3560:3560"
+    networks:
+      factory-sandbox-control: {}
+      factory-sandbox-execution: {}
+      # joining the default bridge is what makes loopback publishing work while the two
+      # sandbox networks stay `internal: true`.
+      default: {}

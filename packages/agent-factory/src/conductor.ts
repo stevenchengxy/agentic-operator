@@ -30,6 +30,7 @@ import { consolidateRunMemory, digestFromMessages, renderMemoryRecall, MEMORY_RE
 import { GENERAL_MEMORY_SUBJECT } from "./ports";
 import { induceSkillsFromRun, kebab as kebabSkill } from "./skill-induction";
 import { humanMemoryQuestionKey, renderHumanMemorySeed } from "./human-memory";
+import { archiveEntriesFromDropped } from "./conversation-archive";
 import { coverageWaiverMatches, normalizeCoverageCells, parseCoverageWaiverTag } from "./coverage-waiver";
 import { isTestCaseDecisionTaggedMessage, parseTestCaseDecision } from "./test-case-decision";
 import { resolveClarificationTimeout } from "./clarification-policy";
@@ -296,7 +297,7 @@ function buildStateSummary(ctx: BrainCtx): string {
   if (ctx.lastValidation && !ctx.lastValidation.ok) { const bad = Object.keys(ctx.lastValidation.agentIssueMap); if (bad.length) open.push(`上次校验未闭合，问题 agent: ${bad.join("、")}`); }
   if (ctx.lastSandbox && !completeSuiteForContext(ctx).complete) open.push(`上次沙箱未证明完整套件跑通（${completeSuiteForContext(ctx).detail}）`);
   if (open.length) lines.push(`⚠ 还没解决的问题（处理完才能 finish）:\n  - ${open.join("\n  - ")}`);
-  lines.push(`花费: ${ctx.spent.turns} 轮 · ${Math.round(ctx.spent.tokens / 1000)}k tokens · ${ctx.spent.sandboxRuns} 次沙箱。需要细节用 describe_object(对象字段) / read_spec / inspect_run / list_agents 取回，别凭记忆脑补。`);
+  lines.push(`花费: ${ctx.spent.turns} 轮 · ${Math.round(ctx.spent.tokens / 1000)}k tokens · ${ctx.spent.sandboxRuns} 次沙箱。需要细节用 describe_object(对象字段) / read_spec / inspect_run / list_agents 取回${ctx.ports?.conversationArchive && (ctx.compactionFolds ?? 0) > 0 ? "；被折叠的对话原文（早期用户消息/推理/工具输入输出）用 recall_conversation 按关键词找回" : ""}，别凭记忆脑补。`);
   return lines.join("\n");
 }
 
@@ -329,6 +330,23 @@ async function maybeCompact(messages: ChatMsg[], ctx: BrainCtx): Promise<boolean
   // A single currently-active oversized exchange cannot be dropped safely.
   // New tool results are structurally capped below, so simply defer the fold.
   if (!dropped.length) return false;
+  // #CONV-ARCHIVE — persist the dropped turns VERBATIM before any fold. The summary below is lossy
+  // by design; the archive is what makes the loss recoverable (recall_conversation). A configured
+  // archive that fails DEFERS the fold — context grows until the write path recovers, but folded
+  // conversation is never silently destroyed. No archive configured → legacy summary-only fold.
+  if (ctx.ports.conversationArchive && ctx.conversationId) {
+    ctx.compactionFolds = (ctx.compactionFolds ?? 0) + 1;
+    try {
+      await ctx.ports.conversationArchive.append(
+        ctx.conversationId,
+        archiveEntriesFromDropped(dropped, ctx.compactionFolds, Date.now()),
+      );
+    } catch (error) {
+      ctx.compactionFolds -= 1;
+      ctx.emit({ t: "reflect", kind: "compact-archive-failed", lesson: `会话归档写入失败（${(error as Error).message}）——本次压缩已推迟，折叠原文不会被静默丢弃。` });
+      return false;
+    }
+  }
   let summaryText = buildStateSummary(ctx);
   if (process.env.FACTORY_COMPACT_ABSTRACTIVE !== "0" && isGatewayConfigured() && dropped.length > 4) {
     const narrative = await summarizeDropped(dropped, ctx).catch(() => "");
@@ -750,6 +768,8 @@ function opts_isSubAgentGuard(ctx: BrainCtx): boolean {
 /** Test seam: the reasoning-driven group tool (research + build) exercised directly with a hand-built ctx. */
 export const __spawnSubagentGroupToolForTest = spawnSubagentGroupTool;
 export const __buildStateSummaryForTest = buildStateSummary;
+/** Test seam (#CONV-ARCHIVE): the compaction fold with its archive-before-drop contract. */
+export const __maybeCompactForTest = maybeCompact;
 
 // ── #DESIGN-FLEET — sub-agents as BUILDERS, not just advisors ────────────────────────────────────
 //

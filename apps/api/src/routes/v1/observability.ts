@@ -15,7 +15,7 @@ import {
   auditLog,
   events,
   getDb,
-  llmCalls,
+  llmCallTelemetry,
   runs,
   steps,
   workflows,
@@ -368,12 +368,12 @@ export async function observabilityRoutes(app: FastifyInstance): Promise<void> {
 
       const llmRows = db
         .select()
-        .from(llmCalls)
+        .from(llmCallTelemetry)
         .where(
           and(
-            eq(llmCalls.tenantId, auth.tenantId),
-            gte(llmCalls.createdAt, new Date(window.since)),
-            lt(llmCalls.createdAt, new Date(window.until)),
+            eq(llmCallTelemetry.tenantId, auth.tenantId),
+            gte(llmCallTelemetry.createdAt, new Date(window.since)),
+            lt(llmCallTelemetry.createdAt, new Date(window.until)),
           ),
         )
         .limit(MAX_SUMMARY_SOURCE_ROWS + 1)

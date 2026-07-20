@@ -43,13 +43,16 @@ import {
 } from "@agentic/shared";
 
 import {
-  matchResumeApi,
-  parseResumeApi,
-  parseJdApi,
   generateJdApi,
-  inviteCandidateApi,
-  robohireHealthApi,
 } from "./robohire";
+import {
+  gohireHealthApi,
+  gohireMatchResumeApi,
+  gohireParseResumeApi,
+  gohireParseJdApi,
+  gohireInviteCandidateApi,
+} from "./gohire";
+import { webSearch } from "./search";
 import {
   readFromInbox,
   writeMarkdownToArchive,
@@ -60,6 +63,7 @@ import { httpFetchTool } from "./http";
 import { ping } from "./meta";
 import {
   fetchActionRules,
+  ontologyQuery,
   ontologyWriteInstance,
   ONTOLOGY_WRITE_INSTANCE_PROBE_SAFETY,
 } from "./ontology";
@@ -123,6 +127,10 @@ export interface ToolCatalogEntry {
   /** Explicit probe/production side-effect class. Undefined is treated as
    * side-effecting by the probe API (fail closed). */
   sideEffect?: "read" | "write" | "dual" | "call";
+  /** Whether Studio / workflow test runs may execute the real implementation
+   * outside live mode. Undefined derives fail-closed from the execution
+   * policy (write/dual/attempt-grant tools block). */
+  testPolicy?: "allow" | "block";
   /** Explicit reviewed execution semantics. All first-party global tools must
    * declare all three fields; sandbox dispatch fails closed without them. */
   operation: ToolOperation;
@@ -327,17 +335,52 @@ const ROBOHIRE_CONFIG_EXAMPLE = {
   base_url_env: "GOHIRE_API_BASE_URL",
 };
 
+// Shared config block for the canonical GoHire wrappers. The NORMAL
+// credential source is the DB-backed integration configured in Settings →
+// Integrations (provider="gohire", resolved through the injected
+// resolveIntegrationCreds seam); explicit env references in the manifest
+// override it and fail closed when the named variable is unset — which is
+// how legacy RoboHire-named manifests ({api_key_env, base_url_env}) keep
+// working unchanged. See gohire/rest-helper.ts for the full order.
+const GOHIRE_CONFIG_SCHEMA: Record<string, ToolFieldSchema> = {
+  api_key_env: {
+    type: "string",
+    description:
+      "Env-var name holding the per-tenant API key. Fail-closed override of the Settings → Integrations credential; if named but unset the call throws.",
+  },
+  base_url_env: {
+    type: "string",
+    description:
+      "Env-var name holding the API base URL. Fail-closed override; legacy manifests bind ROBOHIRE_API_BASE_URL / GOHIRE_API_BASE_URL here.",
+  },
+  base_url: {
+    type: "string",
+    description:
+      "Literal endpoint override. Normally omitted — the Settings → Integrations row (then GOHIRE_BASE_URL / GOHIRE_API_BASE_URL) supplies it. A custom value requires an explicit api_key_env.",
+  },
+  timeout_ms: { type: "number", default: 30000 },
+};
+
+const GOHIRE_CONFIG_EXAMPLE = {
+  api_key_env: "GOHIRE_API_KEY",
+  base_url_env: "GOHIRE_API_BASE_URL",
+};
+
 const REGISTRATIONS: ToolRegistration[] = [
-  // ── robohire.* — live vendor: GoHire (gohire.top), RoboHire-compatible /api/v1
-  //    contract. Every tool also answers to a gohire.* alias. ────────────────
+  // ── gohire.* — the CANONICAL recruitment tool family (live vendor:
+  //    GoHire / gohire.top, RoboHire-compatible contract). Credentials come
+  //    from Settings → Integrations (DB-backed, via resolveIntegrationCreds)
+  //    with fail-closed manifest env-reference overrides and a global-env
+  //    fallback. Every legacy RoboHire tool name aliases to these
+  //    implementations, so existing manifests keep working unchanged. ──────
   {
-    descriptor: robohireHealthApi,
+    descriptor: gohireHealthApi,
     catalog: {
-      name: "robohireHealthApi",
-      aliases: ["gohire.health"],
-      category: "robohire",
+      name: "gohireHealthApi",
+      aliases: ["robohireHealthApi", "gohire.health"],
+      category: "gohire",
       summary:
-        "GET {configured RoboHire base}/health — smoke-test reachability + credentials.",
+        "GET {configured GoHire base}/health — smoke-test reachability + credentials. Also backs the Settings → Integrations 'Test connection' affordance.",
       sideEffect: "read",
       operation: "read",
       effectScope: "external",
@@ -346,22 +389,22 @@ const REGISTRATIONS: ToolRegistration[] = [
         "Cheap canary call to confirm the API is reachable and the configured key is accepted before invoking write endpoints. Returns the upstream response under .data so the LLM can branch on `status === 'ok'`.",
       argsSchema: {},
       argsExample: {},
-      configSchema: ROBOHIRE_CONFIG_SCHEMA,
+      configSchema: GOHIRE_CONFIG_SCHEMA,
       capabilities: [{ systems: ["RoboHire", "GoHire", "RoboHire_System", "GoHire_System"], kinds: ["external_api"], roles: ["read", "reads", "calls"], operations: ["health"], probeRequired: true }],
-      configExample: ROBOHIRE_CONFIG_EXAMPLE,
+      configExample: GOHIRE_CONFIG_EXAMPLE,
       returnsSchema: {
         data: { type: "object", description: "Upstream JSON, e.g. { status: 'ok' }" },
       },
       returnsExample: { data: { status: "ok", uptime_s: 482931 } },
-      sourcePath: "packages/tools/src/robohire/health.ts",
+      sourcePath: "packages/tools/src/gohire/health.ts",
     },
   },
   {
-    descriptor: parseJdApi,
+    descriptor: gohireParseJdApi,
     catalog: {
-      name: "parseJdApi",
-      aliases: ["gohire.parseJd"],
-      category: "robohire",
+      name: "gohireParseJdApi",
+      aliases: ["parseJdApi", "gohire.parseJd"],
+      category: "gohire",
       summary:
         "POST /api/v1/parse-jd — structures a job description (text, URL, or base64 PDF).",
       sideEffect: "call",
@@ -388,7 +431,7 @@ const REGISTRATIONS: ToolRegistration[] = [
         jd_text:
           "Senior Backend Engineer\n\nResponsibilities: design and own production services in Go/TypeScript ...",
       },
-      configSchema: ROBOHIRE_CONFIG_SCHEMA,
+      configSchema: GOHIRE_CONFIG_SCHEMA,
       capabilities: [{ systems: ["RoboHire", "GoHire", "RoboHire_System", "GoHire_System"], kinds: ["external_api"], roles: ["calls"], operations: ["parse-jd"], objectTypes: ["Job_Posting", "Job_Requisition"], probeRequired: true }],
       returnsSchema: {
         data: {
@@ -404,7 +447,7 @@ const REGISTRATIONS: ToolRegistration[] = [
           nice_to_have: ["Go", "Kubernetes"],
         },
       },
-      sourcePath: "packages/tools/src/robohire/parse-jd.ts",
+      sourcePath: "packages/tools/src/gohire/parse-jd.ts",
     },
   },
   {
@@ -432,6 +475,7 @@ const REGISTRATIONS: ToolRegistration[] = [
         language: "zh",
       },
       configSchema: ROBOHIRE_CONFIG_SCHEMA,
+      configExample: ROBOHIRE_CONFIG_EXAMPLE,
       credentialPosture: "environment_reference_only",
       probeRequired: true,
       capabilities: [{
@@ -465,11 +509,11 @@ const REGISTRATIONS: ToolRegistration[] = [
     },
   },
   {
-    descriptor: parseResumeApi,
+    descriptor: gohireParseResumeApi,
     catalog: {
-      name: "parseResumeApi",
-      aliases: ["gohire.parseResume"],
-      category: "robohire",
+      name: "gohireParseResumeApi",
+      aliases: ["parseResumeApi", "gohire.parseResume"],
+      category: "gohire",
       summary:
         "POST /api/v1/parse-resume — validated multipart resume parsing with typed failure semantics.",
       sideEffect: "call",
@@ -499,7 +543,7 @@ const REGISTRATIONS: ToolRegistration[] = [
         },
       },
       argsExample: {},
-      configSchema: ROBOHIRE_CONFIG_SCHEMA,
+      configSchema: GOHIRE_CONFIG_SCHEMA,
       capabilities: [{ systems: ["RoboHire", "GoHire", "RoboHire_System", "GoHire_System"], kinds: ["external_api"], roles: ["calls"], operations: ["parse-resume"], objectTypes: ["Resume", "Candidate"], probeRequired: true }],
       returnsSchema: {
         data: {
@@ -519,15 +563,15 @@ const REGISTRATIONS: ToolRegistration[] = [
         },
       },
       chainsWith: ["objectStore.getObject", "fs.readFromInbox"],
-      sourcePath: "packages/tools/src/robohire/parse-resume.ts",
+      sourcePath: "packages/tools/src/gohire/parse-resume.ts",
     },
   },
   {
-    descriptor: matchResumeApi,
+    descriptor: gohireMatchResumeApi,
     catalog: {
-      name: "matchResumeApi",
-      aliases: ["gohire.matchResume"],
-      category: "robohire",
+      name: "gohireMatchResumeApi",
+      aliases: ["matchResumeApi", "gohire.matchResume"],
+      category: "gohire",
       summary:
         "POST /api/v1/match-resume — score a resume vs. a JD. REQUIRES {resume, jd} as plain-text strings.",
       sideEffect: "call",
@@ -553,7 +597,7 @@ const REGISTRATIONS: ToolRegistration[] = [
         resume: "Wei Zhang — Staff Engineer with 8 years backend experience ...",
         jd: "Senior Backend Engineer — Must have Postgres OLTP expertise ...",
       },
-      configSchema: ROBOHIRE_CONFIG_SCHEMA,
+      configSchema: GOHIRE_CONFIG_SCHEMA,
       capabilities: [{ systems: ["RoboHire", "GoHire", "RoboHire_System", "GoHire_System"], kinds: ["external_api"], roles: ["calls"], operations: ["match-resume"], objectTypes: ["Resume", "Job_Posting", "Job_Requisition", "Candidate_Match_Result"], probeRequired: true }],
       returnsSchema: {
         matchScore: {
@@ -578,15 +622,15 @@ const REGISTRATIONS: ToolRegistration[] = [
         summary: "Direct expertise in the platform's full tech stack.",
         raw: { overallMatchScore: { score: 96 } },
       },
-      sourcePath: "packages/tools/src/robohire/match-resume.ts",
+      sourcePath: "packages/tools/src/gohire/match-resume.ts",
     },
   },
   {
-    descriptor: inviteCandidateApi,
+    descriptor: gohireInviteCandidateApi,
     catalog: {
-      name: "inviteCandidateApi",
-      aliases: ["gohire.inviteCandidate"],
-      category: "robohire",
+      name: "gohireInviteCandidateApi",
+      aliases: ["inviteCandidateApi", "gohire.inviteCandidate"],
+      category: "gohire",
       summary:
         "POST /api/v1/invite-candidate — send a real interview invitation and return its receipt.",
       sideEffect: "write",
@@ -647,8 +691,8 @@ const REGISTRATIONS: ToolRegistration[] = [
         interview_language: "zh",
         interview_duration: 30,
       },
-      configSchema: ROBOHIRE_CONFIG_SCHEMA,
-      credentialPosture: "environment_reference_only",
+      configSchema: GOHIRE_CONFIG_SCHEMA,
+      credentialPosture: "server_managed",
       probeRequired: true,
       capabilities: [{ systems: ["RoboHire", "GoHire", "RoboHire_System", "GoHire_System"], kinds: ["external_api"], roles: ["write", "writes", "calls"], operations: ["invite-candidate"], objectTypes: ["Candidate", "Job_Requisition", "Interview_Record", "Communication_Log"], probeRequired: true }],
       returnsSchema: {
@@ -674,7 +718,7 @@ const REGISTRATIONS: ToolRegistration[] = [
         error_message: null,
         raw: { success: true, login_url: "https://app.robohire.io/interview/real-issued-id" },
       },
-      sourcePath: "packages/tools/src/robohire/invite-candidate.ts",
+      sourcePath: "packages/tools/src/gohire/invite-candidate.ts",
     },
   },
 
@@ -895,7 +939,7 @@ const REGISTRATIONS: ToolRegistration[] = [
       summary:
         "Generic JSON HTTP client. Per-tenant base_url + auth + allow-lists via config; per-call { method, path, body, query, headers }.",
       description:
-        "Returns `{ status, ok, headers, body }` for 2xx. 4xx/5xx throw with a bounded response diagnostic, so direct workflow steps fail and the LLM tool loop can self-correct from an explicit tool error. Auth schemes: bearer (default), header (X-API-Key-style), query (?api_key=), none. Optional `allow_methods` and `allow_host` give the operator a tenant-scoped safety perimeter — useful when you want an agent to talk to one specific vendor and nothing else.",
+        "SSRF-hardened client for one manifest-bound public HTTPS origin. Returns `{ status, ok, headers, body }` for 2xx; 4xx/5xx THROW with a bounded response diagnostic, so direct workflow steps fail and the LLM tool loop can self-correct from an explicit tool error. The server must authorize `base_url` (AGENTIC_WORKFLOW_ENDPOINT_ALLOWLIST); `allow_host` must pin its exact public host; per-call paths stay inside that origin/base path. DNS answers and redirects are revalidated and pinned. Authentication comes only from a populated tenant-owned `api_key_env` (bearer, named header, or query) — never literal model input.",
       argsSchema: {
         method: {
           type: "'GET'|'POST'|'PUT'|'PATCH'|'DELETE'",
@@ -905,11 +949,12 @@ const REGISTRATIONS: ToolRegistration[] = [
           type: "string",
           required: true,
           description:
-            "Joined to config.base_url. Absolute URLs (http://…) are used verbatim.",
+            "Relative path joined inside config.base_url. Absolute URLs, protocol-relative values, fragments, and parent-path escapes are rejected.",
         },
         query: {
           type: "Record<string,string|number|boolean>",
-          description: "Appended as URL search params.",
+          description:
+            "Appended as URL search params. Credential-bearing names are rejected.",
         },
         body: {
           type: "unknown",
@@ -918,7 +963,8 @@ const REGISTRATIONS: ToolRegistration[] = [
         },
         headers: {
           type: "Record<string,string>",
-          description: "Merged on top of config.default_headers.",
+          description:
+            "Merged on top of config.default_headers. Auth, cookie, host, and connection-controlled names are rejected.",
         },
       },
       argsExample: {
@@ -929,18 +975,25 @@ const REGISTRATIONS: ToolRegistration[] = [
       configSchema: {
         base_url: {
           type: "string",
-          description: "Prepended to per-call `path` when not absolute.",
+          required: true,
+          description:
+            "Public HTTPS origin/base path authorized by AGENTIC_WORKFLOW_ENDPOINT_ALLOWLIST. Development localhost additionally requires AGENTIC_FETCH_ALLOW_HTTP_LOCALHOST=1.",
         },
         timeout_ms: { type: "number", default: 30000 },
-        default_headers: { type: "Record<string,string>" },
-        api_key: {
-          type: "string",
-          description: "Literal key — prefer api_key_env for tenant isolation.",
+        default_headers: {
+          type: "Record<string,string>",
+          description:
+            "Non-sensitive defaults only; credentials and connection-controlled headers are rejected.",
         },
-        api_key_env: { type: "string" },
+        api_key_env: {
+          type: "string",
+          description:
+            "Populated tenant-owned environment variable name (or an exact server-shared reference). Missing/empty values fail closed; literal config.api_key is forbidden.",
+        },
         auth_scheme: {
           type: "'bearer'|'header'|'query'|'none'",
-          default: "bearer",
+          description:
+            "Defaults to bearer when api_key_env is configured, otherwise none.",
         },
         auth_header_name: { type: "string", default: "X-API-Key" },
         auth_query_name: { type: "string", default: "api_key" },
@@ -950,7 +1003,9 @@ const REGISTRATIONS: ToolRegistration[] = [
         },
         allow_host: {
           type: "string|string[]",
-          description: "Safety allow-list. Default: any host.",
+          required: true,
+          description:
+            "Exact base_url hostname only; schemes, ports, paths, and wildcards are rejected.",
         },
       },
       configExample: {
@@ -2028,6 +2083,203 @@ const REGISTRATIONS: ToolRegistration[] = [
       sourcePath: "packages/tools/src/crypto/sha256.ts",
     },
   },
+  // ── search.* ────────────────────────────────────────────────────────────
+  {
+    descriptor: webSearch,
+    catalog: {
+      name: "search.web",
+      category: "search",
+      operation: "read",
+      effectScope: "external",
+      sandboxPolicy: "live_external",
+      summary:
+        "Read-only public web search with normalized sources for Deep Search agents.",
+      description:
+        "Supports Tavily (default), Brave Search, Serper, or a compatible custom endpoint. Advanced Tavily searches request cleaned source Markdown and return it under strict per-result and aggregate size limits, letting the agent inspect source evidence while owning its citations.",
+      argsSchema: {
+        query: {
+          type: "string",
+          required: true,
+          description:
+            "One focused search query. Issue multiple varied queries for broad research.",
+        },
+        max_results: { type: "number", default: 8, description: "1-20." },
+        search_depth: { type: "'basic'|'advanced'", default: "basic" },
+        include_raw_content: {
+          type: "boolean",
+          description:
+            "Tavily only. Requests cleaned source Markdown; defaults to true for advanced searches and false for basic searches.",
+        },
+        include_domains: { type: "string[]" },
+        exclude_domains: { type: "string[]" },
+        time_range: {
+          type: "string",
+          description: "Provider-native freshness filter when supported.",
+        },
+      },
+      argsExample: {
+        query: "durable agent workflow runtime primary source",
+        max_results: 8,
+        search_depth: "advanced",
+      },
+      configSchema: {
+        provider: {
+          type: "'tavily'|'brave'|'serper'|'custom'",
+          default: "tavily",
+        },
+        api_key_env: {
+          type: "string",
+          description:
+            "Tenant-scoped env name. Defaults to the selected provider's standard env var.",
+        },
+        base_url: {
+          type: "string",
+          description:
+            "Optional endpoint override. It must be provider-owned or server-allowlisted and requires an explicit tenant-scoped api_key_env.",
+        },
+        timeout_ms: { type: "number", default: 30000 },
+        max_content_chars_per_result: {
+          type: "number",
+          default: 12000,
+          description: "Server-capped at 30,000 characters.",
+        },
+        max_content_chars_total: {
+          type: "number",
+          default: 48000,
+          description: "Server-capped at 100,000 characters.",
+        },
+        max_content_bytes_per_result: {
+          type: "number",
+          default: 48000,
+          description: "Server-capped at 120,000 UTF-8 bytes.",
+        },
+        max_content_bytes_total: {
+          type: "number",
+          default: 192000,
+          description: "Server-capped at 400,000 UTF-8 bytes.",
+        },
+      },
+      configExample: {
+        provider: "tavily",
+        api_key_env: "TENANT_X_TAVILY_API_KEY",
+      },
+      returnsSchema: {
+        query: { type: "string" },
+        provider: { type: "string" },
+        results: {
+          type: "Array<{title,url,snippet,publishedAt,score,content,contentCharacters,contentBytes,contentTruncated}>",
+          description:
+            "Normalized evidence candidates with citeable URLs and optional bounded source Markdown.",
+        },
+        contentRequested: { type: "boolean" },
+        contentCharacters: { type: "number" },
+        contentBytes: { type: "number" },
+        contentTruncated: {
+          type: "boolean",
+          description:
+            "True when any returned source content exceeded a per-result or aggregate content budget.",
+        },
+      },
+      sourcePath: "packages/tools/src/search/web.ts",
+      sideEffect: "read",
+      testPolicy: "allow",
+    },
+  },
+
+  // ── ontology.* ──────────────────────────────────────────────────────────
+  {
+    descriptor: ontologyQuery,
+    catalog: {
+      name: "ontology.query",
+      category: "ontology",
+      operation: "read",
+      effectScope: "external",
+      sandboxPolicy: "live_external",
+      summary:
+        "Tenant-scoped, read-only Neo4j Query API SDK with generated parameterized Cypher.",
+      description:
+        "The model chooses a bounded retrieval operation and values, never raw Cypher. The SDK generates the statement, requests Query API accessMode Read, projects only server-allowlisted properties, and applies the tenant predicate to every matched node (including all nodes in a path). The Neo4j principal must also be read-only because accessMode controls routing, not authorization.",
+      argsSchema: {
+        operation: {
+          type: "'search_nodes'|'get_node'|'neighbors'|'find_paths'|'schema'",
+          required: true,
+        },
+        query: {
+          type: "string",
+          description: "Required by search_nodes.",
+        },
+        id: {
+          type: "string",
+          description: "Required by get_node and neighbors.",
+        },
+        start_id: { type: "string", description: "Required by find_paths." },
+        end_id: { type: "string", description: "Required by find_paths." },
+        max_depth: {
+          type: "number",
+          default: 3,
+          description: "find_paths only; clamped to 1-4.",
+        },
+        labels: { type: "string[]" },
+        properties: { type: "string[]" },
+        relationship_types: { type: "string[]" },
+        neighbor_labels: { type: "string[]" },
+        limit: {
+          type: "number",
+          default: 20,
+          description: "Clamped to 1-100.",
+        },
+      },
+      argsExample: {
+        operation: "neighbors",
+        id: "customer-42",
+        relationship_types: ["OWNS", "USES"],
+        limit: 20,
+      },
+      configSchema: {
+        base_url: {
+          type: "string",
+          description:
+            "Neo4j Query API origin or full /db/<database>/query/v2 URL. Defaults to the server-pinned NEO4J_QUERY_API_URL. An override must be server-allowlisted and use explicit tenant-scoped credential env names.",
+        },
+        database: { type: "string", default: "neo4j" },
+        username_env: { type: "string", default: "NEO4J_USERNAME" },
+        password_env: { type: "string", default: "NEO4J_PASSWORD" },
+        tenant_property: {
+          type: "string",
+          default: "tenant_slug",
+          description:
+            "Server-owned isolation key; an agent may only repeat the configured NEO4J_TENANT_PROPERTY value.",
+        },
+        id_property: {
+          type: "string",
+          default: "id",
+          description:
+            "Server-owned identifier key; an agent may only repeat the configured NEO4J_ID_PROPERTY value.",
+        },
+        search_properties: {
+          type: "string[]",
+          default: ["name", "title", "description", "summary", "content"],
+        },
+        timeout_ms: { type: "number", default: 20000 },
+        max_execution_time_ms: { type: "number", default: 15000 },
+      },
+      configExample: {
+        username_env: "TENANT_X_NEO4J_USERNAME",
+        password_env: "TENANT_X_NEO4J_PASSWORD",
+      },
+      returnsSchema: {
+        operation: { type: "string" },
+        fields: { type: "string[]" },
+        records: { type: "Record<string,unknown>[]" },
+        count: { type: "number" },
+        truncated: { type: "boolean" },
+      },
+      sourcePath: "packages/tools/src/ontology/query.ts",
+      sideEffect: "read",
+      testPolicy: "allow",
+    },
+  },
+
 ];
 
 /**
@@ -2079,6 +2331,55 @@ function buildRegistry(regs: ToolRegistration[]): Map<string, ToolDescriptor> {
 export const globalToolRegistry: ReadonlyMap<string, ToolDescriptor> =
   buildRegistry(REGISTRATIONS);
 
+/** Names that must never auto-run in Studio / workflow test mode even if a
+ * future edit forgets an explicit `testPolicy`. Kept alongside the derived
+ * policy below for exactness with the original review. */
+const TEST_BLOCKED_TOOLS = new Set([
+  "inviteCandidateApi",
+  "gohireInviteCandidateApi",
+  "fs.writeMarkdownToArchive",
+  "fs.writeHtmlToArchive",
+  "fs.appendToLog",
+  "http.fetch",
+]);
+
+/** Fail-closed Studio test gate: only reviewed read/compute tools without
+ * write semantics may execute for real outside live mode. Anything that can
+ * mutate state — write/read_write operation, write/dual side-effect class,
+ * or an attempt-grant sandbox policy — blocks unless explicitly allowed. */
+function derivedTestPolicy(catalog: ToolCatalogEntry): "allow" | "block" {
+  if (catalog.testPolicy) return catalog.testPolicy;
+  if (TEST_BLOCKED_TOOLS.has(catalog.name)) return "block";
+  if (catalog.operation === "write" || catalog.operation === "read_write") {
+    return "block";
+  }
+  if (catalog.sideEffect === "write" || catalog.sideEffect === "dual") {
+    return "block";
+  }
+  if (catalog.sandboxPolicy === "requires_attempt_grant") return "block";
+  return "allow";
+}
+
+function effectiveCatalogMetadata(catalog: ToolCatalogEntry): ToolCatalogEntry {
+  return { ...catalog, testPolicy: derivedTestPolicy(catalog) };
+}
+
+/** Resolve canonical catalog policy from either a canonical name or alias. */
+export function getGlobalToolCatalogEntry(
+  name: string,
+): ToolCatalogEntry | undefined {
+  const normalized = name.trim();
+  if (!normalized) return undefined;
+  const registration = REGISTRATIONS.find(
+    ({ catalog }) =>
+      catalog.name === normalized ||
+      (catalog.aliases ?? []).includes(normalized),
+  );
+  return registration
+    ? effectiveCatalogMetadata(registration.catalog)
+    : undefined;
+}
+
 /**
  * Resolve the reviewed side-effect class for a first-party tool name or alias.
  *
@@ -2129,7 +2430,7 @@ export function listGlobalTools(): ToolCatalogEntry[] {
     throw new Error("AGENTIC_BUILD_ID or GIT_SHA is required to identify global tool implementations");
   }
   return REGISTRATIONS.map(({ catalog, descriptor }) => ({
-    ...catalog,
+    ...effectiveCatalogMetadata(catalog),
     sourceIdentity: {
       provider: "global_registry" as const,
       buildId,

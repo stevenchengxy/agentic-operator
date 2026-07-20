@@ -42,6 +42,8 @@ export interface AdapterEnvSlice {
   TOGETHER_API_KEY?: string;
   MISTRAL_API_KEY?: string;
   DEEPSEEK_API_KEY?: string;
+  MOONSHOT_API_KEY?: string;
+  ZAI_API_KEY?: string;
   QWEN_API_KEY?: string;
   AZURE_OPENAI_API_KEY?: string;
   AZURE_OPENAI_ENDPOINT?: string;
@@ -63,7 +65,8 @@ function isProviderId(s: string): s is ProviderId {
 type ProcessEnv = Record<string, string | undefined>;
 
 export function resolveConfig(
-  env: ProcessEnv = (globalThis as { process?: { env?: ProcessEnv } }).process?.env ?? {},
+  env: ProcessEnv = (globalThis as { process?: { env?: ProcessEnv } }).process
+    ?.env ?? {},
 ): ResolvedConfig {
   const rawProvider = env.LLM_DEFAULT_PROVIDER ?? env.LLM_PROVIDER;
   const rawModel = env.LLM_DEFAULT_MODEL ?? env.LLM_MODEL;
@@ -109,13 +112,21 @@ export function resolveConfig(
   const provider: ProviderId = providerValid && providerImplemented ? (normProvider as ProviderId) : "mock";
   const model = rawModel && rawModel.trim().length > 0 ? rawModel : null;
   const timeoutMs = Number(env.LLM_REQUEST_TIMEOUT_MS ?? DEFAULT_TIMEOUT_MS);
+  const requireUsageAttribution =
+    env.LLM_REQUIRE_USAGE_ATTRIBUTION === undefined
+      ? env.NODE_ENV === "production"
+      : env.LLM_REQUIRE_USAGE_ATTRIBUTION === "true";
 
   return {
     gateway: {
       defaultProvider: provider,
       defaultModel: model,
-      timeoutMs: Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : DEFAULT_TIMEOUT_MS,
+      timeoutMs:
+        Number.isFinite(timeoutMs) && timeoutMs > 0
+          ? timeoutMs
+          : DEFAULT_TIMEOUT_MS,
       allowMock: mockAllowed,
+      requireUsageAttribution,
     },
     adapterEnv: {
       ANTHROPIC_API_KEY: env.ANTHROPIC_API_KEY,
@@ -128,6 +139,8 @@ export function resolveConfig(
       TOGETHER_API_KEY: env.TOGETHER_API_KEY,
       MISTRAL_API_KEY: env.MISTRAL_API_KEY,
       DEEPSEEK_API_KEY: env.DEEPSEEK_API_KEY,
+      MOONSHOT_API_KEY: env.MOONSHOT_API_KEY,
+      ZAI_API_KEY: env.ZAI_API_KEY,
       QWEN_API_KEY: env.QWEN_API_KEY,
       AZURE_OPENAI_API_KEY: env.AZURE_OPENAI_API_KEY,
       AZURE_OPENAI_ENDPOINT: env.AZURE_OPENAI_ENDPOINT,

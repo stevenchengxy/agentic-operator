@@ -199,6 +199,15 @@ export function createAzureAdapter(config: AzureAdapterConfig): ProviderAdapter 
             input,
           });
         }
+        const usageRecord = usage as unknown as Record<string, unknown> | undefined;
+        const promptDetails = usageRecord?.prompt_tokens_details as Record<string, unknown> | undefined;
+        const completionDetails = usageRecord?.completion_tokens_details as Record<string, unknown> | undefined;
+        const number = (record: Record<string, unknown> | undefined, key: string): number => {
+          const value = record?.[key];
+          return typeof value === "number" && Number.isFinite(value) ? Math.max(0, value) : 0;
+        };
+        const inputTokens = number(usageRecord, "prompt_tokens");
+        const outputTokens = number(usageRecord, "completion_tokens");
 
         return {
           text,
@@ -206,6 +215,20 @@ export function createAzureAdapter(config: AzureAdapterConfig): ProviderAdapter 
           model: deployment,
           tokensIn: usage?.prompt_tokens ?? null,
           tokensOut: usage?.completion_tokens ?? null,
+          usage: usage ? {
+            inputTokens,
+            outputTokens,
+            totalTokens: number(usageRecord, "total_tokens") || inputTokens + outputTokens,
+            cachedInputTokens: number(promptDetails, "cached_tokens"),
+            cacheWriteInputTokens: number(promptDetails, "cache_write_tokens"),
+            cacheWrite5mInputTokens: number(promptDetails, "cache_write_tokens_5m"),
+            cacheWrite1hInputTokens: number(promptDetails, "cache_write_tokens_1h"),
+            reasoningTokens: number(completionDetails, "reasoning_tokens"),
+            inputAudioTokens: number(promptDetails, "audio_tokens"),
+            outputAudioTokens: number(completionDetails, "audio_tokens"),
+            raw: usage,
+          } : undefined,
+          providerRequestId: completion.id,
           finishReason: mapFinishReason(choice?.finish_reason),
           latencyMs: Date.now() - start,
           toolCalls: toolCalls.length > 0 ? toolCalls : undefined,

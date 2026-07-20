@@ -599,6 +599,7 @@ function BrowseModelsPanel({
                   <tr style={{ borderBottom: "1px solid var(--border)" }}>
                     <Th style={{ width: 32 }} />
                     <Th>{t("models.colModelId")}</Th>
+                    <Th>{t("models.colTier")}</Th>
                     <Th>{t("models.colContext")}</Th>
                     <Th>{t("models.colPrice")}</Th>
                     <Th>{t("models.colCapabilities")}</Th>
@@ -714,7 +715,7 @@ function ModelRow({
     <tr
       style={{
         borderBottom: "1px solid var(--border)",
-        opacity: model.inFleet ? 0.55 : 1,
+        opacity: model.inFleet || !model.selectable ? 0.55 : 1,
       }}
     >
       <Td>
@@ -722,7 +723,7 @@ function ModelRow({
           type="checkbox"
           checked={checked}
           onChange={onToggle}
-          disabled={model.inFleet}
+          disabled={model.inFleet || !model.selectable}
           aria-label={t("models.selectAria", { id: model.id })}
         />
       </Td>
@@ -735,9 +736,40 @@ function ModelRow({
             {t("models.inFleet")}
           </Badge>
         )}
+        {!model.selectable && (
+          <div style={{ color: "var(--text-3)", fontSize: 10.5, marginTop: 3 }}>
+            {t("models.notSelectable")} · {formatPolicyReason(model.unavailableReason)}
+          </div>
+        )}
       </Td>
       <Td>
-        <span className="mono" style={{ color: "var(--text-2)" }}>
+        <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+          <Badge tone={tierTone(model.tier)}>
+            {model.tier ? `${model.tier}-tier` : t("models.tierUnclassified")}
+          </Badge>
+          <Badge
+            tone={
+              model.status === "current"
+                ? "green"
+                : model.status === "legacy"
+                  ? "amber"
+                  : "muted"
+            }
+          >
+            {model.status}
+          </Badge>
+        </div>
+      </Td>
+      <Td>
+        <span
+          className="mono"
+          title={
+            model.contextLength && model.contextLength > 0
+              ? `${model.contextLength.toLocaleString("en-US")} tokens`
+              : undefined
+          }
+          style={{ color: "var(--text-2)" }}
+        >
           {formatContext(model.contextLength)}
         </span>
       </Td>
@@ -774,6 +806,20 @@ function CapabilityChips({ model }: { model: AvailableModel }) {
       ))}
     </div>
   );
+}
+
+function tierTone(
+  tier: AvailableModel["tier"],
+): "signal" | "blue" | "muted" | "green" {
+  if (tier === "top") return "signal";
+  if (tier === "mid") return "blue";
+  if (tier === "free") return "green";
+  return "muted";
+}
+
+function formatPolicyReason(reason: string | null): string {
+  if (!reason) return "catalog policy";
+  return reason.replaceAll("_", " ");
 }
 
 function formatContext(ctx: number | null): string {

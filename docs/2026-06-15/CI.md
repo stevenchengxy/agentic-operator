@@ -38,7 +38,7 @@ branch protection (see §3).
 
 ### 1.2 Pinned versions
 
-- **Node 26** (matches `.nvmrc`). The native `better-sqlite3` binding is
+- **Node 26.5.0** (matches `.nvmrc`). The native `better-sqlite3` binding is
   compiled per Node major; mismatches surface as `ERR_DLOPEN_FAILED` at
   test boot. Bumping requires regenerating the binding in a dedicated PR.
 - **pnpm 11.1.2** (matches `package.json#packageManager`). Pinned because
@@ -79,7 +79,7 @@ Scope notes:
 ### 2.1 Validating coverage locally
 
 ```bash
-nvm use                        # picks up .nvmrc (26)
+nvm use                        # picks up .nvmrc (26.5.0)
 pnpm install
 pnpm db:migrate && pnpm db:seed
 pnpm -r test:coverage
@@ -210,7 +210,7 @@ must match the GitHub org/user. Before the first release cut:
 Reproduce a failure locally with the same env CI uses:
 
 ```bash
-nvm use                                    # Node 26
+nvm use                                    # Node 26.5.0
 export AGENTIC_DEV_TENANT=raas             # what the e2e job sets
 export LLM_DEFAULT_PROVIDER=mock
 export LLM_DEFAULT_MODEL=mock-model-v1

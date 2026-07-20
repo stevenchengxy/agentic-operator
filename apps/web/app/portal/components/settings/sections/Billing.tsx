@@ -1,225 +1,244 @@
 "use client";
 
-/** Settings → Billing / cost caps, backed by the current tenant's durable
- * `/v1/budgets` row. Cap editing lives on the detailed usage route so this
- * summary never mixes live spend with fixture invoices or sample tenants. */
+/** Settings → Billing / cost caps, backed only by the tenant budget API. */
 
-import { useRouter } from "next/navigation";
-import { Badge, Button, Empty, Panel } from "@/app/portal/components";
-import { useI18n } from "@/app/portal/lib/preferences-context";
+import { useEffect, useState } from "react";
+import Link from "next/link";
+import { Button, Empty, Panel } from "@/app/portal/components";
 import { useTenant } from "@/app/portal/lib/use-tenant";
+import { Field, TextIn } from "@/app/portal/components/settings/atoms";
+import {
+  parseTokenCap,
+  parseUsdCap,
+} from "@/app/portal/components/settings/values";
+import { useBudget, useUpdateBudget } from "@/lib/hooks/useUsage";
 import { fmtNum } from "@/app/portal/lib/format";
-import { useBudget } from "@/lib/hooks/useUsage";
-
-function fmtUsd(cents: number): string {
-  return `$${(cents / 100).toFixed(2)}`;
-}
-
-function percent(used: number, cap: number | null): number | null {
-  return cap != null && cap > 0 ? Math.min(100, (used / cap) * 100) : null;
-}
+import { formatUsdNanos } from "@/lib/format-usd";
 
 export function BillingSection() {
-  const { t } = useI18n();
   const tenant = useTenant();
-  const router = useRouter();
   const budget = useBudget();
+  const update = useUpdateBudget();
+  const [tokenCap, setTokenCap] = useState("");
+  const [usdCap, setUsdCap] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
 
-  if (budget.isLoading && !budget.data) {
-    return <Empty title={t("billing.loading")} hint="" />;
-  }
-  if (budget.isError || !budget.data) {
-    return (
-      <Empty
-        title={t("billing.loadFailed")}
-        hint={budget.error instanceof Error ? budget.error.message : ""}
-      />
+  useEffect(() => {
+    const row = budget.data;
+    if (!row) return;
+    setTokenCap(row.monthlyTokenCap?.toString() ?? "");
+    setUsdCap(
+      row.monthlyUsdCap == null ? "" : (row.monthlyUsdCap / 100).toFixed(2),
     );
+  }, [budget.data]);
+
+  async function saveCaps() {
+    setError(null);
+    setSaved(false);
+    try {
+      await update.mutateAsync({
+        monthlyTokenCap: parseTokenCap(tokenCap),
+        monthlyUsdCap: parseUsdCap(usdCap),
+      });
+      setSaved(true);
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "The budget could not be saved.",
+      );
+    }
   }
 
   const row = budget.data;
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
       <Panel
-        title={t("billing.costCaps")}
-        subtitle={t("billing.costCapsSubtitle")}
-        padded={false}
+        title="Monthly cost caps"
+        subtitle="Live limits for the current tenant. Blank means unlimited."
+        padded
         action={
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <Badge tone="green">{t("billing.liveSource")}</Badge>
-            <Button
-              small
-              icon="external"
-              tone="ghost"
-              onClick={() =>
-                router.push(`/portal/${tenant}/settings/usage` as never)
-              }
-            >
-              {t("billing.openUsage")}
+          <Link
+            href={`/portal/${tenant}/settings/usage` as never}
+            style={{ textDecoration: "none" }}
+          >
+            <Button small icon="dashboard" tone="ghost">
+              Open usage details
             </Button>
-          </div>
+          </Link>
         }
       >
-        {!row.costComplete ? (
+        {budget.isLoading && (
           <div
-            role="note"
-            style={{
-              margin: "12px 16px 0",
-              padding: "8px 10px",
-              border:
-                "1px solid color-mix(in srgb, var(--amber) 35%, var(--border))",
-              borderRadius: 6,
-              color: "var(--amber)",
-              background:
-                "color-mix(in srgb, var(--amber) 7%, transparent)",
-              fontSize: 11,
-            }}
+            style={{ padding: "18px 0", color: "var(--text-3)", fontSize: 12 }}
           >
-            {t("billing.costIncomplete", {
-              n: fmtNum(row.unpricedTokens),
-            })}
+            Loading the tenant budget…
           </div>
-        ) : null}
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))",
-            borderBottom: "1px solid var(--border)",
-          }}
-        >
-          <BudgetCell label={t("billing.tenant")} value={tenant} mono />
-          <BudgetCell
-            label={t("billing.tokensUsed")}
-            value={fmtNum(row.usedTokensMonth)}
-            mono
+        )}
+        {budget.isError && (
+          <Empty
+            title="Budget data is unavailable"
+            hint="The API did not return a tenant budget. No plan or spend figures are being inferred."
           />
-          <BudgetCell
-            label={t("billing.tokensReserved")}
-            value={fmtNum(row.reservedTokens)}
-            mono
-          />
-          <BudgetCell
-            label={t("billing.estimatedSpend")}
-            value={`${row.costComplete ? "" : "≥"}${fmtUsd(row.usedUsdMonth)}`}
-            mono
-          />
-          <BudgetCell
-            label={t("billing.spendReserved")}
-            value={fmtUsd(row.reservedUsdCents)}
-            mono
-          />
-          <BudgetCell
-            label={t("billing.activeReservations")}
-            value={fmtNum(row.activeReservations)}
-            mono
-          />
-          <BudgetCell
-            label={t("billing.periodStart")}
-            value={new Date(row.periodStart).toLocaleDateString()}
-            mono
-          />
-        </div>
-        <div style={{ padding: "14px 16px", display: "grid", gap: 14 }}>
-          <BudgetProgress
-            label={t("billing.tokenCap")}
-            used={row.usedTokensMonth}
-            reserved={row.reservedTokens}
-            cap={row.monthlyTokenCap}
-            format={fmtNum}
-            unlimited={t("billing.unlimited")}
-          />
-          <BudgetProgress
-            label={t("billing.usdCap")}
-            used={row.usedUsdMonth}
-            reserved={row.reservedUsdCents}
-            cap={row.monthlyUsdCap}
-            format={fmtUsd}
-            unlimited={t("billing.unlimited")}
-            minimum={!row.costComplete}
-          />
-        </div>
+        )}
+        {row && (
+          <>
+            <Field
+              label="Monthly token cap"
+              hint="Whole tokens. Leave blank for no token cap."
+            >
+              <TextIn
+                value={tokenCap}
+                onChange={(value) => {
+                  setTokenCap(value);
+                  setSaved(false);
+                }}
+                placeholder="Unlimited"
+                ariaLabel="Monthly token cap"
+                mono
+                suffix="tokens"
+              />
+            </Field>
+            <Field
+              label="Monthly USD cap"
+              hint="Stored by the API in cents. Leave blank for no cost cap."
+            >
+              <TextIn
+                value={usdCap}
+                onChange={(value) => {
+                  setUsdCap(value);
+                  setSaved(false);
+                }}
+                placeholder="Unlimited"
+                ariaLabel="Monthly USD cap"
+                mono
+                prefix="$"
+              />
+            </Field>
+            {(error || saved) && (
+              <div
+                role={error ? "alert" : "status"}
+                style={{
+                  marginTop: 12,
+                  fontSize: 12,
+                  color: error ? "var(--red)" : "var(--green)",
+                }}
+              >
+                {error ?? "Budget caps saved."}
+              </div>
+            )}
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "flex-end",
+                marginTop: 14,
+              }}
+            >
+              <Button
+                tone="primary"
+                icon="check"
+                onClick={() => void saveCaps()}
+                disabled={update.isPending}
+              >
+                {update.isPending ? "Saving…" : "Save caps"}
+              </Button>
+            </div>
+          </>
+        )}
       </Panel>
+
+      {row && (
+        <Panel
+          title="Current budget period"
+          subtitle={`Started ${new Date(row.periodStart).toLocaleDateString()}. Usage is measured by the gateway ledger.`}
+          padded
+        >
+          <BudgetProgress
+            label="Tokens"
+            usedLabel={fmtNum(row.usedTokensMonth)}
+            capLabel={
+              row.monthlyTokenCap == null
+                ? "unlimited"
+                : fmtNum(row.monthlyTokenCap)
+            }
+            percent={percentage(row.usedTokensMonth, row.monthlyTokenCap)}
+          />
+          <BudgetProgress
+            label="Cost"
+            usedLabel={formatUsdNanos(row.usedUsdNanos)}
+            capLabel={
+              row.monthlyUsdCap == null
+                ? "unlimited"
+                : `$${(row.monthlyUsdCap / 100).toFixed(2)}`
+            }
+            percent={percentage(
+              row.usedUsdNanos,
+              row.monthlyUsdCap == null ? null : row.monthlyUsdCap * 10_000_000,
+            )}
+          />
+        </Panel>
+      )}
     </div>
   );
 }
 
-function BudgetCell({
-  label,
-  value,
-  mono,
-}: {
-  label: string;
-  value: string;
-  mono?: boolean;
-}) {
-  return (
-    <div style={{ padding: "13px 16px", borderRight: "1px solid var(--border)" }}>
-      <div
-        style={{
-          fontSize: 10,
-          fontFamily: "var(--mono)",
-          textTransform: "uppercase",
-          letterSpacing: "0.08em",
-          color: "var(--text-3)",
-        }}
-      >
-        {label}
-      </div>
-      <div
-        style={{
-          marginTop: 5,
-          fontSize: 18,
-          fontFamily: mono ? "var(--mono)" : "var(--sans)",
-          color: "var(--text)",
-        }}
-      >
-        {value}
-      </div>
-    </div>
-  );
+function percentage(used: number, cap: number | null): number | null {
+  if (cap == null) return null;
+  if (cap === 0) return used > 0 ? 100 : 0;
+  return Math.min(100, (used / cap) * 100);
 }
 
 function BudgetProgress({
   label,
-  used,
-  reserved,
-  cap,
-  format,
-  unlimited,
-  minimum = false,
+  usedLabel,
+  capLabel,
+  percent,
 }: {
   label: string;
-  used: number;
-  reserved: number;
-  cap: number | null;
-  format: (value: number) => string;
-  unlimited: string;
-  minimum?: boolean;
+  usedLabel: string;
+  capLabel: string;
+  percent: number | null;
 }) {
-  const { t } = useI18n();
-  const committed = used + reserved;
-  const pct = percent(committed, cap);
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "150px 1fr auto", gap: 12, alignItems: "center" }}>
-      <span style={{ fontSize: 11.5, color: "var(--text-2)" }}>{label}</span>
-      <div style={{ height: 7, borderRadius: 99, overflow: "hidden", background: "var(--bg-2)" }}>
-        <div
-          style={{
-            width: pct == null ? 0 : `${pct}%`,
-            height: "100%",
-            background:
-              pct != null && pct >= 90
-                ? "var(--red)"
-                : pct != null && pct >= 70
-                  ? "var(--amber)"
-                  : "var(--signal)",
-          }}
-        />
+    <div style={{ padding: "10px 0", borderBottom: "1px solid var(--border)" }}>
+      <div style={{ display: "flex", gap: 8, marginBottom: 7, fontSize: 12 }}>
+        <span style={{ color: "var(--text)" }}>{label}</span>
+        <span
+          className="mono"
+          style={{ marginLeft: "auto", color: "var(--text-2)" }}
+        >
+          {usedLabel} / {capLabel}
+        </span>
       </div>
-      <span style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-2)" }}>
-        {minimum ? "≥" : ""}{format(used)}{reserved > 0 ? ` + ${format(reserved)} ${t("billing.reservedSuffix")}` : ""} / {cap == null ? unlimited : format(cap)}
-        {pct == null ? "" : ` · ${minimum ? "≥" : ""}${pct.toFixed(0)}%`}
-      </span>
+      <div
+        aria-label={`${label} budget usage`}
+        aria-valuenow={percent ?? undefined}
+        role={percent == null ? undefined : "progressbar"}
+        style={{
+          height: 6,
+          background: "var(--panel-2)",
+          border: "1px solid var(--border)",
+          borderRadius: 3,
+          overflow: "hidden",
+        }}
+      >
+        {percent != null && (
+          <div
+            style={{
+              width: `${percent}%`,
+              height: "100%",
+              background:
+                percent >= 90
+                  ? "var(--red)"
+                  : percent >= 70
+                    ? "var(--amber)"
+                    : "var(--signal)",
+            }}
+          />
+        )}
+      </div>
     </div>
   );
 }

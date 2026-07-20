@@ -56,6 +56,16 @@ export const RunRow = z.object({
   ...CodeActReceiptFields,
   id: z.string(),
   status: RunStatus,
+  /** Agent Studio pinning/history metadata (optional for legacy responses). */
+  sessionId: z.string().nullable().optional(),
+  agentVersionId: z.string().nullable().optional(),
+  draftRevisionId: z.string().nullable().optional(),
+  invocationSource: z
+    .enum(["studio", "event", "api", "replay", "demo"])
+    .optional(),
+  definitionHash: z.string().nullable().optional(),
+  outputValid: z.boolean().nullable().optional(),
+  sideEffectMode: z.enum(["suppressed", "safe", "live"]).optional(),
   agentName: z.string(),
   agentTitle: z.string().nullable(),
   subject: z.string().nullable(),
@@ -67,11 +77,13 @@ export const RunRow = z.object({
    * or when the agent has no `triggered_event` in its manifest.
    */
   emittedEvent: z.string().nullable(),
+  queuedAt: z.coerce.date().optional(),
   startedAt: z.coerce.date().nullable(),
   endedAt: z.coerce.date().nullable(),
   durationMs: z.number().nullable(),
   tokensIn: z.number().nullable(),
   tokensOut: z.number().nullable(),
+  provider: z.string().nullable().optional(),
   model: z.string().nullable(),
   correlationId: z.string(),
   errorMessage: z.string().nullable(),
@@ -122,6 +134,8 @@ export const StepRow = z.object({
   startedAt: z.coerce.date().nullable(),
   endedAt: z.coerce.date().nullable(),
   durationMs: z.number().nullable(),
+  inputRef: z.string().nullable().optional(),
+  outputRef: z.string().nullable().optional(),
   error: z.string().nullable(),
   provider: z.string().nullable(),
   model: z.string().nullable(),

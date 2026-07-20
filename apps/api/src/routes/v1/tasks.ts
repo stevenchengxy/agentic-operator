@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { eq } from "drizzle-orm";
 import { getDb, tasks } from "@agentic/db";
+import { validateValueAgainstJsonSchema } from "@agentic/runtime";
 import { ResolveTaskBody } from "@agentic/contracts";
 import { requirePermission } from "../../plugins/rbac";
 import { writeAudit } from "../../plugins/audit";
@@ -10,6 +11,33 @@ import {
   HumanTaskError,
   requestHumanTaskResolution,
 } from "../../services/hitl-recovery";
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function canonicalFormDecision(
+  value: unknown,
+): "approve" | "reject" | "supplement" | null {
+  if (typeof value !== "string") return null;
+  switch (value.trim().toLowerCase()) {
+    case "approve":
+    case "approved":
+      return "approve";
+    case "reject":
+    case "rejected":
+      return "reject";
+    case "supplement":
+    case "revise":
+    case "revision":
+    case "request_changes":
+      return "supplement";
+    default:
+      return null;
+  }
+}
 
 export async function tasksRoutes(app: FastifyInstance) {
   // GET /v1/tasks — list
@@ -38,6 +66,41 @@ export async function tasksRoutes(app: FastifyInstance) {
       if (!row) return reply.fail("not_found", "task not found", 404);
       if (row.tenantId !== auth.tenantId)
         return reply.fail("forbidden", "forbidden", 403);
+
+      // Tasks that carry a structured form contract validate the answer BEFORE
+      // the durable resolution is claimed, so a bad/incomplete submission stays
+      // on the open task instead of waking the run with unusable input.
+      const formSchema = asRecord(asRecord(row.payloadJson)?.formSchema);
+      if (formSchema) {
+        const formDecision = canonicalFormDecision(
+          asRecord(body.payload)?.decision,
+        );
+        if (formDecision && formDecision !== body.decision) {
+          return reply.fail(
+            "task_decision_mismatch",
+            "The form decision does not match the requested task outcome",
+            400,
+          );
+        }
+        const issues = validateValueAgainstJsonSchema(
+          formSchema as never,
+          body.payload ?? null,
+          "/payload",
+          "task_payload",
+        );
+        if (issues.length > 0) {
+          const summary = issues
+            .slice(0, 3)
+            .map((issue) => `${issue.path}: ${issue.message}`)
+            .join("; ");
+          return reply.fail(
+            "invalid_task_payload",
+            `Task form validation failed: ${summary}`,
+            400,
+          );
+        }
+      }
+
       try {
         const result = await requestHumanTaskResolution({
           taskId: req.params.id,

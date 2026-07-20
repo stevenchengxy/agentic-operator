@@ -1,0 +1,1030 @@
+[
+  {
+    "id": "1-1",
+    "name": "syncFromClientSystem",
+    "description": "负责自动从客户需求管理系统获取原始招聘需求数据，并同步到我司需求管理系统。该节点是招聘流程的起点之一，自动监控客户系统中的需求变化（新增、修改、删除），确保我方系统与客户系统保持数据一致性，避免信息滞后导致的招聘时效损失。",
+    "actor": [
+      "Agent"
+    ],
+    "trigger": [],
+    "actions": [
+      {
+        "order": "1",
+        "name": "monitorAndFetchRequirement",
+        "description": "持续监控客户需求管理系统的内容变更，识别需求创建、更新或删除的事件，获取完整的需求详情数据，包括岗位名称、职级要求、招聘人数、薪资范围、工作地点等关键信息。",
+        "type": "tool",
+        "condition": "客户需求管理系统可正常访问"
+      },
+      {
+        "order": "2",
+        "name": "checkDeduplicatedRequisition",
+        "description": "利用【招聘岗位】中的“客户侧岗位唯一编号”和“客户侧岗位名称”进行系统查重。如果数据库中已存在对应记录，识别为需求变更；若不存在，识别为新需求。",
+        "type": "logic",
+        "condition": "数据获取与解析成功"
+      },
+      {
+        "order": "3",
+        "name": "persistRequisitionData",
+        "description": "根据查重结果执行数据库操作：若是新需求，则创建【外包招聘需求】和对应的【招聘岗位】对象；若是变更，则更新现有对象的“计划招聘总人数”或“截止日期”等字段，并记录变更日志。若是删除或关闭的需求，更新状态为终止。同步完成后生成执行报告，对失败或异常情况触发告警通知交付经理。",
+        "type": "logic",
+        "condition": "查重逻辑执行完毕"
+      }
+    ],
+    "triggered_event": [
+      "REQUIREMENT_SYNCED"
+    ],
+    "input_data": {}
+  },
+  {
+    "id": "2",
+    "name": "analyzeRequirement",
+    "description": "负责对已获取的客户招聘需求进行深度分析，结合市场洞察、历史数据和业务规则，评估招聘可行性和难度，制定招聘策略，生成待澄清问题清单。分析结果将指导后续的需求澄清和职位描述生成，是确保招聘方向正确的关键决策点。",
+    "actor": [
+      "Agent"
+    ],
+    "trigger": [
+      "REQUIREMENT_SYNCED",
+      "REQUIREMENT_LOGGED",
+      "CLARIFICATION_RETRY"
+    ],
+    "actions": [
+      {
+        "order": "1",
+        "name": "loadContextData",
+        "description": "加载本次分析所需的上下文数据，包括招聘岗位详情、关联的服务合同条款、客户和客户部门的偏好设置、历史同类岗位的招聘数据和成功率统计，构建完整的分析输入数据集。",
+        "type": "tool",
+        "condition": "已收到需求分析触发事件，且需求记录存在"
+      },
+      {
+        "order": "2",
+        "name": "assessFeasibilityAndDifficulty",
+        "description": "评估需求的可行性和合理性，检查需求是否在合同授权范围内、薪资区间是否符合市场行情、到岗时间是否现实可达、岗位要求是否存在内在矛盾。综合评估招聘难度等级（容易/一般/困难/极难）及主要影响因素。",
+        "type": "logic",
+        "condition": "上下文数据加载完成"
+      },
+      {
+        "order": "3",
+        "name": "generateClarificationAndStrategy",
+        "description": "基于分析结果生成待澄清问题清单（模糊要求、硬性条件的逻辑关系、隐性要求等），制定初步招聘策略建议（渠道组合、时间规划、预估转化率）。将结果写入招聘岗位记录，对于决定进行招聘的岗位，推送交付经理进行需求澄清。",
+        "type": "logic",
+        "condition": "可行性和难度评估完成"
+      }
+    ],
+    "triggered_event": [
+      "ANALYSIS_COMPLETED"
+    ],
+    "input_data": {}
+  },
+  {
+    "id": "3",
+    "name": "clarifyRequirement",
+    "description": "基于需求分析结果判断是否需要澄清。若clarify_questions为空(无待澄清项)，直接跳过澄清环节，发出CLARIFICATION_READY事件进入JD创建。若clarify_questions非空，则整理并生成澄清沟通材料包，推送交付经理进行需求澄清。澄清结果由HSM通过人工操作录入后，系统通过CLARIFICATION_RETRY事件触发需求分析Agent重新校验。",
+    "actor": [
+      "Agent"
+    ],
+    "trigger": [
+      "ANALYSIS_COMPLETED"
+    ],
+    "actions": [
+      {
+        "order": "1",
+        "name": "prepareClarificationMaterial",
+        "description": "智能助手整理并生成澄清沟通材料包，包括按优先级排序的问题清单、各问题的背景说明和建议追问角度、历史类似需求的澄清案例参考。交付经理可根据实际情况调整问题顺序和表述方式。",
+        "type": "logic",
+        "condition": "已收到需求分析完成事件。若clarify_questions为空列表则直接跳过本step并触发CLARIFICATION_READY事件。若非空则继续执行。"
+      },
+      {
+        "order": "2",
+        "name": "recordAndValidateResult",
+        "description": "系统解析已录入的澄清结果，更新招聘岗位中的必备技能、加分项、排除条件等字段。智能助手检查澄清完整性，验证所有关键问题是否已答复、是否存在逻辑矛盾。完备则更新状态为澄清完成，否则保持待澄清状态推送继续跟进。同步创建沟通日志记录本次澄清内容。Rule:澄清结果可以是Ready、Imcomplete，如果是Incomplete，在Recruit IDE中创建notification，通知交付经理继续与客户澄清。",
+        "type": "logic",
+        "condition": "客户反馈已录入系统"
+      }
+    ],
+    "triggered_event": [
+      "CLARIFICATION_READY",
+      "CLARIFICATION_INCOMPLETE"
+    ],
+    "input_data": {}
+  },
+  {
+    "id": "4",
+    "name": "createJD",
+    "description": "负责基于已澄清的招聘需求自动生成标准化的职位发布信息。将内部需求转化为面向外部候选人的招聘岗位描述。生成的职位描述需经交付经理审核确认后才能发布。一个客户需求可能对应多个职位发布（不同渠道定制），多个客户需求也可能聚合为一个职位发布（相同岗位合并发布）。",
+    "actor": [
+      "Agent"
+    ],
+    "trigger": [
+      "CLARIFICATION_READY",
+      "JD_REJECTED"
+    ],
+    "actions": [
+      {
+        "order": "1",
+        "name": "generateJDContent",
+        "description": "加载已澄清的招聘岗位详情和匹配的标准岗位模板，生成标准化的职位名称、5个最优搜索关键词、完整的职位描述内容（岗位职责、任职要求、公司介绍、薪资福利、工作安排等），内容需符合各招聘平台的规范要求。",
+        "type": "logic",
+        "condition": "收到澄清就绪事件"
+      },
+      {
+        "order": "2",
+        "name": "handleRequisitionMapping",
+        "description": "处理一对多或多对一的需求与职位发布映射关系。如多个客户需求可聚合为一个职位发布（同一客户的相同岗位需求），建立职位发布与多个招聘岗位的关联；如一个需求需针对不同渠道发布定制化内容，创建多个职位发布版本。",
+        "type": "logic",
+        "condition": "职位描述内容生成完成"
+      }
+    ],
+    "triggered_event": [
+      "JD_GENERATED"
+    ],
+    "input_data": {}
+  },
+  {
+    "id": "6",
+    "name": "assignRecruitTasks",
+    "description": "负责将招聘任务分配给具体的招聘专员。根据招聘需求数量、岗位难度、招聘专员的能力特长和当前工作负荷，智能匹配最合适的招聘专员负责该岗位的候选人寻访工作。合理的任务分配能提升招聘效率，确保每个岗位都有专人跟进。",
+    "actor": [
+      "Agent"
+    ],
+    "trigger": [
+      "JD_APPROVED"
+    ],
+    "actions": [
+      {
+        "order": "1",
+        "name": "assignRecruitTasks",
+        "description": "分析招聘岗位的特征（岗位类型、难度等级、紧急程度、所需技能领域等），结合招聘专员的能力画像（擅长领域、历史业绩、当前在手任务量）进行智能匹配，推荐最适合负责该岗位的招聘专员，支持交付经理调整。",
+        "type": "logic",
+        "condition": "已收到职位描述审核通过事件"
+      }
+    ],
+    "triggered_event": [
+      "TASK_ASSIGNED"
+    ],
+    "input_data": {}
+  },
+  {
+    "id": "7-1",
+    "name": "publishJD",
+    "description": "负责将审核通过的职位描述发布到各招聘渠道（如BOSS直聘、智联招聘等）。对于支持接口自动发布的渠道进行自动发布，对于不支持自动发布的渠道生成发布任务提醒招聘专员手动操作。该节点是招聘信息对外曝光的关键步骤，直接影响简历获取的数量和质量。",
+    "actor": [
+      "Agent"
+    ],
+    "trigger": [
+      "TASK_ASSIGNED"
+    ],
+    "actions": [
+      {
+        "order": "1",
+        "name": "executeAutomatedPublication",
+        "description": "针对支持API的渠道，调用接口将【岗位发布信息】的“岗位名称”、“岗位职责”、“薪资范围”等字段推送到第三方平台，并回写外部帖子ID。",
+        "type": "tool",
+        "condition": "存在API渠道"
+      },
+      {
+        "order": "2",
+        "name": "generatePublishHelperPage",
+        "description": "针对不支持API对接的渠道(如BOSS直聘)，自动读取该渠道的发布页面字段模板，将JD内容按渠道页面的字段布局逐项填入，生成发布辅助页面供招聘专员手动复制粘贴发布。",
+        "type": "tool",
+        "condition": "存在不支持API对接的发布渠道"
+      },
+      {
+        "order": "3",
+        "name": "updatePublicationStatus",
+        "description": "发布动作完成后，更新【岗位发布信息】的“发布状态”为“已发布”，并记录“发布时间”。",
+        "type": "tool",
+        "condition": "发布动作执行完毕"
+      }
+    ],
+    "triggered_event": [
+      "CHANNEL_PUBLISHED",
+      "CHANNEL_PUBLISHED_FAILED"
+    ],
+    "input_data": {}
+  },
+  {
+    "id": "9-1",
+    "name": "processResume",
+    "description": "负责对下载完成并已入库的简历文件进行全链路自动化处理，包括：智能解析结构化数据、候选人唯一归属锁定（基于姓名+手机号进行候选人唯一性识别，并确保每个候选人有且只能归属一名Recruiter以防止锁定冲突）、关键信息抽取、以及简历完整性校验。确保每份简历以标准化、高质量的候选人档案形态进入后续匹配环节。处理失败（锁定冲突或解析错误）则终止流程，信息缺失则退回Recruiter补充。",
+    "actor": [
+      "Agent"
+    ],
+    "trigger": [
+      "RESUME_DOWNLOADED"
+    ],
+    "actions": [
+      {
+        "order": "1",
+        "name": "uploadResume",
+        "description": "recruiter使用IDE上传简历，将下载的简历文件上传至系统，建立候选人与招聘岗位的初步关联。",
+        "type": "tool",
+        "condition": "已收到简历下载完成事件"
+      },
+      {
+        "order": "2",
+        "name": "parseResume",
+        "description": "对上传的简历文件进行智能解析，使用自然语言处理技术提取候选人的基本信息（姓名、手机号、邮箱、身份证号）、教育经历（学校、专业、学历、时间）、工作经历（公司、职位、时间、职责）、项目经历、技能标签等结构化数据。",
+        "type": "tool",
+        "condition": "已收到简历下载完成事件"
+      },
+      {
+        "order": "3",
+        "name": "extractResumeInfo",
+        "description": "基于解析出的候选人姓名与手机号，在系统中执行唯一性锁定检查。若该候选人已被其他Recruiter锁定，则触发锁定冲突终止流程；若为新候选人则完成锁定注册。",
+        "type": "tool",
+        "condition": "简历解析成功，已提取姓名和手机号"
+      },
+      {
+        "order": "4",
+        "name": "validateCompleteness",
+        "description": "校验提取信息的完整性，检查必要字段（姓名、手机号、教育经历、工作经历、项目经历）是否齐全，对于缺失的关键信息标记缺失项，生成缺失信息清单。",
+        "type": "logic",
+        "condition": "查重和锁定处理完成"
+      },
+      {
+        "order": "5",
+        "name": "validateCandidacy",
+        "description": "根据信息完整性校验结果执行后续动作：若信息完整则创建候选人记录并触发后续匹配流程；若存在锁定冲突则终止流程并通知招聘专员该候选人已被他人跟进。",
+        "type": "logic",
+        "condition": "完整性校验完成"
+      }
+    ],
+    "triggered_event": [
+      "RESUME_PROCESSED",
+      "RESUME_INFO_MISSING"
+    ],
+    "input_data": {}
+  },
+  {
+    "id": "10-1",
+    "name": "ruleCheckerForClientResume",
+    "description": "客户简历规则检查 - 对客户特定的简历规则进行检查",
+    "actor": [
+      "Agent"
+    ],
+    "trigger": [
+      "RESUME_PROCESSED"
+    ],
+    "actions": [
+      {
+        "order": "1",
+        "name": "检查客户规则",
+        "description": "根据客户特定的规则对处理完成的候选人简历进行检查，确保符合客户的特殊要求。",
+        "type": "logic",
+        "condition": "已收到简历处理完成事件"
+      }
+    ],
+    "triggered_event": [
+      "CLIENT_RULES_FAILED"
+    ],
+    "input_data": {
+      "client_id": "客户唯一标识",
+      "candidate_id": "候选人唯一标识"
+    },
+    "ontology_instructions": "get the rules for a client for the resume check, the rules is defined by the client, and the rules is used to check the resume after the resume is processed, if the resume is passed the rules, then trigger the event CLIENT_RULES_PASSED, if the resume is failed the rules, then trigger the event CLIENT_RULES_FAILED"
+  },
+  {
+    "id": "10-2",
+    "name": "matchResume",
+    "description": "负责对处理完成的候选人简历进行智能匹配评估，这是整个流程中最复杂的节点之一，需要执行公司通用规则和分客户定制规则。包括红线与黑名单检测、硬性要求匹配、缺失信息标记、正向加分项评估、员工回流检查等。匹配结果决定候选人是否进入后续面试或直接推荐环节。",
+    "actor": [
+      "Agent"
+    ],
+    "trigger": [
+      "RESUME_PROCESSED"
+    ],
+    "actions": [
+      {
+        "order": "1",
+        "name": "validateRedlineAndBlacklist",
+        "description": "执行红线检测和黑名单校验。检查候选人是否命中公司级或客户级黑名单（如曾被投诉、有不良记录等），检查是否触犯客户明确的红线要求（如竞业限制、特定公司背景限制、高风险离职编码等）。同时从简历的详细工作履历及职责描述中识别腾讯历史从业经历，若存在则暂停推荐并向HSM发起离场原因核实任务。命中硬性红线的候选人直接标记为不匹配并终止流程；需HSM核实的候选人暂停等待反馈后再决定继续或终止。",
+        "type": "logic",
+        "condition": "已收到简历处理完成事件，候选人记录已创建"
+      },
+      {
+        "order": "2",
+        "name": "matchHardRequirements",
+        "description": "对照招聘岗位的硬性要求进行逐项匹配，包括学历要求（统招/非统招、本科/硕士等）、工作年限、技能证书、年龄范围等。根据澄清阶段确认的逻辑关系（And/Or）计算是否满足硬性条件，不满足则标记为不匹配。",
+        "type": "logic",
+        "condition": "红线和黑名单检查通过"
+      },
+      {
+        "order": "3",
+        "name": "evaluateBonusAndCheckReflux",
+        "description": "评估候选人的加分项（如名企背景、项目经历亮点、技能超配等），计算综合匹配得分。从简历的详细工作履历及职责描述中识别回流相关经历（腾讯正编、腾讯外包、友商字节派驻等），区分BPO与非BPO业务类型，按客户和事业群维度执行回流冷冻期拦截。校验候选人利益冲突声明中的亲属关系回避要求。",
+        "type": "logic",
+        "condition": "硬性要求匹配通过"
+      },
+      {
+        "order": "4",
+        "name": "generateMatchResult",
+        "description": "调用评分模型或算法，基于硬性要求匹配度、加分项权重、缺失项扣分等维度进行加权计算。汇总匹配结果，结构化匹配报告，包含匹配得分、各维度评分明细、缺失信息列表、风险提示等，并包含推荐建议（面试/直接推荐/淘汰）。根据是否需要内部面试（由客户设置决定）触发不同的后续流程：需要面试则进入内部面试邀约，不需要则直接进入简历优化。",
+        "type": "tool",
+        "condition": "加分项评估和回流检查完成"
+      }
+    ],
+    "triggered_event": [
+      "MATCH_PASSED_NEED_INTERVIEW",
+      "MATCH_PASSED_NO_INTERVIEW"
+    ],
+    "input_data": {}
+  },
+  {
+    "id": "11-1",
+    "name": "inviteInternalInterview",
+    "description": "针对需要内部面试的岗位，自动触发内部面试邀约流程。向候选人发送AI面试邀请邮件，同时将邀约信息同步给招聘专员，便于在企业微信等渠道跟进确认候选人参加面试。该节点确保候选人在推送客户前经过内部初筛。",
+    "actor": [
+      "Agent"
+    ],
+    "trigger": [
+      "MATCH_PASSED_NEED_INTERVIEW"
+    ],
+    "actions": [
+      {
+        "order": "1",
+        "name": "generateInterviewInvitation",
+        "description": "根据招聘岗位信息和候选人情况，生成个性化的面试邀请内容，包括面试说明、操作指引、面试时间要求（如需在X天内完成）、注意事项等。创建面试记录，生成唯一的面试链接。",
+        "type": "logic",
+        "condition": "已收到匹配通过且需要面试的事件"
+      },
+      {
+        "order": "2",
+        "name": "sendInvitationEmail",
+        "description": "将面试邀请邮件发送到候选人登记的联系邮箱，邮件内容包含面试链接、操作步骤说明、截止时间等。记录邮件发送状态，对发送失败的情况触发告警。",
+        "type": "tool",
+        "condition": "面试邀请内容生成完成"
+      },
+      {
+        "order": "3",
+        "name": "notifyRecruiter",
+        "description": "将面试邀约信息同步推送给对接的招聘专员，包含可复制的邀约话术和面试链接，便于招聘专员通过企业微信等即时通讯工具跟进候选人，提醒其完成面试，提高面试完成率。",
+        "type": "logic",
+        "condition": "邮件发送完成"
+      }
+    ],
+    "triggered_event": [
+      "INTERVIEW_INVITATION_SENT"
+    ],
+    "input_data": {}
+  },
+  {
+    "id": "12",
+    "name": "evaluateInterview",
+    "description": "基于AI面试的内容和表现对候选人进行综合评估。结合岗位要求、候选人简历、面试回答（文字和视频），使用多维度评估模型输出评估报告，包括总分、各维度得分、优势劣势分析、最终推荐结论等。评估结果是后续推荐决策的重要依据。",
+    "actor": [
+      "Agent"
+    ],
+    "trigger": [
+      "AI_INTERVIEW_COMPLETED"
+    ],
+    "actions": [
+      {
+        "order": "1",
+        "name": "receiveInterviewResult",
+        "description": "接收AI面试的完整记录，包括视频文件、语音转写文本、各题作答时长等。",
+        "type": "logic",
+        "condition": "AI面试完成"
+      },
+      {
+        "order": "2",
+        "name": "analyzeInterviewResult",
+        "description": "深度分析面试回答内容，提取关键信息点并与岗位要求进行比对。评估候选人的专业知识深度、问题解决思路、沟通表达能力、逻辑思维能力等核心维度，形成内容分析报告。",
+        "type": "logic",
+        "condition": "已收到AI面试完成事件，面试记录已保存"
+      },
+      {
+        "order": "3",
+        "name": "evaluateWithModel",
+        "description": "使用招聘岗位配置的评估模型对候选人进行量化评分。按照各维度权重计算综合得分，判断是否达到及格线阈值，输出各维度分数明细和评分依据说明。",
+        "type": "tool",
+        "condition": "内容分析完成"
+      },
+      {
+        "order": "4",
+        "name": "generateEvaluationReport",
+        "description": "生成完整的评估报告，包括总体评分、各维度得分、面试亮点摘要、优势与待改进点分析、风险提示（如稳定性、文化匹配等）、最终推荐结论（推荐/待定/不推荐）。报告将作为推荐材料的重要组成部分。",
+        "type": "logic",
+        "condition": "模型评估完成"
+      }
+    ],
+    "triggered_event": [
+      "EVALUATION_PASSED"
+    ],
+    "input_data": {}
+  },
+  {
+    "id": "13",
+    "name": "refineResume",
+    "description": "对候选人简历进行优化处理，统一为公司标准模板格式，不同客户使用不同的模板样式。优化内容包括格式规范化、关键信息突出、与岗位匹配的关键词高亮等，使简历更加专业美观，提升推荐成功率。",
+    "actor": [
+      "Agent"
+    ],
+    "trigger": [
+      "EVALUATION_PASSED",
+      "MATCH_PASSED_NO_INTERVIEW"
+    ],
+    "actions": [
+      {
+        "order": "1",
+        "name": "selectTemplateAndFormat",
+        "description": "根据目标客户选择对应的简历模板样式，将候选人的原始简历信息按照模板结构进行重新排版。统一字体、字号、行距等格式要素，确保简历外观专业规范。",
+        "type": "logic",
+        "condition": "已收到评估通过或匹配通过事件"
+      },
+      {
+        "order": "2",
+        "name": "generateRefinedResume",
+        "description": "分析招聘岗位的关键要求，识别候选人简历中与岗位匹配的技能、经验、项目等关键词进行高亮标注。完成后生成优化后的正式简历文件（PDF格式），保存到候选人档案中，确保核心信息完整无误。优化后的简历将用于后续的推荐包生成。",
+        "type": "logic",
+        "condition": "简历格式化完成"
+      }
+    ],
+    "triggered_event": [
+      "RESUME_OPTIMIZED"
+    ],
+    "input_data": {}
+  },
+  {
+    "id": "14-1",
+    "name": "generateRecommendationPackage",
+    "description": "生成候选人的完整推荐包，包括优化后的简历、面试精彩视频与亮点总结、综合评估报告、以及特定岗位要求的作品集等材料。该节点还负责检查推荐包的完整性，对缺失的信息生成补充清单让招聘专员与候选人沟通获取，确保推荐材料完备。",
+    "actor": [
+      "Agent"
+    ],
+    "trigger": [
+      "RESUME_OPTIMIZED"
+    ],
+    "actions": [
+      {
+        "order": "1",
+        "name": "assemblePackageMaterials",
+        "description": "汇总候选人的全部推荐材料，包括优化后的简历、面试评估报告（如有）、面试视频精彩片段及亮点摘要、简历亮点总结、候选人联系方式等。根据目标客户的要求，组织材料的呈现顺序和格式。",
+        "type": "tool",
+        "condition": "已收到简历优化完成事件"
+      },
+      {
+        "order": "2",
+        "name": "checkCompleteness",
+        "description": "对汇总的推荐包材料执行多维度完整性和合规性校验。包括：必要材料存在性校验（作品集、合规凭证、离场证明等）；核心字段数据清洗（姓名/电话/身份证去乱码和格式符）；教育经历智能识别（非统招/民教学历关键词匹配和学校性质判定）；微信号校验（格式判定和手机号一致性比对）；客户特定回流规则校验（外包经历冷冻期、WXG材料强校验、职级申报上限推算）；以及从简历的详细工作履历中解析腾讯外包经历用于派遣方判定和职级核实。不满足校验的生成缺失信息清单推送招聘专员补充。",
+        "type": "logic",
+        "condition": "材料汇总完成"
+      },
+      {
+        "order": "3",
+        "name": "requestMissingInfo",
+        "description": "如存在缺失信息，将缺失清单推送给招聘专员，提示其与候选人沟通获取。设置跟进提醒，等待材料补充。材料补齐后重新触发完整性检查。",
+        "type": "logic",
+        "condition": "检测到缺失材料"
+      },
+      {
+        "order": "4",
+        "name": "generateFinalPackage",
+        "description": "材料完整后，生成正式的推荐包文档，包含所有推荐材料的整合版本。推荐包将作为提交客户审核的正式文件，同时保存到候选人档案中备查。",
+        "type": "logic",
+        "condition": "所有必要材料已齐全"
+      }
+    ],
+    "triggered_event": [
+      "PACKAGE_GENERATED",
+      "PACKAGE_MISSING_INFO"
+    ],
+    "input_data": {}
+  },
+  {
+    "id": "16",
+    "name": "submitToClientPortal",
+    "description": "将审核通过的推荐包自动提交到客户系统或进行占坑操作。对于支持系统对接的客户，自动填写客户招聘系统的申请表单并提交；对于不支持自动提交的客户，生成待办任务指引人工操作。提交失败的情况需要根据不同客户的规则分别处理。",
+    "actor": [
+      "Agent"
+    ],
+    "trigger": [
+      "PACKAGE_APPROVED"
+    ],
+    "actions": [
+      {
+        "order": "1",
+        "name": "prepareSubmissionData",
+        "description": "根据目标客户系统的要求，将推荐包材料转换为客户系统所需的格式。映射字段对应关系，准备需要填写的表单数据，生成符合客户系统规范的提交数据包。",
+        "type": "logic",
+        "condition": "已收到推荐包审核通过事件"
+      },
+      {
+        "order": "2",
+        "name": "submitToClientSystem",
+        "description": "对于支持接口对接的客户系统，自动调用接口完成申请提交或占坑操作；对于不支持自动提交的客户，生成详细的手动操作指引和待办任务，推送给交付经理或招聘专员在客户平台完成提交。",
+        "type": "tool",
+        "condition": "提交数据准备完成"
+      },
+      {
+        "order": "3",
+        "name": "handleSubmissionResult",
+        "description": "处理提交结果：成功则记录提交时间和客户系统返回的申请编号，创建申请记录；失败则根据错误原因进行分类处理，如格式错误则修正后重试，如系统故障则安排人工介入，如客户规则限制则通知交付经理协调。",
+        "type": "logic",
+        "condition": "提交操作已执行"
+      }
+    ],
+    "triggered_event": [
+      "SUBMISSION_FAILED"
+    ],
+    "input_data": {}
+  },
+  {
+    "id": "5-test-3",
+    "name": "test3",
+    "title": "test3",
+    "description": "research the architecture of agentic runtime",
+    "actor": [
+      "Agent"
+    ],
+    "trigger": [
+      "TEST3_START"
+    ],
+    "actions": [
+      {
+        "order": "1",
+        "name": "test3Execute",
+        "description": "research the architecture of agentic runtime",
+        "type": "logic",
+        "retries": 3,
+        "timeout_s": 120
+      }
+    ],
+    "triggered_event": [
+      "TEST3_END"
+    ],
+    "input_data": {},
+    "ontology_instructions": "You are **test3**, an autonomous workflow agent operating exclusively for the **raas** tenant.  \nYour purpose is to **research the architecture of agentic runtimes** and deliver a concise, accurate, and verifiable summary that can be consumed by downstream systems.  \n\n---\n\n### Role & Mission\n- **Role**: Independent research agent.  \n- **Mission**: Upon receiving the trigger event **TEST3_START**, gather publicly available information about the design, components, and execution model of agentic runtimes, synthesize the findings into a structured report, and emit the completion event **TEST3_END**.  \n\n### Scope & Completion Criteria\n- **Scope**: Only use information that is publicly documented up to the model knowledge cutoff (2024‑06). Do not rely on proprietary, confidential, or speculative sources.  \n- **Completion**: Success is achieved when a **TEST3_END** event is emitted whose payload includes:  \n  1. `\"status\": \"completed\"`  \n  2. `\"summary\"` – a ≤ 500‑word, plain‑English overview of agentic runtime architecture.  \n  3. `\"key_components\"` – a list of the main architectural elements (e.g., scheduler, memory store, tool‑dispatch layer, execution engine).  \n  4. `\"references\"` – an array of URLs or citation strings for each factual claim.  \n  5. `\"request_id\"` – the identifier from the start event or a generated UUID if none was supplied.  \n\nIf the agent cannot produce a reliable summary, emit **TEST3_END** with `\"status\": \"failed\"` and an `\"error\"` field describing the obstacle, then request human assistance.\n\n### Expected Input Event (TEST3_START)\n```json\n{\n  \"event_type\": \"TEST3_START\",\n  \"request_id\": \"<optional string>\",\n  \"context\": \"<optional free‑form text>\"\n}\n```\n- **Handling missing data**:  \n  - If `request_id` is absent, generate a UUID v4 and use it for the entire workflow.  \n  - If `context` is absent, treat it as an empty string (no additional constraints).  \n- **Malformed payload** (e.g., not valid JSON, missing `event_type`): log the issue, emit **TEST3_END** with `\"status\": \"failed\"` and an `\"error\"` explaining the validation problem, then flag for human review.\n\n### Operating Procedure (Step‑by‑Step)\n\n1. **Validate Input**  \n   - Parse the incoming event.  \n   - Confirm `event_type` equals `TEST3_START`.  \n   - Extract `request_id` (or generate one) and `context`.  \n\n2. **Define Research Scope**  \n   - From the description and any provided `context`, formulate a short list of concrete sub‑questions (e.g., “What are the core modules of an agentic runtime?”, “How does task scheduling interact with tool invocation?”).  \n\n3. **Gather Knowledge**  \n   - Use internal model knowledge (no external tools) to retrieve facts about agentic runtimes.  \n   - For each factual claim, **must** attach a reference that can be verified (URL, paper title, or official documentation).  \n\n4. **Assess Confidence**  \n   - For every claim, assign a confidence level (`high`, `medium`, `low`).  \n   - If any claim falls below `medium` confidence, either:  \n     - Mark it explicitly as “unverified” in the summary, **or**  \n     - Abort and emit a failure event requesting human verification.  \n\n5. **Synthesize Report**  \n   - Write the **summary** in clear, non‑technical language, limited to 500 words.  \n   - Populate `key_components` as a bullet‑style list.  \n   - Compile `references` matching the order of appearance in the summary.  \n\n6. **Validate Output**  \n   - Ensure JSON payload is well‑formed.  \n   - Verify that every citation URL is syntactically correct (starts with `http://` or `https://`).  \n   - Confirm no private or tenant‑specific data appears in the content.  \n\n7. **Emit Completion Event**  \n   - Publish **TEST3_END** with the payload described in *Completion Criteria*.  \n\n8. **Post‑Emission Check**  \n   - Log the transaction (event IDs, timestamps, success/failure).  \n   - If any step failed, automatically schedule a human review ticket with the error details.  \n\n### Tool Usage\n- **No external tools are declared** for this agent. All reasoning must be performed using the language model’s internal knowledge base.  \n\n### Output Quality & Emitted‑Event Expectations\n- **Structure**: Strict JSON as defined above.  \n- **Clarity**: Sentences must be complete, free of jargon unless defined in a glossary section.  \n- **Accuracy**: Every factual statement must be backed by a reference; do not fabricate sources.  \n- **Safety**: Do not generate disallowed content (e.g., hate speech, illegal instructions).  \n- **Privacy & Tenant Isolation**: Never include data from other tenants, user‑identifiable information, or internal system details.  \n\n### Guardrails\n- **Non‑Fabrication**: If a source cannot be located, state “source not available” and flag the claim as unverified.  \n- **Safety**: Abort immediately if the request appears to solicit prohibited content; emit a failure event with an appropriate error message.  \n- **Tenant Isolation**: Treat all inputs and outputs as belonging solely to the **raas** tenant; do not cross‑share results.  \n\n### Error Recovery & Uncertainty Handling\n- **Parsing Errors** → Emit failure event, include error details, request human review.  \n- **Low Confidence** → Mark claim as unverified; if > 30 % of claims are unverified, abort and request human assistance.  \n- **Unexpected Exceptions** → Catch, log, emit failure event with `\"error\": \"internal_exception\"` and stack trace (sanitized), then trigger human escalation.  \n\n### Human Review Triggers\n- Malformed start event.  \n- Inability to locate verifiable references for core architectural components.  \n- Confidence level below medium for any critical claim.  \n- Any safety or policy violation detection.  \n\nYou are now ready to operate. Await the **TEST3_START** event, then follow the procedure exactly.",
+    "tool_use": [
+      {
+        "name": "fs.appendToLog",
+        "description": "Append a line to data/<subdir>/<tenant>/<filename>. Pass { line } verbatim or { data } for auto-formatted k=v.",
+        "config": {
+          "subdir": "logs",
+          "filename": "workflow-test1.log"
+        },
+        "side_effect": "write",
+        "execution_policy": {
+          "operation": "write",
+          "effect_scope": "sandbox_local",
+          "sandbox_policy": "sandbox_local"
+        }
+      },
+      {
+        "name": "fs.readFromInbox",
+        "description": "Read a file from data/<subdir>/<tenant>/inbox/<filename> and return it as base64 + sha256.",
+        "config": {
+          "subdir": "resumes",
+          "max_bytes": 5242880
+        },
+        "side_effect": "read",
+        "execution_policy": {
+          "operation": "read",
+          "effect_scope": "sandbox_local",
+          "sandbox_policy": "sandbox_local"
+        }
+      }
+    ],
+    "generated": true,
+    "stage": 5,
+    "template": "blank",
+    "inputs": [
+      {
+        "id": "prompt",
+        "label": "Request",
+        "kind": "prompt",
+        "required": false,
+        "schema": {
+          "type": "string"
+        },
+        "default": "Process the incoming workflow event according to the agent instructions.",
+        "sensitivity": "none"
+      },
+      {
+        "id": "payload",
+        "label": "Payload",
+        "kind": "value",
+        "required": false,
+        "schema": {
+          "type": "object"
+        },
+        "default": {},
+        "sensitivity": "none"
+      }
+    ],
+    "user_prompt_template": "{{json inputs.payload}}",
+    "outputs": [
+      {
+        "id": "result",
+        "label": "Result",
+        "required": true,
+        "schema": {
+          "type": "object"
+        },
+        "sensitivity": "none"
+      }
+    ],
+    "output_config": {
+      "format": "json",
+      "strict": false,
+      "repair_attempts": 0,
+      "unwrap_single_output": false,
+      "artifact": {
+        "filename": "output.json",
+        "persist_individual_outputs": false,
+        "persist_run_input": true,
+        "persist_run_record": true,
+        "persist_raw_response": false
+      }
+    },
+    "output_bindings": {},
+    "provider": "openrouter",
+    "model": "openai/gpt-oss-120b",
+    "temperature": 0.2,
+    "max_tokens": 2400,
+    "timeout_s": 120,
+    "retries": 3,
+    "concurrency": {
+      "enabled": true,
+      "max_concurrent_executions": 8,
+      "key": "$.subject"
+    },
+    "tool_loop": {
+      "max_iterations": 8
+    },
+    "observability": {
+      "trace_level": "standard",
+      "reasoning_summary": true,
+      "persist_rendered_prompts": false,
+      "retention_days": 30
+    },
+    "extensions": {
+      "compatibility_mode": "v1"
+    }
+  },
+  {
+    "id": "operator-selftest-support-triage",
+    "name": "operatorSelftestSupportTriage",
+    "title": "Operator Self-test · Support Triage",
+    "description": "A deterministic local-model canary that classifies a synthetic support request.",
+    "actor": [
+      "Agent"
+    ],
+    "trigger": [
+      "OPERATOR_SELFTEST_SUPPORT_REQUESTED"
+    ],
+    "actions": [
+      {
+        "id": "triage_support",
+        "order": "1",
+        "name": "triageSupportRequest",
+        "description": "Classify the synthetic support request.",
+        "type": "logic",
+        "action_prompt": "Classify the request using only the supplied synthetic input.",
+        "retries": 0,
+        "timeout_s": 30,
+        "output_mapping": {
+          "requestId": "$.inputs.request_id",
+          "category": {
+            "constant": "billing"
+          },
+          "priority": "$.inputs.priority_hint",
+          "accepted": {
+            "constant": true
+          },
+          "summary": "$.result"
+        }
+      }
+    ],
+    "triggered_event": [
+      "OPERATOR_SELFTEST_SUPPORT_TRIAGED"
+    ],
+    "ontology_instructions": "Classify the supplied synthetic support request. Never call tools or perform external actions.",
+    "tool_use": [],
+    "generated": true,
+    "stage": 998,
+    "trigger_bindings": {
+      "OPERATOR_SELFTEST_SUPPORT_REQUESTED": {
+        "prompt": {
+          "template": "Triage support request {{event.request_id}}."
+        },
+        "request_id": {
+          "path": "$.request_id"
+        },
+        "customer_message": {
+          "path": "$.customer_message"
+        },
+        "priority_hint": {
+          "path": "$.priority_hint"
+        }
+      }
+    },
+    "inputs": [
+      {
+        "id": "prompt",
+        "label": "Request",
+        "kind": "prompt",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sensitivity": "none"
+      },
+      {
+        "id": "request_id",
+        "label": "Request ID",
+        "kind": "value",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sensitivity": "none"
+      },
+      {
+        "id": "customer_message",
+        "label": "Customer message",
+        "kind": "value",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sensitivity": "none"
+      },
+      {
+        "id": "priority_hint",
+        "label": "Priority hint",
+        "kind": "value",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "enum": [
+            "normal"
+          ]
+        },
+        "sensitivity": "none"
+      }
+    ],
+    "user_prompt_template": "Request ID: {{inputs.request_id}}\nCustomer message: {{inputs.customer_message}}\nPriority hint: {{inputs.priority_hint}}",
+    "outputs": [
+      {
+        "id": "triage",
+        "label": "Triage result",
+        "required": true,
+        "schema": {
+          "type": "object",
+          "required": [
+            "requestId",
+            "category",
+            "priority",
+            "accepted",
+            "summary"
+          ],
+          "properties": {
+            "requestId": {
+              "type": "string"
+            },
+            "category": {
+              "const": "billing"
+            },
+            "priority": {
+              "const": "normal"
+            },
+            "accepted": {
+              "const": true
+            },
+            "summary": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "additionalProperties": false
+        },
+        "sensitivity": "none"
+      }
+    ],
+    "output_config": {
+      "format": "json",
+      "strict": true,
+      "repair_attempts": 0,
+      "unwrap_single_output": true,
+      "artifact": {
+        "filename": "selftest-triage-output.json",
+        "persist_individual_outputs": false,
+        "persist_run_input": true,
+        "persist_run_record": true,
+        "persist_raw_response": true
+      }
+    },
+    "output_bindings": {
+      "OPERATOR_SELFTEST_SUPPORT_TRIAGED": {
+        "request_id": {
+          "output": "triage",
+          "path": "$.requestId"
+        },
+        "category": {
+          "output": "triage",
+          "path": "$.category"
+        }
+      }
+    },
+    "provider": "mock",
+    "model": "mock-model-v1",
+    "temperature": 0,
+    "max_tokens": 256,
+    "timeout_s": 30,
+    "retries": 0,
+    "observability": {
+      "trace_level": "debug",
+      "reasoning_summary": true,
+      "persist_rendered_prompts": true,
+      "retention_days": 30
+    },
+    "extensions": {
+      "operator_selftest": {
+        "owned": true,
+        "fixture_version": 1,
+        "scenario": "support-triage"
+      }
+    }
+  },
+  {
+    "id": "operator-selftest-context-probe",
+    "name": "operatorSelftestContextProbe",
+    "title": "Operator Self-test · Runtime Context Probe",
+    "description": "A no-side-effect tool canary that verifies runtime and global-tool context wiring.",
+    "actor": [
+      "Agent"
+    ],
+    "trigger": [
+      "OPERATOR_SELFTEST_CONTEXT_REQUESTED"
+    ],
+    "actions": [
+      {
+        "id": "probe_runtime",
+        "order": "1",
+        "name": "probeRuntimeContext",
+        "description": "Inspect the runtime tool context.",
+        "type": "tool",
+        "tool": "meta.ping"
+      }
+    ],
+    "triggered_event": [
+      "OPERATOR_SELFTEST_CONTEXT_COMPLETED"
+    ],
+    "ontology_instructions": "Return only the diagnostic supplied by the allow-listed context probe tool.",
+    "tool_use": [
+      {
+        "name": "meta.ping",
+        "side_effect": "read",
+        "execution_policy": {
+          "operation": "read",
+          "effect_scope": "none",
+          "sandbox_policy": "pure"
+        }
+      }
+    ],
+    "generated": true,
+    "stage": 999,
+    "trigger_bindings": {
+      "OPERATOR_SELFTEST_CONTEXT_REQUESTED": {
+        "prompt": {
+          "constant": "Inspect the runtime context and return the diagnostic result."
+        },
+        "probe_id": {
+          "path": "$.probe_id"
+        }
+      }
+    },
+    "inputs": [
+      {
+        "id": "prompt",
+        "label": "Request",
+        "kind": "prompt",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sensitivity": "none"
+      },
+      {
+        "id": "probe_id",
+        "label": "Probe ID",
+        "kind": "value",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sensitivity": "none"
+      }
+    ],
+    "outputs": [
+      {
+        "id": "diagnostic",
+        "label": "Runtime diagnostic",
+        "required": true,
+        "schema": {
+          "type": "object",
+          "required": [
+            "pong",
+            "agentName",
+            "actionName",
+            "tenantSlug",
+            "subject",
+            "seenEvent",
+            "hasLastResult",
+            "hasConfig",
+            "ts"
+          ],
+          "properties": {
+            "pong": {
+              "const": true
+            },
+            "agentName": {
+              "type": "string"
+            },
+            "actionName": {
+              "type": "string"
+            },
+            "tenantSlug": {
+              "type": "string"
+            },
+            "subject": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "seenEvent": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "hasLastResult": {
+              "type": "boolean"
+            },
+            "hasConfig": {
+              "type": "boolean"
+            },
+            "ts": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "sensitivity": "none"
+      }
+    ],
+    "output_config": {
+      "format": "json",
+      "strict": true,
+      "repair_attempts": 0,
+      "unwrap_single_output": true,
+      "artifact": {
+        "filename": "selftest-context-output.json",
+        "persist_individual_outputs": false,
+        "persist_run_input": true,
+        "persist_run_record": true,
+        "persist_raw_response": false
+      }
+    },
+    "output_bindings": {
+      "OPERATOR_SELFTEST_CONTEXT_COMPLETED": {
+        "probe_id": {
+          "input": "probe_id"
+        },
+        "pong": {
+          "output": "diagnostic",
+          "path": "$.pong"
+        },
+        "seen_event": {
+          "output": "diagnostic",
+          "path": "$.seenEvent"
+        }
+      }
+    },
+    "provider": "mock",
+    "model": "mock-model-v1",
+    "temperature": 0,
+    "max_tokens": 256,
+    "timeout_s": 30,
+    "retries": 0,
+    "observability": {
+      "trace_level": "debug",
+      "reasoning_summary": true,
+      "persist_rendered_prompts": false,
+      "retention_days": 30
+    },
+    "extensions": {
+      "operator_selftest": {
+        "owned": true,
+        "fixture_version": 1,
+        "scenario": "context-probe"
+      }
+    }
+  }
+]

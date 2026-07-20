@@ -5,6 +5,7 @@ import Fastify from "fastify";
 import cors from "@fastify/cors";
 import { registerEnvelope } from "./plugins/error";
 import { registerAuth } from "./plugins/auth";
+import { registerUsageAttribution } from "./plugins/usage-attribution";
 import { registerSecurity } from "./plugins/security";
 import { installGracefulShutdown } from "./plugins/shutdown";
 import { healthRoute } from "./routes/health";
@@ -13,11 +14,14 @@ import { eventsRoutes } from "./routes/v1/events";
 import { runsRoutes } from "./routes/v1/runs";
 import { reasoningRoutes } from "./routes/v1/reasoning";
 import { reasoningAgentRoutes } from "./routes/v1/reasoning-agent";
+import { operatorChecksRoutes } from "./routes/v1/operator-checks";
 import { runsLogsRoute } from "./routes/v1/runs-logs";
 import { tasksRoutes } from "./routes/v1/tasks";
 import { agentsRoutes } from "./routes/v1/agents";
+import { agentAuthoringRoutes } from "./routes/v1/agent-authoring";
 import { agentInvokeRoutes } from "./routes/v1/agent-invoke";
 import { agentFactoryRoutes } from "./routes/v1/agent-factory";
+import { agentStudioRoutes } from "./routes/v1/agent-studio";
 import { deploymentsRoutes } from "./routes/v1/deployments";
 import { webhooksRoutes } from "./routes/v1/webhooks";
 import { artifactsRoutes } from "./routes/v1/artifacts";
@@ -33,7 +37,10 @@ import { auditRoutes } from "./routes/v1/audit";
 import { streamRoutes } from "./routes/v1/stream";
 import { tenantCodeRoutes } from "./routes/v1/tenant-code";
 import { workflowRoutes } from "./routes/v1/workflow";
+import { workflowAuthoringRoutes } from "./routes/v1/workflow-authoring";
 import { toolsRoutes } from "./routes/v1/tools";
+import { integrationsRoutes } from "./routes/v1/integrations";
+import { apiTokensRoutes } from "./routes/v1/api-tokens";
 import { authRoutes } from "./routes/v1/auth";
 import { membersRoutes } from "./routes/v1/members";
 import { adminUsersRoutes } from "./routes/v1/admin-users";
@@ -106,9 +113,14 @@ function webOrigin(): string {
   return url.origin;
 }
 
+// Studio file controls encode uploads as data URLs in the run reservation
+// request. Base64 adds roughly 33%, so the HTTP envelope must be larger than
+// the old 1 MB default while still remaining globally bounded. Honour the
+// canonical AGENTIC_BODY_LIMIT_BYTES first, then the enterprise-side
+// AGENTIC_MAX_BODY_BYTES name, else 16 MB.
 const MAX_BODY_BYTES = positiveIntegerEnv(
   "AGENTIC_BODY_LIMIT_BYTES",
-  1024 * 1024,
+  positiveIntegerEnv("AGENTIC_MAX_BODY_BYTES", 16 * 1024 * 1024),
 );
 const PORT = positiveIntegerEnv("PORT", 3540);
 const HOST = process.env.HOST ?? "0.0.0.0";
@@ -196,14 +208,23 @@ export async function build() {
       origin: WEB_ORIGIN,
       credentials: true,
       methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+      // No explicit allowedHeaders: @fastify/cors then reflects
+      // Access-Control-Request-Headers, which covers both the portal's
+      // headers (x-agentic-tenant, authorization) and the enterprise
+      // attribution headers (If-Match, Idempotency-Key, Last-Event-ID,
+      // X-Agentic-Product-Surface/-Action, X-Agentic-Interaction-Id).
       // CORS-restricted browsers strip non-safelisted response headers
       // unless explicitly exposed — without this the `x-request-id` echo
-      // above is invisible to the web app.
-      exposedHeaders: ["x-request-id"],
+      // above is invisible to the web app, and studio optimistic-concurrency
+      // (If-Match/etag) breaks.
+      exposedHeaders: ["etag", "x-request-id"],
     });
 
     await registerEnvelope(app);
     await registerAuth(app);
+    // Usage attribution (billing spine) — runs after auth so every ledger row
+    // carries the authenticated billing account/actor, before any /v1 route.
+    await registerUsageAttribution(app);
     await registerSecurity(app);
 
     // Health + Prometheus metrics — both unauthenticated; metrics is
@@ -234,7 +255,13 @@ export async function build() {
         await v1.register(runsLogsRoute);
         await v1.register(tasksRoutes);
         await v1.register(agentsRoutes);
+        // Agent authoring + Agent Studio (enterprise): agent draft/spec
+        // authoring endpoints and the studio run/observability surface.
+        await v1.register(agentAuthoringRoutes);
         await v1.register(agentInvokeRoutes);
+        await v1.register(agentStudioRoutes);
+        // Operator checks — enterprise operational health-check surface.
+        await v1.register(operatorChecksRoutes);
         // Agent Factory — autonomous brain SSE stream (generates business agents from
         // a domain's models/ ontology, streamed live to the portal factory tab).
         await v1.register(agentFactoryRoutes);
@@ -259,9 +286,19 @@ export async function build() {
         await v1.register(streamRoutes);
         await v1.register(tenantCodeRoutes);
         await v1.register(workflowRoutes);
+        // Workflow authoring (enterprise): draft/version/test-run authoring
+        // endpoints layered on the workflow CRUD surface.
+        await v1.register(workflowAuthoringRoutes);
         // Global tool catalog — drives the Tools view in the portal so
         // manifest authors can browse what's available without spelunking.
         await v1.register(toolsRoutes);
+        // External-service integrations (Settings → Integrations). GoHire ATS
+        // base URL + encrypted API key, read by the GoHire tool family.
+        await v1.register(integrationsRoutes);
+        // Workspace API-token lifecycle for Settings → API tokens. Secrets are
+        // returned once on create/rotate and stored only as bearer-compatible
+        // SHA-256 hashes.
+        await v1.register(apiTokensRoutes);
         // P6-AUTH — login + identity, tenant-scoped membership management, and
         // platform-wide user administration (the Access tab + sign-in/up flows).
         await v1.register(authRoutes);

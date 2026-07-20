@@ -11,6 +11,7 @@ import {
 import { useTenant } from "@/app/portal/lib/use-tenant";
 import { useSession } from "@/app/portal/lib/session-context";
 import { useI18n } from "@/app/portal/lib/preferences-context";
+import { useDirty } from "@/app/portal/lib/dirty-context";
 import {
   SETTINGS_SECTIONS,
   type SettingsSectionId,
@@ -18,12 +19,15 @@ import {
 import { WorkspaceSection } from "@/app/portal/components/settings/sections/Workspace";
 import { AppearanceSection } from "@/app/portal/components/settings/sections/Appearance";
 import { PeopleSection } from "@/app/portal/components/settings/sections/People";
+import { AISection } from "@/app/portal/components/settings/sections/AI";
 import { ModelsSection } from "@/app/portal/components/settings/sections/Models";
+import { TokensSection } from "@/app/portal/components/settings/sections/Tokens";
+import { IntegrationsSection } from "@/app/portal/components/settings/sections/Integrations";
 import { BillingSection } from "@/app/portal/components/settings/sections/Billing";
 
 // P3-FE-03 / P3-FE-05 — these section ids deep-link to their own sub-routes
 // instead of being rendered inline (the views are too heavy to live in the
-// 9-section switch). Clicking the sidebar entry pushes the URL; refresh +
+// section switch). Clicking the sidebar entry pushes the URL; refresh +
 // browser back/forward work.
 const ROUTED_SECTIONS: Record<string, string> = {
   usage: "usage",
@@ -44,11 +48,23 @@ export default function SettingsPage() {
     SETTINGS_SECTIONS.find((s) => s.id === section) ?? SETTINGS_SECTIONS[0];
   const router = useRouter();
   const tenant = useTenant();
+  const dirty = useDirty();
   const session = useSession();
   const { t } = useI18n();
   const operatorName = session?.name ?? "—";
 
   function pick(id: SettingsSectionId) {
+    if (id === section) return;
+    // Guard in-progress edits (AI gateway drafts, workspace identity, …)
+    // against a silent section switch — same dirty-context contract as the
+    // workflow editor.
+    if (dirty.isDirty()) {
+      const detail = dirty.describe();
+      const confirmed = window.confirm(
+        `You have unsaved changes${detail ? ` (${detail})` : ""}. Leave this settings section anyway? Your draft will be lost.`,
+      );
+      if (!confirmed) return;
+    }
     const sub = ROUTED_SECTIONS[id];
     if (sub) {
       router.push(`/portal/${tenant}/settings/${sub}` as never);
@@ -104,12 +120,17 @@ export default function SettingsPage() {
         </aside>
 
         <div style={{ overflow: "auto", minHeight: 0 }}>
-          <div style={{ padding: 24, maxWidth: 1080 }}>
+          {/* The AI section hosts a three-column gateway console; give it a
+            * wider canvas than the form-style sections. */}
+          <div style={{ padding: 24, maxWidth: section === "ai" ? 1320 : 1080 }}>
             <SectionHeader section={sec} />
             {section === "workspace" && <WorkspaceSection />}
             {section === "appearance" && <AppearanceSection />}
             {section === "people" && <PeopleSection />}
+            {section === "ai" && <AISection />}
             {section === "models" && <ModelsSection />}
+            {section === "tokens" && <TokensSection />}
+            {section === "integrations" && <IntegrationsSection />}
             {section === "billing" && <BillingSection />}
           </div>
         </div>

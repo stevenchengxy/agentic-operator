@@ -19,7 +19,7 @@
 
 # Supply-chain releases and the local production installer pass an exact
 # platform digest. The tag default remains only for ad-hoc developer builds.
-ARG NODE_BASE_IMAGE=node:26-slim
+ARG NODE_BASE_IMAGE=node:26.5.0-slim
 
 # --- base ----------------------------------------------------------------
 FROM ${NODE_BASE_IMAGE} AS base
@@ -30,7 +30,7 @@ ENV PATH="$PNPM_HOME:$PATH"
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates tini python3 make g++ \
  && rm -rf /var/lib/apt/lists/*
-# node:26-slim does NOT ship corepack; install pnpm via npm.
+# node:26.5.0-slim does NOT ship corepack; install pnpm via npm.
 RUN npm install --global pnpm@11.3.0
 WORKDIR /app
 

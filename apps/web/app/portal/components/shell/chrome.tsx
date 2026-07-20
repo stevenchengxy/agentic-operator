@@ -37,6 +37,7 @@ import {
   type SessionUser,
 } from "../../lib/session-context";
 import { useI18n } from "@/app/portal/lib/preferences-context";
+import styles from "./sidebar.module.css";
 
 /**
  * Detects a layout viewport pinned by a CDP device-metrics override (left
@@ -180,16 +181,10 @@ export function PortalChrome({
 
   return (
     <SessionProvider value={user}>
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "232px 1fr",
-          gridTemplateAreas: '"side main"',
-          height: "100vh",
-          background: "var(--bg)",
-          overflow: "hidden",
-        }}
-      >
+      {/* Grid frame lives in sidebar.module.css `.shell` — a compact 64px
+        * nav rail track; the expanded sidebar overlays the main view instead
+        * of reflowing it. */}
+      <div className={styles.shell}>
         {/* P2-FE-24 — skip-link is the first focusable element so keyboard
           * users can jump past the sidebar straight to the view body.
           * Styled in tokens.css `.skip-link`. */}

@@ -28,7 +28,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  NODE_VERSION: "26"
+  NODE_VERSION: "26.5.0"
   PNPM_VERSION: "11.3.0"
   REGISTRY: ghcr.io
   IMAGE_PREFIX: agentic

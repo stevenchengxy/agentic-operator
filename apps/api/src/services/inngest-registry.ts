@@ -345,6 +345,27 @@ export function _inspectRegistryForTests(): {
   };
 }
 
+/** Snapshot the function ids currently served across every mutable app. */
+export function listInngestFunctionIds(): string[] {
+  const all: InngestFunction.Any[] = [];
+  for (const entry of state.apps.values()) all.push(...entry.fns);
+  return all.flatMap((fn) => {
+    try {
+      const id = fn.id();
+      return typeof id === "string" ? [id] : [];
+    } catch {
+      return [];
+    }
+  });
+}
+
+/** Whether a function id (`<tenantSlug>.<agentName>`) is live in any served
+ * app. The events publish route uses this to refuse a 200 for an agent that
+ * exists in history but is not loaded by this process. */
+export function isInngestFunctionRegistered(id: string): boolean {
+  return listInngestFunctionIds().includes(id);
+}
+
 /** Test-only: remove every served app/function slice. */
 export function __resetInngestRegistryForTests(): void {
   state.apps.clear();

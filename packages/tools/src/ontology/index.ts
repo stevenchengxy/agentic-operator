@@ -1,5 +1,6 @@
 /**
- * @agentic/tools/ontology — runtime ontology access for generated agents (rule fetch etc.).
+ * @agentic/tools/ontology — runtime ontology access for generated agents
+ * (rule fetch, instance writes, read-only graph queries).
  */
 export { fetchActionRules } from "./fetch-action-rules";
 export {
@@ -13,3 +14,5 @@ export {
   type OntologyWriteInstanceOptions,
   type OntologyWriteInstanceContext,
 } from "./write-instance";
+export { ontologyQuery, buildOntologyQuery } from "./query";
+export type { OntologyOperation } from "./query";

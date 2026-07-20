@@ -1,0 +1,388 @@
+.console {
+  width: min(1320px, 96vw);
+  height: min(900px, 92vh);
+}
+
+.body {
+  grid-template-columns: minmax(320px, 390px) minmax(0, 1fr);
+}
+
+.setup {
+  border-right: 1px solid var(--border);
+}
+
+.segmented {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.twoColumn {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.threeColumn {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.agentTrace {
+  grid-template-columns: minmax(210px, 0.34fr) minmax(0, 1fr);
+}
+
+.footerActions {
+  flex: 0 0 auto;
+}
+
+.payloadRecipe {
+  display: grid;
+  gap: 9px;
+  padding: 11px;
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--signal) 5%, var(--panel-2)),
+    var(--panel-2) 44%
+  );
+  border: 1px solid color-mix(in srgb, var(--signal) 28%, var(--border));
+  border-left: 2px solid var(--signal);
+  border-radius: 5px;
+}
+
+.payloadRecipeHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.payloadRecipeEyebrow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 5px;
+  color: var(--signal);
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.09em;
+}
+
+.payloadRecipeTitle {
+  display: block;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.payloadRecipeDescription {
+  margin: 4px 0 0;
+  color: var(--text-2);
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
+.payloadRecipeDescription code,
+.payloadRecipeNote code {
+  color: var(--text);
+  font-family: var(--mono);
+}
+
+.payloadRecipeCounts {
+  display: grid;
+  flex: 0 0 auto;
+  gap: 2px;
+  color: var(--text-3);
+  font-family: var(--mono);
+  font-size: 9px;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.payloadRecipeCode {
+  max-height: 210px;
+  margin: 0;
+  padding: 9px 10px;
+  overflow: auto;
+  color: var(--text-2);
+  background: var(--bg);
+  border: 1px solid var(--border-2);
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1.5;
+  overflow-wrap: normal;
+  tab-size: 2;
+}
+
+.payloadRecipeActions {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.payloadRecipeActions button {
+  min-height: 30px;
+}
+
+.payloadRecipeStatus {
+  min-height: 16px;
+  margin-left: auto;
+  color: var(--green);
+  font-family: var(--mono);
+  font-size: 9.5px;
+}
+
+.payloadContract {
+  border-top: 1px solid var(--border);
+}
+
+.payloadContract summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 32px;
+  color: var(--text-2);
+  font-family: var(--mono);
+  font-size: 10px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.payloadContract summary::-webkit-details-marker {
+  display: none;
+}
+
+.payloadContract summary::before {
+  content: "›";
+  margin-right: 6px;
+  color: var(--signal);
+  transform: rotate(0deg);
+  transition: transform 160ms ease-out;
+}
+
+.payloadContract[open] summary::before {
+  transform: rotate(90deg);
+}
+
+.payloadContract summary span {
+  margin-left: auto;
+  color: var(--text-3);
+}
+
+.payloadFieldList {
+  display: grid;
+  gap: 6px;
+  padding: 2px 0 4px;
+}
+
+.payloadField {
+  display: grid;
+  gap: 4px;
+  padding: 8px;
+  background: color-mix(in srgb, var(--bg) 72%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.payloadFieldHeader {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.payloadFieldHeader strong {
+  color: var(--text);
+  font-size: 10.5px;
+}
+
+.payloadFieldHeader > code {
+  color: var(--blue);
+  font-family: var(--mono);
+  font-size: 9px;
+}
+
+.payloadLocations {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.payloadLocations code {
+  padding: 2px 4px;
+  color: var(--violet);
+  background: color-mix(in srgb, var(--violet) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--violet) 24%, var(--border));
+  border-radius: 3px;
+  font-family: var(--mono);
+  font-size: 8.5px;
+  overflow-wrap: anywhere;
+}
+
+.payloadField p {
+  margin: 0;
+  color: var(--text-3);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.payloadFieldExample,
+.inputExample {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  min-width: 0;
+  color: var(--text-3);
+  font-family: var(--sans);
+  font-size: 9.5px;
+  line-height: 1.45;
+}
+
+.payloadFieldExample code,
+.inputExample code {
+  min-width: 0;
+  color: var(--text-2);
+  font-family: var(--mono);
+  overflow-wrap: anywhere;
+}
+
+.payloadFieldExample {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+}
+
+.runtimeInputNotice {
+  display: grid;
+  gap: 2px;
+  padding: 8px 9px;
+  color: var(--text-3);
+  background: color-mix(in srgb, var(--blue) 6%, var(--panel-2));
+  border: 1px dashed color-mix(in srgb, var(--blue) 32%, var(--border));
+  border-radius: 4px;
+  font-family: var(--sans);
+  font-size: 10px;
+  line-height: 1.45;
+  letter-spacing: 0;
+}
+
+.runtimeInputNotice strong {
+  color: var(--blue);
+  font-size: 10px;
+}
+
+.payloadFieldExample span:last-child {
+  grid-column: 2;
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 8.5px;
+  white-space: nowrap;
+}
+
+.payloadContractEmpty {
+  padding: 8px 0 4px;
+  color: var(--text-3);
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
+.payloadRecipeNote {
+  color: var(--text-3);
+  font-size: 9.5px;
+  line-height: 1.5;
+}
+
+.rawPayloadHelp {
+  display: grid;
+  gap: 2px;
+  padding: 8px 9px;
+  color: var(--text-3);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.rawPayloadHelp strong {
+  color: var(--text-2);
+  font-size: 10px;
+}
+
+.rawPayloadHelp code {
+  color: var(--text);
+  font-family: var(--mono);
+}
+
+@media (max-width: 900px) {
+  .console {
+    width: calc(100vw - 20px);
+    height: calc(100dvh - 20px);
+  }
+
+  .body {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(280px, 0.9fr) minmax(330px, 1.1fr);
+  }
+
+  .setup {
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .agentTrace {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 620px) {
+  .console {
+    width: 100vw;
+    height: 100dvh;
+    border-radius: 0 !important;
+  }
+
+  .header,
+  .resultsHeader,
+  .footer {
+    align-items: stretch !important;
+    flex-direction: column;
+  }
+
+  .body {
+    grid-template-rows: minmax(300px, 1fr) minmax(360px, 1fr);
+  }
+
+  .segmented,
+  .twoColumn,
+  .threeColumn {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .footerActions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+
+  .payloadRecipeHeader {
+    flex-direction: column;
+  }
+
+  .payloadRecipeCounts {
+    display: flex;
+    text-align: left;
+  }
+
+  .payloadRecipeStatus {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .payloadFieldExample span:last-child {
+    grid-column: 1 / -1;
+    margin-left: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .payloadContract summary::before {
+    transition: none;
+  }
+}

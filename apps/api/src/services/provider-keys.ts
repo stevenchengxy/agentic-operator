@@ -6,36 +6,50 @@
  * the already-required session secret). Only test processes have a fixed
  * fallback; real processes fail closed rather than deriving a predictable key.
  *
- * `getProviderKeyOverlay()` returns an env-shaped map so the existing
- * `resolveConfig()` in `@agentic/llm-gateway` continues to be the single
- * place that knows how to read provider env. This way the rest of the
- * gateway is untouched.
+ * `getProviderKeyEnvOverlay()` returns a tenant-aware env-shaped map so
+ * `services/llm.ts` can construct credential-isolated adapter sets while
+ * `resolveConfig()` remains the single provider-env parser.
  */
 import {
+  createHash,
   createCipheriv,
   createDecipheriv,
   randomBytes,
+  randomUUID,
 } from "node:crypto";
+import { tmpdir } from "node:os";
 import {
   closeSync,
+  chmodSync,
+  constants,
   existsSync,
+  fchmodSync,
   fsyncSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
   renameSync,
-  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import { PROVIDER_IDS, type ProviderId } from "@agentic/contracts";
 import {
-  deriveVaultKey,
-  resolveVaultMasterSecret,
-} from "./secret-vault";
+  PROVIDER_IDS,
+  type GatewayInstance,
+  type ProviderId,
+} from "@agentic/contracts";
+import { deriveVaultKey } from "./secret-vault";
 
 function defaultVaultPath(): string {
-  if (process.env.AGENTIC_KEY_VAULT_PATH) return process.env.AGENTIC_KEY_VAULT_PATH;
+  if (process.env.AGENTIC_KEY_VAULT_PATH)
+    return process.env.AGENTIC_KEY_VAULT_PATH;
+  if (process.env.NODE_ENV === "test") {
+    return join(
+      tmpdir(),
+      "agentic-operator-tests",
+      `provider-keys-${process.pid}.json`,
+    );
+  }
   // Co-locate with the SQLite db. `DATABASE_URL` is `file:<path>` per
   // packages/db/client.ts; strip the prefix and use the same directory so
   // logs/db/vault all live under one `data/` tree regardless of cwd.
@@ -55,15 +69,50 @@ const ENV_VAR_BY_PROVIDER: Partial<Record<ProviderId, string>> = {
   together: "TOGETHER_API_KEY",
   mistral: "MISTRAL_API_KEY",
   deepseek: "DEEPSEEK_API_KEY",
+  moonshot: "MOONSHOT_API_KEY",
+  zai: "ZAI_API_KEY",
   qwen: "QWEN_API_KEY",
   azure: "AZURE_OPENAI_API_KEY",
   custom: "CUSTOM_LLM_API_KEY",
 };
 
+/** Environment slot consumed by the built-in adapter for a provider. */
+export function providerApiKeyEnvName(id: ProviderId): string | undefined {
+  return ENV_VAR_BY_PROVIDER[id];
+}
+
+/**
+ * Resolve the private vault slot owned by one configured gateway instance.
+ * Dynamic endpoint credentials are namespaced by authenticated tenant and
+ * instance before lookup, so an arbitrary public `credentialRef` can never
+ * alias a built-in provider key or another tenant's compatible gateway.
+ */
+export function gatewayCredentialSlot(
+  instance: GatewayInstance,
+  tenantId: string,
+): string {
+  if (instance.kind !== "newapi" && instance.kind !== "openai-compatible") {
+    return instance.credentialRef ?? instance.id;
+  }
+  const binding = [
+    tenantId,
+    instance.id,
+    instance.credentialRef ?? instance.id,
+  ].join("\0");
+  const digest = createHash("sha256")
+    .update(binding)
+    .digest("hex")
+    .slice(0, 32);
+  return `gateway:${instance.id}:${digest}`;
+}
+
 export type KeyScope = "workspace" | "tenant";
 
 export interface ProviderKeyRecord {
-  provider: ProviderId;
+  /** Stable, public-safe identity for usage attribution. Never derived from the key. */
+  credentialId: string;
+  /** Static provider id or a dynamic gateway-instance id (for example newapi-csi). */
+  provider: string;
   scope: KeyScope;
   tenantId?: string;
   setBy: string | null;
@@ -83,34 +132,126 @@ interface VaultFile {
   records: ProviderKeyRecord[];
 }
 
-let cache: { path: string; vault: VaultFile } | null = null;
-let masterKey: { identity: string; key: Buffer } | null = null;
+type LegacyProviderKeyRecord = Omit<ProviderKeyRecord, "credentialId"> & {
+  credentialId?: string;
+};
+
+interface LegacyVaultFile {
+  saltHex: string;
+  records: LegacyProviderKeyRecord[];
+}
+
+let cache: VaultFile | null = null;
+let cachePath: string | null = null;
+let masterKey: Buffer | null = null;
 
 function isProviderId(s: string): s is ProviderId {
   return (PROVIDER_IDS as readonly string[]).includes(s);
 }
 
+function deriveMasterKey(salt: Buffer): Buffer {
+  // Fail-closed master secret resolution (AGENTIC_KEY_VAULT_SECRET → session
+  // secret → test-only fallback). Shared with the versioned inline envelope
+  // vault so the whole process derives every secret key the same way; no
+  // hostname-derived predictable key outside the test process.
+  return deriveVaultKey(salt);
+}
+
+function newCredentialId(): string {
+  return `cred-${randomUUID()}`;
+}
+
+/**
+ * Old vaults predate credential IDs. Deriving the migration ID from public
+ * slot metadata (plus the vault salt) makes it stable even when the vault is
+ * temporarily read-only; the API key is deliberately not part of the hash.
+ */
+function legacyCredentialId(
+  record: LegacyProviderKeyRecord,
+  saltHex: string,
+): string {
+  const slot = [
+    saltHex,
+    record.provider,
+    record.scope,
+    record.scope === "tenant" ? (record.tenantId ?? "") : "",
+  ].join("\0");
+  return `cred-legacy-${createHash("sha256").update(slot).digest("hex").slice(0, 24)}`;
+}
+
+function normalizeVault(parsed: LegacyVaultFile): {
+  vault: VaultFile;
+  migrated: boolean;
+} {
+  let migrated = false;
+  const records = parsed.records.map((record): ProviderKeyRecord => {
+    if (
+      typeof record.credentialId === "string" &&
+      record.credentialId.length > 0
+    ) {
+      return record as ProviderKeyRecord;
+    }
+    migrated = true;
+    return {
+      ...record,
+      credentialId: legacyCredentialId(record, parsed.saltHex),
+    };
+  });
+  return {
+    vault: { saltHex: parsed.saltHex, records },
+    migrated,
+  };
+}
+
 function loadVault(): VaultFile {
   const vaultPath = defaultVaultPath();
-  if (cache?.path === vaultPath) return cache.vault;
-  // Runtime configuration is normally immutable, but tests and embedders may
-  // switch isolated vaults in one process. Never reuse ciphertext or a master
-  // key across paths.
-  cache = null;
-  masterKey = null;
+  if (cache && cachePath === vaultPath) return cache;
+  if (cachePath !== vaultPath) {
+    cache = null;
+    cachePath = vaultPath;
+    masterKey = null;
+  }
   if (!existsSync(vaultPath)) {
-    const v: VaultFile = { saltHex: randomBytes(16).toString("hex"), records: [] };
-    cache = { path: vaultPath, vault: v };
+    const v: VaultFile = {
+      saltHex: randomBytes(16).toString("hex"),
+      records: [],
+    };
+    cache = v;
     return v;
   }
   try {
-    const raw = readFileSync(vaultPath, "utf8");
-    const parsed = JSON.parse(raw) as VaultFile;
+    const vaultStat = lstatSync(vaultPath);
+    if (vaultStat.isSymbolicLink() || !vaultStat.isFile()) {
+      throw new Error("vault path must be a regular file, not a symlink");
+    }
+    // O_NOFOLLOW closes the swap window between the lstat above and open.
+    // Repair a checkout/restore's broad mode on the opened inode before any
+    // secret bytes are read.
+    const fd = openSync(vaultPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+    let raw: string;
+    try {
+      fchmodSync(fd, 0o600);
+      raw = readFileSync(fd, "utf8");
+    } finally {
+      closeSync(fd);
+    }
+    const parsed = JSON.parse(raw) as LegacyVaultFile;
     if (!parsed.saltHex || !Array.isArray(parsed.records)) {
       throw new Error("malformed vault file");
     }
-    cache = { path: vaultPath, vault: parsed };
-    return parsed;
+    const { vault, migrated } = normalizeVault(parsed);
+    cache = vault;
+    if (migrated) {
+      // Credential IDs are metadata only. A read-only legacy vault must still
+      // remain usable; deterministic IDs keep attribution stable until a
+      // later process can persist the migration.
+      try {
+        persist(vault);
+      } catch {
+        cache = vault;
+      }
+    }
+    return vault;
   } catch (err) {
     throw new Error(
       `provider-keys vault at ${vaultPath} is unreadable: ${(err as Error).message}`,
@@ -119,41 +260,46 @@ function loadVault(): VaultFile {
 }
 
 function getMasterKey(vault: VaultFile): Buffer {
-  const secret = resolveVaultMasterSecret();
-  const identity = `${defaultVaultPath()}\0${vault.saltHex}\0${secret}`;
-  if (masterKey?.identity === identity) return masterKey.key;
-  const key = deriveVaultKey(Buffer.from(vault.saltHex, "hex"), secret);
-  masterKey = { identity, key };
-  return key;
+  if (masterKey) return masterKey;
+  masterKey = deriveMasterKey(Buffer.from(vault.saltHex, "hex"));
+  return masterKey;
 }
 
 function persist(vault: VaultFile): void {
-  const vaultPath = defaultVaultPath();
-  mkdirSync(dirname(vaultPath), { recursive: true });
-  const temp = `${vaultPath}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`;
-  let fd: number | undefined;
-  try {
-    fd = openSync(temp, "wx", 0o600);
-    writeFileSync(fd, JSON.stringify(vault, null, 2), "utf8");
-    fsyncSync(fd);
-    closeSync(fd);
-    fd = undefined;
-    renameSync(temp, vaultPath);
-  } finally {
-    if (fd !== undefined) closeSync(fd);
-    try {
-      unlinkSync(temp);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
+  const vaultPath = cachePath ?? defaultVaultPath();
+  const vaultDirectory = dirname(vaultPath);
+  mkdirSync(vaultDirectory, { recursive: true, mode: 0o700 });
+  const directoryStat = lstatSync(vaultDirectory);
+  if (directoryStat.isSymbolicLink() || !directoryStat.isDirectory()) {
+    throw new Error("provider-keys vault directory must not be a symlink");
   }
-  cache = { path: vaultPath, vault };
+  chmodSync(vaultDirectory, 0o700);
+  const temporary = `${vaultPath}.tmp-${process.pid}-${randomUUID()}`;
+  writeFileSync(temporary, `${JSON.stringify(vault, null, 2)}\n`, {
+    encoding: "utf8",
+    mode: 0o600,
+  });
+  const fd = openSync(temporary, "r");
+  try {
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+  renameSync(temporary, vaultPath);
+  cache = vault;
+  cachePath = vaultPath;
 }
 
-function encrypt(plain: string, vault: VaultFile): Pick<ProviderKeyRecord, "cipherHex" | "ivHex" | "tagHex"> {
+function encrypt(
+  plain: string,
+  vault: VaultFile,
+): Pick<ProviderKeyRecord, "cipherHex" | "ivHex" | "tagHex"> {
   const iv = randomBytes(12);
   const cipher = createCipheriv("aes-256-gcm", getMasterKey(vault), iv);
-  const cipherBuf = Buffer.concat([cipher.update(plain, "utf8"), cipher.final()]);
+  const cipherBuf = Buffer.concat([
+    cipher.update(plain, "utf8"),
+    cipher.final(),
+  ]);
   const tag = cipher.getAuthTag();
   return {
     cipherHex: cipherBuf.toString("hex"),
@@ -182,6 +328,112 @@ function maskKey(plain: string): string {
   return `${trimmed.slice(0, 6)}…${trimmed.slice(-4)}`;
 }
 
+function sameCredentialSlot(
+  record: ProviderKeyRecord,
+  provider: string,
+  scope: KeyScope,
+  tenantId?: string,
+): boolean {
+  if (record.provider !== provider || record.scope !== scope) return false;
+  if (scope === "workspace") return true;
+  return record.tenantId === tenantId;
+}
+
+function findVaultRecord(
+  vault: VaultFile,
+  id: string,
+  tenantId?: string,
+  requiredScope?: KeyScope,
+): ProviderKeyRecord | undefined {
+  if (requiredScope === "tenant") {
+    if (!tenantId) return undefined;
+    return vault.records.find((record) =>
+      sameCredentialSlot(record, id, "tenant", tenantId),
+    );
+  }
+  if (requiredScope === "workspace") {
+    return vault.records.find((record) =>
+      sameCredentialSlot(record, id, "workspace"),
+    );
+  }
+  if (tenantId) {
+    const tenantRecord = vault.records.find((record) =>
+      sameCredentialSlot(record, id, "tenant", tenantId),
+    );
+    if (tenantRecord) return tenantRecord;
+  }
+  return vault.records.find((record) =>
+    sameCredentialSlot(record, id, "workspace"),
+  );
+}
+
+export interface ResolvedProviderCredential {
+  apiKey: string;
+  credentialId: string;
+  provider: string;
+  source: "vault" | "env";
+  scope: KeyScope;
+  tenantId: string | null;
+}
+
+/**
+ * Resolves both the secret and its public-safe identity. Consumers that
+ * account for provider usage should retain `credentialId` and discard the
+ * plaintext key once the provider adapter is configured.
+ */
+export function getProviderCredential(
+  id: ProviderId,
+  tenantId?: string,
+): ResolvedProviderCredential | null {
+  return getGatewayCredential(id, tenantId);
+}
+
+/** Mirrors the non-secret credentialRef grammar in @agentic/contracts. */
+function isCredentialReference(id: string): boolean {
+  return /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,255}$/.test(id);
+}
+
+/** Resolve a credential for an arbitrary configured gateway instance. */
+export function getGatewayCredential(
+  id: string,
+  tenantId?: string,
+  requiredScope?: KeyScope,
+): ResolvedProviderCredential | null {
+  if (!isCredentialReference(id)) return null;
+  const vault = loadVault();
+  const record = findVaultRecord(vault, id, tenantId, requiredScope);
+  if (record) {
+    try {
+      return {
+        apiKey: decrypt(record, vault),
+        credentialId: record.credentialId,
+        provider: id,
+        source: "vault",
+        scope: record.scope,
+        tenantId: record.scope === "tenant" ? (record.tenantId ?? null) : null,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  const envVar = isProviderId(id) ? ENV_VAR_BY_PROVIDER[id] : undefined;
+  if (envVar && requiredScope !== "tenant") {
+    const apiKey = process.env[envVar];
+    if (apiKey && apiKey.trim().length > 0) {
+      return {
+        apiKey,
+        credentialId: `cred-env-${id}`,
+        provider: id,
+        source: "env",
+        scope: "workspace",
+        tenantId: null,
+      };
+    }
+  }
+  return null;
+}
+
 /**
  * Returns the plaintext key for a provider, preferring the vault over env.
  *
@@ -200,48 +452,13 @@ export function getProviderKey(
   id: ProviderId,
   tenantId?: string,
 ): string | null {
-  const vault = loadVault();
-
-  // 1. Tenant-scoped exact match (only when a tenantId is supplied)
-  if (tenantId) {
-    const tenantRec = vault.records.find(
-      (r) => r.provider === id && r.scope === "tenant" && r.tenantId === tenantId,
-    );
-    if (tenantRec) {
-      try {
-        return decrypt(tenantRec, vault);
-      } catch (error) {
-        throw new Error(`tenant-scoped ${id} key cannot be decrypted`, { cause: error });
-      }
-    }
-  }
-
-  // 2. Workspace-scoped record (platform default)
-  const workspaceRec = vault.records.find(
-    (r) => r.provider === id && r.scope === "workspace",
-  );
-  if (workspaceRec) {
-    try {
-      return decrypt(workspaceRec, vault);
-    } catch (error) {
-      throw new Error(`workspace-scoped ${id} key cannot be decrypted`, { cause: error });
-    }
-  }
-
-  // 3. Fallback: a tenant-scoped record IGNORING tenant id should NOT be
-  // used (that's the bleed we are closing). Skip to env.
-
-  const envVar = ENV_VAR_BY_PROVIDER[id];
-  if (envVar) {
-    const v = process.env[envVar];
-    if (v && v.trim().length > 0) return v;
-  }
-  return null;
+  return getProviderCredential(id, tenantId)?.apiKey ?? null;
 }
 
 /** Public-safe view: masked key + metadata, no plaintext. */
 export interface ProviderKeyMeta {
-  provider: ProviderId;
+  provider: string;
+  credentialId: string | null;
   hasKey: boolean;
   source: "vault" | "env" | "none";
   keyMasked: string | null;
@@ -250,21 +467,37 @@ export interface ProviderKeyMeta {
   setAt: number | null;
 }
 
-export function getProviderKeyMeta(id: ProviderId, tenantId?: string): ProviderKeyMeta {
-  const vault = loadVault();
-  const rec = tenantId
-    ? vault.records.find(
-        (r) => r.provider === id && r.scope === "tenant" && r.tenantId === tenantId,
-      ) ?? vault.records.find((r) => r.provider === id && r.scope === "workspace")
-    : vault.records.find((r) => r.provider === id && r.scope === "workspace");
-  if (rec) {
-    try {
-      decrypt(rec, vault);
-    } catch (error) {
-      throw new Error(`${rec.scope}-scoped ${id} key metadata is corrupt`, { cause: error });
-    }
+export function getProviderKeyMeta(
+  id: ProviderId,
+  tenantId?: string,
+): ProviderKeyMeta {
+  return getGatewayCredentialMeta(id, tenantId);
+}
+
+/** Public-safe credential metadata for a static or dynamic gateway instance. */
+export function getGatewayCredentialMeta(
+  id: string,
+  tenantId?: string,
+  requiredScope?: KeyScope,
+): ProviderKeyMeta {
+  if (!isCredentialReference(id)) {
     return {
       provider: id,
+      credentialId: null,
+      hasKey: false,
+      source: "none",
+      keyMasked: null,
+      scope: null,
+      setBy: null,
+      setAt: null,
+    };
+  }
+  const vault = loadVault();
+  const rec = findVaultRecord(vault, id, tenantId, requiredScope);
+  if (rec) {
+    return {
+      provider: id,
+      credentialId: rec.credentialId,
       hasKey: true,
       source: "vault",
       keyMasked: rec.keyMasked,
@@ -273,12 +506,13 @@ export function getProviderKeyMeta(id: ProviderId, tenantId?: string): ProviderK
       setAt: rec.setAt,
     };
   }
-  const envVar = ENV_VAR_BY_PROVIDER[id];
-  if (envVar) {
+  const envVar = isProviderId(id) ? ENV_VAR_BY_PROVIDER[id] : undefined;
+  if (envVar && requiredScope !== "tenant") {
     const v = process.env[envVar];
     if (v && v.trim().length > 0) {
       return {
         provider: id,
+        credentialId: `cred-env-${id}`,
         hasKey: true,
         source: "env",
         keyMasked: maskKey(v),
@@ -290,6 +524,7 @@ export function getProviderKeyMeta(id: ProviderId, tenantId?: string): ProviderK
   }
   return {
     provider: id,
+    credentialId: null,
     hasKey: false,
     source: "none",
     keyMasked: null,
@@ -299,8 +534,8 @@ export function getProviderKeyMeta(id: ProviderId, tenantId?: string): ProviderK
   };
 }
 
-export function listProviderKeyMeta(): ProviderKeyMeta[] {
-  return PROVIDER_IDS.map((id) => getProviderKeyMeta(id));
+export function listProviderKeyMeta(tenantId?: string): ProviderKeyMeta[] {
+  return PROVIDER_IDS.map((id) => getProviderKeyMeta(id, tenantId));
 }
 
 export interface SetProviderKeyInput {
@@ -317,35 +552,48 @@ export function setProviderKey(
   if (!isProviderId(id)) {
     throw new Error(`unknown provider: ${id}`);
   }
+  return setGatewayCredential(id, input);
+}
+
+/** Save/rotate a credential slot for a dynamic gateway instance. */
+export function setGatewayCredential(
+  id: string,
+  input: SetProviderKeyInput,
+): ProviderKeyMeta {
+  if (!isCredentialReference(id)) {
+    throw new Error(`invalid gateway credential reference: ${id}`);
+  }
   const key = (input.apiKey ?? "").trim();
   if (key.length < 8) {
     throw new Error("API key is too short");
   }
-  if (input.scope === "tenant" && !input.tenantId?.trim()) {
-    throw new Error("tenant-scoped provider keys require tenantId");
+  const tenantId =
+    input.scope === "tenant" ? input.tenantId?.trim() : undefined;
+  if (input.scope === "tenant" && !tenantId) {
+    throw new Error("tenantId is required for tenant-scoped API keys");
   }
   const vault = loadVault();
   const enc = encrypt(key, vault);
+  const current = vault.records.find((record) =>
+    sameCredentialSlot(record, id, input.scope, tenantId),
+  );
   const next: ProviderKeyRecord = {
+    credentialId: current?.credentialId ?? newCredentialId(),
     provider: id,
     scope: input.scope,
-    tenantId: input.tenantId,
+    tenantId,
     setBy: input.setBy,
     setAt: Date.now(),
     keyMasked: maskKey(key),
     ...enc,
   };
   const others = vault.records.filter(
-    (r) =>
-      !(
-        r.provider === id &&
-        r.scope === input.scope &&
-        (r.scope !== "tenant" || r.tenantId === input.tenantId)
-      ),
+    (record) => !sameCredentialSlot(record, id, input.scope, tenantId),
   );
   persist({ saltHex: vault.saltHex, records: [...others, next] });
   return {
     provider: id,
+    credentialId: next.credentialId,
     hasKey: true,
     source: "vault",
     keyMasked: next.keyMasked,
@@ -355,10 +603,30 @@ export function setProviderKey(
   };
 }
 
-export function deleteProviderKey(id: ProviderId): boolean {
+export function deleteProviderKey(
+  id: ProviderId,
+  scope: KeyScope = "workspace",
+  tenantId?: string,
+): boolean {
+  return deleteGatewayCredential(id, scope, tenantId);
+}
+
+export function deleteGatewayCredential(
+  id: string,
+  scope: KeyScope = "workspace",
+  tenantId?: string,
+): boolean {
+  if (!isCredentialReference(id)) {
+    throw new Error(`invalid gateway credential reference: ${id}`);
+  }
+  if (scope === "tenant" && !tenantId?.trim()) {
+    throw new Error("tenantId is required for tenant-scoped API keys");
+  }
   const vault = loadVault();
   const before = vault.records.length;
-  const after = vault.records.filter((r) => r.provider !== id);
+  const after = vault.records.filter(
+    (record) => !sameCredentialSlot(record, id, scope, tenantId?.trim()),
+  );
   if (after.length === before) return false;
   persist({ saltHex: vault.saltHex, records: after });
   return true;
@@ -369,22 +637,19 @@ export function deleteProviderKey(id: ProviderId): boolean {
  * to `resolveConfig()` so the gateway sees vault keys without us mutating
  * `process.env` (which would leak across tests).
  */
-export function getProviderKeyEnvOverlay(): Record<string, string | undefined> {
+export function getProviderKeyEnvOverlay(
+  tenantId?: string,
+): Record<string, string | undefined> {
   const out: Record<string, string | undefined> = {};
   for (const id of PROVIDER_IDS) {
     const envVar = ENV_VAR_BY_PROVIDER[id];
     if (!envVar) continue;
-    // A single undecryptable vault record (secret rotated / corrupt row) must degrade to
-    // "no vault key for THIS provider" — env fallback still applies via resolveConfig —
-    // never crash the whole api boot (this ran at bootstrap and bricked the server).
-    let key: string | null = null;
-    try {
-      key = getProviderKey(id);
-    } catch (error) {
-      try { console.warn(`[provider-keys] ${id} 的保管库密钥无法解密——跳过该 provider 的覆盖（回退 env）。修复：重新录入该 key 或检查加密密钥。`, (error as Error).message); } catch { /* best-effort */ }
-      continue;
-    }
+    const meta = getProviderKeyMeta(id, tenantId);
+    const key = getProviderKey(id, tenantId);
     if (key) out[envVar] = key;
+    // A corrupt/unreadable vault record must fail closed instead of silently
+    // falling back to a process environment credential for another account.
+    else if (meta.source === "vault") out[envVar] = undefined;
   }
   return out;
 }
@@ -392,5 +657,6 @@ export function getProviderKeyEnvOverlay(): Record<string, string | undefined> {
 /** Test-only — drop the in-memory cache so the next read re-loads from disk. */
 export function _resetProviderKeyVaultCache(): void {
   cache = null;
+  cachePath = null;
   masterKey = null;
 }

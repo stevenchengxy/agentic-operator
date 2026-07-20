@@ -22,7 +22,7 @@ import {
   writeSync,
 } from "node:fs";
 import { setLlmCallSink, type LlmCallRecord } from "@agentic/agent-factory";
-import { getDb, llmCalls } from "@agentic/db";
+import { getDb, llmCallTelemetry } from "@agentic/db";
 import { makeId } from "@agentic/shared";
 import { publishStreamEvent } from "@agentic/runtime";
 
@@ -168,9 +168,9 @@ function persistEnvelope(envelope: LlmTelemetryEnvelope): void {
     return;
   }
   getDb()
-    .insert(llmCalls)
+    .insert(llmCallTelemetry)
     .values(envelopeValues(envelope))
-    .onConflictDoNothing({ target: llmCalls.id })
+    .onConflictDoNothing({ target: llmCallTelemetry.id })
     .run();
 }
 

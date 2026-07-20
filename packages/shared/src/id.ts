@@ -1,6 +1,6 @@
 /**
  * Prefixed ID generators per DESIGN.md convention: run-, evt-, agt-, dpl-,
- * tsk-, wf-, ten-. Uses crypto.randomUUID() for the suffix; takes 8 chars
+ * tsk-, wf-, ten-, use-. Uses crypto.randomUUID() for the suffix; takes 12 chars
  * to keep IDs short but collision-safe at portal scale.
  */
 
@@ -18,8 +18,15 @@ export type IdPrefix =
   | "stp"
   | "wfv"
   | "agv"
+  | "agd"
+  | "agr"
+  | "ars"
+  | "msg"
+  | "trc"
+  | "ree"
   | "aud"
   | "cor"
+  | "chk"
   | "inv"
   | "mdl"
   | "imp"
@@ -32,7 +39,10 @@ export type IdPrefix =
   | "rsm"
   | "rpt"
   | "brv"
-  | "whk";
+  | "whk"
+  | "intg"
+  | "llc"
+  | "use";
 
 export function makeId(prefix: IdPrefix): string {
   const uuid = crypto.randomUUID().replace(/-/g, "");

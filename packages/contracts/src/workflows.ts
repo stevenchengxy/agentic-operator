@@ -1,6 +1,5 @@
 import { z } from "zod";
-import { ActorEnum } from "./agents";
-import { ManifestDiff } from "./agents";
+import { ActorEnum, AgentSpec, ManifestDiff } from "./agents";
 
 export const DagAgent = z.object({
   id: z.string(),
@@ -13,6 +12,9 @@ export const DagAgent = z.object({
   stage: z.number(),
   recentRunCount: z.number(),
   isLive: z.boolean(),
+  /** Complete authoring source. Canvas edits must patch this object in place. */
+  definition: AgentSpec.optional(),
+  position: z.object({ x: z.number(), y: z.number() }).optional(),
 });
 export type DagAgent = z.infer<typeof DagAgent>;
 
@@ -28,6 +30,10 @@ export const DagResponse = z.object({
   agents: z.array(DagAgent),
   edges: z.array(DagEdge),
   workflowVersion: z.string(),
+  workflowVersionId: z.string().nullable().optional(),
+  workflowSlug: z.string().nullable().optional(),
+  workflowName: z.string().nullable().optional(),
+  workflowIsLive: z.boolean().optional(),
 });
 
 /**
@@ -95,27 +101,63 @@ export const Conflict = z.object({
 });
 export type Conflict = z.infer<typeof Conflict>;
 
-export const ManifestImportBody = z.object({
-  mode: z.enum(["validate", "commit"]),
-  /** Raw manifest input — may be a bare array (v1) or `{ $schemaVersion, agents }` (v2). */
-  workflow: z.unknown(),
-  actions: z.array(z.unknown()).optional(),
-  target: z.enum(["staging", "production"]).default("production"),
-  /**
-   * Required on commit when the overwrite guard would otherwise trip 409.
-   * Per review A4 the canonical surface is `?confirm=1` on the query string,
-   * but the body field is preserved as a fallback for v1 callers.
-   */
-  confirm_overwrite: z.boolean().default(false),
-  /**
-   * Links a `validate` call to its eventual `commit`. Per review A2 this is
-   * the `dpl-` id of the pending deployment row — no separate `imp-` prefix.
-   * Optional; commit can run cold (without a prior validate).
-   */
-  deployment_id: z.string().optional(),
-  note: z.string().max(500).optional(),
-  conflict_resolutions: z.array(ConflictResolution).default([]),
-});
+export const ManifestImportBody = z
+  .object({
+    mode: z.enum(["validate", "commit"]),
+    /** Raw manifest input — may be a bare array (v1) or `{ $schemaVersion, agents }` (v2). */
+    workflow: z.unknown(),
+    actions: z.array(z.unknown()).optional(),
+    // There is one real live deployment lane for USER-facing imports
+    // ("production"). "staging" is the Agent Factory's sandbox lane marker:
+    // sandbox-deployer validates/commits `-sb` tenant manifests with
+    // target:"staging", and the import pipeline gates it via isSandboxTenant —
+    // it is never a user-selectable lane.
+    target: z.enum(["staging", "production"]).default("production"),
+    /**
+     * Authoring preview mode. The import pipeline migrates, resolves, lints,
+     * and returns a canonical manifest without creating a pending deployment.
+     * The New Workflow flow then persists that result through the ordinary
+     * immutable draft endpoint; it can never promote the live runtime lane.
+     */
+    draft_only: z.boolean().optional(),
+    /**
+     * Required on commit when the overwrite guard would otherwise trip 409.
+     * Per review A4 the canonical surface is `?confirm=1` on the query string,
+     * but the body field is preserved as a fallback for v1 callers.
+     */
+    confirm_overwrite: z.boolean().default(false),
+    /**
+     * Links a `validate` call to its eventual `commit`. Per review A2 this is
+     * the `dpl-` id of the pending deployment row — no separate `imp-` prefix.
+     * Optional; commit can run cold (without a prior validate).
+     */
+    deployment_id: z.string().optional(),
+    note: z.string().max(500).optional(),
+    conflict_resolutions: z.array(ConflictResolution).default([]),
+    /**
+     * Explicit authoring target. Omitted by legacy import callers, which keep
+     * using the historical `<tenant>-default` workflow. The runtime still has
+     * one live workflow per tenant; this field chooses which named draft is
+     * promoted into that live lane.
+     */
+    workflow_slug: z
+      .string()
+      .trim()
+      .min(1)
+      .max(120)
+      .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/)
+      .optional(),
+    workflow_name: z.string().trim().min(1).max(160).optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.mode === "commit" && value.draft_only) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["draft_only"],
+        message: "draft_only is valid only for manifest validation",
+      });
+    }
+  });
 export type ManifestImportBody = z.infer<typeof ManifestImportBody>;
 
 export const ManifestImportPreview = z.object({
@@ -138,8 +180,11 @@ export const ManifestImportPreview = z.object({
    * Pending `deployments.id` (the `dpl-` session token). The SPA passes this
    * back as `body.deployment_id` on the commit call. Per review A2.
    */
-  deployment_id: z.string(),
+  deployment_id: z.string().optional(),
   workflow_version_id: z.string().optional(),
+  /** Canonical resolved payloads returned only for `draft_only` validation. */
+  normalized_workflow: z.unknown().optional(),
+  normalized_actions: z.array(z.unknown()).nullable().optional(),
   /** Elapsed wall-clock ms for the validate pipeline (per review O5). */
   elapsed_ms: z.number(),
 });

@@ -6,8 +6,8 @@ MCP/tool integrations, and observability views run as one workspace.
 
 ## Runtime contract
 
-- Normal and demo runs use the configured real model provider. Demo mode may
-  generate synthetic input events, but it never swaps in a fake model.
+- Every run uses the configured real model provider; there is no demo mode and
+  no synthetic-model substitute.
 - Non-test API processes fail closed when the provider/model is mock-like or a
   required credential is missing.
 - External systems are called only through configured tools or MCP servers.
@@ -37,8 +37,16 @@ MCP/tool integrations, and observability views run as one workspace.
 | `tenants/*` | Tenant-specific agents, prompts, skills and real integrations |
 | `models/*` | Versioned workflow/ontology manifests |
 
-The workspace requires Node 26+ and pnpm 11. The exact pnpm version is pinned in
-`package.json`.
+Workflows and agents can also be authored from the portal: Agent Studio edits
+per-agent V2 definitions, the workflow-authoring API drafts/validates/publishes
+manifests, Settings → Tokens mints tenant API tokens, and Settings →
+Integrations stores third-party credentials (e.g. GoHire) encrypted per tenant.
+LLM traffic is routed per tenant through the gateway (providers include
+Moonshot and Z.ai) and accounted in a usage ledger surfaced at `/v1/usage`.
+
+The workspace requires Node 26 (26.5.0 is the pinned target in `.nvmrc` and
+`package.json#engines`; the lifecycle version guard accepts any 26.x) and
+pnpm 11. The exact pnpm version is pinned in `package.json`.
 
 ## Local development
 

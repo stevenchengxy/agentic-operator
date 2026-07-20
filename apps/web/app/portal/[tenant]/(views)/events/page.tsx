@@ -122,7 +122,11 @@ export default function EventsPage() {
   const [typeFilter, setTypeFilter] = useState<string>(requestedType ?? "all");
   const [catFilter, setCatFilter] = useState<string>("all");
   const [query, setQuery] = useState("");
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  // `?eventId=` deep-links a specific event row (e.g. from a run detail's
+  // emitted-event chip) — initialize the selection from the URL once.
+  const [selectedId, setSelectedId] = useState<string | null>(
+    () => searchParams.get("eventId"),
+  );
 
   const [publishOpen, setPublishOpen] = useState(false);
 

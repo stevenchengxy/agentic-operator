@@ -27,10 +27,16 @@ import {
   RunCancelledError,
 } from "@agentic/agents";
 import { PROVIDER_IDS, type ProviderId } from "@agentic/contracts";
-import { isLLMError } from "@agentic/llm-gateway";
+import {
+  currentUsageAttribution,
+  isLLMError,
+  mergeUsageAttribution,
+} from "@agentic/llm-gateway";
 import {
   appendToLedger,
+  buildCanonicalEventPayload,
   getTenantInngest,
+  privateUsageAttributionMetadata,
   publishStreamEvent,
   tenantEventName,
 } from "@agentic/runtime";
@@ -317,13 +323,36 @@ export async function agentInvokeRoutes(app: FastifyInstance): Promise<void> {
         );
       }
       const subject = suppliedSubject || `TEST-${eventId.slice(4, 12)}`;
+      const exactPrompt =
+        typeof body.input === "string"
+          ? body.input
+          : typeof inputObj.prompt === "string"
+            ? inputObj.prompt
+            : undefined;
+      // Canonical logical payload (event_id/request_id/prompt aliases) so a
+      // direct invoke produces the same envelope shape as a published event.
+      const logicalPayload = buildCanonicalEventPayload({
+        eventName: triggerEvent,
+        eventId,
+        correlationId,
+        subject,
+        payload: inputObj,
+        ...(exactPrompt === undefined ? {} : { prompt: exactPrompt }),
+      });
 
       const inngestData: Record<string, unknown> = {
-        ...inputObj,
+        ...logicalPayload,
         subject,
         __triggerEventId: eventId,
         __correlationId: correlationId,
         __invokedAgent: agentName,
+        ...privateUsageAttributionMetadata(
+          mergeUsageAttribution(currentUsageAttribution(), {
+            billingAccountId: auth.tenantId,
+            correlationId,
+            invocationSource: "api",
+          }),
+        ),
       };
       if (testRunQuery) {
         inngestData.__test = true;

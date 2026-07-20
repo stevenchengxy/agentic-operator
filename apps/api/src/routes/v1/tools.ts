@@ -16,6 +16,7 @@
 import type { FastifyInstance } from "fastify";
 import { globalToolRegistry, listGlobalTools } from "@agentic/tools";
 import { inspectWriteProbeSafety } from "@agentic/shared";
+import { getExpandedTenantRegistry } from "../../bootstrap";
 import {
   safeFetch,
   chatOnce,
@@ -159,7 +160,7 @@ const EXTRACT_SYS =
 export async function toolsRoutes(app: FastifyInstance): Promise<void> {
   // ── GET: the unified catalog (global + created) ──────────────────────────────
   app.get("/tools", async (req, reply) => {
-    requirePermission(req, "tools.read");
+    const auth = requirePermission(req, "tools.read");
     // #SCALE-TOOLS — join empirical sandbox effectiveness so the library shows each tool's real
     // success rate (and flags demoted ones), not just its static contract.
     const binding = req.auth ? getFactoryDomainBinding(req.auth.tenantId) : null;
@@ -205,7 +206,41 @@ export async function toolsRoutes(app: FastifyInstance): Promise<void> {
     // Object.assign (not spread) so declToCatalogEntry's Record<string, unknown> index signature —
     // which carries `category` — survives the enrichment (object-spread would drop it → no category).
     const created = listDeclarativeTools(req.auth?.tenantId, binding?.ontologyDomainId ?? null).map(declToCatalogEntry).map((t) => Object.assign(t, rate(String(t.name))));
-    const tools = [...globals, ...created];
+    // Tenant-effective overlay: tenant packages can shadow a global tool, and
+    // MCP/Skills expansion contributes "<server>.<tool>" entries that exist
+    // nowhere in the global catalog. Surface both so the library reflects what
+    // this tenant's agents can actually call.
+    const registry = getExpandedTenantRegistry(auth.tenantSlug);
+    const createdNames = new Set(created.map((t) => String(t.name)));
+    const globalNames = new Set(
+      globals.flatMap((tool) => [tool.name, ...(tool.aliases ?? [])]),
+    );
+    const globalsWithSource = globals.map((tool) => ({
+      ...tool,
+      source: registry?.tools?.[tool.name]
+        ? ("tenant_override" as const)
+        : ("global" as const),
+      available: true,
+    }));
+    const tenantEffective: Record<string, unknown>[] = [];
+    for (const [name, descriptor] of Object.entries(registry?.tools ?? {})) {
+      if (globalNames.has(name) || createdNames.has(name)) continue;
+      const source = name.includes(".") ? "mcp_or_skill" : "tenant";
+      tenantEffective.push({
+        name,
+        category: source === "tenant" ? "tenant" : name.split(".")[0]!,
+        summary: descriptor.description ?? `Tenant-effective tool '${name}'.`,
+        description: descriptor.description,
+        sourcePath: "tenant-effective registry",
+        origin: source,
+        source,
+        available: true,
+        sideEffect: "write",
+        testPolicy: "block",
+        ...rate(name),
+      });
+    }
+    const tools = [...globalsWithSource, ...created, ...tenantEffective];
     return reply.ok({
       tools,
       count: tools.length,

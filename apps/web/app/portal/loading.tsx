@@ -3,7 +3,7 @@
  *
  * Renders while the async server component in `layout.tsx` (the session
  * read) is in flight. Matches the dark-mode background and a minimal
- * shimmer placeholder for the chrome shape (232px sidebar + 1fr main).
+ * shimmer placeholder for the chrome shape (64px icon rail + 1fr main).
  *
  * Server component on purpose — keeps the very first paint small.
  */
@@ -15,7 +15,7 @@ export default function PortalLoading() {
       aria-label="Loading portal"
       style={{
         display: "grid",
-        gridTemplateColumns: "232px 1fr",
+        gridTemplateColumns: "64px minmax(0, 1fr)",
         height: "100vh",
         background: "var(--bg)",
         overflow: "hidden",
@@ -25,21 +25,21 @@ export default function PortalLoading() {
         style={{
           background: "var(--bg-2)",
           borderRight: "1px solid var(--border)",
-          padding: 16,
+          padding: "16px 10px",
           display: "flex",
           flexDirection: "column",
           gap: 10,
         }}
       >
-        <SkeletonBar w={140} h={20} />
-        <SkeletonBar w={180} h={32} />
+        <SkeletonBar w={28} h={28} />
+        <SkeletonBar w={42} h={40} />
         <div style={{ marginTop: 12 }}>
-          <SkeletonBar w={120} h={14} />
+          <SkeletonBar w={42} h={1} />
         </div>
-        <SkeletonBar w={180} h={22} />
-        <SkeletonBar w={180} h={22} />
-        <SkeletonBar w={180} h={22} />
-        <SkeletonBar w={180} h={22} />
+        <SkeletonBar w={42} h={34} />
+        <SkeletonBar w={42} h={34} />
+        <SkeletonBar w={42} h={34} />
+        <SkeletonBar w={42} h={34} />
       </aside>
       <main style={{ display: "flex", flexDirection: "column" }}>
         <div
@@ -58,9 +58,24 @@ export default function PortalLoading() {
         </div>
         <div style={{ flex: 1, padding: 20 }}>
           <SkeletonBar w={300} h={28} />
-          <div style={{ marginTop: 18, display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 12 }}>
+          <div
+            style={{
+              marginTop: 18,
+              display: "grid",
+              gridTemplateColumns: "repeat(5, 1fr)",
+              gap: 12,
+            }}
+          >
             {Array.from({ length: 5 }).map((_, i) => (
-              <div key={i} style={{ height: 96, border: "1px solid var(--border)", background: "var(--panel)", borderRadius: 8 }} />
+              <div
+                key={i}
+                style={{
+                  height: 96,
+                  border: "1px solid var(--border)",
+                  background: "var(--panel)",
+                  borderRadius: 8,
+                }}
+              />
             ))}
           </div>
         </div>

@@ -11,7 +11,7 @@
  *     `ImportManifestModal` so the operator can populate the new tenant.
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import type { TenantCreateResponse } from "@agentic/contracts";
@@ -26,6 +26,7 @@ import {
   type TenantTokenRevealPayload,
 } from "./TenantTokenRevealModal";
 import { ImportManifestModal } from "../import-manifest/ImportManifestModal";
+import styles from "./sidebar.module.css";
 
 export interface TenantOption {
   id: string;
@@ -36,7 +37,15 @@ export interface TenantOption {
   runs24h?: number;
 }
 
-export function TenantSwitcher({ tenants }: { tenants: TenantOption[] }) {
+export function TenantSwitcher({
+  tenants,
+  expanded,
+  onRequestExpand,
+}: {
+  tenants: TenantOption[];
+  expanded: boolean;
+  onRequestExpand: () => void;
+}) {
   const [open, setOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [tokenReveal, setTokenReveal] =
@@ -48,6 +57,10 @@ export function TenantSwitcher({ tenants }: { tenants: TenantOption[] }) {
   const activeId = useTenant();
   const navigate = useTenantNavigate();
   const active = tenants.find((t) => t.id === activeId) ?? tenants[0];
+
+  useEffect(() => {
+    if (!expanded) setOpen(false);
+  }, [expanded]);
 
   function handleCreated(created: TenantCreateResponse) {
     setCreateOpen(false);
@@ -107,28 +120,21 @@ export function TenantSwitcher({ tenants }: { tenants: TenantOption[] }) {
   }
 
   return (
-    <div
-      style={{
-        padding: "10px 12px",
-        borderBottom: "1px solid var(--border)",
-        position: "relative",
-      }}
-    >
+    <div className={styles.tenantSwitcher}>
       <button
-        onClick={() => setOpen((v) => !v)}
+        type="button"
+        onClick={() => {
+          if (!expanded) {
+            onRequestExpand();
+            return;
+          }
+          setOpen((v) => !v);
+        }}
         aria-haspopup="listbox"
         aria-expanded={open}
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 10,
-          width: "100%",
-          padding: "8px 10px",
-          background: "var(--panel)",
-          border: "1px solid var(--border-2)",
-          borderRadius: 5,
-          textAlign: "left",
-        }}
+        aria-label={`${active.name} tenant. ${expanded ? "Switch tenant" : "Open tenant switcher"}`}
+        data-sidebar-tooltip={`Tenant: ${active.name}`}
+        className={styles.tenantButton}
       >
         <div
           style={{
@@ -148,7 +154,7 @@ export function TenantSwitcher({ tenants }: { tenants: TenantOption[] }) {
         >
           {active.name[0]}
         </div>
-        <div style={{ flex: 1, minWidth: 0 }}>
+        <div className={styles.tenantDetails}>
           <div style={{ fontSize: 12, color: "var(--text)", fontWeight: 500 }}>
             {active.name}
           </div>
@@ -166,11 +172,13 @@ export function TenantSwitcher({ tenants }: { tenants: TenantOption[] }) {
             </div>
           )}
         </div>
-        <Icon
-          name="chevron-down"
-          size={11}
-          style={{ color: "var(--text-3)" }}
-        />
+        <span className={styles.tenantChevron} aria-hidden="true">
+          <Icon
+            name="chevron-down"
+            size={11}
+            style={{ color: "var(--text-3)" }}
+          />
+        </span>
       </button>
       {open && (
         <div

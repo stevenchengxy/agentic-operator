@@ -129,6 +129,7 @@ import {
   resolveActionRuleReferences,
   toolReadsRulebase,
 } from "./rule-gate-evidence";
+import { recallConversationTool } from "./conversation-archive";
 
 export { ontologyContentHash, sandboxEvidenceFingerprint, specsFingerprint } from "./evidence-fingerprint";
 
@@ -2946,14 +2947,27 @@ const design_agent: BrainTool = {
     const picks = explicitPicks.length ? explicitPicks : ontologyPicks;
     const grounded = groundToolPicks(picks, ctx.toolCatalog ?? []);
     const groundedPolicies = selectedToolPolicies(grounded.resolved, resources.realTools);
-    // An EXPLICIT model pick with no auditable policy IS a real error: the model deliberately chose a
-    // specific tool that is not a registered, policy-complete RealTool. Never silently substitute.
-    if (explicitPicks.length && groundedPolicies.missing.length) {
-      const question = `这些工具还没有完整、可审核的执行策略：${groundedPolicies.missing.join("、")}。请先在工具库里明确 operation、effectScope 和 sandboxPolicy；我不会根据名字、HTTP 方法或旧的 read/write 标签来猜。`;
+    // #TOOLUSE-ECHO — an explicit pick that merely ECHOES the ontology's tool_use[] is still a
+    // SUGGESTION, not a deliberate model choice: fleet members and cautious solo turns routinely
+    // copy tool_use into `tools`, and hard-asking about those re-parked every run with the same
+    // templated question even though the granted transports fully cover the requirements (the live
+    // "还有 5 个 Agent 需要补充…" loop). Only a policy-missing name the model introduced BEYOND the
+    // ontology is a real hallucination/no-policy error worth a hard ask. Never silently substitute
+    // those.
+    const ontologyNameSet = new Set(ontologyPicks);
+    const rawNamesOf = (resolved: string): string[] => [
+      resolved,
+      ...grounded.bridged.filter((bridge) => bridge.resolved === resolved).map((bridge) => bridge.raw),
+    ];
+    const novelMissing = explicitPicks.length
+      ? groundedPolicies.missing.filter((name) => !rawNamesOf(name).some((raw) => ontologyNameSet.has(raw)))
+      : [];
+    if (novelMissing.length) {
+      const question = `这些工具还没有完整、可审核的执行策略：${novelMissing.join("、")}。请先在工具库里明确 operation、effectScope 和 sandboxPolicy；我不会根据名字、HTTP 方法或旧的 read/write 标签来猜。`;
       return {
         ok: false,
         summary: question,
-        output: { next: "ask_user", reason: "tool_execution_policy_missing", question, missing: groundedPolicies.missing },
+        output: { next: "ask_user", reason: "tool_execution_policy_missing", question, missing: novelMissing },
       };
     }
     // Ontology suggestions this tenant does not grant → drop them to `unresolved` (surfaced honestly).
@@ -7818,6 +7832,7 @@ export const FACTORY_TOOLS: BrainTool[] = [
   read_spec,
   score_spec,
   diff_spec,
+  recallConversationTool,
   review_agent,
   review_context,
   review_completeness,

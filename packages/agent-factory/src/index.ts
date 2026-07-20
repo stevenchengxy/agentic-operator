@@ -14,6 +14,7 @@
 // Until then the fully-working factory still runs in the OLD repo.
 
 export * from "./egress-guard";
+export * from "./conversation-archive";
 export * from "./spec-types";
 export * from "./ontology-types";
 export * from "./graph";

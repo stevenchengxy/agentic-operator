@@ -63,13 +63,13 @@ describe.sequential("runtime persistence truth", () => {
 
     await expect(
       writeArtifact("../escape", "step-1-output.json", { ok: true }),
-    ).rejects.toThrow(/Invalid run id/);
+    ).rejects.toThrow(/run id must be a safe leaf name/);
     await expect(
       writeArtifact("run-truth", "../escape.json", { ok: true }),
-    ).rejects.toThrow(/Invalid artifact filename/);
+    ).rejects.toThrow(/must be a safe leaf name/);
     await expect(
       writeArtifact("run-truth", "step-2-output.json", undefined),
-    ).rejects.toThrow(/no JSON representation/);
+    ).rejects.toThrow(/not JSON-serializable/);
   });
 
   it("rejects a generated-agent event that cannot be represented as JSON", () => {

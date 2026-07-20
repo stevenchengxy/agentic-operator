@@ -37,6 +37,7 @@ import {
   OverwriteRequiredError,
   BlockingIssuesError,
   PendingImportConflictError,
+  InvalidPendingImportError,
   type AuditCtx,
 } from "../../services/manifest-import";
 import { safeFetch, SsrfError } from "../../services/ssrf-guard";
@@ -197,6 +198,13 @@ export async function manifestImportRoutes(app: FastifyInstance) {
             in_flight_session_id: err.deploymentId,
           });
         }
+        if (err instanceof InvalidPendingImportError) {
+          return reply.fail(
+            `pending_import_${err.reason}`,
+            "pending import is no longer active; validate again without the stale deployment id",
+            err.reason === "not_found" ? 404 : 409,
+          );
+        }
         throw err;
       }
     }
@@ -236,6 +244,18 @@ export async function manifestImportRoutes(app: FastifyInstance) {
           },
           issues: err.issues,
         });
+      }
+      if (err instanceof InvalidPendingImportError) {
+        const status = err.reason === "not_found" ? 404 : 409;
+        return reply.fail(
+          `pending_import_${err.reason}`,
+          err.reason === "workflow_mismatch"
+            ? "pending import belongs to a different workflow"
+            : err.reason === "expired"
+              ? "pending import has expired; validate again"
+              : "pending import not found",
+          status,
+        );
       }
       throw err;
     }

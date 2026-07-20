@@ -44,6 +44,8 @@ import {
   bootstrapCodeAgents,
   setGateway as setAgentGateway,
 } from "@agentic/agents";
+import { setIntegrationResolver } from "@agentic/tools";
+import { resolveCredsByTenantSlug } from "./services/integration-store";
 import "@agentic/agents/system";
 import type { TenantRegistry } from "@agentic/agent-kit";
 import {
@@ -77,6 +79,7 @@ import {
 import { getFactorySandboxTenantRegistryAlias } from "./services/agent-factory/sandbox-tenant-registry-alias";
 import { createSandboxModelProxyGateway } from "./services/agent-factory/sandbox-model-client";
 import { installProductionGeneratedAgentAuthorizationVerifier } from "./services/agent-factory/production-codeact-authorization";
+import { studioRunnerFn } from "./services/studio-runner";
 
 /**
  * v4 typing: TS2742 surfaces because `InngestFunction` references internal
@@ -93,7 +96,10 @@ export interface BootstrapResult {
 export function buildSystemBaseFns(
   env: Record<string, string | undefined> = process.env,
 ): InngestFunction.Any[] {
-  return [helloFn, ...retentionSweepFunctions(env)];
+  // Studio runs execute on the platform (__system) app: studioRunnerFn is
+  // built on the same shared Inngest client as helloFn and serves every
+  // tenant's Agent Studio test runs.
+  return [helloFn, studioRunnerFn, ...retentionSweepFunctions(env)];
 }
 
 export class RuntimeStartupRecoveryError extends Error {
@@ -228,6 +234,17 @@ async function tenantRegistriesForProcess(): Promise<TenantRegistries> {
  * reads this. Empty until `bootstrapRuntime` populates it.
  */
 let cachedExpanded: TenantRegistries = {};
+
+/**
+ * Resolve the exact tenant registry used by live manifest functions. Studio
+ * runs use this read-only seam so prompt overrides, tenant tool overrides,
+ * MCP tools, and Skills tools follow the same resolution order as production.
+ */
+export function getExpandedTenantRegistry(
+  tenantSlug: string,
+): TenantRegistry | undefined {
+  return cachedExpanded[tenantSlug];
+}
 
 /**
  * Re-run the manifest bootstrap and return the fresh tenant Inngest function
@@ -455,6 +472,12 @@ export async function bootstrapRuntime(
   }
   setAgentGateway(gateway);
   setRuntimeGateway(gateway);
+  // Wire the integration credential resolver so DB-backed integrations
+  // (Settings → Integrations, e.g. GoHire) reach the global tool family at
+  // dispatch time. @agentic/tools stays DB-free — it just calls this seam.
+  setIntegrationResolver((tenantSlug, provider) =>
+    resolveCredsByTenantSlug(tenantSlug, provider),
+  );
   // Vector-recall memory: register a real driver so ctx.memory.search() returns cosine-ranked hits
   // instead of NoMemoryDriverError. Prefer a gateway embed model when MEMORY_EMBED_MODEL is set,
   // else the self-contained local (offline, deterministic) embedder. Opt out with MEMORY_VECTOR=off.
@@ -579,7 +602,9 @@ export async function bootstrapRuntime(
   });
   const tenantFns = [...tenantFnsByTenant.values()].flat();
   const systemBaseFns = buildSystemBaseFns();
-  const systemScheduledFns = systemBaseFns.slice(1);
+  // Index 0 = helloFn, index 1 = studioRunnerFn; everything after is an
+  // env-controlled schedule (retention sweeps).
+  const systemScheduledFns = systemBaseFns.slice(2);
   const allFns = [...systemBaseFns, ...codeSummary.codeAgentFns, ...tenantFns];
   console.log(
     `[bootstrap] api serving ${allFns.length} Inngest function(s) across ${tenantFnsByTenant.size} tenant app(s) + __system (${tenantFns.length} from tenant manifests, ${systemScheduledFns.length} system schedule(s))`,
