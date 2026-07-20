@@ -23,6 +23,7 @@ import {
 } from "@agentic/contracts";
 import { z, type ZodType } from "zod";
 import { tenantHeader } from "./tenant-header";
+import { usageAttributionHeaders } from "./usage-attribution";
 
 interface ApiOk {
   ok: true;
@@ -54,6 +55,7 @@ async function callV1<T>(
   const headers: Record<string, string> = {
     Accept: "application/json",
     ...tenantHeader(),
+    ...usageAttributionHeaders("workflow-authoring"),
     ...(initialHeaders as Record<string, string> | undefined),
   };
   if (rest.body != null && !headers["Content-Type"]) {

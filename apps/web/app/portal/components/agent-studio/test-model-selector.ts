@@ -1,4 +1,8 @@
-import { PROVIDER_MODEL_CATALOG, type ProviderId } from "@agentic/contracts";
+import {
+  PROVIDER_MODEL_CATALOG,
+  selectableModelsForProvider,
+  type ProviderId,
+} from "@agentic/contracts";
 
 export const CUSTOM_MODEL_OPTION = "__agentic_custom_model_id__";
 
@@ -29,15 +33,16 @@ export function isLikelyChatModelId(id: string): boolean {
  */
 export function providerModelIds(
   provider: string,
-  discoveredModels: readonly { id: string }[] = [],
+  discoveredModels: readonly { id: string; selectable?: boolean }[] = [],
 ): string[] {
   const ids = new Set(
     discoveredModels
+      .filter((model) => model.selectable !== false)
       .map((model) => model.id.trim())
       .filter((id) => id.length > 0 && isLikelyChatModelId(id)),
   );
   if (isProviderId(provider)) {
-    for (const model of PROVIDER_MODEL_CATALOG[provider]) {
+    for (const model of selectableModelsForProvider(provider)) {
       ids.add(model.name);
     }
   }

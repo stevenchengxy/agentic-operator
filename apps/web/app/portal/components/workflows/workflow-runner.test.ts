@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildWorkflowPayloadGuide,
   buildWorkflowEventPayload,
   deriveWorkflowEntrypoints,
   parseWorkflowTestLimits,
   seedWorkflowInputValue,
   validateWorkflowInputValues,
   workflowInputControl,
+  workflowInputExampleValue,
+  workflowInputSchemaSummary,
 } from "./workflow-runner";
 
 const promptPort = {
@@ -130,6 +133,144 @@ describe("workflow Run Console model", () => {
     };
     expect(workflowInputControl(input)).toBe("select");
     expect(seedWorkflowInputValue(input)).toBe("normal");
+    expect(workflowInputExampleValue(input)).toBe("normal");
+    expect(workflowInputSchemaSummary(input)).toBe("enum · normal | urgent");
+  });
+
+  it("builds a schema-guided example for path and template bindings", () => {
+    const result = deriveWorkflowEntrypoints({
+      $schemaVersion: 2,
+      agents: [
+        agent("triage", ["SUPPORT_REQUESTED"], [], {
+          trigger_bindings: {
+            SUPPORT_REQUESTED: {
+              prompt: {
+                template: "Triage support request {{event.request_id}}.",
+              },
+              request_id: { path: "$.request_id" },
+              customer_message: { path: "$.case.message" },
+              priority_hint: { path: "$.priority_hint" },
+            },
+          },
+          inputs: [
+            promptPort,
+            {
+              id: "request_id",
+              label: "Request ID",
+              kind: "value",
+              required: true,
+              schema: { type: "string", minLength: 1 },
+              sensitivity: "none",
+            },
+            {
+              id: "customer_message",
+              label: "Customer message",
+              kind: "value",
+              required: true,
+              schema: { type: "string", minLength: 1 },
+              sensitivity: "personal",
+            },
+            {
+              id: "priority_hint",
+              label: "Priority hint",
+              kind: "value",
+              required: true,
+              schema: { type: "string", enum: ["normal", "urgent"] },
+              sensitivity: "none",
+            },
+          ],
+        }),
+      ],
+    });
+
+    const guide = buildWorkflowPayloadGuide(result.entrypoints[0]!);
+    expect(guide.inputValues).toMatchObject({
+      request_id: "REQ-2026-001",
+      priority_hint: "normal",
+    });
+    expect(guide.inputValues).not.toHaveProperty("prompt");
+    expect(guide.rawPayload).toEqual({
+      request_id: "REQ-2026-001",
+      case: {
+        message:
+          "I was charged twice for invoice INV-2048. Please review the duplicate charge.",
+      },
+      priority_hint: "normal",
+    });
+    expect(guide.eventPayload.inputs).toEqual(guide.inputValues);
+    expect(
+      guide.fields.find((field) => field.inputId === "request_id"),
+    ).toMatchObject({
+      type: "string",
+      locations: ["$.request_id"],
+      example: "REQ-2026-001",
+      exampleSource: "schema generated",
+    });
+    expect(
+      guide.fields.find((field) => field.inputId === "prompt"),
+    ).toMatchObject({
+      required: false,
+      runtimeProvided: true,
+      locations: ["template reads $.request_id"],
+      example: "Triage support request REQ-2026-001.",
+      exampleSource: "binding generated",
+    });
+  });
+
+  it("turns a whole-event object binding into a useful raw payload example", () => {
+    const result = deriveWorkflowEntrypoints({
+      $schemaVersion: 2,
+      agents: [
+        agent("intake", ["CASE_OPENED"], [], {
+          trigger_bindings: {
+            CASE_OPENED: {
+              payload: { path: "$" },
+            },
+          },
+          inputs: [
+            {
+              id: "payload",
+              label: "Event payload",
+              description: "Complete caller-provided event data.",
+              kind: "value",
+              required: true,
+              schema: {
+                type: "object",
+                required: ["case_id", "amount"],
+                properties: {
+                  case_id: { type: "string" },
+                  amount: { type: "number", minimum: 1 },
+                },
+                additionalProperties: false,
+              },
+              default: {},
+              sensitivity: "confidential",
+            },
+          ],
+        }),
+      ],
+    });
+
+    const guide = buildWorkflowPayloadGuide(result.entrypoints[0]!);
+    expect(guide.rawPayload).toEqual({
+      case_id: "CASE-2026-001",
+      amount: 1,
+    });
+    expect(guide.eventPayload).toMatchObject({
+      case_id: "CASE-2026-001",
+      amount: 1,
+      inputs: {
+        payload: {
+          case_id: "CASE-2026-001",
+          amount: 1,
+        },
+      },
+    });
+    expect(guide.fields[0]).toMatchObject({
+      locations: ["$"],
+      type: "object",
+      sensitivity: "confidential",
+    });
   });
 
   it("preserves file policy and validates bounded test limits", () => {

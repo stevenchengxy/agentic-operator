@@ -487,6 +487,10 @@ export const runs = sqliteTable(
       .notNull()
       .default("event"),
     requestedBy: text("requested_by").references(() => users.id),
+    requestId: text("request_id"),
+    interactionId: text("interaction_id"),
+    productSurface: text("product_surface"),
+    productAction: text("product_action"),
     definitionHash: text("definition_hash"),
     outputValid: integer("output_valid", { mode: "boolean" }),
     sideEffectMode: text("side_effect_mode", {
@@ -514,6 +518,7 @@ export const runs = sqliteTable(
     tenantStatusIdx: index("runs_tenant_status_idx").on(t.tenantId, t.status),
     agentIdx: index("runs_agent_idx").on(t.agentId),
     correlationIdx: index("runs_correlation_idx").on(t.correlationId),
+    interactionIdx: index("runs_interaction_idx").on(t.interactionId),
     subjectIdx: index("runs_subject_idx").on(t.subject),
     deletedAtIdx: index("runs_deleted_at_idx").on(t.deletedAt),
     isTestIdx: index("runs_is_test_idx").on(t.isTest),
@@ -572,10 +577,46 @@ export const llmCalls = sqliteTable(
       .notNull()
       .references(() => tenants.id, { onDelete: "cascade" }),
     runId: text("run_id").references(() => runs.id, { onDelete: "set null" }),
-    stepId: text("step_id").references(() => steps.id, { onDelete: "set null" }),
+    stepId: text("step_id").references(() => steps.id, {
+      onDelete: "set null",
+    }),
     purpose: text("purpose"),
+    billingAccountId: text("billing_account_id"),
+    providerAccountId: text("provider_account_id"),
+    actorType: text("actor_type", {
+      enum: ["user", "api_token", "system"],
+    }),
+    actorId: text("actor_id"),
+    credentialId: text("credential_id"),
+    providerCredentialId: text("provider_credential_id"),
+    product: text("product"),
+    productSurface: text("product_surface"),
+    productAction: text("product_action"),
+    interactionId: text("interaction_id"),
+    functionName: text("function_name"),
+    apiRoute: text("api_route"),
+    httpMethod: text("http_method"),
+    requestId: text("request_id"),
+    correlationId: text("correlation_id"),
+    invocationSource: text("invocation_source"),
     provider: text("provider").notNull(),
     requestedModel: text("requested_model").notNull(),
+    requestedRoute: text("requested_route"),
+    effectiveRoute: text("effective_route"),
+    gatewayInstanceId: text("gateway_instance_id"),
+    gatewayKind: text("gateway_kind"),
+    modelFamily: text("model_family"),
+    taskType: text("task_type"),
+    matchedTaskType: text("matched_task_type"),
+    routingProfileId: text("routing_profile_id"),
+    routingRevision: integer("routing_revision"),
+    resolutionReason: text("resolution_reason"),
+    fallbackIndex: integer("fallback_index"),
+    transport: text("transport"),
+    effectiveTimeoutMs: integer("effective_timeout_ms"),
+    overallDeadlineMs: integer("overall_deadline_ms"),
+    controlsJson: text("controls_json", { mode: "json" }),
+    retryReason: text("retry_reason"),
     reasoningMode: text("reasoning_mode", { enum: ["standard", "pro"] }),
     reasoningEffort: text("reasoning_effort", {
       enum: ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
@@ -637,6 +678,98 @@ export const llmCalls = sqliteTable(
     ),
     runIdx: index("llm_calls_run_idx").on(t.runId),
     stepIdx: index("llm_calls_step_idx").on(t.stepId),
+    accountStartedIdx: index("llm_calls_account_started_idx").on(
+      t.billingAccountId,
+      t.startedAt,
+    ),
+    requestIdx: index("llm_calls_request_idx").on(t.requestId),
+    interactionIdx: index("llm_calls_interaction_idx").on(t.interactionId),
+    taskStartedIdx: index("llm_calls_task_started_idx").on(
+      t.tenantId,
+      t.taskType,
+      t.startedAt,
+    ),
+    gatewayStartedIdx: index("llm_calls_gateway_started_idx").on(
+      t.tenantId,
+      t.gatewayInstanceId,
+      t.startedAt,
+    ),
+  }),
+);
+
+/**
+ * Canonical append-only billing events. `llm_calls` remains the detailed
+ * provider-attempt projection; this table is the normalized, versioned
+ * source used for portable NDJSON exports and future non-LLM usage events.
+ */
+export const usageEvents = sqliteTable(
+  "usage_events",
+  {
+    sequence: integer("sequence").primaryKey({ autoIncrement: true }),
+    id: text("id").notNull().unique(),
+    schemaVersion: integer("schema_version").notNull().default(1),
+    eventType: text("event_type", {
+      enum: ["llm.attempt", "api.call", "tool.call", "product.interaction"],
+    }).notNull(),
+    status: text("status", {
+      enum: ["ok", "failed", "rejected", "unknown", "reconciled"],
+    }).notNull(),
+    tenantId: text("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    billingAccountId: text("billing_account_id").notNull(),
+    actorType: text("actor_type", {
+      enum: ["user", "api_token", "system"],
+    }).notNull(),
+    actorId: text("actor_id"),
+    credentialId: text("credential_id"),
+    providerCredentialId: text("provider_credential_id"),
+    providerAccountId: text("provider_account_id"),
+    requestId: text("request_id"),
+    correlationId: text("correlation_id"),
+    interactionId: text("interaction_id"),
+    runId: text("run_id").references(() => runs.id, { onDelete: "set null" }),
+    stepId: text("step_id").references(() => steps.id, {
+      onDelete: "set null",
+    }),
+    product: text("product").notNull().default("agentic-operator"),
+    productSurface: text("product_surface").notNull(),
+    productAction: text("product_action").notNull(),
+    functionName: text("function_name").notNull(),
+    apiRoute: text("api_route"),
+    httpMethod: text("http_method"),
+    invocationSource: text("invocation_source"),
+    llmCallId: text("llm_call_id").references(() => llmCalls.id, {
+      onDelete: "set null",
+    }),
+    quantityJson: text("quantity_json", { mode: "json" }).notNull(),
+    providerCostUsdNanos: integer("provider_cost_usd_nanos"),
+    billableChargeUsdNanos: integer("billable_charge_usd_nanos"),
+    costLiability: text("cost_liability", {
+      enum: ["known", "unknown", "unpriced"],
+    }).notNull(),
+    currency: text("currency").notNull().default("USD"),
+    rateCardVersion: text("rate_card_version")
+      .notNull()
+      .default("pass-through-v1"),
+    occurredAt: integer("occurred_at", { mode: "timestamp_ms" }).notNull(),
+    recordedAt: integer("recorded_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(now),
+    exportedAt: integer("exported_at", { mode: "timestamp_ms" }),
+  },
+  (t) => ({
+    callUq: uniqueIndex("usage_events_llm_call_uq").on(t.llmCallId),
+    tenantSequenceIdx: index("usage_events_tenant_sequence_idx").on(
+      t.tenantId,
+      t.sequence,
+    ),
+    accountOccurredIdx: index("usage_events_account_occurred_idx").on(
+      t.billingAccountId,
+      t.occurredAt,
+    ),
+    exportIdx: index("usage_events_export_idx").on(t.exportedAt, t.sequence),
+    interactionIdx: index("usage_events_interaction_idx").on(t.interactionId),
   }),
 );
 
@@ -1175,6 +1308,7 @@ export const tenantsRelations = relations(tenants, ({ many }) => ({
   runs: many(runs),
   tasks: many(tasks),
   memberships: many(memberships),
+  usageEvents: many(usageEvents),
 }));
 
 export const workflowsRelations = relations(workflows, ({ one, many }) => ({
@@ -1321,6 +1455,19 @@ export const llmCallsRelations = relations(llmCalls, ({ one }) => ({
   step: one(steps, { fields: [llmCalls.stepId], references: [steps.id] }),
 }));
 
+export const usageEventsRelations = relations(usageEvents, ({ one }) => ({
+  tenant: one(tenants, {
+    fields: [usageEvents.tenantId],
+    references: [tenants.id],
+  }),
+  run: one(runs, { fields: [usageEvents.runId], references: [runs.id] }),
+  step: one(steps, { fields: [usageEvents.stepId], references: [steps.id] }),
+  llmCall: one(llmCalls, {
+    fields: [usageEvents.llmCallId],
+    references: [llmCalls.id],
+  }),
+}));
+
 export const runMessagesRelations = relations(runMessages, ({ one }) => ({
   session: one(agentRunSessions, {
     fields: [runMessages.sessionId],
@@ -1399,6 +1546,7 @@ export const schema = {
   runs,
   steps,
   llmCalls,
+  usageEvents,
   runMessages,
   tasks,
   artifacts,
@@ -1426,6 +1574,7 @@ export const schema = {
   runsRelations,
   stepsRelations,
   llmCallsRelations,
+  usageEventsRelations,
   runMessagesRelations,
   artifactsRelations,
   runTraceEventsRelations,

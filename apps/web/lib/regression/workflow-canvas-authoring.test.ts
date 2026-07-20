@@ -106,6 +106,13 @@ describe("enterprise workflow canvas authoring", () => {
     expect(runConsole).toContain("Agent trace");
     expect(runConsole).toContain("Terminal outputs");
     expect(runConsole).toContain("Copy JSON");
+    expect(runConsole).toContain("Example event payload");
+    expect(runConsole).toContain("Load example");
+    expect(runConsole).toContain("Expected fields");
+    expect(runConsole).toContain("Advanced payload overlay");
+    expect(runConsole).toContain("buildWorkflowPayloadGuide");
+    expect(runConsoleStyles).toContain(".payloadRecipe");
+    expect(runConsoleStyles).toContain(".rawPayloadHelp");
     expect(runConsoleStyles).toContain("@media (max-width: 900px)");
     expect(runConsoleStyles).toContain("grid-template-columns: minmax(0, 1fr)");
   });

@@ -15,26 +15,49 @@
  */
 
 import type { FastifyInstance } from "fastify";
+import { z } from "zod";
 import {
+  catalogModelPolicy,
+  classifyCatalogModelTier,
+  GatewayInstanceSchema,
+  LlmSettingsSchema,
+  LlmRoutingResolutionError,
+  ModelRouteIdSchema,
+  ReasoningConfigSchema,
   PROVIDER_IDS,
   PROVIDER_MODEL_CATALOG,
+  selectableModelsForProvider,
+  resolveLlmRouting,
+  TaskClassIdSchema,
+  TextVerbositySchema,
+  type CatalogModelStatus,
+  type ModelTier,
   type ProviderId,
+  type GatewayInstance,
   type ReasoningEffort,
   type ReasoningMode,
   type TemperatureRange,
   type TextVerbosity,
 } from "@agentic/contracts";
+import { isLLMError, type LLMErrorCode } from "@agentic/llm-gateway";
 import { getLLMGateway, resetLLMGateway } from "../../services/llm";
-import { requireAuth } from "../../plugins/auth";
+import { requireAuth, requireTenantAdmin } from "../../plugins/auth";
 import { writeAudit } from "../../plugins/audit";
 import {
+  getGatewayCredential,
+  getGatewayCredentialMeta,
+  gatewayCredentialSlot,
   getProviderKey,
   getProviderKeyMeta,
   listProviderKeyMeta,
   setProviderKey,
+  setGatewayCredential,
   type KeyScope,
 } from "../../services/provider-keys";
-import { testProviderKey } from "../../services/provider-test";
+import {
+  testGatewayConnection,
+  testProviderKey,
+} from "../../services/provider-test";
 import {
   addFleetEntry,
   deleteFleetEntry,
@@ -42,7 +65,16 @@ import {
   listFleet,
   updateFleetEntry,
 } from "../../services/model-fleet";
-import { listAvailableModels } from "../../services/model-discovery";
+import {
+  listAvailableModels,
+  listGatewayModels,
+} from "../../services/model-discovery";
+import {
+  getLlmSettings,
+  LlmSettingsConflictError,
+  resyncLlmSettings,
+  saveLlmSettings,
+} from "../../services/llm-settings-store";
 
 function isProviderId(s: string): s is ProviderId {
   return (PROVIDER_IDS as readonly string[]).includes(s);
@@ -53,6 +85,87 @@ function isKeyScope(s: unknown): s is KeyScope {
 }
 
 const DEFAULT_TEMPERATURE_RANGE: TemperatureRange = { min: 0, max: 2 };
+
+const LlmTestCallBodySchema = z
+  .object({
+    route: ModelRouteIdSchema.optional(),
+    taskClass: TaskClassIdSchema.optional(),
+    prompt: z.string().trim().min(1).max(8_000),
+    maxTokens: z.number().int().min(1).max(1_048_576).optional(),
+    timeoutMs: z.number().int().min(1_000).max(7_200_000).optional(),
+    temperature: z.number().finite().min(0).max(2).optional(),
+    reasoning: ReasoningConfigSchema.optional(),
+    verbosity: TextVerbositySchema.optional(),
+    store: z.boolean().optional(),
+    jsonMode: z.boolean().optional(),
+  })
+  .strict();
+
+type LlmTestCallBody = z.input<typeof LlmTestCallBodySchema>;
+
+const PUBLIC_TEST_CALL_FAILURES: Record<
+  LLMErrorCode,
+  { message: string; statusCode: number }
+> = {
+  auth: {
+    message: "Provider authentication failed. Check the configured credential.",
+    statusCode: 401,
+  },
+  rate_limit: {
+    message: "The provider rate limit was exceeded. Try again later.",
+    statusCode: 429,
+  },
+  timeout: {
+    message:
+      "The model call timed out. Increase the route timeout or try again.",
+    statusCode: 504,
+  },
+  model_not_found: {
+    message: "The configured provider could not find the requested model.",
+    statusCode: 404,
+  },
+  bad_request: {
+    message: "The selected provider rejected the model-call parameters.",
+    statusCode: 400,
+  },
+  provider_error: {
+    message: "The provider returned an upstream error.",
+    statusCode: 502,
+  },
+  network: {
+    message: "The configured provider could not be reached.",
+    statusCode: 502,
+  },
+  not_configured: {
+    message: "The selected gateway credential or model is not configured.",
+    statusCode: 503,
+  },
+  accounting_error: {
+    message: "The model call completed, but usage accounting failed.",
+    statusCode: 502,
+  },
+  cost_limit_exceeded: {
+    message: "The billing account usage limit has been reached.",
+    statusCode: 429,
+  },
+};
+
+function testCallFailure(error: unknown): {
+  code: LLMErrorCode;
+  message: string;
+  statusCode: number;
+} {
+  if (error instanceof LlmRoutingResolutionError) {
+    return {
+      code: "bad_request",
+      message:
+        "The requested model route is not available in these AI settings.",
+      statusCode: 400,
+    };
+  }
+  const code: LLMErrorCode = isLLMError(error) ? error.code : "provider_error";
+  return { code, ...PUBLIC_TEST_CALL_FAILURES[code] };
+}
 
 function mergedTemperatureRange(
   liveSupported: boolean | undefined,
@@ -68,7 +181,356 @@ function mergedTemperatureRange(
 }
 
 export async function llmRoutes(app: FastifyInstance): Promise<void> {
-  app.get("/llm/providers", async (_req, reply) => {
+  // ── AI settings, routing policies, and dynamic gateway instances ───────
+  app.get("/llm/settings", async (req, reply) => {
+    const auth = requireTenantAdmin(req);
+    const snapshot = getLlmSettings(auth.tenantSlug);
+    return reply.ok({
+      ...snapshot,
+      credentials: Object.fromEntries(
+        snapshot.settings.gatewayInstances.map((instance) => [
+          instance.id,
+          getGatewayCredentialMeta(
+            gatewayCredentialSlot(instance, auth.tenantId),
+            auth.tenantId,
+            instance.credentialScope,
+          ),
+        ]),
+      ),
+    });
+  });
+
+  app.put<{
+    Body: { expectedRevision?: number; settings?: unknown };
+  }>("/llm/settings", async (req, reply) => {
+    const auth = requireTenantAdmin(req);
+    const expected = req.body?.expectedRevision;
+    if (
+      typeof expected !== "number" ||
+      !Number.isInteger(expected) ||
+      expected < 0
+    ) {
+      return reply.fail(
+        "bad_request",
+        "expectedRevision must be a non-negative integer",
+        400,
+      );
+    }
+    const parsed = LlmSettingsSchema.safeParse(req.body?.settings);
+    if (!parsed.success) {
+      return reply.fail(
+        "bad_request",
+        parsed.error.issues
+          .map(
+            (issue) =>
+              `${issue.path.join(".") || "settings"}: ${issue.message}`,
+          )
+          .join("; "),
+        400,
+      );
+    }
+    try {
+      const snapshot = saveLlmSettings(auth.tenantSlug, parsed.data, expected);
+      resetLLMGateway();
+      writeAudit({
+        tenantId: auth.tenantId,
+        action: "llm.settings.update",
+        targetType: "workspace",
+        targetId: auth.tenantSlug,
+        meta: {
+          revision: snapshot.settings.revision,
+          syncStatus: snapshot.sync.status,
+          gateways: snapshot.settings.gatewayInstances.map(({ id, kind }) => ({
+            id,
+            kind,
+          })),
+          taskProfiles: snapshot.settings.taskProfiles.map(
+            ({ taskClass }) => taskClass,
+          ),
+        },
+      });
+      return reply.ok(snapshot);
+    } catch (error) {
+      if (error instanceof LlmSettingsConflictError) {
+        return reply.fail("conflict", error.message, 409);
+      }
+      return reply.fail(
+        "bad_request",
+        error instanceof Error ? error.message : String(error),
+        400,
+      );
+    }
+  });
+
+  app.post("/llm/settings/resync", async (req, reply) => {
+    const auth = requireTenantAdmin(req);
+    const snapshot = resyncLlmSettings(auth.tenantSlug);
+    resetLLMGateway();
+    writeAudit({
+      tenantId: auth.tenantId,
+      action: "llm.settings.resync",
+      targetType: "workspace",
+      targetId: auth.tenantSlug,
+      meta: {
+        revision: snapshot.settings.revision,
+        sync: snapshot.sync.status,
+      },
+    });
+    return reply.ok(snapshot);
+  });
+
+  app.post<{
+    Body: { taskClass?: string; explicitRoute?: string };
+  }>("/llm/routing/resolve", async (req, reply) => {
+    const auth = requireAuth(req);
+    try {
+      const snapshot = getLlmSettings(auth.tenantSlug);
+      return reply.ok(
+        resolveLlmRouting(snapshot.settings, {
+          taskClass: req.body?.taskClass ?? "default",
+          ...(req.body?.explicitRoute
+            ? { explicitRoute: req.body.explicitRoute }
+            : {}),
+        }),
+      );
+    } catch (error) {
+      return reply.fail(
+        "bad_request",
+        error instanceof Error ? error.message : String(error),
+        400,
+      );
+    }
+  });
+
+  app.post<{
+    Params: { id: string };
+    Body: { apiKey?: string; scope?: string };
+  }>("/llm/gateways/:id/key", async (req, reply) => {
+    const auth = requireTenantAdmin(req);
+    const snapshot = getLlmSettings(auth.tenantSlug);
+    const instance = snapshot.settings.gatewayInstances.find(
+      (candidate) => candidate.id === req.params.id,
+    );
+    if (!instance) {
+      return reply.fail("not_found", "gateway instance not found", 404);
+    }
+    const scope = req.body?.scope;
+    const apiKey = req.body?.apiKey?.trim() ?? "";
+    if (!isKeyScope(scope) || apiKey.length < 8) {
+      return reply.fail(
+        "bad_request",
+        "apiKey (min 8 chars) and scope (workspace|tenant) are required",
+        400,
+      );
+    }
+    if (instance.credentialScope && scope !== instance.credentialScope) {
+      return reply.fail(
+        "bad_request",
+        `scope must match gateway credentialScope (${instance.credentialScope})`,
+        400,
+      );
+    }
+    const credentialRef = gatewayCredentialSlot(instance, auth.tenantId);
+    const meta = setGatewayCredential(credentialRef, {
+      apiKey,
+      scope,
+      tenantId: scope === "tenant" ? auth.tenantId : undefined,
+      setBy: auth.userId ?? auth.tenantSlug,
+    });
+    resetLLMGateway();
+    writeAudit({
+      tenantId: auth.tenantId,
+      action: "llm.gateway.key.rotate",
+      targetType: "gateway",
+      targetId: instance.id,
+      meta: {
+        scope,
+        credentialId: meta.credentialId,
+        keyMasked: meta.keyMasked,
+      },
+    });
+    return reply.ok(meta);
+  });
+
+  app.post<{
+    Params: { id: string };
+    Body: { apiKey?: string; instance?: unknown; timeoutMs?: number };
+  }>("/llm/gateways/:id/test-connection", async (req, reply) => {
+    const auth = requireTenantAdmin(req);
+    const hasDraftInstance = Object.prototype.hasOwnProperty.call(
+      req.body ?? {},
+      "instance",
+    );
+    const saved = getLlmSettings(
+      auth.tenantSlug,
+    ).settings.gatewayInstances.find(
+      (candidate) => candidate.id === req.params.id,
+    );
+    const candidate = hasDraftInstance
+      ? GatewayInstanceSchema.safeParse(req.body.instance)
+      : null;
+    if (candidate && !candidate.success) {
+      return reply.fail(
+        "bad_request",
+        candidate.error.issues.map((issue) => issue.message).join("; "),
+        400,
+      );
+    }
+    const instance: GatewayInstance | undefined = candidate?.success
+      ? candidate.data
+      : saved;
+    if (!instance || instance.id !== req.params.id) {
+      return reply.fail("not_found", "gateway instance not found", 404);
+    }
+    // A draft can change both baseUrl and credentialRef. Hydrating its ref
+    // from the vault would let a malicious endpoint receive an unrelated
+    // stored provider key. Only persisted instances may auto-load secrets;
+    // drafts must use the explicit, non-persisted key supplied in this body.
+    const credential = hasDraftInstance
+      ? null
+      : getGatewayCredential(
+          gatewayCredentialSlot(instance, auth.tenantId),
+          auth.tenantId,
+          instance.credentialScope,
+        );
+    const key = req.body?.apiKey?.trim() || credential?.apiKey || "";
+    const result =
+      instance.kind === "direct" && instance.providerId
+        ? {
+            ...(await testProviderKey(instance.providerId, key)),
+            endpoint: null,
+            testedAt: Date.now(),
+          }
+        : instance.kind === "openrouter"
+          ? {
+              ...(await testProviderKey("openrouter", key)),
+              endpoint: "https://openrouter.ai/api/v1/models",
+              testedAt: Date.now(),
+            }
+          : await testGatewayConnection({
+              instance,
+              apiKey: key,
+              timeoutMs: req.body?.timeoutMs,
+            });
+    writeAudit({
+      tenantId: auth.tenantId,
+      action: "llm.gateway.test-connection",
+      targetType: "gateway",
+      targetId: instance.id,
+      meta: {
+        ok: result.ok,
+        statusCode: result.statusCode,
+        latencyMs: result.latencyMs,
+        modelCount: result.modelCount,
+      },
+    });
+    return reply.ok(result);
+  });
+
+  app.get<{ Params: { id: string } }>(
+    "/llm/gateways/:id/models",
+    async (req, reply) => {
+      const auth = requireTenantAdmin(req);
+      const instance = getLlmSettings(
+        auth.tenantSlug,
+      ).settings.gatewayInstances.find(
+        (candidate) => candidate.id === req.params.id,
+      );
+      if (!instance) {
+        return reply.fail("not_found", "gateway instance not found", 404);
+      }
+      const credential = getGatewayCredential(
+        gatewayCredentialSlot(instance, auth.tenantId),
+        auth.tenantId,
+        instance.credentialScope,
+      );
+      const result = await listGatewayModels(
+        instance,
+        credential?.apiKey ?? "",
+      );
+      return reply.ok({ gatewayInstanceId: instance.id, ...result });
+    },
+  );
+
+  app.post<{ Body: LlmTestCallBody }>("/llm/test-call", async (req, reply) => {
+    const auth = requireTenantAdmin(req);
+    const parsed = LlmTestCallBodySchema.safeParse(req.body);
+    if (!parsed.success) {
+      return reply.fail(
+        "bad_request",
+        parsed.error.issues
+          .map(
+            (issue) => `${issue.path.join(".") || "request"}: ${issue.message}`,
+          )
+          .join("; "),
+        400,
+      );
+    }
+    const body = parsed.data;
+    try {
+      const response = await getLLMGateway().chat({
+        messages: [{ role: "user", content: body.prompt }],
+        tenantId: auth.tenantId,
+        purpose: "llm-settings.test-call",
+        maxTokens: body.maxTokens ?? 256,
+        timeoutMs: body.timeoutMs,
+        temperature: body.temperature,
+        reasoning: body.reasoning,
+        verbosity: body.verbosity,
+        store: body.store,
+        jsonMode: body.jsonMode,
+        routing: {
+          taskType: body.taskClass ?? "default",
+          requestedRoute: body.route,
+          parameterPrecedence: "request",
+        },
+        attribution: {
+          productSurface: "llm-settings",
+          productAction: "test-call",
+          functionName: "llm.test-call",
+          invocationSource: "settings",
+        },
+      });
+      writeAudit({
+        tenantId: auth.tenantId,
+        action: "llm.gateway.test-call",
+        targetType: "model-route",
+        targetId: response.routing?.effectiveRoute ?? body.route ?? "default",
+        meta: {
+          provider: response.provider,
+          model: response.model,
+          latencyMs: response.latencyMs,
+          tokensIn: response.tokensIn,
+          tokensOut: response.tokensOut,
+          costUsdNanos: response.cost?.totalUsdNanos ?? null,
+        },
+      });
+      return reply.ok({
+        text: response.text,
+        provider: response.provider,
+        model: response.model,
+        routing: response.routing,
+        latencyMs: response.latencyMs,
+        tokensIn: response.tokensIn,
+        tokensOut: response.tokensOut,
+        usage: response.usage
+          ? { ...response.usage, raw: undefined }
+          : undefined,
+        cost: response.cost,
+        finishReason: response.finishReason,
+        providerRequestId: response.providerRequestId,
+        reasoning: response.reasoning,
+        verbosity: response.verbosity,
+        toolCalls: response.toolCalls,
+      });
+    } catch (error) {
+      const failure = testCallFailure(error);
+      return reply.fail(failure.code, failure.message, failure.statusCode);
+    }
+  });
+
+  app.get("/llm/providers", async (req, reply) => {
+    requireAuth(req);
     const gateway = getLLMGateway();
     return reply.ok(gateway.listProviders());
   });
@@ -81,12 +543,12 @@ export async function llmRoutes(app: FastifyInstance): Promise<void> {
         if (!isProviderId(q)) {
           return reply.fail("bad_request", `Unknown provider: ${q}`, 400);
         }
-        return reply.ok(PROVIDER_MODEL_CATALOG[q].map((m) => m.name));
+        return reply.ok(selectableModelsForProvider(q).map((m) => m.name));
       }
 
       const fullCatalog: Record<string, string[]> = {};
       for (const id of PROVIDER_IDS) {
-        fullCatalog[id] = PROVIDER_MODEL_CATALOG[id].map((m) => m.name);
+        fullCatalog[id] = selectableModelsForProvider(id).map((m) => m.name);
       }
       return reply.ok(fullCatalog);
     },
@@ -96,19 +558,35 @@ export async function llmRoutes(app: FastifyInstance): Promise<void> {
   // /llm/models endpoint returns names only for backwards-compat; this
   // endpoint is what the Settings UI uses to render the "Add model" picker.
   app.get("/llm/catalog", async (_req, reply) => {
-    return reply.ok(PROVIDER_MODEL_CATALOG);
+    const governed = Object.fromEntries(
+      PROVIDER_IDS.map((provider) => [
+        provider,
+        PROVIDER_MODEL_CATALOG[provider].map((model) => {
+          const policy = catalogModelPolicy(model);
+          return {
+            ...model,
+            status: policy.status,
+            selectable: policy.selectable,
+            unavailableReason: policy.selectable ? null : policy.reason,
+          };
+        }),
+      ]),
+    );
+    return reply.ok(governed);
   });
 
   // ── Provider key vault ──────────────────────────────────────────────────
   // List masked key metadata for every provider — used by the Settings UI
   // to populate the credentials grid without fetching plaintext keys.
-  app.get("/llm/providers/keys", async (_req, reply) => {
-    return reply.ok(listProviderKeyMeta());
+  app.get("/llm/providers/keys", async (req, reply) => {
+    const auth = requireTenantAdmin(req);
+    return reply.ok(listProviderKeyMeta(auth.tenantId));
   });
 
   app.get<{ Params: { id: string } }>(
     "/llm/providers/:id/key",
     async (req, reply) => {
+      const auth = requireTenantAdmin(req);
       if (!isProviderId(req.params.id)) {
         return reply.fail(
           "bad_request",
@@ -116,7 +594,7 @@ export async function llmRoutes(app: FastifyInstance): Promise<void> {
           400,
         );
       }
-      return reply.ok(getProviderKeyMeta(req.params.id));
+      return reply.ok(getProviderKeyMeta(req.params.id, auth.tenantId));
     },
   );
 
@@ -124,7 +602,7 @@ export async function llmRoutes(app: FastifyInstance): Promise<void> {
     Params: { id: string };
     Body: { apiKey?: string; scope?: string };
   }>("/llm/providers/:id/key", async (req, reply) => {
-    const auth = requireAuth(req);
+    const auth = requireTenantAdmin(req);
     const id = req.params.id;
     if (!isProviderId(id)) {
       return reply.fail("bad_request", `Unknown provider: ${id}`, 400);
@@ -238,6 +716,13 @@ export async function llmRoutes(app: FastifyInstance): Promise<void> {
          * omitted property means the provider/catalog does not say.
          */
         temperatureRange?: TemperatureRange | null;
+        tier: ModelTier | null;
+        status: CatalogModelStatus;
+        selectable: boolean;
+        unavailableReason: string | null;
+        releaseDate: string | null;
+        providerCatalogCreatedAt: string | null;
+        expiresAt: string | null;
         inFleet: boolean;
         /** Where this row came from. */
         origin: "live" | "catalog";
@@ -253,11 +738,30 @@ export async function llmRoutes(app: FastifyInstance): Promise<void> {
       for (const m of live.models) {
         seen.add(m.id);
         const cat = catalogByName.get(m.id);
+        const inputPrice = m.inputPricePerMTok ?? cat?.inP ?? null;
+        const outputPrice = m.outputPricePerMTok ?? cat?.outP ?? null;
+        const policy = catalogModelPolicy({
+          releaseDate: cat?.releaseDate,
+          releaseDateSource: cat?.releaseDateSource,
+          releaseDateConfidence: cat?.releaseDateConfidence,
+          providerCatalogCreatedAt:
+            m.providerCatalogCreatedAt ?? cat?.providerCatalogCreatedAt,
+          deprecatedAt: cat?.deprecatedAt,
+          sunsetAt: cat?.sunsetAt,
+          expiresAt: m.expiresAt ?? cat?.expiresAt,
+          restricted: cat?.restricted,
+          restrictionReason: cat?.restrictionReason,
+        });
+        const tier = classifyCatalogModelTier({
+          tier: cat?.tier,
+          inP: inputPrice ?? Number.NaN,
+          outP: outputPrice ?? Number.NaN,
+        });
         merged.push({
           id: m.id,
           contextLength: m.contextLength ?? cat?.ctx ?? null,
-          inputPricePerMTok: m.inputPricePerMTok ?? cat?.inP ?? null,
-          outputPricePerMTok: m.outputPricePerMTok ?? cat?.outP ?? null,
+          inputPricePerMTok: inputPrice,
+          outputPricePerMTok: outputPrice,
           vision: m.vision ?? cat?.vision ?? false,
           tools: m.tools ?? cat?.tools ?? false,
           reasoning: m.reasoning ?? cat?.reasoning ?? false,
@@ -275,6 +779,14 @@ export async function llmRoutes(app: FastifyInstance): Promise<void> {
             m.temperatureSupported,
             cat?.temperatureRange,
           ),
+          tier,
+          status: policy.status,
+          selectable: policy.selectable,
+          unavailableReason: policy.selectable ? null : policy.reason,
+          releaseDate: cat?.releaseDate ?? null,
+          providerCatalogCreatedAt:
+            m.providerCatalogCreatedAt ?? cat?.providerCatalogCreatedAt ?? null,
+          expiresAt: m.expiresAt ?? cat?.expiresAt ?? null,
           inFleet: fleetSet.has(m.id),
           origin: "live",
         });
@@ -285,6 +797,7 @@ export async function llmRoutes(app: FastifyInstance): Promise<void> {
       // provider can't be queried (no key, network error, unsupported).
       for (const cat of catalog) {
         if (seen.has(cat.name)) continue;
+        const policy = catalogModelPolicy(cat);
         merged.push({
           id: cat.name,
           contextLength: cat.ctx,
@@ -301,6 +814,13 @@ export async function llmRoutes(app: FastifyInstance): Promise<void> {
           reasoningDefaultEnabled: cat.reasoningDefaultEnabled ?? false,
           textVerbosities: cat.textVerbosities ?? [],
           temperatureRange: cat.temperatureRange,
+          tier: classifyCatalogModelTier(cat),
+          status: policy.status,
+          selectable: policy.selectable,
+          unavailableReason: policy.selectable ? null : policy.reason,
+          releaseDate: cat.releaseDate ?? null,
+          providerCatalogCreatedAt: cat.providerCatalogCreatedAt ?? null,
+          expiresAt: cat.expiresAt ?? null,
           inFleet: fleetSet.has(cat.name),
           origin: "catalog",
         });
@@ -331,10 +851,10 @@ export async function llmRoutes(app: FastifyInstance): Promise<void> {
       role?: string;
       dailyCapUsd?: number;
       maxOutTokens?: number;
-      temperature?: number;
+      temperature?: number | null;
     };
   }>("/llm/fleet", async (req, reply) => {
-    const auth = requireAuth(req);
+    const auth = requireTenantAdmin(req);
     try {
       const entry = addFleetEntry({
         tenantSlug: auth.tenantSlug,
@@ -375,10 +895,10 @@ export async function llmRoutes(app: FastifyInstance): Promise<void> {
       role?: string;
       dailyCapUsd?: number;
       maxOutTokens?: number;
-      temperature?: number;
+      temperature?: number | null;
     };
   }>("/llm/fleet/:id", async (req, reply) => {
-    const auth = requireAuth(req);
+    const auth = requireTenantAdmin(req);
     try {
       const entry = updateFleetEntry(
         auth.tenantSlug,
@@ -405,7 +925,7 @@ export async function llmRoutes(app: FastifyInstance): Promise<void> {
   app.delete<{ Params: { id: string } }>(
     "/llm/fleet/:id",
     async (req, reply) => {
-      const auth = requireAuth(req);
+      const auth = requireTenantAdmin(req);
       const ok = deleteFleetEntry(auth.tenantSlug, req.params.id);
       if (!ok) return reply.fail("not_found", "fleet entry not found", 404);
       writeAudit({

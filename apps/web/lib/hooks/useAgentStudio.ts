@@ -34,6 +34,7 @@ import {
   type RunTraceEvent as ContractRunTraceEvent,
 } from "@agentic/contracts";
 import { tenantHeader } from "./tenant-header";
+import { usageAttributionHeaders } from "./usage-attribution";
 import type { StudioDefinition } from "@/app/portal/components/agent-studio/model";
 
 interface ApiOk<T> {
@@ -94,6 +95,7 @@ async function callV1<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers: Record<string, string> = {
     Accept: "application/json",
     ...tenantHeader(),
+    ...usageAttributionHeaders("agent-studio"),
     ...(initHeaders as Record<string, string> | undefined),
   };
   if (

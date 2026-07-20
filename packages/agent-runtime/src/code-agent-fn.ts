@@ -21,6 +21,7 @@
  *       provider?: ProviderId,
  *       providers?: ProviderId[],
  *       model?: string,
+ *       taskClass?: string,
  *       correlationId: string,
  *       invocationId?: string,
  *     }
@@ -48,6 +49,8 @@ export interface CodeAgentEventData {
   provider?: ProviderId;
   providers?: ProviderId[];
   model?: string;
+  /** Optional invocation-level AI-settings task category. */
+  taskClass?: string;
   correlationId: string;
   invocationId?: string;
   /** P2-FE-18 — when true, persist `runs.is_test = 1` on the spawned run. */
@@ -93,9 +96,12 @@ export function registerCodeAgentFn(
     },
     async ({ event, step, logger }) => {
       const data = (event.data ?? {}) as Partial<CodeAgentEventData>;
-      const tenantSlug = typeof data.tenantSlug === "string" ? data.tenantSlug : "__system";
+      const tenantSlug =
+        typeof data.tenantSlug === "string" ? data.tenantSlug : "__system";
       const correlationId =
-        typeof data.correlationId === "string" ? data.correlationId : "cor-fallback";
+        typeof data.correlationId === "string"
+          ? data.correlationId
+          : "cor-fallback";
 
       logger.info(`[code-agent] async invocation`, {
         agent: agent.name,
@@ -115,6 +121,7 @@ export function registerCodeAgentFn(
           provider: data.provider,
           providers: data.providers,
           model: data.model,
+          taskClass: data.taskClass,
           testRun: data.testRun === true,
         });
         return out;

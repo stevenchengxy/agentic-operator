@@ -22,11 +22,16 @@
 import type { FastifyInstance } from "fastify";
 import { agentRegistry, RunCancelledError } from "@agentic/agents";
 import { PROVIDER_IDS, type ProviderId } from "@agentic/contracts";
-import { isLLMError } from "@agentic/llm-gateway";
+import {
+  currentUsageAttribution,
+  isLLMError,
+  mergeUsageAttribution,
+} from "@agentic/llm-gateway";
 import {
   appendToLedger,
   buildCanonicalEventPayload,
   inngest,
+  privateUsageAttributionMetadata,
 } from "@agentic/runtime";
 import { events, eventTypes, getDb } from "@agentic/db";
 import { and, eq } from "drizzle-orm";
@@ -168,6 +173,13 @@ export async function agentInvokeRoutes(app: FastifyInstance): Promise<void> {
           __triggerEventId: eventId,
           __correlationId: correlationId,
           __invokedAgent: agentName,
+          ...privateUsageAttributionMetadata(
+            mergeUsageAttribution(currentUsageAttribution(), {
+              billingAccountId: auth.tenantId,
+              correlationId,
+              invocationSource: "api",
+            }),
+          ),
         };
         if (testRunQuery) {
           inngestData.__test = true;

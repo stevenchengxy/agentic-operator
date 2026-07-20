@@ -224,6 +224,41 @@ describe("frontier reasoning controls", () => {
     ).rejects.toThrow(/Invalid structured output schema/);
     expect(calls).toBe(1);
   });
+
+  it("honors a routed no-retry policy for transient provider errors", async () => {
+    let calls = 0;
+    const gateway = transientGateway(async () => {
+      calls += 1;
+      throw new LLMError("temporary timeout", "timeout", "mock");
+    });
+
+    await expect(
+      gateway.chat({
+        messages: [{ role: "user", content: "one attempt only" }],
+        retryPolicy: { maxAttempts: 1, baseBackoffMs: 0 },
+      }),
+    ).rejects.toThrow(/temporary timeout/);
+    expect(calls).toBe(1);
+  });
+
+  it("honors a bounded multi-attempt policy and stops after success", async () => {
+    let calls = 0;
+    const gateway = transientGateway(async () => {
+      calls += 1;
+      if (calls < 3) {
+        throw new LLMError("temporary timeout", "timeout", "mock");
+      }
+      return successfulResponse("mock", "mock-model-v1");
+    });
+
+    await expect(
+      gateway.chat({
+        messages: [{ role: "user", content: "up to three attempts" }],
+        retryPolicy: { maxAttempts: 3, baseBackoffMs: 0 },
+      }),
+    ).resolves.toMatchObject({ text: "ok" });
+    expect(calls).toBe(3);
+  });
 });
 
 function successfulResponse(provider: ProviderId, model: string) {
@@ -253,4 +288,22 @@ function capturingAdapter(
       return successfulResponse(id, model);
     },
   };
+}
+
+function transientGateway(
+  chat: ProviderAdapter["chat"],
+): LLMGateway {
+  const gateway = new LLMGateway({
+    defaultProvider: "mock",
+    defaultModel: "mock-model-v1",
+    timeoutMs: 1_000,
+  });
+  gateway.registerProvider({
+    id: "mock",
+    name: "retry-policy-test",
+    hasKey: true,
+    defaultModel: "mock-model-v1",
+    chat,
+  });
+  return gateway;
 }

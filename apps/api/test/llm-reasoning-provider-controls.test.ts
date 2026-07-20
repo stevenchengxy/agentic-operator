@@ -40,7 +40,7 @@ describe("provider-neutral reasoning controls", () => {
     });
   });
 
-  it("only maps explicit disable for providers that expose thinking on/off", () => {
+  it("maps provider-native thinking controls without inventing unsupported levels", () => {
     expect(
       mapOpenAICompatibleReasoning(
         "moonshot",
@@ -96,14 +96,17 @@ describe("provider-neutral reasoning controls", () => {
         "kimi-k2.7-code",
       ),
     ).toThrow(/mandatory thinking/);
-    expect(() =>
+    expect(
       mapOpenAICompatibleReasoning(
         "zai",
         { reasoning: { effort: "high" } },
         "zai",
         "glm-5.2",
       ),
-    ).toThrow(/no native effort level/);
+    ).toEqual({
+      thinking: { type: "enabled" },
+      reasoning_effort: "high",
+    });
   });
 
   it("replays opaque reasoning_content exactly on assistant tool turns", () => {
@@ -189,9 +192,7 @@ describe("provider-neutral reasoning controls", () => {
       "openai",
     );
 
-    expect(wire.input).toEqual(
-      expect.arrayContaining([reasoningItem]),
-    );
+    expect(wire.input).toEqual(expect.arrayContaining([reasoningItem]));
     expect(wire.include).toEqual(["reasoning.encrypted_content"]);
   });
 
@@ -203,9 +204,15 @@ describe("provider-neutral reasoning controls", () => {
     ).toThrow(/does not support reasoning\.effort=none/);
     expect(() =>
       assertModelControls("zai", "glm-5.2", {
-        reasoning: { effort: "high" },
+        reasoning: { effort: "low" },
       }),
-    ).toThrow(/does not support reasoning\.effort=high/);
+    ).toThrow(/does not support reasoning\.effort=low/);
+
+    expect(() =>
+      assertModelControls("zai", "glm-5.2", {
+        reasoning: { effort: "max" },
+      }),
+    ).not.toThrow();
 
     expect(() =>
       assertModelControls("anthropic", "claude-sonnet-5", {
@@ -217,5 +224,33 @@ describe("provider-neutral reasoning controls", () => {
         reasoning: { effort: "max" },
       }),
     ).not.toThrow();
+
+    expect(() =>
+      assertModelControls("zai", "glm-5.2", {
+        maxTokens: 131_072,
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertModelControls("zai", "glm-5.2", {
+        maxTokens: 131_073,
+      }),
+    ).toThrow(/maxTokens=131073/);
+
+    expect(() =>
+      assertModelControls("deepseek", "deepseek-v4-pro", {
+        maxTokens: 384_000,
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertModelControls("deepseek", "deepseek-v4-pro", {
+        maxTokens: 384_001,
+      }),
+    ).toThrow(/maxTokens=384001/);
+
+    expect(() =>
+      assertModelControls("openrouter", "moonshotai/kimi-k3", {
+        maxTokens: 1_048_577,
+      }),
+    ).toThrow(/maxTokens=1048577/);
   });
 });

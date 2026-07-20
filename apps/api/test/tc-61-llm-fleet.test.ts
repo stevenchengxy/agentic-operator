@@ -39,13 +39,35 @@ describe("TC-61: /v1/llm/fleet model-fleet CRUD", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       ok: boolean;
-      data: Record<string, Array<{ name: string; ctx: number; inP: number; outP: number }>>;
+      data: Record<
+        string,
+        Array<{
+          name: string;
+          ctx: number;
+          inP: number;
+          outP: number;
+          status: string;
+          selectable: boolean;
+        }>
+      >;
     };
     expect(body.ok).toBe(true);
     expect(body.data.openrouter.length).toBeGreaterThan(0);
     const first = body.data.openrouter[0];
     expect(typeof first.name).toBe("string");
     expect(typeof first.ctx).toBe("number");
+    expect(
+      body.data.anthropic.find((model) => model.name === "claude-opus-4"),
+    ).toMatchObject({ status: "legacy", selectable: false });
+  });
+
+  it("GET /models exposes only models eligible for new selection", async () => {
+    const res = await env.fetch("/v1/llm/models?provider=anthropic");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { data: string[] };
+    expect(body.data).toContain("claude-sonnet-5");
+    expect(body.data).not.toContain("claude-opus-4");
+    expect(body.data).not.toContain("claude-mythos-5");
   });
 
   it("GET /fleet initially returns empty array", async () => {
@@ -76,7 +98,7 @@ describe("TC-61: /v1/llm/fleet model-fleet CRUD", () => {
         role: string;
         dailyCapUsd: number;
         maxOutTokens: number;
-        temperature: number;
+        temperature: number | null;
       };
     };
     expect(body.ok).toBe(true);
@@ -86,7 +108,22 @@ describe("TC-61: /v1/llm/fleet model-fleet CRUD", () => {
     expect(body.data.role).toBe("primary");
     expect(body.data.dailyCapUsd).toBe(30);
     expect(body.data.maxOutTokens).toBe(2048);
-    expect(body.data.temperature).toBe(0.2);
+    expect(body.data.temperature).toBeNull();
+  });
+
+  it("omits temperature by default and rejects it for unsupported models", async () => {
+    const res = await env.fetch("/v1/llm/fleet", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        provider: "openai",
+        modelName: "gpt-5.6-sol",
+        temperature: 0.2,
+      }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { message: string } };
+    expect(body.error.message).toMatch(/does not support temperature/i);
   });
 
   it("POST /fleet honors alias, role, cap, params", async () => {
@@ -104,7 +141,9 @@ describe("TC-61: /v1/llm/fleet model-fleet CRUD", () => {
       }),
     });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { data: { alias: string; role: string; dailyCapUsd: number } };
+    const body = (await res.json()) as {
+      data: { alias: string; role: string; dailyCapUsd: number };
+    };
     expect(body.data.alias).toBe("fast-fallback");
     expect(body.data.role).toBe("fallback");
     expect(body.data.dailyCapUsd).toBe(5);
@@ -153,6 +192,20 @@ describe("TC-61: /v1/llm/fleet model-fleet CRUD", () => {
     await env.fetch(`/v1/llm/fleet/${body.data.id}`, { method: "DELETE" });
   });
 
+  it("POST /fleet rejects a known legacy catalog model", async () => {
+    const res = await env.fetch("/v1/llm/fleet", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        provider: "anthropic",
+        modelName: "claude-opus-4",
+      }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { message: string } };
+    expect(body.error.message).toMatch(/not selectable.*older_than_365_days/i);
+  });
+
   it("POST /fleet rejects empty modelName", async () => {
     const res = await env.fetch("/v1/llm/fleet", {
       method: "POST",
@@ -171,7 +224,9 @@ describe("TC-61: /v1/llm/fleet model-fleet CRUD", () => {
   });
 
   it("PATCH /fleet/:id updates fields and rejects bad role", async () => {
-    const list = (await (await env.fetch("/v1/llm/fleet")).json()) as { data: Array<{ id: string }> };
+    const list = (await (await env.fetch("/v1/llm/fleet")).json()) as {
+      data: Array<{ id: string }>;
+    };
     const id = list.data[0].id;
 
     const ok = await env.fetch(`/v1/llm/fleet/${id}`, {
@@ -180,7 +235,9 @@ describe("TC-61: /v1/llm/fleet model-fleet CRUD", () => {
       body: JSON.stringify({ alias: "renamed", dailyCapUsd: 12 }),
     });
     expect(ok.status).toBe(200);
-    const okBody = (await ok.json()) as { data: { alias: string; dailyCapUsd: number } };
+    const okBody = (await ok.json()) as {
+      data: { alias: string; dailyCapUsd: number };
+    };
     expect(okBody.data.alias).toBe("renamed");
     expect(okBody.data.dailyCapUsd).toBe(12);
 
@@ -202,19 +259,25 @@ describe("TC-61: /v1/llm/fleet model-fleet CRUD", () => {
   });
 
   it("DELETE /fleet/:id removes the entry", async () => {
-    const before = (await (await env.fetch("/v1/llm/fleet")).json()) as { data: Array<{ id: string }> };
+    const before = (await (await env.fetch("/v1/llm/fleet")).json()) as {
+      data: Array<{ id: string }>;
+    };
     const id = before.data[0].id;
 
     const res = await env.fetch(`/v1/llm/fleet/${id}`, { method: "DELETE" });
     expect(res.status).toBe(200);
 
-    const after = (await (await env.fetch("/v1/llm/fleet")).json()) as { data: Array<{ id: string }> };
+    const after = (await (await env.fetch("/v1/llm/fleet")).json()) as {
+      data: Array<{ id: string }>;
+    };
     expect(after.data.find((e) => e.id === id)).toBeUndefined();
     expect(after.data.length).toBe(before.data.length - 1);
   });
 
   it("DELETE /fleet/:id 404 on unknown id", async () => {
-    const res = await env.fetch("/v1/llm/fleet/mdl-nosuch", { method: "DELETE" });
+    const res = await env.fetch("/v1/llm/fleet/mdl-nosuch", {
+      method: "DELETE",
+    });
     expect(res.status).toBe(404);
   });
 
@@ -236,7 +299,10 @@ describe("TC-61: /v1/llm/fleet model-fleet CRUD", () => {
       body: JSON.stringify({ provider: "openrouter", modelName }),
     });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { ok: boolean; data: { modelName: string } };
+    const body = (await res.json()) as {
+      ok: boolean;
+      data: { modelName: string };
+    };
     expect(body.ok).toBe(true);
     expect(body.data.modelName).toBe(modelName);
   });

@@ -254,6 +254,7 @@ describe("Event Tester backend", () => {
         const {
           __triggerEventId: triggerEventId,
           __correlationId: _privateCorrelationId,
+          __usageAttribution: _privateUsageAttribution,
           ...deliveredLogical
         } = delivered;
         expect(triggerEventId).toBe(eventId);
@@ -717,6 +718,239 @@ describe("Event Tester backend", () => {
         expect(second!.data.__test).toBeUndefined();
       } finally {
         cap.restore();
+      }
+    });
+  });
+
+  describe("private asynchronous usage attribution", () => {
+    it("propagates authenticated request dimensions without writing them to the ledger", async () => {
+      const cap = captureInngest();
+      let publishedEventId: string | undefined;
+      try {
+        const spoofed = await env.fetch("/v1/events", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            name: "CLIENT_RULES_PASSED",
+            payload: {
+              __usageAttribution: { billingAccountId: "ten-attacker" },
+            },
+          }),
+        });
+        expect(spoofed.status).toBe(400);
+        expect(cap.calls).toHaveLength(0);
+
+        const res = await env.fetch("/v1/events", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-agentic-product-surface": "agent-runtime",
+            "x-agentic-product-action": "event-tester.publish",
+            "x-agentic-interaction-id": "int-async-publish",
+          },
+          body: JSON.stringify({
+            name: "CLIENT_RULES_PASSED",
+            subject: "usage-attribution-private",
+            payload: { client_id: "c-usage" },
+          }),
+        });
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as PublishResponse;
+        publishedEventId = body.data.event_id;
+        expect(cap.calls).toHaveLength(1);
+
+        const privateAttribution = cap.calls[0]!.data
+          .__usageAttribution as Record<string, unknown>;
+        expect(privateAttribution).toEqual(
+          expect.objectContaining({
+            billingAccountId: tenantId,
+            actorType: "system",
+            product: "agentic-operator",
+            productSurface: "agent-runtime",
+            productAction: "event-tester.publish",
+            interactionId: "int-async-publish",
+            apiRoute: "/v1/events",
+            httpMethod: "POST",
+            invocationSource: "event",
+          }),
+        );
+        expect(privateAttribution.requestId).toEqual(expect.any(String));
+
+        const row = getDb()
+          .select()
+          .from(events)
+          .where(eq(events.id, publishedEventId))
+          .all()[0];
+        expect(row?.payloadRef).toBeTruthy();
+        const [ledgerPath, offsetText] = row!.payloadRef!.split("#");
+        const ledger = await readFile(ledgerPath!, "utf8");
+        const offset = Number(offsetText);
+        const record = JSON.parse(ledger.slice(offset).split("\n", 1)[0]!) as {
+          data: Record<string, unknown>;
+        };
+        expect(
+          Object.keys(record.data).some((key) => key.startsWith("__")),
+        ).toBe(false);
+      } finally {
+        if (publishedEventId) {
+          getDb().delete(events).where(eq(events.id, publishedEventId)).run();
+        }
+        cap.restore();
+      }
+    });
+
+    it("stamps fresh authenticated attribution on event replay", async () => {
+      const cap = captureInngest();
+      let sourceEventId: string | undefined;
+      let replayEventId: string | undefined;
+      try {
+        const published = await env.fetch("/v1/events", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ name: "CLIENT_RULES_PASSED" }),
+        });
+        expect(published.status).toBe(200);
+        sourceEventId = ((await published.json()) as PublishResponse).data
+          .event_id;
+        cap.calls.length = 0;
+
+        const replay = await env.fetch(`/v1/events/${sourceEventId}/replay`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-agentic-product-action": "event-tester.replay",
+            "x-agentic-interaction-id": "int-async-replay",
+          },
+          body: JSON.stringify({}),
+        });
+        expect(replay.status).toBe(200);
+        const replayBody = (await replay.json()) as {
+          data: { new_event_id: string };
+        };
+        replayEventId = replayBody.data.new_event_id;
+        expect(cap.calls).toHaveLength(1);
+        expect(cap.calls[0]!.data.__usageAttribution).toEqual(
+          expect.objectContaining({
+            billingAccountId: tenantId,
+            productAction: "event-tester.replay",
+            interactionId: "int-async-replay",
+            invocationSource: "replay",
+          }),
+        );
+      } finally {
+        for (const id of [replayEventId, sourceEventId]) {
+          if (id) getDb().delete(events).where(eq(events.id, id)).run();
+        }
+        cap.restore();
+      }
+    });
+
+    it("stamps fresh authenticated attribution on manifest run replay", async () => {
+      const cap = captureInngest();
+      const sourceEventId = makeId("evt");
+      const sourceRunId = makeId("run");
+      const agent = getDb().select().from(agents).limit(1).all()[0];
+      expect(agent).toBeDefined();
+      try {
+        getDb()
+          .insert(events)
+          .values({
+            id: sourceEventId,
+            tenantId,
+            name: "CLIENT_RULES_PASSED",
+            subject: "usage-run-replay",
+            payloadRef: null,
+          })
+          .run();
+        getDb()
+          .insert(runs)
+          .values({
+            id: sourceRunId,
+            tenantId,
+            agentId: agent!.id,
+            triggerEventId: sourceEventId,
+            status: "ok",
+            correlationId: makeId("cor"),
+            invocationSource: "event",
+          })
+          .run();
+
+        const replay = await env.fetch(`/v1/runs/${sourceRunId}/replay`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-agentic-product-action": "run-tester.replay",
+            "x-agentic-interaction-id": "int-async-run-replay",
+          },
+          body: JSON.stringify({}),
+        });
+        expect(replay.status).toBe(200);
+        expect(cap.calls).toHaveLength(1);
+        expect(cap.calls[0]!.data.__usageAttribution).toEqual(
+          expect.objectContaining({
+            billingAccountId: tenantId,
+            productAction: "run-tester.replay",
+            interactionId: "int-async-run-replay",
+            invocationSource: "replay",
+          }),
+        );
+        expect(cap.calls[0]!.data.__correlationId).toEqual(expect.any(String));
+      } finally {
+        getDb().delete(runs).where(eq(runs.id, sourceRunId)).run();
+        getDb().delete(events).where(eq(events.id, sourceEventId)).run();
+        cap.restore();
+      }
+    });
+
+    it("protects the manifest-invoke fallback from input spoofing", async () => {
+      const priorTenant = process.env.AGENTIC_DEV_TENANT;
+      process.env.AGENTIC_DEV_TENANT = "northwind";
+      const cap = captureInngest();
+      let eventId: string | undefined;
+      try {
+        const northwind = getDb()
+          .select()
+          .from(tenants)
+          .where(eq(tenants.slug, "northwind"))
+          .all()[0];
+        expect(northwind).toBeDefined();
+        const res = await env.fetch("/v1/agents/jdAuthorAgent/invoke", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-agentic-product-action": "agent-tester.invoke",
+            "x-agentic-interaction-id": "int-async-invoke",
+          },
+          body: JSON.stringify({
+            input: {
+              subject: "usage-attribution-invoke",
+              prompt: "Draft the role.",
+              __usageAttribution: { billingAccountId: "ten-attacker" },
+            },
+          }),
+        });
+        expect(res.status).toBe(202);
+        const body = (await res.json()) as {
+          data: { eventId: string };
+        };
+        eventId = body.data.eventId;
+        expect(cap.calls).toHaveLength(1);
+        expect(cap.calls[0]!.data.__usageAttribution).toEqual(
+          expect.objectContaining({
+            billingAccountId: northwind!.id,
+            productAction: "agent-tester.invoke",
+            interactionId: "int-async-invoke",
+            invocationSource: "api",
+          }),
+        );
+        expect(cap.calls[0]!.data.__usageAttribution).not.toEqual(
+          expect.objectContaining({ billingAccountId: "ten-attacker" }),
+        );
+      } finally {
+        if (eventId) getDb().delete(events).where(eq(events.id, eventId)).run();
+        cap.restore();
+        if (priorTenant === undefined) delete process.env.AGENTIC_DEV_TENANT;
+        else process.env.AGENTIC_DEV_TENANT = priorTenant;
       }
     });
   });

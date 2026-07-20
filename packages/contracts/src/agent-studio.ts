@@ -336,7 +336,7 @@ export const StudioRuntimeOverridesSchema = z.object({
   verbosity: TextVerbositySchema.optional(),
   store: z.boolean().optional(),
   temperature: z.number().min(0).max(2).optional(),
-  maxTokens: z.number().int().positive().max(1_000_000).optional(),
+  maxTokens: z.number().int().positive().max(1_048_576).optional(),
   timeoutS: z.number().int().positive().max(86_400).optional(),
 });
 export type StudioRuntimeOverrides = z.infer<

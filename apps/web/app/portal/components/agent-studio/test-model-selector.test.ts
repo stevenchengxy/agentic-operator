@@ -39,6 +39,19 @@ describe("Test Lab provider model selector", () => {
     expect(isLikelyChatModelId("gemini-embedding-exp")).toBe(false);
   });
 
+  it("does not let a stale live model re-enter a new-selection picker", () => {
+    const ids = providerModelIds("anthropic", [
+      { id: "claude-3-5-sonnet-20241022", selectable: false },
+      { id: "claude-sonnet-future-private", selectable: true },
+    ]);
+
+    expect(ids).not.toContain("claude-3-5-sonnet-20241022");
+    expect(ids).not.toContain("claude-opus-4");
+    expect(ids).not.toContain("claude-mythos-5");
+    expect(ids).toContain("claude-sonnet-future-private");
+    expect(ids).toContain("claude-sonnet-5");
+  });
+
   it("keeps an inherited model choice when the provider is inherited", () => {
     const options = testModelOptions({
       providerOverride: "",

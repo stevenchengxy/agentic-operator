@@ -92,18 +92,68 @@ export const LOCALES = [
 ];
 
 export const SETTINGS_SECTIONS = [
-  { id: "workspace", label: "Workspace", icon: "settings" as const, hint: "Name, slug, timezone, locale, accent" },
-  { id: "people", label: "People & roles", icon: "human" as const, hint: "RBAC, invites" },
-  { id: "models", label: "Models", icon: "spark" as const, hint: "Fleet & fallback chain" },
-  { id: "channels", label: "Channels", icon: "git" as const, hint: "Job boards & messaging" },
-  { id: "integrations", label: "Integrations", icon: "external" as const, hint: "GitHub, SES, ATS" },
-  { id: "notifications", label: "Notifications", icon: "alert" as const, hint: "Routes & quiet hours" },
-  { id: "tokens", label: "API tokens", icon: "code" as const, hint: "Programmatic access" },
-  { id: "billing", label: "Billing & cost caps", icon: "deploy" as const, hint: "Per-tenant budgets" },
+  {
+    id: "workspace",
+    label: "Workspace",
+    icon: "settings" as const,
+    hint: "Name, slug, timezone, locale, accent",
+  },
+  {
+    id: "people",
+    label: "People & roles",
+    icon: "human" as const,
+    hint: "Capability status",
+  },
+  {
+    id: "ai",
+    label: "AI & models",
+    icon: "spark" as const,
+    hint: "Routing, providers, models & tests",
+  },
+  {
+    id: "channels",
+    label: "Channels",
+    icon: "git" as const,
+    hint: "Not configured",
+  },
+  {
+    id: "integrations",
+    label: "Integrations",
+    icon: "external" as const,
+    hint: "GitHub, SES, ATS",
+  },
+  {
+    id: "notifications",
+    label: "Notifications",
+    icon: "alert" as const,
+    hint: "Not configured",
+  },
+  {
+    id: "tokens",
+    label: "API tokens",
+    icon: "code" as const,
+    hint: "Programmatic access",
+  },
+  {
+    id: "billing",
+    label: "Billing & cost caps",
+    icon: "deploy" as const,
+    hint: "Per-tenant budgets",
+  },
   // P3-FE-03 — cost dashboard. Lives at its own sub-route so deep-links
   // and tab-state survive a reload.
-  { id: "usage", label: "Usage & cost", icon: "dashboard" as const, hint: "Per-agent, per-model spend" },
-  { id: "audit", label: "Audit log", icon: "logs" as const, hint: "Recent admin actions" },
+  {
+    id: "usage",
+    label: "Usage & cost",
+    icon: "dashboard" as const,
+    hint: "Per-agent, per-model spend",
+  },
+  {
+    id: "audit",
+    label: "Audit log",
+    icon: "logs" as const,
+    hint: "Recent admin actions",
+  },
 ] as const;
 
 export type SettingsSectionId = (typeof SETTINGS_SECTIONS)[number]["id"];

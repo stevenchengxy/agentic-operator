@@ -16,7 +16,7 @@ dist
 *.bak
 
 # runtime data — everything under data/ is runtime output and is gitignored,
-# EXCEPT the intentionally-tracked skeleton + config in the allowlist below.
+# EXCEPT intentionally tracked non-secret skeleton/config in the allowlist.
 # CLAUDE.md: "Everything under data/ is gitignored." This `data/*` + allowlist
 # auto-ignores leaked runtime dirs (test-artifacts, test-logs, resumes, briefs,
 # jd-archive, reports, use-cases, the live agentic.db, …) so they can never
@@ -26,7 +26,6 @@ data/*
 !data/backups/
 !data/logs/
 !data/model-fleet.json
-!data/provider-keys.json
 !data/system-agents/
 # inside the artifact + log dirs, keep ONLY the .gitkeep placeholder
 data/artifacts/*

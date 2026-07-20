@@ -1,4 +1,8 @@
-import { findCatalogModel, type ProviderId } from "@agentic/contracts";
+import {
+  catalogModelPolicy,
+  findCatalogModel,
+  type ProviderId,
+} from "@agentic/contracts";
 import { LLMError } from "./errors";
 import type { ChatRequest } from "./types";
 
@@ -41,6 +45,23 @@ export function normalizeModelRequest(
   return catalog?.temperatureRange === null ? omitTemperature(req) : req;
 }
 
+/** Block every catalog-known retired/restricted model before dispatch. */
+export function assertModelSelectable(
+  provider: ProviderId,
+  model: string,
+): void {
+  const catalog = findCatalogModel(provider, model);
+  if (!catalog) return;
+  const policy = catalogModelPolicy(catalog);
+  if (!policy.selectable) {
+    throw new LLMError(
+      `${provider}/${model} is not selectable under model lifecycle policy (${policy.reason})`,
+      "bad_request",
+      provider,
+    );
+  }
+}
+
 /**
  * Narrow compatibility fallback for live/custom model ids that are newer
  * than the catalog. Only an explicit 400-style unsupported-temperature error
@@ -68,10 +89,22 @@ export function isUnsupportedTemperatureError(error: LLMError): boolean {
 export function assertModelControls(
   provider: ProviderId,
   model: string,
-  req: Pick<ChatRequest, "reasoning" | "verbosity" | "store" | "temperature">,
+  req: Pick<
+    ChatRequest,
+    "maxTokens" | "reasoning" | "verbosity" | "store" | "temperature"
+  >,
 ): void {
   const catalog = findCatalogModel(provider, model);
   if (!catalog) return;
+
+  if (req.maxTokens !== undefined) {
+    const maximum = catalog.out ?? catalog.ctx;
+    if (req.maxTokens > maximum) {
+      unsupported(provider, model, "maxTokens", String(req.maxTokens), [
+        `<=${maximum}`,
+      ]);
+    }
+  }
 
   if (req.temperature !== undefined) {
     const range = catalog.temperatureRange;

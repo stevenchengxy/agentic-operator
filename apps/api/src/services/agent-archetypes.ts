@@ -1,5 +1,7 @@
 import {
-  PROVIDER_MODEL_CATALOG,
+  catalogModelPolicy,
+  findCatalogModel,
+  selectableModelsForProvider,
   type AgentActionV2,
   type AgentArchetypeSpec,
   type AgentAuthoringStep,
@@ -408,7 +410,7 @@ function selectProfileModel(
   profile: AgentModelProfile,
   workspaceDefaultModel: string | null,
 ): { model: string | null; usedWorkspaceDefault: boolean } {
-  const candidates = PROVIDER_MODEL_CATALOG[provider] ?? [];
+  const candidates = selectableModelsForProvider(provider);
   if (candidates.length === 0) {
     return {
       model: workspaceDefaultModel,
@@ -435,6 +437,15 @@ export function resolveAgentModelSelection(input: {
   const inferred = inferredProfile(input.template, input.description);
   const provider = input.provider ?? input.defaultProvider;
   if (input.model) {
+    const catalogModel = findCatalogModel(provider, input.model);
+    if (catalogModel) {
+      const policy = catalogModelPolicy(catalogModel);
+      if (!policy.selectable) {
+        throw new Error(
+          `model_selection_unavailable: ${provider}/${input.model} is ${policy.reason}`,
+        );
+      }
+    }
     return {
       provider,
       model: input.model,

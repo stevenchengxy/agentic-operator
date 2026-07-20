@@ -23,6 +23,11 @@ export interface AgentContext {
   /** Optional override of provider/model for this invocation. */
   provider?: ProviderId;
   model?: string;
+  /**
+   * AI-settings task category for this invocation. When omitted, the agent's
+   * `taskClass` is used (which defaults to `tool.loop`).
+   */
+  taskClass?: string;
   reasoning?: ReasoningConfig;
   verbosity?: TextVerbosity;
   store?: boolean;

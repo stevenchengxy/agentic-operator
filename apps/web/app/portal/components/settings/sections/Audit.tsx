@@ -8,8 +8,8 @@
  * `meta` which often contains `before`/`after` blobs — those are rendered
  * as a compact JSON diff in an expanded panel.
  *
- * Falls back to `SETTINGS_AUDIT_FALLBACK` only when the API call fails so
- * the section still renders in dev / disconnected.
+ * Empty and error responses remain distinct: an empty successful response is
+ * still live audit data, while a failed request is shown as unavailable.
  */
 
 import { Fragment, useEffect, useMemo, useState } from "react";
@@ -24,7 +24,7 @@ import {
   Th,
 } from "@/app/portal/components";
 import { fmtAgo } from "@/lib/format";
-import { SETTINGS_AUDIT_FALLBACK } from "@/app/portal/components/settings/data";
+import { tenantHeader } from "@/lib/hooks/tenant-header";
 
 /**
  * Shape returned by `GET /v1/audit`. `at` is unix-ms.
@@ -51,9 +51,7 @@ interface AuditApiResponse {
 }
 
 /**
- * Internal row shape used by the table. Normalises both the live API
- * response and the static `SETTINGS_AUDIT_FALLBACK` shape so the renderer
- * only has one type to think about.
+ * Internal row shape used by the table.
  */
 interface AuditRow {
   id: string;
@@ -68,10 +66,8 @@ interface AuditRow {
 
 function normalizeApiRow(r: AuditApiRow): AuditRow {
   const meta = r.meta ?? {};
-  const before =
-    isRecord(meta.before) ? meta.before : null;
-  const after =
-    isRecord(meta.after) ? meta.after : null;
+  const before = isRecord(meta.before) ? meta.before : null;
+  const after = isRecord(meta.after) ? meta.after : null;
   const target =
     typeof r.targetId === "string" && r.targetId.length > 0
       ? `${r.targetType ?? "?"} · ${r.targetId}`
@@ -88,23 +84,9 @@ function normalizeApiRow(r: AuditApiRow): AuditRow {
   };
 }
 
-function normalizeFallbackRow(
-  r: (typeof SETTINGS_AUDIT_FALLBACK)[number],
-  i: number,
-): AuditRow {
-  return {
-    id: `local-${i}`,
-    at: r.at,
-    actor: r.actor,
-    action: r.action,
-    target: r.target,
-    ip: r.ip,
-    before: null,
-    after: null,
-  };
-}
-
-function actionColor(action: string): "signal" | "amber" | "red" | "muted" | "blue" {
+function actionColor(
+  action: string,
+): "signal" | "amber" | "red" | "muted" | "blue" {
   if (action.startsWith("deploy")) return "signal";
   if (action.startsWith("key") || action.startsWith("token")) return "amber";
   if (action.startsWith("member")) return "blue";
@@ -119,16 +101,16 @@ function isRecord(x: unknown): x is Record<string, unknown> {
 }
 
 export function AuditSection() {
-  const [rows, setRows] = useState<AuditRow[]>(() =>
-    SETTINGS_AUDIT_FALLBACK.map(normalizeFallbackRow),
-  );
+  const [rows, setRows] = useState<AuditRow[]>([]);
   const [q, setQ] = useState("");
   const [filter, setFilter] = useState<
     "all" | "deploy" | "key" | "member" | "agent"
   >("all");
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [usingApi, setUsingApi] = useState(false);
+  const [apiState, setApiState] = useState<"loading" | "live" | "error">(
+    "loading",
+  );
   const [expanded, setExpanded] = useState<string | null>(null);
 
   useEffect(() => {
@@ -138,21 +120,25 @@ export function AuditSection() {
       try {
         const res = await fetch("/v1/audit?limit=100", {
           credentials: "same-origin",
-          headers: { Accept: "application/json" },
+          headers: { Accept: "application/json", ...tenantHeader() },
         });
-        if (!res.ok) return;
+        if (!res.ok) {
+          if (!cancelled) setApiState("error");
+          return;
+        }
         const json = (await res.json()) as
           | { ok: true; data: AuditApiResponse }
           | { ok: false };
         if (cancelled) return;
-        if (!json.ok) return;
-        if (Array.isArray(json.data.items) && json.data.items.length > 0) {
-          setRows(json.data.items.map(normalizeApiRow));
-          setNextCursor(json.data.nextCursor);
-          setUsingApi(true);
+        if (!json.ok) {
+          setApiState("error");
+          return;
         }
+        setRows(json.data.items.map(normalizeApiRow));
+        setNextCursor(json.data.nextCursor);
+        setApiState("live");
       } catch {
-        // keep fallback
+        if (!cancelled) setApiState("error");
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -169,7 +155,10 @@ export function AuditSection() {
     try {
       const res = await fetch(
         `/v1/audit?limit=100&cursor=${encodeURIComponent(nextCursor)}`,
-        { credentials: "same-origin", headers: { Accept: "application/json" } },
+        {
+          credentials: "same-origin",
+          headers: { Accept: "application/json", ...tenantHeader() },
+        },
       );
       if (!res.ok) return;
       const json = (await res.json()) as
@@ -204,16 +193,13 @@ export function AuditSection() {
     <Panel
       title={`Audit log · ${filtered.length}`}
       subtitle={
-        usingApi
+        apiState === "live"
           ? "Live · /v1/audit · most recent first"
-          : "Read-only · workspace mutations land here within a few seconds"
+          : apiState === "error"
+            ? "Unavailable · /v1/audit could not be reached"
+            : "Loading · /v1/audit"
       }
       padded={false}
-      action={
-        <Button small icon="upload" tone="ghost">
-          Export CSV
-        </Button>
-      }
     >
       <div
         style={{
@@ -224,27 +210,57 @@ export function AuditSection() {
           alignItems: "center",
         }}
       >
-        <SearchInput value={q} onChange={setQ} placeholder="actor, action, target…" />
+        <SearchInput
+          value={q}
+          onChange={setQ}
+          placeholder="actor, action, target…"
+        />
         <FilterChip active={filter === "all"} onClick={() => setFilter("all")}>
           All
         </FilterChip>
-        <FilterChip active={filter === "deploy"} onClick={() => setFilter("deploy")}>
+        <FilterChip
+          active={filter === "deploy"}
+          onClick={() => setFilter("deploy")}
+        >
           Deploys
         </FilterChip>
         <FilterChip active={filter === "key"} onClick={() => setFilter("key")}>
           Keys
         </FilterChip>
-        <FilterChip active={filter === "agent"} onClick={() => setFilter("agent")}>
+        <FilterChip
+          active={filter === "agent"}
+          onClick={() => setFilter("agent")}
+        >
           Agents
         </FilterChip>
-        <FilterChip active={filter === "member"} onClick={() => setFilter("member")}>
+        <FilterChip
+          active={filter === "member"}
+          onClick={() => setFilter("member")}
+        >
           Members
         </FilterChip>
       </div>
       {filtered.length === 0 ? (
-        <Empty title="No audit entries match" />
+        <Empty
+          title={
+            apiState === "error"
+              ? "Audit log unavailable"
+              : loading
+                ? "Loading audit entries…"
+                : q || filter !== "all"
+                  ? "No audit entries match"
+                  : "No audit entries yet"
+          }
+          hint={
+            apiState === "error"
+              ? "No fallback or synthetic audit activity is shown."
+              : undefined
+          }
+        />
       ) : (
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+        <table
+          style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}
+        >
           <thead>
             <tr style={{ borderBottom: "1px solid var(--border)" }}>
               <Th>When</Th>
@@ -262,7 +278,9 @@ export function AuditSection() {
                 <Fragment key={a.id}>
                   <tr style={{ borderBottom: "1px solid var(--border)" }}>
                     <Td>
-                      <span style={{ color: "var(--text-3)" }}>{fmtAgo(a.at)}</span>
+                      <span style={{ color: "var(--text-3)" }}>
+                        {fmtAgo(a.at)}
+                      </span>
                     </Td>
                     <Td>
                       <span style={{ color: "var(--text-2)" }}>{a.actor}</span>
@@ -299,7 +317,10 @@ export function AuditSection() {
                   </tr>
                   {hasDiff && isOpen && (
                     <tr style={{ borderBottom: "1px solid var(--border)" }}>
-                      <td colSpan={5} style={{ padding: 0, background: "var(--bg-2)" }}>
+                      <td
+                        colSpan={5}
+                        style={{ padding: 0, background: "var(--bg-2)" }}
+                      >
                         <AuditDiffPanel before={a.before} after={a.after} />
                       </td>
                     </tr>
@@ -310,7 +331,7 @@ export function AuditSection() {
           </tbody>
         </table>
       )}
-      {usingApi && nextCursor && (
+      {apiState === "live" && nextCursor && (
         <div
           style={{
             padding: "10px 14px",
@@ -474,4 +495,3 @@ function toCompactJson(v: unknown): string {
     return "[unrenderable]";
   }
 }
-

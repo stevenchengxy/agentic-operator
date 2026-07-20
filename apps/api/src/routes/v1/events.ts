@@ -5,7 +5,12 @@ import {
   appendToLedger,
   buildCanonicalEventPayload,
   inngest,
+  privateUsageAttributionMetadata,
 } from "@agentic/runtime";
+import {
+  currentUsageAttribution,
+  mergeUsageAttribution,
+} from "@agentic/llm-gateway";
 import { agents, events, eventTypes, getDb } from "@agentic/db";
 import { makeId } from "@agentic/shared";
 import { IngestEventBody, ListEventsQuery } from "@agentic/contracts";
@@ -186,6 +191,13 @@ export async function eventsRoutes(app: FastifyInstance) {
       ...logicalPayload,
       __triggerEventId: eventId,
       __correlationId: correlationId,
+      ...privateUsageAttributionMetadata(
+        mergeUsageAttribution(currentUsageAttribution(), {
+          billingAccountId: auth.tenantId,
+          correlationId,
+          invocationSource: "event",
+        }),
+      ),
     };
     if (parsed.targetAgent) {
       // Reuse the manifest-invoke metadata key. Runtime functions with the
@@ -342,6 +354,13 @@ export async function eventsRoutes(app: FastifyInstance) {
             __triggerEventId: newId,
             __correlationId: correlationId,
             __replayOf: id,
+            ...privateUsageAttributionMetadata(
+              mergeUsageAttribution(currentUsageAttribution(), {
+                billingAccountId: auth.tenantId,
+                correlationId,
+                invocationSource: "replay",
+              }),
+            ),
           },
         });
       } catch (err) {

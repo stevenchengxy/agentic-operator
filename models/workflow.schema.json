@@ -94,6 +94,12 @@
               "minLength": 1,
               "maxLength": 240
             },
+            "task_class": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[a-z][a-z0-9_-]*(?:\\.[a-z][a-z0-9_-]*)*$"
+            },
             "reasoning": {
               "type": "object",
               "properties": {
@@ -155,7 +161,7 @@
             "max_tokens": {
               "type": "integer",
               "exclusiveMinimum": 0,
-              "maximum": 1000000
+              "maximum": 1048576
             },
             "tool": {
               "type": "string"
@@ -309,6 +315,12 @@
       "typescript_code": {},
       "generated": {
         "type": "boolean"
+      },
+      "task_class": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "pattern": "^[a-z][a-z0-9_-]*(?:\\.[a-z][a-z0-9_-]*)*$"
       },
       "cron": {},
       "cron_timezone": {}

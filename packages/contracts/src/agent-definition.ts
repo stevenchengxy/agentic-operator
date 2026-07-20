@@ -4,6 +4,7 @@ import {
   ReasoningConfigSchema,
   TextVerbositySchema,
 } from "./llm";
+import { TaskClassIdSchema } from "./llm-settings";
 
 /**
  * Canonical Agent Definition v2.
@@ -204,9 +205,11 @@ export const AgentActionV2Schema = z
     verbosity: TextVerbositySchema.optional(),
     store: z.boolean().optional(),
     temperature: z.number().min(0).max(2).optional(),
-    max_tokens: z.number().int().positive().max(1_000_000).optional(),
+    max_tokens: z.number().int().positive().max(1_048_576).optional(),
     retries: z.number().int().nonnegative().max(10).optional(),
     timeout_s: z.number().int().positive().max(86_400).optional(),
+    /** Optional per-action override of the agent's AI-settings task class. */
+    task_class: TaskClassIdSchema.optional(),
     tool: z.string().trim().min(1).max(160).optional(),
     condition: z.string().max(8_000).optional(),
     true_action_id: z.string().max(160).optional(),
@@ -310,11 +313,12 @@ export const AgentRuntimeConfigV2Schema = z
   .object({
     provider: ProviderIdSchema.optional(),
     model: z.string().trim().min(1).max(240).optional(),
+    task_class: TaskClassIdSchema.optional(),
     reasoning: ReasoningConfigSchema.optional(),
     verbosity: TextVerbositySchema.optional(),
     store: z.boolean().optional(),
     temperature: z.number().min(0).max(2).optional(),
-    max_tokens: z.number().int().positive().max(1_000_000).optional(),
+    max_tokens: z.number().int().positive().max(1_048_576).optional(),
     timeout_s: z.number().int().positive().max(86_400).optional(),
     retries: z.number().int().nonnegative().max(10).optional(),
     concurrency: AgentConcurrencyV2Schema.optional(),
@@ -374,11 +378,12 @@ const AgentDefinitionV2BaseSchema = z
     output_bindings: AgentOutputBindingsV2Schema.optional(),
     provider: ProviderIdSchema.optional(),
     model: z.string().trim().min(1).max(240).optional(),
+    task_class: TaskClassIdSchema.optional(),
     reasoning: ReasoningConfigSchema.optional(),
     verbosity: TextVerbositySchema.optional(),
     store: z.boolean().optional(),
     temperature: z.number().min(0).max(2).optional(),
-    max_tokens: z.number().int().positive().max(1_000_000).optional(),
+    max_tokens: z.number().int().positive().max(1_048_576).optional(),
     timeout_s: z.number().int().positive().max(86_400).optional(),
     retries: z.number().int().nonnegative().max(10).optional(),
     concurrency: AgentConcurrencyV2Schema.optional(),

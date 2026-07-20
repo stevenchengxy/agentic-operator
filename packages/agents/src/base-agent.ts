@@ -41,6 +41,8 @@ export abstract class BaseAgent<TInput = unknown, TOutput = string> {
   readonly defaultProvider?: ProviderId;
   /** Optional default model override. Falls back to gateway default. */
   readonly defaultModel?: string;
+  /** Task-routing category used by the tenant AI settings policy. */
+  readonly taskClass: string = "tool.loop";
   /** Optional provider-neutral reasoning defaults for every invocation. */
   readonly defaultReasoning?: ReasoningConfig;
   readonly defaultVerbosity?: TextVerbosity;

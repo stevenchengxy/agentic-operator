@@ -120,6 +120,11 @@ export interface ChatRequest {
   stop?: string[];
   /** Default 60_000 ms. */
   timeoutMs?: number;
+  /** Total transient attempts for this provider, including the first call. */
+  retryPolicy?: {
+    maxAttempts: number;
+    baseBackoffMs: number;
+  };
   /** Caller-controlled abort. Combined with timeoutMs via AbortSignal.any-like helper. */
   signal?: AbortSignal;
   /** Hint the model to return JSON. Each adapter maps this to its native flag. */
@@ -141,6 +146,101 @@ export interface ChatRequest {
   stepId?: string;
   /** Stable caller label such as `manifest.logic`, `code-agent`, or `studio`. */
   purpose?: string;
+  /**
+   * Non-sensitive billing dimensions for this logical call. Request-scoped
+   * attribution supplied by the API is merged with these explicit values;
+   * authenticated server context wins for account/principal fields. Never put
+   * prompts, secrets, or customer payloads in this object.
+   */
+  attribution?: UsageAttribution;
+  /**
+   * Runtime routing decision. This contains identifiers and effective policy
+   * only—never prompts, credentials, headers, or provider reasoning state.
+   * Callers normally set `taskType`; the API routing host fills the remaining
+   * fields after resolving the tenant/workspace AI settings.
+   */
+  routing?: LlmRoutingMetadata;
+}
+
+export type GatewayKind =
+  | "direct"
+  | "openrouter"
+  | "newapi"
+  | "openai-compatible"
+  | "mock";
+
+/** Strictly allow-listed routing/dispatch metadata written to the ledger. */
+export interface LlmRoutingMetadata {
+  requestedRoute?: string;
+  effectiveRoute?: string;
+  gatewayInstanceId?: string;
+  gatewayKind?: GatewayKind;
+  modelFamily?: string;
+  taskType?: string;
+  matchedTaskType?: string;
+  profileId?: string;
+  settingsRevision?: number;
+  resolutionReason?:
+    | "explicit"
+    | "exact"
+    | "alias"
+    | "parent"
+    | "default"
+    | "legacy";
+  fallbackIndex?: number;
+  transport?: "chat" | "responses" | "native";
+  effectiveTimeoutMs?: number;
+  overallDeadlineMs?: number;
+  /** Effective non-secret controls after provider capability normalization. */
+  controls?: {
+    temperature?: number;
+    maxTokens?: number;
+    jsonMode?: boolean;
+    reasoning?: ReasoningConfig;
+    verbosity?: TextVerbosity;
+    store?: boolean;
+  };
+  retryReason?: string;
+  /** Shared across route candidates so retries/fallbacks form one timeline. */
+  logicalCallId?: string;
+  /** Route fallback candidates reserve 100 attempt ordinals each. */
+  attemptBase?: number;
+  /** Test/evaluation calls may explicitly override saved profile controls. */
+  parameterPrecedence?: "policy" | "request";
+  /** Caller supplied a legacy provider/model override; bypass task policy. */
+  bypassTaskPolicy?: boolean;
+}
+
+export type UsageActorType = "user" | "api_token" | "system";
+
+/**
+ * Stable, low-cardinality dimensions used to reconcile an LLM charge with
+ * the account, product interaction, server function, and API request that
+ * caused it. IDs are identifiers only; secrets and request payloads are not
+ * accepted by the durable exporter.
+ */
+export interface UsageAttribution {
+  /** Internal customer/account charged for the call; defaults to tenantId. */
+  billingAccountId?: string;
+  /** Non-secret upstream organization/project/account identifier. */
+  providerAccountId?: string;
+  actorType?: UsageActorType;
+  actorId?: string;
+  /** Credential used to authenticate the caller (for example an API-token row). */
+  credentialId?: string;
+  /** Credential used to authenticate to the LLM provider, never the API key. */
+  providerCredentialId?: string;
+  product?: string;
+  productSurface?: string;
+  productAction?: string;
+  /** One billable UI/API interaction; safe to use as a click correlation id. */
+  interactionId?: string;
+  functionName?: string;
+  apiRoute?: string;
+  httpMethod?: string;
+  requestId?: string;
+  correlationId?: string;
+  invocationSource?: string;
 }
 
 /** Provider-neutral token accounting. Cached/write/reasoning tokens are subsets. */
@@ -201,6 +301,8 @@ export interface ChatResponse {
   toolCalls?: ToolCall[];
   /** Provider-specific extras (e.g. tool calls). Opaque in v1. */
   raw?: unknown;
+  /** Safe routing decision returned for diagnostics and the Settings test lab. */
+  routing?: LlmRoutingMetadata;
 }
 
 export interface ProviderInfo {
@@ -228,4 +330,14 @@ export interface GatewayConfig {
   defaultProvider: ProviderId;
   defaultModel: string | null;
   timeoutMs: number;
+  /** Legacy/default transient policy; routed calls normally override it. */
+  maxAttempts?: number;
+  baseBackoffMs?: number;
+  /** Fail before provider dispatch when tenant/account attribution is absent. */
+  requireUsageAttribution?: boolean;
+  /** Resolve non-secret provider-account dimensions separately for each attempt. */
+  resolveProviderAttribution?: (
+    provider: ProviderId,
+    tenantId: string | undefined,
+  ) => UsageAttribution | undefined;
 }

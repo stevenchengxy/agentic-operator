@@ -157,7 +157,10 @@ export function describeWorkflowEntrypoints(manifestInput: unknown): {
             label: input.label ?? input.id,
             description: input.description ?? null,
             kind: input.kind,
-            required: input.required && binding.mode !== "constant",
+            required:
+              input.required &&
+              binding.mode !== "constant" &&
+              binding.mode !== "template",
             schema: structuredClone(input.schema),
             ...(input.default !== undefined
               ? { default: structuredClone(input.default) }

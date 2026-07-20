@@ -5,6 +5,7 @@ import type {
   ChatResponse,
   LLMGateway,
 } from "@agentic/llm-gateway";
+import { TaskClassIdSchema } from "@agentic/contracts";
 import { getRuntimeGateway, setRuntimeGateway } from "./llm-host";
 import { runAction } from "./step-engine";
 
@@ -50,6 +51,7 @@ describe("action-level model controls", () => {
       tool_use: [],
       provider: "mock" as const,
       model: "agent-default",
+      task_class: "chat",
       temperature: 0.7,
       max_tokens: 1000,
     };
@@ -68,6 +70,7 @@ describe("action-level model controls", () => {
         type: "logic",
         provider: "openai",
         model: "gpt-step-model",
+        task_class: TaskClassIdSchema.parse("evaluation"),
         reasoning: { effort: "high" },
         verbosity: "low",
         store: false,
@@ -80,6 +83,7 @@ describe("action-level model controls", () => {
     assert.equal(result.ok, true);
     assert.equal(request?.provider, "openai");
     assert.equal(request?.model, "gpt-step-model");
+    assert.equal(request?.routing?.taskType, "evaluation");
     assert.deepEqual(request?.reasoning, { effort: "high" });
     assert.equal(request?.verbosity, "low");
     assert.equal(request?.store, false);
@@ -87,5 +91,6 @@ describe("action-level model controls", () => {
     assert.equal(request?.maxTokens, 222);
     assert.equal(agent.provider, "mock");
     assert.equal(agent.model, "agent-default");
+    assert.equal(agent.task_class, "chat");
   });
 });

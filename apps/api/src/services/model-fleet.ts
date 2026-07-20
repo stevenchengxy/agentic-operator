@@ -10,7 +10,12 @@
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { PROVIDER_IDS, type ProviderId } from "@agentic/contracts";
+import {
+  catalogModelPolicy,
+  findCatalogModel,
+  PROVIDER_IDS,
+  type ProviderId,
+} from "@agentic/contracts";
 import { makeId } from "@agentic/shared";
 
 export type FleetRole = "primary" | "fallback" | "shadow";
@@ -27,7 +32,8 @@ export interface ModelFleetEntry {
   role: FleetRole;
   dailyCapUsd: number;
   maxOutTokens: number;
-  temperature: number;
+  /** null means use the provider/model default and omit the parameter. */
+  temperature: number | null;
   addedAt: number;
   addedBy: string | null;
 }
@@ -99,7 +105,7 @@ export interface AddFleetInput {
   role?: string;
   dailyCapUsd?: number;
   maxOutTokens?: number;
-  temperature?: number;
+  temperature?: number | null;
   addedBy?: string | null;
 }
 
@@ -118,21 +124,44 @@ export function addFleetEntry(input: AddFleetInput): ModelFleetEntry {
   if (!modelName) {
     throw new FleetValidationError("modelName is required");
   }
-  // We used to reject any modelName not in PROVIDER_MODEL_CATALOG, but the
-  // catalog is a curated subset (≤6 per provider) while live discovery
-  // returns the provider's full inventory — OpenRouter alone serves ~360.
-  // The picker shows live results; rejecting them at add-time was a
-  // permanent footgun. The catalog now serves UI metadata only; bad
-  // modelNames surface at invocation time when the upstream returns 404.
+  // Known legacy/restricted catalog rows cannot be newly added. Unknown IDs
+  // remain valid because live discovery inventories are larger than the
+  // checked-in catalog, and custom/private deployments cannot be curated.
+  // Existing fleet rows are never revalidated here, preserving configured
+  // historical models for replay and controlled migration.
+  const catalogModel = findCatalogModel(input.provider, modelName);
+  if (catalogModel) {
+    const policy = catalogModelPolicy(catalogModel);
+    if (!policy.selectable) {
+      throw new FleetValidationError(
+        `${input.provider}/${modelName} is not selectable (${policy.reason})`,
+      );
+    }
+  }
   const role: FleetRole = isFleetRole(input.role) ? input.role : "primary";
   const alias = (input.alias ?? "").trim() || modelName;
   const dailyCapUsd = Number.isFinite(input.dailyCapUsd) ? Math.max(0, Number(input.dailyCapUsd)) : 30;
   const maxOutTokens = Number.isInteger(input.maxOutTokens) && input.maxOutTokens! > 0
     ? input.maxOutTokens!
     : 2048;
-  const temperature = Number.isFinite(input.temperature)
-    ? Math.min(2, Math.max(0, Number(input.temperature)))
-    : 0.2;
+  let temperature: number | null = null;
+  if (input.temperature !== undefined && input.temperature !== null) {
+    if (!Number.isFinite(input.temperature)) {
+      throw new FleetValidationError("temperature must be a finite number or null");
+    }
+    if (catalogModel?.temperatureRange === null) {
+      throw new FleetValidationError(
+        `${input.provider}/${modelName} does not support temperature; leave it unset`,
+      );
+    }
+    const range = catalogModel?.temperatureRange ?? { min: 0, max: 2 };
+    if (input.temperature < range.min || input.temperature > range.max) {
+      throw new FleetValidationError(
+        `temperature must be between ${range.min} and ${range.max}`,
+      );
+    }
+    temperature = input.temperature;
+  }
 
   const file = load();
   // Duplicate guard: same tenant + provider + modelName means it's already in
@@ -177,7 +206,7 @@ export interface UpdateFleetInput {
   role?: string;
   dailyCapUsd?: number;
   maxOutTokens?: number;
-  temperature?: number;
+  temperature?: number | null;
 }
 
 export function updateFleetEntry(
@@ -214,8 +243,29 @@ export function updateFleetEntry(
   if (patch.maxOutTokens !== undefined && Number.isInteger(patch.maxOutTokens) && patch.maxOutTokens > 0) {
     next.maxOutTokens = patch.maxOutTokens;
   }
-  if (patch.temperature !== undefined && Number.isFinite(patch.temperature)) {
-    next.temperature = Math.min(2, Math.max(0, patch.temperature));
+  if (patch.temperature !== undefined) {
+    if (patch.temperature === null) {
+      next.temperature = null;
+    } else {
+      if (!Number.isFinite(patch.temperature)) {
+        throw new FleetValidationError(
+          "temperature must be a finite number or null",
+        );
+      }
+      const catalog = findCatalogModel(cur.provider, cur.modelName);
+      if (catalog?.temperatureRange === null) {
+        throw new FleetValidationError(
+          `${cur.provider}/${cur.modelName} does not support temperature; leave it unset`,
+        );
+      }
+      const range = catalog?.temperatureRange ?? { min: 0, max: 2 };
+      if (patch.temperature < range.min || patch.temperature > range.max) {
+        throw new FleetValidationError(
+          `temperature must be between ${range.min} and ${range.max}`,
+        );
+      }
+      next.temperature = patch.temperature;
+    }
   }
   const entries = [...file.entries];
   entries[idx] = next;

@@ -4,6 +4,7 @@ import cors from "@fastify/cors";
 import { registerEnvelope } from "./plugins/error";
 import { registerAuth } from "./plugins/auth";
 import { registerSecurity } from "./plugins/security";
+import { registerUsageAttribution } from "./plugins/usage-attribution";
 import { installGracefulShutdown } from "./plugins/shutdown";
 import { healthRoute } from "./routes/health";
 import { metricsRoute } from "./routes/metrics";
@@ -94,6 +95,9 @@ export async function build() {
       "Last-Event-ID",
       "X-Agentic-Tenant",
       "X-Request-Id",
+      "X-Agentic-Product-Surface",
+      "X-Agentic-Product-Action",
+      "X-Agentic-Interaction-Id",
     ],
     // CORS-restricted browsers strip non-safelisted response headers
     // unless explicitly exposed — without this the `x-request-id` echo
@@ -103,6 +107,7 @@ export async function build() {
 
   await registerEnvelope(app);
   await registerAuth(app);
+  await registerUsageAttribution(app);
   await registerSecurity(app);
 
   // Health + Prometheus metrics — both unauthenticated; metrics is

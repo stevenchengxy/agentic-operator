@@ -8,7 +8,7 @@
  * `AGENTIC_DEMO_MODE` between states, or any time you want to confirm a
  * dashboard genuinely reflects live traffic vs. stale fixtures.
  *
- * Wiped: `runs`, `steps`, `llm_calls`, `events`, `tasks`, `audit_log`, `artifacts`,
+ * Wiped: `runs`, `steps`, `usage_events`, `llm_calls`, `events`, `tasks`, `audit_log`, `artifacts`,
  *        `run_trace_events`, `run_emitted_events`, `run_messages`,
  *        `agent_run_sessions`, `event_listeners` (regenerated on bootstrap),
  *        `agent_memory_short`, `agent_memory_long` (per-run scratch),
@@ -36,6 +36,7 @@ const TABLES_TO_WIPE = [
   "run_trace_events",
   "run_emitted_events",
   "run_messages",
+  "usage_events",
   "llm_calls",
   "steps",
   "artifacts",
@@ -91,6 +92,28 @@ export function wipeRuntime(): WipeReport[] {
         afterRows: afterRow.n,
         cleared: beforeRow.n - afterRow.n,
       });
+    }
+    // Usage rows and budget projections are one accounting system. Keep the
+    // configured caps, but reset their projections when the source ledger is
+    // wiped so totals remain reconcilable.
+    const hasBudgets = sqlite
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='tenant_budgets'",
+      )
+      .get();
+    if (hasBudgets) {
+      const now = Date.now();
+      const date = new Date(now);
+      const periodStart = Date.UTC(
+        date.getUTCFullYear(),
+        date.getUTCMonth(),
+        1,
+      );
+      sqlite
+        .prepare(
+          "UPDATE tenant_budgets SET used_tokens_month=0, used_usd_month=0, used_usd_nanos=0, period_start=?, updated_at=?",
+        )
+        .run(periodStart, now);
     }
   });
   try {

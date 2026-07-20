@@ -93,6 +93,40 @@ export interface ProviderPreset {
   color: string;
 }
 
+export const MODEL_TIERS = ["top", "mid", "low", "free"] as const;
+export type ModelTier = (typeof MODEL_TIERS)[number];
+
+export const MODEL_RELEASE_DATE_CONFIDENCES = [
+  "verified",
+  "corroborated",
+  "unverified",
+] as const;
+export type ModelReleaseDateConfidence =
+  (typeof MODEL_RELEASE_DATE_CONFIDENCES)[number];
+
+export type CatalogModelStatus = "current" | "legacy" | "unverified";
+
+/**
+ * Lifecycle evidence is kept separate from mutable aliases and pricing. In
+ * particular, `providerCatalogCreatedAt` is the date on which a gateway
+ * catalog first listed a model; it is not asserted to be the upstream model's
+ * release date.
+ */
+export interface CatalogModelLifecycle {
+  /** Upstream model release date in ISO-8601 form, when independently sourced. */
+  releaseDate?: string;
+  releaseDateSource?: string;
+  releaseDateConfidence?: ModelReleaseDateConfidence;
+  /** Provider/gateway catalog timestamp, not an upstream release date. */
+  providerCatalogCreatedAt?: string;
+  deprecatedAt?: string;
+  sunsetAt?: string;
+  expiresAt?: string;
+  /** Limited-access models must not appear as generally selectable options. */
+  restricted?: boolean;
+  restrictionReason?: string;
+}
+
 export const PROVIDER_PRESETS: ProviderPreset[] = [
   {
     id: "anthropic",
@@ -256,7 +290,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
   },
 ];
 
-export interface CatalogModel {
+export interface CatalogModel extends CatalogModelLifecycle {
   name: string;
   /** Mutable provider aliases that resolve to this concrete catalog model. */
   aliases?: string[];
@@ -291,6 +325,8 @@ export interface CatalogModel {
    * parameter and it must be omitted; `undefined` means catalog-unknown.
    */
   temperatureRange?: TemperatureRange | null;
+  /** Product-level quality/cost grouping for model comparison and evaluation. */
+  tier: ModelTier;
   added?: boolean;
   /** Official price source and the date on which this snapshot was checked. */
   priceSource?: string;
@@ -331,6 +367,11 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderId, CatalogModel[]> = {
   anthropic: [
     {
       name: "claude-fable-5",
+      tier: "top",
+      releaseDate: "2026-06-09",
+      releaseDateSource:
+        "https://www.anthropic.com/news/claude-fable-5-mythos-5",
+      releaseDateConfidence: "verified",
       ctx: 1_000_000,
       out: 128_000,
       inP: 10,
@@ -357,6 +398,13 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderId, CatalogModel[]> = {
     },
     {
       name: "claude-mythos-5",
+      tier: "top",
+      releaseDate: "2026-06-09",
+      releaseDateSource:
+        "https://www.anthropic.com/news/claude-fable-5-mythos-5",
+      releaseDateConfidence: "verified",
+      restricted: true,
+      restrictionReason: "Invitation-only limited availability",
       ctx: 1_000_000,
       out: 128_000,
       inP: 10,
@@ -382,6 +430,10 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderId, CatalogModel[]> = {
     },
     {
       name: "claude-opus-4-8",
+      tier: "top",
+      releaseDate: "2026-05-28",
+      releaseDateSource: "https://www.anthropic.com/news/claude-opus-4-8",
+      releaseDateConfidence: "verified",
       ctx: 1_000_000,
       out: 128_000,
       inP: 5,
@@ -406,6 +458,10 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderId, CatalogModel[]> = {
     },
     {
       name: "claude-sonnet-5",
+      tier: "mid",
+      releaseDate: "2026-06-30",
+      releaseDateSource: "https://www.anthropic.com/news/claude-sonnet-5",
+      releaseDateConfidence: "verified",
       ctx: 1_000_000,
       out: 128_000,
       inP: 2,
@@ -439,6 +495,10 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderId, CatalogModel[]> = {
     },
     {
       name: "claude-haiku-4-5",
+      tier: "low",
+      releaseDate: "2025-10-15",
+      releaseDateSource: "https://www.anthropic.com/news/claude-haiku-4-5",
+      releaseDateConfidence: "verified",
       ctx: 200_000,
       out: 64_000,
       inP: 1,
@@ -460,6 +520,10 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderId, CatalogModel[]> = {
     },
     {
       name: "claude-sonnet-4-5",
+      tier: "mid",
+      releaseDate: "2025-09-29",
+      releaseDateSource: "https://www.anthropic.com/news/claude-sonnet-4-5",
+      releaseDateConfidence: "verified",
       ctx: 200_000,
       out: 64_000,
       inP: 3,
@@ -481,6 +545,10 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderId, CatalogModel[]> = {
     },
     {
       name: "claude-opus-4",
+      tier: "top",
+      releaseDate: "2025-05-22",
+      releaseDateSource: "https://www.anthropic.com/news/claude-4",
+      releaseDateConfidence: "verified",
       ctx: 200_000,
       out: 32_000,
       inP: 15,
@@ -504,6 +572,10 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderId, CatalogModel[]> = {
   openai: [
     {
       name: "gpt-5.6-sol",
+      tier: "top",
+      releaseDate: "2026-07-09",
+      releaseDateSource: "https://openai.com/index/gpt-5-6/",
+      releaseDateConfidence: "verified",
       aliases: ["gpt-5.6"],
       ctx: 1_050_000,
       out: 128_000,
@@ -542,6 +614,10 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderId, CatalogModel[]> = {
     },
     {
       name: "gpt-5.6-terra",
+      tier: "mid",
+      releaseDate: "2026-07-09",
+      releaseDateSource: "https://openai.com/index/gpt-5-6/",
+      releaseDateConfidence: "verified",
       ctx: 1_050_000,
       out: 128_000,
       inP: 2.5,
@@ -578,6 +654,10 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderId, CatalogModel[]> = {
     },
     {
       name: "gpt-5.6-luna",
+      tier: "low",
+      releaseDate: "2026-07-09",
+      releaseDateSource: "https://openai.com/index/gpt-5-6/",
+      releaseDateConfidence: "verified",
       ctx: 1_050_000,
       out: 128_000,
       inP: 1,
@@ -614,6 +694,11 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderId, CatalogModel[]> = {
     },
     {
       name: "gpt-5.4-mini",
+      tier: "low",
+      releaseDate: "2026-03-17",
+      releaseDateSource:
+        "https://openai.com/index/introducing-gpt-5-4-mini-and-nano/",
+      releaseDateConfidence: "verified",
       ctx: 400_000,
       out: 128_000,
       inP: 0.75,
@@ -634,6 +719,11 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderId, CatalogModel[]> = {
   openrouter: [
     {
       name: "openai/gpt-5.6-sol",
+      tier: "top",
+      releaseDate: "2026-07-09",
+      releaseDateSource: "https://openai.com/index/gpt-5-6/",
+      releaseDateConfidence: "verified",
+      providerCatalogCreatedAt: "2026-07-09T09:54:10Z",
       ctx: 1_050_000,
       out: 128_000,
       inP: 5,
@@ -671,6 +761,11 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderId, CatalogModel[]> = {
     },
     {
       name: "openai/gpt-5.6-sol-pro",
+      tier: "top",
+      releaseDate: "2026-07-09",
+      releaseDateSource: "https://openai.com/index/gpt-5-6/",
+      releaseDateConfidence: "verified",
+      providerCatalogCreatedAt: "2026-07-09T09:54:14Z",
       ctx: 1_050_000,
       out: 128_000,
       inP: 5,
@@ -708,6 +803,11 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderId, CatalogModel[]> = {
     },
     {
       name: "openai/gpt-5.6-terra",
+      tier: "mid",
+      releaseDate: "2026-07-09",
+      releaseDateSource: "https://openai.com/index/gpt-5-6/",
+      releaseDateConfidence: "verified",
+      providerCatalogCreatedAt: "2026-07-09T09:54:17Z",
       ctx: 1_050_000,
       out: 128_000,
       inP: 2.5,
@@ -745,6 +845,11 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderId, CatalogModel[]> = {
     },
     {
       name: "openai/gpt-5.6-terra-pro",
+      tier: "mid",
+      releaseDate: "2026-07-09",
+      releaseDateSource: "https://openai.com/index/gpt-5-6/",
+      releaseDateConfidence: "verified",
+      providerCatalogCreatedAt: "2026-07-09T09:54:21Z",
       ctx: 1_050_000,
       out: 128_000,
       inP: 2.5,
@@ -782,6 +887,11 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderId, CatalogModel[]> = {
     },
     {
       name: "openai/gpt-5.6-luna",
+      tier: "low",
+      releaseDate: "2026-07-09",
+      releaseDateSource: "https://openai.com/index/gpt-5-6/",
+      releaseDateConfidence: "verified",
+      providerCatalogCreatedAt: "2026-07-09T09:54:24Z",
       ctx: 1_050_000,
       out: 128_000,
       inP: 1,
@@ -819,6 +929,11 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderId, CatalogModel[]> = {
     },
     {
       name: "openai/gpt-5.6-luna-pro",
+      tier: "low",
+      releaseDate: "2026-07-09",
+      releaseDateSource: "https://openai.com/index/gpt-5-6/",
+      releaseDateConfidence: "verified",
+      providerCatalogCreatedAt: "2026-07-09T09:54:27Z",
       ctx: 1_050_000,
       out: 128_000,
       inP: 1,
@@ -856,6 +971,11 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderId, CatalogModel[]> = {
     },
     {
       name: "openai/gpt-oss-120b",
+      tier: "low",
+      releaseDate: "2025-08-05",
+      releaseDateSource: "https://openai.com/index/introducing-gpt-oss/",
+      releaseDateConfidence: "verified",
+      providerCatalogCreatedAt: "2025-08-05T17:17:11Z",
       ctx: 131_072,
       out: 65_536,
       inP: 0.037,
@@ -872,6 +992,8 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderId, CatalogModel[]> = {
     },
     {
       name: "google/gemini-3.1-pro-preview",
+      tier: "top",
+      providerCatalogCreatedAt: "2026-02-19T14:00:27Z",
       ctx: 1_048_576,
       out: 65_536,
       inP: 2,
@@ -899,6 +1021,11 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderId, CatalogModel[]> = {
     },
     {
       name: "anthropic/claude-sonnet-5",
+      tier: "mid",
+      releaseDate: "2026-06-30",
+      releaseDateSource: "https://www.anthropic.com/news/claude-sonnet-5",
+      releaseDateConfidence: "verified",
+      providerCatalogCreatedAt: "2026-06-30T18:11:23Z",
       ctx: 1_000_000,
       out: 128_000,
       inP: 2,
@@ -923,6 +1050,12 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderId, CatalogModel[]> = {
     },
     {
       name: "anthropic/claude-fable-5",
+      tier: "top",
+      releaseDate: "2026-06-09",
+      releaseDateSource:
+        "https://www.anthropic.com/news/claude-fable-5-mythos-5",
+      releaseDateConfidence: "verified",
+      providerCatalogCreatedAt: "2026-06-09T12:18:35Z",
       ctx: 1_000_000,
       out: 128_000,
       inP: 10,
@@ -948,6 +1081,11 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderId, CatalogModel[]> = {
     },
     {
       name: "anthropic/claude-opus-4.8",
+      tier: "top",
+      releaseDate: "2026-05-28",
+      releaseDateSource: "https://www.anthropic.com/news/claude-opus-4-8",
+      releaseDateConfidence: "verified",
+      providerCatalogCreatedAt: "2026-05-27T18:04:51Z",
       ctx: 1_000_000,
       out: 128_000,
       inP: 5,
@@ -957,9 +1095,9 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderId, CatalogModel[]> = {
       reasoning: true,
       reasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
       defaultReasoningEffort: "medium",
-      temperatureRange: { min: 0, max: 1 },
+      temperatureRange: null,
       priceSource: "https://openrouter.ai/api/v1/models",
-      priceAsOf: "2026-07-15",
+      priceAsOf: "2026-07-19",
       pricing: [
         {
           input: 5,
@@ -972,6 +1110,11 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderId, CatalogModel[]> = {
     },
     {
       name: "anthropic/claude-opus-4.8-fast",
+      tier: "top",
+      releaseDate: "2026-05-28",
+      releaseDateSource: "https://www.anthropic.com/news/claude-opus-4-8",
+      releaseDateConfidence: "verified",
+      providerCatalogCreatedAt: "2026-05-27T20:28:23Z",
       ctx: 1_000_000,
       out: 128_000,
       inP: 10,
@@ -995,7 +1138,37 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderId, CatalogModel[]> = {
       ],
     },
     {
+      name: "moonshotai/kimi-k3",
+      tier: "top",
+      releaseDate: "2026-07-16",
+      releaseDateSource: "https://www.kimi.com/blog/kimi-k3",
+      releaseDateConfidence: "corroborated",
+      providerCatalogCreatedAt: "2026-07-16T15:30:58Z",
+      ctx: 1_048_576,
+      // OpenRouter publishes the exact context window but no routed output
+      // ceiling. Keep this unknown instead of copying Moonshot's direct cap.
+      out: null,
+      inP: 3,
+      outP: 15,
+      vision: true,
+      tools: true,
+      reasoning: true,
+      reasoningMandatory: true,
+      reasoningDefaultEnabled: true,
+      reasoningEfforts: ["max"],
+      defaultReasoningEffort: "max",
+      temperatureRange: null,
+      priceSource: "https://openrouter.ai/api/v1/models",
+      priceAsOf: "2026-07-19",
+      pricing: [{ input: 3, cachedInput: 0.3, output: 15 }],
+    },
+    {
       name: "moonshotai/kimi-k2.7-code",
+      tier: "mid",
+      releaseDate: "2026-06-25",
+      releaseDateSource: "https://www.kimi.com/resources/kimi-k2-7-code",
+      releaseDateConfidence: "verified",
+      providerCatalogCreatedAt: "2026-06-12T12:12:41Z",
       ctx: 262_144,
       out: 262_144,
       inP: 0.719,
@@ -1011,6 +1184,11 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderId, CatalogModel[]> = {
     },
     {
       name: "moonshotai/kimi-k2.6",
+      tier: "mid",
+      releaseDate: "2026-04-20",
+      releaseDateSource: "https://www.kimi.com/blog/kimi-k2-6",
+      releaseDateConfidence: "verified",
+      providerCatalogCreatedAt: "2026-04-20T15:36:42Z",
       ctx: 262_144,
       out: 262_144,
       inP: 0.66,
@@ -1027,25 +1205,35 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderId, CatalogModel[]> = {
     },
     {
       name: "z-ai/glm-5.2",
+      tier: "top",
+      releaseDate: "2026-06-16",
+      releaseDateSource: "https://z.ai/blog/glm-5.2",
+      releaseDateConfidence: "verified",
+      providerCatalogCreatedAt: "2026-06-16T17:45:30Z",
       ctx: 1_048_576,
       out: 131_072,
-      inP: 0.8694,
-      outP: 2.7324,
+      inP: 0.2912,
+      outP: 0.9152,
       vision: false,
       tools: true,
       reasoning: true,
       reasoningDefaultEnabled: true,
-      reasoningEfforts: ["none", "high", "xhigh"],
+      reasoningEfforts: ["high", "xhigh"],
       defaultReasoningEffort: "high",
       temperatureRange: { min: 0, max: 1 },
       priceSource: "https://openrouter.ai/api/v1/models",
-      priceAsOf: "2026-07-15",
-      pricing: [{ input: 0.8694, cachedInput: 0.16146, output: 2.7324 }],
+      priceAsOf: "2026-07-19",
+      pricing: [{ input: 0.2912, cachedInput: 0.05408, output: 0.9152 }],
     },
     {
       name: "deepseek/deepseek-v4-pro",
+      tier: "top",
+      releaseDate: "2026-04-24",
+      releaseDateSource: "https://api-docs.deepseek.com/news/news260424/",
+      releaseDateConfidence: "verified",
+      providerCatalogCreatedAt: "2026-04-24T03:17:59Z",
       ctx: 1_048_576,
-      out: 393_216,
+      out: 384_000,
       inP: 0.435,
       outP: 0.87,
       vision: false,
@@ -1060,8 +1248,14 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderId, CatalogModel[]> = {
     },
     {
       name: "deepseek/deepseek-v4-flash",
+      tier: "mid",
+      releaseDate: "2026-04-24",
+      releaseDateSource: "https://api-docs.deepseek.com/news/news260424/",
+      releaseDateConfidence: "verified",
+      providerCatalogCreatedAt: "2026-04-24T03:17:46Z",
       ctx: 1_048_576,
-      out: 393_216,
+      // The current routed endpoint does not advertise a completion cap.
+      out: null,
       inP: 0.098,
       outP: 0.196,
       vision: false,
@@ -1075,7 +1269,25 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderId, CatalogModel[]> = {
       pricing: [{ input: 0.098, cachedInput: 0.02, output: 0.196 }],
     },
     {
+      name: "openrouter/free",
+      tier: "free",
+      providerCatalogCreatedAt: "2026-02-01T03:43:47Z",
+      ctx: 200_000,
+      out: null,
+      inP: 0,
+      outP: 0,
+      vision: true,
+      tools: true,
+      reasoning: true,
+      temperatureRange: { min: 0, max: 2 },
+      priceSource: "https://openrouter.ai/api/v1/models",
+      priceAsOf: "2026-07-18",
+      pricing: [{ input: 0, output: 0 }],
+    },
+    {
       name: "nvidia/nemotron-3-ultra-550b-a55b:free",
+      tier: "free",
+      providerCatalogCreatedAt: "2026-06-04T05:33:28Z",
       ctx: 1_048_576,
       out: 65_536,
       inP: 0,
@@ -1092,6 +1304,7 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderId, CatalogModel[]> = {
   gemini: [
     {
       name: "gemini-3.5-flash",
+      tier: "mid",
       ctx: 1_048_576,
       out: 65_536,
       inP: 0.75,
@@ -1109,6 +1322,7 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderId, CatalogModel[]> = {
     },
     {
       name: "gemini-3.1-flash-lite",
+      tier: "low",
       ctx: 1_048_576,
       out: 65_536,
       inP: 0.25,
@@ -1125,6 +1339,7 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderId, CatalogModel[]> = {
     },
     {
       name: "gemini-3.1-pro-preview",
+      tier: "top",
       ctx: 1_048_576,
       out: 65_536,
       inP: 2,
@@ -1153,6 +1368,7 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderId, CatalogModel[]> = {
     },
     {
       name: "gemini-3-flash-preview",
+      tier: "mid",
       ctx: 1_048_576,
       out: 65_536,
       inP: 0.5,
@@ -1171,6 +1387,7 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderId, CatalogModel[]> = {
   mistral: [
     {
       name: "mistral-large-latest",
+      tier: "top",
       ctx: 128_000,
       out: 8192,
       inP: 2,
@@ -1181,6 +1398,7 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderId, CatalogModel[]> = {
     },
     {
       name: "mistral-small-latest",
+      tier: "low",
       ctx: 128_000,
       out: 8192,
       inP: 0.2,
@@ -1193,6 +1411,7 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderId, CatalogModel[]> = {
   groq: [
     {
       name: "llama-3.3-70b-versatile",
+      tier: "mid",
       ctx: 128_000,
       out: 32_768,
       inP: 0.59,
@@ -1203,6 +1422,7 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderId, CatalogModel[]> = {
     },
     {
       name: "llama-3.1-8b-instant",
+      tier: "low",
       ctx: 128_000,
       out: 8192,
       inP: 0.05,
@@ -1213,6 +1433,7 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderId, CatalogModel[]> = {
     },
     {
       name: "mixtral-8x7b-32768",
+      tier: "low",
       ctx: 32_768,
       out: 32_768,
       inP: 0.24,
@@ -1225,6 +1446,7 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderId, CatalogModel[]> = {
   together: [
     {
       name: "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+      tier: "mid",
       ctx: 128_000,
       out: 8192,
       inP: 0.88,
@@ -1235,6 +1457,7 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderId, CatalogModel[]> = {
     },
     {
       name: "Qwen/Qwen2.5-72B-Instruct-Turbo",
+      tier: "mid",
       ctx: 32_768,
       out: 8192,
       inP: 1.2,
@@ -1247,8 +1470,12 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderId, CatalogModel[]> = {
   deepseek: [
     {
       name: "deepseek-v4-pro",
+      tier: "top",
+      releaseDate: "2026-04-24",
+      releaseDateSource: "https://api-docs.deepseek.com/news/news260424/",
+      releaseDateConfidence: "verified",
       ctx: 1_048_576,
-      out: 393_216,
+      out: 384_000,
       inP: 0.435,
       outP: 0.87,
       vision: false,
@@ -1265,8 +1492,12 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderId, CatalogModel[]> = {
     },
     {
       name: "deepseek-v4-flash",
+      tier: "mid",
+      releaseDate: "2026-04-24",
+      releaseDateSource: "https://api-docs.deepseek.com/news/news260424/",
+      releaseDateConfidence: "verified",
       ctx: 1_048_576,
-      out: 393_216,
+      out: 384_000,
       inP: 0.14,
       outP: 0.28,
       vision: false,
@@ -1283,7 +1514,34 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderId, CatalogModel[]> = {
   ],
   moonshot: [
     {
+      name: "kimi-k3",
+      tier: "top",
+      releaseDate: "2026-07-16",
+      releaseDateSource: "https://www.kimi.com/blog/kimi-k3",
+      releaseDateConfidence: "corroborated",
+      ctx: 1_048_576,
+      out: 1_048_576,
+      inP: 3,
+      outP: 15,
+      vision: true,
+      tools: true,
+      reasoning: true,
+      reasoningMandatory: true,
+      reasoningDefaultEnabled: true,
+      reasoningEfforts: ["max"],
+      defaultReasoningEffort: "max",
+      temperatureRange: null,
+      added: true,
+      priceSource: "https://platform.kimi.ai/docs/pricing/chat-k3",
+      priceAsOf: "2026-07-19",
+      pricing: [{ input: 3, cachedInput: 0.3, output: 15 }],
+    },
+    {
       name: "kimi-k2.7-code",
+      tier: "mid",
+      releaseDate: "2026-06-25",
+      releaseDateSource: "https://www.kimi.com/resources/kimi-k2-7-code",
+      releaseDateConfidence: "verified",
       ctx: 262_144,
       out: null,
       inP: 0.95,
@@ -1299,6 +1557,10 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderId, CatalogModel[]> = {
     },
     {
       name: "kimi-k2.7-code-highspeed",
+      tier: "mid",
+      releaseDate: "2026-06-25",
+      releaseDateSource: "https://www.kimi.com/resources/kimi-k2-7-code",
+      releaseDateConfidence: "verified",
       ctx: 262_144,
       out: null,
       inP: 1.9,
@@ -1314,6 +1576,10 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderId, CatalogModel[]> = {
     },
     {
       name: "kimi-k2.6",
+      tier: "mid",
+      releaseDate: "2026-04-20",
+      releaseDateSource: "https://www.kimi.com/blog/kimi-k2-6",
+      releaseDateConfidence: "verified",
       ctx: 262_144,
       out: null,
       inP: 0.95,
@@ -1321,7 +1587,6 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderId, CatalogModel[]> = {
       vision: true,
       tools: true,
       reasoning: true,
-      added: true,
       reasoningEfforts: ["none"],
       reasoningDefaultEnabled: true,
       temperatureRange: null,
@@ -1333,7 +1598,13 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderId, CatalogModel[]> = {
   zai: [
     {
       name: "glm-5.2",
-      ctx: 1_048_576,
+      tier: "top",
+      releaseDate: "2026-06-16",
+      releaseDateSource: "https://docs.z.ai/release-notes/new-released",
+      releaseDateConfidence: "verified",
+      // Z.AI's direct integration contract uses exactly 1,000,000 tokens.
+      // OpenRouter separately advertises 1,048,576 for its routed entry.
+      ctx: 1_000_000,
       out: 131_072,
       inP: 1.4,
       outP: 4.4,
@@ -1341,15 +1612,20 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderId, CatalogModel[]> = {
       tools: true,
       reasoning: true,
       added: true,
-      reasoningEfforts: ["none"],
+      reasoningEfforts: ["none", "high", "max"],
+      defaultReasoningEffort: "max",
       reasoningDefaultEnabled: true,
       temperatureRange: { min: 0, max: 1 },
       priceSource: "https://docs.z.ai/guides/overview/pricing",
-      priceAsOf: "2026-07-15",
+      priceAsOf: "2026-07-19",
       pricing: [{ input: 1.4, cachedInput: 0.26, output: 4.4 }],
     },
     {
       name: "glm-5.1",
+      tier: "mid",
+      releaseDate: "2026-04-07",
+      releaseDateSource: "https://docs.z.ai/release-notes/new-released",
+      releaseDateConfidence: "verified",
       ctx: 204_800,
       out: 131_072,
       inP: 1.4,
@@ -1366,6 +1642,10 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderId, CatalogModel[]> = {
     },
     {
       name: "glm-5",
+      tier: "mid",
+      releaseDate: "2026-02-12",
+      releaseDateSource: "https://docs.z.ai/release-notes/new-released",
+      releaseDateConfidence: "verified",
       ctx: 204_800,
       out: 131_072,
       inP: 1,
@@ -1382,6 +1662,10 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderId, CatalogModel[]> = {
     },
     {
       name: "glm-5-turbo",
+      tier: "mid",
+      releaseDate: "2026-03-15",
+      releaseDateSource: "https://docs.z.ai/release-notes/new-released",
+      releaseDateConfidence: "verified",
       ctx: 204_800,
       out: 131_072,
       inP: 1.2,
@@ -1396,10 +1680,131 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderId, CatalogModel[]> = {
       priceAsOf: "2026-07-15",
       pricing: [{ input: 1.2, cachedInput: 0.24, output: 4 }],
     },
+    {
+      name: "glm-4.7",
+      tier: "mid",
+      releaseDate: "2025-12-22",
+      releaseDateSource: "https://docs.z.ai/release-notes/new-released",
+      releaseDateConfidence: "verified",
+      ctx: 204_800,
+      out: 131_072,
+      inP: 0.6,
+      outP: 2.2,
+      vision: false,
+      tools: true,
+      reasoning: true,
+      reasoningEfforts: ["none"],
+      reasoningDefaultEnabled: true,
+      temperatureRange: { min: 0, max: 1 },
+      priceSource: "https://docs.z.ai/guides/overview/pricing",
+      priceAsOf: "2026-07-18",
+      pricing: [{ input: 0.6, cachedInput: 0.11, output: 2.2 }],
+    },
+    {
+      name: "glm-4.7-flashx",
+      tier: "low",
+      releaseDate: "2025-12-22",
+      releaseDateSource: "https://docs.z.ai/release-notes/new-released",
+      releaseDateConfidence: "corroborated",
+      ctx: 204_800,
+      out: 131_072,
+      inP: 0.07,
+      outP: 0.4,
+      vision: false,
+      tools: true,
+      reasoning: true,
+      reasoningEfforts: ["none"],
+      reasoningDefaultEnabled: true,
+      temperatureRange: { min: 0, max: 1 },
+      priceSource: "https://docs.z.ai/guides/overview/pricing",
+      priceAsOf: "2026-07-18",
+      pricing: [{ input: 0.07, cachedInput: 0.01, output: 0.4 }],
+    },
+    {
+      name: "glm-4.5-air",
+      tier: "low",
+      releaseDate: "2025-07-28",
+      releaseDateSource: "https://docs.z.ai/release-notes/new-released",
+      releaseDateConfidence: "verified",
+      ctx: 131_072,
+      out: 98_304,
+      inP: 0.2,
+      outP: 1.1,
+      vision: false,
+      tools: true,
+      reasoning: true,
+      reasoningEfforts: ["none"],
+      reasoningDefaultEnabled: true,
+      temperatureRange: { min: 0, max: 1 },
+      priceSource: "https://docs.z.ai/guides/overview/pricing",
+      priceAsOf: "2026-07-18",
+      pricing: [{ input: 0.2, cachedInput: 0.03, output: 1.1 }],
+    },
+    {
+      name: "glm-4.7-flash",
+      tier: "free",
+      releaseDate: "2026-01-19",
+      releaseDateSource: "https://docs.z.ai/release-notes/new-released",
+      releaseDateConfidence: "verified",
+      ctx: 204_800,
+      out: 131_072,
+      inP: 0,
+      outP: 0,
+      vision: false,
+      tools: true,
+      reasoning: true,
+      reasoningEfforts: ["none"],
+      reasoningDefaultEnabled: true,
+      temperatureRange: { min: 0, max: 1 },
+      priceSource: "https://docs.z.ai/guides/overview/pricing",
+      priceAsOf: "2026-07-18",
+      pricing: [{ input: 0, cachedInput: 0, output: 0 }],
+    },
+    {
+      name: "glm-4.5-flash",
+      tier: "free",
+      releaseDate: "2025-07-28",
+      releaseDateSource: "https://docs.z.ai/release-notes/new-released",
+      releaseDateConfidence: "corroborated",
+      ctx: 131_072,
+      out: 98_304,
+      inP: 0,
+      outP: 0,
+      vision: false,
+      tools: true,
+      reasoning: true,
+      reasoningEfforts: ["none"],
+      reasoningDefaultEnabled: true,
+      temperatureRange: { min: 0, max: 1 },
+      priceSource: "https://docs.z.ai/guides/overview/pricing",
+      priceAsOf: "2026-07-18",
+      pricing: [{ input: 0, cachedInput: 0, output: 0 }],
+    },
+    {
+      name: "glm-4.6v-flash",
+      tier: "free",
+      releaseDate: "2025-12-08",
+      releaseDateSource: "https://docs.z.ai/release-notes/new-released",
+      releaseDateConfidence: "corroborated",
+      ctx: 131_072,
+      out: 32_768,
+      inP: 0,
+      outP: 0,
+      vision: true,
+      tools: true,
+      reasoning: true,
+      reasoningEfforts: ["none"],
+      reasoningDefaultEnabled: true,
+      temperatureRange: { min: 0, max: 1 },
+      priceSource: "https://docs.z.ai/guides/overview/pricing",
+      priceAsOf: "2026-07-18",
+      pricing: [{ input: 0, cachedInput: 0, output: 0 }],
+    },
   ],
   qwen: [
     {
       name: "qwen-max",
+      tier: "top",
       ctx: 32_768,
       out: 8192,
       inP: 2.4,
@@ -1410,6 +1815,7 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderId, CatalogModel[]> = {
     },
     {
       name: "qwen-plus",
+      tier: "mid",
       ctx: 131_072,
       out: 8192,
       inP: 0.4,
@@ -1420,6 +1826,7 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderId, CatalogModel[]> = {
     },
     {
       name: "qwen-turbo",
+      tier: "low",
       ctx: 1_000_000,
       out: 8192,
       inP: 0.05,
@@ -1432,6 +1839,7 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderId, CatalogModel[]> = {
   azure: [
     {
       name: "gpt-4o",
+      tier: "mid",
       ctx: 128_000,
       out: 16_384,
       inP: 2.5,
@@ -1442,6 +1850,7 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderId, CatalogModel[]> = {
     },
     {
       name: "gpt-4o-mini",
+      tier: "low",
       ctx: 128_000,
       out: 16_384,
       inP: 0.15,
@@ -1457,6 +1866,7 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderId, CatalogModel[]> = {
   mock: [
     {
       name: "mock-model-v1",
+      tier: "free",
       ctx: 8192,
       out: 4096,
       inP: 0,
@@ -1469,6 +1879,194 @@ export const PROVIDER_MODEL_CATALOG: Record<ProviderId, CatalogModel[]> = {
     },
   ],
 };
+
+export const CURRENT_MODEL_MAX_AGE_DAYS = 365;
+
+export interface CatalogModelPolicy {
+  status: CatalogModelStatus;
+  selectable: boolean;
+  reason:
+    | "current"
+    | "unverified"
+    | "older_than_365_days"
+    | "deprecated"
+    | "sunset"
+    | "expired"
+    | "restricted";
+  /** Date used for the rolling-age decision, without changing its provenance. */
+  ageEvidenceDate: string | null;
+}
+
+function parseLifecycleDate(value: string | undefined): Date | null {
+  if (!value) return null;
+  const parsed = new Date(value);
+  return Number.isFinite(parsed.getTime()) ? parsed : null;
+}
+
+function startOfUtcDay(value: Date): Date {
+  return new Date(
+    Date.UTC(value.getUTCFullYear(), value.getUTCMonth(), value.getUTCDate()),
+  );
+}
+
+function hasReached(value: string | undefined, asOf: Date): boolean {
+  const date = parseLifecycleDate(value);
+  return date !== null && date.getTime() <= asOf.getTime();
+}
+
+/**
+ * Apply the rolling 365-day selection policy at a caller-supplied instant.
+ * Date-only release values are compared as UTC calendar days, so a model
+ * released exactly 365 days ago remains current for the whole boundary day.
+ *
+ * A provider catalog timestamp is only a conservative age signal: when it is
+ * older than the cutoff, the model necessarily existed outside the window and
+ * is legacy. It remains separately identified as provider-catalog evidence.
+ */
+export function catalogModelPolicy(
+  model: CatalogModelLifecycle,
+  asOf: Date = new Date(),
+): CatalogModelPolicy {
+  const cutoff = startOfUtcDay(asOf);
+  cutoff.setUTCDate(cutoff.getUTCDate() - CURRENT_MODEL_MAX_AGE_DAYS);
+  const releaseDate = parseLifecycleDate(model.releaseDate);
+  const providerCatalogDate = parseLifecycleDate(
+    model.providerCatalogCreatedAt,
+  );
+  const ageEvidenceDate = releaseDate
+    ? (model.releaseDate ?? null)
+    : providerCatalogDate
+      ? (model.providerCatalogCreatedAt ?? null)
+      : null;
+  const evidenceDate = releaseDate ?? providerCatalogDate;
+  let agePolicy: CatalogModelPolicy;
+  if (!ageEvidenceDate || !evidenceDate) {
+    agePolicy = {
+      status: "unverified",
+      selectable: true,
+      reason: "unverified",
+      ageEvidenceDate: null,
+    };
+  } else if (startOfUtcDay(evidenceDate).getTime() < cutoff.getTime()) {
+    agePolicy = {
+      status: "legacy",
+      selectable: false,
+      reason: "older_than_365_days",
+      ageEvidenceDate,
+    };
+  } else if (releaseDate) {
+    agePolicy = {
+      status: "current",
+      selectable: true,
+      reason: "current",
+      ageEvidenceDate,
+    };
+  } else {
+    // A recent gateway listing proves availability but not upstream recency.
+    agePolicy = {
+      status: "unverified",
+      selectable: true,
+      reason: "unverified",
+      ageEvidenceDate,
+    };
+  }
+
+  if (model.restricted) {
+    return {
+      ...agePolicy,
+      selectable: false,
+      reason: "restricted",
+    };
+  }
+  if (hasReached(model.deprecatedAt, asOf)) {
+    return {
+      ...agePolicy,
+      status: "legacy",
+      selectable: false,
+      reason: "deprecated",
+    };
+  }
+  if (hasReached(model.sunsetAt, asOf)) {
+    return {
+      ...agePolicy,
+      status: "legacy",
+      selectable: false,
+      reason: "sunset",
+    };
+  }
+  if (hasReached(model.expiresAt, asOf)) {
+    return {
+      ...agePolicy,
+      status: "legacy",
+      selectable: false,
+      reason: "expired",
+    };
+  }
+  return agePolicy;
+}
+
+export function catalogModelStatus(
+  model: CatalogModelLifecycle,
+  asOf: Date = new Date(),
+): CatalogModelStatus {
+  return catalogModelPolicy(model, asOf).status;
+}
+
+export function isCatalogModelSelectable(
+  model: CatalogModelLifecycle,
+  asOf: Date = new Date(),
+): boolean {
+  return catalogModelPolicy(model, asOf).selectable;
+}
+
+/** Only explicit zero-priced rows qualify as genuine free inference. */
+export function isFreeTierModel(
+  model: Pick<CatalogModel, "tier" | "inP" | "outP">,
+): boolean {
+  return model.tier === "free" && model.inP === 0 && model.outP === 0;
+}
+
+export function classifyCatalogModelTier(model: {
+  tier?: ModelTier;
+  inP: number;
+  outP: number;
+}): ModelTier | null {
+  if (model.tier) return model.tier;
+  return model.inP === 0 && model.outP === 0 ? "free" : null;
+}
+
+export function groupCatalogModelsByTier(
+  models: readonly CatalogModel[],
+): Record<ModelTier, CatalogModel[]> {
+  const grouped: Record<ModelTier, CatalogModel[]> = {
+    top: [],
+    mid: [],
+    low: [],
+    free: [],
+  };
+  for (const model of models) grouped[model.tier].push(model);
+  return grouped;
+}
+
+export function selectableModelsForProvider(
+  provider: ProviderId,
+  asOf: Date = new Date(),
+): CatalogModel[] {
+  return (PROVIDER_MODEL_CATALOG[provider] ?? []).filter((model) =>
+    isCatalogModelSelectable(model, asOf),
+  );
+}
+
+export function selectableProviderModelCatalog(
+  asOf: Date = new Date(),
+): Record<ProviderId, CatalogModel[]> {
+  return Object.fromEntries(
+    PROVIDER_IDS.map((provider) => [
+      provider,
+      selectableModelsForProvider(provider, asOf),
+    ]),
+  ) as Record<ProviderId, CatalogModel[]>;
+}
 
 /**
  * Resolve exact ids, mutable aliases, provider-qualified direct ids, and
@@ -1504,7 +2102,7 @@ export function findCatalogModel(
  * without a sensible default (custom, stubs).
  */
 export function defaultModelFor(provider: ProviderId): string | null {
-  const list = PROVIDER_MODEL_CATALOG[provider];
+  const list = selectableModelsForProvider(provider);
   if (!list || list.length === 0) return null;
   const added = list.find((m) => m.added);
   return (added ?? list[0])?.name ?? null;

@@ -17,12 +17,16 @@ import {
   useWorkflowRunProfile,
 } from "@/lib/hooks/useWorkflowAuthoring";
 import {
+  buildWorkflowPayloadGuide,
   buildWorkflowEventPayload,
   deriveWorkflowEntrypoints,
   parseWorkflowTestLimits,
   seedWorkflowInputValue,
   validateWorkflowInputValues,
   workflowInputControl,
+  workflowInputDisplayExample,
+  workflowInputIsRuntimeProvided,
+  type WorkflowPayloadGuide,
 } from "./workflow-runner";
 import styles from "./WorkflowRunConsole.module.css";
 
@@ -66,14 +70,29 @@ function defaultSubject(): string {
   return `WFT-${random}`;
 }
 
-function inputSeedForForm(input: WorkflowRunInputDescriptor): unknown {
-  const value = seedWorkflowInputValue(input);
+function inputValueForForm(
+  input: WorkflowRunInputDescriptor,
+  value: unknown,
+): unknown {
   const control = workflowInputControl(input);
   if (control === "json") return JSON.stringify(value, null, 2);
   if (control === "number") {
     return value === "" ? "" : String(value);
   }
   return value;
+}
+
+function inputSeedForForm(input: WorkflowRunInputDescriptor): unknown {
+  return inputValueForForm(input, seedWorkflowInputValue(input));
+}
+
+function compactExample(value: unknown, maxLength = 150): string {
+  if (value === undefined) return "not supplied";
+  const serialized = JSON.stringify(value);
+  if (!serialized) return String(value);
+  return serialized.length > maxLength
+    ? `${serialized.slice(0, maxLength - 1)}…`
+    : serialized;
 }
 
 function coerceInputValue(
@@ -205,6 +224,9 @@ export function WorkflowRunConsole({
     null,
   );
   const [copied, setCopied] = useState(false);
+  const [payloadExampleStatus, setPayloadExampleStatus] = useState<
+    "loaded" | "copied" | null
+  >(null);
   const causality = useEventCausality(liveReceipt?.eventId);
 
   const entrypoints =
@@ -217,6 +239,10 @@ export function WorkflowRunConsole({
       : (liveProfile.data?.warnings ?? []);
   const entrypoint = entrypoints.find(
     (candidate) => candidate.event === selectedEvent,
+  );
+  const payloadGuide = useMemo(
+    () => (entrypoint ? buildWorkflowPayloadGuide(entrypoint) : null),
+    [entrypoint],
   );
   const selectedAgentRun =
     result?.agentRuns.find((run) => run.id === selectedAgentRunId) ??
@@ -238,12 +264,15 @@ export function WorkflowRunConsole({
     }
     setInputValues(
       Object.fromEntries(
-        entrypoint.inputs.map((input) => [input.id, inputSeedForForm(input)]),
+        entrypoint.inputs
+          .filter((input) => !workflowInputIsRuntimeProvided(input))
+          .map((input) => [input.id, inputSeedForForm(input)]),
       ),
     );
     setRawPayload("{}");
     setShowRawPayload(entrypoint.requiresRawPayload);
     setFormError(null);
+    setPayloadExampleStatus(null);
   }, [entrypoint?.event]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
@@ -252,6 +281,7 @@ export function WorkflowRunConsole({
     setResultTab("summary");
     setSelectedAgentRunId(null);
     setFormError(null);
+    setPayloadExampleStatus(null);
   }, [target]);
 
   const liveRuns = causality.data?.runs ?? [];
@@ -259,6 +289,54 @@ export function WorkflowRunConsole({
     liveRuns.length > 0 &&
     liveRuns.every((run) => TERMINAL_RUN_STATUSES.has(run.status));
   const pending = runTest.isPending || emitLive.isPending;
+
+  function showPayloadExampleStatus(status: "loaded" | "copied") {
+    setPayloadExampleStatus(status);
+    window.setTimeout(() => setPayloadExampleStatus(null), 1_800);
+  }
+
+  function loadPayloadExample() {
+    if (!entrypoint || !payloadGuide) return;
+    setInputValues(
+      Object.fromEntries(
+        entrypoint.inputs.map((input) => {
+          if (workflowInputIsRuntimeProvided(input)) {
+            return [input.id, undefined];
+          }
+          const example = payloadGuide.inputValues[input.id];
+          return [
+            input.id,
+            example === undefined
+              ? inputSeedForForm(input)
+              : inputValueForForm(input, example),
+          ];
+        }),
+      ),
+    );
+    setRawPayload(JSON.stringify(payloadGuide.rawPayload, null, 2));
+    if (
+      entrypoint.requiresRawPayload ||
+      Object.keys(payloadGuide.rawPayload).length > 0
+    ) {
+      setShowRawPayload(true);
+    }
+    setFormError(null);
+    showPayloadExampleStatus("loaded");
+  }
+
+  async function copyPayloadExample() {
+    if (!payloadGuide) return;
+    try {
+      await navigator.clipboard.writeText(
+        JSON.stringify(payloadGuide.eventPayload, null, 2),
+      );
+      showPayloadExampleStatus("copied");
+    } catch (error) {
+      setFormError(
+        `Could not copy the payload example: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
 
   function buildSubmission(): {
     inputs: Record<string, unknown>;
@@ -513,6 +591,15 @@ export function WorkflowRunConsole({
               title="Input variables"
               hint="Controls are generated from every listener's declared input ports."
             >
+              {entrypoint && payloadGuide ? (
+                <PayloadRecipe
+                  entrypoint={entrypoint}
+                  guide={payloadGuide}
+                  status={payloadExampleStatus}
+                  onLoad={loadPayloadExample}
+                  onCopy={() => void copyPayloadExample()}
+                />
+              ) : null}
               {entrypoint?.inputs.length ? (
                 <div style={{ display: "grid", gap: 11 }}>
                   {entrypoint.inputs.map((input) => (
@@ -520,12 +607,13 @@ export function WorkflowRunConsole({
                       key={input.id}
                       input={input}
                       value={inputValues[input.id]}
-                      onChange={(value) =>
+                      onChange={(value) => {
+                        setPayloadExampleStatus(null);
                         setInputValues((current) => ({
                           ...current,
                           [input.id]: value,
-                        }))
-                      }
+                        }));
+                      }}
                     />
                   ))}
                 </div>
@@ -547,14 +635,32 @@ export function WorkflowRunConsole({
                 ) : null}
               </button>
               {showRawPayload ? (
-                <textarea
-                  aria-label="Raw event payload JSON"
-                  value={rawPayload}
-                  onChange={(event) => setRawPayload(event.target.value)}
-                  rows={8}
-                  spellCheck={false}
-                  style={{ ...controlStyle, ...monoAreaStyle }}
-                />
+                <div style={{ display: "grid", gap: 7 }}>
+                  <div
+                    id="workflow-raw-payload-help"
+                    className={styles.rawPayloadHelp}
+                  >
+                    <strong>Advanced payload overlay</strong>
+                    <span>
+                      Enter extra top-level JSON or fields referenced by a path
+                      or template binding. Named controls are added
+                      automatically; the runtime-owned <code>inputs</code>{" "}
+                      envelope cannot be overridden here.
+                    </span>
+                  </div>
+                  <textarea
+                    aria-label="Raw event payload JSON"
+                    aria-describedby="workflow-raw-payload-help"
+                    value={rawPayload}
+                    onChange={(event) => {
+                      setRawPayload(event.target.value);
+                      setPayloadExampleStatus(null);
+                    }}
+                    rows={8}
+                    spellCheck={false}
+                    style={{ ...controlStyle, ...monoAreaStyle }}
+                  />
+                </div>
               ) : null}
             </SetupSection>
 
@@ -815,6 +921,155 @@ export function WorkflowRunConsole({
   );
 }
 
+function PayloadRecipe({
+  entrypoint,
+  guide,
+  status,
+  onLoad,
+  onCopy,
+}: {
+  entrypoint: WorkflowRunEntrypoint;
+  guide: WorkflowPayloadGuide;
+  status: "loaded" | "copied" | null;
+  onLoad: () => void;
+  onCopy: () => void;
+}) {
+  const requiredCount = guide.fields.filter((field) => field.required).length;
+  const hasFileInput = guide.fields.some((field) =>
+    field.type.startsWith("file"),
+  );
+  const [contractOpen, setContractOpen] = useState(
+    guide.fields.length > 0 && guide.fields.length <= 4,
+  );
+
+  useEffect(() => {
+    setContractOpen(guide.fields.length > 0 && guide.fields.length <= 4);
+  }, [entrypoint.event, guide.fields.length]);
+
+  return (
+    <div className={styles.payloadRecipe}>
+      <div className={styles.payloadRecipeHeader}>
+        <div style={{ minWidth: 0 }}>
+          <div className={styles.payloadRecipeEyebrow}>
+            <Icon name="code" size={11} />
+            PAYLOAD RECIPE
+            <Badge tone="signal">SCHEMA-GUIDED</Badge>
+          </div>
+          <strong className={styles.payloadRecipeTitle}>
+            Example event payload
+          </strong>
+          <p className={styles.payloadRecipeDescription}>
+            Use this shape to start <code>{entrypoint.event}</code>. Examples
+            prefer authored values, then derive safe placeholders from each
+            input schema and binding.
+          </p>
+        </div>
+        <div className={styles.payloadRecipeCounts}>
+          <span>{guide.fields.length} fields</span>
+          <span>{requiredCount} required</span>
+        </div>
+      </div>
+
+      <pre
+        className={styles.payloadRecipeCode}
+        aria-label={"Example payload for " + entrypoint.event}
+      >
+        {JSON.stringify(guide.eventPayload, null, 2)}
+      </pre>
+
+      <div className={styles.payloadRecipeActions}>
+        <Button
+          small
+          icon="replay"
+          onClick={onLoad}
+          title="Replace current input values and advanced JSON with this example"
+        >
+          Load example
+        </Button>
+        <Button small tone="ghost" icon="code" onClick={onCopy}>
+          Copy JSON
+        </Button>
+        <span
+          className={styles.payloadRecipeStatus}
+          role="status"
+          aria-live="polite"
+        >
+          {status === "loaded"
+            ? "Example loaded"
+            : status === "copied"
+              ? "Example copied"
+              : ""}
+        </span>
+      </div>
+
+      <details
+        className={styles.payloadContract}
+        open={contractOpen}
+        onToggle={(event) => setContractOpen(event.currentTarget.open)}
+      >
+        <summary>
+          Expected fields
+          <span>{guide.fields.length}</span>
+        </summary>
+        {guide.fields.length > 0 ? (
+          <div className={styles.payloadFieldList}>
+            {guide.fields.map((field) => {
+              return (
+                <div key={field.inputId} className={styles.payloadField}>
+                  <div className={styles.payloadFieldHeader}>
+                    <strong>{field.label}</strong>
+                    <code>{field.type}</code>
+                    {field.runtimeProvided ? (
+                      <Badge tone="blue">DERIVED</Badge>
+                    ) : field.required ? (
+                      <Badge tone="amber">REQUIRED</Badge>
+                    ) : (
+                      <Badge tone="muted">OPTIONAL</Badge>
+                    )}
+                    {field.sensitivity !== "none" ? (
+                      <Badge tone="amber">
+                        {field.sensitivity.toUpperCase()}
+                      </Badge>
+                    ) : null}
+                  </div>
+                  <div className={styles.payloadLocations}>
+                    {field.locations.map((location) => (
+                      <code key={location}>{location}</code>
+                    ))}
+                  </div>
+                  {field.description ? <p>{field.description}</p> : null}
+                  <div className={styles.payloadFieldExample}>
+                    <span>
+                      {field.runtimeProvided ? "Derived example" : "Example"}
+                    </span>
+                    <code>{compactExample(field.example)}</code>
+                    <span>{field.exampleSource}</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <div className={styles.payloadContractEmpty}>
+            No caller-supplied fields are declared. An empty JSON object is
+            valid.
+          </div>
+        )}
+      </details>
+
+      <div className={styles.payloadRecipeNote}>
+        Named controls populate both top-level keys and the canonical{" "}
+        <code>inputs</code> envelope. Use Raw event payload only for additional
+        fields or explicit path/template bindings. Derived fields are shown for
+        clarity but do not require a caller value.
+        {hasFileInput
+          ? " File contents must be selected with the file control and are not embedded in this example."
+          : ""}
+      </div>
+    </div>
+  );
+}
+
 function WorkflowInputField({
   input,
   value,
@@ -827,6 +1082,9 @@ function WorkflowInputField({
   const control = workflowInputControl(input);
   const schema = input.schema as Record<string, unknown>;
   const enumValues = Array.isArray(schema.enum) ? schema.enum : [];
+  const example = workflowInputDisplayExample(input);
+  const runtimeProvided = workflowInputIsRuntimeProvided(input);
+  const FieldContainer = runtimeProvided ? "div" : "label";
   const [fileError, setFileError] = useState<string | null>(null);
 
   async function selectFiles(files: FileList | null) {
@@ -864,7 +1122,7 @@ function WorkflowInputField({
   }
 
   return (
-    <label style={fieldLabelStyle}>
+    <FieldContainer style={fieldLabelStyle}>
       <span
         style={{
           display: "flex",
@@ -874,7 +1132,9 @@ function WorkflowInputField({
         }}
       >
         {input.label}
-        {input.required ? (
+        {runtimeProvided ? (
+          <Badge tone="blue">DERIVED</Badge>
+        ) : input.required ? (
           <span style={{ color: "var(--amber)" }}>*</span>
         ) : null}
         <Badge tone="muted">{input.kind.toUpperCase()}</Badge>
@@ -886,7 +1146,21 @@ function WorkflowInputField({
       {input.description ? (
         <span style={fieldHintStyle}>{input.description}</span>
       ) : null}
-      {control === "textarea" ? (
+      {runtimeProvided ? (
+        <div className={styles.runtimeInputNotice}>
+          <strong>No value to enter</strong>
+          <span>
+            The workflow derives this input at runtime from{" "}
+            {input.bindings
+              .map((binding) =>
+                binding.mode === "template"
+                  ? binding.expression
+                  : "an authored constant",
+              )
+              .join(" · ")}
+          </span>
+        </div>
+      ) : control === "textarea" ? (
         <textarea
           value={String(value ?? "")}
           onChange={(event) => onChange(event.target.value)}
@@ -963,6 +1237,11 @@ function WorkflowInputField({
       {input.ui?.helpText ? (
         <span style={fieldHintStyle}>{input.ui.helpText}</span>
       ) : null}
+      {control !== "file" ? (
+        <span className={styles.inputExample}>
+          Example <code>{compactExample(example, 120)}</code>
+        </span>
+      ) : null}
       <span style={fieldHintStyle}>
         Used by {input.consumers.join(", ")}
         {input.bindings.some((binding) => binding.mode !== "direct")
@@ -975,7 +1254,7 @@ function WorkflowInputField({
               .join(" · ")}`
           : ""}
       </span>
-    </label>
+    </FieldContainer>
   );
 }
 

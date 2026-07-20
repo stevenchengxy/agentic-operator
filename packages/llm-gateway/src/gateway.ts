@@ -10,7 +10,10 @@
  * finalized with normalized usage and exact/dated cost information.
  */
 
-import { PROVIDER_MODEL_CATALOG, type ProviderId } from "@agentic/contracts";
+import {
+  selectableModelsForProvider,
+  type ProviderId,
+} from "@agentic/contracts";
 import type {
   ChatRequest,
   ChatResponse,
@@ -19,10 +22,11 @@ import type {
   ProviderInfo,
 } from "./types";
 import { LLMError, isLLMError } from "./errors";
-import { assertBudgetAvailable, recordActualSpend } from "./budget";
+import { assertBudgetAvailable } from "./budget";
 import { calculateCost, normalizeUsage } from "./pricing";
 import {
   assertModelControls,
+  assertModelSelectable,
   isUnsupportedTemperatureError,
   normalizeModelRequest,
   omitTemperature,
@@ -33,6 +37,10 @@ import {
   newLogicalCallId,
   startAttempt,
 } from "./usage-ledger";
+import {
+  currentUsageAttribution,
+  mergeUsageAttribution,
+} from "./usage-attribution";
 
 export class LLMGateway {
   private readonly providers = new Map<ProviderId, ProviderAdapter>();
@@ -63,7 +71,7 @@ export class LLMGateway {
   listProviders(): ProviderInfo[] {
     const out: ProviderInfo[] = [];
     for (const [id, adapter] of this.providers) {
-      const catalog = PROVIDER_MODEL_CATALOG[id] ?? [];
+      const catalog = selectableModelsForProvider(id);
       out.push({
         id,
         name: adapter.name,
@@ -84,10 +92,24 @@ export class LLMGateway {
    */
   async chat(req: ChatRequest): Promise<ChatResponse> {
     const providers = this.resolveProviderChain(req);
+    if (this.config.requireUsageAttribution && !req.tenantId) {
+      throw new LLMError(
+        "tenantId is required for durable LLM usage accounting",
+        "accounting_error",
+        providers[0] ?? this.config.defaultProvider,
+      );
+    }
     const timeoutMs = req.timeoutMs ?? this.config.timeoutMs;
     let lastError: unknown = null;
-    const logicalCallId = newLogicalCallId();
-    let attemptNumber = 0;
+    const logicalCallId = req.routing?.logicalCallId ?? newLogicalCallId();
+    let attemptNumber = req.routing?.attemptBase ?? 0;
+    const attribution = mergeUsageAttribution(
+      req.tenantId ? { billingAccountId: req.tenantId } : undefined,
+      req.attribution,
+      // Authenticated server context wins over caller-supplied account and
+      // principal dimensions whenever a call originates in an API request.
+      currentUsageAttribution(),
+    );
 
     for (const id of providers) {
       const adapter = this.providers.get(id);
@@ -124,6 +146,7 @@ export class LLMGateway {
         effectiveReq = omitTemperature(effectiveReq);
       }
       if (resolvedModel) {
+        assertModelSelectable(id, resolvedModel);
         assertModelControls(id, resolvedModel, effectiveReq);
       }
       assertBudgetAvailable(req.tenantId, id);
@@ -135,12 +158,40 @@ export class LLMGateway {
         signal,
         providers: undefined,
         provider: id,
+        routing: {
+          ...req.routing,
+          effectiveTimeoutMs: timeoutMs,
+          controls: {
+            ...(effectiveReq.temperature !== undefined
+              ? { temperature: effectiveReq.temperature }
+              : {}),
+            ...(effectiveReq.maxTokens !== undefined
+              ? { maxTokens: effectiveReq.maxTokens }
+              : {}),
+            ...(effectiveReq.jsonMode !== undefined
+              ? { jsonMode: effectiveReq.jsonMode }
+              : {}),
+            ...(effectiveReq.reasoning !== undefined
+              ? { reasoning: effectiveReq.reasoning }
+              : {}),
+            ...(effectiveReq.verbosity !== undefined
+              ? { verbosity: effectiveReq.verbosity }
+              : {}),
+            ...(effectiveReq.store !== undefined
+              ? { store: effectiveReq.store }
+              : {}),
+          },
+        },
       };
 
       const executeAttempt = async (
         attemptReq: ChatRequest,
       ): Promise<ChatResponse> => {
         attemptNumber += 1;
+        const attemptAttribution = mergeUsageAttribution(
+          attribution,
+          this.config.resolveProviderAttribution?.(id, req.tenantId),
+        );
         let ledgerAttempt;
         try {
           ledgerAttempt = startAttempt({
@@ -155,6 +206,8 @@ export class LLMGateway {
             reasoning: attemptReq.reasoning,
             verbosity: attemptReq.verbosity,
             store: attemptReq.store,
+            attribution: attemptAttribution,
+            routing: attemptReq.routing,
           });
         } catch (error) {
           throw new LLMError(
@@ -196,10 +249,10 @@ export class LLMGateway {
           tokensOut: usage.available === false ? null : usage.outputTokens,
           usage,
           cost,
+          routing: attemptReq.routing,
         };
         try {
           finishAttempt(ledgerAttempt, normalized, usage, cost);
-          recordActualSpend({ tenantId: req.tenantId, usage, cost });
         } catch (error) {
           // This is deliberately non-transient: the provider already ran, so
           // an accounting failure must never trigger an internal model retry.
@@ -227,23 +280,44 @@ export class LLMGateway {
           }
           retryReq = omitTemperature(retryReq);
           try {
-            return await executeAttempt(retryReq);
+            return await executeAttempt({
+              ...retryReq,
+              routing: {
+                ...retryReq.routing,
+                retryReason: "unsupported_temperature_parameter",
+              },
+            });
           } catch (compatibilityErr) {
             e1 = toLLMError(compatibilityErr, id);
           }
         }
         if (!e1.transient) throw e1;
-        // One retry with backoff
-        await delay(250);
-        try {
-          const signal2 = combineSignals(req.signal, timeoutMs);
-          return await executeAttempt({ ...retryReq, signal: signal2 });
-        } catch (err2) {
-          const e2 = toLLMError(err2, id);
-          lastError = e2;
-          if (!e2.transient) throw e2;
-          // Continue to next provider
+        const maxAttempts = boundedAttempts(
+          req.retryPolicy?.maxAttempts ?? this.config.maxAttempts ?? 2,
+        );
+        const baseBackoffMs = boundedBackoff(
+          req.retryPolicy?.baseBackoffMs ?? this.config.baseBackoffMs ?? 250,
+        );
+        lastError = e1;
+        for (let transientAttempt = 2; transientAttempt <= maxAttempts; transientAttempt += 1) {
+          await delay(baseBackoffMs * 2 ** (transientAttempt - 2));
+          try {
+            const signal2 = combineSignals(req.signal, timeoutMs);
+            return await executeAttempt({
+              ...retryReq,
+              signal: signal2,
+              routing: {
+                ...retryReq.routing,
+                retryReason: `transient_${e1.code}`,
+              },
+            });
+          } catch (retryError) {
+            const normalizedRetry = toLLMError(retryError, id);
+            lastError = normalizedRetry;
+            if (!normalizedRetry.transient) throw normalizedRetry;
+          }
         }
+        // Continue to the next provider after this provider's policy is spent.
       }
     }
 
@@ -271,6 +345,14 @@ function toLLMError(err: unknown, provider: ProviderId): LLMError {
 
 function delay(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+function boundedAttempts(value: number): number {
+  return Number.isInteger(value) ? Math.max(1, Math.min(5, value)) : 2;
+}
+
+function boundedBackoff(value: number): number {
+  return Number.isFinite(value) ? Math.max(0, Math.min(30_000, value)) : 250;
 }
 
 /**

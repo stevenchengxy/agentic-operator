@@ -138,6 +138,25 @@ describe("TC-75: /v1/llm/providers/:id/available-models", () => {
     ).toBe(false);
   });
 
+  it("keeps live catalog creation and expiry separate from release metadata", () => {
+    const [model] = parseOpenAICompatBody({
+      data: [
+        {
+          id: "qwen/temporary:free",
+          created: 1_753_257_600,
+          expiration_date: "2026-07-19",
+          pricing: { prompt: "0", completion: "0" },
+        },
+      ],
+    });
+
+    expect(model).toMatchObject({
+      providerCatalogCreatedAt: "2025-07-23T08:00:00.000Z",
+      expiresAt: "2026-07-19T00:00:00.000Z",
+    });
+    expect(model).not.toHaveProperty("releaseDate");
+  });
+
   it("rejects unknown provider with 400", async () => {
     const res = await env.fetch("/v1/llm/providers/bogus/available-models");
     expect(res.status).toBe(400);
@@ -204,6 +223,7 @@ describe("TC-75: /v1/llm/providers/:id/available-models", () => {
           type: "model",
           id: "claude-3-5-sonnet-20241022",
           display_name: "Claude 3.5 Sonnet",
+          created_at: "2024-10-22T00:00:00Z",
         },
         {
           type: "model",
@@ -228,6 +248,8 @@ describe("TC-75: /v1/llm/providers/:id/available-models", () => {
           id: string;
           origin: string;
           contextLength: number | null;
+          status: string;
+          selectable: boolean;
         }>;
       };
     };
@@ -236,6 +258,9 @@ describe("TC-75: /v1/llm/providers/:id/available-models", () => {
     expect(
       body.data.models.some((m) => m.id === "claude-3-5-sonnet-20241022"),
     ).toBe(true);
+    expect(
+      body.data.models.find((m) => m.id === "claude-3-5-sonnet-20241022"),
+    ).toMatchObject({ status: "legacy", selectable: false });
     // Live entry whose id matches catalog inherits the catalog ctx (200_000)
     const haiku = body.data.models.find((m) => m.id === "claude-haiku-4-5");
     expect(haiku?.origin).toBe("live");
@@ -244,6 +269,7 @@ describe("TC-75: /v1/llm/providers/:id/available-models", () => {
     // listed with origin=catalog
     const opus = body.data.models.find((m) => m.id === "claude-opus-4");
     expect(opus?.origin).toBe("catalog");
+    expect(opus?.selectable).toBe(false);
   });
 
   it("flags models already in the tenant's fleet with inFleet=true", async () => {

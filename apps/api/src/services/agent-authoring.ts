@@ -95,7 +95,7 @@ export async function generateAgentSystemPrompt(
     tenantId: ctx.tenantId,
     tenantSlug: ctx.tenantSlug,
     purpose: "agent-authoring",
-    temperature: 0.2,
+    routing: { taskType: "agent.author" },
     maxTokens: 2_400,
     messages: [
       { role: "system", content: PROMPT_DESIGNER_SYSTEM },

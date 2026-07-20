@@ -15,7 +15,14 @@ import path from "node:path";
 import { mkdir, writeFile } from "node:fs/promises";
 import { and, eq } from "drizzle-orm";
 
-import { agents, agentVersions, getDb, runs, steps, tenants } from "@agentic/db";
+import {
+  agents,
+  agentVersions,
+  getDb,
+  runs,
+  steps,
+  tenants,
+} from "@agentic/db";
 import type { DB } from "@agentic/db";
 import { makeId } from "@agentic/shared";
 // Some builds of @agentic/runtime export the broadcast helper under the
@@ -24,8 +31,12 @@ import { makeId } from "@agentic/shared";
 // either barrel.
 import * as agenticRuntime from "@agentic/runtime";
 const publishStreamEvent: (event: unknown) => void =
-  (agenticRuntime as { publishStreamEvent?: (event: unknown) => void; publish?: (event: unknown) => void })
-    .publishStreamEvent ??
+  (
+    agenticRuntime as {
+      publishStreamEvent?: (event: unknown) => void;
+      publish?: (event: unknown) => void;
+    }
+  ).publishStreamEvent ??
   (agenticRuntime as { publish?: (event: unknown) => void }).publish ??
   ((): void => {
     /* no-op: broadcast surface missing in this runtime build */
@@ -33,6 +44,7 @@ const publishStreamEvent: (event: unknown) => void =
 const { writeRunLog } = agenticRuntime;
 import type { ProviderId } from "@agentic/contracts";
 import {
+  currentUsageAttribution,
   LLMError,
   isLLMError,
   type ChatContentBlock,
@@ -52,7 +64,11 @@ function artifactsRoot(): string {
   return process.env.AGENTIC_ARTIFACTS_DIR ?? "./artifacts";
 }
 
-async function writeArtifact(runId: string, name: string, payload: unknown): Promise<string> {
+async function writeArtifact(
+  runId: string,
+  name: string,
+  payload: unknown,
+): Promise<string> {
   const dir = path.join(artifactsRoot(), runId);
   await mkdir(dir, { recursive: true });
   const filePath = path.join(dir, name);
@@ -104,7 +120,9 @@ function resolveAgentRow(
   };
 }
 
-function contentToToolUseBlocks(toolCalls: ToolCall[] | undefined): ChatContentBlock[] {
+function contentToToolUseBlocks(
+  toolCalls: ToolCall[] | undefined,
+): ChatContentBlock[] {
   if (!toolCalls || toolCalls.length === 0) return [];
   return toolCalls.map((tc) => ({
     type: "tool_use" as const,
@@ -134,7 +152,9 @@ function buildToolResultMessage(
     const res = results[idx]!;
     const body = res.ok
       ? JSON.stringify(res.data ?? null)
-      : JSON.stringify({ error: res.error ?? { code: "unknown", message: "tool failed" } });
+      : JSON.stringify({
+          error: res.error ?? { code: "unknown", message: "tool failed" },
+        });
     return {
       type: "tool_result",
       tool_use_id: tc.id,
@@ -146,8 +166,8 @@ function buildToolResultMessage(
 }
 
 function artifactSafeMessages(messages: ChatMessage[]): ChatMessage[] {
-  return messages.map(({ reasoningContent: _reasoningContent, ...message }) =>
-    message,
+  return messages.map(
+    ({ reasoningContent: _reasoningContent, ...message }) => message,
   );
 }
 
@@ -167,6 +187,7 @@ export async function executeAgentRun<TInput, TOutput>(
   const startedAt = Date.now();
   const logCtx = { tenantSlug, runId, correlationId };
   const testRun = ctx.testRun === true;
+  const usageAttribution = currentUsageAttribution();
 
   // Initial run row
   db.insert(runs)
@@ -179,6 +200,14 @@ export async function executeAgentRun<TInput, TOutput>(
       status: "running",
       startedAt: new Date(startedAt),
       correlationId,
+      requestId: usageAttribution?.requestId,
+      interactionId: usageAttribution?.interactionId,
+      productSurface: usageAttribution?.productSurface,
+      productAction: usageAttribution?.productAction,
+      requestedBy:
+        usageAttribution?.actorType === "user"
+          ? usageAttribution.actorId
+          : undefined,
       subject: null,
       logPath: null,
       isTest: testRun,
@@ -216,7 +245,8 @@ export async function executeAgentRun<TInput, TOutput>(
   let finalText = "";
 
   try {
-    const provider: ProviderId | undefined = ctx.provider ?? agent.defaultProvider;
+    const provider: ProviderId | undefined =
+      ctx.provider ?? agent.defaultProvider;
     const model = ctx.model ?? agent.defaultModel;
     const reasoning = ctx.reasoning ?? agent.defaultReasoning;
     const verbosity = ctx.verbosity ?? agent.defaultVerbosity;
@@ -247,16 +277,20 @@ export async function executeAgentRun<TInput, TOutput>(
         })
         .run();
 
-      const inputArtifact = await writeArtifact(runId, `step-${ord}-input.json`, {
-        agent: agent.name,
-        provider,
-        model,
-        reasoning,
-        verbosity,
-        store,
-        messages: artifactSafeMessages(messages),
-        tools: tools.length > 0 ? tools : undefined,
-      });
+      const inputArtifact = await writeArtifact(
+        runId,
+        `step-${ord}-input.json`,
+        {
+          agent: agent.name,
+          provider,
+          model,
+          reasoning,
+          verbosity,
+          store,
+          messages: artifactSafeMessages(messages),
+          tools: tools.length > 0 ? tools : undefined,
+        },
+      );
 
       const response: ChatResponse = await gateway.chat({
         messages,
@@ -272,18 +306,29 @@ export async function executeAgentRun<TInput, TOutput>(
         runId,
         stepId,
         purpose: "agent-runtime",
+        routing: {
+          taskType: ctx.taskClass ?? agent.taskClass,
+          ...(ctx.provider || ctx.model ? { bypassTaskPolicy: true } : {}),
+          ...(ctx.provider && ctx.model
+            ? { requestedRoute: `${ctx.provider}/${ctx.model}` }
+            : {}),
+        },
       } as never);
 
-      const outputArtifact = await writeArtifact(runId, `step-${ord}-output.json`, {
-        text: response.text,
-        provider: response.provider,
-        model: response.model,
-        tokensIn: response.tokensIn,
-        tokensOut: response.tokensOut,
-        finishReason: response.finishReason,
-        toolCalls: response.toolCalls ?? null,
-        latencyMs: response.latencyMs,
-      });
+      const outputArtifact = await writeArtifact(
+        runId,
+        `step-${ord}-output.json`,
+        {
+          text: response.text,
+          provider: response.provider,
+          model: response.model,
+          tokensIn: response.tokensIn,
+          tokensOut: response.tokensOut,
+          finishReason: response.finishReason,
+          toolCalls: response.toolCalls ?? null,
+          latencyMs: response.latencyMs,
+        },
+      );
 
       const stepEndedAt = Date.now();
       db.update(steps)
@@ -345,7 +390,10 @@ export async function executeAgentRun<TInput, TOutput>(
           if (!handler) {
             res = {
               ok: false,
-              error: { code: "tool_handler_missing", message: `No handler for ${tc.name}` },
+              error: {
+                code: "tool_handler_missing",
+                message: `No handler for ${tc.name}`,
+              },
             };
           } else {
             res = await handler(tc.input, ctx);
@@ -365,7 +413,9 @@ export async function executeAgentRun<TInput, TOutput>(
             status: res.ok ? "ok" : "failed",
             endedAt: new Date(toolEndedAt),
             durationMs: toolEndedAt - toolStartedAt,
-            error: res.ok ? null : `${res.error?.code ?? "tool_failed"}: ${res.error?.message ?? ""}`,
+            error: res.ok
+              ? null
+              : `${res.error?.code ?? "tool_failed"}: ${res.error?.message ?? ""}`,
           })
           .where(eq(steps.id, toolStepId))
           .run();
@@ -425,6 +475,13 @@ export async function executeAgentRun<TInput, TOutput>(
           runId,
           stepId: repairStepId,
           purpose: "agent-runtime.output-repair",
+          routing: {
+            taskType: "output.repair",
+            ...(ctx.provider || ctx.model ? { bypassTaskPolicy: true } : {}),
+            ...(ctx.provider && ctx.model
+              ? { requestedRoute: `${ctx.provider}/${ctx.model}` }
+              : {}),
+          },
         } as never);
         const repairEndedAt = Date.now();
         db.update(steps)

@@ -14,6 +14,8 @@ export interface AuthedContext {
   role?: "admin" | "operator" | "viewer";
   /** Bearer-token capabilities. Browser/dev sessions do not use token scopes. */
   scopes?: string[];
+  /** Stable credential record id; never contains bearer-token material. */
+  credentialId?: string;
 }
 
 const COOKIE_NAME = "agentic_session";
@@ -234,6 +236,7 @@ export async function authenticate(
     tenantSlug: tenant.slug,
     via: "token",
     scopes: row.scopes,
+    credentialId: row.id,
   };
 }
 

@@ -6,10 +6,11 @@
  * Renders three views:
  *   1. Totals strip (runs · tokens in/out · USD this period)
  *   2. Per-day line chart (tokens or USD, user-toggled)
- *   3. Top agents + top models horizontal bar charts
+ *   3. Agent/model/reasoning charts plus account/product/API/function billing
+ *      attribution drilldowns.
  *
  * Reads:
- *   - GET /v1/usage     — aggregated runs/tokens/usdCents
+ *   - GET /v1/usage     — aggregated runs/tokens/exact USD nanodollars
  *   - GET /v1/budgets   — monthly cap + used totals
  *
  * If /v1/usage isn't available yet the page degrades to the budget row
@@ -31,12 +32,21 @@ import {
 import { useTenant } from "@/app/portal/lib/use-tenant";
 import { fmtNum } from "@/app/portal/lib/format";
 import { useBudget, useUsage, useUpdateBudget } from "@/lib/hooks/useUsage";
+import { formatUsdNanos } from "@/lib/format-usd";
 import {
   HorizontalBarChart,
   LineChart,
 } from "@/app/portal/components/usage/charts";
 
 type Window = "24h" | "7d" | "30d";
+type AttributionDimension =
+  | "account"
+  | "provider"
+  | "surface"
+  | "action"
+  | "function"
+  | "api";
+type RoutingDimension = "task" | "gateway" | "route" | "actor" | "profile";
 
 const WINDOWS: Array<{ id: Window; label: string; ms: number }> = [
   { id: "24h", label: "24h", ms: 24 * 60 * 60 * 1000 },
@@ -44,10 +54,34 @@ const WINDOWS: Array<{ id: Window; label: string; ms: number }> = [
   { id: "30d", label: "30d", ms: 30 * 24 * 60 * 60 * 1000 },
 ];
 
+const ATTRIBUTION_DIMENSIONS: Array<{
+  id: AttributionDimension;
+  label: string;
+}> = [
+  { id: "account", label: "Account" },
+  { id: "provider", label: "Provider" },
+  { id: "surface", label: "Product surface" },
+  { id: "action", label: "Product action" },
+  { id: "function", label: "Function" },
+  { id: "api", label: "API call" },
+];
+
+const ROUTING_DIMENSIONS: Array<{ id: RoutingDimension; label: string }> = [
+  { id: "task", label: "Feature / task" },
+  { id: "gateway", label: "Gateway instance" },
+  { id: "route", label: "Model route" },
+  { id: "actor", label: "User / actor" },
+  { id: "profile", label: "Routing profile" },
+];
+
 export default function UsagePage() {
   const tenant = useTenant();
   const [win, setWin] = useState<Window>("7d");
   const [metric, setMetric] = useState<"tokens" | "usd" | "runs">("tokens");
+  const [attributionDimension, setAttributionDimension] =
+    useState<AttributionDimension>("surface");
+  const [routingDimension, setRoutingDimension] =
+    useState<RoutingDimension>("task");
   const since = useMemo(() => {
     const w = WINDOWS.find((w) => w.id === win) ?? WINDOWS[1]!;
     return Date.now() - w.ms;
@@ -57,12 +91,35 @@ export default function UsagePage() {
   const budget = useBudget();
 
   const total = usage.data?.totals;
+  const attempts = usage.data?.attempts;
   const byDay = usage.data?.byDay ?? [];
   const byAgent = usage.data?.byAgent ?? [];
   const byModel = usage.data?.byModel ?? [];
   const byReasoning = usage.data?.byReasoning ?? [];
+  const attributionRows =
+    attributionDimension === "account"
+      ? (usage.data?.byAccount ?? [])
+      : attributionDimension === "provider"
+        ? (usage.data?.byProvider ?? [])
+        : attributionDimension === "surface"
+          ? (usage.data?.byProductSurface ?? [])
+          : attributionDimension === "action"
+            ? (usage.data?.byProductAction ?? [])
+            : attributionDimension === "function"
+              ? (usage.data?.byFunction ?? [])
+              : (usage.data?.byApiCall ?? []);
+  const routingRows =
+    routingDimension === "task"
+      ? (usage.data?.byTask ?? [])
+      : routingDimension === "gateway"
+        ? (usage.data?.byGateway ?? [])
+        : routingDimension === "route"
+          ? (usage.data?.byRoute ?? [])
+          : routingDimension === "actor"
+            ? (usage.data?.byActor ?? [])
+            : (usage.data?.byRoutingProfile ?? []);
   const budgetRow = usage.data?.budget ?? budget.data ?? null;
-  const usageUnavailable = !usage.data && (usage.error != null);
+  const usageUnavailable = !usage.data && usage.error != null;
 
   const series = useMemo(() => {
     if (byDay.length === 0) return { values: [], labels: [] };
@@ -71,7 +128,7 @@ export default function UsagePage() {
         metric === "tokens"
           ? d.tokensIn + d.tokensOut
           : metric === "usd"
-            ? d.usdCents
+            ? d.usdNanos
             : d.runs,
       ),
       labels: byDay.map((d) => d.key.slice(5)), // MM-DD
@@ -115,9 +172,24 @@ export default function UsagePage() {
       />
 
       <div style={{ flex: 1, overflow: "auto", minHeight: 0 }}>
-        <div style={{ padding: 24, maxWidth: 1180, display: "flex", flexDirection: "column", gap: 16 }}>
+        <div
+          style={{
+            padding: 24,
+            maxWidth: 1180,
+            display: "flex",
+            flexDirection: "column",
+            gap: 16,
+          }}
+        >
           {/* Window + metric chips */}
-          <div style={{ display: "flex", gap: 14, flexWrap: "wrap", alignItems: "center" }}>
+          <div
+            style={{
+              display: "flex",
+              gap: 14,
+              flexWrap: "wrap",
+              alignItems: "center",
+            }}
+          >
             <div style={{ display: "flex", gap: 6 }}>
               {WINDOWS.map((w) => (
                 <FilterChip
@@ -159,7 +231,7 @@ export default function UsagePage() {
           <div
             style={{
               display: "grid",
-              gridTemplateColumns: "repeat(4, 1fr)",
+              gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
               gap: 0,
               border: "1px solid var(--border)",
               borderRadius: 6,
@@ -171,8 +243,29 @@ export default function UsagePage() {
             <Totals label="Tokens out" value={fmtNum(total?.tokensOut ?? 0)} />
             <Totals
               label="USD this period"
-              value={fmtUsd(total?.usdCents ?? 0)}
+              value={formatUsdNanos(total?.usdNanos ?? 0)}
               accent="var(--signal)"
+            />
+            <Totals
+              label="Unpriced calls"
+              value={fmtNum(total?.unpricedCalls ?? 0)}
+              accent={
+                (total?.unpricedCalls ?? 0) > 0 ? "var(--red)" : undefined
+              }
+            />
+            <Totals label="Provider attempts" value={fmtNum(attempts?.attempts ?? 0)} />
+            <Totals
+              label="Failed / timed out"
+              value={`${fmtNum(attempts?.failed ?? 0)} / ${fmtNum(attempts?.timeouts ?? 0)}`}
+              accent={(attempts?.failed ?? 0) > 0 ? "var(--red)" : undefined}
+            />
+            <Totals
+              label="Retries / fallbacks"
+              value={`${fmtNum(attempts?.retries ?? 0)} / ${fmtNum(attempts?.fallbacks ?? 0)}`}
+            />
+            <Totals
+              label="Latency p50 / p95"
+              value={`${fmtLatency(attempts?.p50LatencyMs)} / ${fmtLatency(attempts?.p95LatencyMs)}`}
             />
           </div>
 
@@ -198,7 +291,7 @@ export default function UsagePage() {
               labels={series.labels}
               formatY={(v) =>
                 metric === "usd"
-                  ? fmtUsd(v)
+                  ? formatUsdNanos(v)
                   : metric === "tokens"
                     ? fmtNum(v)
                     : String(Math.round(v))
@@ -214,25 +307,33 @@ export default function UsagePage() {
               gap: 16,
             }}
           >
-            <Panel title="By agent" subtitle="Tokens in+out · top 10" padded={false}>
+            <Panel
+              title="By agent"
+              subtitle="Tokens in+out · top 10"
+              padded={false}
+            >
               <HorizontalBarChart
                 data={byAgent
                   .map((r) => ({
                     key: r.key,
                     value: r.tokensIn + r.tokensOut,
-                    secondary: r.usdCents,
+                    secondary: r.usdNanos,
                   }))
                   .sort((a, b) => b.value - a.value)}
                 formatValue={fmtNum}
               />
             </Panel>
-            <Panel title="By model" subtitle="Tokens in+out · top 10" padded={false}>
+            <Panel
+              title="By model"
+              subtitle="Tokens in+out · top 10"
+              padded={false}
+            >
               <HorizontalBarChart
                 data={byModel
                   .map((r) => ({
                     key: r.key,
                     value: r.tokensIn + r.tokensOut,
-                    secondary: r.usdCents,
+                    secondary: r.usdNanos,
                   }))
                   .sort((a, b) => b.value - a.value)}
                 formatValue={fmtNum}
@@ -250,10 +351,102 @@ export default function UsagePage() {
                 .map((row) => ({
                   key: row.key,
                   value: row.tokensIn + row.tokensOut,
-                  secondary: row.usdCents,
+                  secondary: row.usdNanos,
                 }))
                 .sort((a, b) => b.value - a.value)}
               formatValue={fmtNum}
+            />
+          </Panel>
+
+          <Panel
+            title="Routing & reliability"
+            subtitle="Attempts, failures, latency, retries, and failover by runtime decision"
+            padded={false}
+          >
+            <div
+              role="group"
+              aria-label="Routing usage dimension"
+              style={{
+                display: "flex",
+                flexWrap: "wrap",
+                gap: 6,
+                padding: "12px 14px",
+                borderBottom: "1px solid var(--border)",
+              }}
+            >
+              {ROUTING_DIMENSIONS.map((dimension) => (
+                <FilterChip
+                  key={dimension.id}
+                  active={routingDimension === dimension.id}
+                  onClick={() => setRoutingDimension(dimension.id)}
+                >
+                  {dimension.label}
+                </FilterChip>
+              ))}
+            </div>
+            <HorizontalBarChart
+              data={routingRows
+                .map((row) => ({
+                  key: row.key ?? "unattributed",
+                  value: row.attempts,
+                  secondary: row.failed,
+                }))
+                .sort((a, b) => b.value - a.value)}
+              formatValue={fmtNum}
+            />
+            <div
+              style={{
+                padding: "0 14px 12px",
+                color: "var(--text-3)",
+                fontSize: 11,
+              }}
+            >
+              Bar = provider attempts · secondary value = failed attempts.
+            </div>
+          </Panel>
+
+          <Panel
+            title="Billing attribution"
+            subtitle="Trace provider spend to an account, product interaction, server function, or API route"
+            padded={false}
+          >
+            <div
+              role="group"
+              aria-label="Billing attribution dimension"
+              style={{
+                display: "flex",
+                flexWrap: "wrap",
+                gap: 6,
+                padding: "12px 14px",
+                borderBottom: "1px solid var(--border)",
+              }}
+            >
+              {ATTRIBUTION_DIMENSIONS.map((dimension) => (
+                <FilterChip
+                  key={dimension.id}
+                  active={attributionDimension === dimension.id}
+                  onClick={() => setAttributionDimension(dimension.id)}
+                >
+                  {dimension.label}
+                </FilterChip>
+              ))}
+            </div>
+            <HorizontalBarChart
+              data={attributionRows
+                .map((row) => ({
+                  key: row.key,
+                  value:
+                    metric === "tokens"
+                      ? row.tokensIn + row.tokensOut
+                      : metric === "usd"
+                        ? row.usdNanos
+                        : row.runs,
+                  secondary: row.usdNanos,
+                }))
+                .sort((a, b) => b.value - a.value)}
+              formatValue={(value) =>
+                metric === "usd" ? formatUsdNanos(value) : fmtNum(value)
+              }
             />
           </Panel>
 
@@ -269,6 +462,11 @@ export default function UsagePage() {
   );
 }
 
+function fmtLatency(value: number | null | undefined): string {
+  if (value == null) return "—";
+  return value >= 1_000 ? `${(value / 1_000).toFixed(1)}s` : `${Math.round(value)}ms`;
+}
+
 function Totals({
   label,
   value,
@@ -279,7 +477,9 @@ function Totals({
   accent?: string;
 }) {
   return (
-    <div style={{ padding: "14px 18px", borderRight: "1px solid var(--border)" }}>
+    <div
+      style={{ padding: "14px 18px", borderRight: "1px solid var(--border)" }}
+    >
       <div
         style={{
           fontSize: 10,
@@ -314,6 +514,7 @@ function BudgetRow({
     monthlyUsdCap: number | null;
     usedTokensMonth: number;
     usedUsdMonth: number;
+    usedUsdNanos: number;
     periodStart: number;
   };
   onCapsChanged: () => void;
@@ -331,7 +532,10 @@ function BudgetRow({
       : null;
   const usdPct =
     row.monthlyUsdCap && row.monthlyUsdCap > 0
-      ? Math.min(100, (row.usedUsdMonth / row.monthlyUsdCap) * 100)
+      ? Math.min(
+          100,
+          (row.usedUsdNanos / (row.monthlyUsdCap * 10_000_000)) * 100,
+        )
       : null;
 
   async function saveCaps() {
@@ -381,8 +585,8 @@ function BudgetRow({
           value={usdCap}
           onChange={setUsdCap}
           placeholder="unlimited"
-          used={row.usedUsdMonth}
-          usedLabel={fmtUsd(row.usedUsdMonth)}
+          used={row.usedUsdNanos}
+          usedLabel={formatUsdNanos(row.usedUsdNanos)}
           pct={usdPct}
         />
       </div>
@@ -486,11 +690,4 @@ function CapInput({
       )}
     </div>
   );
-}
-
-function fmtUsd(cents: number): string {
-  const dollars = cents / 100;
-  if (Math.abs(dollars) < 1) return `$${dollars.toFixed(2)}`;
-  if (Math.abs(dollars) < 1000) return `$${dollars.toFixed(2)}`;
-  return `$${(dollars / 1000).toFixed(1)}k`;
 }

@@ -16,7 +16,8 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { UseQueryResult } from "@tanstack/react-query";
-import { tenantHeader } from "./tenant-header";
+import { usePathname } from "next/navigation";
+import { tenantFromPathname, tenantHeader } from "./tenant-header";
 
 interface ApiOk<T> {
   ok: true;
@@ -70,12 +71,43 @@ export interface UsageResponse {
     usdCents: number;
     unpricedCalls: number;
   };
+  attempts: AttemptMetricRow;
   byAgent: UsageRow[];
   byModel: UsageRow[];
   byProvider: UsageRow[];
+  byAccount: UsageRow[];
+  byProductSurface: UsageRow[];
+  byProductAction: UsageRow[];
+  byFunction: UsageRow[];
+  byApiCall: UsageRow[];
   byReasoning: UsageRow[];
   byDay: UsageRow[];
+  byTask: AttemptMetricRow[];
+  byGateway: AttemptMetricRow[];
+  byRoute: AttemptMetricRow[];
+  byActor: AttemptMetricRow[];
+  byRoutingProfile: AttemptMetricRow[];
   budget: BudgetRow | null;
+}
+
+export interface AttemptMetricRow {
+  key?: string;
+  logicalCalls: number;
+  attempts: number;
+  succeeded: number;
+  failed: number;
+  inFlight: number;
+  timeouts: number;
+  retries: number;
+  fallbacks: number;
+  unpriced: number;
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
+  reasoningTokens: number;
+  costUsdNanos: number;
+  p50LatencyMs: number | null;
+  p95LatencyMs: number | null;
 }
 
 export interface BudgetRow {
@@ -90,35 +122,61 @@ export interface BudgetRow {
 }
 
 const USAGE_KEYS = {
-  all: ["usage"] as const,
-  range: (since: number | null, until: number | null) =>
-    ["usage", since, until] as const,
+  all: (tenant: string) => ["usage", tenant] as const,
+  range: (tenant: string, query: string) =>
+    ["usage", tenant, query] as const,
 };
 
 const BUDGET_KEYS = {
-  current: ["budgets", "current"] as const,
+  current: (tenant: string) => ["budgets", tenant, "current"] as const,
 };
+
+function useTenantQueryScope(): string {
+  const pathname = usePathname() ?? "";
+  return tenantFromPathname(pathname) ?? "default";
+}
 
 export function useUsage(opts?: {
   since?: number;
   until?: number;
+  taskType?: string;
+  gatewayInstanceId?: string;
+  route?: string;
+  actorId?: string;
+  model?: string;
+  functionName?: string;
+  apiRoute?: string;
 }): UseQueryResult<UsageResponse> {
+  const tenant = useTenantQueryScope();
   const since = opts?.since ?? null;
   const until = opts?.until ?? null;
   const sp = new URLSearchParams();
   if (since != null) sp.set("since", String(since));
   if (until != null) sp.set("until", String(until));
+  for (const key of [
+    "taskType",
+    "gatewayInstanceId",
+    "route",
+    "actorId",
+    "model",
+    "functionName",
+    "apiRoute",
+  ] as const) {
+    const value = opts?.[key];
+    if (value) sp.set(key, value);
+  }
   const qs = sp.toString();
   return useQuery({
-    queryKey: USAGE_KEYS.range(since, until),
+    queryKey: USAGE_KEYS.range(tenant, qs),
     queryFn: () => callV1<UsageResponse>(`/v1/usage${qs ? `?${qs}` : ""}`),
     staleTime: 30_000,
   });
 }
 
 export function useBudget(): UseQueryResult<BudgetRow> {
+  const tenant = useTenantQueryScope();
   return useQuery({
-    queryKey: BUDGET_KEYS.current,
+    queryKey: BUDGET_KEYS.current(tenant),
     queryFn: () => callV1<BudgetRow>("/v1/budgets"),
     staleTime: 30_000,
   });
@@ -126,6 +184,7 @@ export function useBudget(): UseQueryResult<BudgetRow> {
 
 export function useUpdateBudget() {
   const client = useQueryClient();
+  const tenant = useTenantQueryScope();
   return useMutation({
     mutationFn: (body: {
       monthlyTokenCap?: number | null;
@@ -138,8 +197,10 @@ export function useUpdateBudget() {
         body: JSON.stringify(body),
       }),
     onSettled: () => {
-      void client.invalidateQueries({ queryKey: BUDGET_KEYS.current });
-      void client.invalidateQueries({ queryKey: USAGE_KEYS.all });
+      void client.invalidateQueries({
+        queryKey: BUDGET_KEYS.current(tenant),
+      });
+      void client.invalidateQueries({ queryKey: USAGE_KEYS.all(tenant) });
     },
   });
 }

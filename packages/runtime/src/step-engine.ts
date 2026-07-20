@@ -28,14 +28,18 @@ import type { ActionSpec } from "./manifest";
 import { getRuntimeGateway } from "./llm-host";
 import { makeGeneratedAgentPrompt } from "./generated-agent";
 import { writeRunLog, type RunLogContext } from "./log-writer";
-import type {
-  ChatContentBlock,
-  ChatMessage,
-  ChatResponse,
-  ProviderId,
-  ToolDef,
-  ToolUseBlock,
-  ToolResultBlock,
+import {
+  mergeUsageAttribution,
+  runWithUsageAttribution,
+  type UsageAttribution,
+  type ChatContentBlock,
+  type ChatMessage,
+  type ChatRequest,
+  type ChatResponse,
+  type ProviderId,
+  type ToolDef,
+  type ToolUseBlock,
+  type ToolResultBlock,
 } from "@agentic/llm-gateway";
 import { writeArtifact } from "./artifacts";
 import {
@@ -84,6 +88,8 @@ interface AgentSlots {
   generated?: boolean;
   /** Provider-native model selected in the deploy wizard. */
   model?: string;
+  /** AI-settings task category inherited by logic actions. */
+  task_class?: string;
   /** Explicit provider selected in the deploy wizard. */
   provider?: ProviderId;
   reasoning?: ReasoningConfigDTO;
@@ -247,6 +253,11 @@ export interface StepInput {
   trace?: RuntimeTraceSink;
   /** Only the terminal action is validated against agent-level outputs. */
   finalOutput?: boolean;
+  /**
+   * Sanitized account/request attribution recovered from the private Inngest
+   * envelope. It is never exposed to prompts or tools.
+   */
+  usageAttribution?: UsageAttribution;
 }
 
 export interface StepOutput {
@@ -347,6 +358,7 @@ async function callLLM(
     trace?: RuntimeTraceSink;
     runId?: string;
     stepId?: string;
+    usageAttribution?: UsageAttribution;
   },
 ): Promise<{
   text: string;
@@ -415,7 +427,7 @@ async function callLLM(
     const llmStartedAt = new Date();
     let response: ChatResponse;
     try {
-      response = await gateway.chat({
+      const request: ChatRequest = {
         messages,
         model: preferredModel,
         provider: agent?.provider,
@@ -435,7 +447,14 @@ async function callLLM(
         runId: execution?.runId,
         stepId: execution?.stepId,
         purpose: "manifest.logic",
-      });
+        routing: { taskType: agent?.task_class ?? "tool.loop" },
+        attribution: execution?.usageAttribution,
+      };
+      response = execution?.usageAttribution
+        ? await runWithUsageAttribution(execution.usageAttribution, () =>
+            gateway.chat(request),
+          )
+        : await gateway.chat(request);
     } catch (error) {
       const llmEndedAt = new Date();
       const message = error instanceof Error ? error.message : String(error);
@@ -798,6 +817,7 @@ async function runTenantPrompt(
   stepId?: string,
   validateOutput = true,
   conversationHistory?: AgentConversationTurn[],
+  usageAttribution?: UsageAttribution,
 ): Promise<StepOutput> {
   const rendered = prompt.template(ctx);
   const usesV2Execution =
@@ -929,6 +949,7 @@ async function runTenantPrompt(
       trace,
       runId,
       stepId,
+      usageAttribution,
     },
   );
   let validated: unknown = result.text;
@@ -955,7 +976,7 @@ async function runTenantPrompt(
             throw new Error("LLMGateway not initialised for output repair");
           }
           const repairStartedAt = new Date();
-          const response = await gateway.chat({
+          const repairRequest: ChatRequest = {
             messages: [
               {
                 role: "system",
@@ -991,7 +1012,14 @@ async function runTenantPrompt(
             stepId,
             purpose: "manifest.output-repair",
             tenantSlug: ctx.tenantSlug,
-          });
+            routing: { taskType: "output.repair" },
+            attribution: usageAttribution,
+          };
+          const response = usageAttribution
+            ? await runWithUsageAttribution(usageAttribution, () =>
+                gateway.chat(repairRequest),
+              )
+            : await gateway.chat(repairRequest);
           repairTokensIn += response.tokensIn ?? 0;
           repairTokensOut += response.tokensOut ?? 0;
           if (runId) {
@@ -1316,8 +1344,13 @@ export async function runAction(input: StepInput): Promise<StepOutput> {
     trace,
     finalOutput = true,
     conversationHistory,
+    usageAttribution: deliveredUsageAttribution,
   } = input;
   const ctx = applyActionInputMapping(suppliedCtx, action);
+  const usageAttribution = mergeUsageAttribution(deliveredUsageAttribution, {
+    correlationId: ctx.correlationId,
+    functionName: `manifest.${ctx.tenantSlug ?? "unknown"}.${ctx.agentName ?? agent?.name ?? "unknown"}.${action.name}`,
+  });
   const logCtx = deriveLogCtx(ctx, runId);
   const actionStartedAt = new Date();
 
@@ -1514,6 +1547,11 @@ export async function runAction(input: StepInput): Promise<StepOutput> {
               ...agent,
               ...(action.provider ? { provider: action.provider } : {}),
               ...(action.model ? { model: action.model } : {}),
+              ...(action.task_class
+                ? { task_class: action.task_class }
+                : action.task_type
+                  ? { task_class: action.task_type }
+                  : {}),
               ...(action.reasoning ? { reasoning: action.reasoning } : {}),
               ...(action.verbosity ? { verbosity: action.verbosity } : {}),
               ...(typeof action.store === "boolean"
@@ -1549,6 +1587,7 @@ export async function runAction(input: StepInput): Promise<StepOutput> {
               stepId,
               finalOutput && !hasOutputMapping,
               conversationHistory,
+              usageAttribution,
             );
           } catch (error) {
             if (attempts >= maxAttempts) throw error;

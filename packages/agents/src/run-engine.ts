@@ -21,13 +21,21 @@ import path from "node:path";
 import { mkdir, writeFile } from "node:fs/promises";
 import { and, eq } from "drizzle-orm";
 
-import { agents, agentVersions, getDb, runs, steps, tenants } from "@agentic/db";
+import {
+  agents,
+  agentVersions,
+  getDb,
+  runs,
+  steps,
+  tenants,
+} from "@agentic/db";
 import type { DB } from "@agentic/db";
 import { makeId } from "@agentic/shared";
 import { publishStreamEvent, writeRunLog } from "@agentic/runtime";
 import type { ProviderId } from "@agentic/contracts";
 import {
   LLMError,
+  currentUsageAttribution,
   isLLMError,
   type ChatMessage,
   type ChatResponse,
@@ -72,7 +80,11 @@ function artifactsRoot(): string {
   return process.env.AGENTIC_ARTIFACTS_DIR ?? "./artifacts";
 }
 
-async function writeArtifact(runId: string, name: string, payload: unknown): Promise<string> {
+async function writeArtifact(
+  runId: string,
+  name: string,
+  payload: unknown,
+): Promise<string> {
   const dir = path.join(artifactsRoot(), runId);
   await mkdir(dir, { recursive: true });
   const filePath = path.join(dir, name);
@@ -148,6 +160,7 @@ export async function executeAgentRun<TInput, TOutput>(
   // `runs.is_test` column and the broadcast `run.started` event payload so
   // operator SSE clients can paint the TEST badge without an extra DB read.
   const isTest = ctx.testRun === true;
+  const usageAttribution = currentUsageAttribution();
 
   // Initial run row
   db.insert(runs)
@@ -160,6 +173,14 @@ export async function executeAgentRun<TInput, TOutput>(
       status: "running",
       startedAt: new Date(startedAt),
       correlationId,
+      requestId: usageAttribution?.requestId,
+      interactionId: usageAttribution?.interactionId,
+      productSurface: usageAttribution?.productSurface,
+      productAction: usageAttribution?.productAction,
+      requestedBy:
+        usageAttribution?.actorType === "user"
+          ? usageAttribution.actorId
+          : undefined,
       subject: null,
       isTest,
       logPath: null,
@@ -206,7 +227,8 @@ export async function executeAgentRun<TInput, TOutput>(
     .run();
 
   try {
-    const provider: ProviderId | undefined = ctx.provider ?? agent.defaultProvider;
+    const provider: ProviderId | undefined =
+      ctx.provider ?? agent.defaultProvider;
     const model = ctx.model ?? agent.defaultModel;
     const reasoning = ctx.reasoning ?? agent.defaultReasoning;
     const verbosity = ctx.verbosity ?? agent.defaultVerbosity;
@@ -243,6 +265,13 @@ export async function executeAgentRun<TInput, TOutput>(
       runId,
       stepId,
       purpose: "code-agent",
+      routing: {
+        taskType: ctx.taskClass ?? agent.taskClass,
+        ...(ctx.provider || ctx.model ? { bypassTaskPolicy: true } : {}),
+        ...(ctx.provider && ctx.model
+          ? { requestedRoute: `${ctx.provider}/${ctx.model}` }
+          : {}),
+      },
     });
 
     // Cooperative cancel checkpoint #2 — between the LLM response and

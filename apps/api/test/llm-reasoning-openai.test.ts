@@ -74,9 +74,9 @@ describe("OpenAI and OpenRouter reasoning controls", () => {
     expect(
       shouldUseOpenRouterResponses({ reasoning: { effort: "high" } }),
     ).toBe(false);
-    expect(
-      shouldUseOpenRouterResponses({ reasoning: { mode: "pro" } }),
-    ).toBe(true);
+    expect(shouldUseOpenRouterResponses({ reasoning: { mode: "pro" } })).toBe(
+      true,
+    );
     expect(
       shouldUseOpenRouterResponses({ reasoning: { context: "all_turns" } }),
     ).toBe(true);
@@ -164,9 +164,8 @@ describe("OpenAI and OpenRouter reasoning controls", () => {
       apiKey: "test-key",
       defaultModel: "openai/gpt-5.6-sol",
       fetch: async (input, init) => {
-        const request = input instanceof Request
-          ? input
-          : new Request(input, init);
+        const request =
+          input instanceof Request ? input : new Request(input, init);
         requestUrl = request.url;
         requestBody = await request.clone().json();
         return new Response(
@@ -267,6 +266,61 @@ describe("OpenAI and OpenRouter reasoning controls", () => {
         cachedInputTokens: 2,
         reasoningTokens: 3,
       },
+    });
+  });
+
+  it("retains provider-reported cost from a NewAPI-compatible Responses endpoint", async () => {
+    const adapter = createOpenAIResponsesAdapter({
+      id: "custom",
+      name: "NewAPI CSI",
+      baseURL: "https://newapi.example.test/v1",
+      apiKey: "test-key",
+      defaultModel: null,
+      fetch: async () =>
+        new Response(
+          JSON.stringify({
+            id: "resp_newapi",
+            object: "response",
+            created_at: 1,
+            model: "moonshotai/kimi-k3",
+            status: "completed",
+            output: [
+              {
+                type: "message",
+                id: "msg_newapi",
+                status: "completed",
+                role: "assistant",
+                content: [
+                  {
+                    type: "output_text",
+                    text: "Gateway answer",
+                    annotations: [],
+                  },
+                ],
+              },
+            ],
+            usage: {
+              input_tokens: 4,
+              output_tokens: 2,
+              total_tokens: 6,
+              cost: "0.00003125",
+            },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+    });
+
+    const response = await adapter.chat({
+      messages: [{ role: "user", content: "Test" }],
+      model: "moonshotai/kimi-k3",
+      reasoning: { effort: "high" },
+    });
+
+    expect(response.providerReportedCostUsd).toBe(0.00003125);
+    expect(response.usage).toMatchObject({
+      inputTokens: 4,
+      outputTokens: 2,
+      totalTokens: 6,
     });
   });
 });

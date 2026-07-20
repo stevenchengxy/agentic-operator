@@ -28,11 +28,11 @@
  * @agentic/contracts/tenants. Slug is immutable — PUT rejects any body
  * field other than name/subtitle/color (via `.strict()` on the Zod schema).
  *
- * Authorization (current milestone): every endpoint requires `requireAuth`.
- * The platform-admin gate (`isPlatformAdmin`) is a stub that always returns
- * false; for the milestone we allow any authenticated caller to create /
- * archive tenants. Production hardening (P5-TEN-02) tightens this to
- * platform admin only and adds role-based update gating.
+ * Authorization: every endpoint requires authentication. Updating,
+ * archiving, and restoring a tenant additionally requires a tenant-admin
+ * browser session for that same tenant (development auth may manage fixtures
+ * across tenants). Tenant creation retains the milestone provisioning policy
+ * until a real platform-admin role is introduced.
  */
 
 import path from "node:path";
@@ -63,7 +63,7 @@ import {
   TenantUpdateBody,
   isReservedSlug,
 } from "@agentic/contracts";
-import { requireAuth } from "../../plugins/auth";
+import { requireAuth, requireTenantAdmin } from "../../plugins/auth";
 import {
   getTenantDetail,
   listTenantsWithCounts,
@@ -71,6 +71,22 @@ import {
   tenantHasActiveWork,
   tenantSlugExists,
 } from "../../queries/tenants";
+
+function requireSameTenantAdmin(
+  req: FastifyRequest,
+  targetSlug: string,
+): ReturnType<typeof requireTenantAdmin> {
+  const auth = requireTenantAdmin(req);
+  if (auth.via !== "dev" && auth.tenantSlug !== targetSlug) {
+    const error: Error & { statusCode?: number; code?: string } = new Error(
+      "tenant administrators may manage only their authenticated tenant",
+    );
+    error.statusCode = 403;
+    error.code = "forbidden";
+    throw error;
+  }
+  return auth;
+}
 // P5-TEN-01 — the dynamic Inngest re-register hook may not exist in every
 // HEAD checkout (`reregisterInngest` lives in services/inngest-registry but
 // the underlying `rebuildTenantFns` ships in a follow-on PR). We import it
@@ -176,8 +192,7 @@ async function ensureTenantDirs(slug: string): Promise<string[]> {
   const repoRoot = process.cwd();
   // Walk up to find the data/ directory the same way db/client.ts does.
   // For correctness we use process.env.AGENTIC_DATA_ROOT when set.
-  const dataRoot =
-    process.env.AGENTIC_DATA_ROOT ?? path.join(repoRoot, "data");
+  const dataRoot = process.env.AGENTIC_DATA_ROOT ?? path.join(repoRoot, "data");
   const dirs = [
     path.join(dataRoot, "logs", slug, "runs"),
     path.join(dataRoot, "logs", slug, "events"),
@@ -244,7 +259,10 @@ async function performCreate(
 
   let copyFromTenantId: string | null = null;
   let copyFromSlug: string | null = null;
-  if (typeof body.starter === "string" && body.starter.startsWith("copy-from:")) {
+  if (
+    typeof body.starter === "string" &&
+    body.starter.startsWith("copy-from:")
+  ) {
     copyFromSlug = body.starter.slice("copy-from:".length);
     const src = db
       .select()
@@ -446,10 +464,14 @@ async function performCreate(
   // build — we still report success to the caller because the row is in.
   const inngestFnCount = await safeReregisterInngest();
   if (inngestFnCount === null) {
-    req.log.debug?.("[tenants] reregister hook unavailable; deferred to next deploy");
+    req.log.debug?.(
+      "[tenants] reregister hook unavailable; deferred to next deploy",
+    );
   }
 
-  const detail = await getTenantDetail(body.slug, { forUserId: operatorUserId });
+  const detail = await getTenantDetail(body.slug, {
+    forUserId: operatorUserId,
+  });
 
   const starterSummary =
     body.starter === "empty"
@@ -514,19 +536,26 @@ export async function tenantsRoutes(app: FastifyInstance): Promise<void> {
   );
 
   // ── GET /v1/tenants/:slug ──────────────────────────────────────────────
-  app.get<{ Params: { slug: string } }>("/tenants/:slug", async (req, reply) => {
-    requireAuth(req);
-    const slug = req.params.slug;
-    if (!TENANT_SLUG_REGEX.test(slug)) {
-      return reply.fail("invalid_slug", `slug "${slug}" is malformed`, 400);
-    }
-    const operatorUserId = resolveOperatorUserId();
-    const detail = await getTenantDetail(slug, { forUserId: operatorUserId });
-    if (!detail) {
-      return reply.fail("tenant_not_found", `no tenant with slug "${slug}"`, 404);
-    }
-    return reply.ok(detail);
-  });
+  app.get<{ Params: { slug: string } }>(
+    "/tenants/:slug",
+    async (req, reply) => {
+      requireAuth(req);
+      const slug = req.params.slug;
+      if (!TENANT_SLUG_REGEX.test(slug)) {
+        return reply.fail("invalid_slug", `slug "${slug}" is malformed`, 400);
+      }
+      const operatorUserId = resolveOperatorUserId();
+      const detail = await getTenantDetail(slug, { forUserId: operatorUserId });
+      if (!detail) {
+        return reply.fail(
+          "tenant_not_found",
+          `no tenant with slug "${slug}"`,
+          404,
+        );
+      }
+      return reply.ok(detail);
+    },
+  );
 
   // ── POST /v1/tenants ───────────────────────────────────────────────────
   app.post("/tenants", async (req, reply) => {
@@ -582,8 +611,8 @@ export async function tenantsRoutes(app: FastifyInstance): Promise<void> {
   app.put<{ Params: { slug: string } }>(
     "/tenants/:slug",
     async (req, reply) => {
-      const auth = requireAuth(req);
       const slug = req.params.slug;
+      const auth = requireSameTenantAdmin(req, slug);
       const body = TenantUpdateBody.parse(req.body ?? {});
 
       const db = getDb();
@@ -593,7 +622,11 @@ export async function tenantsRoutes(app: FastifyInstance): Promise<void> {
         .where(eq(tenants.slug, slug))
         .all()[0];
       if (!row) {
-        return reply.fail("tenant_not_found", `no tenant with slug "${slug}"`, 404);
+        return reply.fail(
+          "tenant_not_found",
+          `no tenant with slug "${slug}"`,
+          404,
+        );
       }
 
       const now = new Date();
@@ -603,10 +636,7 @@ export async function tenantsRoutes(app: FastifyInstance): Promise<void> {
       if (body.color !== undefined) update.color = body.color;
 
       db.transaction(() => {
-        db.update(tenants)
-          .set(update)
-          .where(eq(tenants.id, row.id))
-          .run();
+        db.update(tenants).set(update).where(eq(tenants.id, row.id)).run();
         db.insert(auditLog)
           .values({
             id: makeId("aud"),
@@ -640,8 +670,8 @@ export async function tenantsRoutes(app: FastifyInstance): Promise<void> {
   app.delete<{ Params: { slug: string } }>(
     "/tenants/:slug",
     async (req, reply) => {
-      const auth = requireAuth(req);
       const slug = req.params.slug;
+      const auth = requireSameTenantAdmin(req, slug);
       const body = TenantArchiveBody.parse(req.body ?? {});
 
       if (body.confirm !== slug) {
@@ -666,7 +696,11 @@ export async function tenantsRoutes(app: FastifyInstance): Promise<void> {
         .where(eq(tenants.slug, slug))
         .all()[0];
       if (!row) {
-        return reply.fail("tenant_not_found", `no tenant with slug "${slug}"`, 404);
+        return reply.fail(
+          "tenant_not_found",
+          `no tenant with slug "${slug}"`,
+          404,
+        );
       }
       if (row.archivedAt) {
         return reply.fail(
@@ -722,8 +756,8 @@ export async function tenantsRoutes(app: FastifyInstance): Promise<void> {
   app.post<{ Params: { slug: string } }>(
     "/tenants/:slug/restore",
     async (req, reply) => {
-      const auth = requireAuth(req);
       const slug = req.params.slug;
+      const auth = requireSameTenantAdmin(req, slug);
       const body = TenantRestoreBody.parse(req.body ?? {});
 
       const db = getDb();
@@ -733,7 +767,11 @@ export async function tenantsRoutes(app: FastifyInstance): Promise<void> {
         .where(eq(tenants.slug, slug))
         .all()[0];
       if (!row) {
-        return reply.fail("tenant_not_found", `no tenant with slug "${slug}"`, 404);
+        return reply.fail(
+          "tenant_not_found",
+          `no tenant with slug "${slug}"`,
+          404,
+        );
       }
       if (!row.archivedAt) {
         return reply.fail(

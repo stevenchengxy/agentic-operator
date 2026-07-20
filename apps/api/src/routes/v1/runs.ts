@@ -2,7 +2,11 @@ import type { FastifyInstance } from "fastify";
 import { readFile } from "node:fs/promises";
 import { and, eq, inArray } from "drizzle-orm";
 import { agents, events, getDb, runs } from "@agentic/db";
-import { inngest } from "@agentic/runtime";
+import { inngest, privateUsageAttributionMetadata } from "@agentic/runtime";
+import {
+  currentUsageAttribution,
+  mergeUsageAttribution,
+} from "@agentic/llm-gateway";
 import { makeId } from "@agentic/shared";
 import {
   CreateAgentRunResponseSchema,
@@ -124,13 +128,22 @@ export async function runsRoutes(app: FastifyInstance) {
       }
 
       const newEventId = makeId("evt");
+      const correlationId = makeId("cor");
       await inngest.send({
         name: `${auth.tenantSlug}/${evt.name}` as `${string}/${string}`,
         data: {
           ...payload,
           subject: evt.subject ?? undefined,
           __triggerEventId: newEventId,
+          __correlationId: correlationId,
           __replayOfRun: run.id,
+          ...privateUsageAttributionMetadata(
+            mergeUsageAttribution(currentUsageAttribution(), {
+              billingAccountId: auth.tenantId,
+              correlationId,
+              invocationSource: "replay",
+            }),
+          ),
         },
       });
       return reply.ok({ replayed_run: run.id, new_event_id: newEventId });

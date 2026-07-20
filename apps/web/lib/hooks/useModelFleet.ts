@@ -14,13 +14,16 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { UseQueryResult } from "@tanstack/react-query";
+import { usePathname } from "next/navigation";
 import type {
+  CatalogModelStatus,
+  ModelTier,
   ReasoningEffort,
   ReasoningMode,
   TemperatureRange,
   TextVerbosity,
 } from "@agentic/contracts";
-import { tenantHeader } from "./tenant-header";
+import { tenantFromPathname, tenantHeader } from "./tenant-header";
 
 interface ApiOk<T> {
   ok: true;
@@ -72,7 +75,8 @@ export interface FleetEntry {
   role: FleetRole;
   dailyCapUsd: number;
   maxOutTokens: number;
-  temperature: number;
+  /** null means the parameter is omitted and the provider/model default wins. */
+  temperature: number | null;
   addedAt: number;
   addedBy: string | null;
 }
@@ -94,6 +98,13 @@ export interface AvailableModel {
   textVerbosities: TextVerbosity[];
   /** null=unsupported, object=supported range, absent=unknown */
   temperatureRange?: TemperatureRange | null;
+  tier: ModelTier | null;
+  status: CatalogModelStatus;
+  selectable: boolean;
+  unavailableReason: string | null;
+  releaseDate: string | null;
+  providerCatalogCreatedAt: string | null;
+  expiresAt: string | null;
   inFleet: boolean;
   origin: "live" | "catalog";
 }
@@ -106,14 +117,23 @@ export interface AvailableModelsPayload {
 }
 
 export const FLEET_KEYS = {
-  list: ["llm", "fleet"] as const,
-  available: (provider: string) =>
-    ["llm", "available-models", provider] as const,
+  root: ["llm", "fleet"] as const,
+  list: (tenant: string) => ["llm", "fleet", tenant] as const,
+  availableRoot: (tenant: string) =>
+    ["llm", "available-models", tenant] as const,
+  available: (tenant: string, provider: string) =>
+    ["llm", "available-models", tenant, provider] as const,
 };
 
+function useTenantQueryScope(): string {
+  const pathname = usePathname() ?? "";
+  return tenantFromPathname(pathname) ?? "default";
+}
+
 export function useFleet(): UseQueryResult<FleetEntry[]> {
+  const tenant = useTenantQueryScope();
   return useQuery({
-    queryKey: FLEET_KEYS.list,
+    queryKey: FLEET_KEYS.list(tenant),
     queryFn: () => callV1<FleetEntry[]>("/v1/llm/fleet"),
     staleTime: 5_000,
   });
@@ -128,8 +148,9 @@ export function useFleet(): UseQueryResult<FleetEntry[]> {
 export function useAvailableModels(
   provider: string,
 ): UseQueryResult<AvailableModelsPayload> {
+  const tenant = useTenantQueryScope();
   return useQuery({
-    queryKey: FLEET_KEYS.available(provider),
+    queryKey: FLEET_KEYS.available(tenant, provider),
     queryFn: () =>
       callV1<AvailableModelsPayload>(
         `/v1/llm/providers/${encodeURIComponent(provider)}/available-models`,
@@ -147,11 +168,12 @@ export interface AddFleetInput {
   role?: FleetRole;
   dailyCapUsd?: number;
   maxOutTokens?: number;
-  temperature?: number;
+  temperature?: number | null;
 }
 
 export function useAddFleetEntry() {
   const client = useQueryClient();
+  const tenant = useTenantQueryScope();
   return useMutation({
     mutationFn: (input: AddFleetInput) =>
       callV1<FleetEntry>("/v1/llm/fleet", {
@@ -159,10 +181,10 @@ export function useAddFleetEntry() {
         body: JSON.stringify(input),
       }),
     onSettled: (_data, _err, vars) => {
-      void client.invalidateQueries({ queryKey: FLEET_KEYS.list });
+      void client.invalidateQueries({ queryKey: FLEET_KEYS.list(tenant) });
       if (vars?.provider) {
         void client.invalidateQueries({
-          queryKey: FLEET_KEYS.available(vars.provider),
+          queryKey: FLEET_KEYS.available(tenant, vars.provider),
         });
       }
     },
@@ -176,12 +198,13 @@ export interface UpdateFleetInput {
     role?: FleetRole;
     dailyCapUsd?: number;
     maxOutTokens?: number;
-    temperature?: number;
+    temperature?: number | null;
   };
 }
 
 export function useUpdateFleetEntry() {
   const client = useQueryClient();
+  const tenant = useTenantQueryScope();
   return useMutation({
     mutationFn: ({ id, patch }: UpdateFleetInput) =>
       callV1<FleetEntry>(`/v1/llm/fleet/${encodeURIComponent(id)}`, {
@@ -189,13 +212,14 @@ export function useUpdateFleetEntry() {
         body: JSON.stringify(patch),
       }),
     onSettled: () => {
-      void client.invalidateQueries({ queryKey: FLEET_KEYS.list });
+      void client.invalidateQueries({ queryKey: FLEET_KEYS.list(tenant) });
     },
   });
 }
 
 export function useDeleteFleetEntry() {
   const client = useQueryClient();
+  const tenant = useTenantQueryScope();
   return useMutation({
     mutationFn: (id: string) =>
       callV1<{ id: string; deleted: true }>(
@@ -209,8 +233,10 @@ export function useDeleteFleetEntry() {
     // entry came from) — bedrock/vertex/custom never fetch anyway.
     onSettled: async () => {
       await Promise.all([
-        client.invalidateQueries({ queryKey: FLEET_KEYS.list }),
-        client.invalidateQueries({ queryKey: ["llm", "available-models"] }),
+        client.invalidateQueries({ queryKey: FLEET_KEYS.list(tenant) }),
+        client.invalidateQueries({
+          queryKey: FLEET_KEYS.availableRoot(tenant),
+        }),
       ]);
     },
   });

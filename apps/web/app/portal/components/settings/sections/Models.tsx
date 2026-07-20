@@ -17,7 +17,11 @@
 
 import { useMemo, useState } from "react";
 import { Badge, Button, Icon, Panel, Td, Th } from "@/app/portal/components";
-import { Field, SelectIn, TextIn } from "@/app/portal/components/settings/atoms";
+import {
+  Field,
+  SelectIn,
+  TextIn,
+} from "@/app/portal/components/settings/atoms";
 import {
   useAddFleetEntry,
   useAvailableModels,
@@ -50,12 +54,23 @@ const PROVIDERS = [
 
 const FLEET_ROLES: FleetRole[] = ["primary", "fallback", "shadow"];
 
+const MODEL_TIER_GROUPS = [
+  { key: "top", label: "Top-Tier" },
+  { key: "mid", label: "Mid-Tier" },
+  { key: "low", label: "Low-Tier" },
+  { key: "free", label: "Free-Tier" },
+  { key: "unclassified", label: "Unverified tier" },
+] as const;
+
 export function ModelsSection() {
   const fleet = useFleet();
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-      <ConfiguredFleetPanel fleet={fleet.data ?? []} loading={fleet.isLoading} />
+      <ConfiguredFleetPanel
+        fleet={fleet.data ?? []}
+        loading={fleet.isLoading}
+      />
       <BrowseModelsPanel />
       <FallbackChainPanel fleet={fleet.data ?? []} />
     </div>
@@ -77,10 +92,12 @@ function ConfiguredFleetPanel({
   return (
     <Panel
       title={`Configured models · ${fleet.length}`}
-      subtitle="The fleet available to agents. Set a primary and one or more fallbacks."
+      subtitle="Evaluation and planning inventory. Active agent selection is configured in AI Routing & defaults."
       padded={false}
     >
-      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+      <table
+        style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}
+      >
         <thead>
           <tr style={{ borderBottom: "1px solid var(--border)" }}>
             <Th>Model</Th>
@@ -160,11 +177,18 @@ function ConfiguredFleetPanel({
                   small
                   tone="ghost"
                   onClick={async () => {
-                    if (!confirm(`Remove ${m.modelName} from this tenant's fleet?`)) return;
+                    if (
+                      !confirm(
+                        `Remove ${m.modelName} from this tenant's fleet?`,
+                      )
+                    )
+                      return;
                     try {
                       await deleteMut.mutateAsync(m.id);
                     } catch (err) {
-                      alert(`Failed to remove ${m.modelName}: ${(err as Error).message}`);
+                      alert(
+                        `Failed to remove ${m.modelName}: ${(err as Error).message}`,
+                      );
                     }
                   }}
                   disabled={deleteMut.isPending}
@@ -207,7 +231,9 @@ function BrowseModelsPanel() {
   }
 
   async function addSelected() {
-    const ids = [...selected];
+    const ids = [...selected].filter(
+      (id) => models.find((model) => model.id === id)?.selectable === true,
+    );
     setSelected(new Set());
     // Fire mutations sequentially so duplicate-alias errors from one don't
     // race the next; the fleet hook invalidates the list on each settle.
@@ -235,8 +261,22 @@ function BrowseModelsPanel() {
   const source = available.data?.source ?? null;
   const message = available.data?.message ?? null;
   const isEmptyCatalog = !available.isLoading && models.length === 0;
+  const groupedModels = useMemo(
+    () =>
+      MODEL_TIER_GROUPS.map((group) => ({
+        ...group,
+        models: models.filter(
+          (model) => (model.tier ?? "unclassified") === group.key,
+        ),
+      })).filter((group) => group.models.length > 0),
+    [models],
+  );
   const addableCount = useMemo(
-    () => [...selected].filter((id) => !modelInFleet(models, id)).length,
+    () =>
+      [...selected].filter((id) => {
+        const model = models.find((candidate) => candidate.id === id);
+        return model?.selectable === true && !model.inFleet;
+      }).length,
     [selected, models],
   );
 
@@ -292,28 +332,64 @@ function BrowseModelsPanel() {
 
         {!available.isLoading && models.length > 0 && (
           <>
-            <div style={{ maxHeight: 360, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 4 }}>
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
-                <thead style={{ position: "sticky", top: 0, background: "var(--bg-2)" }}>
+            <div
+              style={{
+                maxHeight: 360,
+                overflowY: "auto",
+                border: "1px solid var(--border)",
+                borderRadius: 4,
+              }}
+            >
+              <table
+                style={{
+                  width: "100%",
+                  borderCollapse: "collapse",
+                  fontSize: 12.5,
+                }}
+              >
+                <thead
+                  style={{
+                    position: "sticky",
+                    top: 0,
+                    background: "var(--bg-2)",
+                  }}
+                >
                   <tr style={{ borderBottom: "1px solid var(--border)" }}>
                     <Th style={{ width: 32 }} />
                     <Th>Model ID</Th>
+                    <Th>Tier / status</Th>
                     <Th>Context</Th>
                     <Th>$ / Mtok in→out</Th>
                     <Th>Capabilities</Th>
                     <Th>Source</Th>
                   </tr>
                 </thead>
-                <tbody>
-                  {models.map((m) => (
-                    <ModelRow
-                      key={m.id}
-                      model={m}
-                      checked={selected.has(m.id)}
-                      onToggle={() => toggle(m.id)}
-                    />
-                  ))}
-                </tbody>
+                {groupedModels.map((group) => (
+                  <tbody key={group.key}>
+                    <tr style={{ background: "var(--panel-2)" }}>
+                      <Td
+                        colSpan={7}
+                        style={{
+                          color: "var(--text-2)",
+                          fontFamily: "var(--mono)",
+                          fontSize: 10.5,
+                          letterSpacing: "0.08em",
+                          textTransform: "uppercase",
+                        }}
+                      >
+                        {group.label} · {group.models.length}
+                      </Td>
+                    </tr>
+                    {group.models.map((m) => (
+                      <ModelRow
+                        key={m.id}
+                        model={m}
+                        checked={selected.has(m.id)}
+                        onToggle={() => toggle(m.id)}
+                      />
+                    ))}
+                  </tbody>
+                ))}
               </table>
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -360,23 +436,39 @@ function SourceBanner({
   if (source === "live") {
     return (
       <Banner tone="ok">
-        <Icon name="check" size={11} /> {modelCount} models returned by provider API
+        <Icon name="check" size={11} /> {modelCount} models returned by provider
+        API
       </Banner>
     );
   }
   return (
     <Banner tone="warn">
       <Icon name="alert" size={11} />{" "}
-      {message ?? "Provider doesn't support live model listing — showing curated catalog"}
+      {message ??
+        "Provider doesn't support live model listing — showing curated catalog"}
     </Banner>
   );
 }
 
-function Banner({ tone, children }: { tone: "ok" | "warn"; children: React.ReactNode }) {
+function Banner({
+  tone,
+  children,
+}: {
+  tone: "ok" | "warn";
+  children: React.ReactNode;
+}) {
   const colors =
     tone === "ok"
-      ? { bg: "rgba(101,224,163,0.08)", border: "rgba(101,224,163,0.3)", text: "var(--text-2)" }
-      : { bg: "rgba(255,181,71,0.08)", border: "rgba(255,181,71,0.3)", text: "var(--text-2)" };
+      ? {
+          bg: "rgba(101,224,163,0.08)",
+          border: "rgba(101,224,163,0.3)",
+          text: "var(--text-2)",
+        }
+      : {
+          bg: "rgba(255,181,71,0.08)",
+          border: "rgba(255,181,71,0.3)",
+          text: "var(--text-2)",
+        };
   return (
     <div
       style={{
@@ -409,7 +501,7 @@ function ModelRow({
     <tr
       style={{
         borderBottom: "1px solid var(--border)",
-        opacity: model.inFleet ? 0.55 : 1,
+        opacity: model.inFleet || !model.selectable ? 0.55 : 1,
       }}
     >
       <Td>
@@ -417,7 +509,7 @@ function ModelRow({
           type="checkbox"
           checked={checked}
           onChange={onToggle}
-          disabled={model.inFleet}
+          disabled={model.inFleet || !model.selectable}
           aria-label={`Select ${model.id}`}
         />
       </Td>
@@ -430,9 +522,40 @@ function ModelRow({
             in fleet
           </Badge>
         )}
+        {!model.selectable && (
+          <div style={{ color: "var(--text-3)", fontSize: 10.5, marginTop: 3 }}>
+            Not selectable · {formatPolicyReason(model.unavailableReason)}
+          </div>
+        )}
       </Td>
       <Td>
-        <span className="mono" style={{ color: "var(--text-2)" }}>
+        <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+          <Badge tone={tierTone(model.tier)}>
+            {model.tier ? `${model.tier}-tier` : "unclassified"}
+          </Badge>
+          <Badge
+            tone={
+              model.status === "current"
+                ? "green"
+                : model.status === "legacy"
+                  ? "amber"
+                  : "muted"
+            }
+          >
+            {model.status}
+          </Badge>
+        </div>
+      </Td>
+      <Td>
+        <span
+          className="mono"
+          title={
+            model.contextLength && model.contextLength > 0
+              ? `${model.contextLength.toLocaleString("en-US")} tokens`
+              : undefined
+          }
+          style={{ color: "var(--text-2)" }}
+        >
           {formatContext(model.contextLength)}
         </span>
       </Td>
@@ -453,6 +576,20 @@ function ModelRow({
   );
 }
 
+function tierTone(
+  tier: AvailableModel["tier"],
+): "signal" | "blue" | "muted" | "green" {
+  if (tier === "top") return "signal";
+  if (tier === "mid") return "blue";
+  if (tier === "free") return "green";
+  return "muted";
+}
+
+function formatPolicyReason(reason: string | null): string {
+  if (!reason) return "catalog policy";
+  return reason.replaceAll("_", " ");
+}
+
 function CapabilityChips({ model }: { model: AvailableModel }) {
   const chips: string[] = [];
   if (model.vision) chips.push("vision");
@@ -469,7 +606,8 @@ function CapabilityChips({ model }: { model: AvailableModel }) {
   }
   if (model.reasoningMandatory) chips.push("always thinking");
   if (model.textVerbosities.length > 0) chips.push("verbosity");
-  if (chips.length === 0) return <span style={{ color: "var(--text-3)", fontSize: 11 }}>—</span>;
+  if (chips.length === 0)
+    return <span style={{ color: "var(--text-3)", fontSize: 11 }}>—</span>;
   return (
     <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
       {chips.map((c) => (
@@ -483,7 +621,9 @@ function CapabilityChips({ model }: { model: AvailableModel }) {
 
 function formatContext(ctx: number | null): string {
   if (ctx === null || ctx <= 0) return "—";
-  if (ctx >= 1_000_000) return `${(ctx / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
+  if (ctx === 1_048_576) return "1M";
+  if (ctx >= 1_000_000)
+    return `${(ctx / 1_000_000).toFixed(2).replace(/0+$/, "").replace(/\.$/, "")}M`;
   if (ctx >= 1_000) return `${Math.round(ctx / 1_000)}k`;
   return String(ctx);
 }
@@ -521,9 +661,9 @@ function FreeTextAdd({
       }}
     >
       <div style={{ fontSize: 12, color: "var(--text-2)" }}>
-        Provider <span className="mono">{provider}</span> doesn't expose a
-        model list and has no curated catalog. Enter the model ID exactly as
-        the provider expects it.
+        Provider <span className="mono">{provider}</span> doesn't expose a model
+        list and has no curated catalog. Enter the model ID exactly as the
+        provider expects it.
       </div>
       <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
         <div style={{ flex: 1 }}>
@@ -551,13 +691,23 @@ function FreeTextAdd({
 // ─── Fallback chain ───────────────────────────────────────────────────────
 
 function FallbackChainPanel({ fleet }: { fleet: FleetEntry[] }) {
-  const chain = fleet.filter((m) => m.role === "primary" || m.role === "fallback");
+  const chain = fleet.filter(
+    (m) => m.role === "primary" || m.role === "fallback",
+  );
   if (chain.length === 0) return null;
   return (
-    <Panel title="Fallback chain" padded>
-      <div style={{ fontSize: 12.5, color: "var(--text-2)", marginBottom: 10, lineHeight: 1.55 }}>
-        When the primary model is unavailable or rate-limited, requests cascade
-        through fallbacks in this order.
+    <Panel title="Planned fleet role order" padded>
+      <div
+        style={{
+          fontSize: 12.5,
+          color: "var(--text-2)",
+          marginBottom: 10,
+          lineHeight: 1.55,
+        }}
+      >
+        This is an informational inventory view; fleet roles and daily caps do
+        not drive runtime dispatch yet. Configure the enforced primary and
+        fallback order in AI Routing &amp; defaults.
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
         {chain.map((m, i) => (
@@ -583,11 +733,16 @@ function FallbackChainPanel({ fleet }: { fleet: FleetEntry[] }) {
             >
               {i + 1}.
             </span>
-            <span className="mono" style={{ fontSize: 12, color: "var(--text)", flex: 1 }}>
+            <span
+              className="mono"
+              style={{ fontSize: 12, color: "var(--text)", flex: 1 }}
+            >
               {m.alias}
             </span>
             <Badge tone="muted">{m.provider}</Badge>
-            <Badge tone={m.role === "primary" ? "signal" : "muted"}>{m.role}</Badge>
+            <Badge tone={m.role === "primary" ? "signal" : "muted"}>
+              {m.role}
+            </Badge>
           </div>
         ))}
       </div>

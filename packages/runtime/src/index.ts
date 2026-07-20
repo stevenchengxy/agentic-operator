@@ -109,6 +109,11 @@ export {
   stripPrivateEventMetadata,
   type BuildCanonicalEventPayloadInput,
 } from "./event-envelope";
+export {
+  PRIVATE_USAGE_ATTRIBUTION_FIELD,
+  privateUsageAttributionMetadata,
+  usageAttributionFromDeliveryData,
+} from "./usage-attribution-envelope";
 export { correlationFromEvent, withCorrelation } from "./correlation";
 export {
   setRuntimeGateway,

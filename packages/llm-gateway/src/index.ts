@@ -22,10 +22,27 @@ export {
   type AdapterEnvSlice,
 } from "./config";
 export { registerAllProviders } from "./providers/index";
+export {
+  resolveOpenRouterReasoningMode,
+  shouldUseOpenRouterResponses,
+} from "./providers/openrouter";
 export { redact, redactObject } from "./redact";
 export { calculateCost, normalizeUsage, USD_NANOS_PER_CENT } from "./pricing";
+export { budgetPeriodStart, ensureCurrentBudgetPeriod } from "./budget";
+export {
+  currentUsageAttribution,
+  mergeUsageAttribution,
+  runWithUsageAttribution,
+  sanitizeUsageAttribution,
+} from "./usage-attribution";
+export {
+  exportPendingUsageEvents,
+  usageExportDirectory,
+  USAGE_EXPORT_SCHEMA,
+} from "./usage-export";
 export {
   assertModelControls,
+  assertModelSelectable,
   isUnsupportedTemperatureError,
   normalizeModelRequest,
   omitTemperature,
@@ -39,8 +56,10 @@ export {
   createOpenAIResponsesAdapter,
 } from "./adapters/openai-responses";
 export {
+  createOpenAICompatibleAdapter,
   mapOpenAICompatibleMessages,
   mapOpenAICompatibleReasoning,
+  type OpenAICompatibleConfig,
 } from "./adapters/openai-compatible";
 // P1-CON-01 — adapter helper for collapsing typed content blocks into text.
 export { flattenContentToText } from "./types";
@@ -67,4 +86,8 @@ export type {
   ReasoningSummary,
   ReasoningContext,
   TextVerbosity,
+  UsageActorType,
+  UsageAttribution,
+  GatewayKind,
+  LlmRoutingMetadata,
 } from "./types";

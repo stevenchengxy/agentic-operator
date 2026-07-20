@@ -2085,9 +2085,9 @@ export async function generateInstructionsForDefinition(
     tenantId: ctx.tenantId,
     tenantSlug: ctx.tenantSlug,
     purpose: "studio.instruction-authoring",
+    routing: { taskType: "agent.author" },
     provider: input.provider,
     model: input.model,
-    temperature: 0.2,
     maxTokens: 2_400,
     messages: [
       {

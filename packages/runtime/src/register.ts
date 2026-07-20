@@ -68,6 +68,14 @@ import { eq, and, desc } from "drizzle-orm";
 import type { TenantRegistry } from "@agentic/agent-kit";
 import type { InngestFunction } from "inngest";
 import { getRuntimeMetrics } from "./llm-host";
+import {
+  mergeUsageAttribution,
+  type UsageAttribution,
+} from "@agentic/llm-gateway";
+import {
+  privateUsageAttributionMetadata,
+  usageAttributionFromDeliveryData,
+} from "./usage-attribution-envelope";
 import type {
   AgentRunRecord,
   ProviderId,
@@ -283,11 +291,34 @@ export function buildManifestEventDeliveryData(args: {
   logicalPayload: Record<string, unknown>;
   eventId: string;
   correlationId: string;
+  usageAttribution?: UsageAttribution;
 }): Record<string, unknown> {
-  return withCorrelation(args.correlationId, {
-    ...stripPrivateEventMetadata(args.logicalPayload),
-    __triggerEventId: args.eventId,
-  });
+  return {
+    ...withCorrelation(args.correlationId, {
+      ...stripPrivateEventMetadata(args.logicalPayload),
+      __triggerEventId: args.eventId,
+    }),
+    ...privateUsageAttributionMetadata(args.usageAttribution),
+  };
+}
+
+type RunInvocationSource =
+  | "studio"
+  | "event"
+  | "api"
+  | "replay"
+  | "demo";
+
+function runInvocationSource(value: string | undefined): RunInvocationSource {
+  switch (value) {
+    case "studio":
+    case "api":
+    case "replay":
+    case "demo":
+      return value;
+    default:
+      return "event";
+  }
 }
 
 export interface ResolvedAgentConcurrency {
@@ -458,6 +489,10 @@ export function registerAgent(
       // legacy spelling is `__test`; downstream actions should not read it
       // directly — runs.isTest is the source of truth.
       const isTest = deliveryData.__test === true;
+      const deliveredUsageAttribution = usageAttributionFromDeliveryData(
+        deliveryData,
+        ctx.tenantId,
+      );
 
       // step.run memoizes results across Inngest replays. Wrap correlation +
       // run-row allocation so identical IDs are reused on every replay, and
@@ -466,6 +501,16 @@ export function registerAgent(
         const cid = correlationFromEvent(event);
         const rid = makeId("run");
         const db = getDb();
+        const usageAttribution = mergeUsageAttribution(
+          deliveredUsageAttribution,
+          {
+            billingAccountId: ctx.tenantId,
+            correlationId: cid,
+            invocationSource: runInvocationSource(
+              deliveredUsageAttribution.invocationSource,
+            ),
+          },
+        );
 
         // Resolve through the exact workflow version. `kebab_id` is only
         // unique within a workflow, so a global lookup could attach this run
@@ -502,7 +547,17 @@ export function registerAgent(
             correlationId: cid,
             subject,
             isTest,
-            invocationSource: "event",
+            invocationSource: runInvocationSource(
+              usageAttribution.invocationSource,
+            ),
+            requestId: usageAttribution.requestId,
+            interactionId: usageAttribution.interactionId,
+            productSurface: usageAttribution.productSurface,
+            productAction: usageAttribution.productAction,
+            requestedBy:
+              usageAttribution.actorType === "user"
+                ? usageAttribution.actorId
+                : undefined,
             definitionHash,
             outputValid: null,
             sideEffectMode: isTest ? "suppressed" : "live",
@@ -555,6 +610,16 @@ export function registerAgent(
 
       const runId = init.runId;
       const correlationId = init.correlationId;
+      const usageAttribution = mergeUsageAttribution(
+        deliveredUsageAttribution,
+        {
+          billingAccountId: ctx.tenantId,
+          correlationId,
+          invocationSource: runInvocationSource(
+            deliveredUsageAttribution.invocationSource,
+          ),
+        },
+      );
       const startedAtMs = init.startedAt;
       const startedAt = new Date(startedAtMs);
       const db = getDb();
@@ -892,7 +957,7 @@ export function registerAgent(
                 event: {
                   name: event.name,
                   data: {
-                    ...((event.data ?? {}) as Record<string, unknown>),
+                    ...data,
                     ...(usesV2Definition ? { inputs: executionInputs } : {}),
                   },
                 },
@@ -908,6 +973,7 @@ export function registerAgent(
               agent: { ...agent, tenantId: ctx.tenantId },
               tenantRegistry: ctx.tenantRegistry,
               autoResolveManual: true,
+              usageAttribution,
             });
             const sEnded = Date.now();
             dbInner
@@ -1566,6 +1632,7 @@ export function registerAgent(
             logicalPayload: emission.payload,
             eventId: emission.eventId,
             correlationId,
+            usageAttribution,
           }),
         });
       }

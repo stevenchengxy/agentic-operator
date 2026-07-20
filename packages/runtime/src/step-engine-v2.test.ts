@@ -3,10 +3,12 @@ import { after, before, beforeEach, describe, it } from "node:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import type {
-  ChatRequest,
-  ChatResponse,
-  LLMGateway,
+import {
+  currentUsageAttribution,
+  runWithUsageAttribution,
+  type ChatRequest,
+  type ChatResponse,
+  type LLMGateway,
 } from "@agentic/llm-gateway";
 import { normalizeAgentForExecution } from "./agent-execution";
 import { parseValidateAndRepairOutput } from "./agent-execution";
@@ -18,11 +20,17 @@ const previousGateway = getRuntimeGateway();
 const previousLogRoot = process.env.AGENTIC_LOGS_DIR;
 let testLogRoot = "";
 let requests: ChatRequest[] = [];
+let observedAttributionContexts: Array<
+  ReturnType<typeof currentUsageAttribution>
+> = [];
 let responses: Array<ChatResponse | Error> = [];
 
 const gateway = {
   async chat(request: ChatRequest): Promise<ChatResponse> {
     requests.push(structuredClone(request));
+    observedAttributionContexts.push(
+      structuredClone(currentUsageAttribution()),
+    );
     const response = responses.shift();
     if (!response) throw new Error("test gateway response queue is empty");
     if (response instanceof Error) throw response;
@@ -32,6 +40,7 @@ const gateway = {
 
 beforeEach(() => {
   requests = [];
+  observedAttributionContexts = [];
   responses = [];
   setRuntimeGateway(gateway);
 });
@@ -145,43 +154,60 @@ describe("runAction v2 integration", () => {
       response(JSON.stringify({ result: { decision: "advance" } })),
     );
     const trace = createBufferedTraceSink();
-    const result = await runAction({
-      runId: "run-v2-1",
-      stepId: "stp-v2-1",
-      trace,
-      ctx: {
-        agentName: "studioAgent",
-        actionName: "execute",
-        correlationId: "cor-v2-1",
-        tenantSlug: "test",
-        event: {
-          // Production registration namespaces Inngest event names. The
-          // execution boundary must remove that prefix before resolving the
-          // authored trigger_bindings key.
-          name: "test/RUN",
-          data: {
-            prompt: "Assess candidate cand-1.",
-            candidate: { id: "cand-1" },
+    const result = await runWithUsageAttribution(
+      { billingAccountId: "ten-worker", requestId: "req-worker" },
+      () =>
+        runAction({
+          runId: "run-v2-1",
+          stepId: "stp-v2-1",
+          trace,
+          ctx: {
+            agentName: "studioAgent",
+            actionName: "execute",
+            correlationId: "cor-v2-1",
+            tenantSlug: "test",
+            event: {
+              // Production registration namespaces Inngest event names. The
+              // execution boundary must remove that prefix before resolving the
+              // authored trigger_bindings key.
+              name: "test/RUN",
+              data: {
+                prompt: "Assess candidate cand-1.",
+                candidate: { id: "cand-1" },
+              },
+            },
           },
-        },
-      },
-      action: {
-        order: "1",
-        name: "execute",
-        description: "Produce the declared result.",
-        action_prompt: "Apply the authored assessment rubric.",
-        type: "logic",
-      },
-      agent: v2Agent({
-        trigger_bindings: {
-          RUN: {
-            prompt: { path: "$.prompt" },
-            candidate: { path: "$.candidate" },
+          action: {
+            order: "1",
+            name: "execute",
+            description: "Produce the declared result.",
+            action_prompt: "Apply the authored assessment rubric.",
+            type: "logic",
           },
-        },
-      }),
-      tenantRegistry: {},
-    });
+          agent: v2Agent({
+            trigger_bindings: {
+              RUN: {
+                prompt: { path: "$.prompt" },
+                candidate: { path: "$.candidate" },
+              },
+            },
+          }),
+          tenantRegistry: {},
+          usageAttribution: {
+            billingAccountId: "ten-test",
+            actorType: "api_token",
+            credentialId: "tok-test",
+            requestId: "req-test",
+            interactionId: "int-test",
+            product: "agentic-operator",
+            productSurface: "agent-runtime",
+            productAction: "POST /v1/events",
+            apiRoute: "/v1/events",
+            httpMethod: "POST",
+            invocationSource: "event",
+          },
+        }),
+    );
 
     assert.equal(result.ok, true);
     assert.deepEqual(result.data, { result: { decision: "advance" } });
@@ -204,6 +230,29 @@ describe("runAction v2 integration", () => {
     assert.equal(requests[1]?.jsonMode, true);
     assert.equal(requests[0]?.temperature, 0.25);
     assert.equal(requests[0]?.maxTokens, 900);
+    assert.equal(requests[0]?.routing?.taskType, "tool.loop");
+    assert.equal(requests[1]?.routing?.taskType, "output.repair");
+    for (const request of requests) {
+      assert.deepEqual(request.attribution, {
+        billingAccountId: "ten-test",
+        actorType: "api_token",
+        credentialId: "tok-test",
+        product: "agentic-operator",
+        productSurface: "agent-runtime",
+        productAction: "POST /v1/events",
+        interactionId: "int-test",
+        functionName: "manifest.test.studioAgent.execute",
+        apiRoute: "/v1/events",
+        httpMethod: "POST",
+        requestId: "req-test",
+        correlationId: "cor-v2-1",
+        invocationSource: "event",
+      });
+    }
+    assert.deepEqual(
+      observedAttributionContexts,
+      requests.map((request) => request.attribution),
+    );
     assert.equal(result.meta?.outputValid, true);
     assert.equal(result.meta?.repairAttempts, 1);
     assert.ok(

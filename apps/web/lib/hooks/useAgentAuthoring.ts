@@ -17,6 +17,7 @@ import {
 } from "./useStream";
 import { tenantHeader } from "./tenant-header";
 import { readAgentAuthoringResponse } from "./agent-authoring-response";
+import { usageAttributionHeaders } from "./usage-attribution";
 
 async function callV1<T>(path: string, init: RequestInit): Promise<T> {
   const { headers: initHeaders, ...rest } = init;
@@ -29,6 +30,7 @@ async function callV1<T>(path: string, init: RequestInit): Promise<T> {
         Accept: "application/json",
         "Content-Type": "application/json",
         ...tenantHeader(),
+        ...usageAttributionHeaders("agent-builder"),
         ...(initHeaders as Record<string, string> | undefined),
       },
     });

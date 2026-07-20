@@ -13,9 +13,14 @@
  */
 import {
   REASONING_EFFORTS,
+  type GatewayInstance,
   type ProviderId,
   type ReasoningEffort,
 } from "@agentic/contracts";
+import {
+  assertSafeGatewayBaseUrl,
+  gatewayApiUrl,
+} from "./gateway-network-safety";
 
 export interface DiscoveredModel {
   /** Provider-native model ID, e.g. "claude-sonnet-4-5", "openai/gpt-4.1". */
@@ -43,6 +48,10 @@ export interface DiscoveredModel {
   /** True when the upstream model cannot disable thinking. */
   reasoningMandatory?: boolean;
   reasoningDefaultEnabled?: boolean;
+  /** Upstream/gateway catalog timestamp; never treated as a release date. */
+  providerCatalogCreatedAt?: string;
+  /** Live catalog expiry, when advertised (common for preview/free routes). */
+  expiresAt?: string;
 }
 
 export type DiscoverySource = "live" | "unsupported";
@@ -56,6 +65,26 @@ export interface DiscoveryResult {
 
 const TIMEOUT_MS = 10_000;
 
+export function parseProviderCatalogTimestamp(
+  value: unknown,
+): string | undefined {
+  let date: Date;
+  if (typeof value === "number" && Number.isFinite(value)) {
+    date = new Date(value > 10_000_000_000 ? value : value * 1000);
+  } else if (typeof value === "string" && value.trim()) {
+    const trimmed = value.trim();
+    if (/^\d+(?:\.\d+)?$/.test(trimmed)) {
+      const numeric = Number(trimmed);
+      date = new Date(numeric > 10_000_000_000 ? numeric : numeric * 1000);
+    } else {
+      date = new Date(trimmed);
+    }
+  } else {
+    return undefined;
+  }
+  return Number.isFinite(date.getTime()) ? date.toISOString() : undefined;
+}
+
 async function fetchJson(
   url: string,
   init: RequestInit,
@@ -63,7 +92,11 @@ async function fetchJson(
   const ac = new AbortController();
   const t = setTimeout(() => ac.abort(), TIMEOUT_MS);
   try {
-    const res = await fetch(url, { ...init, signal: ac.signal });
+    const res = await fetch(url, {
+      ...init,
+      redirect: "error",
+      signal: ac.signal,
+    });
     let body: unknown = null;
     try {
       body = await res.json();
@@ -116,6 +149,14 @@ export function parseOpenAICompatBody(body: unknown): DiscoveredModel[] {
     const id = typeof obj.id === "string" ? obj.id : null;
     if (!id) continue;
     const entry: DiscoveredModel = { id };
+    const providerCatalogCreatedAt = parseProviderCatalogTimestamp(
+      obj.created_at ?? obj.created,
+    );
+    if (providerCatalogCreatedAt) {
+      entry.providerCatalogCreatedAt = providerCatalogCreatedAt;
+    }
+    const expiresAt = parseProviderCatalogTimestamp(obj.expiration_date);
+    if (expiresAt) entry.expiresAt = expiresAt;
     const ctxRaw = obj.context_length;
     if (typeof ctxRaw === "number" && Number.isFinite(ctxRaw)) {
       entry.contextLength = ctxRaw;
@@ -237,20 +278,69 @@ async function listOpenAICompat(
   }
 }
 
+/** Discover models from a configured gateway instance, including NewAPI. */
+export async function listGatewayModels(
+  instance: GatewayInstance,
+  apiKey: string,
+): Promise<DiscoveryResult> {
+  if (instance.kind === "mock") {
+    return listAvailableModels("mock", "");
+  }
+  if (instance.kind === "direct" && instance.providerId) {
+    return listAvailableModels(instance.providerId, apiKey);
+  }
+  if (instance.kind === "openrouter") {
+    return listAvailableModels("openrouter", apiKey);
+  }
+  if (!instance.baseUrl) {
+    return {
+      source: "unsupported",
+      models: [],
+      message: `Gateway ${instance.id} has no base URL`,
+    };
+  }
+  try {
+    await assertSafeGatewayBaseUrl(instance.baseUrl);
+    const modelsUrl = gatewayApiUrl(
+      instance.baseUrl,
+      "/models",
+      instance.kind === "newapi",
+    );
+    const url = new URL(modelsUrl);
+    return listOpenAICompat(apiKey, {
+      baseURL: `${url.protocol}//${url.host}${url.pathname.replace(/\/models$/, "")}`,
+      keyOptional: false,
+    });
+  } catch (error) {
+    return {
+      source: "unsupported",
+      models: [],
+      message: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 /**
  * Anthropic /v1/models — `{ data: [{ id, display_name, created_at }, ...] }`.
  * No context_length in the response; the Settings UI uses the catalog's
  * value when the discovered id matches.
  */
-function parseAnthropicBody(body: unknown): DiscoveredModel[] {
+export function parseAnthropicBody(body: unknown): DiscoveredModel[] {
   if (!body || typeof body !== "object") return [];
   const data = (body as Record<string, unknown>).data;
   if (!Array.isArray(data)) return [];
   const out: DiscoveredModel[] = [];
   for (const item of data) {
     if (!item || typeof item !== "object") continue;
-    const id = (item as Record<string, unknown>).id;
-    if (typeof id === "string") out.push({ id });
+    const obj = item as Record<string, unknown>;
+    const id = obj.id;
+    if (typeof id !== "string") continue;
+    const providerCatalogCreatedAt = parseProviderCatalogTimestamp(
+      obj.created_at ?? obj.created,
+    );
+    out.push(
+      providerCatalogCreatedAt ? { id, providerCatalogCreatedAt } : { id },
+    );
   }
   out.sort((a, b) => a.id.localeCompare(b.id));
   return out;

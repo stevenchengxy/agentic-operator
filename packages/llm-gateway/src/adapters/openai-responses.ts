@@ -52,7 +52,9 @@ function replayReasoningItems(
 ): ResponseInputItem[] {
   if (!serialized) return [];
   try {
-    const parsed = JSON.parse(serialized) as Partial<ResponsesReasoningReplayEnvelope>;
+    const parsed = JSON.parse(
+      serialized,
+    ) as Partial<ResponsesReasoningReplayEnvelope>;
     if (
       parsed.provider !== provider ||
       parsed.api !== "responses" ||
@@ -179,24 +181,19 @@ export function buildOpenAIResponsesRequest(
         ...(req.reasoning.summary !== undefined
           ? {
               summary:
-                req.reasoning.summary === "none"
-                  ? null
-                  : req.reasoning.summary,
+                req.reasoning.summary === "none" ? null : req.reasoning.summary,
             }
           : {}),
       }
     : undefined;
 
-  const text = req.jsonMode || req.verbosity
-    ? {
-        ...(req.jsonMode
-          ? { format: { type: "json_object" as const } }
-          : {}),
-        ...(req.verbosity !== undefined
-          ? { verbosity: req.verbosity }
-          : {}),
-      }
-    : undefined;
+  const text =
+    req.jsonMode || req.verbosity
+      ? {
+          ...(req.jsonMode ? { format: { type: "json_object" as const } } : {}),
+          ...(req.verbosity !== undefined ? { verbosity: req.verbosity } : {}),
+        }
+      : undefined;
 
   return {
     model,
@@ -241,26 +238,27 @@ function effectiveReasoning(
   reported: unknown,
   requested: ChatRequest["reasoning"],
 ): ChatResponse["reasoning"] {
-  const value = reported && typeof reported === "object"
-    ? reported as Record<string, unknown>
-    : undefined;
-  const effort = recognized(value?.effort, REASONING_EFFORTS)
-    ?? requested?.effort;
-  const mode = recognized(value?.mode, REASONING_MODES)
-    ?? requested?.mode;
-  const context = recognized(value?.context, REASONING_CONTEXTS)
-    ?? requested?.context;
+  const value =
+    reported && typeof reported === "object"
+      ? (reported as Record<string, unknown>)
+      : undefined;
+  const effort =
+    recognized(value?.effort, REASONING_EFFORTS) ?? requested?.effort;
+  const mode = recognized(value?.mode, REASONING_MODES) ?? requested?.mode;
+  const context =
+    recognized(value?.context, REASONING_CONTEXTS) ?? requested?.context;
   const reportedSummary = recognized(value?.summary, REASONING_SUMMARIES);
-  const summary = reportedSummary
-    ?? (value?.summary === null && requested?.summary === "none"
+  const summary =
+    reportedSummary ??
+    (value?.summary === null && requested?.summary === "none"
       ? "none"
       : requested?.summary);
 
   if (
-    effort === undefined
-    && mode === undefined
-    && context === undefined
-    && summary === undefined
+    effort === undefined &&
+    mode === undefined &&
+    context === undefined &&
+    summary === undefined
   ) {
     return undefined;
   }
@@ -277,11 +275,12 @@ function effectiveVerbosity(
   reported: unknown,
   requested: ChatRequest["verbosity"],
 ): ChatResponse["verbosity"] {
-  const value = reported && typeof reported === "object"
-    ? reported as Record<string, unknown>
-    : undefined;
-  return (recognized(value?.verbosity, TEXT_VERBOSITIES)
-    ?? requested) as ChatResponse["verbosity"];
+  const value =
+    reported && typeof reported === "object"
+      ? (reported as Record<string, unknown>)
+      : undefined;
+  return (recognized(value?.verbosity, TEXT_VERBOSITIES) ??
+    requested) as ChatResponse["verbosity"];
 }
 
 function reasoningSummaryParts(item: unknown): string[] {
@@ -433,7 +432,11 @@ export function createOpenAIResponsesAdapter(
           let parsedInput: Record<string, unknown> = {};
           try {
             const parsed = item.arguments ? JSON.parse(item.arguments) : {};
-            if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            if (
+              parsed &&
+              typeof parsed === "object" &&
+              !Array.isArray(parsed)
+            ) {
               parsedInput = parsed as Record<string, unknown>;
             }
           } catch {
@@ -446,9 +449,9 @@ export function createOpenAIResponsesAdapter(
           });
         }
 
-        const incomplete = response.incomplete_details as
-          | { reason?: string }
-          | null;
+        const incomplete = response.incomplete_details as {
+          reason?: string;
+        } | null;
 
         return {
           text: outputText(response),
@@ -461,7 +464,8 @@ export function createOpenAIResponsesAdapter(
                 inputTokens,
                 outputTokens,
                 totalTokens:
-                  number(rawUsage, "total_tokens") || inputTokens + outputTokens,
+                  number(rawUsage, "total_tokens") ||
+                  inputTokens + outputTokens,
                 cachedInputTokens: number(inputDetails, "cached_tokens"),
                 cacheWriteInputTokens: number(
                   inputDetails,
@@ -475,10 +479,11 @@ export function createOpenAIResponsesAdapter(
                 raw: response.usage,
               }
             : undefined,
-          providerReportedCostUsd:
-            config.id === "openrouter"
-              ? decimal(rawUsage, "cost")
-              : undefined,
+          // OpenRouter and NewAPI-compatible gateways may return an exact
+          // upstream charge in `usage.cost`. Official OpenAI responses omit
+          // it, so parsing the optional non-negative value is safe for every
+          // Responses-compatible transport and avoids losing gateway billing.
+          providerReportedCostUsd: decimal(rawUsage, "cost"),
           providerRequestId: response.id,
           finishReason: finishReason(
             response.status ?? "unknown",

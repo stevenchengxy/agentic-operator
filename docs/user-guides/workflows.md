@@ -149,12 +149,15 @@ The console has two deliberately separate targets:
 ### Test the current draft
 
 1. Choose an external entry event, or deliberately select an internal event to test one branch.
-2. Enter the generated input variables. Controls come from the listening agents' input contracts, including enums, booleans, numbers, JSON, and file policies.
-3. Add a subject or correlation key so the test is easy to identify.
-4. Choose a tool policy: safe test, read-only, or explicitly confirmed live effects.
-5. Choose whether independent branches continue after a failure, and set the simulated human decision for manual steps.
-6. Keep agent-run, event, and depth budgets bounded.
-7. Choose **Run draft test**.
+2. Review **Example event payload**. The recipe shows the complete event shape, expected field paths and types, required fields, sensitivity, and realistic values derived from authored examples/defaults or JSON Schema.
+3. Choose **Load example** to populate the named controls and any path-bound raw JSON, or **Copy JSON** to reuse the complete example in another client.
+4. Enter or adjust the generated input variables. Controls come from the listening agents' input contracts, including enums, booleans, numbers, JSON, and file policies. Each control also shows an inline example.
+5. Expand **Raw event payload** only for additional top-level fields or fields referenced by explicit path/template bindings. Named controls populate the canonical inputs envelope automatically.
+6. Add a subject or correlation key so the test is easy to identify.
+7. Choose a tool policy: safe test, read-only, or explicitly confirmed live effects.
+8. Choose whether independent branches continue after a failure, and set the simulated human decision for manual steps.
+9. Keep agent-run, event, and depth budgets bounded.
+10. Choose **Run draft test**.
 
 Review the result tabs:
 

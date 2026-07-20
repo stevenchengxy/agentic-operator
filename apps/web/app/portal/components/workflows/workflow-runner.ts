@@ -79,7 +79,10 @@ export function deriveWorkflowEntrypoints(manifestInput: unknown): {
             label: port.label ?? port.id,
             description: port.description ?? null,
             kind: port.kind,
-            required: port.required && binding.mode !== "constant",
+            required:
+              port.required &&
+              binding.mode !== "constant" &&
+              binding.mode !== "template",
             schema: structuredClone(port.schema),
             ...(port.default !== undefined
               ? { default: structuredClone(port.default) }
@@ -159,6 +162,428 @@ export type WorkflowInputControl =
   | "select"
   | "json"
   | "file";
+
+export interface WorkflowPayloadFieldGuide {
+  inputId: string;
+  label: string;
+  description: string | null;
+  required: boolean;
+  sensitivity: WorkflowRunInputDescriptor["sensitivity"];
+  type: string;
+  locations: string[];
+  example: unknown;
+  exampleSource:
+    | "authored example"
+    | "authored default"
+    | "schema generated"
+    | "binding generated";
+  runtimeProvided: boolean;
+}
+
+export interface WorkflowPayloadGuide {
+  /** Values loaded into the generated named-input controls. */
+  inputValues: Record<string, unknown>;
+  /** Advanced JSON merged over the event root by the Run Console. */
+  rawPayload: Record<string, unknown>;
+  /** Caller-facing event shape after named inputs and advanced JSON are combined. */
+  eventPayload: Record<string, unknown>;
+  fields: WorkflowPayloadFieldGuide[];
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function meaningfulExample(value: unknown): boolean {
+  if (value === undefined || value === null || value === "") return false;
+  if (Array.isArray(value)) return value.length > 0;
+  if (isRecord(value)) return Object.keys(value).length > 0;
+  return true;
+}
+
+function identifierExample(identifier: string): string {
+  const normalized = identifier.toLowerCase().replace(/[^a-z0-9]+/g, "_");
+  if (normalized.includes("email")) return "alex.morgan@example.com";
+  if (normalized.includes("phone") || normalized.includes("mobile")) {
+    return "+1-202-555-0147";
+  }
+  if (normalized.includes("url") || normalized.includes("uri")) {
+    return "https://example.com/resources/record-001";
+  }
+  if (normalized.includes("customer_message")) {
+    return "I was charged twice for invoice INV-2048. Please review the duplicate charge.";
+  }
+  if (
+    normalized.includes("prompt") ||
+    normalized === "request" ||
+    normalized.includes("instruction")
+  ) {
+    return "Review the supplied event, validate the data, and return the expected workflow result.";
+  }
+  if (normalized.includes("message") || normalized.includes("description")) {
+    return "Provide the business context and expected outcome for this workflow run.";
+  }
+  if (normalized.includes("priority")) return "normal";
+  if (normalized.includes("status")) return "pending";
+  if (normalized.includes("name")) return "Example record";
+  if (normalized.includes("request_id")) return "REQ-2026-001";
+  if (normalized.includes("case_id")) return "CASE-2026-001";
+  if (normalized.includes("customer_id")) return "CUS-2026-001";
+  if (normalized.includes("document_id")) return "DOC-2026-001";
+  if (normalized.endsWith("_id") || normalized === "id") {
+    const prefix = normalized
+      .replace(/_id$/, "")
+      .split("_")
+      .filter(Boolean)
+      .map((part) => part[0])
+      .join("")
+      .slice(0, 4)
+      .toUpperCase();
+    return `${prefix || "REQ"}-2026-001`;
+  }
+  return "Example value";
+}
+
+function schemaType(schema: Record<string, unknown>): string | undefined {
+  if (typeof schema.type === "string") return schema.type;
+  if (Array.isArray(schema.type)) {
+    return schema.type.find((candidate) => candidate !== "null");
+  }
+  if (isRecord(schema.properties)) return "object";
+  if (schema.items !== undefined) return "array";
+  return undefined;
+}
+
+function schemaExample(
+  schema: Record<string, unknown>,
+  identifier: string,
+  kind: WorkflowRunInputDescriptor["kind"],
+  depth = 0,
+): unknown {
+  if (depth > 5) return null;
+  if (schema.const !== undefined) return structuredClone(schema.const);
+  if (Array.isArray(schema.enum) && schema.enum.length > 0) {
+    return structuredClone(schema.enum[0]);
+  }
+  if (meaningfulExample(schema.default)) {
+    return structuredClone(schema.default);
+  }
+  if (Array.isArray(schema.examples) && schema.examples.length > 0) {
+    return structuredClone(schema.examples[0]);
+  }
+  for (const union of [schema.oneOf, schema.anyOf]) {
+    if (Array.isArray(union) && isRecord(union[0])) {
+      return schemaExample(union[0], identifier, kind, depth + 1);
+    }
+  }
+
+  const type = schemaType(schema);
+  if (type === "object") {
+    const properties = isRecord(schema.properties) ? schema.properties : {};
+    if (Object.keys(properties).length > 0) {
+      return Object.fromEntries(
+        Object.entries(properties)
+          .slice(0, 20)
+          .map(([key, child]) => [
+            key,
+            schemaExample(
+              isRecord(child) ? child : {},
+              key,
+              "value",
+              depth + 1,
+            ),
+          ]),
+      );
+    }
+    if (schema.additionalProperties === false) return {};
+    return {
+      request_id: "REQ-2026-001",
+      message: "Describe the event or work this workflow should process.",
+      source: "workflow-run-console",
+    };
+  }
+  if (type === "array") {
+    if (schema.maxItems === 0) return [];
+    const items = isRecord(schema.items) ? schema.items : {};
+    const count = Math.min(
+      3,
+      Math.max(1, typeof schema.minItems === "number" ? schema.minItems : 1),
+    );
+    return Array.from({ length: count }, (_, index) =>
+      schemaExample(items, `${identifier}_${index + 1}`, "value", depth + 1),
+    );
+  }
+  if (type === "boolean") return true;
+  if (type === "integer" || type === "number") {
+    if (typeof schema.minimum === "number") return schema.minimum;
+    if (typeof schema.exclusiveMinimum === "number") {
+      return schema.exclusiveMinimum + (type === "integer" ? 1 : 0.1);
+    }
+    const normalized = identifier.toLowerCase();
+    if (normalized.includes("amount") || normalized.includes("price")) {
+      return 1250.5;
+    }
+    return type === "integer" ? 10 : 0.85;
+  }
+  if (type === "null") return null;
+
+  const format = typeof schema.format === "string" ? schema.format : "";
+  if (format === "date-time") return "2026-07-17T09:00:00Z";
+  if (format === "date") return "2026-07-17";
+  if (format === "time") return "09:00:00Z";
+  if (format === "email") return "alex.morgan@example.com";
+  if (format === "uuid") return "123e4567-e89b-12d3-a456-426614174000";
+  if (format === "uri" || format === "url") {
+    return "https://example.com/resources/record-001";
+  }
+  if (kind === "prompt") {
+    return "Review the supplied event, validate the data, and return the expected workflow result.";
+  }
+  return identifierExample(identifier);
+}
+
+export function workflowInputExampleValue(
+  input: WorkflowRunInputDescriptor,
+): unknown {
+  if (input.kind === "file") return input.file?.multiple ? [] : null;
+  if (input.example !== undefined) return structuredClone(input.example);
+  if (meaningfulExample(input.default)) return structuredClone(input.default);
+  return schemaExample(
+    input.schema as Record<string, unknown>,
+    input.id,
+    input.kind,
+  );
+}
+
+export function workflowInputIsRuntimeProvided(
+  input: WorkflowRunInputDescriptor,
+): boolean {
+  return (
+    input.bindings.length > 0 &&
+    input.bindings.every(
+      (binding) => binding.mode === "constant" || binding.mode === "template",
+    )
+  );
+}
+
+export function workflowInputSchemaSummary(
+  input: WorkflowRunInputDescriptor,
+): string {
+  if (input.kind === "file") {
+    const mediaTypes = input.file?.media_types ?? [];
+    return mediaTypes.length > 0
+      ? `${input.file?.multiple ? "files" : "file"} · ${mediaTypes.join(" | ")}`
+      : input.file?.multiple
+        ? "files"
+        : "file";
+  }
+  const schema = input.schema as Record<string, unknown>;
+  if (Array.isArray(schema.enum) && schema.enum.length > 0) {
+    return `enum · ${schema.enum.map(String).join(" | ")}`;
+  }
+  const type =
+    schemaType(schema) ?? (input.kind === "prompt" ? "string" : "value");
+  if (type === "array" && isRecord(schema.items)) {
+    return `array<${schemaType(schema.items) ?? "value"}>`;
+  }
+  return type;
+}
+
+function mergePayloadRecords(
+  target: Record<string, unknown>,
+  source: Record<string, unknown>,
+): Record<string, unknown> {
+  const merged = structuredClone(target);
+  for (const [key, value] of Object.entries(source)) {
+    if (["__proto__", "prototype", "constructor"].includes(key)) continue;
+    merged[key] =
+      isRecord(merged[key]) && isRecord(value)
+        ? mergePayloadRecords(merged[key], value)
+        : structuredClone(value);
+  }
+  return merged;
+}
+
+function restrictedPathSegments(path: string): Array<string | number> | null {
+  if (!path.startsWith("$") || path === "$") return [];
+  const segments: Array<string | number> = [];
+  let offset = 1;
+  while (offset < path.length) {
+    const rest = path.slice(offset);
+    const property = rest.match(/^\.([A-Za-z_][A-Za-z0-9_-]*)/);
+    const index = rest.match(/^\[(\d+)\]/);
+    if (property) {
+      const key = property[1]!;
+      if (["__proto__", "prototype", "constructor"].includes(key)) return null;
+      segments.push(key);
+      offset += property[0].length;
+      continue;
+    }
+    if (index) {
+      segments.push(Number(index[1]));
+      offset += index[0].length;
+      continue;
+    }
+    return null;
+  }
+  return segments;
+}
+
+function setPayloadPath(
+  payload: Record<string, unknown>,
+  path: string,
+  value: unknown,
+): Record<string, unknown> {
+  if (path === "$") {
+    return isRecord(value) ? mergePayloadRecords(payload, value) : payload;
+  }
+  const segments = restrictedPathSegments(path);
+  if (!segments || segments.length === 0 || typeof segments[0] === "number") {
+    return payload;
+  }
+  const nextPayload = structuredClone(payload);
+  let cursor: Record<string, unknown> | unknown[] = nextPayload;
+  for (let index = 0; index < segments.length; index += 1) {
+    const segment = segments[index]!;
+    const final = index === segments.length - 1;
+    if (final) {
+      if (Array.isArray(cursor) && typeof segment === "number") {
+        cursor[segment] = structuredClone(value);
+      } else if (!Array.isArray(cursor) && typeof segment === "string") {
+        cursor[segment] = structuredClone(value);
+      }
+      break;
+    }
+    const following = segments[index + 1]!;
+    const container: Record<string, unknown> | unknown[] =
+      typeof following === "number" ? [] : {};
+    if (Array.isArray(cursor) && typeof segment === "number") {
+      if (!isRecord(cursor[segment]) && !Array.isArray(cursor[segment])) {
+        cursor[segment] = container;
+      }
+      cursor = cursor[segment] as Record<string, unknown> | unknown[];
+    } else if (!Array.isArray(cursor) && typeof segment === "string") {
+      if (!isRecord(cursor[segment]) && !Array.isArray(cursor[segment])) {
+        cursor[segment] = container;
+      }
+      cursor = cursor[segment] as Record<string, unknown> | unknown[];
+    } else {
+      return payload;
+    }
+  }
+  return nextPayload;
+}
+
+function templateEventPaths(template: string): string[] {
+  const paths = new Set<string>();
+  const token = /{{\s*(?:json\s+)?event((?:\.[A-Za-z_][A-Za-z0-9_-]*)+)\s*}}/g;
+  for (const match of template.matchAll(token)) paths.add(`$${match[1]}`);
+  return [...paths];
+}
+
+function templateBindingExample(
+  input: WorkflowRunInputDescriptor,
+): string | undefined {
+  const template = input.bindings.find(
+    (binding) => binding.mode === "template" && binding.expression,
+  )?.expression;
+  if (!template) return undefined;
+  return template.replace(
+    /{{\s*(json\s+)?event((?:\.[A-Za-z_][A-Za-z0-9_-]*)+)\s*}}/g,
+    (_token, jsonPrefix: string | undefined, path: string) => {
+      const identifier = path.split(".").filter(Boolean).at(-1) ?? input.id;
+      const value = identifierExample(identifier);
+      return jsonPrefix ? JSON.stringify(value) : value;
+    },
+  );
+}
+
+export function workflowInputDisplayExample(
+  input: WorkflowRunInputDescriptor,
+): unknown {
+  return templateBindingExample(input) ?? workflowInputExampleValue(input);
+}
+
+function guideLocations(input: WorkflowRunInputDescriptor): string[] {
+  const locations = new Set<string>();
+  for (const binding of input.bindings) {
+    if (binding.mode === "direct") {
+      locations.add(`named input · ${input.id}`);
+    } else if (binding.mode === "constant") {
+      locations.add("runtime constant · no value required");
+    } else if (binding.mode === "path" && binding.expression) {
+      locations.add(binding.expression);
+    } else if (binding.mode === "template") {
+      const paths = binding.expression
+        ? templateEventPaths(binding.expression)
+        : [];
+      if (paths.length > 0) {
+        paths.forEach((path) => locations.add("template reads " + path));
+      } else locations.add("runtime template");
+    }
+  }
+  return [...locations];
+}
+
+/** Build a deterministic, caller-facing payload recipe from the entry contract. */
+export function buildWorkflowPayloadGuide(
+  entrypoint: WorkflowRunEntrypoint,
+): WorkflowPayloadGuide {
+  const inputValues: Record<string, unknown> = {};
+  let rawPayload: Record<string, unknown> = {};
+  const fields: WorkflowPayloadFieldGuide[] = [];
+
+  for (const input of entrypoint.inputs) {
+    const runtimeProvided = workflowInputIsRuntimeProvided(input);
+    const bindingExample = templateBindingExample(input);
+    const example = workflowInputDisplayExample(input);
+    if (!runtimeProvided && input.kind !== "file") {
+      inputValues[input.id] = structuredClone(example);
+    }
+    for (const binding of input.bindings) {
+      if (binding.mode === "path" && binding.expression) {
+        rawPayload = setPayloadPath(rawPayload, binding.expression, example);
+      }
+      if (binding.mode === "template" && binding.expression) {
+        for (const path of templateEventPaths(binding.expression)) {
+          const segments = restrictedPathSegments(path) ?? [];
+          const identifier = String(segments.at(-1) ?? input.id);
+          rawPayload = setPayloadPath(
+            rawPayload,
+            path,
+            identifierExample(identifier),
+          );
+        }
+      }
+    }
+    fields.push({
+      inputId: input.id,
+      label: input.label,
+      description: input.description,
+      required: input.required,
+      sensitivity: input.sensitivity,
+      type: workflowInputSchemaSummary(input),
+      locations: guideLocations(input),
+      example,
+      runtimeProvided,
+      exampleSource:
+        bindingExample !== undefined
+          ? "binding generated"
+          : input.example !== undefined
+            ? "authored example"
+            : meaningfulExample(input.default)
+              ? "authored default"
+              : "schema generated",
+    });
+  }
+
+  return {
+    inputValues,
+    rawPayload,
+    eventPayload: buildWorkflowEventPayload(inputValues, rawPayload),
+    fields,
+  };
+}
 
 export function workflowInputControl(
   input: WorkflowRunInputDescriptor,

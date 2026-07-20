@@ -1,18 +1,19 @@
 "use client";
 
 /**
- * Settings view — 9 sections per audit 01 §4.9. P2-FE-15 + P2-FE-27.
+ * Settings view — tenant administration and capability status.
  *
  * Sections:
  *   1. Workspace (name, slug, timezone, locale, accent)
  *   2. People & roles
- *   3. Models (CRUD on configured providers/models)
+ *   3. AI & models (routing, gateway connections, catalog, test lab)
  *   4. Channels
  *   5. Integrations
  *   6. Notifications
  *   7. API tokens
  *   8. Billing / Cost caps
- *   9. Audit log (reads `/v1/audit`)
+ *   9. Usage & cost (routed view)
+ *  10. Audit log (reads `/v1/audit`)
  *
  * Ported from `apps/web/public/portal/views/settings.jsx` (2303 LOC) with
  * timezone wired through to the new `useWorkspace()` hook (P2-FE-27).
@@ -20,14 +21,9 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import {
-  Badge,
-  Button,
-  Icon,
-  Panel,
-  ViewHeader,
-} from "@/app/portal/components";
+import { Badge, Icon, ViewHeader } from "@/app/portal/components";
 import { useTenant } from "@/app/portal/lib/use-tenant";
+import { useDirty } from "@/app/portal/lib/dirty-context";
 import { useSession } from "@/app/portal/lib/session-context";
 import {
   SETTINGS_SECTIONS,
@@ -35,7 +31,7 @@ import {
 } from "@/app/portal/components/settings/data";
 import { WorkspaceSection } from "@/app/portal/components/settings/sections/Workspace";
 import { PeopleSection } from "@/app/portal/components/settings/sections/People";
-import { ModelsSection } from "@/app/portal/components/settings/sections/Models";
+import { AISection } from "@/app/portal/components/settings/sections/AI";
 import { ChannelsSection } from "@/app/portal/components/settings/sections/Channels";
 import { IntegrationsSection } from "@/app/portal/components/settings/sections/Integrations";
 import { NotificationsSection } from "@/app/portal/components/settings/sections/Notifications";
@@ -57,8 +53,7 @@ const ROUTED_SECTIONS: Record<string, string> = {
 // fallback** — if the env var isn't set we show "—" so the operator
 // doesn't read a region they didn't deploy to (the prior default was
 // "cn-shenzhen-1", which actively misled non-China deployments).
-const REGION =
-  (process.env.NEXT_PUBLIC_AGENTIC_REGION ?? "").trim() || "—";
+const REGION = (process.env.NEXT_PUBLIC_AGENTIC_REGION ?? "").trim() || "—";
 
 export default function SettingsPage() {
   const [section, setSection] = useState<SettingsSectionId>("workspace");
@@ -66,10 +61,19 @@ export default function SettingsPage() {
     SETTINGS_SECTIONS.find((s) => s.id === section) ?? SETTINGS_SECTIONS[0];
   const router = useRouter();
   const tenant = useTenant();
+  const dirty = useDirty();
   const session = useSession();
   const operatorName = session?.name ?? "—";
 
   function pick(id: SettingsSectionId) {
+    if (id === section) return;
+    if (dirty.isDirty()) {
+      const detail = dirty.describe();
+      const confirmed = window.confirm(
+        `You have unsaved changes${detail ? ` (${detail})` : ""}. Leave this settings section anyway? Your draft will be lost.`,
+      );
+      if (!confirmed) return;
+    }
     const sub = ROUTED_SECTIONS[id];
     if (sub) {
       router.push(`/portal/${tenant}/settings/${sub}` as never);
@@ -97,17 +101,10 @@ export default function SettingsPage() {
           </>
         }
         badge={<Badge tone="muted">v0.6.2</Badge>}
-        action={[
-          <Button key="docs" small icon="external" tone="ghost">
-            Settings docs
-          </Button>,
-          <Button key="exp" small icon="upload">
-            Export config
-          </Button>,
-        ]}
       />
 
       <div
+        className="settings-layout"
         style={{
           flex: 1,
           display: "grid",
@@ -116,6 +113,7 @@ export default function SettingsPage() {
         }}
       >
         <aside
+          className="settings-sidebar"
           style={{
             borderRight: "1px solid var(--border)",
             overflow: "auto",
@@ -133,12 +131,17 @@ export default function SettingsPage() {
           ))}
         </aside>
 
-        <div style={{ overflow: "auto", minHeight: 0 }}>
-          <div style={{ padding: 24, maxWidth: 1080 }}>
+        <div
+          className="settings-content"
+          style={{ overflow: "auto", minHeight: 0 }}
+        >
+          <div
+            style={{ padding: 24, maxWidth: section === "ai" ? 1320 : 1080 }}
+          >
             <SectionHeader section={sec} />
             {section === "workspace" && <WorkspaceSection />}
             {section === "people" && <PeopleSection />}
-            {section === "models" && <ModelsSection />}
+            {section === "ai" && <AISection />}
             {section === "channels" && <ChannelsSection />}
             {section === "integrations" && <IntegrationsSection />}
             {section === "notifications" && <NotificationsSection />}
@@ -148,8 +151,6 @@ export default function SettingsPage() {
           </div>
         </div>
       </div>
-
-      {false && <Panel title="hidden" />}
     </div>
   );
 }
@@ -165,6 +166,7 @@ function SectionNavItem({
 }) {
   return (
     <button
+      className="settings-nav-item"
       onClick={onClick}
       style={{
         display: "flex",
@@ -213,11 +215,26 @@ function SectionNavItem({
   );
 }
 
-function SectionHeader({ section }: { section: (typeof SETTINGS_SECTIONS)[number] }) {
+function SectionHeader({
+  section,
+}: {
+  section: (typeof SETTINGS_SECTIONS)[number];
+}) {
   return (
     <div style={{ marginBottom: 18 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-        <Icon name={section.icon} size={14} style={{ color: "var(--signal)" }} />
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          marginBottom: 4,
+        }}
+      >
+        <Icon
+          name={section.icon}
+          size={14}
+          style={{ color: "var(--signal)" }}
+        />
         <span
           style={{
             fontSize: 11,
@@ -242,7 +259,9 @@ function SectionHeader({ section }: { section: (typeof SETTINGS_SECTIONS)[number
       >
         {section.label}
       </h2>
-      <div style={{ marginTop: 4, fontSize: 12.5, color: "var(--text-2)" }}>{section.hint}</div>
+      <div style={{ marginTop: 4, fontSize: 12.5, color: "var(--text-2)" }}>
+        {section.hint}
+      </div>
     </div>
   );
 }

@@ -22,8 +22,12 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { eq } from "drizzle-orm";
 import { getDb, tenantBudgets } from "@agentic/db";
-import { requireAuth } from "../../plugins/auth";
+import { requireAuth, requireTenantAdmin } from "../../plugins/auth";
 import { writeAudit } from "../../plugins/audit";
+import {
+  budgetPeriodStart,
+  ensureCurrentBudgetPeriod,
+} from "@agentic/llm-gateway";
 
 const BudgetUpdateBody = z.object({
   monthlyTokenCap: z.number().int().nonnegative().nullable().optional(),
@@ -46,12 +50,14 @@ function shapeRow(row: typeof tenantBudgets.$inferSelect) {
 
 function ensureRow(tenantId: string) {
   const db = getDb();
+  ensureCurrentBudgetPeriod(tenantId);
   let row = db
     .select()
     .from(tenantBudgets)
     .where(eq(tenantBudgets.tenantId, tenantId))
     .all()[0];
   if (!row) {
+    const now = new Date();
     db.insert(tenantBudgets)
       .values({
         tenantId,
@@ -59,6 +65,8 @@ function ensureRow(tenantId: string) {
         monthlyUsdCap: null,
         usedTokensMonth: 0,
         usedUsdMonth: 0,
+        periodStart: budgetPeriodStart(now),
+        updatedAt: now,
       })
       .onConflictDoNothing({ target: tenantBudgets.tenantId })
       .run();
@@ -79,7 +87,7 @@ export async function budgetsRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.put("/budgets", async (req, reply) => {
-    const auth = requireAuth(req);
+    const auth = requireTenantAdmin(req);
     const body = BudgetUpdateBody.parse(req.body ?? {});
     const db = getDb();
     ensureRow(auth.tenantId);

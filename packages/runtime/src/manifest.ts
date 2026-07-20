@@ -13,6 +13,7 @@ import {
   WorkflowManifestCompatSchema,
   type AgentDefinitionV2,
   ReasoningConfigSchema,
+  TaskClassIdSchema,
   TextVerbositySchema,
   ProviderIdSchema,
 } from "@agentic/contracts";
@@ -47,11 +48,12 @@ export const ActionSchema = z
     action_prompt: z.string().optional(),
     provider: ProviderIdSchema.optional(),
     model: z.string().trim().min(1).max(240).optional(),
+    task_class: TaskClassIdSchema.optional(),
     reasoning: ReasoningConfigSchema.optional(),
     verbosity: TextVerbositySchema.optional(),
     store: z.boolean().optional(),
     temperature: z.number().min(0).max(2).optional(),
-    max_tokens: z.number().int().positive().max(1_000_000).optional(),
+    max_tokens: z.number().int().positive().max(1_048_576).optional(),
     tool: z.string().optional(),
     condition: z.string().optional(),
     true_action_id: z.string().optional(),
@@ -164,6 +166,8 @@ const LegacyAgentSchema = z
      * tenant-specific TypeScript `definePrompt` implementation.
      */
     generated: z.boolean().optional(),
+    /** AI-settings task category inherited by logic actions. */
+    task_class: TaskClassIdSchema.optional(),
     // Scheduled-trigger fields. Declared explicitly so that legacy manifests
     // serialising `""` as the placeholder coerce to `undefined`; otherwise
     // `.passthrough()` would let the raw empty string flow through and the

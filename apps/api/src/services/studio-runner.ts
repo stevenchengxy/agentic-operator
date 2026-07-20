@@ -54,6 +54,7 @@ import {
 import type { TenantRegistry } from "@agentic/agent-kit";
 import { getGlobalToolCatalogEntry } from "@agentic/tools";
 import type { InngestFunction } from "inngest";
+import { currentUsageAttribution } from "@agentic/llm-gateway";
 import type { AuthedContext } from "../plugins/auth";
 import {
   AgentStudioNotFoundError,
@@ -984,6 +985,7 @@ export async function reserveStudioRun(
     options.conversationHistorySnapshot !== undefined
       ? parseConversationHistorySnapshot(options.conversationHistorySnapshot)
       : [];
+  const usageAttribution = currentUsageAttribution();
   getDb().transaction(() => {
     if (contextMode === "session") {
       const activeRun = getDb()
@@ -1030,7 +1032,11 @@ export async function reserveStudioRun(
         correlationId,
         subject,
         invocationSource: options.source ?? "studio",
-        requestedBy: null,
+        requestedBy: ctx.userId ?? null,
+        requestId: usageAttribution?.requestId,
+        interactionId: usageAttribution?.interactionId,
+        productSurface: usageAttribution?.productSurface,
+        productAction: usageAttribution?.productAction,
         definitionHash: pinned.definitionHash,
         outputValid: null,
         sideEffectMode,

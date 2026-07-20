@@ -1,15 +1,16 @@
 import { describe, expect, it } from "vitest";
-import {
-  calculateCost,
-  type TokenUsage,
-} from "@agentic/llm-gateway";
+import { calculateCost, type TokenUsage } from "@agentic/llm-gateway";
 import {
   defaultModelFor,
   PROVIDER_MODEL_CATALOG,
   PROVIDER_PRESETS,
 } from "@agentic/contracts";
 
-function usage(inputTokens: number, outputTokens: number, cachedInputTokens = 0): TokenUsage {
+function usage(
+  inputTokens: number,
+  outputTokens: number,
+  cachedInputTokens = 0,
+): TokenUsage {
   return {
     inputTokens,
     outputTokens,
@@ -102,14 +103,28 @@ describe("model catalog pricing", () => {
     expect(PROVIDER_PRESETS.map((provider) => provider.id)).toEqual(
       expect.arrayContaining(["moonshot", "zai"]),
     );
-    expect(PROVIDER_MODEL_CATALOG.openai.map((model) => model.name)).toContain("gpt-5.6-sol");
-    expect(PROVIDER_MODEL_CATALOG.anthropic.map((model) => model.name)).toContain("claude-opus-4-8");
-    expect(PROVIDER_MODEL_CATALOG.deepseek.map((model) => model.name)).toContain("deepseek-v4-pro");
-    expect(PROVIDER_MODEL_CATALOG.moonshot.map((model) => model.name)).toEqual(
-      expect.arrayContaining(["kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6"]),
+    expect(PROVIDER_MODEL_CATALOG.openai.map((model) => model.name)).toContain(
+      "gpt-5.6-sol",
     );
-    expect(PROVIDER_MODEL_CATALOG.zai.map((model) => model.name)).toContain("glm-5.2");
-    expect(PROVIDER_MODEL_CATALOG.openrouter.map((model) => model.name)).toEqual(
+    expect(
+      PROVIDER_MODEL_CATALOG.anthropic.map((model) => model.name),
+    ).toContain("claude-opus-4-8");
+    expect(
+      PROVIDER_MODEL_CATALOG.deepseek.map((model) => model.name),
+    ).toContain("deepseek-v4-pro");
+    expect(PROVIDER_MODEL_CATALOG.moonshot.map((model) => model.name)).toEqual(
+      expect.arrayContaining([
+        "kimi-k2.7-code",
+        "kimi-k2.7-code-highspeed",
+        "kimi-k2.6",
+      ]),
+    );
+    expect(PROVIDER_MODEL_CATALOG.zai.map((model) => model.name)).toContain(
+      "glm-5.2",
+    );
+    expect(
+      PROVIDER_MODEL_CATALOG.openrouter.map((model) => model.name),
+    ).toEqual(
       expect.arrayContaining([
         "openai/gpt-5.6-sol-pro",
         "anthropic/claude-opus-4.8",
@@ -128,7 +143,9 @@ describe("model catalog pricing", () => {
     const kimiGeneral = PROVIDER_MODEL_CATALOG.moonshot.find(
       (model) => model.name === "kimi-k2.6",
     );
-    const glm = PROVIDER_MODEL_CATALOG.zai.find((model) => model.name === "glm-5.2");
+    const glm = PROVIDER_MODEL_CATALOG.zai.find(
+      (model) => model.name === "glm-5.2",
+    );
     const deepseek = PROVIDER_MODEL_CATALOG.deepseek.find(
       (model) => model.name === "deepseek-v4-pro",
     );
@@ -145,9 +162,10 @@ describe("model catalog pricing", () => {
       reasoningEfforts: ["none"],
     });
     expect(glm).toMatchObject({
-      ctx: 1_048_576,
+      ctx: 1_000_000,
       reasoningDefaultEnabled: true,
-      reasoningEfforts: ["none"],
+      reasoningEfforts: ["none", "high", "max"],
+      defaultReasoningEffort: "max",
       pricing: [{ input: 1.4, cachedInput: 0.26, output: 4.4 }],
     });
     expect(deepseek).toMatchObject({
@@ -159,7 +177,7 @@ describe("model catalog pricing", () => {
 
   it("selects current general-purpose defaults while retaining specialist models", () => {
     expect(defaultModelFor("openrouter")).toBe("openai/gpt-oss-120b");
-    expect(defaultModelFor("moonshot")).toBe("kimi-k2.6");
+    expect(defaultModelFor("moonshot")).toBe("kimi-k3");
     expect(defaultModelFor("zai")).toBe("glm-5.2");
     expect(defaultModelFor("deepseek")).toBe("deepseek-v4-pro");
   });

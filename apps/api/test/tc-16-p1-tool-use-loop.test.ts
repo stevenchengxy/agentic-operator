@@ -42,6 +42,7 @@ interface CapturedCall {
   providers?: string[];
   provider?: string;
   jsonMode?: boolean;
+  routing?: ChatRequest["routing"];
 }
 
 /** Programmable mock gateway: per-call queue of responses. */
@@ -67,14 +68,21 @@ class ProgrammableGateway {
     // across turns, so a live reference would show every turn's state.
     this.captured.push({
       messages: JSON.parse(JSON.stringify(req.messages)) as ChatMessage[],
-      tools: req.tools ? (JSON.parse(JSON.stringify(req.tools)) as ToolDef[]) : undefined,
+      tools: req.tools
+        ? (JSON.parse(JSON.stringify(req.tools)) as ToolDef[])
+        : undefined,
       providers: req.providers as string[] | undefined,
       provider: req.provider,
       jsonMode: req.jsonMode,
+      routing: req.routing
+        ? (JSON.parse(JSON.stringify(req.routing)) as ChatRequest["routing"])
+        : undefined,
     });
     const next = this.queue.shift();
     if (!next) {
-      throw new Error("[programmable-gateway] queue empty — test forgot to enqueue a response");
+      throw new Error(
+        "[programmable-gateway] queue empty — test forgot to enqueue a response",
+      );
     }
     return next;
   }
@@ -211,6 +219,7 @@ describe("TC-16: Phase 1 tool-use loop (P1-RT-01..02 + RT-06..07)", () => {
     expect(gw.captured[0]!.tools).toBeDefined();
     expect(gw.captured[0]!.tools!.length).toBe(1);
     expect(gw.captured[0]!.tools![0]!.name).toBe("lookupWeather");
+    expect(gw.captured[0]!.routing?.taskType).toBe("tool.loop");
 
     // Turn 2: seed + assistant(tool_use) + tool(tool_result) = 4 messages
     const t2messages = gw.captured[1]!.messages;
@@ -227,13 +236,21 @@ describe("TC-16: Phase 1 tool-use loop (P1-RT-01..02 + RT-06..07)", () => {
 
     // DB: one logic step per LLM call + one tool step per tool dispatch = 3
     const db = getDb();
-    const stepRows = db.select().from(steps).where(eq(steps.runId, result.runId)).all();
+    const stepRows = db
+      .select()
+      .from(steps)
+      .where(eq(steps.runId, result.runId))
+      .all();
     expect(stepRows.length).toBe(3);
     const types = stepRows.map((s) => s.type).sort();
     expect(types).toEqual(["logic", "logic", "tool"]);
 
     // Run row reflects steps count.
-    const runRow = db.select().from(runs).where(eq(runs.id, result.runId)).all()[0]!;
+    const runRow = db
+      .select()
+      .from(runs)
+      .where(eq(runs.id, result.runId))
+      .all()[0]!;
     expect(runRow.status).toBe("ok");
     expect(runRow.tokensIn).toBe(40);
     expect(runRow.tokensOut).toBe(13);
@@ -317,9 +334,60 @@ describe("TC-16: Phase 1 tool-use loop (P1-RT-01..02 + RT-06..07)", () => {
     // jsonMode is on for both calls
     expect(gw.captured[0]!.jsonMode).toBe(true);
     expect(gw.captured[1]!.jsonMode).toBe(true);
+    expect(gw.captured[0]!.routing?.taskType).toBe("tool.loop");
+    expect(gw.captured[1]!.routing?.taskType).toBe("output.repair");
     // Tokens summed across both turns
     expect(result.tokensIn).toBe(10);
     expect(result.tokensOut).toBe(10);
+  });
+
+  it("routes by task class while preserving explicit provider/model overrides", async () => {
+    const agent = agentRegistry.get("scorerAgent") as ScorerAgent;
+    const validResponse = (): ChatResponse => ({
+      text: JSON.stringify({ score: 0.8, label: "good" }),
+      provider: "mock",
+      model: "mock-model-v1",
+      tokensIn: 1,
+      tokensOut: 1,
+      finishReason: "stop",
+      latencyMs: 1,
+    });
+
+    gw.captured = [];
+    gw.queueResponse(validResponse());
+    await agent.run(
+      { text: "normal" },
+      {
+        ...ctxFor(),
+        taskClass: "evaluation",
+        provider: "openai",
+        model: "gpt-test",
+      },
+    );
+    expect(gw.captured[0]!.routing?.taskType).toBe("evaluation");
+    expect(gw.captured[0]!.routing).toMatchObject({
+      taskType: "evaluation",
+      requestedRoute: "openai/gpt-test",
+      bypassTaskPolicy: true,
+    });
+
+    gw.captured = [];
+    gw.queueResponse(validResponse());
+    await agent.run(
+      { text: "test" },
+      {
+        ...ctxFor(),
+        taskClass: "evaluation",
+        provider: "openai",
+        model: "gpt-test",
+        testRun: true,
+      },
+    );
+    expect(gw.captured[0]!.routing).toMatchObject({
+      taskType: "evaluation",
+      requestedRoute: "openai/gpt-test",
+      bypassTaskPolicy: true,
+    });
   });
 
   it("structured output: two consecutive failures throws output_parse_error", async () => {

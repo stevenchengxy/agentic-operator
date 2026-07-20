@@ -840,7 +840,6 @@ function compileDesign(
       ),
       provider: context.provider,
       model: context.model,
-      temperature: 0.2,
       max_tokens: 3_200,
       timeout_s: 120,
       retries: 2,
@@ -1364,6 +1363,7 @@ export async function generateWorkflowPreview(
       research_provider: research?.provider ?? null,
     };
     const first = await gateway.chat({
+      routing: { taskType: "workflow.generate" },
       provider: selection.provider,
       model: selection.model,
       tenantId: ctx.tenantId,
@@ -1399,11 +1399,11 @@ export async function generateWorkflowPreview(
       );
     } catch (firstError) {
       const repaired = await gateway.chat({
+        routing: { taskType: "output.repair" },
         provider: selection.provider,
         model: selection.model,
         tenantId: ctx.tenantId,
         tenantSlug: ctx.tenantSlug,
-        temperature: 0,
         maxTokens: 10_000,
         timeoutMs: 90_000,
         jsonMode: true,
