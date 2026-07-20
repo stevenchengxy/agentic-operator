@@ -1,7 +1,0 @@
-{
-  "tool": "lookupWeather",
-  "id": "call-2",
-  "input": {
-    "city": "X"
-  }
-}

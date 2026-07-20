@@ -1,3 +1,0 @@
-2026-05-19T11:25:28.694Z  INFO   run.start  run_id=run-51971d81c33a correlation_id=cor-8e425086abea agent=testAgent kind=code invocation_id=inv-bbb0b5baa59f max_steps=1
-2026-05-19T11:25:28.708Z  INFO   llm.call   run_id=run-51971d81c33a correlation_id=cor-8e425086abea turn=1 provider=mock model=mock-model-v1 tokens_in=24 tokens_out=106 finish=stop tool_calls=0
-2026-05-19T11:25:28.709Z  INFO   run.ok     run_id=run-51971d81c33a correlation_id=cor-8e425086abea agent=testAgent provider=mock model=mock-model-v1 steps=1 tokens_in=24 tokens_out=106 duration_ms=18

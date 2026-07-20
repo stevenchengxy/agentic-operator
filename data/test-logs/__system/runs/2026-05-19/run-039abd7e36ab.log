@@ -1,2 +1,0 @@
-2026-05-19T18:56:23.114Z  INFO   run.start  run_id=run-039abd7e36ab correlation_id=cor-ac43cc25c98d agent=testAgent kind=code invocation_id=inv-958861ddfc07
-2026-05-19T18:56:23.118Z  ERROR  run.fail   run_id=run-039abd7e36ab correlation_id=cor-ac43cc25c98d agent=testAgent code=not_configured provider=bedrock message=AWS Bedrock adapter is not implemented in v1 — configure AWS credentials and request implementation

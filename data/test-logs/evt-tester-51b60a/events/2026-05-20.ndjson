@@ -1,7 +1,0 @@
-{"id":"evt-9e504942d603","name":"CLIENT_RULES_PASSED","subject":"req-tester-1","data":{"client_id":"client-1","candidate_id":"cand-1","rules_passed":true},"ts":1779261262215}
-{"id":"evt-78f7c2acbb8e","name":"CLIENT_RULES_PASSED","subject":"test-flag-true","data":{"client_id":"c1","candidate_id":"k1","rules_passed":true},"ts":1779261262230}
-{"id":"evt-b2b7b2de9b65","name":"CLIENT_RULES_PASSED","subject":"test-flag-false","data":{"client_id":"c2","candidate_id":"k2","rules_passed":true},"ts":1779261262231}
-{"id":"evt-f9dbc1d80498","name":"CLIENT_RULES_PASSED","subject":"audit-test","data":{"client_id":"c-a","candidate_id":"k-a","rules_passed":true},"ts":1779261262232}
-{"id":"evt-08e23f56315f","name":"CLIENT_RULES_PASSED","subject":"audit-test-no-source","data":{"client_id":"c-b","candidate_id":"k-b","rules_passed":true},"ts":1779261262233}
-{"id":"evt-19b74e1eaf20","name":"CLIENT_RULES_PASSED","subject":"sse-test","data":{"client_id":"c-sse","candidate_id":"k-sse","rules_passed":true},"ts":1779261263003}
-{"id":"evt-a9dc1420c1eb","name":"CLIENT_RULES_PASSED","subject":"evt-tester-sse-3a5bb4","data":{"client_id":"c-stream","candidate_id":"k-stream","rules_passed":true},"ts":1779261263042}

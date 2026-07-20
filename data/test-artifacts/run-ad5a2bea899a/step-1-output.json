@@ -1,9 +1,0 @@
-{
-  "text": "Agentic Operator is an event-driven operating system for autonomous agents.It orchestrates declarative workflows of LLM-powered agents and human-in-the-loop tasks, tracking every run, step, and emitted event with full audit trail and live log streaming. The platform separates UI (Next.js) from runtime (Fastify + Inngest), uses SQLite for state, and ships a multi-provider LLM gateway. (mock response from mock-model-v1)",
-  "provider": "mock",
-  "model": "mock-model-v1",
-  "tokensIn": 24,
-  "tokensOut": 106,
-  "finishReason": "stop",
-  "latencyMs": 20
-}

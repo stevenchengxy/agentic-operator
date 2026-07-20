@@ -1,5 +1,0 @@
-2026-05-19T11:29:38.318Z  INFO   run.start  run_id=run-9615949d5d83 correlation_id=cor-tc16 agent=scorerAgent kind=code invocation_id=— max_steps=1
-2026-05-19T11:29:38.319Z  INFO   llm.call   run_id=run-9615949d5d83 correlation_id=cor-tc16 turn=1 provider=mock model=mock-model-v1 tokens_in=5 tokens_out=5 finish=stop tool_calls=0
-2026-05-19T11:29:38.319Z  WARN   output.parse_retry run_id=run-9615949d5d83 correlation_id=cor-tc16 first_error=not valid JSON: Expected property name or '}' in JSON at position 1 (line 1 column 2)
-2026-05-19T11:29:38.320Z  INFO   llm.call   run_id=run-9615949d5d83 correlation_id=cor-tc16 turn=2 provider=mock model=mock-model-v1 tokens_in=5 tokens_out=5 finish=stop tool_calls=0
-2026-05-19T11:29:38.320Z  INFO   run.ok     run_id=run-9615949d5d83 correlation_id=cor-tc16 agent=scorerAgent provider=mock model=mock-model-v1 steps=2 tokens_in=10 tokens_out=10 duration_ms=2

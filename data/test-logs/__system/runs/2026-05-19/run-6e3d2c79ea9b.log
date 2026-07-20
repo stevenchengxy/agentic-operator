@@ -1,2 +1,0 @@
-2026-05-19T20:30:52.381Z  INFO   run.start  run_id=run-6e3d2c79ea9b correlation_id=cor-tc16 agent=scorerAgent kind=code invocation_id=— test_run=false
-2026-05-19T20:30:52.383Z  INFO   run.ok     run_id=run-6e3d2c79ea9b correlation_id=cor-tc16 agent=scorerAgent provider=mock model=mock-model-v1 tokens_in=10 tokens_out=10 duration_ms=1

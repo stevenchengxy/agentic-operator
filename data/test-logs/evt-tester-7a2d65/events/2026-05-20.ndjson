@@ -1,9 +1,0 @@
-{"id":"evt-4016e69508ad","name":"CLIENT_RULES_PASSED","subject":"req-tester-1","data":{"client_id":"client-1","candidate_id":"cand-1","rules_passed":true},"ts":1779263506494}
-{"id":"evt-6c885218fcdb","name":"CLIENT_RULES_PASSED","subject":"category-stamp","data":{"client_id":"cc1","candidate_id":"kk1","rules_passed":true},"ts":1779263506500}
-{"id":"evt-b86b3f96a693","name":"UNCATALOGUED_EVENT","subject":"no-cat","data":{},"ts":1779263506501}
-{"id":"evt-b961a356a1d7","name":"CLIENT_RULES_PASSED","subject":"test-flag-true","data":{"client_id":"c1","candidate_id":"k1","rules_passed":true},"ts":1779263506507}
-{"id":"evt-71f5e77179f8","name":"CLIENT_RULES_PASSED","subject":"test-flag-false","data":{"client_id":"c2","candidate_id":"k2","rules_passed":true},"ts":1779263506508}
-{"id":"evt-ca3238c0037a","name":"CLIENT_RULES_PASSED","subject":"audit-test","data":{"client_id":"c-a","candidate_id":"k-a","rules_passed":true},"ts":1779263506509}
-{"id":"evt-22fd3dce5de3","name":"CLIENT_RULES_PASSED","subject":"audit-test-no-source","data":{"client_id":"c-b","candidate_id":"k-b","rules_passed":true},"ts":1779263506510}
-{"id":"evt-a590d20980a8","name":"CLIENT_RULES_PASSED","subject":"sse-test","data":{"client_id":"c-sse","candidate_id":"k-sse","rules_passed":true},"ts":1779263507002}
-{"id":"evt-522101325648","name":"CLIENT_RULES_PASSED","subject":"evt-tester-sse-fee82e","data":{"client_id":"c-stream","candidate_id":"k-stream","rules_passed":true},"ts":1779263507049}

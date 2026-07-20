@@ -1,2 +1,0 @@
-2026-05-19T20:20:08.821Z  INFO   run.start  run_id=run-549d971c5503 correlation_id=cor-b98a55009579 agent=testAgent kind=code invocation_id=inv-ec0a0533f924 test_run=true
-2026-05-19T20:20:08.836Z  INFO   run.ok     run_id=run-549d971c5503 correlation_id=cor-b98a55009579 agent=testAgent provider=mock model=mock-model-v1 tokens_in=24 tokens_out=106 duration_ms=15

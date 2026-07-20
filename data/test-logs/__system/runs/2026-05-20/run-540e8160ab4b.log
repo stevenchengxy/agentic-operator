@@ -1,2 +1,0 @@
-2026-05-20T07:22:22.743Z  INFO   run.start  run_id=run-540e8160ab4b correlation_id=cor-tc16 agent=scorerAgent kind=code invocation_id=— test_run=false
-2026-05-20T07:22:22.769Z  ERROR  run.fail   run_id=run-540e8160ab4b correlation_id=cor-tc16 agent=scorerAgent code=bad_request provider=mock message=output_parse_error: [{"expected":"object","code":"invalid_type","path":[],"message":"Invalid input: expected object, received undefined"}]

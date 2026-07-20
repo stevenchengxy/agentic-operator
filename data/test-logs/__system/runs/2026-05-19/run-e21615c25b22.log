@@ -1,7 +1,0 @@
-2026-05-19T18:32:09.297Z  INFO   run.start  run_id=run-e21615c25b22 correlation_id=cor-tc16 agent=weatherAgent kind=code invocation_id=— max_steps=3
-2026-05-19T18:32:09.299Z  INFO   llm.call   run_id=run-e21615c25b22 correlation_id=cor-tc16 turn=1 provider=mock model=mock-model-v1 tokens_in=10 tokens_out=5 finish=tool_calls tool_calls=1
-2026-05-19T18:32:09.300Z  INFO   tool.call  run_id=run-e21615c25b22 correlation_id=cor-tc16 name=lookupWeather id=call-1 ok=true
-2026-05-19T18:32:09.302Z  INFO   llm.call   run_id=run-e21615c25b22 correlation_id=cor-tc16 turn=3 provider=mock model=mock-model-v1 tokens_in=10 tokens_out=5 finish=tool_calls tool_calls=1
-2026-05-19T18:32:09.303Z  INFO   tool.call  run_id=run-e21615c25b22 correlation_id=cor-tc16 name=lookupWeather id=call-2 ok=true
-2026-05-19T18:32:09.303Z  INFO   llm.call   run_id=run-e21615c25b22 correlation_id=cor-tc16 turn=5 provider=mock model=mock-model-v1 tokens_in=10 tokens_out=5 finish=tool_calls tool_calls=1
-2026-05-19T18:32:09.304Z  INFO   run.ok     run_id=run-e21615c25b22 correlation_id=cor-tc16 agent=weatherAgent provider=mock model=mock-model-v1 steps=5 tokens_in=30 tokens_out=15 duration_ms=8

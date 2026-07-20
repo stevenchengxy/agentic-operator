@@ -1,2 +1,0 @@
-2026-05-19T20:02:31.770Z  INFO   run.start  run_id=run-a55a5e842f1d correlation_id=cor-tc16 agent=weatherAgent kind=code invocation_id=— test_run=false
-2026-05-19T20:02:31.771Z  INFO   run.ok     run_id=run-a55a5e842f1d correlation_id=cor-tc16 agent=weatherAgent provider=mock model=mock-model-v1 tokens_in=1 tokens_out=1 duration_ms=1

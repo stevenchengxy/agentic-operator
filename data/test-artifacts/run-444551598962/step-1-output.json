@@ -1,9 +1,0 @@
-{
-  "text": "ok",
-  "provider": "mock",
-  "model": "mock-model-v1",
-  "tokensIn": 1,
-  "tokensOut": 1,
-  "finishReason": "stop",
-  "latencyMs": 1
-}

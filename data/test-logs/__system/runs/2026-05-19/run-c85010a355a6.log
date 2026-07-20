@@ -1,5 +1,0 @@
-2026-05-19T11:25:20.217Z  INFO   run.start  run_id=run-c85010a355a6 correlation_id=cor-tc16 agent=scorerAgent kind=code invocation_id=— max_steps=1
-2026-05-19T11:25:20.218Z  INFO   llm.call   run_id=run-c85010a355a6 correlation_id=cor-tc16 turn=1 provider=mock model=mock-model-v1 tokens_in=1 tokens_out=1 finish=stop tool_calls=0
-2026-05-19T11:25:20.218Z  WARN   output.parse_retry run_id=run-c85010a355a6 correlation_id=cor-tc16 first_error=not valid JSON: Unexpected token 'o', "not even json" is not valid JSON
-2026-05-19T11:25:20.219Z  INFO   llm.call   run_id=run-c85010a355a6 correlation_id=cor-tc16 turn=2 provider=mock model=mock-model-v1 tokens_in=1 tokens_out=1 finish=stop tool_calls=0
-2026-05-19T11:25:20.219Z  ERROR  run.fail   run_id=run-c85010a355a6 correlation_id=cor-tc16 agent=scorerAgent code=bad_request provider=mock message=output_parse_error: not valid JSON: Unexpected token 's', "still not json" is not valid JSON
