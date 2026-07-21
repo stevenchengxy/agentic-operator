@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import type { Translate } from "@/app/portal/lib/preferences-context";
+import { translate } from "@/lib/i18n";
 import {
   BYTEDANCE_MATCH_RESUME_EXAMPLE,
   BYTEDANCE_MATCH_RESUME_EXAMPLE_DATA,
@@ -6,8 +8,11 @@ import {
   MATCH_RESUME_EXAMPLE,
   MATCH_RESUME_EXAMPLE_DATA,
   MATCH_RESUME_PROMPT,
-  REASONING_TEST_EXAMPLES,
+  getReasoningTestExamples,
 } from "./examples";
+
+const enT: Translate = (key, vars) => translate("en", key, vars);
+const zhT: Translate = (key, vars) => translate("zh", key, vars);
 
 describe("Reasoning Agent resume-match examples", () => {
   it("contains complete Tencent IEG Candidate, Resume, Job Requisition and JD evidence", () => {
@@ -112,11 +117,19 @@ describe("Reasoning Agent resume-match examples", () => {
   });
 
   it("offers both complete examples to the UI selector", () => {
-    expect(REASONING_TEST_EXAMPLES.map((example) => example.id)).toEqual([
+    const examples = getReasoningTestExamples(zhT);
+    expect(examples.map((example) => example.id)).toEqual([
       "tencent-ieg",
       "bytedance-ecommerce",
     ]);
-    for (const example of REASONING_TEST_EXAMPLES) {
+    expect(examples.map((example) => example.label)).toEqual([
+      "腾讯 · IEG",
+      "字节 · 抖音电商",
+    ]);
+    expect(
+      getReasoningTestExamples(enT).map((example) => example.label),
+    ).toEqual(["Tencent · IEG", "ByteDance · Douyin E-commerce"]);
+    for (const example of examples) {
       expect(example.prompt.length).toBeGreaterThan(100);
       expect(Object.values(example.context).every(Boolean)).toBe(true);
     }

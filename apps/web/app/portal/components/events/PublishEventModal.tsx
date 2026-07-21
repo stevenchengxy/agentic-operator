@@ -36,6 +36,8 @@ import {
   type EventCatalogField,
 } from "@/lib/hooks/useEvents";
 import { useDag } from "@/lib/hooks/useAgents";
+import { useI18n } from "@/app/portal/lib/preferences-context";
+import { runStatusLabel } from "@/app/portal/lib/protocol-labels";
 
 /**
  * Source of an option in the event dropdown:
@@ -115,6 +117,7 @@ export function PublishEventModal({
   targetAgent,
   onOpenRun,
 }: PublishEventModalProps) {
+  const { language, t } = useI18n();
   const catalog = useEventCatalog();
   const dag = useDag();
   const emit = useEmitEvent();
@@ -295,7 +298,7 @@ export function PublishEventModal({
       try {
         const v = rawJson.trim() === "" ? {} : JSON.parse(rawJson);
         if (typeof v !== "object" || v === null || Array.isArray(v)) {
-          return { ok: false, error: "Payload must be a JSON object." };
+          return { ok: false, error: t("publishEventModal.errPayloadObject") };
         }
         const payload = v as Record<string, unknown>;
         const missing = fields
@@ -312,14 +315,18 @@ export function PublishEventModal({
         if (missing.length > 0) {
           return {
             ok: false,
-            error: `Required payload field${missing.length === 1 ? "" : "s"} missing: ${missing.join(", ")}.`,
+            error: t("publishEventModal.errRequiredFields", {
+              fields: missing.join(", "),
+            }),
           };
         }
         return { ok: true, payload };
       } catch (err) {
         return {
           ok: false,
-          error: `JSON parse error — ${err instanceof Error ? err.message : String(err)}`,
+          error: t("publishEventModal.errJsonParse", {
+            message: err instanceof Error ? err.message : String(err),
+          }),
         };
       }
     }
@@ -329,7 +336,7 @@ export function PublishEventModal({
       if (f.required && raw.trim() === "") {
         return {
           ok: false,
-          error: `Required payload field missing: ${f.name}.`,
+          error: t("publishEventModal.errRequiredFields", { fields: f.name }),
         };
       }
       const coerced = coerceFieldValue(fieldKind(f.type), raw);
@@ -342,11 +349,11 @@ export function PublishEventModal({
 
   async function handleSubmit() {
     if (!finalName) {
-      setServerError("Event name is required.");
+      setServerError(t("publishEventModal.errNameRequired"));
       return;
     }
     if (!subject.trim()) {
-      setServerError("Subject is required — use the real business identifier.");
+      setServerError(t("publishEventModal.errSubjectBusinessId"));
       return;
     }
     const built = buildPayload();
@@ -374,7 +381,9 @@ export function PublishEventModal({
     <ModalOverlay
       onClose={onClose}
       ariaLabel={
-        targetAgent ? `Send event to ${targetAgent.title}` : "Publish event"
+        targetAgent
+          ? t("publishEventModal.sendToAria", { title: targetAgent.title })
+          : t("publishEventModal.ariaLabel")
       }
     >
       <div
@@ -401,8 +410,8 @@ export function PublishEventModal({
             }}
           >
             {targetAgent
-              ? `Send event to ${targetAgent.title}`
-              : "Publish event"}
+              ? t("publishEventModal.sendTo", { title: targetAgent.title })
+              : t("publishEventModal.heading")}
           </h3>
           <span
             className="mono"
@@ -414,17 +423,14 @@ export function PublishEventModal({
 
         <p style={{ margin: 0, fontSize: 12.5, color: "var(--text-2)" }}>
           {targetAgent ? (
-            <>
-              Publishes one of this agent&apos;s declared trigger events and
-              waits for the runtime to create its run. The exact event → run
-              link is tracked below.
-            </>
+            <>{t("publishEventModal.agentIntro")}</>
           ) : (
             <>
-              Fires a single event into this tenant&apos;s workflow. Any agent
-              whose <code className="mono">trigger</code> matches{" "}
-              <code className="mono">{finalName || "<name>"}</code> picks it up
-              — chained agents cascade from there.
+              {t("publishEventModal.introBeforeTrigger")}{" "}
+              <code className="mono">trigger</code>{" "}
+              {t("publishEventModal.introMatches")}{" "}
+              <code className="mono">{finalName || "<name>"}</code>{" "}
+              {t("publishEventModal.introAfterName")}
             </>
           )}
         </p>
@@ -438,21 +444,21 @@ export function PublishEventModal({
           }}
         >
           {/* Event name */}
-          <Field label="Event name" required>
+          <Field label={t("publishEventModal.fieldEventName")} required>
             <select
               value={eventName}
               onChange={(e) => setEventName(e.target.value)}
               style={selectStyle}
             >
               {(catalog.isLoading || dag.isLoading) && options.length === 0 ? (
-                <option value="">Loading…</option>
+                <option value="">{t("publishEventModal.loading")}</option>
               ) : options.length === 0 ? (
                 <option value="">
-                  No events declared in catalog or workflow
+                  {t("publishEventModal.noEventsDeclared")}
                 </option>
               ) : null}
               {catalogOptions.length > 0 && (
-                <optgroup label="Declared in catalog">
+                <optgroup label={t("publishEventModal.groupCatalog")}>
                   {catalogOptions.map((o) => (
                     <option key={o.name} value={o.name}>
                       {o.name}
@@ -462,7 +468,7 @@ export function PublishEventModal({
                 </optgroup>
               )}
               {workflowOptions.length > 0 && (
-                <optgroup label="From workflow (no schema declared)">
+                <optgroup label={t("publishEventModal.groupWorkflow")}>
                   {workflowOptions.map((o) => (
                     <option key={o.name} value={o.name}>
                       {o.name}
@@ -471,13 +477,15 @@ export function PublishEventModal({
                 </optgroup>
               )}
               {!restricted && (
-                <option value="__custom__">— custom event name —</option>
+                <option value="__custom__">
+                  {t("publishEventModal.customOption")}
+                </option>
               )}
             </select>
             {eventName === "__custom__" && (
               <input
                 type="text"
-                placeholder="my-custom-event"
+                placeholder={t("publishEventModal.customPlaceholder")}
                 value={customName}
                 onChange={(e) => setCustomName(e.target.value)}
                 style={{ ...inputStyle, marginTop: 6 }}
@@ -488,19 +496,23 @@ export function PublishEventModal({
             )}
             {targetAgent && dag.isError && (
               <p style={errorStyle}>
-                The live workflow could not be read: {dag.error.message}
+                {t("publishEventModal.liveWorkflowReadFailed", {
+                  error: dag.error.message,
+                })}
               </p>
             )}
             {targetAgent && dag.isSuccess && !liveTargetAgent && (
               <p style={errorStyle}>
-                {targetAgent.title} is not present in the live workflow.
+                {t("publishEventModal.agentNotLive", {
+                  title: targetAgent.title,
+                })}
               </p>
             )}
             {selectedOption && (
               <p style={hintStyle}>
                 {selectedOption.triggeredBy.length > 0 && (
                   <>
-                    Triggers:{" "}
+                    {t("publishEventModal.triggersLabel")}{" "}
                     <span className="mono" style={{ color: "var(--text-2)" }}>
                       {selectedOption.triggeredBy.join(", ")}
                     </span>
@@ -511,7 +523,7 @@ export function PublishEventModal({
                   " · "}
                 {selectedOption.emittedBy.length > 0 && (
                   <>
-                    Emitted by:{" "}
+                    {t("publishEventModal.emittedByLabel")}{" "}
                     <span className="mono" style={{ color: "var(--text-2)" }}>
                       {selectedOption.emittedBy.join(", ")}
                     </span>
@@ -523,14 +535,14 @@ export function PublishEventModal({
 
           {/* Subject */}
           <Field
-            label="Subject"
-            hint="The workflow correlates events by subject. Use the real business identifier (e.g. a job or request id)."
+            label={t("publishEventModal.fieldSubject")}
+            hint={t("publishEventModal.subjectHint")}
           >
             <input
               type="text"
               value={subject}
               onChange={(e) => setSubject(e.target.value)}
-              placeholder="REQ-…"
+              placeholder={t("publishEventModal.subjectPlaceholderShort")}
               style={inputStyle}
             />
           </Field>
@@ -557,14 +569,20 @@ export function PublishEventModal({
                 aria-expanded={showSchema}
               >
                 <span>{showSchema ? "▾" : "▸"}</span>
-                Payload schema
+                {t("publishEventModal.payloadSchema")}
                 {selectedEntry ? (
                   <span style={{ color: "var(--text-3)", marginLeft: 6 }}>
-                    · {fields.length} field{fields.length === 1 ? "" : "s"}
+                    ·{" "}
+                    {t(
+                      fields.length === 1
+                        ? "publishEventModal.fieldCountOne"
+                        : "publishEventModal.fieldCountMany",
+                      { count: fields.length },
+                    )}
                   </span>
                 ) : (
                   <span style={{ color: "var(--text-3)", marginLeft: 6 }}>
-                    · none declared
+                    · {t("publishEventModal.noneDeclared")}
                   </span>
                 )}
               </button>
@@ -605,9 +623,9 @@ export function PublishEventModal({
                     </pre>
                   ) : (
                     <p style={{ ...hintStyle, marginTop: 0 }}>
-                      This event is referenced by the workflow but has no schema
-                      in <code className="mono">event_types</code>. Use the
-                      raw-JSON editor below to send any payload shape.
+                      {t("publishEventModal.noSchemaBefore")}{" "}
+                      <code className="mono">event_types</code>
+                      {t("publishEventModal.noSchemaAfter")}
                     </p>
                   )}
                 </div>
@@ -626,11 +644,16 @@ export function PublishEventModal({
               }}
             >
               <label style={labelStyle}>
-                Payload
+                {t("publishEventModal.payload")}
                 {fields.length > 0 && !rawMode ? (
                   <span style={{ color: "var(--text-3)", marginLeft: 6 }}>
-                    · {fields.length} declared field
-                    {fields.length === 1 ? "" : "s"}
+                    ·{" "}
+                    {t(
+                      fields.length === 1
+                        ? "publishEventModal.declaredFieldOne"
+                        : "publishEventModal.declaredFieldMany",
+                      { count: fields.length },
+                    )}
                   </span>
                 ) : null}
               </label>
@@ -658,7 +681,9 @@ export function PublishEventModal({
                   fontFamily: "var(--mono)",
                 }}
               >
-                {rawMode ? "Form" : "Raw JSON"}
+                {rawMode
+                  ? t("publishEventModal.toggleForm")
+                  : t("publishEventModal.toggleRawJson")}
               </button>
             </div>
 
@@ -694,7 +719,11 @@ export function PublishEventModal({
           </div>
 
           {parseError && <p style={errorStyle}>{parseError}</p>}
-          {serverError && <p style={errorStyle}>Server: {serverError}</p>}
+          {serverError && (
+            <p style={errorStyle}>
+              {t("publishEventModal.serverPrefix")} {serverError}
+            </p>
+          )}
           {submitted && (
             <div
               style={{
@@ -706,7 +735,7 @@ export function PublishEventModal({
                 padding: "10px 12px",
               }}
             >
-              ✓ Event published · {submitted.name}{" "}
+              {t("publishEventModal.published")} · {submitted.name}{" "}
               <span className="mono" style={{ color: "var(--text)" }}>
                 {submitted.id}
               </span>
@@ -718,7 +747,11 @@ export function PublishEventModal({
                   marginLeft: 8,
                 }}
               >
-                ({new Date(submitted.at).toLocaleTimeString()})
+                (
+                {new Date(submitted.at).toLocaleTimeString(
+                  language === "zh" ? "zh-CN" : "en-US",
+                )}
+                )
               </span>
               {targetAgent && (
                 <div
@@ -738,13 +771,13 @@ export function PublishEventModal({
                       }}
                     >
                       <span style={{ color: "var(--signal)" }}>
-                        ✓ Agent started
+                        {t("publishEventModal.agentStarted")}
                       </span>
                       <span className="mono" style={{ color: "var(--text)" }}>
                         {targetRun.id}
                       </span>
                       <span className="mono" style={{ color: "var(--text-3)" }}>
-                        {targetRun.status}
+                        {runStatusLabel(t, targetRun.status)}
                       </span>
                       {onOpenRun && (
                         <Button
@@ -753,24 +786,30 @@ export function PublishEventModal({
                           onClick={() => onOpenRun(targetRun.id)}
                           style={{ marginLeft: "auto" }}
                         >
-                          Open run
+                          {t("publishEventModal.openRun")}
                         </Button>
                       )}
                     </div>
                   ) : delivery.isError ? (
                     <span style={{ color: "var(--red)" }}>
-                      Event accepted, but delivery status could not be read:{" "}
-                      {delivery.error.message}
+                      {t("publishEventModal.deliveryReadFailed", {
+                        error: delivery.error.message,
+                      })}
                     </span>
                   ) : waitingTooLong ? (
                     <span style={{ color: "var(--amber, #f0b429)" }}>
-                      Event accepted, but {targetAgent.title} has not started
-                      yet. Check that the runtime and Inngest worker are
-                      connected; local development requires the full{" "}
-                      <code className="mono">pnpm dev</code> command.
+                      {t("publishEventModal.agentStartDelayedBefore", {
+                        title: targetAgent.title,
+                      })}{" "}
+                      <code className="mono">pnpm dev</code>{" "}
+                      {t("publishEventModal.agentStartDelayedAfter")}
                     </span>
                   ) : (
-                    <span>Waiting for {targetAgent.title} to start…</span>
+                    <span>
+                      {t("publishEventModal.waitingForAgent", {
+                        title: targetAgent.title,
+                      })}
+                    </span>
                   )}
                 </div>
               )}
@@ -792,7 +831,9 @@ export function PublishEventModal({
             onClick={onClose}
             disabled={emit.isPending}
           >
-            {submitted ? "Close" : "Cancel"}
+            {submitted
+              ? t("publishEventModal.close")
+              : t("publishEventModal.cancel")}
           </Button>
           <Button
             small
@@ -803,15 +844,15 @@ export function PublishEventModal({
           >
             {emit.isPending
               ? targetAgent
-                ? "Sending…"
-                : "Publishing…"
+                ? t("publishEventModal.sending")
+                : t("publishEventModal.publishing")
               : submitted
                 ? targetAgent
-                  ? "Send again"
-                  : "Publish another"
+                  ? t("publishEventModal.sendAgain")
+                  : t("publishEventModal.publishAnother")
                 : targetAgent
-                  ? "Send event"
-                  : "Publish"}
+                  ? t("publishEventModal.sendEvent")
+                  : t("publishEventModal.publish")}
           </Button>
         </footer>
       </div>
@@ -853,6 +894,7 @@ function FieldRow({
   value: string;
   onChange: (v: string) => void;
 }) {
+  const { t } = useI18n();
   const kind = fieldKind(field.type);
   return (
     <div
@@ -923,7 +965,7 @@ function FieldRow({
           <textarea
             value={value}
             onChange={(e) => onChange(e.target.value)}
-            placeholder="[] or {}"
+            placeholder={t("publishEventModal.jsonPlaceholder")}
             spellCheck={false}
             style={{
               ...inputStyle,

@@ -3,6 +3,7 @@
 import { memo, useMemo, useState, type CSSProperties } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 
 /**
  * Markdown — renders LLM-generated answers/reasoning/reports as formatted text.
@@ -55,8 +56,11 @@ function splitHtmlDocuments(text: string): Segment[] {
 }
 
 function HtmlDocCard({ html }: { html: string }) {
+  const { t } = useI18n();
   const [tall, setTall] = useState(false);
-  const title = /<title[^>]*>([^<]*)<\/title>/i.exec(html)?.[1]?.trim() || "HTML 报告";
+  const title =
+    /<title[^>]*>([^<]*)<\/title>/i.exec(html)?.[1]?.trim() ||
+    t("markdownComp.htmlDocCard.defaultTitle");
   const download = () => {
     const blob = new Blob([html], { type: "text/html;charset=utf-8" });
     const url = URL.createObjectURL(blob);
@@ -88,21 +92,25 @@ function HtmlDocCard({ html }: { html: string }) {
         }}
       >
         <span style={{ fontWeight: 600, color: "var(--text)" }}>📄 {title}</span>
-        <span style={{ opacity: 0.7 }}>内联沙箱预览（脚本已禁用）</span>
+        <span style={{ opacity: 0.7 }}>
+          {t("markdownComp.htmlDocCard.sandboxPreviewNote")}
+        </span>
         <span style={{ flex: 1 }} />
         <button
           type="button"
           onClick={() => setTall((v) => !v)}
           style={{ background: "none", border: "1px solid var(--border-2)", borderRadius: 6, color: "var(--text-2)", padding: "2px 10px", cursor: "pointer", fontSize: 12 }}
         >
-          {tall ? "收起" : "展开"}
+          {tall
+            ? t("markdownComp.htmlDocCard.collapse")
+            : t("markdownComp.htmlDocCard.expand")}
         </button>
         <button
           type="button"
           onClick={download}
           style={{ background: "none", border: "1px solid var(--border-2)", borderRadius: 6, color: "var(--text-2)", padding: "2px 10px", cursor: "pointer", fontSize: 12 }}
         >
-          下载 .html
+          {t("markdownComp.htmlDocCard.download")}
         </button>
       </div>
       {/* sandbox=""（无 allow-scripts / allow-same-origin）→ 文档完全惰性：只渲染 HTML/CSS，

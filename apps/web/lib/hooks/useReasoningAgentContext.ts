@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery, type UseQueryResult } from "@tanstack/react-query";
-import { readApiData } from "@/lib/api-response";
+import { fetchApiData } from "@/lib/api-response";
 import { tenantHeader } from "./tenant-header";
 import { reasoningRunPollInterval } from "./reasoning-run-liveness";
 
@@ -65,26 +65,8 @@ export interface ReasoningRunResponse {
 async function loadContext(
   tenant: string,
 ): Promise<ReasoningAgentContextResponse> {
-  const response = await fetch("/v1/reasoning-agent/context", {
-    credentials: "same-origin",
-    headers: {
-      Accept: "application/json",
-      ...tenantHeader(),
-      "x-agentic-tenant": tenant,
-    },
-  });
-  return readApiData<ReasoningAgentContextResponse>(
-    response,
+  return fetchApiData<ReasoningAgentContextResponse>(
     "/v1/reasoning-agent/context",
-  );
-}
-
-async function loadReasoningRun(
-  tenant: string,
-  runId: string,
-): Promise<ReasoningRunResponse> {
-  const response = await fetch(
-    `/v1/reasoning-agent/runs/${encodeURIComponent(runId)}`,
     {
       credentials: "same-origin",
       headers: {
@@ -94,10 +76,21 @@ async function loadReasoningRun(
       },
     },
   );
-  return readApiData<ReasoningRunResponse>(
-    response,
-    `/v1/reasoning-agent/runs/${runId}`,
-  );
+}
+
+async function loadReasoningRun(
+  tenant: string,
+  runId: string,
+): Promise<ReasoningRunResponse> {
+  const path = `/v1/reasoning-agent/runs/${encodeURIComponent(runId)}`;
+  return fetchApiData<ReasoningRunResponse>(path, {
+    credentials: "same-origin",
+    headers: {
+      Accept: "application/json",
+      ...tenantHeader(),
+      "x-agentic-tenant": tenant,
+    },
+  });
 }
 
 export const REASONING_AGENT_CONTEXT_KEYS = {

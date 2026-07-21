@@ -48,11 +48,7 @@ export function Field({
         >
           {label}
           {locked && (
-            <Icon
-              name="check"
-              size={10}
-              style={{ color: "var(--text-4)" }}
-            />
+            <Icon name="check" size={10} style={{ color: "var(--text-4)" }} />
           )}
         </div>
         {hint && (
@@ -204,16 +200,14 @@ export function SelectIn({
         appearance: "none",
         backgroundImage:
           "linear-gradient(45deg, transparent 50%, var(--text-3) 50%), linear-gradient(135deg, var(--text-3) 50%, transparent 50%)",
-        backgroundPosition:
-          "calc(100% - 14px) 50%, calc(100% - 10px) 50%",
+        backgroundPosition: "calc(100% - 14px) 50%, calc(100% - 10px) 50%",
         backgroundSize: "4px 4px, 4px 4px",
         backgroundRepeat: "no-repeat",
         paddingRight: 26,
       }}
     >
       {options.map((o) => {
-        const opt =
-          typeof o === "string" ? { value: o, label: o } : o;
+        const opt = typeof o === "string" ? { value: o, label: o } : o;
         return (
           <option key={opt.value} value={opt.value}>
             {opt.label}
@@ -243,7 +237,9 @@ export function Toggle({
       type="button"
       disabled={disabled}
       onClick={() => onChange?.(!value)}
-      aria-label={ariaLabel ?? (value ? t("settingsAtoms.on") : t("settingsAtoms.off"))}
+      aria-label={
+        ariaLabel ?? (value ? t("settingsAtoms.on") : t("settingsAtoms.off"))
+      }
       style={{
         width: 36,
         height: 20,
@@ -298,16 +294,28 @@ export function CardRow({
 }
 
 // ---------- StatusPill ----------
-export function StatusPill({ status }: { status: "ok" | "warn" | "err" | "off" }) {
+export function StatusPill({
+  status,
+}: {
+  status: "ok" | "warn" | "err" | "off";
+}) {
   const { t } = useI18n();
   const map = {
-    ok: { tone: "green" as const, label: t("settingsAtoms.statusConnected"), dot: "ok" as const },
+    ok: {
+      tone: "green" as const,
+      label: t("settingsAtoms.statusConnected"),
+      dot: "ok" as const,
+    },
     warn: {
       tone: "amber" as const,
       label: t("settingsAtoms.statusDegraded"),
       dot: "waiting" as const,
     },
-    err: { tone: "red" as const, label: t("settingsAtoms.statusError"), dot: "failed" as const },
+    err: {
+      tone: "red" as const,
+      label: t("settingsAtoms.statusError"),
+      dot: "failed" as const,
+    },
     off: {
       tone: "muted" as const,
       label: t("settingsAtoms.statusDisconnected"),
@@ -324,12 +332,21 @@ export function StatusPill({ status }: { status: "ok" | "warn" | "err" | "off" }
 
 // ---------- RoleBadge ----------
 export function RoleBadge({ role }: { role: string }) {
-  const map: Record<string, "signal" | "violet" | "blue" | "muted" | "amber"> = {
-    Owner: "signal",
-    Admin: "violet",
-    Operator: "blue",
-    Viewer: "muted",
-    Service: "amber",
+  const { t } = useI18n();
+  const map: Record<string, "signal" | "violet" | "blue" | "muted" | "amber"> =
+    {
+      Owner: "signal",
+      Admin: "violet",
+      Operator: "blue",
+      Viewer: "muted",
+      Service: "amber",
+    };
+  const labels: Record<string, string> = {
+    Owner: t("settingsAtoms.roleOwner"),
+    Admin: t("settingsAtoms.roleAdmin"),
+    Operator: t("settingsAtoms.roleOperator"),
+    Viewer: t("settingsAtoms.roleViewer"),
+    Service: t("settingsAtoms.roleService"),
   };
-  return <Badge tone={map[role] ?? "muted"}>{role}</Badge>;
+  return <Badge tone={map[role] ?? "muted"}>{labels[role] ?? role}</Badge>;
 }

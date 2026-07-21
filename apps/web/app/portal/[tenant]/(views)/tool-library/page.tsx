@@ -12,8 +12,10 @@
 import { useEffect } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { Empty } from "@/app/portal/components";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 
 export default function ToolLibraryRedirect() {
+  const { t } = useI18n();
   const router = useRouter();
   const params = useParams<{ tenant: string }>();
   useEffect(() => {
@@ -21,7 +23,7 @@ export default function ToolLibraryRedirect() {
   }, [router, params.tenant]);
   return (
     <div style={{ padding: 20 }}>
-      <Empty title="工具库已合并到「工具库」(/tools)" hint="正在跳转…" />
+      <Empty title={t("toolLibrary.redirect.title")} hint={t("toolLibrary.redirect.hint")} />
     </div>
   );
 }

@@ -49,10 +49,10 @@ describe("production Workflows user guide", () => {
       "app/portal/components/workflows/inspectors.tsx",
     );
     expect(page).toContain('onAddAgent={() => addAgent("Agent")}');
-    expect(inspectors).toContain('aria-label="Add agent"');
+    expect(inspectors).toContain('aria-label={t("inspectors.addAgent")}');
     expect(page).toContain("onDoubleClick={(event) =>");
     expect(page).toContain("expandAgentPanel(a.kebabId)");
-    expect(page).toContain("Double-click to expand");
+    expect(page).toContain('t("workflowPage.nodeEditTitle"');
     expect(page).toContain("<Splitter");
     expect(page).toContain("onToggleWidth={toggleAgentPanelWidth}");
     expect(page).not.toContain("async function navAgent(id: string)");
@@ -75,22 +75,32 @@ describe("production Workflows user guide", () => {
   });
 
   it("explains the workflow lifecycle and fields in plain language", () => {
-    expect(guide).toContain("A workflow is a shared plan");
-    expect(guide).toContain("Change a draft, not the live workflow");
-    expect(guide).toContain("Every workflow field in plain language");
-    expect(guide).toContain("Canvas and inspector");
-    expect(guide).toContain("Edit-mode fields and actions");
-    expect(guide).toContain("New workflow fields");
+    expect(guide).toContain('t("workflowHelp.start.title")');
+    expect(guide).toContain('t("workflowHelp.edit.title")');
+    expect(guide).toContain('t("workflowHelp.fields.title")');
+    expect(guide).toContain('t("workflowHelp.fields.canvas.title")');
+    expect(guide).toContain('t("workflowHelp.fields.edit.title")');
+    expect(guide).toContain('t("workflowHelp.fields.newWorkflow.title")');
   });
 
   it("includes two realistic worked examples and actionable troubleshooting", () => {
-    expect(guide).toContain("Customer support triage");
-    expect(guide).toContain("Invoice approval");
-    expect(guide).toContain("The canvas looks empty");
-    expect(guide).toContain("A box never starts");
-    expect(guide).toContain("Draft test failed");
-    expect(guide).toContain("Publication failed");
-    expect(guide).toContain("Stop before publishing when");
+    expect(guide).toContain('t("workflowHelp.examples.support.title")');
+    expect(guide).toContain('t("workflowHelp.examples.invoice.title")');
+    expect(guide).toContain(
+      't("workflowHelp.troubleshooting.emptyTitle")',
+    );
+    expect(guide).toContain(
+      't("workflowHelp.troubleshooting.neverStartsTitle")',
+    );
+    expect(guide).toContain(
+      't("workflowHelp.troubleshooting.draftFailedTitle")',
+    );
+    expect(guide).toContain(
+      't("workflowHelp.troubleshooting.publicationFailedTitle")',
+    );
+    expect(guide).toContain(
+      't("workflowHelp.troubleshooting.stopTitle")',
+    );
   });
 
   it("ships the durable guide with the same lifecycle, examples, and glossary", () => {

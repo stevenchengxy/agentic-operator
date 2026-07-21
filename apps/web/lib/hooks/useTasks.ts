@@ -9,12 +9,12 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import type { UseQueryResult } from "@tanstack/react-query";
 import { TASK_KEYS, COUNT_KEYS } from "./useStream";
-import { readApiData } from "@/lib/api-response";
+import { ApiResponseError, fetchApiData } from "@/lib/api-response";
 import { tenantHeader } from "./tenant-header";
 
 async function callV1<T>(path: string, init: RequestInit = {}): Promise<T> {
   const { headers: initHeaders, ...rest } = init;
-  const res = await fetch(path, {
+  return fetchApiData<T>(path, {
     credentials: "same-origin",
     ...rest,
     headers: {
@@ -23,7 +23,6 @@ async function callV1<T>(path: string, init: RequestInit = {}): Promise<T> {
       ...(initHeaders as Record<string, string> | undefined),
     },
   });
-  return readApiData<T>(res, path);
 }
 
 export interface TaskRow {
@@ -81,7 +80,13 @@ export function useResolveTask() {
         },
       );
       if (result.task_id !== vars.id || result.decision !== vars.decision) {
-        throw new Error("Task resolution response did not confirm the requested decision");
+        throw new ApiResponseError(
+          `/v1/tasks/${encodeURIComponent(vars.id)}/resolve`,
+          200,
+          "task_resolution_unconfirmed",
+          "",
+          { clientKind: "taskResolutionUnconfirmed" },
+        );
       }
       return { task_id: result.task_id, decision: result.decision };
     },

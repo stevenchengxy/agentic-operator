@@ -2,6 +2,8 @@
 
 import type { ReactNode } from "react";
 import { Badge, Button } from "@/app/portal/components";
+import { useI18n } from "@/app/portal/lib/preferences-context";
+import { studioUi } from "./copy";
 import {
   EmptySection,
   Field,
@@ -60,6 +62,7 @@ const STEP_TYPE_GUIDANCE: Record<
 };
 
 function StepTypeGuide() {
+  const { t } = useI18n();
   return (
     <details
       className="agent-studio-step-type-guide"
@@ -78,7 +81,7 @@ function StepTypeGuide() {
           fontWeight: 600,
         }}
       >
-        Which step type should I choose?
+        {studioUi(t, "Which step type should I choose?")}
       </summary>
       <div
         className="agent-studio-step-type-guide-grid"
@@ -111,7 +114,7 @@ function StepTypeGuide() {
                     fontWeight: 600,
                   }}
                 >
-                  {guidance.label}
+                  {studioUi(t, guidance.label)}
                 </div>
                 <div
                   style={{
@@ -120,7 +123,7 @@ function StepTypeGuide() {
                     lineHeight: 1.5,
                   }}
                 >
-                  {guidance.summary}
+                  {studioUi(t, guidance.summary)}
                 </div>
               </div>
             );
@@ -132,14 +135,17 @@ function StepTypeGuide() {
 }
 
 function CurrentStepHelp({ type }: { type: StudioAction["type"] }) {
+  const { t } = useI18n();
   const guidance = STEP_TYPE_GUIDANCE[type];
   const preview = type === "delay" || type === "subflow";
   return (
     <InlineNotice
       tone={preview ? "amber" : "blue"}
-      title={`${guidance.label} step`}
+      title={studioUi(t, "{type} step", {
+        type: studioUi(t, guidance.label),
+      })}
     >
-      <div>{guidance.summary}</div>
+      <div>{studioUi(t, guidance.summary)}</div>
       <details style={{ marginTop: 4 }}>
         <summary
           style={{
@@ -149,7 +155,7 @@ function CurrentStepHelp({ type }: { type: StudioAction["type"] }) {
             fontWeight: 600,
           }}
         >
-          Show an example
+          {studioUi(t, "Show an example")}
         </summary>
         <div
           style={{
@@ -159,7 +165,7 @@ function CurrentStepHelp({ type }: { type: StudioAction["type"] }) {
             lineHeight: 1.5,
           }}
         >
-          {guidance.example}
+          {studioUi(t, guidance.example)}
         </div>
       </details>
     </InlineNotice>
@@ -190,6 +196,7 @@ export function StepsEditor({
   onChange: (actions: StudioAction[]) => void;
   disabled?: boolean;
 }) {
+  const { t } = useI18n();
   function add() {
     onChange([
       ...actions,
@@ -209,9 +216,9 @@ export function StepsEditor({
       >
         <StepTypeGuide />
         <EmptySection
-          title="No steps"
-          hint="Add the first thing this agent should do."
-          actionLabel="Add step"
+          title={studioUi(t, "No steps")}
+          hint={studioUi(t, "Add the first thing this agent should do.")}
+          actionLabel={studioUi(t, "Add step")}
           onAction={add}
         />
       </div>
@@ -253,7 +260,7 @@ export function StepsEditor({
           );
         };
         const branchOptions = [
-          { value: "", label: "Continue to the next step" },
+          { value: "", label: studioUi(t, "Continue to the next step") },
           ...actions.slice(index + 1).map((candidate) => ({
             value: String(candidate.id ?? candidate.name),
             label: `${candidate.order} · ${candidate.name}`,
@@ -315,7 +322,7 @@ export function StepsEditor({
                       : "muted"
                 }
               >
-                {STEP_TYPE_GUIDANCE[action.type].label}
+                {studioUi(t, STEP_TYPE_GUIDANCE[action.type].label)}
               </Badge>
             </summary>
             <div
@@ -341,8 +348,11 @@ export function StepsEditor({
                 }}
               >
                 <Field
-                  label="Order"
-                  hint="When this step runs. Use Move up or Move down to reorder safely."
+                  label={studioUi(t, "Order")}
+                  hint={studioUi(
+                    t,
+                    "When this step runs. Use Move up or Move down to reorder safely.",
+                  )}
                 >
                   <TextInput
                     value={action.order}
@@ -352,8 +362,11 @@ export function StepsEditor({
                   />
                 </Field>
                 <Field
-                  label="Stable step ID"
-                  hint="A unique internal reference for branches and traces. Leave blank to use the step name; avoid changing it after connecting conditions."
+                  label={studioUi(t, "Stable step ID")}
+                  hint={studioUi(
+                    t,
+                    "A unique internal reference for branches and traces. Leave blank to use the step name; avoid changing it after connecting conditions.",
+                  )}
                 >
                   <TextInput
                     value={String(action.id ?? "")}
@@ -364,8 +377,11 @@ export function StepsEditor({
                   />
                 </Field>
                 <Field
-                  label="Step name"
-                  hint="A short label shown in run history, such as draftReply or managerReview."
+                  label={studioUi(t, "Step name")}
+                  hint={studioUi(
+                    t,
+                    "A short label shown in run history, such as draftReply or managerReview.",
+                  )}
                 >
                   <TextInput
                     value={action.name}
@@ -375,8 +391,11 @@ export function StepsEditor({
                   />
                 </Field>
                 <Field
-                  label="Type"
-                  hint="What this step does. Selecting a type reveals only the settings it needs."
+                  label={studioUi(t, "Type")}
+                  hint={studioUi(
+                    t,
+                    "What this step does. Selecting a type reveals only the settings it needs.",
+                  )}
                 >
                   <SelectInput
                     value={action.type}
@@ -385,25 +404,37 @@ export function StepsEditor({
                       update({ type: type as StudioAction["type"] })
                     }
                     options={[
-                      { value: "logic", label: "AI / logic" },
-                      { value: "tool", label: "Tool" },
-                      { value: "manual", label: "Human task" },
-                      { value: "condition", label: "Condition" },
-                      { value: "delay", label: "Delay (preview)" },
-                      { value: "subflow", label: "Subflow (preview)" },
+                      { value: "logic", label: studioUi(t, "AI / logic") },
+                      { value: "tool", label: studioUi(t, "Tool") },
+                      { value: "manual", label: studioUi(t, "Human task") },
+                      { value: "condition", label: studioUi(t, "Condition") },
+                      {
+                        value: "delay",
+                        label: studioUi(t, "Delay (preview)"),
+                      },
+                      {
+                        value: "subflow",
+                        label: studioUi(t, "Subflow (preview)"),
+                      },
                     ]}
                   />
                 </Field>
               </div>
               <Field
-                label="Description"
-                hint="Explain this step's purpose to teammates. This is documentation; it does not tell the AI what to do."
+                label={studioUi(t, "Description")}
+                hint={studioUi(
+                  t,
+                  "Explain this step's purpose to teammates. This is documentation; it does not tell the AI what to do.",
+                )}
               >
                 <TextArea
                   value={action.description ?? ""}
                   rows={2}
                   disabled={disabled}
-                  placeholder="Example: Create a first draft from the customer's request."
+                  placeholder={studioUi(
+                    t,
+                    "Example: Create a first draft from the customer's request.",
+                  )}
                   onChange={(description) => update({ description })}
                 />
               </Field>
@@ -411,13 +442,19 @@ export function StepsEditor({
                 <Field
                   label={
                     action.type === "logic"
-                      ? "Step prompt"
-                      : "Task instructions"
+                      ? studioUi(t, "Step prompt")
+                      : studioUi(t, "Task instructions")
                   }
                   hint={
                     action.type === "logic"
-                      ? "Optional directions for this AI step only. The agent's main Instructions still apply."
-                      : "Tell the person exactly what to review, decide, or provide."
+                      ? studioUi(
+                          t,
+                          "Optional directions for this AI step only. The agent's main Instructions still apply.",
+                        )
+                      : studioUi(
+                          t,
+                          "Tell the person exactly what to review, decide, or provide.",
+                        )
                   }
                 >
                   <TextArea
@@ -427,8 +464,14 @@ export function StepsEditor({
                     disabled={disabled}
                     placeholder={
                       action.type === "logic"
-                        ? "Example: Return a three-sentence summary and list any missing facts."
-                        : "Example: Check the proposed refund and approve or reject it with a short reason."
+                        ? studioUi(
+                            t,
+                            "Example: Return a three-sentence summary and list any missing facts.",
+                          )
+                        : studioUi(
+                            t,
+                            "Example: Check the proposed refund and approve or reject it with a short reason.",
+                          )
                     }
                     onChange={(action_prompt) => update({ action_prompt })}
                   />
@@ -436,14 +479,17 @@ export function StepsEditor({
               )}
               {action.type === "tool" && (
                 <Field
-                  label="Tool name"
-                  hint="Enter the exact name of a tool enabled in this agent's Tools section. Example: fs.readFromInbox."
+                  label={studioUi(t, "Tool name")}
+                  hint={studioUi(
+                    t,
+                    "Enter the exact name of a tool enabled in this agent's Tools section. Example: fs.readFromInbox.",
+                  )}
                 >
                   <TextInput
                     value={String(action.tool ?? "")}
                     mono
                     disabled={disabled}
-                    placeholder="Example: fs.readFromInbox"
+                    placeholder={studioUi(t, "Example: fs.readFromInbox")}
                     onChange={(tool) => update({ tool })}
                   />
                 </Field>
@@ -451,16 +497,20 @@ export function StepsEditor({
               {action.type === "condition" && (
                 <div style={{ display: "grid", gap: 10 }}>
                   <Field
-                    label="Condition expression"
-                    hint={
-                      "A simple yes/no check. Use an input, event value, or the previous step result; for example: inputs.score >= 70 or lastResult.approved == true."
-                    }
+                    label={studioUi(t, "Condition expression")}
+                    hint={studioUi(
+                      t,
+                      "A simple yes/no check. Use an input, event value, or the previous step result; for example: inputs.score >= 70 or lastResult.approved == true.",
+                    )}
                   >
                     <TextInput
                       value={String(action.condition ?? "")}
                       mono
                       disabled={disabled}
-                      placeholder="Example: lastResult.approved == true"
+                      placeholder={studioUi(
+                        t,
+                        "Example: lastResult.approved == true",
+                      )}
                       onChange={(condition) => update({ condition })}
                     />
                   </Field>
@@ -475,8 +525,11 @@ export function StepsEditor({
                     }}
                   >
                     <Field
-                      label="When true"
-                      hint="Choose a later step to run when the rule passes, or continue normally."
+                      label={studioUi(t, "When true")}
+                      hint={studioUi(
+                        t,
+                        "Choose a later step to run when the rule passes, or continue normally.",
+                      )}
                     >
                       <SelectInput
                         value={String(action.true_action_id ?? "")}
@@ -490,8 +543,11 @@ export function StepsEditor({
                       />
                     </Field>
                     <Field
-                      label="When false"
-                      hint="Choose a later step to run when the rule does not pass, or continue normally."
+                      label={studioUi(t, "When false")}
+                      hint={studioUi(
+                        t,
+                        "Choose a later step to run when the rule does not pass, or continue normally.",
+                      )}
                     >
                       <SelectInput
                         value={String(action.false_action_id ?? "")}
@@ -520,8 +576,11 @@ export function StepsEditor({
                     }}
                   >
                     <Field
-                      label="Task type"
-                      hint="A category that helps people recognize the request, such as approval, review, or data-entry."
+                      label={studioUi(t, "Task type")}
+                      hint={studioUi(
+                        t,
+                        "A category that helps people recognize the request, such as approval, review, or data-entry.",
+                      )}
                     >
                       <TextInput
                         value={String(action.task_type ?? "approval")}
@@ -532,8 +591,11 @@ export function StepsEditor({
                       />
                     </Field>
                     <Field
-                      label="Awaiting role"
-                      hint="The kind of person expected to respond, such as manager or operator. This is saved as workflow metadata; task access is managed separately."
+                      label={studioUi(t, "Awaiting role")}
+                      hint={studioUi(
+                        t,
+                        "The kind of person expected to respond, such as manager or operator. This is saved as workflow metadata; task access is managed separately.",
+                      )}
                     >
                       <TextInput
                         value={String(action.awaiting_role ?? "operator")}
@@ -545,9 +607,10 @@ export function StepsEditor({
                     </Field>
                   </div>
                   <JsonFieldHelp>
-                    Advanced: describe the expected response as JSON Schema.
-                    Leave the empty object form for a simple approval, or define
-                    fields such as decision and comments.
+                    {studioUi(
+                      t,
+                      "Advanced: describe the expected response as JSON Schema. Leave the empty object form for a simple approval, or define fields such as decision and comments.",
+                    )}
                   </JsonFieldHelp>
                   <JsonValueEditor
                     value={
@@ -555,15 +618,18 @@ export function StepsEditor({
                     }
                     onChange={(form_schema) => update({ form_schema })}
                     height={150}
-                    label="Human response form schema"
+                    label={studioUi(t, "Human response form schema")}
                     readOnly={disabled}
                   />
                 </div>
               )}
               {action.type === "delay" && (
                 <Field
-                  label="Delay (milliseconds)"
-                  hint="Planned wait in thousandths of a second; 60000 means one minute. Preview only: the value is retained and traced, but production does not wait on a durable timer yet."
+                  label={studioUi(t, "Delay (milliseconds)")}
+                  hint={studioUi(
+                    t,
+                    "Planned wait in thousandths of a second; 60000 means one minute. Preview only: the value is retained and traced, but production does not wait on a durable timer yet.",
+                  )}
                 >
                   <TextInput
                     value={Number(action.delay_ms ?? 0)}
@@ -589,43 +655,56 @@ export function StepsEditor({
                     }}
                   >
                     <Field
-                      label="Subflow agent or event"
-                      hint="The exact agent name or event identifier that should receive the hand-off."
+                      label={studioUi(t, "Subflow agent or event")}
+                      hint={studioUi(
+                        t,
+                        "The exact agent name or event identifier that should receive the hand-off.",
+                      )}
                       required
                     >
                       <TextInput
                         value={String(action.subflow ?? "")}
                         mono
                         disabled={disabled}
-                        placeholder="Example: fulfilOrder"
+                        placeholder={studioUi(t, "Example: fulfilOrder")}
                         onChange={(subflow) => update({ subflow })}
                       />
                     </Field>
                     <Field
-                      label="Wait policy"
-                      hint="Choose whether this agent should wait for the hand-off or continue immediately. Saved for future execution support."
+                      label={studioUi(t, "Wait policy")}
+                      hint={studioUi(
+                        t,
+                        "Choose whether this agent should wait for the hand-off or continue immediately. Saved for future execution support.",
+                      )}
                     >
                       <SelectInput
                         value={String(action.wait_policy ?? "wait")}
                         disabled={disabled}
                         onChange={(wait_policy) => update({ wait_policy })}
                         options={[
-                          { value: "wait", label: "Wait for completion" },
-                          { value: "detach", label: "Start and continue" },
+                          {
+                            value: "wait",
+                            label: studioUi(t, "Wait for completion"),
+                          },
+                          {
+                            value: "detach",
+                            label: studioUi(t, "Start and continue"),
+                          },
                         ]}
                       />
                     </Field>
                   </div>
                   <JsonFieldHelp>
-                    Data planned for the receiving agent. Most users can leave
-                    this as {"{}"}; technical users can map named values for the
-                    hand-off.
+                    {studioUi(
+                      t,
+                      "Data planned for the receiving agent. Most users can leave this as {}; technical users can map named values for the hand-off.",
+                    )}
                   </JsonFieldHelp>
                   <JsonValueEditor
                     value={action.subflow_input ?? {}}
                     onChange={(subflow_input) => update({ subflow_input })}
                     height={140}
-                    label="Subflow input"
+                    label={studioUi(t, "Subflow input")}
                     readOnly={disabled}
                   />
                   <div
@@ -635,8 +714,10 @@ export function StepsEditor({
                       lineHeight: 1.5,
                     }}
                   >
-                    Preview only: the target and input are validated and traced,
-                    but production execution does not invoke the subflow yet.
+                    {studioUi(
+                      t,
+                      "Preview only: the target and input are validated and traced, but production execution does not invoke the subflow yet.",
+                    )}
                   </div>
                 </div>
               )}
@@ -650,7 +731,7 @@ export function StepsEditor({
                     cursor: "pointer",
                   }}
                 >
-                  Advanced: data mappings and model limits
+                  {studioUi(t, "Advanced: data mappings and model limits")}
                 </summary>
                 <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
                   <div
@@ -660,8 +741,10 @@ export function StepsEditor({
                       lineHeight: 1.5,
                     }}
                   >
-                    These settings are optional. Leave both mappings as {"{}"}{" "}
-                    to pass normal data through without custom reshaping.
+                    {studioUi(
+                      t,
+                      "These settings are optional. Leave both mappings as {} to pass normal data through without custom reshaping.",
+                    )}
                   </div>
                   {action.type === "logic" && (
                     <div
@@ -675,8 +758,11 @@ export function StepsEditor({
                       }}
                     >
                       <Field
-                        label="AI retry attempts"
-                        hint="How many extra times to try this AI step after a temporary failure. Use 0 for no retry. Tools are never retried automatically."
+                        label={studioUi(t, "AI retry attempts")}
+                        hint={studioUi(
+                          t,
+                          "How many extra times to try this AI step after a temporary failure. Use 0 for no retry. Tools are never retried automatically.",
+                        )}
                       >
                         <TextInput
                           value={Number(action.retries ?? 0)}
@@ -690,8 +776,11 @@ export function StepsEditor({
                         />
                       </Field>
                       <Field
-                        label="AI step time limit"
-                        hint="Maximum seconds to wait for this AI step before marking it failed. 120 seconds is a practical starting point."
+                        label={studioUi(t, "AI step time limit")}
+                        hint={studioUi(
+                          t,
+                          "Maximum seconds to wait for this AI step before marking it failed. 120 seconds is a practical starting point.",
+                        )}
                       >
                         <TextInput
                           value={Number(action.timeout_s ?? 120)}
@@ -717,20 +806,26 @@ export function StepsEditor({
                   >
                     <div>
                       <JsonFieldHelp>
-                        Choose and rename data sent into this step. Example:{" "}
+                        {studioUi(
+                          t,
+                          "Choose and rename data sent into this step. Example:",
+                        )}{" "}
                         {`{"topic":"$.inputs.topic"}`}.
                       </JsonFieldHelp>
                       <JsonValueEditor
                         value={action.input_mapping ?? {}}
                         onChange={(input_mapping) => update({ input_mapping })}
                         height={140}
-                        label="Input mapping"
+                        label={studioUi(t, "Input mapping")}
                         readOnly={disabled}
                       />
                     </div>
                     <div>
                       <JsonFieldHelp>
-                        Choose and rename data kept from this step. Example:{" "}
+                        {studioUi(
+                          t,
+                          "Choose and rename data kept from this step. Example:",
+                        )}{" "}
                         {`{"summary":"$.result.summary"}`}.
                       </JsonFieldHelp>
                       <JsonValueEditor
@@ -739,7 +834,7 @@ export function StepsEditor({
                           update({ output_mapping })
                         }
                         height={140}
-                        label="Output mapping"
+                        label={studioUi(t, "Output mapping")}
                         readOnly={disabled}
                       />
                     </div>
@@ -776,7 +871,7 @@ export function StepsEditor({
                       );
                     }}
                   >
-                    Move up
+                    {studioUi(t, "Move up")}
                   </Button>
                   <Button
                     small
@@ -795,7 +890,7 @@ export function StepsEditor({
                       );
                     }}
                   >
-                    Move down
+                    {studioUi(t, "Move down")}
                   </Button>
                 </div>
                 <Button
@@ -808,7 +903,7 @@ export function StepsEditor({
                     onChange(actions.filter((_, i) => i !== index))
                   }
                 >
-                  Remove
+                  {studioUi(t, "Remove")}
                 </Button>
               </div>
             </div>
@@ -822,7 +917,7 @@ export function StepsEditor({
         disabled={disabled}
         style={{ justifySelf: "start" }}
       >
-        Add step
+        {studioUi(t, "Add step")}
       </Button>
     </div>
   );

@@ -10,6 +10,7 @@
 //  · 子 agent tokens = 【无】——工厂未按子脑单独记 budget,故不显示(不编造)。
 
 import type { BrainEvent } from "@/lib/hooks/useBrainStream";
+import type { Translate } from "@/app/portal/lib/preferences-context";
 import {
   isAnswerCompletion,
   isDeliveryCompletion,
@@ -43,17 +44,17 @@ export interface PhaseTimeline {
   totalDurationMs: number;
 }
 
-const STAGE_LABEL: Record<string, string> = {
-  intake: "接收 · 理解",
-  read: "读业务",
-  plan: "规划",
-  design: "设计",
-  validate: "校验",
-  sandbox: "试运行",
-  deliver: "交付",
-  answer: "回答",
-  incomplete: "未完成",
-  completion_unknown: "结束（类型未知）",
+const STAGE_KEY: Record<string, string> = {
+  intake: "intake",
+  read: "read",
+  plan: "plan",
+  design: "design",
+  validate: "validate",
+  sandbox: "sandbox",
+  deliver: "deliver",
+  answer: "answer",
+  incomplete: "incomplete",
+  completion_unknown: "completionUnknown",
 };
 
 const s = (v: unknown): string => (typeof v === "string" ? v : v == null ? "" : String(v));
@@ -68,7 +69,7 @@ interface PhaseAcc extends Omit<PhaseGroup, "agents"> {
 }
 
 /** Group a run's BrainEvents into a Workflow→Phase→Agent timeline with REAL rolled-up telemetry. */
-export function derivePhaseTimeline(events: BrainEvent[]): PhaseTimeline {
+export function derivePhaseTimeline(t: Translate, events: BrainEvent[]): PhaseTimeline {
   const order: string[] = [];
   const phases = new Map<string, PhaseAcc>();
   let curStage = "intake";
@@ -78,7 +79,7 @@ export function derivePhaseTimeline(events: BrainEvent[]): PhaseTimeline {
   const phaseOf = (stage: string): PhaseAcc => {
     let p = phases.get(stage);
     if (!p) {
-      p = { stage, label: STAGE_LABEL[stage] ?? stage, status: "active", agents: new Map(), tokens: 0, tools: 0, durationMs: 0 };
+      p = { stage, label: STAGE_KEY[stage] ? t(`factory.phaseTimeline.stage.${STAGE_KEY[stage]}`) : stage, status: "active", agents: new Map(), tokens: 0, tools: 0, durationMs: 0 };
       phases.set(stage, p);
       order.push(stage);
     }
@@ -91,7 +92,7 @@ export function derivePhaseTimeline(events: BrainEvent[]): PhaseTimeline {
     if (!existing) return phaseOf(to);
     phases.delete(from);
     existing.stage = to;
-    existing.label = STAGE_LABEL[to] ?? to;
+    existing.label = STAGE_KEY[to] ? t(`factory.phaseTimeline.stage.${STAGE_KEY[to]}`) : to;
     phases.set(to, existing);
     const index = order.indexOf(from);
     if (index >= 0) order[index] = to;
@@ -99,24 +100,24 @@ export function derivePhaseTimeline(events: BrainEvent[]): PhaseTimeline {
   };
 
   for (const e of events) {
-    const t = s(e.t);
+    const eventType = s(e.t);
     const ts = num((e as { ts?: number }).ts);
-    if (t === "sandbox" && !e.simulated) {
+    if (eventType === "sandbox" && !e.simulated) {
       latestRealSandboxSucceeded = Boolean(
         e.fullChainRan || e.reachedSuccessTerminal,
       );
     }
     // running token total (budget carries a monotonic run-wide total).
-    if (t === "budget") { const tk = num(e.tokens); if (tk != null) runningTokens = tk; }
+    if (eventType === "budget") { const tk = num(e.tokens); if (tk != null) runningTokens = tk; }
     // phase switch on an ACTIVE stage marker.
-    if (t === "stage") {
+    if (eventType === "stage") {
       const st = s(e.stage) || curStage;
       if (s(e.status) === "active") curStage = st;
       const p = phaseOf(st);
       if (s(e.status) === "error") p.status = "error";
       else if (s(e.status) === "ok" && p.status !== "error") p.status = "ok";
     }
-    if (t === "done") {
+    if (eventType === "done") {
       const completionKind = normalizeFactoryCompletionKind(e.completionKind);
       if (e.status === "waiting_human") {
         // Suspension is neither success nor failure. Keep the current phase
@@ -144,12 +145,12 @@ export function derivePhaseTimeline(events: BrainEvent[]): PhaseTimeline {
     if (p.tokenStart == null) p.tokenStart = runningTokens;
     p.tokenEnd = runningTokens;
     // per-phase tool count.
-    if (t === "tool.call") p.tools++;
+    if (eventType === "tool.call") p.tools++;
     // sub-agents (specialists / research sub-brains) that ran in this phase.
-    if (t === "subagent.start") {
+    if (eventType === "subagent.start") {
       const key = `${curStage}:${p.agents.size}:${s(e.role) || s(e.task)}`;
-      p.agents.set(key, { key, name: s(e.role) || s(e.task) || "子脑", role: s(e.role) || undefined, tools: 0, status: "running", startTs: ts });
-    } else if (t === "subagent.done") {
+      p.agents.set(key, { key, name: s(e.role) || s(e.task) || t("factory.phaseTimeline.subBrainFallback"), role: s(e.role) || undefined, tools: 0, status: "running", startTs: ts });
+    } else if (eventType === "subagent.done") {
       // close the most recent still-running sub-agent in this phase.
       const openArr = [...p.agents.values()].filter((a) => a.status === "running");
       const last = openArr[openArr.length - 1];

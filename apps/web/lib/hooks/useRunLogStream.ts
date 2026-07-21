@@ -34,8 +34,8 @@ export interface RunLogLine {
 export interface UseRunLogStreamResult {
   lines: RunLogLine[];
   connected: boolean;
-  /** Last transport error message, if any. Cleared on reconnect. */
-  error: string | null;
+  /** Last transport retry state, if any. Cleared on reconnect. */
+  error: { retrySeconds: number } | null;
   /** Reset the buffer (e.g. when the user picks a different run). */
   clear: () => void;
 }
@@ -51,7 +51,7 @@ export function useRunLogStream(
 
   const [lines, setLines] = useState<RunLogLine[]>([]);
   const [connected, setConnected] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<{ retrySeconds: number } | null>(null);
 
   const seqRef = useRef(0);
   const esRef = useRef<EventSource | null>(null);
@@ -79,7 +79,10 @@ export function useRunLogStream(
         at: Date.now(),
       };
       setLines((prev) => {
-        const next = prev.length >= maxLines ? prev.slice(prev.length - maxLines + 1) : prev.slice();
+        const next =
+          prev.length >= maxLines
+            ? prev.slice(prev.length - maxLines + 1)
+            : prev.slice();
         next.push(line);
         return next;
       });
@@ -107,7 +110,7 @@ export function useRunLogStream(
         if (typeof e.data === "string" && e.data) push("error", e.data);
       });
       es.addEventListener("end", () => {
-        push("end", "(stream closed by server)");
+        push("end", "");
         es.close();
         setConnected(false);
       });
@@ -118,8 +121,11 @@ export function useRunLogStream(
         setConnected(false);
         if (cancelled || !follow) return;
         attempt += 1;
-        const backoff = Math.min(MAX_BACKOFF_MS, 500 * 2 ** Math.min(attempt, 6));
-        setError(`disconnected — retry in ${Math.round(backoff / 1000)}s`);
+        const backoff = Math.min(
+          MAX_BACKOFF_MS,
+          500 * 2 ** Math.min(attempt, 6),
+        );
+        setError({ retrySeconds: Math.round(backoff / 1000) });
         backoffTimer = setTimeout(connect, backoff);
       };
     }

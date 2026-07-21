@@ -58,7 +58,7 @@ function fromApi(d: DeploymentRow): DeploymentItem {
 }
 
 export default function DeploymentsPage() {
-  const { t } = useI18n();
+  const { language, t } = useI18n();
   const toast = useToast();
   const tenant = useTenant();
   const { data, isLoading, isError, error } = useDeployments();
@@ -216,7 +216,7 @@ export default function DeploymentsPage() {
                     </Td>
                     <Td>
                       <span style={{ color: "var(--text-3)" }}>
-                        {d.at > 0 ? fmtAgo(d.at) : "—"}
+                        {d.at > 0 ? fmtAgo(d.at, language) : "—"}
                       </span>
                     </Td>
                     <Td>
@@ -272,7 +272,7 @@ function LiveCard({
   deployedBy: string;
   at: number;
 }) {
-  const { t } = useI18n();
+  const { language, t } = useI18n();
   return (
     <div style={{ padding: "14px 16px", background: "var(--panel)" }}>
       <div
@@ -326,7 +326,7 @@ function LiveCard({
         {agentCount != null && (
           <span>{t("deployments.agentCount", { count: agentCount })}</span>
         )}
-        <span>{at > 0 ? fmtAgo(at) : "—"}</span>
+        <span>{at > 0 ? fmtAgo(at, language) : "—"}</span>
         <span>· {deployedBy}</span>
       </div>
     </div>

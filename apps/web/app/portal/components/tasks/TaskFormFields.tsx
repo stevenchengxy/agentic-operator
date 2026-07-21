@@ -6,6 +6,8 @@ interface TaskFormFieldsProps {
   values: Record<string, TaskFormRawValue>;
   errors: Record<string, string>;
   disabled?: boolean;
+  selectPlaceholder?: string;
+  confirmLabel?: string;
   onChange: (name: string, value: TaskFormRawValue) => void;
 }
 
@@ -25,6 +27,8 @@ export function TaskFormFields({
   values,
   errors,
   disabled,
+  selectPlaceholder = "Select…",
+  confirmLabel = "Confirm",
   onChange,
 }: TaskFormFieldsProps) {
   if (definition.fields.length === 0) return null;
@@ -74,7 +78,7 @@ export function TaskFormFields({
                 onChange={(event) => onChange(field.name, event.target.value)}
                 style={controlStyle}
               >
-                <option value="">Select…</option>
+                <option value="">{selectPlaceholder}</option>
                 {field.options.map((option) => (
                   <option key={option.value} value={option.value}>
                     {option.label}
@@ -93,7 +97,7 @@ export function TaskFormFields({
                   }
                 />
                 <span style={{ fontSize: 12, color: "var(--text)" }}>
-                  Confirm
+                  {confirmLabel}
                 </span>
               </span>
             ) : field.kind === "textarea" || field.kind === "json" ? (

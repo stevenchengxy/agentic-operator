@@ -346,7 +346,7 @@ function RunListItem({
   onDelete: () => void;
   onRestore: () => void;
 }) {
-  const { t } = useI18n();
+  const { language, t } = useI18n();
   const testRun = (row as { testRun?: boolean }).testRun === true;
   const isReplay = Boolean(row.parentRunId);
 
@@ -386,7 +386,7 @@ function RunListItem({
           {row.status === "running"
             ? fmtDur(row.durationMs)
             : row.startedAt
-              ? fmtAgo(Date.parse(row.startedAt))
+              ? fmtAgo(Date.parse(row.startedAt), language)
               : "—"}
         </span>
       </div>

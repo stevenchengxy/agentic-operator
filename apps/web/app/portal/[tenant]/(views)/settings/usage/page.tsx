@@ -55,24 +55,21 @@ const WINDOWS: Array<{ id: Window; label: string; ms: number }> = [
   { id: "30d", label: "30d", ms: 30 * 24 * 60 * 60 * 1000 },
 ];
 
-const ATTRIBUTION_DIMENSIONS: Array<{
-  id: AttributionDimension;
-  label: string;
-}> = [
-  { id: "account", label: "Account" },
-  { id: "provider", label: "Provider" },
-  { id: "surface", label: "Product surface" },
-  { id: "action", label: "Product action" },
-  { id: "function", label: "Function" },
-  { id: "api", label: "API call" },
+const ATTRIBUTION_DIMENSIONS: Array<{ id: AttributionDimension }> = [
+  { id: "account" },
+  { id: "provider" },
+  { id: "surface" },
+  { id: "action" },
+  { id: "function" },
+  { id: "api" },
 ];
 
-const ROUTING_DIMENSIONS: Array<{ id: RoutingDimension; label: string }> = [
-  { id: "task", label: "Feature / task" },
-  { id: "gateway", label: "Gateway instance" },
-  { id: "route", label: "Model route" },
-  { id: "actor", label: "User / actor" },
-  { id: "profile", label: "Routing profile" },
+const ROUTING_DIMENSIONS: Array<{ id: RoutingDimension }> = [
+  { id: "task" },
+  { id: "gateway" },
+  { id: "route" },
+  { id: "actor" },
+  { id: "profile" },
 ];
 
 export default function UsagePage() {
@@ -143,11 +140,11 @@ export default function UsagePage() {
         title={t("settings.section.usage")}
         subtitle={
           <>
-            Tenant{" "}
+            {t("usagePage.tenant")}{" "}
             <span className="mono" style={{ color: "var(--text)" }}>
               {tenant}
             </span>{" "}
-            · windowed read from{" "}
+            {t("usagePage.windowedReadFrom")}{" "}
             <span className="mono" style={{ color: "var(--text)" }}>
               /v1/usage
             </span>
@@ -155,9 +152,9 @@ export default function UsagePage() {
         }
         badge={
           usageUnavailable ? (
-            <Badge tone="amber">limited</Badge>
+            <Badge tone="amber">{t("usagePage.limited")}</Badge>
           ) : (
-            <Badge tone="muted">live</Badge>
+            <Badge tone="muted">{t("usagePage.live")}</Badge>
           )
         }
         action={[
@@ -167,7 +164,7 @@ export default function UsagePage() {
             style={{ textDecoration: "none" }}
           >
             <Button small icon="chevron-left" tone="ghost">
-              Back to Settings
+              {t("usagePage.backSettings")}
             </Button>
           </Link>,
         ]}
@@ -213,9 +210,9 @@ export default function UsagePage() {
             <div style={{ display: "flex", gap: 6 }}>
               {(
                 [
-                  { id: "tokens", label: "Tokens" },
-                  { id: "usd", label: "USD" },
-                  { id: "runs", label: "Runs" },
+                  { id: "tokens", label: t("usagePage.metric.tokens") },
+                  { id: "usd", label: t("usagePage.metric.usd") },
+                  { id: "runs", label: t("usagePage.metric.runs") },
                 ] as const
               ).map((m) => (
                 <FilterChip
@@ -240,33 +237,33 @@ export default function UsagePage() {
               background: "var(--panel)",
             }}
           >
-            <Totals label="Runs" value={fmtNum(total?.runs ?? 0)} />
-            <Totals label="Tokens in" value={fmtNum(total?.tokensIn ?? 0)} />
-            <Totals label="Tokens out" value={fmtNum(total?.tokensOut ?? 0)} />
+            <Totals label={t("usagePage.total.runs")} value={fmtNum(total?.runs ?? 0)} />
+            <Totals label={t("usagePage.total.tokensIn")} value={fmtNum(total?.tokensIn ?? 0)} />
+            <Totals label={t("usagePage.total.tokensOut")} value={fmtNum(total?.tokensOut ?? 0)} />
             <Totals
-              label="USD this period"
+              label={t("usagePage.total.usdPeriod")}
               value={formatUsdNanos(total?.usdNanos ?? 0)}
               accent="var(--signal)"
             />
             <Totals
-              label="Unpriced calls"
+              label={t("usagePage.total.unpricedCalls")}
               value={fmtNum(total?.unpricedCalls ?? 0)}
               accent={
                 (total?.unpricedCalls ?? 0) > 0 ? "var(--red)" : undefined
               }
             />
-            <Totals label="Provider attempts" value={fmtNum(attempts?.attempts ?? 0)} />
+            <Totals label={t("usagePage.total.providerAttempts")} value={fmtNum(attempts?.attempts ?? 0)} />
             <Totals
-              label="Failed / timed out"
+              label={t("usagePage.total.failedTimeout")}
               value={`${fmtNum(attempts?.failed ?? 0)} / ${fmtNum(attempts?.timeouts ?? 0)}`}
               accent={(attempts?.failed ?? 0) > 0 ? "var(--red)" : undefined}
             />
             <Totals
-              label="Retries / fallbacks"
+              label={t("usagePage.total.retriesFallbacks")}
               value={`${fmtNum(attempts?.retries ?? 0)} / ${fmtNum(attempts?.fallbacks ?? 0)}`}
             />
             <Totals
-              label="Latency p50 / p95"
+              label={t("usagePage.total.latency")}
               value={`${fmtLatency(attempts?.p50LatencyMs)} / ${fmtLatency(attempts?.p95LatencyMs)}`}
             />
           </div>
@@ -284,8 +281,8 @@ export default function UsagePage() {
 
           {/* Per-day line chart */}
           <Panel
-            title={`Usage by day · ${metric}`}
-            subtitle={`Last ${win} · ${byDay.length} buckets`}
+            title={t("usagePage.byDayTitle", { metric: t(`usagePage.metric.${metric}`) })}
+            subtitle={t("usagePage.byDaySubtitle", { window: win, count: byDay.length })}
             padded={false}
           >
             <LineChart
@@ -310,8 +307,8 @@ export default function UsagePage() {
             }}
           >
             <Panel
-              title="By agent"
-              subtitle="Tokens in+out · top 10"
+              title={t("usagePage.byAgent")}
+              subtitle={t("usagePage.tokensTop")}
               padded={false}
             >
               <HorizontalBarChart
@@ -326,8 +323,8 @@ export default function UsagePage() {
               />
             </Panel>
             <Panel
-              title="By model"
-              subtitle="Tokens in+out · top 10"
+              title={t("usagePage.byModel")}
+              subtitle={t("usagePage.tokensTop")}
               padded={false}
             >
               <HorizontalBarChart
@@ -344,8 +341,8 @@ export default function UsagePage() {
           </div>
 
           <Panel
-            title="By reasoning configuration"
-            subtitle="Mode · effort · summary/context · verbosity/storage · tokens in+out"
+            title={t("usagePage.byReasoning")}
+            subtitle={t("usagePage.byReasoningSubtitle")}
             padded={false}
           >
             <HorizontalBarChart
@@ -361,13 +358,13 @@ export default function UsagePage() {
           </Panel>
 
           <Panel
-            title="Routing & reliability"
-            subtitle="Attempts, failures, latency, retries, and failover by runtime decision"
+            title={t("usagePage.routingTitle")}
+            subtitle={t("usagePage.routingSubtitle")}
             padded={false}
           >
             <div
               role="group"
-              aria-label="Routing usage dimension"
+              aria-label={t("usagePage.routingDimensionAria")}
               style={{
                 display: "flex",
                 flexWrap: "wrap",
@@ -382,14 +379,14 @@ export default function UsagePage() {
                   active={routingDimension === dimension.id}
                   onClick={() => setRoutingDimension(dimension.id)}
                 >
-                  {dimension.label}
+                  {t(`usagePage.routingDimension.${dimension.id}`)}
                 </FilterChip>
               ))}
             </div>
             <HorizontalBarChart
               data={routingRows
                 .map((row) => ({
-                  key: row.key ?? "unattributed",
+                  key: row.key ?? t("usagePage.unattributed"),
                   value: row.attempts,
                   secondary: row.failed,
                 }))
@@ -403,18 +400,18 @@ export default function UsagePage() {
                 fontSize: 11,
               }}
             >
-              Bar = provider attempts · secondary value = failed attempts.
+              {t("usagePage.routingLegend")}
             </div>
           </Panel>
 
           <Panel
-            title="Billing attribution"
-            subtitle="Trace provider spend to an account, product interaction, server function, or API route"
+            title={t("usagePage.attributionTitle")}
+            subtitle={t("usagePage.attributionSubtitle")}
             padded={false}
           >
             <div
               role="group"
-              aria-label="Billing attribution dimension"
+              aria-label={t("usagePage.attributionDimensionAria")}
               style={{
                 display: "flex",
                 flexWrap: "wrap",
@@ -429,7 +426,7 @@ export default function UsagePage() {
                   active={attributionDimension === dimension.id}
                   onClick={() => setAttributionDimension(dimension.id)}
                 >
-                  {dimension.label}
+                  {t(`usagePage.attributionDimension.${dimension.id}`)}
                 </FilterChip>
               ))}
             </div>
@@ -454,8 +451,8 @@ export default function UsagePage() {
 
           {usageUnavailable && (
             <Empty
-              title="Live usage data unavailable"
-              hint="The /v1/usage endpoint did not respond. Showing budget row only."
+              title={t("usagePage.unavailableTitle")}
+              hint={t("usagePage.unavailableHint")}
             />
           )}
         </div>
@@ -521,6 +518,7 @@ function BudgetRow({
   };
   onCapsChanged: () => void;
 }) {
+  const { t, language } = useI18n();
   const update = useUpdateBudget();
   const [tokenCap, setTokenCap] = useState(
     row.monthlyTokenCap?.toString() ?? "",
@@ -552,8 +550,12 @@ function BudgetRow({
 
   return (
     <Panel
-      title="Monthly budget"
-      subtitle={`Period started ${new Date(row.periodStart).toLocaleDateString()}`}
+      title={t("usagePage.budget.title")}
+      subtitle={t("usagePage.budget.periodStarted", {
+        date: new Date(row.periodStart).toLocaleDateString(
+          language === "zh" ? "zh-CN" : "en-US",
+        ),
+      })}
       padded
       action={
         <Button
@@ -562,7 +564,7 @@ function BudgetRow({
           onClick={saveCaps}
           disabled={update.isPending}
         >
-          {update.isPending ? "Saving…" : "Save caps"}
+          {update.isPending ? t("common.saving") : t("usagePage.budget.saveCaps")}
         </Button>
       }
     >
@@ -574,19 +576,19 @@ function BudgetRow({
         }}
       >
         <CapInput
-          label="Monthly token cap"
+          label={t("billing.tokenCap")}
           value={tokenCap}
           onChange={setTokenCap}
-          placeholder="unlimited"
+          placeholder={t("billing.unlimited")}
           used={row.usedTokensMonth}
           usedLabel={fmtNum(row.usedTokensMonth)}
           pct={tokenPct}
         />
         <CapInput
-          label="Monthly USD cap"
+          label={t("billing.usdCap")}
           value={usdCap}
           onChange={setUsdCap}
-          placeholder="unlimited"
+          placeholder={t("billing.unlimited")}
           used={row.usedUsdNanos}
           usedLabel={formatUsdNanos(row.usedUsdNanos)}
           pct={usdPct}
@@ -613,6 +615,7 @@ function CapInput({
   usedLabel: string;
   pct: number | null;
 }) {
+  const { t } = useI18n();
   return (
     <div>
       <div
@@ -652,7 +655,7 @@ function CapInput({
         }}
       >
         <span style={{ color: "var(--text-3)" }}>
-          Used {usedLabel}
+          {t("usagePage.budget.used", { value: usedLabel })}
           {pct != null ? ` · ${pct.toFixed(0)}%` : ""}
         </span>
         <div
@@ -687,7 +690,7 @@ function CapInput({
             color: "var(--text-3)",
           }}
         >
-          (no cap configured — unlimited)
+          {t("usagePage.budget.noCap")}
         </div>
       )}
     </div>

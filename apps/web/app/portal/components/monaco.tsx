@@ -25,6 +25,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { CSSProperties } from "react";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 
 export interface MonacoEditorProps {
   value: string;
@@ -195,6 +196,7 @@ export function MonacoEditor({
   readOnly = false,
   minHeight,
 }: MonacoEditorProps) {
+  const { t } = useI18n();
   const containerRef = useRef<HTMLDivElement | null>(null);
   // Use a loose `any` here — Monaco's own `IStandaloneCodeEditor` type would
   // require a top-level static import which defeats the dynamic-import
@@ -324,7 +326,7 @@ export function MonacoEditor({
               animation: "spin 0.9s linear infinite",
             }}
           />
-          Loading editor…
+          {t("common.loadingEditor")}
         </div>
       )}
     </div>

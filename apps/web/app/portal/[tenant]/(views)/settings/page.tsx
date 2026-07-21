@@ -4,10 +4,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import {
-  Icon,
-  ViewHeader,
-} from "@/app/portal/components";
+import { Icon, ViewHeader } from "@/app/portal/components";
 import { useTenant } from "@/app/portal/lib/use-tenant";
 import { useSession } from "@/app/portal/lib/session-context";
 import { useI18n } from "@/app/portal/lib/preferences-context";
@@ -39,8 +36,7 @@ const ROUTED_SECTIONS: Record<string, string> = {
 // fallback** — if the env var isn't set we show "—" so the operator
 // doesn't read a region they didn't deploy to (the prior default was
 // "cn-shenzhen-1", which actively misled non-China deployments).
-const REGION =
-  (process.env.NEXT_PUBLIC_AGENTIC_REGION ?? "").trim() || "—";
+const REGION = (process.env.NEXT_PUBLIC_AGENTIC_REGION ?? "").trim() || "—";
 
 export default function SettingsPage() {
   const [section, setSection] = useState<SettingsSectionId>("workspace");
@@ -61,7 +57,9 @@ export default function SettingsPage() {
     if (dirty.isDirty()) {
       const detail = dirty.describe();
       const confirmed = window.confirm(
-        `You have unsaved changes${detail ? ` (${detail})` : ""}. Leave this settings section anyway? Your draft will be lost.`,
+        detail
+          ? t("settingsPage.unsavedConfirmWithDetail", { detail })
+          : t("settingsPage.unsavedConfirm"),
       );
       if (!confirmed) return;
     }
@@ -121,8 +119,10 @@ export default function SettingsPage() {
 
         <div style={{ overflow: "auto", minHeight: 0 }}>
           {/* The AI section hosts a three-column gateway console; give it a
-            * wider canvas than the form-style sections. */}
-          <div style={{ padding: 24, maxWidth: section === "ai" ? 1320 : 1080 }}>
+           * wider canvas than the form-style sections. */}
+          <div
+            style={{ padding: 24, maxWidth: section === "ai" ? 1320 : 1080 }}
+          >
             <SectionHeader section={sec} />
             {section === "workspace" && <WorkspaceSection />}
             {section === "appearance" && <AppearanceSection />}
@@ -199,12 +199,27 @@ function SectionNavItem({
   );
 }
 
-function SectionHeader({ section }: { section: (typeof SETTINGS_SECTIONS)[number] }) {
+function SectionHeader({
+  section,
+}: {
+  section: (typeof SETTINGS_SECTIONS)[number];
+}) {
   const { t } = useI18n();
   return (
     <div style={{ marginBottom: 18 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-        <Icon name={section.icon} size={14} style={{ color: "var(--accent-text)" }} />
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          marginBottom: 4,
+        }}
+      >
+        <Icon
+          name={section.icon}
+          size={14}
+          style={{ color: "var(--accent-text)" }}
+        />
         <span
           style={{
             fontSize: 11,

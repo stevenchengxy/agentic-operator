@@ -2,6 +2,8 @@
 
 import { useCallback, useRef, useState, type CSSProperties, type ReactNode } from "react";
 
+import { useI18n } from "@/app/portal/lib/preferences-context";
+
 /**
  * HelpTip — a muted "?" that reveals explanatory copy on hover / focus.
  *
@@ -25,6 +27,7 @@ export function HelpTip({
   size?: number;
   style?: CSSProperties;
 }) {
+  const { t } = useI18n();
   const ref = useRef<HTMLSpanElement>(null);
   const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
 
@@ -44,7 +47,7 @@ export function HelpTip({
       className="help-tip"
       tabIndex={0}
       role="note"
-      aria-label={typeof children === "string" ? children : "说明"}
+      aria-label={typeof children === "string" ? children : t("helpTip.ariaLabel")}
       onMouseEnter={show}
       onMouseLeave={hide}
       onFocus={show}

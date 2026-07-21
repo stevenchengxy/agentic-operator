@@ -1,8 +1,14 @@
 import { describe, expect, it } from "vitest";
+import { translate } from "@/lib/i18n";
 import {
   factoryConversationStorageKey,
   parseProductionReworkPreview,
 } from "./production-rework";
+
+const zh = (key: string, vars?: Record<string, string | number>) =>
+  translate("zh", key, vars);
+const en = (key: string, vars?: Record<string, string | number>) =>
+  translate("en", key, vars);
 
 const validResponse = () => ({
   started: false,
@@ -59,7 +65,7 @@ const validResponse = () => ({
 
 describe("production rework preview", () => {
   it("accepts only a non-started seed containing the selected failed run", () => {
-    const parsed = parseProductionReworkPreview(validResponse(), "run-failed");
+    const parsed = parseProductionReworkPreview(zh, validResponse(), "run-failed");
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
     expect(parsed.preview.startRequest.started).toBe(false);
@@ -72,12 +78,14 @@ describe("production rework preview", () => {
   it("refuses a response that may already have started work", () => {
     expect(
       parseProductionReworkPreview(
+        zh,
         { ...validResponse(), started: true },
         "run-failed",
       ),
     ).toMatchObject({ ok: false });
     expect(
       parseProductionReworkPreview(
+        zh,
         {
           ...validResponse(),
           startRequest: { ...validResponse().startRequest, started: true },
@@ -88,20 +96,20 @@ describe("production rework preview", () => {
   });
 
   it("refuses to substitute another production run as evidence", () => {
-    const parsed = parseProductionReworkPreview(validResponse(), "run-other");
+    const parsed = parseProductionReworkPreview(zh, validResponse(), "run-other");
     expect(parsed).toMatchObject({ ok: false });
     if (!parsed.ok) expect(parsed.message).toContain("没有当前运行");
   });
 
   it("refuses a seed for another domain or agent", () => {
     expect(
-      parseProductionReworkPreview(validResponse(), "run-failed", {
+      parseProductionReworkPreview(zh, validResponse(), "run-failed", {
         domain: "other-domain",
         slug: "match-resume",
       }),
     ).toMatchObject({ ok: false });
     expect(
-      parseProductionReworkPreview(validResponse(), "run-failed", {
+      parseProductionReworkPreview(zh, validResponse(), "run-failed", {
         domain: "Agents-generation",
         slug: "other-agent",
       }),
@@ -112,5 +120,24 @@ describe("production rework preview", () => {
     expect(
       factoryConversationStorageKey("tenant-a", "Agents-generation"),
     ).toBe("ao:factory:conv:tenant-a:Agents-generation");
+  });
+
+  it("returns validation errors and fallback step names in the active language", () => {
+    const invalid = parseProductionReworkPreview(en, {}, "run-failed");
+    expect(invalid).toEqual({
+      ok: false,
+      message:
+        "The server did not explicitly confirm started=false; stopped to avoid an accidental start.",
+    });
+
+    const response = validResponse();
+    response.seed.productionEvidence.runs[0]!.steps[0]!.name = "";
+    const parsed = parseProductionReworkPreview(en, response, "run-failed");
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) {
+      expect(parsed.preview.selectedRun.failedSteps[0]?.name).toBe(
+        "Unnamed step",
+      );
+    }
   });
 });

@@ -16,7 +16,11 @@ import {
   EVENT_KEYS,
 } from "./useStream";
 import { tenantHeader } from "./tenant-header";
-import { readAgentAuthoringResponse } from "./agent-authoring-response";
+import {
+  AgentAuthoringClientError,
+  agentAuthoringOperation,
+  readAgentAuthoringResponse,
+} from "./agent-authoring-response";
 import { usageAttributionHeaders } from "./usage-attribution";
 
 async function callV1<T>(path: string, init: RequestInit): Promise<T> {
@@ -35,9 +39,12 @@ async function callV1<T>(path: string, init: RequestInit): Promise<T> {
       },
     });
   } catch {
-    throw new Error(
-      "Could not reach the agent authoring service. Check the connection and retry.",
-    );
+    throw new AgentAuthoringClientError({
+      code: "unreachable",
+      operation: agentAuthoringOperation(path),
+      fallback:
+        "Could not reach the agent authoring service. Check the connection and retry.",
+    });
   }
   return readAgentAuthoringResponse<T>(response, path);
 }

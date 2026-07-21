@@ -21,6 +21,7 @@ import {
   type StatusName,
 } from "@/app/portal/components";
 import { useTenant } from "@/app/portal/lib/use-tenant";
+import { useI18n, type Translate } from "@/app/portal/lib/preferences-context";
 import {
   useOperatorCheck,
   useOperatorCheckHistory,
@@ -30,8 +31,8 @@ import {
   OPERATOR_CHECK_SCENARIOS,
   isOperatorCheckTerminal,
   operatorCheckProgress,
-  operatorCheckStatusLabel,
 } from "@/app/portal/components/operator-check/model";
+import { formatApiError } from "@/lib/api-response";
 
 const STATUS_DOT: Record<OperatorCheckStatus, StatusName> = {
   queued: "waiting",
@@ -47,9 +48,75 @@ function statusTone(status: OperatorCheckStatus): BadgeTone {
   return "amber";
 }
 
-function formatTime(value: Date | null | undefined): string {
+function formatTime(
+  value: Date | null | undefined,
+  language: "en" | "zh",
+): string {
   if (!value) return "—";
-  return Number.isNaN(value.getTime()) ? "—" : value.toLocaleString();
+  return Number.isNaN(value.getTime())
+    ? "—"
+    : value.toLocaleString(language === "zh" ? "zh-CN" : "en-US");
+}
+
+function statusLabel(t: Translate, status: OperatorCheckStatus): string {
+  return t(`systemCheck.status.${status}`);
+}
+
+function stageLabel(t: Translate, stage: OperatorCheckStage): string {
+  if (stage.id === "complete" && !stage.scenario) {
+    return t("systemCheck.phase.finish");
+  }
+  return t(`systemCheck.phase.${stage.phase}`);
+}
+
+function stageIdLabel(t: Translate, stageId: string): string {
+  if (stageId === "complete") return t("systemCheck.phase.finish");
+  const phase = stageId.slice(stageId.lastIndexOf(".") + 1);
+  return t(`systemCheck.phase.${phase}`);
+}
+
+function scenarioTitle(
+  t: Translate,
+  id: (typeof OPERATOR_CHECK_SCENARIOS)[number]["id"],
+): string {
+  return t(`systemCheck.scenario.${id}.title`);
+}
+
+const ASSERTION_KEYS: Record<string, string> = {
+  "Run output is available": "runOutput",
+  "Output matches its schema": "outputSchema",
+  "Request identity was preserved": "requestIdentity",
+  "Support classification is deterministic": "supportClassification",
+  "Local mock model answered": "mockAnswered",
+  "Global context tool returned pong": "contextPong",
+  "Runtime context is tenant-scoped": "tenantScoped",
+  "Context starts clean": "contextClean",
+  "Diagnostic timestamp is valid": "timestampValid",
+  "Trace contains the complete sequence": "traceComplete",
+  "Downstream event was safely suppressed": "eventSuppressed",
+  "Run log contains expected evidence": "logEvidence",
+  "Run log has no error-level entry": "noErrorLog",
+  "Output file was saved": "outputSaved",
+  "Run record was saved": "recordSaved",
+  "Artifacts are non-empty": "artifactsNonEmpty",
+  "Run completed successfully": "runCompleted",
+  "Run is isolated test traffic": "isolatedTraffic",
+  "Expected agent step executed": "stepExecuted",
+  "Scenario completed": "scenarioCompleted",
+};
+
+function assertionName(t: Translate, value: string): string {
+  const key = ASSERTION_KEYS[value];
+  return key ? t(`systemCheck.assertion.${key}.name`) : value;
+}
+
+function assertionMessage(
+  t: Translate,
+  assertion: OperatorCheckAssertion,
+): string {
+  const key = ASSERTION_KEYS[assertion.name];
+  if (key === "scenarioCompleted") return assertion.message;
+  return key ? t(`systemCheck.assertion.${key}.message`) : assertion.message;
 }
 
 function formatDuration(value: number | null | undefined): string {
@@ -77,18 +144,20 @@ export default function SystemCheckPage() {
 }
 
 function SystemCheckLoading() {
+  const { t } = useI18n();
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
       <ViewHeader
-        title="Agent system check"
-        subtitle="Loading saved reliability checks…"
+        title={t("systemCheck.title")}
+        subtitle={t("systemCheck.loadingSaved")}
       />
-      <Empty title="Loading system check…" />
+      <Empty title={t("systemCheck.loading")} />
     </div>
   );
 }
 
 function SystemCheckContent() {
+  const { t, language } = useI18n();
   const router = useRouter();
   const searchParams = useSearchParams();
   const tenant = useTenant();
@@ -120,11 +189,13 @@ function SystemCheckContent() {
 
   const currentStageLabel = useMemo(() => {
     if (!check?.currentStage) return null;
-    return (
-      check.stages.find((stage) => stage.id === check.currentStage)?.label ??
-      check.currentStage
+    const currentStage = check.stages.find(
+      (stage) => stage.id === check.currentStage,
     );
-  }, [check]);
+    return currentStage
+      ? stageLabel(t, currentStage)
+      : stageIdLabel(t, check.currentStage);
+  }, [check, t]);
 
   async function runCheck() {
     if (startGuard.current || startingOrActive) return;
@@ -149,17 +220,17 @@ function SystemCheckContent() {
 
   const headerBadge = check ? (
     <Badge tone={statusTone(check.status)}>
-      {operatorCheckStatusLabel(check.status)}
+      {statusLabel(t, check.status)}
     </Badge>
   ) : (
-    <Badge tone="muted">Ready</Badge>
+    <Badge tone="muted">{t("systemCheck.status.ready")}</Badge>
   );
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
       <ViewHeader
-        title="Agent system check"
-        subtitle="One click builds, publishes, deploys, runs, and verifies two different agents using the production operator."
+        title={t("systemCheck.title")}
+        subtitle={t("systemCheck.subtitle")}
         badge={headerBadge}
         action={
           <Button
@@ -167,20 +238,20 @@ function SystemCheckContent() {
             icon="play"
             disabled={startingOrActive}
             onClick={() => void runCheck()}
-            ariaLabel="Run two-agent system check"
+            ariaLabel={t("systemCheck.runAria")}
           >
             {start.isPending
-              ? "Starting check…"
+              ? t("systemCheck.starting")
               : active
-                ? "Check running…"
-                : "Run two-agent check"}
+                ? t("systemCheck.running")
+                : t("systemCheck.run")}
           </Button>
         }
       />
 
       <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: 20 }}>
         <section
-          aria-label="What this check does"
+          aria-label={t("systemCheck.whatItDoesAria")}
           style={{
             display: "grid",
             gap: 8,
@@ -194,17 +265,13 @@ function SystemCheckContent() {
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <Icon name="check" size={14} style={{ color: "var(--blue)" }} />
             <strong style={{ color: "var(--text)", fontSize: 12.5 }}>
-              A safe, visible production check
+              {t("systemCheck.safeTitle")}
             </strong>
           </div>
           <div
             style={{ color: "var(--text-2)", fontSize: 11.5, lineHeight: 1.6 }}
           >
-            The check creates or updates two reserved test agents, writes their
-            manifests, publishes and deploys them, sends generated test events,
-            and checks the resulting JSON, trace, logs, and artifacts. It does
-            not turn on demo mode or replace your business agents. Test
-            deployments, events, and runs remain in history as evidence.
+            {t("systemCheck.safeDescription")}
           </div>
         </section>
 
@@ -221,7 +288,9 @@ function SystemCheckContent() {
               fontSize: 11.5,
             }}
           >
-            Could not start the check: {start.error.message}
+            {t("systemCheck.startFailed", {
+              error: formatApiError(start.error, t),
+            })}
           </div>
         )}
 
@@ -235,13 +304,13 @@ function SystemCheckContent() {
               aria-busy={active || detail.isLoading}
             >
               <Panel
-                title="Current check"
-                subtitle={selectedCheckId ?? "not started"}
+                title={t("systemCheck.currentTitle")}
+                subtitle={selectedCheckId ?? t("systemCheck.notStarted")}
                 action={
                   check ? (
                     <Badge tone={statusTone(check.status)}>
                       <StatusDot status={STATUS_DOT[check.status]} size={6} />
-                      {operatorCheckStatusLabel(check.status)}
+                      {statusLabel(t, check.status)}
                     </Badge>
                   ) : undefined
                 }
@@ -259,8 +328,8 @@ function SystemCheckContent() {
                   }}
                 >
                   {check
-                    ? (check.summary ?? "Two-agent reliability check")
-                    : "Ready to verify the agent operator"}
+                    ? t("systemCheck.reliabilityCheck")
+                    : t("systemCheck.readyTitle")}
                 </h2>
 
                 {!selectedCheckId ? (
@@ -272,8 +341,7 @@ function SystemCheckContent() {
                       lineHeight: 1.6,
                     }}
                   >
-                    Select <strong>Run two-agent check</strong>. This screen
-                    will update automatically as every build and run completes.
+                    {t("systemCheck.readyInstructions")}
                   </div>
                 ) : detail.isLoading && !check ? (
                   <div
@@ -285,14 +353,16 @@ function SystemCheckContent() {
                       fontSize: 12,
                     }}
                   >
-                    Loading check {selectedCheckId}…
+                    {t("systemCheck.loadingCheck", { id: selectedCheckId })}
                   </div>
                 ) : detail.isError ? (
                   <div
                     role="alert"
                     style={{ marginTop: 10, color: "var(--red)", fontSize: 12 }}
                   >
-                    Check details are unavailable: {detail.error.message}
+                    {t("systemCheck.detailUnavailable", {
+                      error: formatApiError(detail.error, t),
+                    })}
                   </div>
                 ) : check ? (
                   <div style={{ display: "grid", gap: 12, marginTop: 12 }}>
@@ -308,17 +378,18 @@ function SystemCheckContent() {
                       >
                         <span>
                           {isOperatorCheckTerminal(check.status)
-                            ? (check.summary ??
-                              operatorCheckStatusLabel(check.status))
+                            ? statusLabel(t, check.status)
                             : currentStageLabel
-                              ? `Now: ${currentStageLabel}`
-                              : operatorCheckStatusLabel(check.status)}
+                              ? t("systemCheck.nowStage", {
+                                  stage: currentStageLabel,
+                                })
+                              : statusLabel(t, check.status)}
                         </span>
                         <span className="mono">{progress}%</span>
                       </div>
                       <div
                         role="progressbar"
-                        aria-label="Two-agent check progress"
+                        aria-label={t("systemCheck.progressAria")}
                         aria-valuemin={0}
                         aria-valuemax={100}
                         aria-valuenow={progress}
@@ -357,8 +428,16 @@ function SystemCheckContent() {
                         fontSize: 10,
                       }}
                     >
-                      <span>Started {formatTime(check.startedAt)}</span>
-                      <span>Duration {formatDuration(check.durationMs)}</span>
+                      <span>
+                        {t("systemCheck.started", {
+                          time: formatTime(check.startedAt, language),
+                        })}
+                      </span>
+                      <span>
+                        {t("systemCheck.duration", {
+                          duration: formatDuration(check.durationMs),
+                        })}
+                      </span>
                       <span>{check.id}</span>
                     </div>
                     {check.status === "failed" && (
@@ -373,10 +452,11 @@ function SystemCheckContent() {
                           fontSize: 11.5,
                         }}
                       >
-                        The check stopped at{" "}
-                        {currentStageLabel ?? "a verification stage"}. Review
-                        the failed step below, then run the check again after
-                        correcting the issue.
+                        {t("systemCheck.stoppedAt", {
+                          stage:
+                            currentStageLabel ??
+                            t("systemCheck.verificationStage"),
+                        })}
                       </div>
                     )}
                   </div>
@@ -394,7 +474,7 @@ function SystemCheckContent() {
                   fontWeight: 600,
                 }}
               >
-                Two independent agent scenarios
+                {t("systemCheck.scenariosTitle")}
               </h2>
               <div
                 className="operator-check-scenario-grid"
@@ -417,8 +497,8 @@ function SystemCheckContent() {
             </section>
 
             <Panel
-              title="Build and run sequence"
-              subtitle="updates automatically"
+              title={t("systemCheck.sequenceTitle")}
+              subtitle={t("systemCheck.autoUpdates")}
               padded={false}
             >
               <StageTimeline
@@ -428,16 +508,25 @@ function SystemCheckContent() {
             </Panel>
           </div>
 
-          <aside aria-label="System check history" style={{ minWidth: 0 }}>
-            <Panel title="Check history" subtitle="latest 20" padded={false}>
+          <aside
+            aria-label={t("systemCheck.historyAria")}
+            style={{ minWidth: 0 }}
+          >
+            <Panel
+              title={t("systemCheck.historyTitle")}
+              subtitle={t("systemCheck.latestCount", { count: 20 })}
+              padded={false}
+            >
               {history.isLoading ? (
-                <Empty title="Loading history…" />
+                <Empty title={t("systemCheck.loadingHistory")} />
               ) : history.isError ? (
                 <div
                   role="alert"
                   style={{ padding: 14, color: "var(--red)", fontSize: 11.5 }}
                 >
-                  History unavailable: {history.error.message}
+                  {t("systemCheck.historyUnavailable", {
+                    error: formatApiError(history.error, t),
+                  })}
                 </div>
               ) : history.data?.checks.length ? (
                 <div style={{ display: "grid" }}>
@@ -449,7 +538,10 @@ function SystemCheckContent() {
                         key={item.id}
                         onClick={() => selectHistory(item.id)}
                         aria-current={selected ? "true" : undefined}
-                        aria-label={`View ${operatorCheckStatusLabel(item.status).toLowerCase()} check started ${formatTime(item.startedAt)}`}
+                        aria-label={t("systemCheck.viewHistoryAria", {
+                          status: statusLabel(t, item.status),
+                          time: formatTime(item.startedAt, language),
+                        })}
                         style={{
                           display: "grid",
                           gap: 6,
@@ -475,7 +567,7 @@ function SystemCheckContent() {
                             size={7}
                           />
                           <Badge tone={statusTone(item.status)}>
-                            {operatorCheckStatusLabel(item.status)}
+                            {statusLabel(t, item.status)}
                           </Badge>
                           <span
                             className="mono"
@@ -495,15 +587,15 @@ function SystemCheckContent() {
                             lineHeight: 1.45,
                           }}
                         >
-                          {item.summary ??
-                            item.currentStage ??
-                            "Two-agent reliability check"}
+                          {item.currentStage
+                            ? stageIdLabel(t, item.currentStage)
+                            : t("systemCheck.reliabilityCheck")}
                         </span>
                         <span
                           className="mono"
                           style={{ color: "var(--text-3)", fontSize: 9.5 }}
                         >
-                          {formatTime(item.startedAt)}
+                          {formatTime(item.startedAt, language)}
                         </span>
                       </button>
                     );
@@ -511,8 +603,8 @@ function SystemCheckContent() {
                 </div>
               ) : (
                 <Empty
-                  title="No checks yet"
-                  hint="Your first completed check will be saved here."
+                  title={t("systemCheck.noChecks")}
+                  hint={t("systemCheck.noChecksHint")}
                 />
               )}
             </Panel>
@@ -534,16 +626,17 @@ function ScenarioCard({
   checkStatus: OperatorCheckStatus | null;
   tenant: string;
 }) {
+  const { t } = useI18n();
   const status = result?.status ?? (checkStatus ? "queued" : null);
   const evidenceRows = result
     ? [
-        ["Agent", result.agentId],
-        ["Draft", result.draftId],
-        ["Deployment", result.deploymentId],
-        ["Workflow version", result.workflowVersionId],
-        ["Agent version", result.agentVersionId],
-        ["Trigger event", result.eventId],
-        ["Run", result.runId],
+        [t("systemCheck.evidence.agent"), result.agentId],
+        [t("systemCheck.evidence.draft"), result.draftId],
+        [t("systemCheck.evidence.deployment"), result.deploymentId],
+        [t("systemCheck.evidence.workflowVersion"), result.workflowVersionId],
+        [t("systemCheck.evidence.agentVersion"), result.agentVersionId],
+        [t("systemCheck.evidence.triggerEvent"), result.eventId],
+        [t("systemCheck.evidence.run"), result.runId],
       ].filter((row): row is [string, string] => Boolean(row[1]))
     : [];
 
@@ -580,14 +673,12 @@ function ScenarioCard({
               fontWeight: 600,
             }}
           >
-            {result?.title ?? definition.title}
+            {scenarioTitle(t, definition.id)}
           </h3>
           {status ? (
-            <Badge tone={statusTone(status)}>
-              {operatorCheckStatusLabel(status)}
-            </Badge>
+            <Badge tone={statusTone(status)}>{statusLabel(t, status)}</Badge>
           ) : (
-            <Badge tone="muted">Not started</Badge>
+            <Badge tone="muted">{t("systemCheck.notStarted")}</Badge>
           )}
         </div>
         <div
@@ -598,7 +689,7 @@ function ScenarioCard({
             lineHeight: 1.55,
           }}
         >
-          {result?.description ?? definition.description}
+          {t(`systemCheck.scenario.${definition.id}.description`)}
         </div>
         <div
           style={{
@@ -608,7 +699,7 @@ function ScenarioCard({
             lineHeight: 1.5,
           }}
         >
-          {definition.purpose}
+          {t(`systemCheck.scenario.${definition.id}.purpose`)}
         </div>
       </header>
 
@@ -624,18 +715,18 @@ function ScenarioCard({
               letterSpacing: "0.08em",
             }}
           >
-            Scenario sequence
+            {t("systemCheck.scenarioSequence")}
           </div>
           <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
             {result?.stages.length ? (
               result.stages.map((stage) => (
                 <Badge key={stage.id} tone={statusTone(stage.status)}>
-                  {stage.label}
+                  {stageLabel(t, stage)}
                 </Badge>
               ))
             ) : (
               <span style={{ color: "var(--text-3)", fontSize: 10.5 }}>
-                Waiting to build this agent.
+                {t("systemCheck.waitingBuild")}
               </span>
             )}
           </div>
@@ -652,7 +743,7 @@ function ScenarioCard({
               letterSpacing: "0.08em",
             }}
           >
-            Verification assertions
+            {t("systemCheck.assertionsTitle")}
           </div>
           {result?.assertions.length ? (
             <ul
@@ -673,7 +764,7 @@ function ScenarioCard({
             </ul>
           ) : (
             <div style={{ color: "var(--text-3)", fontSize: 10.5 }}>
-              Assertions will appear after the run produces evidence.
+              {t("systemCheck.assertionsPending")}
             </div>
           )}
         </div>
@@ -688,10 +779,12 @@ function ScenarioCard({
                 fontSize: 10.5,
               }}
             >
-              Validated output JSON
+              {t("systemCheck.validatedOutput")}
             </summary>
             <pre
-              aria-label={`${definition.title} output JSON`}
+              aria-label={t("systemCheck.outputAria", {
+                scenario: scenarioTitle(t, definition.id),
+              })}
               style={{
                 maxHeight: 260,
                 margin: "8px 0 0",
@@ -721,7 +814,7 @@ function ScenarioCard({
                 fontSize: 10.5,
               }}
             >
-              Manifest, deployment, and run evidence
+              {t("systemCheck.manifestEvidence")}
             </summary>
             <dl style={{ display: "grid", gap: 6, margin: "9px 0 0" }}>
               {evidenceRows.map(([label, value]) => (
@@ -762,7 +855,7 @@ function ScenarioCard({
             style={{ justifySelf: "start" }}
           >
             <Button small icon="external" tone="ghost">
-              Open full run, trace, and logs
+              {t("systemCheck.openFullRun")}
             </Button>
           </Link>
         )}
@@ -772,6 +865,7 @@ function ScenarioCard({
 }
 
 function AssertionRow({ assertion }: { assertion: OperatorCheckAssertion }) {
+  const { t } = useI18n();
   const hasComparison =
     assertion.expected !== undefined || assertion.actual !== undefined;
   return (
@@ -797,7 +891,7 @@ function AssertionRow({ assertion }: { assertion: OperatorCheckAssertion }) {
           <div
             style={{ color: "var(--text)", fontSize: 10.5, fontWeight: 600 }}
           >
-            {assertion.name}
+            {assertionName(t, assertion.name)}
           </div>
           <div
             style={{
@@ -807,7 +901,7 @@ function AssertionRow({ assertion }: { assertion: OperatorCheckAssertion }) {
               lineHeight: 1.45,
             }}
           >
-            {assertion.message}
+            {assertionMessage(t, assertion)}
           </div>
         </div>
       </div>
@@ -817,14 +911,20 @@ function AssertionRow({ assertion }: { assertion: OperatorCheckAssertion }) {
             className="mono"
             style={{ cursor: "pointer", color: "var(--text-3)", fontSize: 9.5 }}
           >
-            Expected and actual values
+            {t("systemCheck.expectedActual")}
           </summary>
           <div style={{ display: "grid", gap: 6, marginTop: 6 }}>
             {assertion.expected !== undefined && (
-              <EvidenceValue label="Expected" value={assertion.expected} />
+              <EvidenceValue
+                label={t("systemCheck.expected")}
+                value={assertion.expected}
+              />
             )}
             {assertion.actual !== undefined && (
-              <EvidenceValue label="Actual" value={assertion.actual} />
+              <EvidenceValue
+                label={t("systemCheck.actual")}
+                value={assertion.actual}
+              />
             )}
           </div>
         </details>
@@ -834,13 +934,14 @@ function AssertionRow({ assertion }: { assertion: OperatorCheckAssertion }) {
 }
 
 function EvidenceValue({ label, value }: { label: string; value: unknown }) {
+  const { t } = useI18n();
   return (
     <div>
       <div className="mono" style={{ color: "var(--text-3)", fontSize: 9 }}>
         {label}
       </div>
       <pre
-        aria-label={`${label} assertion value`}
+        aria-label={t("systemCheck.assertionValueAria", { label })}
         style={{
           maxHeight: 160,
           margin: "3px 0 0",
@@ -867,18 +968,19 @@ function StageTimeline({
   stages: OperatorCheckStage[];
   loading: boolean;
 }) {
-  if (loading) return <Empty title="Loading build sequence…" />;
+  const { t } = useI18n();
+  if (loading) return <Empty title={t("systemCheck.loadingSequence")} />;
   if (stages.length === 0)
     return (
       <Empty
-        title="No sequence yet"
-        hint="Start the check to watch every build and run step here."
+        title={t("systemCheck.noSequence")}
+        hint={t("systemCheck.noSequenceHint")}
       />
     );
 
   return (
     <ol
-      aria-label="Agent check build and run stages"
+      aria-label={t("systemCheck.sequenceAria")}
       style={{ margin: 0, padding: 0, listStyle: "none" }}
     >
       {stages.map((stage, index) => (
@@ -916,11 +1018,13 @@ function StageTimeline({
                   fontWeight: 500,
                 }}
               >
-                {stage.label}
+                {stageLabel(t, stage)}
               </span>
-              {stage.scenario && <Badge tone="muted">{stage.scenario}</Badge>}
+              {stage.scenario && (
+                <Badge tone="muted">{scenarioTitle(t, stage.scenario)}</Badge>
+              )}
               <Badge tone={statusTone(stage.status)}>
-                {operatorCheckStatusLabel(stage.status)}
+                {statusLabel(t, stage.status)}
               </Badge>
             </div>
             {stage.message && (
@@ -946,10 +1050,12 @@ function StageTimeline({
                     fontSize: 9.5,
                   }}
                 >
-                  Technical evidence
+                  {t("systemCheck.technicalEvidence")}
                 </summary>
                 <pre
-                  aria-label={`${stage.label} technical evidence`}
+                  aria-label={t("systemCheck.technicalEvidenceAria", {
+                    stage: stageLabel(t, stage),
+                  })}
                   style={{
                     maxHeight: 220,
                     margin: "6px 0 0",

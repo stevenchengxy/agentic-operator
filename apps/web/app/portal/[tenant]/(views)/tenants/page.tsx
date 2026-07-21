@@ -378,7 +378,7 @@ function Row({
   onArchive: () => void;
   onRestore: () => void;
 }) {
-  const { t } = useI18n();
+  const { language, t } = useI18n();
   const archived = !!tenant.archivedAt;
   return (
     <div
@@ -478,7 +478,7 @@ function Row({
           fontFamily: "var(--mono)",
         }}
       >
-        {fmtAgo(tenant.createdAt)}
+        {fmtAgo(tenant.createdAt, language)}
       </div>
       <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
         {!archived ? (

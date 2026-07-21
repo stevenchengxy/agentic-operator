@@ -23,6 +23,7 @@ import {
   type StatusName,
 } from "@/app/portal/components";
 import { fmtDur, fmtNum, fmtTime } from "@/app/portal/lib/format";
+import { runStatusLabel } from "@/app/portal/lib/protocol-labels";
 import { useTenant } from "@/app/portal/lib/use-tenant";
 import { useI18n } from "@/app/portal/lib/preferences-context";
 import {
@@ -111,12 +112,19 @@ interface RunDetailProps {
   tenant: string;
 }
 
-function RunDetail({ run, steps, waitingTask, tab, setTab, tenant }: RunDetailProps) {
+function RunDetail({
+  run,
+  steps,
+  waitingTask,
+  tab,
+  setTab,
+  tenant,
+}: RunDetailProps) {
   const agentsQuery = useAgents();
   const agents = agentsQuery.data ?? [];
   const router = useRouter();
   const toast = useToast();
-  const { t } = useI18n();
+  const { t, language } = useI18n();
   const replay = useReplayRun();
   const cancel = useCancelRun();
   // Inline-confirmation gate for the Stop button (P0 NO-MODAL policy —
@@ -181,7 +189,8 @@ function RunDetail({ run, steps, waitingTask, tab, setTab, tenant }: RunDetailPr
       toast({
         tone: "red",
         title: t("runDetail.replayFailed"),
-        description: err instanceof Error ? err.message : t("runDetail.unknownError"),
+        description:
+          err instanceof Error ? err.message : t("runDetail.unknownError"),
       });
     }
   }
@@ -217,7 +226,8 @@ function RunDetail({ run, steps, waitingTask, tab, setTab, tenant }: RunDetailPr
       toast({
         tone: "red",
         title: t("runDetail.cancelFailed"),
-        description: err instanceof Error ? err.message : t("runDetail.unknownError"),
+        description:
+          err instanceof Error ? err.message : t("runDetail.unknownError"),
       });
     }
   }
@@ -259,28 +269,20 @@ function RunDetail({ run, steps, waitingTask, tab, setTab, tenant }: RunDetailPr
             flexWrap: "wrap",
           }}
         >
-          <StatusDot
-            status={STATUS_TO_DOT[run.status] ?? "idle"}
-            size={9}
-          />
+          <StatusDot status={STATUS_TO_DOT[run.status] ?? "idle"} size={9} />
           <span
             className="mono"
             style={{ fontSize: 13, color: "var(--text-2)" }}
           >
             {run.id}
           </span>
-          <Badge
-            tone={statusTone}
-            style={{ marginLeft: 4 }}
-          >
-            {run.status}
+          <Badge tone={statusTone} style={{ marginLeft: 4 }}>
+            {runStatusLabel(t, run.status)}
           </Badge>
-          {testRun && <Badge tone="signal">TEST RUN</Badge>}
-          {isReplay && <Badge tone="amber">REPLAY</Badge>}
+          {testRun && <Badge tone="signal">{t("runs.badgeTest")}</Badge>}
+          {isReplay && <Badge tone="amber">{t("runs.badgeReplay")}</Badge>}
           {codeActReceipt && <CodeActReceiptBadges receipt={codeActReceipt} />}
-          {run.triggerEvent && (
-            <Badge tone="muted">↑ {run.triggerEvent}</Badge>
-          )}
+          {run.triggerEvent && <Badge tone="muted">↑ {run.triggerEvent}</Badge>}
           <div
             style={{
               marginLeft: "auto",
@@ -321,7 +323,9 @@ function RunDetail({ run, steps, waitingTask, tab, setTab, tenant }: RunDetailPr
               disabled={replay.isPending}
               title={t("runDetail.replayTitle")}
             >
-              {replay.isPending ? t("runDetail.replaying") : t("runDetail.replay")}
+              {replay.isPending
+                ? t("runDetail.replaying")
+                : t("runDetail.replay")}
             </Button>
             {agentRow && !agentsQuery.isError && (
               <Link
@@ -364,11 +368,14 @@ function RunDetail({ run, steps, waitingTask, tab, setTab, tenant }: RunDetailPr
           label={t("runDetail.statStarted")}
           value={
             startedMs
-              ? new Date(startedMs).toLocaleString([], {
-                  hour: "2-digit",
-                  minute: "2-digit",
-                  second: "2-digit",
-                })
+              ? new Date(startedMs).toLocaleString(
+                  language === "zh" ? "zh-CN" : "en-US",
+                  {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                    second: "2-digit",
+                  },
+                )
               : "—"
           }
         />
@@ -388,19 +395,37 @@ function RunDetail({ run, steps, waitingTask, tab, setTab, tenant }: RunDetailPr
               "—"
             ) : (
               <>
-                {run.tokensIn == null ? "—" : <CountUp value={run.tokensIn} format={fmtNum} />} ·{" "}
-                {run.tokensOut == null ? "—" : <CountUp value={run.tokensOut} format={fmtNum} />}
+                {run.tokensIn == null ? (
+                  "—"
+                ) : (
+                  <CountUp value={run.tokensIn} format={fmtNum} />
+                )}{" "}
+                ·{" "}
+                {run.tokensOut == null ? (
+                  "—"
+                ) : (
+                  <CountUp value={run.tokensOut} format={fmtNum} />
+                )}
               </>
             )
           }
         />
-        <StatCell label={t("runDetail.statSubject")} value={run.subject ?? "—"} mono />
+        <StatCell
+          label={t("runDetail.statSubject")}
+          value={run.subject ?? "—"}
+          mono
+        />
       </div>
 
       {codeActReceipt && <CodeActReceiptStrip receipt={codeActReceipt} />}
 
       {/* Live / waiting banner — Inngest-style "what's happening right now". */}
-      <RunLiveBanner run={run} waitingTask={waitingTask} tenant={tenant} setTab={setTab} />
+      <RunLiveBanner
+        run={run}
+        waitingTask={waitingTask}
+        tenant={tenant}
+        setTab={setTab}
+      />
 
       {/* Tabs */}
       <div
@@ -411,7 +436,19 @@ function RunDetail({ run, steps, waitingTask, tab, setTab, tenant }: RunDetailPr
           flexShrink: 0,
         }}
       >
-        {(["summary", "timeline", "trace", "chain", "logs", "io", "artifacts", "events", "agent"] as const).map((tabId) => (
+        {(
+          [
+            "summary",
+            "timeline",
+            "trace",
+            "chain",
+            "logs",
+            "io",
+            "artifacts",
+            "events",
+            "agent",
+          ] as const
+        ).map((tabId) => (
           <button
             key={tabId}
             onClick={() => setTab(tabId)}
@@ -436,11 +473,20 @@ function RunDetail({ run, steps, waitingTask, tab, setTab, tenant }: RunDetailPr
       {isAgentTab && (
         <div style={{ flex: 1, minHeight: 0, overflow: "hidden" }}>
           {agentsQuery.isError ? (
-            <Empty title={t("runDetail.agentNotFound")} hint={agentsQuery.error.message} />
+            <Empty
+              title={t("runDetail.agentNotFound")}
+              hint={agentsQuery.error.message}
+            />
           ) : agentDetailQuery.isError ? (
-            <Empty title={t("runDetail.agentDetailUnavailable")} hint={agentDetailQuery.error.message} />
+            <Empty
+              title={t("runDetail.agentDetailUnavailable")}
+              hint={agentDetailQuery.error.message}
+            />
           ) : agentDetailQuery.isLoading && !agentDetail ? (
-            <Empty title={t("runDetail.loadingAgent")} hint={agentRow?.kebabId ?? ""} />
+            <Empty
+              title={t("runDetail.loadingAgent")}
+              hint={agentRow?.kebabId ?? ""}
+            />
           ) : agentDetail ? (
             <AgentCodeTab
               agent={{
@@ -503,7 +549,9 @@ function RunDetail({ run, steps, waitingTask, tab, setTab, tenant }: RunDetailPr
       {!isAgentTab && run.status === "failed" && (
         <Panel
           title={t("runDetail.errorTitle")}
-          style={{ borderColor: "color-mix(in srgb, var(--red) 30%, transparent)" }}
+          style={{
+            borderColor: "color-mix(in srgb, var(--red) 30%, transparent)",
+          }}
           padded
         >
           <div
@@ -516,7 +564,9 @@ function RunDetail({ run, steps, waitingTask, tab, setTab, tenant }: RunDetailPr
           >
             {run.error ?? t("runDetail.runFailedFallback")}
           </div>
-          <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <div
+            style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}
+          >
             <Button
               icon="replay"
               small
@@ -525,7 +575,12 @@ function RunDetail({ run, steps, waitingTask, tab, setTab, tenant }: RunDetailPr
             >
               {replay.isPending ? t("runDetail.running") : t("runDetail.retry")}
             </Button>
-            <Button icon="logs" small tone="ghost" onClick={() => setTab("logs")}>
+            <Button
+              icon="logs"
+              small
+              tone="ghost"
+              onClick={() => setTab("logs")}
+            >
               {t("runDetail.viewErrorTrace")}
             </Button>
             {agentRow && (
@@ -578,7 +633,11 @@ function ArtifactsTab({
     })
       .then(async (response) => {
         if (!response.ok)
-          throw new Error(`artifact request failed (${response.status})`);
+          throw new Error(
+            t("runDetail.artifactRequestFailed", {
+              status: response.status,
+            }),
+          );
         return response.text();
       })
       .then((text) => {
@@ -587,13 +646,15 @@ function ArtifactsTab({
       .catch((err) => {
         if (!cancelled)
           setError(
-            err instanceof Error ? err.message : "Could not load artifact",
+            err instanceof Error
+              ? err.message
+              : t("runDetail.artifactLoadFailed"),
           );
       });
     return () => {
       cancelled = true;
     };
-  }, [selectedArtifactId, selectedDownloadPath]);
+  }, [selectedArtifactId, selectedDownloadPath, t]);
 
   if (artifacts.length === 0) {
     return (
@@ -725,9 +786,7 @@ function CodeActReceiptBadges({
 
   return (
     <>
-      <Badge tone={tone}>
-        {stateLabel}
-      </Badge>
+      <Badge tone={tone}>{stateLabel}</Badge>
       {!compact && (
         <>
           <Badge tone="muted">
@@ -802,7 +861,9 @@ function RunLiveBanner({
   if (waitingTask) {
     return (
       <Link
-        href={`/portal/${tenant}/tasks?selected=${encodeURIComponent(waitingTask.id)}` as never}
+        href={
+          `/portal/${tenant}/tasks?selected=${encodeURIComponent(waitingTask.id)}` as never
+        }
         style={{ textDecoration: "none" }}
       >
         <div
@@ -813,24 +874,31 @@ function RunLiveBanner({
             gap: 12,
             padding: "12px 16px",
             background: "color-mix(in srgb, var(--amber) 8%, var(--panel))",
-            border: "1px solid color-mix(in srgb, var(--amber) 35%, transparent)",
+            border:
+              "1px solid color-mix(in srgb, var(--amber) 35%, transparent)",
             borderRadius: 8,
             flexShrink: 0,
           }}
         >
           <span className="health-pulse" style={{ color: "var(--amber)" }} />
           <div style={{ minWidth: 0 }}>
-            <div style={{ fontSize: 13, color: "var(--text)", fontWeight: 500 }}>
+            <div
+              style={{ fontSize: 13, color: "var(--text)", fontWeight: 500 }}
+            >
               {t("runDetail.waitingHuman")}
             </div>
-            <div style={{ fontSize: 11.5, color: "var(--text-2)", marginTop: 1 }}>
+            <div
+              style={{ fontSize: 11.5, color: "var(--text-2)", marginTop: 1 }}
+            >
               {waitingTask.title}
               {waitingTask.awaitingRole
                 ? ` · ${t("runDetail.awaitingRole", { role: waitingTask.awaitingRole })}`
                 : ""}
             </div>
           </div>
-          <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--amber)" }}>
+          <span
+            style={{ marginLeft: "auto", fontSize: 11, color: "var(--amber)" }}
+          >
             {t("runDetail.openTask")} ↗
           </span>
         </div>
@@ -848,7 +916,8 @@ function RunLiveBanner({
           gap: 12,
           padding: "12px 16px",
           background: "color-mix(in srgb, var(--signal) 7%, var(--panel))",
-          border: "1px solid color-mix(in srgb, var(--signal) 30%, transparent)",
+          border:
+            "1px solid color-mix(in srgb, var(--signal) 30%, transparent)",
           borderRadius: 8,
           flexShrink: 0,
         }}
@@ -868,7 +937,12 @@ function RunLiveBanner({
         <button
           type="button"
           onClick={() => setTab("logs")}
-          style={{ marginLeft: "auto", fontSize: 11, color: "var(--signal)", cursor: "pointer" }}
+          style={{
+            marginLeft: "auto",
+            fontSize: 11,
+            color: "var(--signal)",
+            cursor: "pointer",
+          }}
         >
           {t("runDetail.followLogs")} ↗
         </button>
@@ -889,7 +963,9 @@ function TimelineTab({ steps, run }: { steps: StepRow[]; run: RunListRow }) {
       <Empty title={t("runDetail.noSteps")} hint={t("runDetail.noStepsHint")} />
     );
   }
-  const parsedStartedMs = run.startedAt ? Date.parse(run.startedAt) : Number.NaN;
+  const parsedStartedMs = run.startedAt
+    ? Date.parse(run.startedAt)
+    : Number.NaN;
   const startedMs = Number.isFinite(parsedStartedMs) ? parsedStartedMs : null;
   const total =
     run.durationMs ??
@@ -907,16 +983,24 @@ function TimelineTab({ steps, run }: { steps: StepRow[]; run: RunListRow }) {
     <Panel title={t("runDetail.stepTimeline")} padded={false}>
       <div style={{ padding: "8px 16px" }}>
         {steps.map((s, i) => {
-          const parsedStepStartedMs = s.startedAt ? Date.parse(s.startedAt) : Number.NaN;
+          const parsedStepStartedMs = s.startedAt
+            ? Date.parse(s.startedAt)
+            : Number.NaN;
           const stepStartedMs = Number.isFinite(parsedStepStartedMs)
             ? parsedStepStartedMs
             : null;
-          const timelineReady = startedMs != null && stepStartedMs != null && total != null && total > 0;
-          const startPct = timelineReady ? ((stepStartedMs - startedMs) / total) * 100 : 0;
-          const durPct =
-            timelineReady
-              ? ((s.durationMs ?? total - (stepStartedMs - startedMs)) / total) * 100
-              : 1;
+          const timelineReady =
+            startedMs != null &&
+            stepStartedMs != null &&
+            total != null &&
+            total > 0;
+          const startPct = timelineReady
+            ? ((stepStartedMs - startedMs) / total) * 100
+            : 0;
+          const durPct = timelineReady
+            ? ((s.durationMs ?? total - (stepStartedMs - startedMs)) / total) *
+              100
+            : 1;
           const color =
             s.status === "failed"
               ? "var(--red)"
@@ -932,11 +1016,17 @@ function TimelineTab({ steps, run }: { steps: StepRow[]; run: RunListRow }) {
           const stepOut = (s as { output?: unknown }).output;
           const codeActReceipt = getCodeActReceiptView(s);
           const hasIO =
-            stepIn != null || stepOut != null || Boolean(s.error) || codeActReceipt !== null;
+            stepIn != null ||
+            stepOut != null ||
+            Boolean(s.error) ||
+            codeActReceipt !== null;
           return (
             <div
               key={`${s.id}-${i}`}
-              style={{ borderBottom: i < steps.length - 1 ? "1px solid var(--border)" : "none" }}
+              style={{
+                borderBottom:
+                  i < steps.length - 1 ? "1px solid var(--border)" : "none",
+              }}
             >
               <div
                 onClick={() => hasIO && toggle(s.id)}
@@ -961,7 +1051,10 @@ function TimelineTab({ steps, run }: { steps: StepRow[]; run: RunListRow }) {
                   <div
                     style={{ display: "flex", alignItems: "center", gap: 6 }}
                   >
-                    <span className="mono" style={{ fontSize: 12, color: "var(--text)" }}>
+                    <span
+                      className="mono"
+                      style={{ fontSize: 12, color: "var(--text)" }}
+                    >
                       {s.name}
                     </span>
                     {(s.attempts ?? 1) > 1 && (
@@ -1000,7 +1093,11 @@ function TimelineTab({ steps, run }: { steps: StepRow[]; run: RunListRow }) {
                       top: 0,
                       bottom: 0,
                       background: color,
-                      opacity: timelineReady ? (s.status === "running" ? 0.85 : 0.45) : 0,
+                      opacity: timelineReady
+                        ? s.status === "running"
+                          ? 0.85
+                          : 0.45
+                        : 0,
                       borderLeft: `2px solid ${color}`,
                     }}
                   >
@@ -1022,7 +1119,10 @@ function TimelineTab({ steps, run }: { steps: StepRow[]; run: RunListRow }) {
                   className="mono"
                   style={{
                     fontSize: 11.5,
-                    color: s.status === "running" ? "var(--accent-text)" : "var(--text-2)",
+                    color:
+                      s.status === "running"
+                        ? "var(--accent-text)"
+                        : "var(--text-2)",
                     textAlign: "right",
                   }}
                 >
@@ -1030,7 +1130,14 @@ function TimelineTab({ steps, run }: { steps: StepRow[]; run: RunListRow }) {
                 </div>
               </div>
               {isOpen && (
-                <div style={{ padding: "0 0 12px 56px", display: "flex", flexDirection: "column", gap: 8 }}>
+                <div
+                  style={{
+                    padding: "0 0 12px 56px",
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 8,
+                  }}
+                >
                   {s.error && (
                     <div
                       className="mono"
@@ -1038,7 +1145,8 @@ function TimelineTab({ steps, run }: { steps: StepRow[]; run: RunListRow }) {
                         fontSize: 11,
                         color: "var(--red)",
                         padding: "6px 8px",
-                        background: "color-mix(in srgb, var(--red) 7%, transparent)",
+                        background:
+                          "color-mix(in srgb, var(--red) 7%, transparent)",
                         borderRadius: 4,
                       }}
                     >
@@ -1116,11 +1224,23 @@ interface ParsedLogLine {
 /** Parse the runtime's `<ts>  LEVEL  event  k=v k=v` format. */
 function parseLogLine(raw: string): ParsedLogLine {
   if (raw.startsWith("# ")) {
-    return { raw, ts: null, level: "INFO", event: "system", rest: raw.slice(2) };
+    return {
+      raw,
+      ts: null,
+      level: "INFO",
+      event: "system",
+      rest: raw.slice(2),
+    };
   }
   const m = raw.match(/^(\S+)\s+(DEBUG|INFO|WARN|ERROR)\s+(\S+)\s*(.*)$/);
   if (m) {
-    return { raw, ts: m[1]!, level: m[2] as LogLevel, event: m[3]!, rest: m[4] ?? "" };
+    return {
+      raw,
+      ts: m[1]!,
+      level: m[2] as LogLevel,
+      event: m[3]!,
+      rest: m[4] ?? "",
+    };
   }
   return { raw, ts: null, level: "INFO", event: null, rest: raw };
 }
@@ -1179,7 +1299,8 @@ function LogsTab({ runId, tenant }: { runId: string; tenant: string }) {
             if (raw.startsWith("event:")) currentEvent = raw.slice(6).trim();
             else if (raw.startsWith("data:")) {
               if (currentEvent === "log") batch.push(raw.slice(5).trim());
-              else if (currentEvent === "info") batch.push(`# ${raw.slice(5).trim()}`);
+              else if (currentEvent === "info")
+                batch.push(`# ${raw.slice(5).trim()}`);
             } else if (raw === "") currentEvent = null;
           }
           if (batch.length && !cancelled) {
@@ -1250,8 +1371,11 @@ function LogsTab({ runId, tenant }: { runId: string; tenant: string }) {
         padding: "3px 9px",
         borderRadius: 99,
         border: `1px solid ${level === key ? "var(--signal)" : "var(--border-2)"}`,
-        background: level === key ? "color-mix(in srgb, var(--signal) 10%, transparent)" : "transparent",
-        color: level === key ? "var(--signal)" : color ?? "var(--text-3)",
+        background:
+          level === key
+            ? "color-mix(in srgb, var(--signal) 10%, transparent)"
+            : "transparent",
+        color: level === key ? "var(--signal)" : (color ?? "var(--text-3)"),
         cursor: "pointer",
       }}
     >
@@ -1282,8 +1406,16 @@ function LogsTab({ runId, tenant }: { runId: string; tenant: string }) {
           >
             {follow ? t("runDetail.logsFollowing") : t("runDetail.logsFollow")}
           </Button>
-          <Button small icon="upload" tone="ghost" onClick={download} disabled={lines.length === 0}>
-            {truncated ? t("runDetail.logsDownloadVisible") : t("runDetail.logsDownload")}
+          <Button
+            small
+            icon="upload"
+            tone="ghost"
+            onClick={download}
+            disabled={lines.length === 0}
+          >
+            {truncated
+              ? t("runDetail.logsDownloadVisible")
+              : t("runDetail.logsDownload")}
           </Button>
         </div>
       }
@@ -1340,7 +1472,9 @@ function LogsTab({ runId, tenant }: { runId: string; tenant: string }) {
           </div>
         )}
         {!error && filtered.length === 0 && !loading && (
-          <div style={{ color: "var(--text-3)" }}>{t("runDetail.logsEmpty")}</div>
+          <div style={{ color: "var(--text-3)" }}>
+            {t("runDetail.logsEmpty")}
+          </div>
         )}
         {filtered.map((p, i) => (
           <div key={i} style={{ display: "flex", gap: 8 }}>
@@ -1354,13 +1488,20 @@ function LogsTab({ runId, tenant }: { runId: string; tenant: string }) {
                 color: LEVEL_COLOR[p.level],
                 flexShrink: 0,
                 width: 42,
-                fontWeight: p.level === "ERROR" || p.level === "WARN" ? 600 : 400,
+                fontWeight:
+                  p.level === "ERROR" || p.level === "WARN" ? 600 : 400,
               }}
             >
               {p.level}
             </span>
             {p.event && (
-              <span style={{ color: "var(--accent-text)", flexShrink: 0, minWidth: 90 }}>
+              <span
+                style={{
+                  color: "var(--accent-text)",
+                  flexShrink: 0,
+                  minWidth: 90,
+                }}
+              >
                 {p.event}
               </span>
             )}
@@ -1394,7 +1535,10 @@ function IOTab({ run }: { run: RunListRow }) {
         padded
       >
         {input == null ? (
-          <Empty title={t("runDetail.ioNoInput")} hint={t("runDetail.ioNoInputHint")} />
+          <Empty
+            title={t("runDetail.ioNoInput")}
+            hint={t("runDetail.ioNoInputHint")}
+          />
         ) : (
           <CodeBlock>{JSON.stringify(input, null, 2)}</CodeBlock>
         )}
@@ -1420,19 +1564,25 @@ function IOTab({ run }: { run: RunListRow }) {
             color: "var(--text-3)",
           }}
         >
-          <span>{t("runDetail.ioStatus")}: {run.status}</span>
+          <span>
+            {t("runDetail.ioStatus")}: {runStatusLabel(t, run.status)}
+          </span>
           <span>{fmtDur(run.durationMs)}</span>
           {(run.tokensIn != null || run.tokensOut != null) && (
             <span>
               {run.tokensIn != null && run.tokensOut != null
                 ? run.tokensIn + run.tokensOut
-                : `${run.tokensIn ?? "—"} + ${run.tokensOut ?? "—"}`} tok
+                : `${run.tokensIn ?? "—"} + ${run.tokensOut ?? "—"}`}{" "}
+              tok
               {run.model ? ` · ${run.model}` : ""}
             </span>
           )}
         </div>
         {output == null ? (
-          <Empty title={t("runDetail.ioNoOutput")} hint={t("runDetail.ioNoOutputHint")} />
+          <Empty
+            title={t("runDetail.ioNoOutput")}
+            hint={t("runDetail.ioNoOutputHint")}
+          />
         ) : (
           <CodeBlock>{JSON.stringify(output, null, 2)}</CodeBlock>
         )}
@@ -1445,7 +1595,9 @@ function IOTab({ run }: { run: RunListRow }) {
 
 function RunEventsTab({ run }: { run: RunListRow }) {
   const { t } = useI18n();
-  const parsedStartedMs = run.startedAt ? Date.parse(run.startedAt) : Number.NaN;
+  const parsedStartedMs = run.startedAt
+    ? Date.parse(run.startedAt)
+    : Number.NaN;
   const parsedEndedMs = run.endedAt ? Date.parse(run.endedAt) : Number.NaN;
   const startedMs = Number.isFinite(parsedStartedMs) ? parsedStartedMs : null;
   const endedMs = Number.isFinite(parsedEndedMs) ? parsedEndedMs : null;
@@ -1472,10 +1624,19 @@ function RunEventsTab({ run }: { run: RunListRow }) {
     });
 
   if (events.length === 0) {
-    return <Empty title={t("runDetail.noEvents")} hint={t("runDetail.noEventsHint")} />;
+    return (
+      <Empty
+        title={t("runDetail.noEvents")}
+        hint={t("runDetail.noEventsHint")}
+      />
+    );
   }
   return (
-    <Panel title={t("runDetail.eventFlowTitle")} subtitle={t("runDetail.eventFlowSubtitle")} padded={false}>
+    <Panel
+      title={t("runDetail.eventFlowTitle")}
+      subtitle={t("runDetail.eventFlowSubtitle")}
+      padded={false}
+    >
       <div style={{ display: "flex", flexDirection: "column" }}>
         {events.map((e, i) => (
           <RunEventRow key={i} event={e} last={i === events.length - 1} />
@@ -1490,7 +1651,12 @@ function RunEventRow({
   event,
   last,
 }: {
-  event: { name: string; kind: "trigger" | "emit"; at: number | null; payload: unknown };
+  event: {
+    name: string;
+    kind: "trigger" | "emit";
+    at: number | null;
+    payload: unknown;
+  };
   last: boolean;
 }) {
   const { t } = useI18n();
@@ -1523,9 +1689,13 @@ function RunEventRow({
             width: 64,
           }}
         >
-          {event.kind === "trigger" ? t("runDetail.eventInbound") : t("runDetail.eventOutbound")}
+          {event.kind === "trigger"
+            ? t("runDetail.eventInbound")
+            : t("runDetail.eventOutbound")}
         </span>
-        <Badge tone={event.kind === "trigger" ? "blue" : "green"}>{event.name}</Badge>
+        <Badge tone={event.kind === "trigger" ? "blue" : "green"}>
+          {event.name}
+        </Badge>
         <span
           style={{
             marginLeft: "auto",

@@ -8,6 +8,7 @@
  */
 
 import type { BrainEvent } from "@/lib/hooks/useBrainStream";
+import type { Translate } from "@/app/portal/lib/preferences-context";
 
 // ── pickers / history ───────────────────────────────────────────────────────────
 export interface DomainRow { id: string; name?: string; counts?: { actions: number; events: number; objects: number; rules: number; workflow: number } }
@@ -75,33 +76,32 @@ export type Block =
 
 const ZERO_DIMS: ScoreDims = { toolResolution: 0, promptRichness: 0, decisionCoverage: 0, refineHealth: 0 };
 
-const FIXTURE_REFERENCE_HIDDEN = "[内部测试资产引用已隐藏]";
-const FIXTURE_CONTENT_HIDDEN = "[测试文件内容已隐藏]";
-
 /**
  * Fixture bytes and opaque asset ids are execution-layer details. They may be
  * present in persisted tool frames, but must never be copied into the visible
  * transcript/activity log. Keep non-sensitive shape information so an
  * operator can still understand which case/path the tool worked on.
  */
-function redactFixtureTranscriptText(value: unknown): string {
+function redactFixtureTranscriptText(t: Translate, value: unknown): string {
+  const fixtureReferenceHidden = t("factory.model.redact.assetRefHidden");
+  const fixtureContentHidden = t("factory.model.redact.fileContentHidden");
   return String(value ?? "")
-    .replace(/("(?:asset_id|assetId)"\s*:\s*")[^"]*(")/gi, `$1${FIXTURE_REFERENCE_HIDDEN}$2`)
-    .replace(/("base64"\s*:\s*")[^"]*(")/gi, `$1${FIXTURE_CONTENT_HIDDEN}$2`)
-    .replace(/data:[^;,\s]+;base64,[a-z0-9+/=_-]+/gi, FIXTURE_CONTENT_HIDDEN);
+    .replace(/("(?:asset_id|assetId)"\s*:\s*")[^"]*(")/gi, `$1${fixtureReferenceHidden}$2`)
+    .replace(/("base64"\s*:\s*")[^"]*(")/gi, `$1${fixtureContentHidden}$2`)
+    .replace(/data:[^;,\s]+;base64,[a-z0-9+/=_-]+/gi, fixtureContentHidden);
 }
 
-function redactFixtureTranscriptValue(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(redactFixtureTranscriptValue);
+function redactFixtureTranscriptValue(t: Translate, value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((entry) => redactFixtureTranscriptValue(t, entry));
   if (value && typeof value === "object") {
     return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, nested]) => {
       const normalized = key.replace(/[_-]/g, "").toLowerCase();
-      if (normalized === "assetid") return [key, FIXTURE_REFERENCE_HIDDEN];
-      if (normalized === "base64") return [key, FIXTURE_CONTENT_HIDDEN];
-      return [key, redactFixtureTranscriptValue(nested)];
+      if (normalized === "assetid") return [key, t("factory.model.redact.assetRefHidden")];
+      if (normalized === "base64") return [key, t("factory.model.redact.fileContentHidden")];
+      return [key, redactFixtureTranscriptValue(t, nested)];
     }));
   }
-  return typeof value === "string" ? redactFixtureTranscriptText(value) : value;
+  return typeof value === "string" ? redactFixtureTranscriptText(t, value) : value;
 }
 
 /**
@@ -163,25 +163,25 @@ export function factoryRunDisplayStatus(
     : "unverified_evidence";
 }
 
-export function toBlocks(events: BrainEvent[]): Block[] {
+export function toBlocks(t: Translate, events: BrainEvent[]): Block[] {
   const blocks: Block[] = [];
   let buf = "";
   let tid = 0;
   let currentModel = ""; // #7 — the model the current turn was routed to; stamped on tool steps.
   let currentTier = ""; // #7 — the difficulty tier (fast/default/hard) that selected the model.
-  const flush = () => { if (buf.trim()) blocks.push({ kind: "think", id: `t-${tid++}`, text: redactFixtureTranscriptText(buf.trim()) }); buf = ""; };
+  const flush = () => { if (buf.trim()) blocks.push({ kind: "think", id: `t-${tid++}`, text: redactFixtureTranscriptText(t, buf.trim()) }); buf = ""; };
   events.forEach((e, i) => {
     const id = `b-${i}`;
     switch (e.t) {
       case "model": currentModel = String(e.model ?? ""); currentTier = String(e.tier ?? ""); break;
       // #USER-MESSAGE — the human's words render as their own bubble (goal / injected note / gate answer).
-      case "user.message": flush(); blocks.push({ kind: "user", id, text: redactFixtureTranscriptText(String(e.text ?? "")) }); break;
+      case "user.message": flush(); blocks.push({ kind: "user", id, text: redactFixtureTranscriptText(t, String(e.text ?? "")) }); break;
       // #CLEAN-ANSWER — a real reasoning-kernel step (cot/reflection/…): the deliberation behind an
       // answer or a blueprint phase. Foldable noise — hidden in 精简, fully shown in 详尽 — so the
       // message card stays a clean answer while the process stays inspectable.
       case "reasoning.step": {
         flush();
-        const text = redactFixtureTranscriptText(String(e.output ?? ""));
+        const text = redactFixtureTranscriptText(t, String(e.output ?? ""));
         if (text.trim()) blocks.push({ kind: "reasoning", id, strategy: String(e.strategy ?? "cot"), text, ...(e.forAgent ? { forAgent: String(e.forAgent) } : {}) });
         break;
       }
@@ -190,8 +190,8 @@ export function toBlocks(events: BrainEvent[]): Block[] {
       case "flow.blueprint": {
         flush();
         const m = (e.model ?? {}) as { domain?: string; phases?: unknown[]; unresolved?: unknown[]; diagrams?: Array<{ kind?: string; title?: string; svg?: string }> };
-        const svgs = (m.diagrams ?? []).filter((d) => typeof d.svg === "string" && d.svg).map((d) => ({ title: String(d.title ?? d.kind ?? "图"), svg: String(d.svg) }));
-        if (svgs.length) blocks.push({ kind: "viz", id, title: `🗺 本体蓝图 · ${m.phases?.length ?? 0} 阶段 · ${svgs.length} 张图`, svgs, note: `${(m.unresolved?.length ?? 0) > 0 ? `${m.unresolved!.length} 项缺本体证据未接地 · ` : ""}点图放大；完整蓝图（含推理细化/未接地清单）在「蓝图」标签页` });
+        const svgs = (m.diagrams ?? []).filter((d) => typeof d.svg === "string" && d.svg).map((d) => ({ title: String(d.title ?? d.kind ?? t("factory.model.viz.diagramFallbackTitle")), svg: String(d.svg) }));
+        if (svgs.length) blocks.push({ kind: "viz", id, title: t("factory.model.viz.blueprintTitle", { phases: m.phases?.length ?? 0, count: svgs.length }), svgs, note: `${(m.unresolved?.length ?? 0) > 0 ? t("factory.model.viz.blueprintUnresolvedPrefix", { count: m.unresolved!.length }) : ""}${t("factory.model.viz.blueprintNote")}` });
         break;
       }
       case "think": buf += String(e.delta ?? ""); break;
@@ -205,13 +205,13 @@ export function toBlocks(events: BrainEvent[]): Block[] {
         const m = text.trim();
         if (b && m && (b === m || m.startsWith(b) || b.startsWith(m))) buf = "";
         flush();
-        blocks.push({ kind: "message", id, text: redactFixtureTranscriptText(text) });
+        blocks.push({ kind: "message", id, text: redactFixtureTranscriptText(t, text) });
         break;
       }
-      case "tool.call": flush(); blocks.push({ kind: "tool", id: String(e.id ?? id), name: String(e.name ?? ""), role: e.role ? String(e.role) : undefined, reasoning: redactFixtureTranscriptText(e.reasoning ?? ""), input: redactFixtureTranscriptValue(e.input), model: currentModel || undefined, tier: currentTier || undefined }); break;
+      case "tool.call": flush(); blocks.push({ kind: "tool", id: String(e.id ?? id), name: String(e.name ?? ""), role: e.role ? String(e.role) : undefined, reasoning: redactFixtureTranscriptText(t, e.reasoning ?? ""), input: redactFixtureTranscriptValue(t, e.input), model: currentModel || undefined, tier: currentTier || undefined }); break;
       // #HEARTBEAT — 长工具心跳：把 elapsed/升级提示写回打开中的 tool block（慢/卡/死可区分）。
       case "tool.progress": { const pb = [...blocks].reverse().find((b) => b.kind === "tool" && b.id === String(e.id)) as Extract<Block, { kind: "tool" }> | undefined; if (pb && pb.ok === undefined) { pb.elapsedS = Number(e.elapsedS ?? 0) || undefined; if (e.note) pb.progressNote = String(e.note); } break; }
-      case "tool.result": { const tb = [...blocks].reverse().find((b) => b.kind === "tool" && b.id === String(e.id)) as Extract<Block, { kind: "tool" }> | undefined; if (tb) { tb.ok = Boolean(e.ok); tb.summary = redactFixtureTranscriptText(e.summary ?? ""); tb.output = e.output ? redactFixtureTranscriptText(e.output) : undefined; } break; }
+      case "tool.result": { const tb = [...blocks].reverse().find((b) => b.kind === "tool" && b.id === String(e.id)) as Extract<Block, { kind: "tool" }> | undefined; if (tb) { tb.ok = Boolean(e.ok); tb.summary = redactFixtureTranscriptText(t, e.summary ?? ""); tb.output = e.output ? redactFixtureTranscriptText(t, e.output) : undefined; } break; }
       case "plan": flush(); blocks.push({ kind: "plan", id, summary: String((e.plan as Record<string, unknown>)?.summary ?? ""), agents: ((e.plan as Record<string, unknown>)?.agents as unknown[])?.length ?? 0 }); break;
       case "validation": flush(); blocks.push({ kind: "validation", id, ok: Boolean(e.ok), issues: (e.issues as string[]) ?? [] }); break;
       case "sandbox": flush(); blocks.push({ kind: "sandbox", id, ev: e }); break;
@@ -232,12 +232,14 @@ export function toBlocks(events: BrainEvent[]): Block[] {
         // test.cases frame (or the user explicitly approves/regenerates).
         if (tcb && (decision === "approve" || decision === "regenerate")) tcb.awaiting = false;
         const text = decision === "approve"
-          ? "✅ 已确认执行测试用例"
+          ? t("factory.model.testDecision.approved")
           : decision === "regenerate"
-            ? `🔄 已要求重新生成测试用例${e.note ? `：${redactFixtureTranscriptText(e.note)}` : ""}`
+            ? e.note
+              ? t("factory.model.testDecision.regenerateWithNote", { note: redactFixtureTranscriptText(t, e.note) })
+              : t("factory.model.testDecision.regenerate")
             : decision === "supply_data"
-              ? "📎 已补充测试数据，工厂正在应用；应用完成后仍需你确认测试用例"
-              : "已记录测试用例决策，等待工厂确认状态";
+              ? t("factory.model.testDecision.supplyData")
+              : t("factory.model.testDecision.recorded");
         blocks.push({ kind: "message", id, text });
         break;
       }
@@ -271,7 +273,7 @@ export function toBlocks(events: BrainEvent[]): Block[] {
       case "subagent.start": flush(); blocks.push({ kind: "subagent", id, task: String(e.task ?? ""), ...(e.groupId ? { groupId: String(e.groupId) } : {}) }); break;
       // #SUBAGENT-GROUP — a reasoning-driven group of sub-brains: render one header card, then the member
       // subagent cards (which carry the same groupId) stream below it.
-      case "group.start": flush(); blocks.push({ kind: "group", id, groupId: String(e.groupId ?? ""), label: String(e.label ?? "子智能体组"), members: Number(e.members ?? 0), mode: String(e.mode ?? "research"), done: false }); break;
+      case "group.start": flush(); blocks.push({ kind: "group", id, groupId: String(e.groupId ?? ""), label: String(e.label ?? t("factory.model.block.subagentGroupFallback")), members: Number(e.members ?? 0), mode: String(e.mode ?? "research"), done: false }); break;
       case "group.done": {
         const gb = [...blocks].reverse().find((b): b is Extract<Block, { kind: "group" }> => b.kind === "group" && b.groupId === String(e.groupId ?? "") && !b.done);
         if (gb) { gb.done = true; gb.ok = Number(e.ok ?? 0); gb.total = Number(e.total ?? 0); gb.summary = String(e.summary ?? ""); }
@@ -285,9 +287,9 @@ export function toBlocks(events: BrainEvent[]): Block[] {
         if (sb) sb.summary = String(e.summary ?? "");
         break;
       }
-      case "budget": blocks.push({ kind: "budget", id, text: `已用 ${e.turn}/${e.maxTurns} 轮 · ${Math.round(Number(e.tokens) / 1000)}k tokens · ${e.specsBuilt} agent`, level: String(e.level ?? "ok") }); break;
+      case "budget": blocks.push({ kind: "budget", id, text: t("factory.model.block.budget", { turn: String(e.turn ?? ""), maxTurns: String(e.maxTurns ?? ""), tokensK: Math.round(Number(e.tokens) / 1000), specsBuilt: String(e.specsBuilt ?? "") }), level: String(e.level ?? "ok") }); break;
       case "reflect": flush(); blocks.push({ kind: "reflect", id, text: String(e.lesson ?? "") }); break;
-      case "catalog": flush(); blocks.push({ kind: "catalog", id, text: `读到本体：${e.actions} 动作（${e.agentActions} 个要造 agent）· ${e.events} 事件` }); break;
+      case "catalog": flush(); blocks.push({ kind: "catalog", id, text: t("factory.model.block.catalog", { actions: String(e.actions ?? ""), agentActions: String(e.agentActions ?? ""), events: String(e.events ?? "") }) }); break;
       case "tool.created": flush(); blocks.push({ kind: "toolnew", id, name: String(e.name ?? ""), desc: String(e.description ?? "") }); break;
       case "web.result": flush(); blocks.push({ kind: "web", id, query: String(e.query ?? ""), count: ((e.results as unknown[]) ?? []).length }); break;
       case "tool.search": flush(); blocks.push({ kind: "toolsearch", id, query: String(e.query ?? ""), count: ((e.results as unknown[]) ?? []).length }); break;
@@ -349,7 +351,6 @@ export function deriveScores(events: BrainEvent[]): Map<string, { delta: number;
 export type FactoryStageId = "read" | "plan" | "design" | "validate" | "sandbox" | "deliver";
 export type StageStatus = "idle" | "active" | "ok" | "error";
 export const STAGE_ORDER: FactoryStageId[] = ["read", "plan", "design", "validate", "sandbox", "deliver"];
-export const STAGE_LABELS: Record<FactoryStageId, string> = { read: "读业务", plan: "规划", design: "设计", validate: "校验", sandbox: "试运行", deliver: "交付" };
 export interface StageState { id: FactoryStageId; label: string; status: StageStatus }
 
 /** Client fallback: infer a stage from a transcript event type, for runs recorded before the
@@ -368,10 +369,10 @@ function stageOfEvent(t: string): FactoryStageId | null {
 
 /** Per-stage status + the current (most-recently-entered) stage. Prefers the explicit `stage`
  *  events; falls back to event.t inference when a transcript has none. */
-export function deriveStages(events: BrainEvent[]): { stages: StageState[]; current: FactoryStageId | null } {
+export function deriveStages(t: Translate, events: BrainEvent[]): { stages: StageState[]; current: FactoryStageId | null } {
   const status: Record<FactoryStageId, StageStatus> = { read: "idle", plan: "idle", design: "idle", validate: "idle", sandbox: "idle", deliver: "idle" };
   let current: FactoryStageId | null = null;
-  let finalStageLabel = STAGE_LABELS.deliver;
+  let finalStageLabel = t("factory.model.stage.deliver");
   const hasExplicit = events.some((e) => e.t === "stage");
 
   if (hasExplicit) {
@@ -406,19 +407,19 @@ export function deriveStages(events: BrainEvent[]): { stages: StageState[]; curr
   if (lastDone) {
     current = "deliver";
     if (lastDone.status === "waiting_human") {
-      finalStageLabel = "等待人工";
+      finalStageLabel = t("factory.model.stage.finalWaitingHuman");
       status.deliver = "idle";
     } else if (answerCompleted) {
       // The fixed six-stage rail reuses its final slot, but changes the visible
       // semantic label. A Q&A answer is successful without claiming delivery.
-      finalStageLabel = "回答";
+      finalStageLabel = t("factory.model.stage.finalAnswer");
       status.deliver = "ok";
     } else if (deliveryCompleted) {
       status.deliver = "ok";
     } else {
       finalStageLabel = normalizeFactoryCompletionKind(lastDone.completionKind) === "legacy_unknown"
-        ? "结束（类型未知）"
-        : "结束";
+        ? t("factory.model.stage.finalEndedUnknown")
+        : t("factory.model.stage.finalEnded");
       status.deliver = "error";
     }
   }
@@ -461,7 +462,7 @@ export function deriveStages(events: BrainEvent[]): { stages: StageState[]; curr
   // explicit historical `stage: sandbox, status: ok` markers without evidence.
   if (!realSandboxSucceeded && status.sandbox === "ok") status.sandbox = "error";
 
-  return { stages: STAGE_ORDER.map((id) => ({ id, label: id === "deliver" ? finalStageLabel : STAGE_LABELS[id], status: status[id] })), current };
+  return { stages: STAGE_ORDER.map((id) => ({ id, label: id === "deliver" ? finalStageLabel : t(`factory.model.stage.${id}`), status: status[id] })), current };
 }
 
 // ── brain decision flow (the 大脑 view) ───────────────────────────────────────────
@@ -469,9 +470,9 @@ export function deriveStages(events: BrainEvent[]): { stages: StageState[]; curr
 // Each step is one decision/act; the renderer draws status colors, HITL diamonds, and refine
 // loop-back arcs. Derived from the same event stream so a replayed run reproduces it.
 export type BrainStepStatus = "ok" | "fail" | "warn" | "await" | "info" | "neutral";
-export interface BrainStep { id: string; kind: "read" | "plan" | "design" | "validate" | "refine" | "revert" | "gate" | "sandbox" | "answer" | "deliver" | "error" | "subagent" | "skill" | "reflect"; label: string; detail?: string; status: BrainStepStatus; interactionId?: string }
+export interface BrainStep { id: string; kind: "read" | "plan" | "design" | "validate" | "refine" | "revert" | "gate" | "sandbox" | "answer" | "deliver" | "error" | "subagent" | "skill" | "reflect"; label: string; detail?: string; status: BrainStepStatus; interactionId?: string; gateKind?: "testcases" | "boundary" | "clarify" }
 
-export function deriveBrainFlow(events: BrainEvent[]): BrainStep[] {
+export function deriveBrainFlow(t: Translate, events: BrainEvent[]): BrainStep[] {
   const steps: BrainStep[] = [];
   const seenDesign = new Set<string>();
   let i = 0;
@@ -480,61 +481,61 @@ export function deriveBrainFlow(events: BrainEvent[]): BrainStep[] {
   for (const e of events) {
     const id = `bs-${i++}`;
     switch (e.t) {
-      case "catalog": steps.push({ id, kind: "read", label: "读本体", detail: `${e.actions} 动作 · ${e.events} 事件`, status: "neutral" }); break;
-      case "plan": steps.push({ id, kind: "plan", label: "规划", detail: `${((e.plan as Record<string, unknown>)?.agents as unknown[])?.length ?? 0} 个智能体`, status: "neutral" }); break;
+      case "catalog": steps.push({ id, kind: "read", label: t("factory.model.flow.readOntology"), detail: t("factory.model.flow.readOntologyDetail", { actions: String(e.actions ?? ""), events: String(e.events ?? "") }), status: "neutral" }); break;
+      case "plan": steps.push({ id, kind: "plan", label: t("factory.model.flow.plan"), detail: t("factory.model.flow.planDetail", { count: ((e.plan as Record<string, unknown>)?.agents as unknown[])?.length ?? 0 }), status: "neutral" }); break;
       // #F: make recursive reasoning visible in the decision flow — sub-brain spawns + skill creation.
-      case "subagent.start": steps.push({ id, kind: "subagent", label: "🧩 子智能体", detail: String(e.task ?? "").slice(0, 44), status: "info" }); break;
-      case "group.start": steps.push({ id, kind: "subagent", label: "🧩 子智能体组", detail: `${String(e.label ?? "")}（${Number(e.members ?? 0)} 成员）`.slice(0, 44), status: "info" }); break;
-      case "group.done": steps.push({ id, kind: "subagent", label: "🧩 子智能体组完成", detail: `${String(e.label ?? "")} · ${Number(e.ok ?? 0)}/${Number(e.total ?? 0)} 成功`.slice(0, 44), status: Number(e.ok ?? 0) > 0 ? "ok" : "warn" }); break;
+      case "subagent.start": steps.push({ id, kind: "subagent", label: t("factory.model.flow.subagent"), detail: String(e.task ?? "").slice(0, 44), status: "info" }); break;
+      case "group.start": steps.push({ id, kind: "subagent", label: t("factory.model.flow.subagentGroup"), detail: t("factory.model.flow.subagentGroupDetail", { label: String(e.label ?? ""), members: Number(e.members ?? 0) }).slice(0, 44), status: "info" }); break;
+      case "group.done": steps.push({ id, kind: "subagent", label: t("factory.model.flow.subagentGroupDone"), detail: t("factory.model.flow.subagentGroupDoneDetail", { label: String(e.label ?? ""), ok: Number(e.ok ?? 0), total: Number(e.total ?? 0) }).slice(0, 44), status: Number(e.ok ?? 0) > 0 ? "ok" : "warn" }); break;
       case "subagent.done": { const sb = [...steps].reverse().find((s) => s.kind === "subagent" && !s.detail?.includes(" → ")); if (sb) sb.detail = `${sb.detail ?? ""} → ${String(e.summary ?? "").slice(0, 30)}`; break; }
-      case "skill.created": steps.push({ id, kind: "skill", label: `🛠 造技能 ${String(e.name ?? "")}`, detail: String(e.purpose ?? "").slice(0, 40), status: "info" }); break;
-      case "reflect": steps.push({ id, kind: "reflect", label: "💡 反思", detail: String(e.lesson ?? "").slice(0, 44), status: "neutral" }); break;
+      case "skill.created": steps.push({ id, kind: "skill", label: t("factory.model.flow.createSkill", { name: String(e.name ?? "") }), detail: String(e.purpose ?? "").slice(0, 40), status: "info" }); break;
+      case "reflect": steps.push({ id, kind: "reflect", label: t("factory.model.flow.reflect"), detail: String(e.lesson ?? "").slice(0, 44), status: "neutral" }); break;
       case "agent.created": {
         const s = e.spec as Record<string, unknown>;
         const slug = String(s.slug ?? "");
         if (seenDesign.has(slug)) break; // re-emit on refine — the refine event records that, not a new design step
         seenDesign.add(slug);
-        steps.push({ id, kind: "design", label: `设计 ${String(s.actionName || s.short || slug)}`, status: "ok" });
+        steps.push({ id, kind: "design", label: t("factory.model.flow.design", { name: String(s.actionName || s.short || slug) }), status: "ok" });
         break;
       }
-      case "validation": steps.push({ id, kind: "validate", label: e.ok ? "校验闭合" : "校验未闭合", detail: e.ok ? "含字段合同" : `${((e.issues as unknown[]) ?? []).length} 个问题`, status: e.ok ? "ok" : "fail" }); break;
-      case "refine": steps.push({ id, kind: "refine", label: `修订 ${String(e.actionName ?? "")}`, detail: String(e.critique ?? "").slice(0, 44), status: "warn" }); break;
+      case "validation": steps.push({ id, kind: "validate", label: e.ok ? t("factory.model.flow.validateClosed") : t("factory.model.flow.validateNotClosed"), detail: e.ok ? t("factory.model.flow.validateHasFieldContract") : t("factory.model.flow.validateIssues", { count: ((e.issues as unknown[]) ?? []).length }), status: e.ok ? "ok" : "fail" }); break;
+      case "refine": steps.push({ id, kind: "refine", label: t("factory.model.flow.refine", { name: String(e.actionName ?? "") }), detail: String(e.critique ?? "").slice(0, 44), status: "warn" }); break;
       case "score.delta": {
         const d = Number(e.delta ?? 0);
-        const txt = `评分 ${d >= 0 ? "▲+" : "▼"}${d}`;
+        const txt = d >= 0 ? t("factory.model.flow.scoreUp", { delta: d }) : t("factory.model.flow.scoreDown", { delta: d });
         const ref = lastOf("refine");
         if (ref) ref.detail = ref.detail ? `${ref.detail} · ${txt}` : txt;
         break;
       }
-      case "revert": steps.push({ id, kind: "revert", label: `回滚 ${String(e.actionName ?? "")}`, detail: `到第 ${e.revertedToAttempt} 次之前`, status: "warn" }); break;
-      case "test.cases": steps.push({ id, kind: "gate", label: "用例确认", detail: `${((e.cases as unknown[]) ?? []).length} 个用例`, status: e.awaitingApproval ? "await" : "ok", interactionId: typeof e.interactionId === "string" ? e.interactionId : undefined }); break;
+      case "revert": steps.push({ id, kind: "revert", label: t("factory.model.flow.revert", { name: String(e.actionName ?? "") }), detail: t("factory.model.flow.revertDetail", { n: String(e.revertedToAttempt ?? "") }), status: "warn" }); break;
+      case "test.cases": steps.push({ id, kind: "gate", gateKind: "testcases", label: t("factory.model.flow.testCasesGate"), detail: t("factory.model.flow.testCasesDetail", { count: ((e.cases as unknown[]) ?? []).length }), status: e.awaitingApproval ? "await" : "ok", interactionId: typeof e.interactionId === "string" ? e.interactionId : undefined }); break;
       case "test.decision": {
         const interactionId = typeof e.interactionId === "string" ? e.interactionId : undefined;
-        const g = [...steps].reverse().find((step) => step.kind === "gate" && step.label === "用例确认" && (interactionId ? step.interactionId === interactionId : step.interactionId === undefined));
+        const g = [...steps].reverse().find((step) => step.kind === "gate" && step.gateKind === "testcases" && (interactionId ? step.interactionId === interactionId : step.interactionId === undefined));
         if (g) {
           const decision = String(e.decision ?? "");
           if (decision === "approve") g.status = "ok";
           else if (decision === "regenerate") g.status = "warn";
           else if (decision === "supply_data") {
             g.status = "await";
-            g.detail = "补充数据已提交 · 应用后仍需确认";
+            g.detail = t("factory.model.flow.supplyDataPending");
           }
         }
         break;
       }
-      case "boundary.cases": steps.push({ id, kind: "gate", label: "边界事件分类", detail: `${((e.proposals as unknown[]) ?? []).length} 个`, status: e.awaitingDecision ? "await" : "ok", interactionId: typeof e.interactionId === "string" ? e.interactionId : undefined }); break;
+      case "boundary.cases": steps.push({ id, kind: "gate", gateKind: "boundary", label: t("factory.model.flow.boundaryGate"), detail: t("factory.model.flow.boundaryDetail", { count: ((e.proposals as unknown[]) ?? []).length }), status: e.awaitingDecision ? "await" : "ok", interactionId: typeof e.interactionId === "string" ? e.interactionId : undefined }); break;
       case "clarify": {
         // #CLARIFY-CLEAR — the resolution frame flips the existing gate step to ok, not a new step.
         if (e.awaitingAnswer === false) {
           const interactionId = typeof e.interactionId === "string" ? e.interactionId : undefined;
-          const prev = [...steps].reverse().find((s) => s.kind === "gate" && s.label === "询问用户" && s.status === "await" && (interactionId ? s.interactionId === interactionId : s.interactionId === undefined));
+          const prev = [...steps].reverse().find((s) => s.kind === "gate" && s.gateKind === "clarify" && s.status === "await" && (interactionId ? s.interactionId === interactionId : s.interactionId === undefined));
           if (prev) prev.status = "ok";
           break;
         }
-        steps.push({ id, kind: "gate", label: "询问用户", detail: String(e.question ?? "").slice(0, 40), status: "await", interactionId: typeof e.interactionId === "string" ? e.interactionId : undefined });
+        steps.push({ id, kind: "gate", gateKind: "clarify", label: t("factory.model.flow.askUser"), detail: String(e.question ?? "").slice(0, 40), status: "await", interactionId: typeof e.interactionId === "string" ? e.interactionId : undefined });
         break;
       }
-      case "boundary.decided": { const interactionId = typeof e.interactionId === "string" ? e.interactionId : undefined; const g = [...steps].reverse().find((step) => step.kind === "gate" && step.label === "边界事件分类" && (interactionId ? step.interactionId === interactionId : step.interactionId === undefined)); if (g) g.status = "ok"; break; }
+      case "boundary.decided": { const interactionId = typeof e.interactionId === "string" ? e.interactionId : undefined; const g = [...steps].reverse().find((step) => step.kind === "gate" && step.gateKind === "boundary" && (interactionId ? step.interactionId === interactionId : step.interactionId === undefined)); if (g) g.status = "ok"; break; }
       case "sandbox": {
         const sim = Boolean(e.simulated);
         const ok =
@@ -545,11 +546,11 @@ export function deriveBrainFlow(events: BrainEvent[]): BrainStep[] {
           id,
           kind: "sandbox",
           label: sim
-            ? "历史模拟记录 · 无效执行证据"
+            ? t("factory.model.flow.sandboxSimulated")
             : ok
-              ? "真沙箱跑通"
-              : "真沙箱未跑通",
-          detail: `${sim ? "legacy / invalid evidence" : "真实执行"} · 部署 ${e.functionsRegistered ?? 0} · 跑 ${e.ran ?? 0}`,
+              ? t("factory.model.flow.sandboxOk")
+              : t("factory.model.flow.sandboxFail"),
+          detail: t("factory.model.flow.sandboxDetail", { kind: sim ? t("factory.model.flow.sandboxLegacyEvidence") : t("factory.model.flow.sandboxRealExec"), deployed: String(e.functionsRegistered ?? 0), ran: String(e.ran ?? 0) }),
           status: ok ? "ok" : "fail",
         });
         break;
@@ -560,8 +561,9 @@ export function deriveBrainFlow(events: BrainEvent[]): BrainStep[] {
           steps.push({
             id,
             kind: "gate",
-            label: "等待人工回复",
-            detail: "已保存检查点，回复后继续",
+            gateKind: "clarify",
+            label: t("factory.model.flow.waitingHuman"),
+            detail: t("factory.model.flow.waitingHumanDetail"),
             status: "await",
           });
           break;
@@ -570,8 +572,8 @@ export function deriveBrainFlow(events: BrainEvent[]): BrainStep[] {
           steps.push({
             id,
             kind: "answer",
-            label: "回答完成",
-            detail: "信息回答 · 未产生交付或沙箱证据",
+            label: t("factory.model.flow.answerDone"),
+            detail: t("factory.model.flow.answerDoneDetail"),
             status: "ok",
           });
           break;
@@ -582,17 +584,17 @@ export function deriveBrainFlow(events: BrainEvent[]): BrainStep[] {
           id,
           kind: "deliver",
           label: verifiedFinished
-            ? "交付完成"
+            ? t("factory.model.flow.deliverDone")
             : isDeliveryCompletion(e.status, completionKind)
-              ? "交付记录 · 无有效真实成功证据"
+              ? t("factory.model.flow.deliverNoEvidence")
               : completionKind === "legacy_unknown"
-                ? "结束 · 历史记录未标注完成类型"
-              : `结束 · ${e.status}`,
+                ? t("factory.model.flow.deliverLegacyUnknown")
+              : t("factory.model.flow.deliverEnded", { status: String(e.status ?? "") }),
           status: verifiedFinished ? "ok" : completionKind === "legacy_unknown" ? "warn" : "fail",
         });
         break;
       }
-      case "error": steps.push({ id, kind: "error", label: "出错", detail: String(e.message ?? "").slice(0, 44), status: "fail" }); break;
+      case "error": steps.push({ id, kind: "error", label: t("factory.model.flow.error"), detail: String(e.message ?? "").slice(0, 44), status: "fail" }); break;
     }
   }
   return steps;

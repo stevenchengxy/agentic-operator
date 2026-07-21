@@ -1,4 +1,5 @@
 import { redactDomainKnowledge } from "../../factory/domain-knowledge";
+import type { Translate } from "../../../../lib/preferences-context";
 
 export interface ProductionReworkPreview {
   seedId: string;
@@ -42,6 +43,7 @@ const stringOrNull = (value: unknown): string | null =>
 /** Fail closed: a preview is actionable only when the server explicitly says
  * no run was started and its evidence bundle contains this exact failed run. */
 export function parseProductionReworkPreview(
+  t: Translate,
   value: unknown,
   selectedRunId: string,
   expected?: { domain: string; slug: string },
@@ -49,7 +51,7 @@ export function parseProductionReworkPreview(
   if (!isRecord(value) || value.started !== false) {
     return {
       ok: false,
-      message: "服务端没有明确确认 started=false；为避免误启动，已停止。",
+      message: t("runDetail.rework.errNotStartedUnconfirmed"),
     };
   }
   const seed = isRecord(value.seed) ? value.seed : null;
@@ -81,7 +83,10 @@ export function parseProductionReworkPreview(
     !startRequest.goal.trim() ||
     !startRequest.goal.includes(seed.seedId)
   ) {
-    return { ok: false, message: "返工预览结构无效；未启动任何返工。" };
+    return {
+      ok: false,
+      message: t("runDetail.rework.errInvalidStructure"),
+    };
   }
 
   const evidenceRows = evidence.runs.filter(isRecord);
@@ -99,7 +104,7 @@ export function parseProductionReworkPreview(
   ) {
     return {
       ok: false,
-      message: "返工证据统计与运行明细不一致；未启动任何返工。",
+      message: t("runDetail.rework.errEvidenceMismatch"),
     };
   }
 
@@ -109,15 +114,14 @@ export function parseProductionReworkPreview(
   if (selectedRows.length !== 1) {
     return {
       ok: false,
-      message:
-        "服务端返回的生产证据中没有当前运行；不能把别的运行当成这次失败，未启动任何返工。",
+      message: t("runDetail.rework.errRunNotInEvidence"),
     };
   }
   const selected = selectedRows[0]!;
   if (selected.status !== "failed") {
     return {
       ok: false,
-      message: "当前运行在返工证据中不是 failed；未启动任何返工。",
+      message: t("runDetail.rework.errRunNotFailed"),
     };
   }
   if (
@@ -126,8 +130,7 @@ export function parseProductionReworkPreview(
   ) {
     return {
       ok: false,
-      message:
-        "返工 seed 与当前本体域或 agent 不一致；未启动任何返工。",
+      message: t("runDetail.rework.errSeedDomainMismatch"),
     };
   }
 
@@ -142,7 +145,7 @@ export function parseProductionReworkPreview(
           name:
             typeof step.name === "string" && step.name.trim()
               ? redactDomainKnowledge(step.name)
-              : "未命名步骤",
+              : t("runDetail.rework.unnamedStep"),
           attempts:
             typeof step.attempts === "number" && Number.isFinite(step.attempts)
               ? Math.max(0, Math.trunc(step.attempts))

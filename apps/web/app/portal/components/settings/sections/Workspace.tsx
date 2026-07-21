@@ -18,20 +18,22 @@ import {
 } from "@/app/portal/components/settings/atoms";
 import { LOCALES, TIMEZONES } from "@/app/portal/components/settings/data";
 import { useDirty } from "@/app/portal/lib/dirty-context";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 import { useTenant } from "@/app/portal/lib/use-tenant";
 import { useTenants, useUpdateTenant } from "@/lib/hooks/useTenants";
 import { useWorkspace } from "@/lib/hooks/useWorkspace";
 
 const ACCENTS = [
-  { value: "#d0ff00", label: "Lime" },
-  { value: "#5deeff", label: "Cyan" },
-  { value: "#ffb547", label: "Amber" },
-  { value: "#b594ff", label: "Violet" },
+  { value: "#d0ff00", id: "lime" },
+  { value: "#5deeff", id: "cyan" },
+  { value: "#ffb547", id: "amber" },
+  { value: "#b594ff", id: "violet" },
 ];
 
 const DEFAULT_ACCENT = ACCENTS[0]!.value;
 
 export function WorkspaceSection() {
+  const { t } = useI18n();
   const activeSlug = useTenant();
   const tenantsQuery = useTenants();
   const update = useUpdateTenant();
@@ -76,7 +78,7 @@ export function WorkspaceSection() {
   useEffect(() => {
     dirty.setDirty(
       "workspace-identity",
-      identityDirty ? "workspace name or color" : null,
+      identityDirty ? t("workspaceSection.dirtyIdentity") : null,
     );
     return () => dirty.setDirty("workspace-identity", null);
   }, [dirty, identityDirty]);
@@ -91,7 +93,7 @@ export function WorkspaceSection() {
   async function saveIdentity() {
     const name = displayName.trim();
     if (!name) {
-      setError("Display name cannot be blank.");
+      setError(t("workspaceSection.nameRequired"));
       return;
     }
     setError(null);
@@ -114,46 +116,46 @@ export function WorkspaceSection() {
       setError(
         cause instanceof Error
           ? cause.message
-          : "The workspace identity could not be saved.",
+          : t("workspaceSection.saveFailed"),
       );
     }
   }
 
   const region =
-    (process.env.NEXT_PUBLIC_AGENTIC_REGION ?? "").trim() || "Not configured";
+    (process.env.NEXT_PUBLIC_AGENTIC_REGION ?? "").trim() || t("workspaceSection.notConfigured");
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
       <Panel
-        title="Workspace identity"
-        subtitle="Name and accent are stored on the active tenant record."
+        title={t("workspaceSection.identityTitle")}
+        subtitle={t("workspaceSection.identitySubtitle")}
         padded
       >
         {tenantsQuery.isLoading && (
           <div
             style={{ padding: "18px 0", color: "var(--text-3)", fontSize: 12 }}
           >
-            Loading the active tenant…
+            {t("workspaceSection.loadingTenant")}
           </div>
         )}
         {tenantsQuery.isError && (
           <Empty
-            title="Workspace data is unavailable"
-            hint="The tenant API could not be reached, so identity controls are disabled."
+            title={t("workspaceSection.unavailableTitle")}
+            hint={t("workspaceSection.unavailableHint")}
           />
         )}
         {activeTenant && (
           <>
             <Field
-              label="Workspace ID"
-              hint="Used in URLs and API endpoints. The slug is immutable."
+              label={t("workspace.workspaceId")}
+              hint={t("workspaceSection.workspaceIdHint")}
               locked
             >
               <ReadOnlyValue value={activeTenant.slug} mono />
             </Field>
             <Field
-              label="Display name"
-              hint="Shown in the tenant switcher and audit log."
+              label={t("workspace.displayName")}
+              hint={t("workspaceSection.displayNameHint")}
             >
               <TextIn
                 value={displayName}
@@ -161,12 +163,12 @@ export function WorkspaceSection() {
                   setDisplayName(value);
                   setSaved(false);
                 }}
-                ariaLabel="Workspace display name"
+                ariaLabel={t("workspaceSection.displayNameAria")}
               />
             </Field>
             <Field
-              label="Accent color"
-              hint="Stored on the tenant and used by tenant identity surfaces."
+              label={t("workspaceSection.accentLabel")}
+              hint={t("workspaceSection.accentHint")}
             >
               <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
                 {ACCENTS.map((option) => (
@@ -177,9 +179,9 @@ export function WorkspaceSection() {
                       setAccent(option.value);
                       setSaved(false);
                     }}
-                    aria-label={`${option.label} accent`}
+                    aria-label={t(`workspaceSection.accent.${option.id}`)}
                     aria-pressed={accent === option.value}
-                    title={option.label}
+                    title={t(`workspaceSection.accent.${option.id}`)}
                     style={{
                       width: 28,
                       height: 28,
@@ -201,7 +203,7 @@ export function WorkspaceSection() {
                   fontSize: 12,
                 }}
               >
-                {error ?? "Workspace identity saved."}
+                {error ?? t("workspaceSection.saved")}
               </div>
             )}
             <div
@@ -217,7 +219,7 @@ export function WorkspaceSection() {
                 onClick={discardIdentity}
                 disabled={!identityDirty}
               >
-                Discard
+                {t("common.discard")}
               </Button>
               <Button
                 tone="primary"
@@ -225,7 +227,7 @@ export function WorkspaceSection() {
                 onClick={() => void saveIdentity()}
                 disabled={!identityDirty || update.isPending}
               >
-                {update.isPending ? "Saving…" : "Save identity"}
+                {update.isPending ? t("common.saving") : t("workspaceSection.saveIdentity")}
               </Button>
             </div>
           </>
@@ -233,49 +235,52 @@ export function WorkspaceSection() {
       </Panel>
 
       <Panel
-        title="Regional preferences"
-        subtitle="Timezone and locale are browser preferences and save immediately."
+        title={t("workspaceSection.regionalTitle")}
+        subtitle={t("workspaceSection.regionalSubtitle")}
         padded
       >
         <Field
-          label="Region"
-          hint="Deployment configuration. This UI cannot change worker or storage region."
+          label={t("workspace.region")}
+          hint={t("workspaceSection.regionHint")}
           locked
         >
           <ReadOnlyValue value={region} mono />
         </Field>
         <Field
-          label="Timezone"
-          hint="Saved to this browser through /api/prefs."
+          label={t("workspaceSection.timezone")}
+          hint={t("workspaceSection.browserPreferenceHint")}
         >
           <SelectIn
             value={timezone}
             onChange={setTimezone}
             options={TIMEZONES}
-            ariaLabel="Workspace timezone"
+            ariaLabel={t("workspaceSection.timezoneAria")}
           />
         </Field>
-        <Field label="Locale" hint="Saved to this browser through /api/prefs.">
+        <Field label={t("workspaceSection.locale")} hint={t("workspaceSection.browserPreferenceHint")}>
           <SelectIn
             value={locale}
             onChange={setLocale}
-            options={LOCALES}
-            ariaLabel="Workspace locale"
+            options={LOCALES.map((option) => ({
+              ...option,
+              label: t(`workspaceSection.localeOption.${option.value}`),
+            }))}
+            ariaLabel={t("workspaceSection.localeAria")}
           />
         </Field>
       </Panel>
 
       <Panel
-        title="Runtime policy"
-        subtitle="Retention, PII masking, and strict schema policy are not configurable from Settings yet."
+        title={t("workspaceSection.runtimeTitle")}
+        subtitle={t("workspaceSection.runtimeSubtitle")}
         padded
       >
         <Field
-          label="Retention & privacy"
-          hint="No tenant policy API is installed. Runtime defaults remain in effect."
+          label={t("workspaceSection.retentionLabel")}
+          hint={t("workspaceSection.retentionHint")}
           locked
         >
-          <ReadOnlyValue value="Managed by runtime configuration" />
+          <ReadOnlyValue value={t("workspaceSection.managedByRuntime")} />
         </Field>
       </Panel>
     </div>

@@ -9,12 +9,12 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import type { UseQueryResult } from "@tanstack/react-query";
 import { EVENT_KEYS, COUNT_KEYS } from "./useStream";
-import { readApiData } from "@/lib/api-response";
+import { fetchApiData } from "@/lib/api-response";
 import { tenantHeader } from "./tenant-header";
 
 async function callV1<T>(path: string, init: RequestInit = {}): Promise<T> {
   const { headers: initHeaders, ...rest } = init;
-  const res = await fetch(path, {
+  return fetchApiData<T>(path, {
     credentials: "same-origin",
     ...rest,
     headers: {
@@ -23,7 +23,6 @@ async function callV1<T>(path: string, init: RequestInit = {}): Promise<T> {
       ...(initHeaders as Record<string, string> | undefined),
     },
   });
-  return readApiData<T>(res, path);
 }
 
 export interface EventListFilter {

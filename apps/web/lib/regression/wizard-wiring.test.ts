@@ -117,7 +117,7 @@ describe("regression: production wizard wiring", () => {
 
     it("loads the tenant event catalog and offers an explicit create action", () => {
       expect(/\buseEventCatalog\s*\(/.test(src)).toBe(true);
-      expect(src).toContain("Create new event");
+      expect(src).toContain("deployAgentBuilder.events.createNew");
     });
 
     it("marks draft events and reports created catalog entries after deploy", () => {
@@ -142,8 +142,8 @@ describe("regression: production wizard wiring", () => {
       expect(modal).toContain("targetAgent: targetAgent?.name");
       expect(/useEventCausality\s*\(/.test(modal)).toBe(true);
       expect(modal).toContain("run.triggerEventId === submitted.id");
-      expect(modal).toContain("✓ Agent started");
-      expect(modal).toContain("Open run");
+      expect(modal).toContain('t("publishEventModal.agentStarted")');
+      expect(modal).toContain('t("publishEventModal.openRun")');
     });
 
     it("polls the exact event seed rather than guessing by name or subject", () => {
@@ -226,12 +226,12 @@ describe("regression: production wizard wiring", () => {
 
     it("requires name and slug and passes both to the draft importer", () => {
       expect(src).toContain(
-        'setError("Display name and workflow slug are required.")',
+        'setError(t("newWorkflowModal.errIdentityRequired"))',
       );
       expect(src).toContain(
         "onImport?.({ slug: slug.trim(), name: name.trim() })",
       );
-      expect(src).toContain("create an editable server-backed draft");
+      expect(src).toContain('t("newWorkflowModal.advancedImportBody")');
     });
   });
 });

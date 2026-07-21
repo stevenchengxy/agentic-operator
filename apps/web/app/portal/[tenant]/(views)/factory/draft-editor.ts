@@ -1,3 +1,5 @@
+import type { Translate } from "@/app/portal/lib/preferences-context";
+
 export type DraftEditorValueType =
   | "string"
   | "multiline"
@@ -169,11 +171,12 @@ function parseField(value: unknown): DraftEditorFieldContract | null {
 /** Validate both response shape and the exact browser scope that initiated the
  * read. A late response from another tenant/domain/version is discarded. */
 export function readDraftEditorContract(
+  t: Translate,
   value: unknown,
   expected: { tenantSlug: string; domain: string; slug: string; versionId: string },
 ): DraftEditorValidation<DraftEditorContract> {
   if (!isRecord(value) || value.schema !== "agent-factory-draft-editor/v1" || !isRecord(value.scope)) {
-    return { ok: false, message: "服务端没有返回可识别的草稿编辑契约。" };
+    return { ok: false, message: t("factory.draftEditor.contract.unrecognized") };
   }
   const scope = value.scope;
   if (
@@ -183,18 +186,18 @@ export function readDraftEditorContract(
     || scope.slug !== expected.slug
     || scope.versionId !== expected.versionId
   ) {
-    return { ok: false, message: "草稿编辑范围已经变化，请刷新后重新打开。" };
+    return { ok: false, message: t("factory.draftEditor.contract.scopeChanged") };
   }
   if (!Array.isArray(value.fields) || !exactEvidenceEffect(value.evidenceEffect)) {
-    return { ok: false, message: "草稿编辑契约不完整，已停止编辑。" };
+    return { ok: false, message: t("factory.draftEditor.contract.incomplete") };
   }
   const fields = value.fields.map(parseField);
   if (fields.length === 0 || fields.some((field) => !field)) {
-    return { ok: false, message: "服务端返回了无法编辑的字段定义。" };
+    return { ok: false, message: t("factory.draftEditor.contract.uneditableFields") };
   }
   const keys = fields.map((field) => field!.key);
   if (new Set(keys).size !== keys.length) {
-    return { ok: false, message: "草稿字段定义重复，已停止编辑。" };
+    return { ok: false, message: t("factory.draftEditor.contract.duplicateFields") };
   }
   return {
     ok: true,
@@ -297,7 +300,7 @@ export function draftEditorValueText(field: DraftEditorFieldContract): string {
   return JSON.stringify(field.value, null, 2);
 }
 
-function parseEditorValue(field: DraftEditorFieldContract, text: string): DraftEditorValidation<unknown> {
+function parseEditorValue(t: Translate, field: DraftEditorFieldContract, text: string): DraftEditorValidation<unknown> {
   try {
     switch (field.valueType) {
       case "string":
@@ -307,35 +310,35 @@ function parseEditorValue(field: DraftEditorFieldContract, text: string): DraftE
       case "enum":
         return field.enumValues?.includes(text)
           ? { ok: true, data: text }
-          : { ok: false, message: "请选择服务端允许的值。" };
+          : { ok: false, message: t("factory.draftEditor.validation.enumNotAllowed") };
       case "boolean":
         return text === "true" || text === "false"
           ? { ok: true, data: text === "true" }
-          : { ok: false, message: "布尔值只能选择 true 或 false。" };
+          : { ok: false, message: t("factory.draftEditor.validation.booleanOnly") };
       case "integer": {
-        if (!/^-?\d+$/.test(text.trim())) return { ok: false, message: "请输入整数。" };
+        if (!/^-?\d+$/.test(text.trim())) return { ok: false, message: t("factory.draftEditor.validation.integerRequired") };
         const parsed = Number(text);
         return Number.isSafeInteger(parsed)
           ? { ok: true, data: parsed }
-          : { ok: false, message: "整数超出安全范围。" };
+          : { ok: false, message: t("factory.draftEditor.validation.integerOutOfRange") };
       }
       case "number": {
         const parsed = Number(text);
         return text.trim() && Number.isFinite(parsed)
           ? { ok: true, data: parsed }
-          : { ok: false, message: "请输入有效数字。" };
+          : { ok: false, message: t("factory.draftEditor.validation.numberInvalid") };
       }
       case "string_array": {
         const parsed: unknown = JSON.parse(text);
         return isStringArray(parsed) && parsed.every((entry) => entry.trim())
           ? { ok: true, data: parsed }
-          : { ok: false, message: "请输入由非空字符串组成的 JSON 数组。" };
+          : { ok: false, message: t("factory.draftEditor.validation.stringArrayInvalid") };
       }
       case "json":
         return { ok: true, data: JSON.parse(text) as unknown };
     }
   } catch {
-    return { ok: false, message: "内容不是有效的 JSON。" };
+    return { ok: false, message: t("factory.draftEditor.validation.jsonInvalid") };
   }
 }
 
@@ -344,6 +347,7 @@ const canonical = (value: unknown): string => JSON.stringify(value);
 /** Build a one-field top-level PATCH. Unchanged values are rejected so a
  * no-op cannot needlessly invalidate a reviewed/sandboxed version. */
 export function prepareDraftFieldEdit(
+  t: Translate,
   field: DraftEditorFieldContract,
   text: string,
   unset: boolean,
@@ -351,12 +355,12 @@ export function prepareDraftFieldEdit(
   if (!field.editable) {
     return {
       ok: false,
-      message: field.readonlyReason || "这个字段由 Allmeta Ontology 维护，请先更新 Allmeta Ontology 后重新生成。",
+      message: field.readonlyReason || t("factory.draftEditor.edit.ontologyReadonly"),
     };
   }
   if (unset) {
-    if (!field.unsettable) return { ok: false, message: "这个必填字段不能移除。" };
-    if (!field.present) return { ok: false, message: "这个字段当前已经不存在。" };
+    if (!field.unsettable) return { ok: false, message: t("factory.draftEditor.edit.requiredCannotUnset") };
+    if (!field.present) return { ok: false, message: t("factory.draftEditor.edit.fieldAlreadyAbsent") };
     return {
       ok: true,
       data: {
@@ -368,16 +372,16 @@ export function prepareDraftFieldEdit(
       },
     };
   }
-  const parsed = parseEditorValue(field, text);
+  const parsed = parseEditorValue(t, field, text);
   if (!parsed.ok) return parsed;
   if (draftEditContainsSensitiveData(parsed.data)) {
     return {
       ok: false,
-      message: "不能在草稿里填写密钥、凭证、fixture bytes 或 fixture asset ID。密钥请使用 *_env/profile，fixture 请去测试数据界面上传。",
+      message: t("factory.draftEditor.edit.sensitiveNotAllowed"),
     };
   }
   if (field.present && field.valueStatus === "available" && canonical(parsed.data) === canonical(field.value)) {
-    return { ok: false, message: "内容没有变化，不需要创建新版本。" };
+    return { ok: false, message: t("factory.draftEditor.edit.noChange") };
   }
   return {
     ok: true,
@@ -392,11 +396,12 @@ export function prepareDraftFieldEdit(
 }
 
 export function readPatchedDraftVersionReceipt(
+  t: Translate,
   value: unknown,
   expected: { tenantSlug: string; domain: string; slug: string; baseVersionId: string },
 ): DraftEditorValidation<PatchedDraftVersionReceipt> {
   if (!isRecord(value) || "drafts" in value || !isRecord(value.scope) || !exactEvidenceEffect(value.evidenceEffect)) {
-    return { ok: false, message: "服务端没有返回完整的新版本回执。" };
+    return { ok: false, message: t("factory.draftEditor.receipt.incomplete") };
   }
   const scope = value.scope;
   if (
@@ -409,33 +414,33 @@ export function readPatchedDraftVersionReceipt(
     || value.baseVersionId !== expected.baseVersionId
     || value.changedSlug !== expected.slug
   ) {
-    return { ok: false, message: "新版本回执与当前租户、领域或草稿不一致。" };
+    return { ok: false, message: t("factory.draftEditor.receipt.mismatch") };
   }
   if (typeof value.versionId !== "string" || !value.versionId || value.versionId === expected.baseVersionId || value.regressionReady !== false) {
-    return { ok: false, message: "服务端没有确认已创建新的无证据版本。" };
+    return { ok: false, message: t("factory.draftEditor.receipt.versionNotConfirmed") };
   }
   return { ok: true, data: value as unknown as PatchedDraftVersionReceipt };
 }
 
-export function draftDiffText(value: unknown, withheld = false): string {
-  if (withheld) return "（原值包含敏感数据，服务端未返回）";
-  if (value === undefined) return "（字段不存在）";
+export function draftDiffText(t: Translate, value: unknown, withheld = false): string {
+  if (withheld) return t("factory.draftEditor.diff.valueWithheld");
+  if (value === undefined) return t("factory.draftEditor.diff.fieldAbsent");
   return typeof value === "string" ? value : JSON.stringify(value, null, 2);
 }
 
 /** Turn store/compiler diagnostics into an operator-facing explanation. Do
  * not echo any response that itself looks like a credential or fixture. */
-export function humanDraftEditFailure(message: unknown): string {
+export function humanDraftEditFailure(t: Translate, message: unknown): string {
   const text = typeof message === "string" ? message.trim() : "";
-  if (!text) return "服务端没有说明失败原因，请刷新草稿后重试。";
+  if (!text) return t("factory.draftEditor.failure.noReason");
   if (draftEditContainsSensitiveData(text)) {
-    return "服务端错误里包含了敏感内容，界面已隐藏。请检查密钥引用或测试 fixture 的放置方式。";
+    return t("factory.draftEditor.failure.sensitiveHidden");
   }
   if (/不能包含字面密钥|fixture bytes|fixture asset/i.test(text)) return text;
-  if (/draft version not found|draft not found/i.test(text)) return "这个草稿版本已经变化或不存在，请刷新后重新打开。";
-  if (/immutable or unknown|identity field changed|cannot be unset/i.test(text)) return "这个字段由系统维护，不能用草稿编辑器修改。";
-  if (/generatedCode|compile|lint|typescript/i.test(text)) return "修改后的代码没有通过安全检查或 TypeScript 编译，请先修正代码。";
-  if (/invalid draft patch|must be|is invalid|has no expanded/i.test(text)) return "修改后的内容不符合 Agent 运行契约，请检查字段类型、事件、工具和计划之间是否一致。";
-  if (/patch must set or unset/i.test(text)) return "没有检测到实际修改，请先改动一个字段。";
+  if (/draft version not found|draft not found/i.test(text)) return t("factory.draftEditor.failure.draftVersionGone");
+  if (/immutable or unknown|identity field changed|cannot be unset/i.test(text)) return t("factory.draftEditor.failure.systemManagedField");
+  if (/generatedCode|compile|lint|typescript/i.test(text)) return t("factory.draftEditor.failure.codeCheckFailed");
+  if (/invalid draft patch|must be|is invalid|has no expanded/i.test(text)) return t("factory.draftEditor.failure.contractMismatch");
+  if (/patch must set or unset/i.test(text)) return t("factory.draftEditor.failure.noActualChange");
   return text.length > 240 ? `${text.slice(0, 237)}…` : text;
 }

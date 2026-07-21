@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { translate } from "@/lib/i18n";
 import { deriveBrainFlow, toBlocks } from "./model";
 import {
   buildCasePayloadDecision,
@@ -6,9 +7,12 @@ import {
   uploadBinaryFixtureAndInject,
 } from "./test-fixtures";
 
+const t = (key: string, vars?: Record<string, string | number>) =>
+  translate("zh", key, vars);
+
 describe("Agent Factory test fixtures", () => {
   it("preserves the authoritative test-case id and nested payload", () => {
-    const [block] = toBlocks([{
+    const [block] = toBlocks(t, [{
       t: "test.cases",
       cases: [{
         id: "case:resume/01",
@@ -31,14 +35,14 @@ describe("Agent Factory test fixtures", () => {
   });
 
   it("builds a structured nested-payload decision with the exact case id", () => {
-    const payload = parseTestCasePayload('{"candidate":{"documents":[{"name":"resume.pdf"}]}}');
-    const directive = buildCasePayloadDecision("case/exact-id", payload);
+    const payload = parseTestCasePayload('{"candidate":{"documents":[{"name":"resume.pdf"}]}}', t);
+    const directive = buildCasePayloadDecision("case/exact-id", payload, t);
 
     expect(directive).toBe(
       '[测试用例决策: 补数据] {"case_payloads":[{"case_id":"case/exact-id","payload":{"candidate":{"documents":[{"name":"resume.pdf"}]}}}]}',
     );
-    expect(() => parseTestCasePayload("[]")).toThrow("JSON 对象");
-    expect(() => parseTestCasePayload("not-json")).toThrow("有效的 JSON");
+    expect(() => parseTestCasePayload("[]", t)).toThrow("JSON 对象");
+    expect(() => parseTestCasePayload("not-json", t)).toThrow("有效的 JSON");
   });
 
   it("keeps the approval gate awaiting when the third decision state supplies data", () => {
@@ -59,7 +63,7 @@ describe("Agent Factory test fixtures", () => {
       note: '{"asset_id":"asset-must-not-render","base64":"AAECAw=="}',
     }];
 
-    const blocks = toBlocks(events);
+    const blocks = toBlocks(t, events);
     const testBlock = blocks.find((block) => block.kind === "testcases");
     const decisionBlock = blocks.findLast((block) => block.kind === "message");
     expect(testBlock?.kind === "testcases" && testBlock.awaiting).toBe(true);
@@ -68,12 +72,12 @@ describe("Agent Factory test fixtures", () => {
     expect(JSON.stringify(decisionBlock)).not.toContain("AAECAw==");
     expect(JSON.stringify(decisionBlock)).not.toContain("重新生成");
 
-    const gate = deriveBrainFlow(events).findLast((step) => step.kind === "gate" && step.label === "用例确认");
+    const gate = deriveBrainFlow(t, events).findLast((step) => step.kind === "gate" && step.label === "用例确认");
     expect(gate).toMatchObject({ status: "await", detail: "补充数据已提交 · 应用后仍需确认" });
   });
 
   it("redacts fixture content and internal asset ids from visible tool I/O", () => {
-    const blocks = toBlocks([{
+    const blocks = toBlocks(t, [{
       t: "tool.call",
       id: "tool-1",
       name: "supply_test_data",
@@ -123,6 +127,7 @@ describe("Agent Factory test fixtures", () => {
     });
 
     await uploadBinaryFixtureAndInject({
+      t,
       runId: "run/one",
       caseId: "case-1",
       path: "/candidate/resume",
@@ -158,6 +163,7 @@ describe("Agent Factory test fixtures", () => {
     const inject = vi.fn(async () => undefined);
 
     await expect(uploadBinaryFixtureAndInject({
+      t,
       runId: "run-1",
       caseId: "case-1",
       path: "/document",

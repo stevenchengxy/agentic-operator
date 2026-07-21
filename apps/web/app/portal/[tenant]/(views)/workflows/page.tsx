@@ -121,6 +121,7 @@ import { useDag } from "@/lib/hooks/useAgents";
 import { useAgentEditor } from "@/lib/hooks/useAgentStudio";
 import { useEvents } from "@/lib/hooks/useEvents";
 import {
+  formatWorkflowAuthoringError,
   useDeleteWorkflow,
   usePublishWorkflow,
   useSaveWorkflow,
@@ -135,15 +136,15 @@ import styles from "./workflow.module.css";
  * column headers match the dashboard funnel labels. Tenants whose agents
  * use stage indices outside this map get a generic "Stage N" label.
  */
-const STAGE_LABELS: Record<number, string> = {
-  0: "Intake",
-  1: "Analyze",
-  2: "JD",
-  3: "Publish",
-  4: "Resume",
-  5: "Match & Interview",
-  6: "Package",
-  7: "Submit",
+const STAGE_KEYS: Record<number, string> = {
+  0: "intake",
+  1: "analyze",
+  2: "jd",
+  3: "publish",
+  4: "resume",
+  5: "matchInterview",
+  6: "package",
+  7: "submit",
 };
 
 interface NodeDragState {
@@ -166,7 +167,7 @@ export default function WorkflowsPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const tenant = useTenant();
-  const { t } = useI18n();
+  const { t, language } = useI18n();
   const toast = useToast();
   const requestedWorkflow = searchParams.get("workflow");
   const requestedMode = searchParams.get("mode");
@@ -425,7 +426,12 @@ export default function WorkflowsPage() {
   // useTenantNavigate() and other guards can prompt before navigating away.
   useEffect(() => {
     const label = dirty
-      ? `${selectedWorkflow ?? "workflow"} draft · +${draftCounts.added} ~${draftCounts.modified} −${draftCounts.removed}`
+      ? t("workflowPage.dirtyLabel", {
+          workflow: selectedWorkflow ?? t("workflowPage.workflowLower"),
+          added: draftCounts.added,
+          modified: draftCounts.modified,
+          removed: draftCounts.removed,
+        })
       : null;
     dirtyApi.setDirty("workflow-draft", label);
     return () => dirtyApi.setDirty("workflow-draft", null);
@@ -436,6 +442,7 @@ export default function WorkflowsPage() {
     draftCounts.removed,
     dirtyApi,
     selectedWorkflow,
+    t,
   ]);
 
   // Persist each workflow's browser edits independently. Switching the
@@ -615,10 +622,12 @@ export default function WorkflowsPage() {
         return {
           id: column,
           column,
-          label: STAGE_LABELS[stage] ?? `Stage ${stage}`,
+          label: STAGE_KEYS[stage]
+            ? t(`workflowPage.stage.${STAGE_KEYS[stage]}`)
+            : t("workflowPage.stageFallback", { stage }),
         };
       });
-  }, [agents, renderedPositions]);
+  }, [agents, renderedPositions, t]);
 
   // Build edges: for each agent's emitted event, find listeners.
   const edges = useMemo(
@@ -655,19 +664,35 @@ export default function WorkflowsPage() {
     if (added.length > 0) {
       const first = added[0]!;
       setCanvasAnnouncement(
-        `Automatically linked ${first.src} to ${first.dst} with ${first.event}${
-          added.length > 1 ? ` and ${added.length - 1} more link(s)` : ""
-        }.`,
+        t("workflowPage.announcement.autoLinked", {
+          source: first.src,
+          target: first.dst,
+          event: first.event,
+          more:
+            added.length > 1
+              ? t("workflowPage.announcement.moreLinks", {
+                  count: added.length - 1,
+                })
+              : "",
+        }),
       );
     } else if (removed.length > 0) {
       const first = removed[0]!;
       setCanvasAnnouncement(
-        `Removed the automatic ${first.event} link from ${first.src} to ${first.dst}${
-          removed.length > 1 ? ` and ${removed.length - 1} more link(s)` : ""
-        }.`,
+        t("workflowPage.announcement.autoRemoved", {
+          source: first.src,
+          target: first.dst,
+          event: first.event,
+          more:
+            removed.length > 1
+              ? t("workflowPage.announcement.moreLinks", {
+                  count: removed.length - 1,
+                })
+              : "",
+        }),
       );
     }
-  }, [edges, editing, selectedWorkflow]);
+  }, [edges, editing, selectedWorkflow, t]);
 
   const evColor = useMemo(() => {
     const m: Record<string, string> = {};
@@ -797,9 +822,8 @@ export default function WorkflowsPage() {
     ) {
       toast({
         tone: "red",
-        title: "Agent draft belongs to another workflow version",
-        description:
-          "Reload the workflow and reopen Agent Studio so changes are applied to the correct draft.",
+        title: t("workflowPage.toast.wrongVersionTitle"),
+        description: t("workflowPage.toast.wrongVersionDescription"),
       });
     } else {
       setEditing(true);
@@ -814,13 +838,14 @@ export default function WorkflowsPage() {
       setSelectedEvent(null);
       setValidation(null);
       setCanvasAnnouncement(
-        `${returned.definition.title ?? requestedAgent} returned from Agent Studio and is ready to save in this workflow.`,
+        t("workflowPage.announcement.agentReturned", {
+          agent: returned.definition.title ?? requestedAgent,
+        }),
       );
       toast({
         tone: "green",
-        title: "Agent changes returned to workflow",
-        description:
-          "Review the node and save the workflow draft when you are ready.",
+        title: t("workflowPage.toast.agentReturnedTitle"),
+        description: t("workflowPage.toast.agentReturnedDescription"),
       });
     }
     router.replace(
@@ -840,6 +865,7 @@ export default function WorkflowsPage() {
     router,
     selectedWorkflow,
     tenant,
+    t,
     toast,
   ]);
 
@@ -849,16 +875,17 @@ export default function WorkflowsPage() {
     appliedReturnedDraftRef.current = returnedAgentDraftId;
     toast({
       tone: "red",
-      title: "Agent changes could not be restored",
+      title: t("workflowPage.toast.restoreFailedTitle"),
       description:
         returnedAgentEditor.error instanceof Error
           ? returnedAgentEditor.error.message
-          : "The returned Agent Studio draft is unavailable.",
+          : t("workflowPage.toast.returnedDraftUnavailable"),
     });
   }, [
     returnedAgentDraftId,
     returnedAgentEditor.error,
     returnedAgentEditor.isError,
+    t,
     toast,
   ]);
 
@@ -904,12 +931,7 @@ export default function WorkflowsPage() {
   }
 
   function closeEditor() {
-    if (
-      dirty &&
-      !window.confirm(
-        "Close the editor and discard these unsaved browser changes? The last server-saved draft will be kept.",
-      )
-    ) {
+    if (dirty && !window.confirm(t("workflowPage.closeConfirm"))) {
       return;
     }
     discardDraft();
@@ -943,9 +965,10 @@ export default function WorkflowsPage() {
     if (hasEditorErrors) {
       toast({
         tone: "red",
-        title: "Fix editor errors before saving",
+        title: t("workflowPage.toast.fixBeforeSave"),
         description:
-          Object.values(editorErrors).flat()[0] ?? "A field is invalid.",
+          Object.values(editorErrors).flat()[0] ??
+          t("workflowPage.invalidField"),
       });
       return null;
     }
@@ -954,8 +977,8 @@ export default function WorkflowsPage() {
     if (!selectedWorkflow || !baseVersionId) {
       toast({
         tone: "red",
-        title: "Draft cannot be saved",
-        description: "The selected workflow version has not finished loading.",
+        title: t("workflowPage.toast.draftCannotSave"),
+        description: t("workflowPage.toast.versionLoading"),
       });
       return null;
     }
@@ -966,8 +989,10 @@ export default function WorkflowsPage() {
       });
       toast({
         tone: "signal",
-        title: "Draft saved",
-        description: `${detail.latestVersion} is stored on the server. Live runs are unchanged.`,
+        title: t("workflowPage.toast.draftSaved"),
+        description: t("workflowPage.toast.draftSavedDescription", {
+          version: detail.latestVersion,
+        }),
       });
       setDraft(emptyDraft());
       setDraftBaseVersionId(detail.latestVersionId);
@@ -977,8 +1002,9 @@ export default function WorkflowsPage() {
     } catch (err) {
       toast({
         tone: "red",
-        title: "Draft save failed",
-        description: err instanceof Error ? err.message : "Unknown error",
+        title: t("workflowPage.toast.draftSaveFailed"),
+        description:
+          err instanceof Error ? err.message : t("common.unknownError"),
       });
       return null;
     }
@@ -988,9 +1014,10 @@ export default function WorkflowsPage() {
     if (hasEditorErrors) {
       toast({
         tone: "red",
-        title: "Fix editor errors before validating",
+        title: t("workflowPage.toast.fixBeforeValidate"),
         description:
-          Object.values(editorErrors).flat()[0] ?? "A field is invalid.",
+          Object.values(editorErrors).flat()[0] ??
+          t("workflowPage.invalidField"),
       });
       return null;
     }
@@ -1002,17 +1029,25 @@ export default function WorkflowsPage() {
       setValidation(result);
       toast({
         tone: result.valid ? "green" : "amber",
-        title: result.valid ? "Workflow is valid" : "Workflow needs changes",
+        title: result.valid
+          ? t("workflowPage.toast.validTitle")
+          : t("workflowPage.toast.needsChangesTitle"),
         description: result.valid
-          ? `${result.promptScores.length} agent prompts checked.`
-          : `${result.issues.filter((issue) => issue.severity === "error").length} blocking issue(s).`,
+          ? t("workflowPage.toast.promptsChecked", {
+              count: result.promptScores.length,
+            })
+          : t("workflowPage.toast.blockingIssues", {
+              count: result.issues.filter((issue) => issue.severity === "error")
+                .length,
+            }),
       });
       return result;
     } catch (err) {
       toast({
         tone: "red",
-        title: "Validation failed",
-        description: err instanceof Error ? err.message : "Unknown error",
+        title: t("workflowPage.toast.validationFailed"),
+        description:
+          err instanceof Error ? err.message : t("common.unknownError"),
       });
       return null;
     }
@@ -1034,8 +1069,8 @@ export default function WorkflowsPage() {
       if (!versionId) {
         toast({
           tone: "red",
-          title: "Workflow cannot be published",
-          description: "No immutable workflow version is available.",
+          title: t("workflowPage.toast.cannotPublish"),
+          description: t("workflowPage.toast.noImmutableVersion"),
         });
         return;
       }
@@ -1045,8 +1080,10 @@ export default function WorkflowsPage() {
       });
       toast({
         tone: "green",
-        title: "Workflow is live",
-        description: `${result.version} was published to production.`,
+        title: t("workflowPage.toast.liveTitle"),
+        description: t("workflowPage.toast.liveDescription", {
+          version: result.version,
+        }),
       });
       setDraft(emptyDraft());
       setEditing(false);
@@ -1055,8 +1092,9 @@ export default function WorkflowsPage() {
     } catch (err) {
       toast({
         tone: "red",
-        title: "Publish failed",
-        description: err instanceof Error ? err.message : "Unknown error",
+        title: t("workflowPage.toast.publishFailed"),
+        description:
+          err instanceof Error ? err.message : t("common.unknownError"),
       });
     } finally {
       publishInFlight.current = false;
@@ -1106,15 +1144,38 @@ export default function WorkflowsPage() {
     };
     const definition =
       actor === "Human"
-        ? createHumanAgentDefinition(options)
-        : createAutomatedAgentDefinition(options);
+        ? createHumanAgentDefinition({
+            ...options,
+            title: t("workflowPage.newNodeDefaults.humanTitle"),
+            description: t("workflowPage.newNodeDefaults.humanDescription"),
+            actionDescription: t(
+              "workflowPage.newNodeDefaults.humanActionDescription",
+            ),
+          })
+        : createAutomatedAgentDefinition({
+            ...options,
+            title: t("workflowPage.newNodeDefaults.automatedTitle"),
+            description: t("workflowPage.newNodeDefaults.automatedDescription"),
+            actionDescription: t(
+              "workflowPage.newNodeDefaults.automatedActionDescription",
+            ),
+            actionPrompt: t(
+              "workflowPage.newNodeDefaults.automatedActionPrompt",
+            ),
+            ontologyInstructions: t(
+              "workflowPage.newNodeDefaults.automatedOntologyInstructions",
+              { title: t("workflowPage.newNodeDefaults.automatedTitle") },
+            ),
+          });
     setDraft((current) => addAgentToDraft(current, definition));
     setSelectedAgent(id);
     setSelectedEvent(null);
     setTool("select");
     setValidation(null);
     setCanvasAnnouncement(
-      `${definition.title ?? definition.name} added. Drag the node to position it, then use its output port to create a connection.`,
+      t("workflowPage.announcement.agentAdded", {
+        agent: definition.title ?? definition.name,
+      }),
     );
   }
 
@@ -1136,19 +1197,28 @@ export default function WorkflowsPage() {
       setTool("select");
       setValidation(null);
       setCanvasAnnouncement(
-        `${sourceId} connected to ${targetId} with event ${eventName}.`,
+        t("workflowPage.announcement.connected", {
+          source: sourceId,
+          target: targetId,
+          event: eventName,
+        }),
       );
       toast({
         tone: "signal",
-        title: "Agents connected",
-        description: `${eventName} is emitted by ${sourceId} and consumed by ${targetId}.`,
+        title: t("workflowPage.toast.connectedTitle"),
+        description: t("workflowPage.toast.connectedDescription", {
+          event: eventName,
+          source: sourceId,
+          target: targetId,
+        }),
       });
     } catch (err) {
       setLinkDrag(null);
       toast({
         tone: "red",
-        title: "Connection failed",
-        description: err instanceof Error ? err.message : "Unknown error",
+        title: t("workflowPage.toast.connectionFailed"),
+        description:
+          err instanceof Error ? err.message : t("common.unknownError"),
       });
     }
   }
@@ -1158,7 +1228,7 @@ export default function WorkflowsPage() {
       setConnectFrom(targetId);
       setSelectedAgent(targetId);
       setCanvasAnnouncement(
-        `${targetId} selected as the connection source. Choose a target node.`,
+        t("workflowPage.announcement.sourceSelected", { agent: targetId }),
       );
       return;
     }
@@ -1244,7 +1314,11 @@ export default function WorkflowsPage() {
     setDraft((current) => moveAgent(current, completed.id, completed.position));
     setValidation(null);
     setCanvasAnnouncement(
-      `${completed.id} moved to x ${Math.round(completed.position.x)}, y ${Math.round(completed.position.y)}.`,
+      t("workflowPage.announcement.moved", {
+        agent: completed.id,
+        x: Math.round(completed.position.x),
+        y: Math.round(completed.position.y),
+      }),
     );
   }
 
@@ -1269,7 +1343,11 @@ export default function WorkflowsPage() {
     setDraft((value) => moveAgent(value, id, position));
     setValidation(null);
     setCanvasAnnouncement(
-      `${id} moved to x ${Math.round(position.x)}, y ${Math.round(position.y)}.`,
+      t("workflowPage.announcement.moved", {
+        agent: id,
+        x: Math.round(position.x),
+        y: Math.round(position.y),
+      }),
     );
   }
 
@@ -1292,7 +1370,7 @@ export default function WorkflowsPage() {
       targetId: null,
     });
     setCanvasAnnouncement(
-      `Creating a connection from ${sourceId}. Drag to another agent's input port.`,
+      t("workflowPage.announcement.creatingConnection", { agent: sourceId }),
     );
   }
 
@@ -1329,7 +1407,7 @@ export default function WorkflowsPage() {
     setConnectFrom(sourceId);
     setSelectedAgent(sourceId);
     setCanvasAnnouncement(
-      `${sourceId} selected as the connection source. Choose a target input port or node.`,
+      t("workflowPage.announcement.sourceSelectedPort", { agent: sourceId }),
     );
   }
 
@@ -1340,11 +1418,11 @@ export default function WorkflowsPage() {
       setNodeDrag(null);
       setLinkDrag(null);
       setConnectFrom(null);
-      setCanvasAnnouncement("Canvas interaction cancelled.");
+      setCanvasAnnouncement(t("workflowPage.announcement.cancelled"));
     }
     window.addEventListener("keydown", cancelActiveInteraction);
     return () => window.removeEventListener("keydown", cancelActiveInteraction);
-  }, [connectFrom, linkDrag, nodeDrag]);
+  }, [connectFrom, linkDrag, nodeDrag, t]);
 
   function autoLayout() {
     const byStage = new Map<number, typeof agents>();
@@ -1372,9 +1450,8 @@ export default function WorkflowsPage() {
     setValidation(null);
     toast({
       tone: "signal",
-      title: "Canvas arranged",
-      description:
-        "Agent positions were packed by stage and saved in the draft.",
+      title: t("workflowPage.toast.canvasArranged"),
+      description: t("workflowPage.toast.canvasArrangedDescription"),
     });
   }
 
@@ -1407,19 +1484,22 @@ export default function WorkflowsPage() {
   async function deleteSelectedWorkflow() {
     if (!selectedWorkflow || selectedSummary?.liveVersionId) return;
     const confirmed = window.confirm(
-      `Delete the draft workflow "${selectedSummary?.name ?? selectedWorkflow}"? This cannot be undone.`,
+      t("workflowPage.deleteConfirm", {
+        name: selectedSummary?.name ?? selectedWorkflow,
+      }),
     );
     if (!confirmed) return;
     try {
       await deleteWorkflow.mutateAsync(selectedWorkflow);
       const next = workflows.find((row) => row.slug !== selectedWorkflow);
       setSelectedWorkflow(next?.slug ?? null);
-      toast({ tone: "green", title: "Draft workflow deleted" });
+      toast({ tone: "green", title: t("workflowPage.toast.deleted") });
     } catch (err) {
       toast({
         tone: "red",
-        title: "Delete failed",
-        description: err instanceof Error ? err.message : "Unknown error",
+        title: t("workflowPage.toast.deleteFailed"),
+        description:
+          err instanceof Error ? err.message : t("common.unknownError"),
       });
     }
   }
@@ -1444,28 +1524,27 @@ export default function WorkflowsPage() {
         subtitle={
           editing ? (
             <>
-              Editing an unpublished draft of{" "}
+              {t("workflowPage.editingDraftOf")}{" "}
               <span className="mono" style={{ color: "var(--text)" }}>
-                {selectedWorkflow ?? "workflow"}
+                {selectedWorkflow ?? t("workflowPage.workflowLower")}
               </span>{" "}
-              · Save creates an immutable draft version; Publish explicitly
-              promotes it to live.
+              {t("workflowPage.editingDraftHint")}
             </>
           ) : (
-            "Select a tenant workflow, inspect its immutable version, or open the full draft editor."
+            t("workflowPage.subtitle")
           )
         }
         badge={
           editing ? (
             <Badge tone="amber">
-              <Icon name="alert" size={9} /> LOCAL DRAFT
+              <Icon name="alert" size={9} /> {t("workflowPage.localDraft")}
             </Badge>
           ) : dagQuery.data?.workflowIsLive ? (
             <Badge tone="green">
-              <Icon name="check" size={9} /> LIVE
+              <Icon name="check" size={9} /> {t("workflowPage.live")}
             </Badge>
           ) : (
-            <Badge tone="amber">DRAFT</Badge>
+            <Badge tone="amber">{t("workflowPage.draft")}</Badge>
           )
         }
         action={
@@ -1482,7 +1561,7 @@ export default function WorkflowsPage() {
                     agents.length === 0
                   }
                 >
-                  Run
+                  {t("workflowPage.run")}
                 </Button>,
                 <Button
                   key="help"
@@ -1490,10 +1569,10 @@ export default function WorkflowsPage() {
                   icon="task"
                   onClick={() => setShowHelp(true)}
                 >
-                  Help
+                  {t("workflowPage.help")}
                 </Button>,
                 <Button key="discard" small tone="ghost" onClick={closeEditor}>
-                  Close editor
+                  {t("workflowPage.closeEditor")}
                 </Button>,
                 <Button
                   key="val"
@@ -1509,7 +1588,9 @@ export default function WorkflowsPage() {
                     hasEditorErrors
                   }
                 >
-                  {validateWorkflow.isPending ? "Validating…" : "Validate"}
+                  {validateWorkflow.isPending
+                    ? t("workflowPage.validating")
+                    : t("workflowPage.validate")}
                 </Button>,
                 <Button
                   key="save"
@@ -1519,8 +1600,15 @@ export default function WorkflowsPage() {
                   disabled={!dirty || saveWorkflow.isPending || hasEditorErrors}
                 >
                   {saveWorkflow.isPending
-                    ? "Saving…"
-                    : `Save draft${dirty ? ` (${draftCounts.added + draftCounts.modified + draftCounts.removed})` : ""}`}
+                    ? t("common.saving")
+                    : dirty
+                      ? t("workflowPage.saveDraftCount", {
+                          count:
+                            draftCounts.added +
+                            draftCounts.modified +
+                            draftCounts.removed,
+                        })
+                      : t("workflowPage.saveDraft")}
                 </Button>,
                 <Button
                   key="publish"
@@ -1539,7 +1627,9 @@ export default function WorkflowsPage() {
                     hasEditorErrors
                   }
                 >
-                  {publishing ? "Publishing…" : "Publish"}
+                  {publishing
+                    ? t("workflowPage.publishing")
+                    : t("workflowPage.publish")}
                 </Button>,
               ]
             : [
@@ -1555,7 +1645,7 @@ export default function WorkflowsPage() {
                     agents.length === 0
                   }
                 >
-                  Run workflow
+                  {t("workflowPage.runWorkflow")}
                 </Button>,
                 <Button
                   key="help"
@@ -1563,7 +1653,7 @@ export default function WorkflowsPage() {
                   icon="task"
                   onClick={() => setShowHelp(true)}
                 >
-                  Help
+                  {t("workflowPage.help")}
                 </Button>,
                 <Button
                   key="edit"
@@ -1577,7 +1667,7 @@ export default function WorkflowsPage() {
                   }}
                   disabled={!selectedWorkflow || dagQuery.isLoading}
                 >
-                  Edit workflow
+                  {t("workflowPage.editWorkflow")}
                 </Button>,
                 ...(selectedSummary?.hasUnpublishedChanges
                   ? [
@@ -1596,7 +1686,9 @@ export default function WorkflowsPage() {
                           !dagQuery.data?.workflowVersionId
                         }
                       >
-                        {publishing ? "Publishing…" : "Publish draft"}
+                        {publishing
+                          ? t("workflowPage.publishing")
+                          : t("workflowPage.publishDraft")}
                       </Button>,
                     ]
                   : []),
@@ -1610,7 +1702,7 @@ export default function WorkflowsPage() {
                         onClick={() => void deleteSelectedWorkflow()}
                         disabled={deleteWorkflow.isPending}
                       >
-                        Delete draft
+                        {t("workflowPage.deleteDraft")}
                       </Button>,
                     ]
                   : []),
@@ -1620,7 +1712,7 @@ export default function WorkflowsPage() {
                   small
                   onClick={() => setShowNewModal(true)}
                 >
-                  New workflow
+                  {t("workflowPage.newWorkflow")}
                 </Button>,
                 <Button
                   key="upload"
@@ -1628,30 +1720,34 @@ export default function WorkflowsPage() {
                   small
                   onClick={() => setShowImport(true)}
                 >
-                  Import manifest
+                  {t("workflowPage.importManifest")}
                 </Button>,
               ]
         }
       />
 
       <div className={styles.selectorBar}>
-        <span className={styles.selectorLabel}>Workflow</span>
+        <span className={styles.selectorLabel}>
+          {t("workflowPage.workflow")}
+        </span>
         <select
           className={styles.workflowSelect}
-          aria-label="Selected workflow"
+          aria-label={t("workflowPage.selectedWorkflowAria")}
           value={selectedWorkflow ?? ""}
           onChange={(event) => setSelectedWorkflow(event.target.value || null)}
           disabled={catalogQuery.isLoading || workflows.length === 0}
         >
-          {workflows.length === 0 && <option value="">No workflows yet</option>}
+          {workflows.length === 0 && (
+            <option value="">{t("workflowPage.noWorkflows")}</option>
+          )}
           {workflows.map((workflow) => (
             <option key={workflow.id} value={workflow.slug}>
               {workflow.name} ·{" "}
               {workflow.liveVersionId
                 ? workflow.hasUnpublishedChanges
-                  ? "LIVE + DRAFT"
-                  : "LIVE"
-                : "DRAFT"}{" "}
+                  ? t("workflowPage.liveAndDraft")
+                  : t("workflowPage.live")
+                : t("workflowPage.draft")}{" "}
               · {workflow.latestVersion}
             </option>
           ))}
@@ -1659,30 +1755,34 @@ export default function WorkflowsPage() {
         {selectedSummary && (
           <>
             <Badge tone={dagQuery.data?.workflowIsLive ? "green" : "amber"}>
-              {dagQuery.data?.workflowIsLive ? "LIVE VERSION" : "DRAFT VERSION"}
+              {dagQuery.data?.workflowIsLive
+                ? t("workflowPage.liveVersion")
+                : t("workflowPage.draftVersion")}
             </Badge>
             {selectedSummary.hasUnpublishedChanges && (
-              <Badge tone="amber">UNPUBLISHED CHANGES</Badge>
+              <Badge tone="amber">{t("workflowPage.unpublishedChanges")}</Badge>
             )}
             <span
               className="mono"
               style={{ color: "var(--text-3)", fontSize: 10.5 }}
             >
               {workflowVersion || selectedSummary.latestVersion} ·{" "}
-              {selectedSummary.agentCount} agents
+              {t("workflowPage.agentsCount", {
+                count: selectedSummary.agentCount,
+              })}
             </span>
           </>
         )}
         {catalogQuery.isError && (
           <span role="alert" style={{ color: "var(--red)", fontSize: 11.5 }}>
             {catalogQuery.error instanceof Error
-              ? catalogQuery.error.message
-              : "Workflow catalog unavailable"}
+              ? formatWorkflowAuthoringError(catalogQuery.error, t)
+              : t("workflowPage.catalogUnavailable")}
           </span>
         )}
         {!catalogQuery.isLoading && workflows.length === 0 && (
           <span style={{ color: "var(--text-3)", fontSize: 11.5 }}>
-            Create a workflow to begin.
+            {t("workflowPage.createToBegin")}
           </span>
         )}
       </div>
@@ -1705,9 +1805,11 @@ export default function WorkflowsPage() {
         >
           <Icon name="alert" size={11} style={{ color: "var(--amber)" }} />
           <span>
-            Restored unsaved draft from{" "}
+            {t("workflowPage.restoredFrom")}{" "}
             <span className="mono" style={{ color: "var(--text)" }}>
-              {new Date(restoredAt).toLocaleString()}
+              {new Date(restoredAt).toLocaleString(
+                language === "zh" ? "zh-CN" : "en-US",
+              )}
             </span>
           </span>
           <Button
@@ -1716,7 +1818,7 @@ export default function WorkflowsPage() {
             onClick={discardRestored}
             style={{ marginLeft: "auto" }}
           >
-            Discard
+            {t("common.discard")}
           </Button>
         </div>
       )}
@@ -1736,14 +1838,14 @@ export default function WorkflowsPage() {
           {editing && (
             <div className={styles.canvasCoach}>
               <Icon name="workflow" size={12} />
-              <span>Drag nodes to move · drag output to input to connect</span>
+              <span>{t("workflowPage.canvasCoach")}</span>
               <kbd>Esc</kbd>
             </div>
           )}
           {canvasDropActive && (
             <div className={styles.dropHint} aria-hidden="true">
               <Icon name="plus" size={15} />
-              Release to add this agent
+              {t("workflowPage.releaseToAdd")}
             </div>
           )}
           <div
@@ -1884,7 +1986,10 @@ export default function WorkflowsPage() {
                 width={canvasSize.width}
                 height={canvasSize.height}
                 role="img"
-                aria-label={`Workflow DAG: ${agents.length} agents wired by ${edges.length} event edges`}
+                aria-label={t("workflowPage.dagAria", {
+                  agents: agents.length,
+                  edges: edges.length,
+                })}
                 style={{
                   position: "absolute",
                   top: 30,
@@ -1927,7 +2032,11 @@ export default function WorkflowsPage() {
                       key={JSON.stringify([e.src, e.dst, e.event])}
                       role="button"
                       tabIndex={0}
-                      aria-label={`Event edge: ${e.event} from ${e.src} to ${e.dst}`}
+                      aria-label={t("workflowPage.edgeAria", {
+                        event: e.event,
+                        source: e.src,
+                        target: e.dst,
+                      })}
                       style={{ pointerEvents: "auto" }}
                       onKeyDown={(ev) => {
                         if (ev.key === "Enter" || ev.key === " ") {
@@ -2037,12 +2146,20 @@ export default function WorkflowsPage() {
                             ? "var(--border-3)"
                             : "var(--border-2)";
                   const dashed = editing ? "dashed" : "solid";
-                  const stateSuffix = isAdded
-                    ? ", draft addition"
+                  const state = isAdded
+                    ? t("workflowPage.nodeState.added")
                     : isModified
-                      ? ", draft modification"
-                      : "";
-                  const nodeLabel = `${a.actor} node: ${a.title}, id ${a.kebabId}${stateSuffix}`;
+                      ? t("workflowPage.nodeState.modified")
+                      : t("workflowPage.nodeState.unchanged");
+                  const nodeLabel = t("workflowPage.nodeAria", {
+                    actor:
+                      a.actor === "Agent"
+                        ? t("workflowPage.actorAgent")
+                        : t("workflowPage.actorHuman"),
+                    title: a.title,
+                    id: a.kebabId,
+                    state,
+                  });
                   return (
                     <div
                       key={a.kebabId}
@@ -2088,8 +2205,12 @@ export default function WorkflowsPage() {
                         }}
                         title={
                           editing
-                            ? `Drag to move ${a.title}. Double-click to expand all agent settings.`
-                            : `Open ${a.title} details. Double-click to expand the detail panel.`
+                            ? t("workflowPage.nodeEditTitle", {
+                                title: a.title,
+                              })
+                            : t("workflowPage.nodeViewTitle", {
+                                title: a.title,
+                              })
                         }
                         style={{
                           background:
@@ -2125,9 +2246,24 @@ export default function WorkflowsPage() {
                             marginBottom: 4,
                           }}
                         >
-                          <ActorTag actor={a.actor} />
-                          {isAdded && <Badge tone="green">NEW</Badge>}
-                          {isModified && <Badge tone="amber">MOD</Badge>}
+                          <ActorTag
+                            actor={a.actor}
+                            label={
+                              a.actor === "Agent"
+                                ? t("common.actorAgent")
+                                : t("common.actorHuman")
+                            }
+                          />
+                          {isAdded && (
+                            <Badge tone="green">
+                              {t("workflowPage.newBadge")}
+                            </Badge>
+                          )}
+                          {isModified && (
+                            <Badge tone="amber">
+                              {t("workflowPage.modifiedBadge")}
+                            </Badge>
+                          )}
                           <span
                             style={{
                               marginLeft: "auto",
@@ -2163,8 +2299,12 @@ export default function WorkflowsPage() {
                               isDropTarget ? styles.nodePortActive : ""
                             }`}
                             data-workflow-input={a.kebabId}
-                            aria-label={`Connect into ${a.title}`}
-                            title={`Input port for ${a.title}`}
+                            aria-label={t("workflowPage.connectIntoAria", {
+                              title: a.title,
+                            })}
+                            title={t("workflowPage.inputPortTitle", {
+                              title: a.title,
+                            })}
                             onClick={(event) => {
                               event.stopPropagation();
                               if (connectFrom) {
@@ -2181,8 +2321,12 @@ export default function WorkflowsPage() {
                                 ? styles.nodePortActive
                                 : ""
                             }`}
-                            aria-label={`Start a connection from ${a.title}`}
-                            title={`Drag to connect from ${a.title}`}
+                            aria-label={t("workflowPage.startConnectionAria", {
+                              title: a.title,
+                            })}
+                            title={t("workflowPage.outputPortTitle", {
+                              title: a.title,
+                            })}
                             onPointerDown={(event) =>
                               beginLinkDrag(event, a.kebabId)
                             }
@@ -2197,7 +2341,12 @@ export default function WorkflowsPage() {
                               setSelectedAgent(a.kebabId);
                               setSelectedEvent(null);
                               setCanvasAnnouncement(
-                                `${a.kebabId} selected as the connection source. Choose a target input port or node.`,
+                                t(
+                                  "workflowPage.announcement.sourceSelectedPort",
+                                  {
+                                    agent: a.kebabId,
+                                  },
+                                ),
                               );
                             }}
                           />
@@ -2213,7 +2362,7 @@ export default function WorkflowsPage() {
 
         <div
           className={styles.inspectorSplitter}
-          title="Drag to resize agent details. Double-click to expand or restore."
+          title={t("workflowPage.resizeTitle")}
           onDoubleClick={toggleAgentPanelWidth}
         >
           <Splitter
@@ -2228,7 +2377,7 @@ export default function WorkflowsPage() {
             }
             min={WORKFLOW_INSPECTOR_MIN_WIDTH}
             max={inspectorMaxWidth}
-            ariaLabel="Resize workflow canvas and agent details"
+            ariaLabel={t("workflowPage.resizeAria")}
             ariaControls="workflow-canvas-region workflow-agent-inspector"
           />
         </div>
@@ -2289,7 +2438,7 @@ export default function WorkflowsPage() {
               onToggleWidth={toggleAgentPanelWidth}
               canResize={inspectorCanResize}
               isWide={inspectorIsWide}
-              workflowLabel={`${selectedWorkflow ?? "workflow"}${workflowVersion ? ` · ${workflowVersion}` : ""}`}
+              workflowLabel={`${selectedWorkflow ?? t("workflowPage.workflowLower")}${workflowVersion ? ` · ${workflowVersion}` : ""}`}
             />
           ) : selectedEvent ? (
             <EventInspector
@@ -2305,7 +2454,9 @@ export default function WorkflowsPage() {
           ) : editing ? (
             <DraftPalette
               workflowName={
-                selectedSummary?.name ?? selectedWorkflow ?? "Workflow"
+                selectedSummary?.name ??
+                selectedWorkflow ??
+                t("workflowPage.workflow")
               }
               draft={draft}
               connectFrom={connectFrom}
@@ -2351,7 +2502,9 @@ export default function WorkflowsPage() {
           workflowName={selectedSummary?.name ?? selectedWorkflow}
           manifest={editableManifest()}
           currentVersion={
-            workflowVersion || selectedSummary?.latestVersion || "draft"
+            workflowVersion ||
+            selectedSummary?.latestVersion ||
+            t("workflowPage.draftLower")
           }
           liveVersionId={selectedSummary?.liveVersionId ?? null}
           onClose={() => setShowRunConsole(false)}

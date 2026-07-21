@@ -72,7 +72,10 @@ describe("Agent Studio workflow round trip", () => {
       '{workflowSlug ? (\n            <div\n              className="agent-studio-agent-select"',
     );
     expect(studioSource).toContain(
-      "aria-label={`Workflow handoff for ${workflowSlug}. ${definition.title} is pinned until you return to the workflow canvas.`}",
+      '"Workflow handoff for {workflow}. {agent} is pinned until you return to the workflow canvas."',
+    );
+    expect(studioSource).toContain(
+      "{ workflow: workflowSlug, agent: definition.title }",
     );
     expect(studioSource).toContain(
       ') : (\n            <select\n              className="agent-studio-agent-select"',

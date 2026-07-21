@@ -66,15 +66,17 @@ export function Sidebar({
   const { data: health } = useHealth();
 
   const inngestMeta = useMemo(() => {
-    if (!health?.inngest) return "checking…";
+    if (!health?.inngest) return t("sidebar.healthChecking");
     if (health.inngest.note) return health.inngest.note;
-    return health.inngest.reachable ? "reachable" : "unreachable";
-  }, [health?.inngest]);
+    return health.inngest.reachable
+      ? t("sidebar.healthReachable")
+      : t("sidebar.healthUnreachable");
+  }, [health?.inngest, t]);
   const inngestStatus: "ok" | "failed" = health?.inngest?.ok ? "ok" : "failed";
   const sqliteMeta = useMemo(() => {
-    if (!health?.sqlite) return "checking…";
+    if (!health?.sqlite) return t("sidebar.healthChecking");
     return fmtBytes(health.sqlite.sizeBytes);
-  }, [health?.sqlite]);
+  }, [health?.sqlite, t]);
   const sqliteStatus: "ok" | "failed" = health?.sqlite?.ok ? "ok" : "failed";
   const expanded = pinnedOpen || hoverOpen || focusOpen;
 
@@ -169,7 +171,7 @@ export function Sidebar({
       <aside
         className={styles.sidebar}
         data-expanded={expanded}
-        aria-label="Primary navigation"
+        aria-label={t("sidebar.primaryNavigation")}
         onPointerEnter={handlePointerEnter}
         onPointerLeave={handlePointerLeave}
         onPointerOver={handlePointerOver}
@@ -190,19 +192,17 @@ export function Sidebar({
             type="button"
             className={styles.pinButton}
             aria-label={
-              pinnedOpen
-                ? "Return navigation to automatic collapse"
-                : "Keep navigation open"
+              pinnedOpen ? t("sidebar.returnAutomatic") : t("sidebar.keepOpen")
             }
             aria-pressed={pinnedOpen}
             aria-expanded={expanded}
             data-sidebar-pin
             data-sidebar-tooltip={
               pinnedOpen
-                ? "Use automatic collapse"
+                ? t("sidebar.useAutomatic")
                 : expanded
-                  ? "Keep navigation open"
-                  : "Open navigation"
+                  ? t("sidebar.keepOpen")
+                  : t("sidebar.openNavigation")
             }
             onClick={() => {
               setTooltip(null);
@@ -226,7 +226,7 @@ export function Sidebar({
           }}
         />
 
-        <nav className={styles.nav} aria-label="Portal sections">
+        <nav className={styles.nav} aria-label={t("sidebar.portalSections")}>
           <NavGroup label={t("nav.group.run")}>
             <NavItem
               href={`${base}/dashboard`}
@@ -284,6 +284,12 @@ export function Sidebar({
           </NavGroup>
           <NavGroup label={t("nav.group.manage")}>
             <NavItem
+              href={`${base}/ontocode`}
+              icon="spark"
+              label={t("nav.ontocode")}
+              matchPrefix
+            />
+            <NavItem
               href={`${base}/factory`}
               icon="spark"
               label={t("nav.factory")}
@@ -331,7 +337,10 @@ export function Sidebar({
           </NavGroup>
         </nav>
 
-        <footer className={styles.footer} aria-label="System status">
+        <footer
+          className={styles.footer}
+          aria-label={t("sidebar.systemStatus")}
+        >
           <FooterRow
             status={inngestStatus}
             label="Inngest"

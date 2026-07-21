@@ -15,7 +15,7 @@ import {
 } from "@tanstack/react-query";
 import { usePathname } from "next/navigation";
 import type { MeResponse, Permission } from "@agentic/contracts";
-import { readApiData } from "@/lib/api-response";
+import { ApiResponseError, fetchApiData } from "@/lib/api-response";
 import { tenantHeader, tenantFromPathname } from "./tenant-header";
 
 async function callV1<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -23,7 +23,7 @@ async function callV1<T>(path: string, init: RequestInit = {}): Promise<T> {
   // Only set a JSON content-type when there's a body. Fastify 400s on an empty
   // body with `content-type: application/json` (FST_ERR_CTP_EMPTY_JSON_BODY),
   // which would otherwise break bodyless POST/DELETE (logout, delete, revoke).
-  const res = await fetch(path, {
+  return fetchApiData<T>(path, {
     credentials: "same-origin",
     ...rest,
     headers: {
@@ -33,7 +33,6 @@ async function callV1<T>(path: string, init: RequestInit = {}): Promise<T> {
       ...(initHeaders as Record<string, string> | undefined),
     },
   });
-  return readApiData<T>(res, path);
 }
 
 export const ME_KEY = ["me"] as const;
@@ -67,13 +66,22 @@ export function useIsSuperadmin(): boolean {
 
 export function useChangePassword() {
   return useMutation({
-    mutationFn: async (body: { currentPassword: string; newPassword: string }) => {
+    mutationFn: async (body: {
+      currentPassword: string;
+      newPassword: string;
+    }) => {
       const result = await callV1<{ ok?: unknown }>("/v1/me/password", {
         method: "POST",
         body: JSON.stringify(body),
       });
       if (result.ok !== true) {
-        throw new Error("Password change response did not confirm success");
+        throw new ApiResponseError(
+          "/v1/me/password",
+          200,
+          "password_change_unconfirmed",
+          "",
+          { clientKind: "passwordChangeUnconfirmed" },
+        );
       }
       return { ok: true as const };
     },
@@ -88,7 +96,13 @@ export function useLogout() {
         method: "POST",
       });
       if (result.ok !== true) {
-        throw new Error("Logout response did not confirm success");
+        throw new ApiResponseError(
+          "/v1/auth/logout",
+          200,
+          "logout_unconfirmed",
+          "",
+          { clientKind: "logoutUnconfirmed" },
+        );
       }
       return { ok: true as const };
     },

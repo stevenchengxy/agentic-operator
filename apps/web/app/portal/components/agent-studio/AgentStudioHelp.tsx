@@ -1,8 +1,19 @@
 "use client";
 
-import { useEffect, useId, useMemo, useRef, useState } from "react";
-import type { ReactNode } from "react";
+import {
+  Children,
+  cloneElement,
+  isValidElement,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import type { ReactElement, ReactNode } from "react";
 import { Badge, Icon, ModalOverlay } from "@/app/portal/components";
+import { useI18n } from "@/app/portal/lib/preferences-context";
+import { studioHelp } from "./copy";
 
 export type AgentStudioHelpTopic =
   | "start"
@@ -33,6 +44,32 @@ interface HelpFieldGroup {
   title: string;
   summary: string;
   fields: HelpField[];
+}
+
+function localizeHelpNode(
+  node: ReactNode,
+  t: ReturnType<typeof useI18n>["t"],
+): ReactNode {
+  if (typeof node === "string") {
+    if (!node.trim()) return node;
+    const leading = /^\s/.test(node) ? " " : "";
+    const trailing = /\s$/.test(node) ? " " : "";
+    return `${leading}${studioHelp(t, node.trim().replace(/\s+/g, " "))}${trailing}`;
+  }
+  if (!isValidElement(node)) return node;
+  if (node.type === "code" || node.type === "pre") return node;
+  const element = node as ReactElement<{ children?: ReactNode }>;
+  if (element.props.children === undefined) return element;
+  return cloneElement(element, {
+    children: Children.map(element.props.children, (child) =>
+      localizeHelpNode(child, t),
+    ),
+  });
+}
+
+function LocalizedHelp({ children }: { children: ReactNode }) {
+  const { t } = useI18n();
+  return <>{Children.map(children, (child) => localizeHelpNode(child, t))}</>;
 }
 
 const TOPICS: Array<{
@@ -866,6 +903,7 @@ export function AgentStudioHelp({
   onClose,
   initialTopic = "start",
 }: AgentStudioHelpProps) {
+  const { t } = useI18n();
   const titleId = useId();
   const descriptionId = useId();
   const panelRef = useRef<HTMLDivElement>(null);
@@ -915,12 +953,12 @@ export function AgentStudioHelp({
     return FIELD_GROUPS.map((group) => ({
       ...group,
       fields: group.fields.filter((field) =>
-        `${group.title} ${field.name} ${field.meaning} ${field.enter} ${field.example ?? ""}`
+        `${group.title} ${field.name} ${field.meaning} ${field.enter} ${field.example ?? ""} ${studioHelp(t, group.title)} ${studioHelp(t, field.name)} ${studioHelp(t, field.meaning)} ${studioHelp(t, field.enter)}`
           .toLocaleLowerCase()
           .includes(query),
       ),
     })).filter((group) => group.fields.length > 0);
-  }, [fieldSearch]);
+  }, [fieldSearch, t]);
 
   if (!open) return null;
 
@@ -973,9 +1011,9 @@ export function AgentStudioHelp({
                 id={titleId}
                 style={{ margin: 0, fontSize: 17, fontWeight: 650 }}
               >
-                Agent Studio guide
+                {studioHelp(t, "Agent Studio guide")}
               </h1>
-              <Badge tone="signal">Help</Badge>
+              <Badge tone="signal">{studioHelp(t, "Help")}</Badge>
             </div>
             <p
               id={descriptionId}
@@ -986,16 +1024,18 @@ export function AgentStudioHelp({
                 lineHeight: 1.5,
               }}
             >
-              Create, edit, test, publish, and operate an agent safely—no coding
-              required.
+              {studioHelp(
+                t,
+                "Create, edit, test, publish, and operate an agent safely—no coding required.",
+              )}
             </p>
           </div>
           <button
             ref={closeRef}
             type="button"
             onClick={onClose}
-            aria-label="Close Agent Studio guide"
-            title="Close guide (Escape)"
+            aria-label={studioHelp(t, "Close Agent Studio guide")}
+            title={studioHelp(t, "Close guide (Escape)")}
             style={{
               width: 30,
               height: 30,
@@ -1020,7 +1060,7 @@ export function AgentStudioHelp({
           }}
         >
           <nav
-            aria-label="Agent Studio help topics"
+            aria-label={studioHelp(t, "Agent Studio help topics")}
             className="agent-studio-help-nav"
             style={{
               minHeight: 0,
@@ -1040,7 +1080,7 @@ export function AgentStudioHelp({
                 letterSpacing: ".08em",
               }}
             >
-              USER GUIDE
+              {studioHelp(t, "USER GUIDE")}
             </div>
             {TOPICS.map((item, index) => {
               const active = item.id === topic;
@@ -1081,7 +1121,7 @@ export function AgentStudioHelp({
                         fontWeight: 600,
                       }}
                     >
-                      {item.label}
+                      {studioHelp(t, item.label)}
                     </span>
                     <span
                       style={{
@@ -1092,7 +1132,7 @@ export function AgentStudioHelp({
                         lineHeight: 1.4,
                       }}
                     >
-                      {item.eyebrow}
+                      {studioHelp(t, item.eyebrow)}
                     </span>
                   </span>
                 </button>
@@ -1111,11 +1151,13 @@ export function AgentStudioHelp({
               }}
             >
               <strong style={{ color: "var(--text)", fontWeight: 650 }}>
-                Safe default
+                {studioHelp(t, "Safe default")}
               </strong>
               <br />
-              Create a draft, test with Safe test tool effects, check the setup,
-              then publish.
+              {studioHelp(
+                t,
+                "Create a draft, test with Safe test tool effects, check the setup, then publish.",
+              )}
             </div>
           </nav>
 
@@ -1187,6 +1229,7 @@ function PageHeading({
   title: string;
   children: ReactNode;
 }) {
+  const { t } = useI18n();
   return (
     <div style={{ marginBottom: 22 }}>
       <div
@@ -1199,7 +1242,7 @@ function PageHeading({
           textTransform: "uppercase",
         }}
       >
-        {eyebrow}
+        {studioHelp(t, eyebrow)}
       </div>
       <h2
         style={{
@@ -1209,7 +1252,7 @@ function PageHeading({
           fontWeight: 650,
         }}
       >
-        {title}
+        {studioHelp(t, title)}
       </h2>
       <p
         style={{
@@ -1247,8 +1290,9 @@ function StartHere({
       "Validate, review downstream impact, and create a new live version.",
     ],
   ];
+  const { t } = useI18n();
   return (
-    <>
+    <LocalizedHelp>
       <PageHeading
         eyebrow="Start here"
         title="Build an agent in five decisions"
@@ -1288,7 +1332,7 @@ function StartHere({
               <strong
                 style={{ display: "block", fontSize: 13, fontWeight: 650 }}
               >
-                {title}
+                {studioHelp(t, title!)}
               </strong>
               <span
                 style={{
@@ -1299,7 +1343,7 @@ function StartHere({
                   lineHeight: 1.55,
                 }}
               >
-                {body}
+                {studioHelp(t, body!)}
               </span>
             </div>
           </div>
@@ -1338,13 +1382,13 @@ function StartHere({
           onClick={() => onNavigate("examples")}
         />
       </div>
-    </>
+    </LocalizedHelp>
   );
 }
 
 function LifecycleGuide() {
   return (
-    <>
+    <LocalizedHelp>
       <PageHeading
         eyebrow="Create & publish"
         title="A safe path from idea to live agent"
@@ -1450,7 +1494,7 @@ function LifecycleGuide() {
         Schema valid · tools have only intended effects · downstream event
         contract is reviewed.
       </Callout>
-    </>
+    </LocalizedHelp>
   );
 }
 
@@ -1463,9 +1507,10 @@ function FieldReference({
   onSearch: (value: string) => void;
   groups: HelpFieldGroup[];
 }) {
+  const { t } = useI18n();
   const total = groups.reduce((count, group) => count + group.fields.length, 0);
   return (
-    <>
+    <LocalizedHelp>
       <PageHeading
         eyebrow="Every field"
         title="What to enter, in plain language"
@@ -1501,7 +1546,10 @@ function FieldReference({
           <input
             value={search}
             onChange={(event) => onSearch(event.target.value)}
-            placeholder="For example: timeout, mapping, Stable step ID…"
+            placeholder={studioHelp(
+              t,
+              "For example: timeout, mapping, Stable step ID…",
+            )}
             style={{
               minWidth: 0,
               flex: 1,
@@ -1554,7 +1602,7 @@ function FieldReference({
             >
               <summary style={{ padding: "11px 13px", cursor: "pointer" }}>
                 <strong style={{ fontSize: 13, fontWeight: 650 }}>
-                  {group.title}
+                  {studioHelp(t, group.title)}
                 </strong>
                 <span
                   style={{
@@ -1563,7 +1611,9 @@ function FieldReference({
                     fontSize: 11,
                   }}
                 >
-                  {group.fields.length} fields
+                  {studioHelp(t, "{count} fields", {
+                    count: group.fields.length,
+                  })}
                 </span>
                 <span
                   style={{
@@ -1574,7 +1624,7 @@ function FieldReference({
                     lineHeight: 1.55,
                   }}
                 >
-                  {group.summary}
+                  {studioHelp(t, group.summary)}
                 </span>
               </summary>
               <dl style={{ margin: 0, borderTop: "1px solid var(--border)" }}>
@@ -1592,7 +1642,7 @@ function FieldReference({
                     }}
                   >
                     <dt style={{ fontSize: 12.5, fontWeight: 650 }}>
-                      {field.name}
+                      {studioHelp(t, field.name)}
                     </dt>
                     <dd
                       style={{
@@ -1602,12 +1652,12 @@ function FieldReference({
                         lineHeight: 1.55,
                       }}
                     >
-                      <span>{field.meaning}</span>
+                      <span>{studioHelp(t, field.meaning)}</span>
                       <span style={{ display: "block", marginTop: 4 }}>
                         <strong style={{ color: "var(--text)" }}>
                           What to enter:
                         </strong>{" "}
-                        {field.enter}
+                        {studioHelp(t, field.enter)}
                       </span>
                       {field.example && (
                         <code
@@ -1634,7 +1684,8 @@ function FieldReference({
                             color: "var(--amber)",
                           }}
                         >
-                          Watch out: {field.caution}
+                          {studioHelp(t, "Watch out:")}{" "}
+                          {studioHelp(t, field.caution)}
                         </span>
                       )}
                     </dd>
@@ -1656,16 +1707,19 @@ function FieldReference({
             lineHeight: 1.55,
           }}
         >
-          No field matches “{search}”. Try a shorter label.
+          {studioHelp(t, "No field matches “{search}”. Try a shorter label.", {
+            search,
+          })}
         </div>
       )}
-    </>
+    </LocalizedHelp>
   );
 }
 
 function TestingGuide() {
+  const { t } = useI18n();
   return (
-    <>
+    <LocalizedHelp>
       <PageHeading
         eyebrow="Test & operate"
         title="Run once, inspect everything, learn safely"
@@ -1747,7 +1801,9 @@ function TestingGuide() {
                 background: "var(--panel-2)",
               }}
             >
-              <strong style={{ fontSize: 13, fontWeight: 650 }}>{title}</strong>
+              <strong style={{ fontSize: 13, fontWeight: 650 }}>
+                {studioHelp(t, title!)}
+              </strong>
               <span
                 style={{
                   display: "block",
@@ -1757,7 +1813,7 @@ function TestingGuide() {
                   lineHeight: 1.55,
                 }}
               >
-                {body}
+                {studioHelp(t, body!)}
               </span>
             </div>
           ))}
@@ -1792,13 +1848,13 @@ function TestingGuide() {
         reverse an external change a tool already made. This is why Safe test or
         Read-only is the right first choice.
       </Callout>
-    </>
+    </LocalizedHelp>
   );
 }
 
 function ExamplesGuide() {
   return (
-    <>
+    <LocalizedHelp>
       <PageHeading
         eyebrow="Worked examples"
         title="Two small agents you can reproduce"
@@ -1862,13 +1918,14 @@ function ExamplesGuide() {
         size, and allow an approved document-reading tool. Test with Safe test
         or Read-only before allowing Live effects.
       </Callout>
-    </>
+    </LocalizedHelp>
   );
 }
 
 function GlossaryGuide() {
+  const { t } = useI18n();
   return (
-    <>
+    <LocalizedHelp>
       <PageHeading eyebrow="Glossary" title="Agent Studio terms, decoded">
         A shared vocabulary makes reviews faster. These definitions describe how
         the words are used in this product.
@@ -1892,7 +1949,7 @@ function GlossaryGuide() {
               className="mono"
               style={{ color: "var(--blue)", fontSize: 11, fontWeight: 600 }}
             >
-              {term}
+              {studioHelp(t, term)}
             </dt>
             <dd
               style={{
@@ -1902,12 +1959,12 @@ function GlossaryGuide() {
                 lineHeight: 1.55,
               }}
             >
-              {definition}
+              {studioHelp(t, definition)}
             </dd>
           </div>
         ))}
       </dl>
-    </>
+    </LocalizedHelp>
   );
 }
 
@@ -1920,6 +1977,7 @@ function GuideSection({
   title: string;
   children: ReactNode;
 }) {
+  const { t } = useI18n();
   return (
     <section style={{ marginTop: 24 }}>
       <div
@@ -1940,7 +1998,9 @@ function GuideSection({
         >
           {number}
         </span>
-        <h3 style={{ margin: 0, fontSize: 15, fontWeight: 650 }}>{title}</h3>
+        <h3 style={{ margin: 0, fontSize: 15, fontWeight: 650 }}>
+          {studioHelp(t, title)}
+        </h3>
       </div>
       {children}
     </section>
@@ -1956,6 +2016,7 @@ function Callout({
   title: string;
   children: ReactNode;
 }) {
+  const { t } = useI18n();
   const colors =
     tone === "amber"
       ? ["var(--amber)", "rgba(255,181,71,0.07)"]
@@ -1985,7 +2046,7 @@ function Callout({
           fontWeight: 650,
         }}
       >
-        {title}
+        {studioHelp(t, title)}
       </strong>
       {children}
     </div>
@@ -2003,6 +2064,7 @@ function JumpCard({
   action: string;
   onClick: () => void;
 }) {
+  const { t } = useI18n();
   return (
     <button
       type="button"
@@ -2016,7 +2078,9 @@ function JumpCard({
         background: "var(--panel-2)",
       }}
     >
-      <strong style={{ fontSize: 13, fontWeight: 650 }}>{title}</strong>
+      <strong style={{ fontSize: 13, fontWeight: 650 }}>
+        {studioHelp(t, title)}
+      </strong>
       <span
         style={{
           display: "block",
@@ -2027,7 +2091,7 @@ function JumpCard({
           lineHeight: 1.55,
         }}
       >
-        {body}
+        {studioHelp(t, body)}
       </span>
       <span
         style={{
@@ -2038,7 +2102,7 @@ function JumpCard({
           fontWeight: 600,
         }}
       >
-        {action} →
+        {studioHelp(t, action)} →
       </span>
     </button>
   );
@@ -2053,6 +2117,7 @@ function MiniCard({
   title: string;
   children: ReactNode;
 }) {
+  const { t } = useI18n();
   return (
     <div
       style={{
@@ -2070,7 +2135,7 @@ function MiniCard({
           fontWeight: 600,
         }}
       >
-        {label}
+        {studioHelp(t, label)}
       </div>
       <strong
         style={{
@@ -2080,7 +2145,7 @@ function MiniCard({
           fontWeight: 650,
         }}
       >
-        {title}
+        {studioHelp(t, title)}
       </strong>
       <div
         style={{
@@ -2113,6 +2178,7 @@ function Example({
   schema: string;
   testPrompt: string;
 }) {
+  const { t } = useI18n();
   return (
     <section
       style={{
@@ -2124,8 +2190,12 @@ function Example({
       }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <Badge tone="signal">Example {number}</Badge>
-        <h3 style={{ margin: 0, fontSize: 16, fontWeight: 650 }}>{title}</h3>
+        <Badge tone="signal">
+          {studioHelp(t, "Example {number}", { number })}
+        </Badge>
+        <h3 style={{ margin: 0, fontSize: 16, fontWeight: 650 }}>
+          {studioHelp(t, title)}
+        </h3>
       </div>
       <p
         style={{
@@ -2135,7 +2205,7 @@ function Example({
           lineHeight: 1.55,
         }}
       >
-        <strong>Goal:</strong> {goal}
+        <strong>{studioHelp(t, "Goal:")}</strong> {studioHelp(t, goal)}
       </p>
       <div style={{ display: "grid", gap: 5 }}>
         {settings.map(([label, value]) => (
@@ -2150,9 +2220,11 @@ function Example({
             }}
           >
             <span className="mono" style={{ color: "var(--text-2)" }}>
-              {label}
+              {studioHelp(t, label!)}
             </span>
-            <span style={{ color: "var(--text-2)" }}>{value}</span>
+            <span style={{ color: "var(--text-2)" }}>
+              {studioHelp(t, value!)}
+            </span>
           </div>
         ))}
       </div>
@@ -2188,15 +2260,16 @@ function Example({
             fontWeight: 600,
           }}
         >
-          TEST PROMPT
+          {studioHelp(t, "TEST PROMPT")}
         </span>
-        {testPrompt}
+        {studioHelp(t, testPrompt)}
       </div>
     </section>
   );
 }
 
 function CodeSample({ label, value }: { label: string; value: string }) {
+  const { t } = useI18n();
   return (
     <div style={{ minWidth: 0 }}>
       <div
@@ -2208,7 +2281,7 @@ function CodeSample({ label, value }: { label: string; value: string }) {
           fontWeight: 600,
         }}
       >
-        {label}
+        {studioHelp(t, label)}
       </div>
       <pre
         style={{

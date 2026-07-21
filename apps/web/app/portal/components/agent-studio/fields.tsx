@@ -14,6 +14,8 @@ import {
   MonacoEditor,
   Panel,
 } from "@/app/portal/components";
+import { useI18n } from "@/app/portal/lib/preferences-context";
+import { studioUi } from "./copy";
 import { parseLooseJson, toPrettyJson } from "./model";
 
 export function StudioPanel({
@@ -61,6 +63,7 @@ export function Field({
   children: ReactNode;
   style?: CSSProperties;
 }) {
+  const { t } = useI18n();
   return (
     <label
       className="agent-studio-field"
@@ -98,7 +101,7 @@ export function Field({
             marginBottom: 6,
           }}
         >
-          <strong>Example:</strong> {example}
+          <strong>{studioUi(t, "Example:")}</strong> {example}
         </span>
       )}
       {children}
@@ -300,18 +303,19 @@ export function Segmented<T extends string>({
   value,
   onChange,
   options,
-  ariaLabel = "Choose an option",
+  ariaLabel,
 }: {
   value: T;
   onChange: (value: T) => void;
   options: Array<{ value: T; label: string }>;
   ariaLabel?: string;
 }) {
+  const { t } = useI18n();
   return (
     <div
       className="agent-studio-segmented"
       role="group"
-      aria-label={ariaLabel}
+      aria-label={ariaLabel ?? studioUi(t, "Choose an option")}
       style={{
         display: "inline-flex",
         border: "1px solid var(--border-2)",
@@ -363,6 +367,7 @@ export function JsonValueEditor({
   example?: ReactNode;
   readOnly?: boolean;
 }) {
+  const { t } = useI18n();
   const serialized = toPrettyJson(value);
   const [text, setText] = useState(serialized);
   const [error, setError] = useState<string | null>(null);
@@ -387,9 +392,9 @@ export function JsonValueEditor({
       >
         <span className="mono agent-studio-json-label">{label}</span>
         {error ? (
-          <Badge tone="red">JSON error</Badge>
+          <Badge tone="red">{studioUi(t, "JSON error")}</Badge>
         ) : (
-          <Badge tone="green">Valid JSON</Badge>
+          <Badge tone="green">{studioUi(t, "Valid JSON")}</Badge>
         )}
       </div>
       {hint && (
@@ -409,7 +414,7 @@ export function JsonValueEditor({
             margin: "-2px 0 7px",
           }}
         >
-          <strong>Example:</strong> {example}
+          <strong>{studioUi(t, "Example:")}</strong> {example}
         </div>
       )}
       <MonacoEditor

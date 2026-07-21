@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
+import { translate } from "@/lib/i18n";
 import { composeFactoryGoal, isFactoryRunStartReceipt, replayModeForStart } from "./factory-run-start";
+
+const t = (key: string, vars?: Record<string, string | number>) => translate("zh", key, vars);
 
 describe("composeFactoryGoal", () => {
   it("preserves document content beyond the old 3000-character cutoff", () => {
     const tail = "TAIL_AFTER_3000";
     const text = `${"x".repeat(3_500)}${tail}`;
-    const result = composeFactoryGoal("生成真实工具", [{ name: "api.md", text }]);
+    const result = composeFactoryGoal(t, "生成真实工具", [{ name: "api.md", text }]);
 
     expect(result).toContain(text);
     expect(result).toContain(tail);
@@ -13,7 +16,7 @@ describe("composeFactoryGoal", () => {
   });
 
   it("keeps multiple documents ordered and unmodified", () => {
-    const result = composeFactoryGoal("", [
+    const result = composeFactoryGoal(t, "", [
       { name: "one.txt", text: "FIRST\nLINE" },
       { name: "two.txt", text: "SECOND" },
     ]);
@@ -23,7 +26,7 @@ describe("composeFactoryGoal", () => {
   });
 
   it("returns a plain operator goal when no documents are attached", () => {
-    expect(composeFactoryGoal("  只回答问题  ", [])).toBe("只回答问题");
+    expect(composeFactoryGoal(t, "  只回答问题  ", [])).toBe("只回答问题");
   });
 });
 

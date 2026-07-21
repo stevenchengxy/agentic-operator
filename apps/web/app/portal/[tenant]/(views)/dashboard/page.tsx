@@ -73,6 +73,7 @@ import {
   type UsageResponse,
 } from "@/lib/hooks/useUsage";
 import { useStartOperatorCheck } from "@/lib/hooks/useOperatorChecks";
+import { formatApiError } from "@/lib/api-response";
 
 /** Narrowed view of an event row for the ticker. */
 interface EventItem {
@@ -166,6 +167,7 @@ function sourceStatus(
 // ─── Page (data wiring) ──────────────────────────────────────────────────────
 
 export default function DashboardPage() {
+  const { t } = useI18n();
   const countsQuery = useCounts();
   const agentsQuery = useAgents();
   const tasksQuery = useTasks();
@@ -191,19 +193,47 @@ export default function DashboardPage() {
   );
   const liveRuns = runsQuery.data ?? [];
   const sources: DashboardSources = {
-    counts: sourceStatus(countsQuery.data, countsQuery.isLoading, countsQuery.isError),
-    agents: sourceStatus(agentsQuery.data, agentsQuery.isLoading, agentsQuery.isError),
-    tasks: sourceStatus(tasksQuery.data, tasksQuery.isLoading, tasksQuery.isError),
-    events: sourceStatus(eventsQuery.data, eventsQuery.isLoading, eventsQuery.isError),
+    counts: sourceStatus(
+      countsQuery.data,
+      countsQuery.isLoading,
+      countsQuery.isError,
+    ),
+    agents: sourceStatus(
+      agentsQuery.data,
+      agentsQuery.isLoading,
+      agentsQuery.isError,
+    ),
+    tasks: sourceStatus(
+      tasksQuery.data,
+      tasksQuery.isLoading,
+      tasksQuery.isError,
+    ),
+    events: sourceStatus(
+      eventsQuery.data,
+      eventsQuery.isLoading,
+      eventsQuery.isError,
+    ),
     runs: sourceStatus(runsQuery.data, runsQuery.isLoading, runsQuery.isError),
     throughput: sourceStatus(
       throughputQuery.data,
       throughputQuery.isLoading,
       throughputQuery.isError,
     ),
-    usage: sourceStatus(usageQuery.data, usageQuery.isLoading, usageQuery.isError),
-    budget: sourceStatus(budgetQuery.data, budgetQuery.isLoading, budgetQuery.isError),
-    health: sourceStatus(healthQuery.data, healthQuery.isLoading, healthQuery.isError),
+    usage: sourceStatus(
+      usageQuery.data,
+      usageQuery.isLoading,
+      usageQuery.isError,
+    ),
+    budget: sourceStatus(
+      budgetQuery.data,
+      budgetQuery.isLoading,
+      budgetQuery.isError,
+    ),
+    health: sourceStatus(
+      healthQuery.data,
+      healthQuery.isLoading,
+      healthQuery.isError,
+    ),
   };
   const sourceErrors = [
     countsQuery.error,
@@ -217,7 +247,7 @@ export default function DashboardPage() {
     healthQuery.error,
   ]
     .filter((error): error is Error => error instanceof Error)
-    .map((error) => error.message);
+    .map((error) => formatApiError(error, t));
 
   return (
     <DashboardView
@@ -239,7 +269,14 @@ export default function DashboardPage() {
 type Verdict = "ok" | "warn" | "down" | "unknown";
 
 interface DashboardViewProps {
-  counts: { runningRuns: number; okRuns24h: number; failedRuns24h: number; events24h: number; openTasks: number; totalRuns: number } | null;
+  counts: {
+    runningRuns: number;
+    okRuns24h: number;
+    failedRuns24h: number;
+    events24h: number;
+    openTasks: number;
+    totalRuns: number;
+  } | null;
   agents: AgentListRow[];
   tasks: TaskItem[];
   eventStream: EventItem[];
@@ -355,19 +392,23 @@ function DashboardView({
   const observabilityError = Object.values(sources).some(
     (status) => status === "error",
   );
-  const verdict: Verdict = sources.health === "loading"
-    ? "unknown"
-    : healthFail || sources.health === "error"
-    ? "down"
-    : observabilityError || (errorRatePct != null && errorRatePct >= 5) || (highTasks != null && highTasks > 0)
-      ? "warn"
-      : "ok";
+  const verdict: Verdict =
+    sources.health === "loading"
+      ? "unknown"
+      : healthFail || sources.health === "error"
+        ? "down"
+        : observabilityError ||
+            (errorRatePct != null && errorRatePct >= 5) ||
+            (highTasks != null && highTasks > 0)
+          ? "warn"
+          : "ok";
 
   // ── Event window (newest-first, deduped, frozen when paused) ───────────────
   const recentEvents = useMemo(() => {
     if (eventStream.length === 0) return [];
     const sorted = [...eventStream].sort(
-      (a, b) => (b.at ?? Number.NEGATIVE_INFINITY) - (a.at ?? Number.NEGATIVE_INFINITY),
+      (a, b) =>
+        (b.at ?? Number.NEGATIVE_INFINITY) - (a.at ?? Number.NEGATIVE_INFINITY),
     );
     const out: EventItem[] = [];
     const seen = new Set<string>();
@@ -445,7 +486,8 @@ function DashboardView({
   const handleCancelAll = useCallback(async () => {
     if (active.length === 0) return;
     const ids = active.map((r) => r.id);
-    if (!window.confirm(t("dashboard.cancelAllConfirm", { count: ids.length }))) return;
+    if (!window.confirm(t("dashboard.cancelAllConfirm", { count: ids.length })))
+      return;
     let cancelled = 0;
     const failures: string[] = [];
     for (const id of ids) {
@@ -454,7 +496,9 @@ function DashboardView({
         if (result.cancelled) cancelled += 1;
         else failures.push(`${id}: ${result.status}`);
       } catch (error) {
-        failures.push(`${id}: ${error instanceof Error ? error.message : String(error)}`);
+        failures.push(
+          `${id}: ${error instanceof Error ? error.message : String(error)}`,
+        );
       }
     }
     toast({
@@ -463,7 +507,8 @@ function DashboardView({
         cancelled,
         failed: failures.length,
       }),
-      description: failures.length > 0 ? failures.slice(0, 3).join(" · ") : undefined,
+      description:
+        failures.length > 0 ? failures.slice(0, 3).join(" · ") : undefined,
     });
   }, [active, cancelRun, toast, t]);
 
@@ -487,9 +532,8 @@ function DashboardView({
       setOperatorCheckLaunching(false);
       toast({
         tone: "red",
-        title: "System check could not start",
-        description:
-          error instanceof Error ? error.message : "Unknown startup error",
+        title: t("dashboard.systemCheckStartFailed"),
+        description: formatApiError(error, t, "dashboard.unknownStartupError"),
       });
     }
   }
@@ -497,7 +541,10 @@ function DashboardView({
   if (!hasMounted) {
     return (
       <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
-        <ViewHeader title={t("nav.dashboard")} subtitle={t("dashboard.subtitle")} />
+        <ViewHeader
+          title={t("nav.dashboard")}
+          subtitle={t("dashboard.subtitle")}
+        />
         <div style={{ padding: 20 }}>
           <Empty title={t("dashboard.loading")} hint="" />
         </div>
@@ -535,13 +582,13 @@ function DashboardView({
             icon="play"
             onClick={() => void handleStartOperatorCheck()}
             disabled={startOperatorCheck.isPending || operatorCheckLaunching}
-            ariaLabel="Run two-agent system check"
+            ariaLabel={t("dashboard.runSystemCheckAria")}
           >
             {startOperatorCheck.isPending
-              ? "Starting…"
+              ? t("dashboard.startingSystemCheck")
               : operatorCheckLaunching
-                ? "Opening check…"
-                : "Run full check"}
+                ? t("dashboard.openingSystemCheck")
+                : t("dashboard.runFullCheck")}
           </Button>
         }
       />
@@ -556,7 +603,8 @@ function DashboardView({
             fontSize: 12,
           }}
         >
-          {t("dashboard.partialUnavailable")}: {[...new Set(sourceErrors)].join(" · ")}
+          {t("dashboard.partialUnavailable")}:{" "}
+          {[...new Set(sourceErrors)].join(" · ")}
         </div>
       )}
 
@@ -585,7 +633,9 @@ function DashboardView({
           <KPICard
             delay={0.06}
             label={t("dashboard.kpiActiveRuns")}
-            value={runningCount == null ? "—" : <CountUp value={runningCount} />}
+            value={
+              runningCount == null ? "—" : <CountUp value={runningCount} />
+            }
             sub={
               countsReady
                 ? t("dashboard.kpiActiveSub", {
@@ -605,7 +655,10 @@ function DashboardView({
               ) : (
                 <>
                   <CountUp value={eventsPerHr} />
-                  <span style={{ fontSize: 14, color: "var(--text-3)" }}> /h</span>
+                  <span style={{ fontSize: 14, color: "var(--text-3)" }}>
+                    {" "}
+                    /h
+                  </span>
                 </>
               )
             }
@@ -624,7 +677,10 @@ function DashboardView({
               errorRatePct == null ? (
                 "—"
               ) : (
-                <CountUp value={errorRatePct} format={(n) => `${n.toFixed(1)}%`} />
+                <CountUp
+                  value={errorRatePct}
+                  format={(n) => `${n.toFixed(1)}%`}
+                />
               )
             }
             sub={
@@ -635,7 +691,13 @@ function DashboardView({
                   })
                 : t("dashboard.metricsUnavailable")
             }
-            tone={errorRatePct == null ? undefined : errorRatePct >= 5 ? "down" : "up"}
+            tone={
+              errorRatePct == null
+                ? undefined
+                : errorRatePct >= 5
+                  ? "down"
+                  : "up"
+            }
             accent={
               errorRatePct == null
                 ? "var(--text-3)"
@@ -653,47 +715,47 @@ function DashboardView({
               ) : (
                 <CountUp
                   value={spendCents}
-                  format={(n) => `${costComplete === false ? "≥" : ""}${usd(n)}`}
+                  format={(n) =>
+                    `${costComplete === false ? "≥" : ""}${usd(n)}`
+                  }
                 />
               )
             }
             sub={
-              !usageReady
-                ? t("dashboard.costUnavailable")
-                : (
-                    <>
-                      {costComplete === false ? (
-                        <span
-                          style={{ display: "block", color: "var(--amber)" }}
-                        >
-                          {unpricedTokens != null
-                            ? t("dashboard.costIncompleteBrief", {
-                                unpriced: fmtNum(unpricedTokens),
-                              })
-                            : t("dashboard.costIncompleteBriefCalls", {
-                                unpriced: fmtNum(unpricedCalls ?? 0),
-                              })}
-                        </span>
-                      ) : null}
-                      <span style={{ display: "block" }}>
-                        {sources.budget === "error"
-                          ? t("dashboard.budgetUnavailable")
-                          : sources.budget === "loading"
-                            ? t("common.loading")
-                            : budgetPct != null
-                              ? t(
-                                  costComplete === false
-                                    ? "dashboard.kpiBudgetSubMinimum"
-                                    : "dashboard.kpiBudgetSub",
-                                  {
-                                    cap: usd(capCents),
-                                    pct: budgetPct.toFixed(1),
-                                  },
-                                )
-                              : t("dashboard.kpiNoBudget")}
-                      </span>
-                    </>
-                  )
+              !usageReady ? (
+                t("dashboard.costUnavailable")
+              ) : (
+                <>
+                  {costComplete === false ? (
+                    <span style={{ display: "block", color: "var(--amber)" }}>
+                      {unpricedTokens != null
+                        ? t("dashboard.costIncompleteBrief", {
+                            unpriced: fmtNum(unpricedTokens),
+                          })
+                        : t("dashboard.costIncompleteBriefCalls", {
+                            unpriced: fmtNum(unpricedCalls ?? 0),
+                          })}
+                    </span>
+                  ) : null}
+                  <span style={{ display: "block" }}>
+                    {sources.budget === "error"
+                      ? t("dashboard.budgetUnavailable")
+                      : sources.budget === "loading"
+                        ? t("common.loading")
+                        : budgetPct != null
+                          ? t(
+                              costComplete === false
+                                ? "dashboard.kpiBudgetSubMinimum"
+                                : "dashboard.kpiBudgetSub",
+                              {
+                                cap: usd(capCents),
+                                pct: budgetPct.toFixed(1),
+                              },
+                            )
+                          : t("dashboard.kpiNoBudget")}
+                  </span>
+                </>
+              )
             }
             accent="var(--amber)"
             spark={spendSpark.length > 1 ? spendSpark : undefined}
@@ -720,7 +782,13 @@ function DashboardView({
         </div>
 
         {/* ③ Actionable middle */}
-        <div style={{ display: "grid", gridTemplateColumns: "1.45fr 1fr", gap: 14 }}>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "1.45fr 1fr",
+            gap: 14,
+          }}
+        >
           <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
             <Panel
               className="rise dash-card"
@@ -746,7 +814,10 @@ function DashboardView({
                       {t("dashboard.cancelAll")}
                     </Button>
                   )}
-                  <Link href={`/portal/${tenant}/runs` as never} style={{ textDecoration: "none" }}>
+                  <Link
+                    href={`/portal/${tenant}/runs` as never}
+                    style={{ textDecoration: "none" }}
+                  >
                     <Button small icon="external" tone="ghost">
                       {t("dashboard.viewAll")}
                     </Button>
@@ -759,7 +830,9 @@ function DashboardView({
                 rows={active}
                 tenant={tenant}
                 onCancel={handleCancel}
-                cancelPendingIds={cancelRun.isPending ? cancelRun.variables : undefined}
+                cancelPendingIds={
+                  cancelRun.isPending ? cancelRun.variables : undefined
+                }
                 status={sources.runs}
               />
             </Panel>
@@ -776,7 +849,10 @@ function DashboardView({
                     : t("dashboard.unavailable")
               }
               action={
-                <Link href={`/portal/${tenant}/tasks` as never} style={{ textDecoration: "none" }}>
+                <Link
+                  href={`/portal/${tenant}/tasks` as never}
+                  style={{ textDecoration: "none" }}
+                >
                   <Button small icon="external" tone="ghost">
                     {t("dashboard.inbox")}
                   </Button>
@@ -813,9 +889,14 @@ function DashboardView({
                   onClick={() => setStreamLive((v) => !v)}
                   disabled={sources.events !== "ready"}
                 >
-                  {streamLive ? t("dashboard.streamPause") : t("dashboard.streamResume")}
+                  {streamLive
+                    ? t("dashboard.streamPause")
+                    : t("dashboard.streamResume")}
                 </Button>
-                <Link href={`/portal/${tenant}/events` as never} style={{ textDecoration: "none" }}>
+                <Link
+                  href={`/portal/${tenant}/events` as never}
+                  style={{ textDecoration: "none" }}
+                >
                   <Button small icon="external" tone="ghost">
                     {t("dashboard.open")}
                   </Button>
@@ -835,7 +916,14 @@ function DashboardView({
         </div>
 
         {/* ④ Cost + per-agent throughput */}
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginTop: 14 }}>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "1fr 1fr",
+            gap: 14,
+            marginTop: 14,
+          }}
+        >
           <Panel
             className="rise dash-card"
             style={{ animationDelay: "0.34s" }}
@@ -854,7 +942,10 @@ function DashboardView({
                 : t("dashboard.costTotalLabel", { total: usd(spendCents) })
             }
             action={
-              <Link href={`/portal/${tenant}/settings/usage` as never} style={{ textDecoration: "none" }}>
+              <Link
+                href={`/portal/${tenant}/settings/usage` as never}
+                style={{ textDecoration: "none" }}
+              >
                 <Button small icon="external" tone="ghost">
                   {t("dashboard.usage")}
                 </Button>
@@ -913,7 +1004,9 @@ function DashboardView({
               gap: 8,
             }}
           >
-            <span style={{ color: "var(--text-3)" }}>{showAgents ? "▾" : "▸"}</span>
+            <span style={{ color: "var(--text-3)" }}>
+              {showAgents ? "▾" : "▸"}
+            </span>
             {showAgents
               ? t("dashboard.agentActivityHide")
               : sources.agents === "ready"
@@ -929,7 +1022,8 @@ function DashboardView({
                   status={
                     sources.agents === "error" || sources.runs === "error"
                       ? "error"
-                      : sources.agents === "loading" || sources.runs === "loading"
+                      : sources.agents === "loading" ||
+                          sources.runs === "loading"
                         ? "loading"
                         : "ready"
                   }
@@ -1006,7 +1100,9 @@ function HealthHero({
     chips.push({
       label: t("dashboard.healthInngest"),
       ok: health.inngest.ok,
-      note: health.inngest.ok ? t("dashboard.healthReachable") : t("dashboard.healthUnreachable"),
+      note: health.inngest.ok
+        ? t("dashboard.healthReachable")
+        : t("dashboard.healthUnreachable"),
     });
     chips.push({
       label: t("dashboard.healthSqlite"),
@@ -1018,31 +1114,48 @@ function HealthHero({
     chips.push({
       label: t("dashboard.healthLogVolume"),
       ok: health.disk.ok,
-      note: health.disk.ok ? fmtBytes(health.disk.freeBytes) : t("dashboard.healthStatFailed"),
+      note: health.disk.ok
+        ? fmtBytes(health.disk.freeBytes)
+        : t("dashboard.healthStatFailed"),
     });
     if (health.schedules) {
       chips.push({
         label: t("dashboard.healthSchedules"),
         ok: health.schedules.ok,
-        note: health.schedules.unconfigured > 0
-          ? t("dashboard.healthSchedulesUnconfigured", {
-              count: health.schedules.unconfigured,
-            })
-          : health.schedules.configured > 0
-            ? t("dashboard.healthSchedulesConfigured", {
-                count: health.schedules.configured,
+        note:
+          health.schedules.unconfigured > 0
+            ? t("dashboard.healthSchedulesUnconfigured", {
+                count: health.schedules.unconfigured,
               })
-            : t("dashboard.healthSchedulesDisabled", {
-                count: health.schedules.disabled,
-              }),
+            : health.schedules.configured > 0
+              ? t("dashboard.healthSchedulesConfigured", {
+                  count: health.schedules.configured,
+                })
+              : t("dashboard.healthSchedulesDisabled", {
+                  count: health.schedules.disabled,
+                }),
       });
     }
   } else if (healthStatus === "error") {
-    for (const label of [t("dashboard.healthInngest"), t("dashboard.healthSqlite"), t("dashboard.healthLogVolume"), t("dashboard.healthSchedules")]) {
-      chips.push({ label, ok: false, note: t("dashboard.healthApiUnreachable") });
+    for (const label of [
+      t("dashboard.healthInngest"),
+      t("dashboard.healthSqlite"),
+      t("dashboard.healthLogVolume"),
+      t("dashboard.healthSchedules"),
+    ]) {
+      chips.push({
+        label,
+        ok: false,
+        note: t("dashboard.healthApiUnreachable"),
+      });
     }
   } else {
-    for (const label of [t("dashboard.healthInngest"), t("dashboard.healthSqlite"), t("dashboard.healthLogVolume"), t("dashboard.healthSchedules")]) {
+    for (const label of [
+      t("dashboard.healthInngest"),
+      t("dashboard.healthSqlite"),
+      t("dashboard.healthLogVolume"),
+      t("dashboard.healthSchedules"),
+    ]) {
       chips.push({ label, ok: null, note: t("dashboard.healthChecking") });
     }
   }
@@ -1062,13 +1175,22 @@ function HealthHero({
         animationDelay: "0.02s",
       }}
     >
-      <div style={{ display: "flex", alignItems: "center", gap: 13, minWidth: 0 }}>
+      <div
+        style={{ display: "flex", alignItems: "center", gap: 13, minWidth: 0 }}
+      >
         <span
           className="health-pulse"
           style={{ color: tone, boxShadow: `0 0 12px ${tone}` }}
         />
         <div style={{ minWidth: 0 }}>
-          <div style={{ fontSize: 21, fontWeight: 650, color: "var(--text)", letterSpacing: "0.01em" }}>
+          <div
+            style={{
+              fontSize: 21,
+              fontWeight: 650,
+              color: "var(--text)",
+              letterSpacing: "0.01em",
+            }}
+          >
             {verdictLabel}
           </div>
           <div
@@ -1086,7 +1208,14 @@ function HealthHero({
         </div>
       </div>
       {chips.length > 0 && (
-        <div style={{ marginLeft: "auto", display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <div
+          style={{
+            marginLeft: "auto",
+            display: "flex",
+            gap: 8,
+            flexWrap: "wrap",
+          }}
+        >
           {chips.map((c) => (
             <div
               key={c.label}
@@ -1122,7 +1251,10 @@ function HealthHero({
                   gap: 6,
                 }}
               >
-                <StatusDot status={c.ok == null ? "idle" : c.ok ? "ok" : "failed"} size={7} />
+                <StatusDot
+                  status={c.ok == null ? "idle" : c.ok ? "ok" : "failed"}
+                  size={7}
+                />
                 {c.note}
               </span>
             </div>
@@ -1213,7 +1345,12 @@ function KPICard({
           style={{
             marginTop: 7,
             fontSize: 11,
-            color: tone === "down" ? "var(--red)" : tone === "up" ? "var(--text-2)" : "var(--text-3)",
+            color:
+              tone === "down"
+                ? "var(--red)"
+                : tone === "up"
+                  ? "var(--text-2)"
+                  : "var(--text-3)",
           }}
         >
           {sub}
@@ -1245,11 +1382,21 @@ function RunTable({
   if (status === "error")
     return <Empty title={t("dashboard.runsUnavailable")} hint="—" />;
   if (rows.length === 0)
-    return <Empty title={t("dashboard.noActiveRuns")} hint={t("dashboard.systemIdle")} />;
+    return (
+      <Empty
+        title={t("dashboard.noActiveRuns")}
+        hint={t("dashboard.systemIdle")}
+      />
+    );
   return (
     <div style={{ maxHeight: 280, overflow: "auto" }}>
       <table
-        style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, tableLayout: "fixed" }}
+        style={{
+          width: "100%",
+          borderCollapse: "collapse",
+          fontSize: 12.5,
+          tableLayout: "fixed",
+        }}
       >
         <colgroup>
           <col style={{ width: 28 }} />
@@ -1275,7 +1422,9 @@ function RunTable({
             <Th>{t("dashboard.colSubject")}</Th>
             <Th>{t("dashboard.colStep")}</Th>
             <Th style={{ textAlign: "right" }}>{t("dashboard.colDur")}</Th>
-            {onCancel && <Th style={{ textAlign: "right" }}>{t("dashboard.colAction")}</Th>}
+            {onCancel && (
+              <Th style={{ textAlign: "right" }}>{t("dashboard.colAction")}</Th>
+            )}
           </tr>
         </thead>
         <tbody>
@@ -1312,9 +1461,17 @@ function RunTableRow({
         <StatusDot status={STATUS_TO_DOT[row.status] ?? "idle"} />
       </Td>
       <Td>
-        <Link href={`/portal/${tenant}/runs/${row.id}` as never} style={{ textDecoration: "none" }}>
-          <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
-            <span className="mono" style={{ color: "var(--text-2)", whiteSpace: "nowrap" }}>
+        <Link
+          href={`/portal/${tenant}/runs/${row.id}` as never}
+          style={{ textDecoration: "none" }}
+        >
+          <span
+            style={{ display: "inline-flex", alignItems: "center", gap: 5 }}
+          >
+            <span
+              className="mono"
+              style={{ color: "var(--text-2)", whiteSpace: "nowrap" }}
+            >
               {row.id}
             </span>
             {row.testRun && (
@@ -1325,18 +1482,35 @@ function RunTableRow({
           </span>
         </Link>
       </Td>
-      <Td style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-        <span style={{ color: "var(--text)" }}>{row.agentTitle ?? row.agentName}</span>
+      <Td
+        style={{
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+        }}
+      >
+        <span style={{ color: "var(--text)" }}>
+          {row.agentTitle ?? row.agentName}
+        </span>
       </Td>
       <Td>
-        <span className="mono" style={{ color: "var(--text-2)", whiteSpace: "nowrap" }}>
+        <span
+          className="mono"
+          style={{ color: "var(--text-2)", whiteSpace: "nowrap" }}
+        >
           {row.subject ?? "—"}
         </span>
       </Td>
       <Td style={{ overflow: "hidden" }}>
         {row.currentStepName && row.stepCount ? (
           <span
-            style={{ fontSize: 11.5, display: "flex", gap: 4, alignItems: "baseline", overflow: "hidden" }}
+            style={{
+              fontSize: 11.5,
+              display: "flex",
+              gap: 4,
+              alignItems: "baseline",
+              overflow: "hidden",
+            }}
           >
             <span
               className="mono"
@@ -1350,7 +1524,13 @@ function RunTableRow({
             >
               {row.currentStepName}
             </span>
-            <span style={{ color: "var(--text-3)", whiteSpace: "nowrap", flexShrink: 0 }}>
+            <span
+              style={{
+                color: "var(--text-3)",
+                whiteSpace: "nowrap",
+                flexShrink: 0,
+              }}
+            >
               {(row.currentStepOrd ?? "?") + "/" + row.stepCount}
             </span>
           </span>
@@ -1359,13 +1539,22 @@ function RunTableRow({
         )}
       </Td>
       <Td style={{ textAlign: "right" }}>
-        <span className="mono" style={{ color: "var(--accent-text)", whiteSpace: "nowrap" }}>
+        <span
+          className="mono"
+          style={{ color: "var(--accent-text)", whiteSpace: "nowrap" }}
+        >
           {fmtDur(row.durationMs)}
         </span>
       </Td>
       {onCancel && (
         <Td style={{ textAlign: "right" }}>
-          <Button small icon="x" tone="danger" onClick={() => onCancel(row.id)} disabled={cancelling}>
+          <Button
+            small
+            icon="x"
+            tone="danger"
+            onClick={() => onCancel(row.id)}
+            disabled={cancelling}
+          >
             {cancelling ? "…" : t("dashboard.cancel")}
           </Button>
         </Td>
@@ -1392,12 +1581,13 @@ function AgentActivityGrid({
   tenant: string;
   status: DashboardSourceStatus;
 }) {
-  const { t } = useI18n();
+  const { language, t } = useI18n();
   if (status === "loading")
     return <Empty title={t("dashboard.loadingAgents")} hint="" />;
   if (status === "error")
     return <Empty title={t("dashboard.agentActivityUnavailable")} hint="—" />;
-  if (items.length === 0) return <Empty title={t("dashboard.noAgentActivity")} hint="—" />;
+  if (items.length === 0)
+    return <Empty title={t("dashboard.noAgentActivity")} hint="—" />;
   return (
     <div
       style={{
@@ -1436,8 +1626,22 @@ function AgentActivityGrid({
                     : `color-mix(in srgb, var(--signal) ${(0.15 + intensity * 0.6) * 100}%, transparent)`,
               }}
             />
-            <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
-              <ActorTag actor={agent.actor} />
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                marginBottom: 4,
+              }}
+            >
+              <ActorTag
+                actor={agent.actor}
+                label={
+                  agent.actor === "Agent"
+                    ? t("common.actorAgent")
+                    : t("common.actorHuman")
+                }
+              />
               <span
                 style={{
                   marginLeft: "auto",
@@ -1462,8 +1666,14 @@ function AgentActivityGrid({
             >
               {agent.title ?? agent.name}
             </div>
-            <div style={{ fontSize: 10.5, fontFamily: "var(--mono)", color: "var(--text-3)" }}>
-              {lastRun > 0 ? fmtAgo(lastRun) : t("dashboard.idle")}
+            <div
+              style={{
+                fontSize: 10.5,
+                fontFamily: "var(--mono)",
+                color: "var(--text-3)",
+              }}
+            >
+              {lastRun > 0 ? fmtAgo(lastRun, language) : t("dashboard.idle")}
               {errors > 0 && (
                 <span style={{ color: "var(--red)", marginLeft: 8 }}>
                   {t("dashboard.errCount", { count: errors })}
@@ -1510,7 +1720,8 @@ function EventTicker({
             padding: "9px 14px",
             borderBottom: "1px solid var(--border)",
             fontSize: 12,
-            animation: live && e.id === latestEventId ? "tick 0.45s ease-out" : "none",
+            animation:
+              live && e.id === latestEventId ? "tick 0.45s ease-out" : "none",
           }}
         >
           <span
@@ -1523,9 +1734,25 @@ function EventTicker({
               boxShadow: `0 0 7px var(--${e.color === "muted" ? "text-3" : e.color})`,
             }}
           />
-          <div style={{ display: "flex", flexDirection: "column", gap: 3, minWidth: 0 }}>
-            <div style={{ display: "flex", alignItems: "baseline", gap: 8, minWidth: 0 }}>
-              <span style={{ color: "var(--text)", fontSize: 12 }}>{e.name}</span>
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: 3,
+              minWidth: 0,
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                alignItems: "baseline",
+                gap: 8,
+                minWidth: 0,
+              }}
+            >
+              <span style={{ color: "var(--text)", fontSize: 12 }}>
+                {e.name}
+              </span>
               <span
                 style={{
                   color: "var(--text-3)",
@@ -1542,7 +1769,12 @@ function EventTicker({
           </div>
           <span
             className="mono"
-            style={{ color: "var(--text-4)", fontSize: 9.5, marginTop: 2, textAlign: "right" }}
+            style={{
+              color: "var(--text-4)",
+              fontSize: 9.5,
+              marginTop: 2,
+              textAlign: "right",
+            }}
           >
             <span style={{ color: "var(--text-3)" }}>
               {e.at == null ? "—" : fmtTime(e.at)}
@@ -1555,11 +1787,17 @@ function EventTicker({
   );
 }
 
-function EventConsumerStrip({ consumers }: { consumers: EventItem["consumers"] }) {
+function EventConsumerStrip({
+  consumers,
+}: {
+  consumers: EventItem["consumers"];
+}) {
   const { t } = useI18n();
   if (!consumers || consumers.length === 0) {
     return (
-      <span style={{ fontSize: 10, color: "var(--text-4)" }}>{t("dashboard.noSubscribers")}</span>
+      <span style={{ fontSize: 10, color: "var(--text-4)" }}>
+        {t("dashboard.noSubscribers")}
+      </span>
     );
   }
   return (
@@ -1576,7 +1814,11 @@ function EventConsumerStrip({ consumers }: { consumers: EventItem["consumers"] }
       {consumers.map((c) => (
         <span
           key={c.runId}
-          title={`${c.agentName ?? "(unknown agent)"} · run ${c.runId} · ${c.status}`}
+          title={t("dashboard.consumerTooltip", {
+            agent: c.agentName ?? t("dashboard.unknownAgent"),
+            runId: c.runId,
+            status: c.status,
+          })}
           style={{
             display: "inline-flex",
             alignItems: "center",
@@ -1608,19 +1850,26 @@ function PendingTasksList({
   tenant: string;
   status: DashboardSourceStatus;
 }) {
-  const { t } = useI18n();
+  const { language, t } = useI18n();
   if (status === "loading")
     return <Empty title={t("dashboard.loadingTasks")} hint="" />;
   if (status === "error")
     return <Empty title={t("dashboard.tasksUnavailable")} hint="—" />;
   if (tasks.length === 0)
-    return <Empty title={t("dashboard.allClear")} hint={t("dashboard.noPendingTasks")} />;
+    return (
+      <Empty
+        title={t("dashboard.allClear")}
+        hint={t("dashboard.noPendingTasks")}
+      />
+    );
   return (
     <div>
       {tasks.map((task) => (
         <Link
           key={task.id}
-          href={`/portal/${tenant}/tasks?selected=${encodeURIComponent(task.id)}` as never}
+          href={
+            `/portal/${tenant}/tasks?selected=${encodeURIComponent(task.id)}` as never
+          }
           style={{
             display: "block",
             width: "100%",
@@ -1630,21 +1879,50 @@ function PendingTasksList({
             textDecoration: "none",
           }}
         >
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              marginBottom: 4,
+            }}
+          >
             <Badge
-              tone={task.priority === "high" ? "amber" : task.priority === "med" ? "blue" : "muted"}
+              tone={
+                task.priority === "high"
+                  ? "amber"
+                  : task.priority === "med"
+                    ? "blue"
+                    : "muted"
+              }
               style={{ fontSize: 9.5 }}
             >
               {task.priority.toUpperCase()}
             </Badge>
-            <span style={{ fontSize: 11, color: "var(--text-3)", fontFamily: "var(--mono)" }}>
+            <span
+              style={{
+                fontSize: 11,
+                color: "var(--text-3)",
+                fontFamily: "var(--mono)",
+              }}
+            >
               {task.id}
             </span>
-            <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--text-3)" }}>
-              {task.createdAt ? fmtAgo(task.createdAt) : "—"}
+            <span
+              style={{
+                marginLeft: "auto",
+                fontSize: 11,
+                color: "var(--text-3)",
+              }}
+            >
+              {task.createdAt ? fmtAgo(task.createdAt, language) : "—"}
             </span>
           </div>
-          <div style={{ fontSize: 12.5, color: "var(--text)", marginBottom: 2 }}>{task.title}</div>
+          <div
+            style={{ fontSize: 12.5, color: "var(--text)", marginBottom: 2 }}
+          >
+            {task.title}
+          </div>
           {task.awaitingFrom ? (
             <div style={{ fontSize: 11, color: "var(--text-3)" }}>
               {t("dashboard.awaiting", { role: task.awaitingFrom })}
@@ -1676,14 +1954,21 @@ function CostByModel({
   if (status === "error")
     return <Empty title={t("dashboard.costUnavailable")} hint="—" />;
   const sorted = [...rows].sort((a, b) => b.usdCents - a.usdCents).slice(0, 6);
-  if (sorted.length === 0) return <Empty title={t("dashboard.noCost")} hint="—" />;
+  if (sorted.length === 0)
+    return <Empty title={t("dashboard.noCost")} hint="—" />;
   const max = Math.max(...sorted.map((r) => r.usdCents), 1);
   return (
     <div style={{ padding: "8px 0" }}>
       {sorted.map((r) => (
         <div
           key={r.key}
-          style={{ display: "flex", alignItems: "center", gap: 12, padding: "9px 16px", fontSize: 11.5 }}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+            padding: "9px 16px",
+            fontSize: 11.5,
+          }}
         >
           <span
             className="mono"
@@ -1742,7 +2027,12 @@ function ThroughputByAgent({
     return <Empty title={t("dashboard.throughputUnavailable")} hint="—" />;
   const top = agents.slice(0, 8);
   if (top.length === 0)
-    return <Empty title={t("dashboard.noThroughput")} hint={t("dashboard.workflowNotLoaded")} />;
+    return (
+      <Empty
+        title={t("dashboard.noThroughput")}
+        hint={t("dashboard.workflowNotLoaded")}
+      />
+    );
   const max = Math.max(...top.map((a) => a.subjects), 1);
   return (
     <div style={{ padding: "8px 0" }}>
@@ -1775,7 +2065,12 @@ function ThroughputByAgent({
           </div>
           <span
             className="mono"
-            style={{ width: 78, textAlign: "right", color: "var(--text)", whiteSpace: "nowrap" }}
+            style={{
+              width: 78,
+              textAlign: "right",
+              color: "var(--text)",
+              whiteSpace: "nowrap",
+            }}
           >
             {fmtNum(a.subjects)}
             <span style={{ color: "var(--text-4)", fontSize: 10 }}>

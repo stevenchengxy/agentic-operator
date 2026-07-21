@@ -12,7 +12,7 @@ export default function PortalLoading() {
   return (
     <div
       role="status"
-      aria-label="Loading portal"
+      aria-label="Agentic Operator"
       style={{
         display: "grid",
         gridTemplateColumns: "64px minmax(0, 1fr)",

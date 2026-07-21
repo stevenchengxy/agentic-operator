@@ -16,8 +16,20 @@
  */
 
 import { Fragment, useMemo, useState } from "react";
-import { Badge, Button, Icon, Panel, Td, Th, useToast } from "@/app/portal/components";
-import { Field, SelectIn, TextIn } from "@/app/portal/components/settings/atoms";
+import {
+  Badge,
+  Button,
+  Icon,
+  Panel,
+  Td,
+  Th,
+  useToast,
+} from "@/app/portal/components";
+import {
+  Field,
+  SelectIn,
+  TextIn,
+} from "@/app/portal/components/settings/atoms";
 import { useI18n } from "@/app/portal/lib/preferences-context";
 import {
   useAddFleetEntry,
@@ -75,7 +87,7 @@ function ProviderCredentialsPanel({
   loading: boolean;
   error: Error | null;
 }) {
-  const { t } = useI18n();
+  const { t, language } = useI18n();
   const keys = useProviderKeys();
   const saveKey = useSaveProviderKey();
   const deleteKey = useDeleteProviderKey();
@@ -83,7 +95,10 @@ function ProviderCredentialsPanel({
   const toast = useToast();
   const [editing, setEditing] = useState<string | null>(null);
   const [candidate, setCandidate] = useState("");
-  const [feedback, setFeedback] = useState<{ ok: boolean; message: string } | null>(null);
+  const [feedback, setFeedback] = useState<{
+    ok: boolean;
+    message: string;
+  } | null>(null);
   const keyByProvider = useMemo(
     () => new Map((keys.data ?? []).map((key) => [key.provider, key])),
     [keys.data],
@@ -98,30 +113,48 @@ function ProviderCredentialsPanel({
   async function test(provider: string) {
     setFeedback(null);
     try {
-      const result = await testKey.mutateAsync({ provider, apiKey: candidate || undefined });
+      const result = await testKey.mutateAsync({
+        provider,
+        apiKey: candidate || undefined,
+      });
       setFeedback({ ok: result.ok, message: result.message });
     } catch (cause) {
-      setFeedback({ ok: false, message: cause instanceof Error ? cause.message : String(cause) });
+      setFeedback({
+        ok: false,
+        message: cause instanceof Error ? cause.message : String(cause),
+      });
     }
   }
 
   async function save(provider: string) {
     setFeedback(null);
     try {
-      const result = await saveKey.mutateAsync({ provider, apiKey: candidate.trim() });
+      const result = await saveKey.mutateAsync({
+        provider,
+        apiKey: candidate.trim(),
+      });
       setCandidate("");
-      setFeedback({ ok: true, message: t("models.keySaved", { key: result.keyMasked ?? "—" }) });
+      setFeedback({
+        ok: true,
+        message: t("models.keySaved", { key: result.keyMasked ?? "—" }),
+      });
     } catch (cause) {
-      setFeedback({ ok: false, message: cause instanceof Error ? cause.message : String(cause) });
+      setFeedback({
+        ok: false,
+        message: cause instanceof Error ? cause.message : String(cause),
+      });
     }
   }
 
   async function revoke(provider: string, providerName: string) {
-    if (!window.confirm(t("models.revokeKeyConfirm", { provider: providerName }))) return;
+    if (
+      !window.confirm(t("models.revokeKeyConfirm", { provider: providerName }))
+    )
+      return;
     setFeedback(null);
     try {
       const result = await deleteKey.mutateAsync(provider);
-      setEditing((current) => current === provider ? null : current);
+      setEditing((current) => (current === provider ? null : current));
       setCandidate("");
       toast({
         tone: "green",
@@ -147,12 +180,17 @@ function ProviderCredentialsPanel({
       padded={false}
     >
       {(error || keys.error) && (
-        <div role="alert" style={{ padding: 14, color: "var(--red)", fontSize: 12 }}>
+        <div
+          role="alert"
+          style={{ padding: 14, color: "var(--red)", fontSize: 12 }}
+        >
           {t("models.providersLoadFailed")}: {(error ?? keys.error)?.message}
         </div>
       )}
       {!error && !keys.error && (
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+        <table
+          style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}
+        >
           <thead>
             <tr style={{ borderBottom: "1px solid var(--border)" }}>
               <Th>{t("models.colProvider")}</Th>
@@ -164,10 +202,14 @@ function ProviderCredentialsPanel({
           </thead>
           <tbody>
             {(loading || keys.isLoading) && (
-              <tr><Td colSpan={5}>{t("models.loadingProviders")}</Td></tr>
+              <tr>
+                <Td colSpan={5}>{t("models.loadingProviders")}</Td>
+              </tr>
             )}
             {!loading && !keys.isLoading && providers.length === 0 && (
-              <tr><Td colSpan={5}>{t("models.noRuntimeProviders")}</Td></tr>
+              <tr>
+                <Td colSpan={5}>{t("models.noRuntimeProviders")}</Td>
+              </tr>
             )}
             {providers.map((provider) => {
               const meta = keyByProvider.get(provider.id);
@@ -175,30 +217,60 @@ function ProviderCredentialsPanel({
               const isEditing = editing === provider.id;
               return (
                 <Fragment key={provider.id}>
-                  <tr style={{ borderBottom: isEditing ? "none" : "1px solid var(--border)" }}>
+                  <tr
+                    style={{
+                      borderBottom: isEditing
+                        ? "none"
+                        : "1px solid var(--border)",
+                    }}
+                  >
                     <Td>
-                      <span style={{ color: "var(--text)" }}>{provider.name}</span>{" "}
-                      <span className="mono" style={{ color: "var(--text-3)", fontSize: 10.5 }}>{provider.id}</span>
+                      <span style={{ color: "var(--text)" }}>
+                        {provider.name}
+                      </span>{" "}
+                      <span
+                        className="mono"
+                        style={{ color: "var(--text-3)", fontSize: 10.5 }}
+                      >
+                        {provider.id}
+                      </span>
                     </Td>
                     <Td>
                       <Badge tone={configured ? "green" : "muted"}>
                         {configured
-                          ? meta?.keyMasked ?? t("models.keyConfigured")
+                          ? (meta?.keyMasked ?? t("models.keyConfigured"))
                           : t("models.keyMissing")}
                       </Badge>
                     </Td>
                     <Td>
-                      <span className="mono" style={{ color: "var(--text-2)", fontSize: 11 }}>
-                        {meta?.source ?? (configured ? "runtime" : "none")} · {meta?.scope ?? "workspace"}
+                      <span
+                        className="mono"
+                        style={{ color: "var(--text-2)", fontSize: 11 }}
+                      >
+                        {t(
+                          `models.keySource_${meta?.source ?? (configured ? "runtime" : "none")}`,
+                        )}{" "}
+                        · {t(`models.keyScope_${meta?.scope ?? "workspace"}`)}
                       </span>
                     </Td>
                     <Td>
                       <span style={{ color: "var(--text-3)", fontSize: 11 }}>
-                        {meta?.setAt ? new Date(meta.setAt).toLocaleString() : "—"}
+                        {meta?.setAt
+                          ? new Date(meta.setAt).toLocaleString(
+                              language === "zh" ? "zh-CN" : "en-US",
+                            )
+                          : "—"}
                       </span>
                     </Td>
                     <Td style={{ textAlign: "right" }}>
-                      <span style={{ display: "inline-flex", gap: 6, alignItems: "center", justifyContent: "flex-end" }}>
+                      <span
+                        style={{
+                          display: "inline-flex",
+                          gap: 6,
+                          alignItems: "center",
+                          justifyContent: "flex-end",
+                        }}
+                      >
                         {configured && meta?.source === "env" && (
                           <span
                             title={t("models.envKeyRemovalHint")}
@@ -211,16 +283,31 @@ function ProviderCredentialsPanel({
                           <Button
                             small
                             tone="danger"
-                            onClick={() => void revoke(provider.id, provider.name)}
+                            onClick={() =>
+                              void revoke(provider.id, provider.name)
+                            }
                             disabled={deleteKey.isPending}
                           >
-                            {deleteKey.isPending && deleteKey.variables === provider.id
+                            {deleteKey.isPending &&
+                            deleteKey.variables === provider.id
                               ? t("models.revokingKey")
                               : t("models.revokeKey")}
                           </Button>
                         )}
-                        <Button small tone="ghost" onClick={() => isEditing ? setEditing(null) : beginEdit(provider.id)}>
-                          {isEditing ? t("models.cancelKeyEdit") : configured ? t("models.rotateKey") : t("models.configureKey")}
+                        <Button
+                          small
+                          tone="ghost"
+                          onClick={() =>
+                            isEditing
+                              ? setEditing(null)
+                              : beginEdit(provider.id)
+                          }
+                        >
+                          {isEditing
+                            ? t("models.cancelKeyEdit")
+                            : configured
+                              ? t("models.rotateKey")
+                              : t("models.configureKey")}
                         </Button>
                       </span>
                     </Td>
@@ -228,13 +315,27 @@ function ProviderCredentialsPanel({
                   {isEditing && (
                     <tr style={{ borderBottom: "1px solid var(--border)" }}>
                       <Td colSpan={5} style={{ padding: "10px 14px" }}>
-                        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                        <div
+                          style={{
+                            display: "flex",
+                            gap: 8,
+                            alignItems: "center",
+                          }}
+                        >
                           <input
                             type="password"
                             value={candidate}
-                            onChange={(event) => setCandidate(event.target.value)}
-                            placeholder={configured ? t("models.newKeyPlaceholder") : t("models.keyPlaceholder")}
-                            aria-label={t("models.keyForProvider", { provider: provider.name })}
+                            onChange={(event) =>
+                              setCandidate(event.target.value)
+                            }
+                            placeholder={
+                              configured
+                                ? t("models.newKeyPlaceholder")
+                                : t("models.keyPlaceholder")
+                            }
+                            aria-label={t("models.keyForProvider", {
+                              provider: provider.name,
+                            })}
                             autoComplete="new-password"
                             style={{
                               flex: 1,
@@ -252,21 +353,39 @@ function ProviderCredentialsPanel({
                             small
                             tone="ghost"
                             onClick={() => void test(provider.id)}
-                            disabled={testKey.isPending || (!candidate.trim() && !configured)}
+                            disabled={
+                              testKey.isPending ||
+                              (!candidate.trim() && !configured)
+                            }
                           >
-                            {testKey.isPending ? t("models.testingKey") : t("models.testKey")}
+                            {testKey.isPending
+                              ? t("models.testingKey")
+                              : t("models.testKey")}
                           </Button>
                           <Button
                             small
                             tone="primary"
                             onClick={() => void save(provider.id)}
-                            disabled={saveKey.isPending || candidate.trim().length < 8}
+                            disabled={
+                              saveKey.isPending || candidate.trim().length < 8
+                            }
                           >
-                            {saveKey.isPending ? t("models.savingKey") : t("models.saveWorkspaceKey")}
+                            {saveKey.isPending
+                              ? t("models.savingKey")
+                              : t("models.saveWorkspaceKey")}
                           </Button>
                         </div>
                         {feedback && (
-                          <div role="status" style={{ marginTop: 8, color: feedback.ok ? "var(--green)" : "var(--red)", fontSize: 11.5 }}>
+                          <div
+                            role="status"
+                            style={{
+                              marginTop: 8,
+                              color: feedback.ok
+                                ? "var(--green)"
+                                : "var(--red)",
+                              fontSize: 11.5,
+                            }}
+                          >
                             {feedback.message}
                           </div>
                         )}
@@ -294,7 +413,7 @@ function ConfiguredFleetPanel({
   loading: boolean;
   error: Error | null;
 }) {
-  const { t } = useI18n();
+  const { t, language } = useI18n();
   const toast = useToast();
   const updateMut = useUpdateFleetEntry();
   const deleteMut = useDeleteFleetEntry();
@@ -310,7 +429,9 @@ function ConfiguredFleetPanel({
       subtitle={t("models.configuredSubtitle")}
       padded={false}
     >
-      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+      <table
+        style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}
+      >
         <thead>
           <tr style={{ borderBottom: "1px solid var(--border)" }}>
             <Th>{t("models.colModel")}</Th>
@@ -357,9 +478,19 @@ function ConfiguredFleetPanel({
               <Td>
                 <span
                   title={m.availabilityMessage ?? undefined}
-                  style={{ display: "inline-flex", flexDirection: "column", gap: 3 }}
+                  style={{
+                    display: "inline-flex",
+                    flexDirection: "column",
+                    gap: 3,
+                  }}
                 >
-                  <Badge tone={m.availability === "provider_confirmed" ? "green" : "amber"}>
+                  <Badge
+                    tone={
+                      m.availability === "provider_confirmed"
+                        ? "green"
+                        : "amber"
+                    }
+                  >
                     {m.availability === "provider_confirmed"
                       ? t("models.availabilityConfirmed")
                       : t("models.availabilityUnverified")}
@@ -367,7 +498,9 @@ function ConfiguredFleetPanel({
                   {m.availabilityCheckedAt && (
                     <span style={{ color: "var(--text-4)", fontSize: 9.5 }}>
                       {t("models.availabilityChecked", {
-                        time: new Date(m.availabilityCheckedAt).toLocaleString(),
+                        time: new Date(m.availabilityCheckedAt).toLocaleString(
+                          language === "zh" ? "zh-CN" : "en-US",
+                        ),
                       })}
                     </span>
                   )}
@@ -427,11 +560,19 @@ function ConfiguredFleetPanel({
                   small
                   tone="ghost"
                   onClick={async () => {
-                    if (!confirm(t("models.removeConfirm", { name: m.modelName }))) return;
+                    if (
+                      !confirm(t("models.removeConfirm", { name: m.modelName }))
+                    )
+                      return;
                     try {
                       await deleteMut.mutateAsync(m.id);
                     } catch (err) {
-                      alert(t("models.removeFailed", { name: m.modelName, error: (err as Error).message }));
+                      alert(
+                        t("models.removeFailed", {
+                          name: m.modelName,
+                          error: (err as Error).message,
+                        }),
+                      );
                     }
                   }}
                   disabled={deleteMut.isPending}
@@ -460,9 +601,11 @@ function BrowseModelsPanel({
 }) {
   const { t } = useI18n();
   const [pickedProvider, setPickedProvider] = useState<string>("");
-  const provider = providers.some((candidate) => candidate.id === pickedProvider)
+  const provider = providers.some(
+    (candidate) => candidate.id === pickedProvider,
+  )
     ? pickedProvider
-    : providers[0]?.id ?? "";
+    : (providers[0]?.id ?? "");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [freeText, setFreeText] = useState("");
   const available = useAvailableModels(provider);
@@ -534,7 +677,10 @@ function BrowseModelsPanel({
             <SelectIn
               value={provider}
               onChange={pickProvider}
-              options={providers.map((item) => ({ value: item.id, label: item.name }))}
+              options={providers.map((item) => ({
+                value: item.id,
+                label: item.name,
+              }))}
               disabled={providersLoading || providers.length === 0}
             />
           </Field>
@@ -546,19 +692,23 @@ function BrowseModelsPanel({
             disabled={available.isFetching || !provider}
           >
             <Icon name="replay" size={11} />{" "}
-            {available.isFetching ? t("models.refreshing") : t("models.refresh")}
+            {available.isFetching
+              ? t("models.refreshing")
+              : t("models.refresh")}
           </Button>
         </div>
 
         {providersError && (
           <Banner tone="warn">
-            <Icon name="alert" size={11} /> {t("models.providersLoadFailed")}: {providersError.message}
+            <Icon name="alert" size={11} /> {t("models.providersLoadFailed")}:{" "}
+            {providersError.message}
           </Banner>
         )}
 
         {available.isError ? (
           <Banner tone="warn">
-            <Icon name="alert" size={11} /> {t("models.modelListFailed")}: {available.error.message}
+            <Icon name="alert" size={11} /> {t("models.modelListFailed")}:{" "}
+            {available.error.message}
           </Banner>
         ) : (
           <SourceBanner
@@ -593,9 +743,28 @@ function BrowseModelsPanel({
 
         {!available.isLoading && !available.isError && models.length > 0 && (
           <>
-            <div style={{ maxHeight: 360, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 4 }}>
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
-                <thead style={{ position: "sticky", top: 0, background: "var(--bg-2)" }}>
+            <div
+              style={{
+                maxHeight: 360,
+                overflowY: "auto",
+                border: "1px solid var(--border)",
+                borderRadius: 4,
+              }}
+            >
+              <table
+                style={{
+                  width: "100%",
+                  borderCollapse: "collapse",
+                  fontSize: 12.5,
+                }}
+              >
+                <thead
+                  style={{
+                    position: "sticky",
+                    top: 0,
+                    background: "var(--bg-2)",
+                  }}
+                >
                   <tr style={{ borderBottom: "1px solid var(--border)" }}>
                     <Th style={{ width: 32 }} />
                     <Th>{t("models.colModelId")}</Th>
@@ -635,7 +804,9 @@ function BrowseModelsPanel({
                 disabled={addableCount === 0 || addMut.isPending}
               >
                 <Icon name="plus" size={11} />{" "}
-                {addMut.isPending ? t("models.adding") : t("models.addToFleet", { count: addableCount })}
+                {addMut.isPending
+                  ? t("models.adding")
+                  : t("models.addToFleet", { count: addableCount })}
               </Button>
             </div>
           </>
@@ -665,23 +836,37 @@ function SourceBanner({
   if (source === "live") {
     return (
       <Banner tone="ok">
-        <Icon name="check" size={11} /> {t("models.liveBanner", { count: modelCount })}
+        <Icon name="check" size={11} />{" "}
+        {t("models.liveBanner", { count: modelCount })}
       </Banner>
     );
   }
   return (
     <Banner tone="warn">
-      <Icon name="alert" size={11} />{" "}
-      {message ?? t("models.unsupportedBanner")}
+      <Icon name="alert" size={11} /> {message ?? t("models.unsupportedBanner")}
     </Banner>
   );
 }
 
-function Banner({ tone, children }: { tone: "ok" | "warn"; children: React.ReactNode }) {
+function Banner({
+  tone,
+  children,
+}: {
+  tone: "ok" | "warn";
+  children: React.ReactNode;
+}) {
   const colors =
     tone === "ok"
-      ? { bg: "color-mix(in srgb, var(--green) 8%, transparent)", border: "color-mix(in srgb, var(--green) 30%, transparent)", text: "var(--text-2)" }
-      : { bg: "color-mix(in srgb, var(--amber) 8%, transparent)", border: "color-mix(in srgb, var(--amber) 30%, transparent)", text: "var(--text-2)" };
+      ? {
+          bg: "color-mix(in srgb, var(--green) 8%, transparent)",
+          border: "color-mix(in srgb, var(--green) 30%, transparent)",
+          text: "var(--text-2)",
+        }
+      : {
+          bg: "color-mix(in srgb, var(--amber) 8%, transparent)",
+          border: "color-mix(in srgb, var(--amber) 30%, transparent)",
+          text: "var(--text-2)",
+        };
   return (
     <div
       style={{
@@ -710,7 +895,7 @@ function ModelRow({
   checked: boolean;
   onToggle: () => void;
 }) {
-  const { t } = useI18n();
+  const { t, language } = useI18n();
   return (
     <tr
       style={{
@@ -738,14 +923,17 @@ function ModelRow({
         )}
         {!model.selectable && (
           <div style={{ color: "var(--text-3)", fontSize: 10.5, marginTop: 3 }}>
-            {t("models.notSelectable")} · {formatPolicyReason(model.unavailableReason)}
+            {t("models.notSelectable")} ·{" "}
+            {formatPolicyReason(model.unavailableReason, t)}
           </div>
         )}
       </Td>
       <Td>
         <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
           <Badge tone={tierTone(model.tier)}>
-            {model.tier ? `${model.tier}-tier` : t("models.tierUnclassified")}
+            {model.tier
+              ? t(`models.tier_${model.tier}`)
+              : t("models.tierUnclassified")}
           </Badge>
           <Badge
             tone={
@@ -756,7 +944,7 @@ function ModelRow({
                   : "muted"
             }
           >
-            {model.status}
+            {t(`models.status_${model.status}`)}
           </Badge>
         </div>
       </Td>
@@ -765,7 +953,11 @@ function ModelRow({
           className="mono"
           title={
             model.contextLength && model.contextLength > 0
-              ? `${model.contextLength.toLocaleString("en-US")} tokens`
+              ? t("models.contextTokens", {
+                  count: model.contextLength.toLocaleString(
+                    language === "zh" ? "zh-CN" : "en-US",
+                  ),
+                })
               : undefined
           }
           style={{ color: "var(--text-2)" }}
@@ -783,7 +975,7 @@ function ModelRow({
       </Td>
       <Td>
         <Badge tone={model.origin === "live" ? "blue" : "muted"}>
-          {model.origin}
+          {t(`models.origin_${model.origin}`)}
         </Badge>
       </Td>
     </tr>
@@ -796,7 +988,8 @@ function CapabilityChips({ model }: { model: AvailableModel }) {
   if (model.vision) chips.push("vision");
   if (model.tools) chips.push("tools");
   if (model.reasoning) chips.push("reasoning");
-  if (chips.length === 0) return <span style={{ color: "var(--text-3)", fontSize: 11 }}>—</span>;
+  if (chips.length === 0)
+    return <span style={{ color: "var(--text-3)", fontSize: 11 }}>—</span>;
   return (
     <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
       {chips.map((c) => (
@@ -817,14 +1010,29 @@ function tierTone(
   return "muted";
 }
 
-function formatPolicyReason(reason: string | null): string {
-  if (!reason) return "catalog policy";
-  return reason.replaceAll("_", " ");
+function formatPolicyReason(
+  reason: string | null,
+  t: ReturnType<typeof useI18n>["t"],
+): string {
+  if (!reason) return t("models.policyReason_catalog_policy");
+  const known = new Set([
+    "current",
+    "unverified",
+    "older_than_365_days",
+    "deprecated",
+    "sunset",
+    "expired",
+    "restricted",
+  ]);
+  return known.has(reason)
+    ? t(`models.policyReason_${reason}`)
+    : reason.replaceAll("_", " ");
 }
 
 function formatContext(ctx: number | null): string {
   if (ctx === null || ctx <= 0) return "—";
-  if (ctx >= 1_000_000) return `${(ctx / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
+  if (ctx >= 1_000_000)
+    return `${(ctx / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
   if (ctx >= 1_000) return `${Math.round(ctx / 1_000)}k`;
   return String(ctx);
 }
@@ -863,7 +1071,8 @@ function FreeTextAdd({
       }}
     >
       <div style={{ fontSize: 12, color: "var(--text-2)" }}>
-        {t("models.freeTextDescPrefix")} <span className="mono">{provider}</span>{" "}
+        {t("models.freeTextDescPrefix")}{" "}
+        <span className="mono">{provider}</span>{" "}
         {t("models.freeTextDescSuffix")}
       </div>
       <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -893,11 +1102,20 @@ function FreeTextAdd({
 
 function FallbackChainPanel({ fleet }: { fleet: FleetEntry[] }) {
   const { t } = useI18n();
-  const chain = fleet.filter((m) => m.role === "primary" || m.role === "fallback");
+  const chain = fleet.filter(
+    (m) => m.role === "primary" || m.role === "fallback",
+  );
   if (chain.length === 0) return null;
   return (
     <Panel title={t("models.fallbackTitle")} padded>
-      <div style={{ fontSize: 12.5, color: "var(--text-2)", marginBottom: 10, lineHeight: 1.55 }}>
+      <div
+        style={{
+          fontSize: 12.5,
+          color: "var(--text-2)",
+          marginBottom: 10,
+          lineHeight: 1.55,
+        }}
+      >
         {t("models.fallbackDesc")}
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
@@ -924,16 +1142,23 @@ function FallbackChainPanel({ fleet }: { fleet: FleetEntry[] }) {
             >
               {i + 1}.
             </span>
-            <span className="mono" style={{ fontSize: 12, color: "var(--text)", flex: 1 }}>
+            <span
+              className="mono"
+              style={{ fontSize: 12, color: "var(--text)", flex: 1 }}
+            >
               {m.alias}
             </span>
             <Badge tone="muted">{m.provider}</Badge>
-            <Badge tone={m.availability === "provider_confirmed" ? "green" : "amber"}>
+            <Badge
+              tone={m.availability === "provider_confirmed" ? "green" : "amber"}
+            >
               {m.availability === "provider_confirmed"
                 ? t("models.availabilityConfirmed")
                 : t("models.availabilityUnverified")}
             </Badge>
-            <Badge tone={m.role === "primary" ? "signal" : "muted"}>{t(`models.role_${m.role}`)}</Badge>
+            <Badge tone={m.role === "primary" ? "signal" : "muted"}>
+              {t(`models.role_${m.role}`)}
+            </Badge>
           </div>
         ))}
       </div>

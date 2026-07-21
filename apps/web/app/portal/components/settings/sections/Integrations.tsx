@@ -14,6 +14,7 @@
 import { useMemo, useState } from "react";
 import { Button, Icon, Panel } from "@/app/portal/components";
 import { Field, StatusPill, TextIn } from "@/app/portal/components/settings/atoms";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 import {
   useDeleteIntegration,
   useIntegrations,
@@ -41,6 +42,7 @@ interface EditorState {
 }
 
 export function IntegrationsSection() {
+  const { t, language } = useI18n();
   const q = useIntegrations();
   const upsert = useUpsertIntegration();
   const del = useDeleteIntegration();
@@ -99,7 +101,7 @@ export function IntegrationsSection() {
   }
 
   async function remove(provider: string, name: string) {
-    if (!confirm(`Remove the ${name} integration? Agents using it will lose access.`)) return;
+    if (!confirm(t("integrationsSection.removeConfirm", { name }))) return;
     setError(null);
     try {
       await del.mutateAsync(provider);
@@ -113,7 +115,9 @@ export function IntegrationsSection() {
     setError(null);
     try {
       const r = await test.mutateAsync(provider);
-      if (!r.ok) setError(`Connection test failed: ${r.message ?? "unknown error"}`);
+      if (!r.ok) setError(t("integrationsSection.testFailed", {
+        error: r.message ?? t("integrationsSection.unknownError"),
+      }));
     } catch (err) {
       setError((err as Error).message);
     }
@@ -141,8 +145,8 @@ export function IntegrationsSection() {
       )}
 
       <Panel
-        title={`Integrations · ${integrations.length}`}
-        subtitle="External systems this workspace can reach. API keys are encrypted at rest."
+        title={t("integrations.title", { n: integrations.length })}
+        subtitle={t("integrationsSection.subtitle")}
         padded={false}
         action={
           addable.length > 0 ? (
@@ -153,25 +157,27 @@ export function IntegrationsSection() {
               onClick={() => openNew(addable[0]!)}
               disabled={!!editor}
             >
-              {addable.length === 1 ? `Add ${addable[0]!.name}` : "New integration"}
+              {addable.length === 1
+                ? t("integrationsSection.addProvider", { name: addable[0]!.name })
+                : t("integrations.newIntegration")}
             </Button>
           ) : undefined
         }
       >
         {q.isLoading && (
           <div style={{ padding: 16, fontSize: 12.5, color: "var(--text-3)" }}>
-            Loading integrations…
+            {t("integrationsSection.loading")}
           </div>
         )}
         {q.isError && (
           <div style={{ padding: 16, fontSize: 12.5, color: "var(--red)" }}>
-            Couldn’t reach the API. Integrations are unavailable.
+            {t("integrationsSection.unavailable")}
           </div>
         )}
         {!q.isLoading && !q.isError && integrations.length === 0 && (
           <div style={{ padding: 16, fontSize: 12.5, color: "var(--text-3)" }}>
-            No integrations configured yet.
-            {addable.length > 0 && ` Add ${addable[0]!.name} to get started.`}
+            {t("integrationsSection.none")}
+            {addable.length > 0 && ` ${t("integrationsSection.addToStart", { name: addable[0]!.name })}`}
           </div>
         )}
 
@@ -214,16 +220,20 @@ export function IntegrationsSection() {
                   textOverflow: "ellipsis",
                 }}
               >
-                {i.baseUrl ?? "no base URL"} · {i.hasKey ? (i.keyMasked ?? "key set") : "no key"}
+                {i.baseUrl ?? t("integrationsSection.noBaseUrl")} · {i.hasKey
+                  ? (i.keyMasked ?? t("integrationsSection.keySet"))
+                  : t("integrationsSection.noKey")}
               </div>
             </div>
             <div style={{ fontSize: 11.5, color: "var(--text-2)" }}>
               {i.lastError && i.status === "error" ? (
                 <span style={{ color: "var(--red)" }}>{i.lastError}</span>
               ) : i.lastCheckedAt ? (
-                `Checked ${new Date(i.lastCheckedAt).toLocaleString()}`
+                t("integrationsSection.checkedAt", {
+                  time: new Date(i.lastCheckedAt).toLocaleString(language === "zh" ? "zh-CN" : "en-US"),
+                })
               ) : (
-                "Not tested yet"
+                t("integrationsSection.notTested")
               )}
             </div>
             <div>
@@ -235,14 +245,30 @@ export function IntegrationsSection() {
                 tone="ghost"
                 onClick={() => runTest(i.provider)}
                 disabled={test.isPending || !i.hasKey}
-                title={i.hasKey ? "Test connection" : "Add an API key first"}
+                title={i.hasKey
+                  ? t("integrationsSection.testConnection")
+                  : t("integrationsSection.addKeyFirst")}
               >
-                {test.isPending && test.variables === i.provider ? "Testing…" : "Test"}
+                {test.isPending && test.variables === i.provider
+                  ? t("integrationsSection.testing")
+                  : t("integrationsSection.test")}
               </Button>
-              <Button small tone="ghost" onClick={() => openEdit(i)} disabled={!!editor}>
+              <Button
+                small
+                tone="ghost"
+                onClick={() => openEdit(i)}
+                disabled={!!editor}
+                ariaLabel={t("integrationsSection.configureAria", { name: i.name })}
+              >
                 <Icon name="settings" size={10} />
               </Button>
-              <Button small tone="ghost" onClick={() => remove(i.provider, i.name)} disabled={del.isPending}>
+              <Button
+                small
+                tone="ghost"
+                onClick={() => remove(i.provider, i.name)}
+                disabled={del.isPending}
+                ariaLabel={t("integrationsSection.removeAria", { name: i.name })}
+              >
                 <Icon name="x" size={10} />
               </Button>
             </div>
@@ -252,45 +278,49 @@ export function IntegrationsSection() {
 
       {editor && (
         <Panel
-          title={`${editor.isNew ? "Add" : "Configure"} ${editor.name}`}
+          title={editor.isNew
+            ? t("integrationsSection.addTitle", { name: editor.name })
+            : t("integrationsSection.configureTitle", { name: editor.name })}
           subtitle={
             available.find((a) => a.id === editor.provider)?.description ??
-            "Configure the base URL and API key."
+            t("integrationsSection.configureFallback")
           }
           padded
         >
           <div style={{ display: "flex", flexDirection: "column" }}>
-            <Field label="Base URL" hint="The provider's API root. Falls back to the env/default when blank.">
+            <Field label={t("integrationsSection.baseUrl")} hint={t("integrationsSection.baseUrlHint")}>
               <TextIn
                 value={editor.baseUrl}
                 onChange={(v) => setEditor({ ...editor, baseUrl: v })}
                 placeholder="https://api.gohire.io/v1"
                 mono
-                ariaLabel="Base URL"
+                ariaLabel={t("integrationsSection.baseUrl")}
               />
             </Field>
             <Field
-              label="API key"
+              label={t("integrationsSection.apiKey")}
               hint={
                 editor.hadKey
-                  ? "A key is stored (encrypted). Leave blank to keep it; type a new one to replace."
-                  : "Stored encrypted at rest; never shown again after saving."
+                  ? t("integrationsSection.keyStoredHint")
+                  : t("integrationsSection.newKeyHint")
               }
             >
               <TextIn
                 value={editor.apiKey}
                 onChange={(v) => setEditor({ ...editor, apiKey: v })}
-                placeholder={editor.hadKey ? "•••••••• (leave blank to keep)" : "Paste the API key from GoHire"}
+                placeholder={editor.hadKey
+                  ? t("integrationsSection.keepKeyPlaceholder")
+                  : t("integrationsSection.keyPlaceholder")}
                 mono
-                ariaLabel="API key"
+                ariaLabel={t("integrationsSection.apiKey")}
               />
             </Field>
             <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
               <Button tone="primary" small onClick={save} disabled={upsert.isPending}>
-                {upsert.isPending ? "Saving…" : "Save"}
+                {upsert.isPending ? t("common.saving") : t("integrationsSection.save")}
               </Button>
               <Button tone="ghost" small onClick={() => setEditor(null)} disabled={upsert.isPending}>
-                Cancel
+                {t("integrationsSection.cancel")}
               </Button>
               {!editor.isNew && (
                 <Button
@@ -299,7 +329,9 @@ export function IntegrationsSection() {
                   onClick={() => runTest(editor.provider)}
                   disabled={test.isPending}
                 >
-                  {test.isPending ? "Testing…" : "Test connection"}
+                  {test.isPending
+                    ? t("integrationsSection.testing")
+                    : t("integrationsSection.testConnection")}
                 </Button>
               )}
             </div>

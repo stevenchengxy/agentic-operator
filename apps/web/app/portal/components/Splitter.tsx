@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 
 /**
  * Splitter — thin drag handle for resizing adjacent panels.
@@ -50,6 +51,7 @@ export function Splitter({
   ariaLabel,
   ariaControls,
 }: SplitterProps) {
+  const { t } = useI18n();
   const [hov, setHov] = useState(false);
   const isX = axis === "x";
 
@@ -140,7 +142,7 @@ export function Splitter({
       }}
       role="separator"
       aria-orientation={isX ? "vertical" : "horizontal"}
-      aria-label={ariaLabel ?? "panel splitter"}
+      aria-label={ariaLabel ?? t("common.panelSplitter")}
       aria-controls={ariaControls}
       aria-valuenow={getValue()}
       aria-valuemin={min}

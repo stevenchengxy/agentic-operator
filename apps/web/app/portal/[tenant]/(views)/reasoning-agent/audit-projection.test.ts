@@ -1,9 +1,20 @@
 import { describe, expect, it } from "vitest";
+import type { Translate } from "@/app/portal/lib/preferences-context";
+import { translate } from "@/lib/i18n";
 import type {
   ReasoningRunResponse,
   ReasoningRunStep,
 } from "@/lib/hooks/useReasoningAgentContext";
 import { projectReasoningToolAudit } from "./audit-projection";
+
+const zhT: Translate = (key, vars) => translate("zh", key, vars);
+
+function projectAudit(
+  steps: ReasoningRunStep[],
+  children: ReasoningRunResponse["children"] = [],
+) {
+  return projectReasoningToolAudit(steps, zhT, children);
+}
 
 const baseStep = {
   id: "step-1",
@@ -112,7 +123,7 @@ describe("projectReasoningToolAudit", () => {
       },
     ];
 
-    const audit = projectReasoningToolAudit(steps);
+    const audit = projectAudit(steps);
     expect(audit.ruleSelection?.rules).toHaveLength(1);
     expect(audit.ruleSelection?.queryAgent.diagnostics).toEqual({
       scannedRuleCount: 262,
@@ -122,7 +133,7 @@ describe("projectReasoningToolAudit", () => {
   });
 
   it("ignores truncated or malformed receipts", () => {
-    const audit = projectReasoningToolAudit([
+    const audit = projectAudit([
       {
         ...baseStep,
         name: "select_applicable_rules",
@@ -156,7 +167,7 @@ describe("projectReasoningToolAudit", () => {
       steps: 1,
       assessmentCount: 2,
     };
-    const audit = projectReasoningToolAudit([
+    const audit = projectAudit([
       {
         ...baseStep,
         name: "compile_qualified_prompt",
@@ -191,7 +202,7 @@ describe("projectReasoningToolAudit", () => {
   });
 
   it("keeps historical full compiler tool payloads projectable", () => {
-    const audit = projectReasoningToolAudit([
+    const audit = projectAudit([
       {
         ...baseStep,
         name: "compile_qualified_prompt",
@@ -266,7 +277,7 @@ describe("projectReasoningToolAudit", () => {
       },
     ];
 
-    const audit = projectReasoningToolAudit([], children);
+    const audit = projectAudit([], children);
     expect(audit.executedQualifiedPrompt).toEqual({
       source: "verified-qualified-child-step",
       runId: "run-child",
@@ -319,9 +330,7 @@ describe("projectReasoningToolAudit", () => {
       },
     ] as ReasoningRunResponse["children"];
 
-    expect(
-      projectReasoningToolAudit([], children).executedQualifiedPrompt,
-    ).toBeNull();
+    expect(projectAudit([], children).executedQualifiedPrompt).toBeNull();
   });
 
   it("projects a generated Cypher receipt and semantic link paths", () => {
@@ -359,7 +368,7 @@ describe("projectReasoningToolAudit", () => {
         rowCount: 0,
       },
     ];
-    const audit = projectReasoningToolAudit([
+    const audit = projectAudit([
       {
         ...baseStep,
         name: "select_applicable_rules",

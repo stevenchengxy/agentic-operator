@@ -19,6 +19,30 @@
  */
 
 import { useEffect } from "react";
+import { useI18n } from "@/app/portal/lib/preferences-context";
+
+function localizedErrorDetail(
+  error: Error,
+  t: ReturnType<typeof useI18n>["t"],
+): string {
+  if (error.message === "Authentication service is unavailable") {
+    return t("portalError.authUnavailable");
+  }
+  const http = /^Authentication service returned HTTP (\d+)$/.exec(
+    error.message,
+  );
+  if (http) return t("portalError.authHttpError", { status: http[1]! });
+  if (error.message === "Authentication service returned invalid JSON") {
+    return t("portalError.authInvalidJson");
+  }
+  if (
+    error.message ===
+    "Authentication service returned an invalid session payload"
+  ) {
+    return t("portalError.authInvalidSession");
+  }
+  return error.message;
+}
 
 export default function PortalError({
   error,
@@ -27,6 +51,7 @@ export default function PortalError({
   error: Error & { digest?: string };
   reset: () => void;
 }) {
+  const { t } = useI18n();
   useEffect(() => {
     // Surface the error to the browser console so devs can debug. In
     // production the digest is the only identifier — server-side logs
@@ -70,7 +95,7 @@ export default function PortalError({
             marginBottom: 8,
           }}
         >
-          Portal error
+          {t("portalError.eyebrow")}
         </div>
         <h2
           style={{
@@ -82,7 +107,7 @@ export default function PortalError({
             letterSpacing: "-0.01em",
           }}
         >
-          Something broke while rendering this view.
+          {t("portalError.title")}
         </h2>
         <p
           style={{
@@ -92,8 +117,7 @@ export default function PortalError({
             lineHeight: 1.6,
           }}
         >
-          The control plane recovered but couldn&rsquo;t complete the page.
-          Retry the segment below, or hit refresh if it persists.
+          {t("portalError.description")}
         </p>
         {error.message && (
           <div
@@ -113,7 +137,7 @@ export default function PortalError({
               overflow: "auto",
             }}
           >
-            {error.message}
+            {localizedErrorDetail(error, t)}
             {error.digest && (
               <div style={{ marginTop: 6, color: "var(--text-4)" }}>
                 digest: {error.digest}
@@ -137,7 +161,7 @@ export default function PortalError({
             cursor: "pointer",
           }}
         >
-          Try again
+          {t("portalError.retry")}
         </button>
       </div>
     </div>

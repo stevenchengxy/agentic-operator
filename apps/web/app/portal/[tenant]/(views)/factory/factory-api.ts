@@ -1,3 +1,5 @@
+import type { Translate } from "@/app/portal/lib/preferences-context";
+
 export type FactoryApiResult<T> =
   | { ok: true; status: number; data: T }
   | { ok: false; status: number; message: string; code?: string };
@@ -26,7 +28,7 @@ function apiErrorCode(body: unknown): string | undefined {
  * Decode the factory API envelope without ever treating a JSON `{ ok: true }`
  * body as success when the HTTP request itself failed (or vice versa).
  */
-export async function decodeFactoryResponse<T>(response: JsonResponse): Promise<FactoryApiResult<T>> {
+export async function decodeFactoryResponse<T>(t: Translate, response: JsonResponse): Promise<FactoryApiResult<T>> {
   let body: unknown;
   try {
     body = await response.json();
@@ -34,7 +36,7 @@ export async function decodeFactoryResponse<T>(response: JsonResponse): Promise<
     return {
       ok: false,
       status: response.status,
-      message: `HTTP ${response.status} 返回了无效 JSON`,
+      message: t("factory.api.invalidJson", { status: response.status }),
     };
   }
 
@@ -53,7 +55,7 @@ export async function decodeFactoryResponse<T>(response: JsonResponse): Promise<
     return {
       ok: false,
       status: response.status,
-      message: apiErrorMessage(body) ?? "接口未返回成功状态",
+      message: apiErrorMessage(body) ?? t("factory.api.noSuccessStatus"),
       ...(code ? { code } : {}),
     };
   }
@@ -62,18 +64,18 @@ export async function decodeFactoryResponse<T>(response: JsonResponse): Promise<
     return {
       ok: false,
       status: response.status,
-      message: "接口成功响应缺少 data",
+      message: t("factory.api.missingData"),
     };
   }
 
   return { ok: true, status: response.status, data: body.data as T };
 }
 
-export function factoryNetworkFailure(error: unknown): FactoryApiResult<never> {
+export function factoryNetworkFailure(t: Translate, error: unknown): FactoryApiResult<never> {
   return {
     ok: false,
     status: 0,
-    message: error instanceof Error && error.message ? error.message : "网络请求失败",
+    message: error instanceof Error && error.message ? error.message : t("factory.api.networkFailure"),
   };
 }
 
@@ -81,7 +83,7 @@ export type HumanInteractionKind = "clarify" | "test_approval" | "boundary";
 
 /** Keep the exact one-shot interaction coordinates in one tested transport
  * builder. Callers cannot accidentally fall back to the old text-only body. */
-export function buildHumanInteractionSubmission(input: {
+export function buildHumanInteractionSubmission(t: Translate, input: {
   conversation: string;
   interactionId: string;
   kind: HumanInteractionKind;
@@ -91,7 +93,7 @@ export function buildHumanInteractionSubmission(input: {
   const interactionId = input.interactionId.trim();
   const text = input.text.trim();
   if (!conversation || !interactionId || !text) {
-    throw new Error("当前交互缺少会话、卡片编号或回复内容，不能安全提交");
+    throw new Error(t("factory.api.interactionIncomplete"));
   }
   return { conversation, interactionId, kind: input.kind, text };
 }

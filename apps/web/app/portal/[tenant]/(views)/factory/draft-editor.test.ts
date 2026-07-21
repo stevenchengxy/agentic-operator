@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { translate } from "@/lib/i18n";
 import {
   draftEditContainsSensitiveData,
   humanDraftEditFailure,
@@ -8,6 +9,8 @@ import {
   type DraftEditorContract,
   type DraftEditorFieldContract,
 } from "./draft-editor";
+
+const t = (key: string, vars?: Record<string, string | number>) => translate("zh", key, vars);
 
 const evidenceEffect = {
   carriedForward: false as const,
@@ -62,19 +65,19 @@ const expected = {
 
 describe("Factory draft editor contract", () => {
   it("accepts only the exact tenant/domain/draft/version response", () => {
-    expect(readDraftEditorContract(contract(), expected)).toMatchObject({ ok: true });
-    expect(readDraftEditorContract(contract(), { ...expected, tenantSlug: "tenant-two" })).toEqual({
+    expect(readDraftEditorContract(t, contract(), expected)).toMatchObject({ ok: true });
+    expect(readDraftEditorContract(t, contract(), { ...expected, tenantSlug: "tenant-two" })).toEqual({
       ok: false,
       message: "草稿编辑范围已经变化，请刷新后重新打开。",
     });
-    expect(readDraftEditorContract(contract(), { ...expected, versionId: "v-two" })).toMatchObject({ ok: false });
+    expect(readDraftEditorContract(t, contract(), { ...expected, versionId: "v-two" })).toMatchObject({ ok: false });
   });
 
   it("fails closed if a withheld field still carries its value or evidence rules are missing", () => {
-    expect(readDraftEditorContract(contract({
+    expect(readDraftEditorContract(t, contract({
       fields: [{ ...systemPrompt, valueStatus: "withheld_sensitive", value: "must-not-reach-browser" }],
     }), expected)).toMatchObject({ ok: false });
-    expect(readDraftEditorContract(contract({
+    expect(readDraftEditorContract(t, contract({
       evidenceEffect: { ...evidenceEffect, invalidatedForNewVersion: ["sandbox"] },
     }), expected)).toMatchObject({ ok: false });
   });
@@ -90,15 +93,15 @@ describe("Factory draft editor contract", () => {
       unsettable: false,
       value: ["WORK_REQUESTED"],
     };
-    const parsed = readDraftEditorContract(contract({ fields: [systemPrompt, readonlyTrigger] }), expected);
+    const parsed = readDraftEditorContract(t, contract({ fields: [systemPrompt, readonlyTrigger] }), expected);
     expect(parsed).toMatchObject({
       ok: true,
       data: { fields: [expect.objectContaining({ key: "systemPrompt", editable: true }), expect.objectContaining({ key: "trigger", editable: false })] },
     });
-    expect(readDraftEditorContract(contract({
+    expect(readDraftEditorContract(t, contract({
       fields: [{ ...readonlyTrigger, readonlyReason: undefined }],
     }), expected)).toMatchObject({ ok: false });
-    expect(readDraftEditorContract(contract({
+    expect(readDraftEditorContract(t, contract({
       fields: [{ ...readonlyTrigger, unsettable: true }],
     }), expected)).toMatchObject({ ok: false });
   });
@@ -106,7 +109,7 @@ describe("Factory draft editor contract", () => {
 
 describe("Factory draft field PATCH", () => {
   it("builds a one-field top-level patch and rejects no-op edits", () => {
-    expect(prepareDraftFieldEdit(systemPrompt, "new prompt", false)).toMatchObject({
+    expect(prepareDraftFieldEdit(t, systemPrompt, "new prompt", false)).toMatchObject({
       ok: true,
       data: {
         patch: { set: { systemPrompt: "new prompt" } },
@@ -114,7 +117,7 @@ describe("Factory draft field PATCH", () => {
         after: "new prompt",
       },
     });
-    expect(prepareDraftFieldEdit(systemPrompt, "old prompt", false)).toEqual({
+    expect(prepareDraftFieldEdit(t, systemPrompt, "old prompt", false)).toEqual({
       ok: false,
       message: "内容没有变化，不需要创建新版本。",
     });
@@ -131,11 +134,11 @@ describe("Factory draft field PATCH", () => {
       present: false,
       valueStatus: "available",
     };
-    expect(prepareDraftFieldEdit(arrayField, '["ONE","TWO"]', false)).toMatchObject({
+    expect(prepareDraftFieldEdit(t, arrayField, '["ONE","TWO"]', false)).toMatchObject({
       ok: true,
       data: { patch: { set: { anyServerField: ["ONE", "TWO"] } } },
     });
-    expect(prepareDraftFieldEdit({ ...arrayField, valueType: "integer" }, "2.5", false)).toMatchObject({ ok: false });
+    expect(prepareDraftFieldEdit(t, { ...arrayField, valueType: "integer" }, "2.5", false)).toMatchObject({ ok: false });
   });
 
   it("never builds a request containing credentials, fixture bytes or fixture asset ids", () => {
@@ -149,21 +152,21 @@ describe("Factory draft field PATCH", () => {
       present: false,
       valueStatus: "available",
     };
-    expect(prepareDraftFieldEdit(jsonField, '{"api_key":"secret-value"}', false)).toMatchObject({ ok: false });
-    expect(prepareDraftFieldEdit(jsonField, '{"asset_id":"ffa-0123456789abcdef0123456789abcdef"}', false)).toMatchObject({ ok: false });
-    expect(prepareDraftFieldEdit(jsonField, '{"base64":"aGVsbG8="}', false)).toMatchObject({ ok: false });
-    expect(prepareDraftFieldEdit(jsonField, '{"content":"aGVsbG8="}', false)).toMatchObject({ ok: false });
-    expect(prepareDraftFieldEdit(jsonField, '{"headers":{"X-Api-Key":"literal-value"}}', false)).toMatchObject({ ok: false });
-    expect(prepareDraftFieldEdit(jsonField, '{"auth":"this-is-a-real-secret-value"}', false)).toMatchObject({ ok: false });
-    expect(prepareDraftFieldEdit(jsonField, '{"authHeader":"this-is-a-real-secret-value"}', false)).toMatchObject({ ok: false });
-    expect(prepareDraftFieldEdit(jsonField, '{"key":"this-is-a-real-secret-value"}', false)).toMatchObject({ ok: false });
-    expect(prepareDraftFieldEdit(jsonField, '{"~key":"ordinary-business-value"}', false)).toMatchObject({ ok: true });
-    expect(prepareDraftFieldEdit({ ...systemPrompt, present: false, value: undefined }, "Bearer literal-token", false)).toMatchObject({ ok: false });
-    expect(prepareDraftFieldEdit(jsonField, '{"api_key_env":"SAFE_API_KEY"}', false)).toMatchObject({
+    expect(prepareDraftFieldEdit(t, jsonField, '{"api_key":"secret-value"}', false)).toMatchObject({ ok: false });
+    expect(prepareDraftFieldEdit(t, jsonField, '{"asset_id":"ffa-0123456789abcdef0123456789abcdef"}', false)).toMatchObject({ ok: false });
+    expect(prepareDraftFieldEdit(t, jsonField, '{"base64":"aGVsbG8="}', false)).toMatchObject({ ok: false });
+    expect(prepareDraftFieldEdit(t, jsonField, '{"content":"aGVsbG8="}', false)).toMatchObject({ ok: false });
+    expect(prepareDraftFieldEdit(t, jsonField, '{"headers":{"X-Api-Key":"literal-value"}}', false)).toMatchObject({ ok: false });
+    expect(prepareDraftFieldEdit(t, jsonField, '{"auth":"this-is-a-real-secret-value"}', false)).toMatchObject({ ok: false });
+    expect(prepareDraftFieldEdit(t, jsonField, '{"authHeader":"this-is-a-real-secret-value"}', false)).toMatchObject({ ok: false });
+    expect(prepareDraftFieldEdit(t, jsonField, '{"key":"this-is-a-real-secret-value"}', false)).toMatchObject({ ok: false });
+    expect(prepareDraftFieldEdit(t, jsonField, '{"~key":"ordinary-business-value"}', false)).toMatchObject({ ok: true });
+    expect(prepareDraftFieldEdit(t, { ...systemPrompt, present: false, value: undefined }, "Bearer literal-token", false)).toMatchObject({ ok: false });
+    expect(prepareDraftFieldEdit(t, jsonField, '{"api_key_env":"SAFE_API_KEY"}', false)).toMatchObject({
       ok: true,
       data: { patch: { set: { toolConfigs: { api_key_env: "SAFE_API_KEY" } } } },
     });
-    expect(prepareDraftFieldEdit(jsonField, '{"auth_env":"AUTH_SECRET_ENV","authHeaderEnv":"AUTH_HEADER_ENV","key_env":"SIGNING_KEY_ENV"}', false)).toMatchObject({ ok: true });
+    expect(prepareDraftFieldEdit(t, jsonField, '{"auth_env":"AUTH_SECRET_ENV","authHeaderEnv":"AUTH_HEADER_ENV","key_env":"SIGNING_KEY_ENV"}', false)).toMatchObject({ ok: true });
     expect(draftEditContainsSensitiveData("data:application/pdf;base64,aGVsbG8=")).toBe(true);
   });
 
@@ -180,20 +183,20 @@ describe("Factory draft field PATCH", () => {
       valueStatus: "available",
       value: ["WORK_REQUESTED"],
     };
-    expect(prepareDraftFieldEdit(readonlyTrigger, '["OTHER_EVENT"]', false)).toEqual({
+    expect(prepareDraftFieldEdit(t, readonlyTrigger, '["OTHER_EVENT"]', false)).toEqual({
       ok: false,
       message: readonlyTrigger.readonlyReason,
     });
-    expect(prepareDraftFieldEdit(readonlyTrigger, "", true)).toEqual({
+    expect(prepareDraftFieldEdit(t, readonlyTrigger, "", true)).toEqual({
       ok: false,
       message: readonlyTrigger.readonlyReason,
     });
   });
 
   it("turns technical validation failures into human language without echoing sensitive values", () => {
-    expect(humanDraftEditFailure("invalid draft patch: retries must be an integer")).toContain("不符合 Agent 运行契约");
-    expect(humanDraftEditFailure("draft version not found: v-old")).toContain("已经变化");
-    const hidden = humanDraftEditFailure("failed around ffa-0123456789abcdef0123456789abcdef");
+    expect(humanDraftEditFailure(t, "invalid draft patch: retries must be an integer")).toContain("不符合 Agent 运行契约");
+    expect(humanDraftEditFailure(t, "draft version not found: v-old")).toContain("已经变化");
+    const hidden = humanDraftEditFailure(t, "failed around ffa-0123456789abcdef0123456789abcdef");
     expect(hidden).toContain("已隐藏");
     expect(hidden).not.toContain("ffa-0123456789abcdef0123456789abcdef");
   });
@@ -218,16 +221,16 @@ describe("Factory patched-version receipt", () => {
   const receiptScope = { tenantSlug: "tenant-one", domain: "domain-one", slug: "resume-agent", baseVersionId: "v-one" };
 
   it("requires a different version plus explicit evidence invalidation", () => {
-    expect(readPatchedDraftVersionReceipt(receipt, receiptScope)).toMatchObject({ ok: true });
-    expect(readPatchedDraftVersionReceipt({ ...receipt, versionId: "v-one" }, receiptScope)).toMatchObject({ ok: false });
-    expect(readPatchedDraftVersionReceipt({ ...receipt, regressionReady: true }, receiptScope)).toMatchObject({ ok: false });
+    expect(readPatchedDraftVersionReceipt(t, receipt, receiptScope)).toMatchObject({ ok: true });
+    expect(readPatchedDraftVersionReceipt(t, { ...receipt, versionId: "v-one" }, receiptScope)).toMatchObject({ ok: false });
+    expect(readPatchedDraftVersionReceipt(t, { ...receipt, regressionReady: true }, receiptScope)).toMatchObject({ ok: false });
   });
 
   it("rejects scope drift and any response that sends full draft specs", () => {
-    expect(readPatchedDraftVersionReceipt({
+    expect(readPatchedDraftVersionReceipt(t, {
       ...receipt,
       scope: { ...receipt.scope, tenantSlug: "tenant-two" },
     }, receiptScope)).toMatchObject({ ok: false });
-    expect(readPatchedDraftVersionReceipt({ ...receipt, drafts: [{ spec: { toolConfigs: { api_key: "leak" } } }] }, receiptScope)).toMatchObject({ ok: false });
+    expect(readPatchedDraftVersionReceipt(t, { ...receipt, drafts: [{ spec: { toolConfigs: { api_key: "leak" } } }] }, receiptScope)).toMatchObject({ ok: false });
   });
 });

@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { translate } from "@/lib/i18n";
 
 import type { DraftRow } from "./model";
 import { draftPromotionIneligibleReason } from "./left-rail";
+
+const t = (key: string, vars?: Record<string, string | number>) => translate("zh", key, vars);
 
 const readyDraft = (over: Partial<DraftRow> = {}): DraftRow => ({
   slug: "resume-agent",
@@ -31,11 +34,11 @@ const readyDraft = (over: Partial<DraftRow> = {}): DraftRow => ({
 
 describe("draft promotion evidence labels", () => {
   it("allows a server-qualified replay + production candidate", () => {
-    expect(draftPromotionIneligibleReason(readyDraft())).toBeNull();
+    expect(draftPromotionIneligibleReason(t, readyDraft())).toBeNull();
   });
 
   it("explains that a signed-fixture replay is sandbox-only", () => {
-    const reason = draftPromotionIneligibleReason(readyDraft({
+    const reason = draftPromotionIneligibleReason(t, readyDraft({
       promotionEligible: false,
       promotionEvidenceReady: false,
       evidenceQualification: {
@@ -53,7 +56,7 @@ describe("draft promotion evidence labels", () => {
   });
 
   it("does not treat replay readiness alone as promotion authority", () => {
-    expect(draftPromotionIneligibleReason(readyDraft({
+    expect(draftPromotionIneligibleReason(t, readyDraft({
       promotionEligible: true,
       promotionEvidenceReady: false,
     }))).not.toBeNull();

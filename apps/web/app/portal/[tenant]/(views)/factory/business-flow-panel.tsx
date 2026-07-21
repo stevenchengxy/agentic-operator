@@ -9,6 +9,7 @@
 
 import React, { useMemo } from "react";
 import { Empty, HelpTip } from "@/app/portal/components";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 import type { BrainEvent } from "@/lib/hooks/useBrainStream";
 
 // —— 与 business-flow.ts#BusinessFlowModel 对齐的宽松前端形状（事件流是 loose 的） ——
@@ -43,14 +44,7 @@ const SEM_COLOR: Record<string, string> = {
   park: "var(--violet)",
   external: "var(--amber)",
 };
-const SEM_LABEL: Record<string, string> = {
-  internal: "链内",
-  success: "成功",
-  terminal: "终态",
-  failure: "失败",
-  park: "暂挂",
-  external: "外部交接",
-};
+const SEMANTICS = new Set(["internal", "success", "terminal", "failure", "park", "external"]);
 const KIND_ICON: Record<string, string> = {
   external_api: "🌐",
   file_store: "📁",
@@ -76,9 +70,11 @@ function Line({ icon, items, color }: { icon: string; items: string[]; color?: s
 }
 
 export function BusinessFlowPanel({ events, onSelect }: { events: BrainEvent[]; onSelect?: (slug: string) => void }) {
+  const { language, t } = useI18n();
   const model = useMemo(() => deriveBusinessFlowModel(events), [events]);
+  const listSeparator = language === "zh" ? "、" : ", ";
   if (!model) {
-    return <Empty title={<>还没有业务流全景 <HelpTip>业务流全景在 <span style={{ fontFamily: "var(--mono)" }}>validate_graph</span> 之后生成——设计完成并校验过一次即可看到外部平台、读/调/写与分支语义。</HelpTip></>} />;
+    return <Empty title={<>{t("factory.businessFlow.empty.title")} <HelpTip>{t("factory.businessFlow.emptyTip.before")}<span style={{ fontFamily: "var(--mono)" }}>validate_graph</span>{t("factory.businessFlow.emptyTip.after")}</HelpTip></>} />;
   }
   const topAgents = model.agents.filter((a) => !a.isSubAgent);
   const subAgents = model.agents.filter((a) => a.isSubAgent);
@@ -88,10 +84,10 @@ export function BusinessFlowPanel({ events, onSelect }: { events: BrainEvent[]; 
       {/* 外部平台目录 */}
       {model.externals.length > 0 && (
         <div style={{ border: "1px solid var(--border)", borderRadius: 10, background: "var(--panel-2)", padding: "9px 11px" }}>
-          <div style={{ fontSize: 11, fontWeight: 700, color: "var(--amber)", marginBottom: 6 }}>外界平台 / 依赖（{model.externals.length}）</div>
+          <div style={{ fontSize: 11, fontWeight: 700, color: "var(--amber)", marginBottom: 6 }}>{t("factory.businessFlow.externals.heading", { count: model.externals.length })}</div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
             {model.externals.map((x) => (
-              <span key={x.name} style={chipStyle("var(--amber)")} title={`被 ${x.usedBy.join("、")} 使用 · ${x.roles.join("/")}`}>
+              <span key={x.name} style={chipStyle("var(--amber)")} title={t("factory.businessFlow.externals.usedByTitle", { usedBy: x.usedBy.join(listSeparator), roles: x.roles.join("/") })}>
                 {KIND_ICON[x.kind] ?? "🏢"} {x.name} <span style={{ color: "var(--text-4)" }}>{x.roles.join("/")}</span>
               </span>
             ))}
@@ -108,12 +104,12 @@ export function BusinessFlowPanel({ events, onSelect }: { events: BrainEvent[]; 
         >
           {/* triggers */}
           <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 150 }}>
-            {a.triggers.map((t) => (
-              <div key={t.event}>
-                {t.external && (
-                  <div style={{ fontSize: 9.5, color: "var(--amber)", fontFamily: "var(--mono)", marginBottom: 1 }}>🏢 {t.source ?? "外部业务系统"} ▸</div>
+            {a.triggers.map((trigger) => (
+              <div key={trigger.event}>
+                {trigger.external && (
+                  <div style={{ fontSize: 9.5, color: "var(--amber)", fontFamily: "var(--mono)", marginBottom: 1 }}>🏢 {trigger.source ?? t("factory.businessFlow.trigger.externalSourceFallback")} ▸</div>
                 )}
-                <span style={chipStyle("var(--blue)")}>◂ {t.event}</span>
+                <span style={chipStyle("var(--blue)")}>◂ {trigger.event}</span>
               </div>
             ))}
           </div>
@@ -140,8 +136,8 @@ export function BusinessFlowPanel({ events, onSelect }: { events: BrainEvent[]; 
                 <div key={em.event} style={{ textAlign: "right" }}>
                   <span style={chipStyle(color)}>▸ {em.event}</span>
                   <div style={{ fontSize: 9.5, color: "var(--text-4)", fontFamily: "var(--mono)", marginTop: 1 }}>
-                    {SEM_LABEL[em.semantic] ?? em.semantic}
-                    {em.semantic === "external" && em.externalConsumer ? ` → ${em.externalConsumer}` : em.consumers.length ? ` → ${em.consumers.join("、")}` : ""}
+                    {SEMANTICS.has(em.semantic) ? t(`factory.businessFlow.semantic.${em.semantic}`) : em.semantic}
+                    {em.semantic === "external" && em.externalConsumer ? ` → ${em.externalConsumer}` : em.consumers.length ? ` → ${em.consumers.join(listSeparator)}` : ""}
                   </div>
                 </div>
               );
@@ -153,7 +149,7 @@ export function BusinessFlowPanel({ events, onSelect }: { events: BrainEvent[]; 
       {/* sub-agents（invoke-only 助手） */}
       {subAgents.length > 0 && (
         <div style={{ border: "1px dashed var(--border-2)", borderRadius: 10, padding: "8px 11px" }}>
-          <div style={{ fontSize: 10.5, color: "var(--violet)", fontFamily: "var(--mono)", marginBottom: 5 }}>🧩 invoke 子 agent（被父 agent 同步调用，不在事件总线上）</div>
+          <div style={{ fontSize: 10.5, color: "var(--violet)", fontFamily: "var(--mono)", marginBottom: 5 }}>🧩 {t("factory.businessFlow.subAgents.heading")}</div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
             {subAgents.map((a) => (
               <span key={a.slug} style={{ ...chipStyle("var(--violet)"), cursor: onSelect ? "pointer" : "default" }} onClick={() => onSelect?.(a.slug)}>

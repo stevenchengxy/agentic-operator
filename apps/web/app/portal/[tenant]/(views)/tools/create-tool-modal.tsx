@@ -12,6 +12,7 @@
 
 import { useState } from "react";
 import { Button, useToast } from "@/app/portal/components";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 import { useGenerateToolFromDoc, useSaveTool, type ToolDraft } from "@/lib/hooks/useTools";
 
 const lbl: React.CSSProperties = { fontSize: 10.5, textTransform: "uppercase", letterSpacing: 0.5, color: "var(--text-3)", fontFamily: "var(--mono)", display: "block", marginBottom: 3 };
@@ -28,6 +29,7 @@ function parseJson(s: string): Record<string, unknown> | undefined {
 }
 
 export function CreateToolModal({ onClose }: { onClose: () => void }) {
+  const { t } = useI18n();
   const toast = useToast();
   const notify = (title: string, tone: "default" | "green" | "red" = "default") => toast({ tone, title });
   const gen = useGenerateToolFromDoc();
@@ -59,40 +61,50 @@ export function CreateToolModal({ onClose }: { onClose: () => void }) {
     if (d.body_template) setBodyTemplate(String(d.body_template));
     if (d.params_schema) setParamsSchema(jsonStr(d.params_schema));
     if (d.returns_schema) setReturnsSchema(jsonStr(d.returns_schema));
-    const meta = [d.auth_hint ? `鉴权：${d.auth_hint}` : "", d.confidence != null ? `置信度 ${d.confidence}` : "", d.notes ?? ""].filter(Boolean).join(" · ");
+    const meta = [
+      d.auth_hint
+        ? t("createToolModal.meta.auth", { authHint: d.auth_hint })
+        : "",
+      d.confidence != null
+        ? t("createToolModal.meta.confidence", { confidence: d.confidence })
+        : "",
+      d.notes ?? "",
+    ]
+      .filter(Boolean)
+      .join(" · ");
     setNotes(meta);
     if (!description && d.notes) setDescription(String(d.notes).slice(0, 120));
   }
 
   async function onExtract() {
-    if (!intent.trim()) { notify("先写「这个工具要干嘛」（intent）"); return; }
-    if (!url.trim() && !docText.trim()) { notify("给一个公网 API 文档 URL，或把文档文本贴进来"); return; }
+    if (!intent.trim()) { notify(t("createToolModal.toast.intentRequired")); return; }
+    if (!url.trim() && !docText.trim()) { notify(t("createToolModal.toast.sourceRequired")); return; }
     try {
       const r = await gen.mutateAsync({ intent: intent.trim(), url: url.trim() || undefined, text: docText.trim() || undefined });
       applyDraft(r.draft);
-      notify("已提炼契约草稿，请核对后保存", "green");
+      notify(t("createToolModal.toast.extractSuccess"), "green");
     } catch (e) {
-      notify(`提炼失败：${(e as Error).message}`, "red");
+      notify(t("createToolModal.toast.extractFailed", { message: (e as Error).message }), "red");
     }
   }
 
   async function onSave() {
-    if (!name.trim()) { notify("工具名不能为空（建议带命名空间，如 acme.createTicket）"); return; }
-    if (!urlTemplate.trim()) { notify("URL 模板不能为空"); return; }
+    if (!name.trim()) { notify(t("createToolModal.toast.nameRequired")); return; }
+    if (!urlTemplate.trim()) { notify(t("createToolModal.toast.urlTemplateRequired")); return; }
     const ph = parseJson(paramsSchema), rh = parseJson(returnsSchema), hh = parseJson(headers);
-    if (paramsSchema.trim() && !ph) { notify("入参 schema 不是合法 JSON"); return; }
-    if (returnsSchema.trim() && !rh) { notify("返回 schema 不是合法 JSON"); return; }
-    if (headers.trim() && !hh) { notify("headers 不是合法 JSON"); return; }
+    if (paramsSchema.trim() && !ph) { notify(t("createToolModal.toast.paramsSchemaInvalid")); return; }
+    if (returnsSchema.trim() && !rh) { notify(t("createToolModal.toast.returnsSchemaInvalid")); return; }
+    if (headers.trim() && !hh) { notify(t("createToolModal.toast.headersInvalid")); return; }
     try {
       await save.mutateAsync({
         name: name.trim(), description: description.trim(), method, url_template: urlTemplate.trim(),
         headers: hh as Record<string, string> | undefined, body_template: bodyTemplate.trim() || undefined,
         side_effect: sideEffect, params_schema: ph, returns_schema: rh, shared,
       });
-      notify(`已保存工具「${name.trim()}」到工具库`, "green");
+      notify(t("createToolModal.toast.saveSuccess", { name: name.trim() }), "green");
       onClose();
     } catch (e) {
-      notify(`保存失败：${(e as Error).message}`, "red");
+      notify(t("createToolModal.toast.saveFailed", { message: (e as Error).message }), "red");
     }
   }
 
@@ -100,41 +112,41 @@ export function CreateToolModal({ onClose }: { onClose: () => void }) {
     <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: "var(--z-modal)" as unknown as number, display: "flex", alignItems: "flex-start", justifyContent: "center", overflow: "auto", padding: "40px 16px" }}>
       <div onClick={(e) => e.stopPropagation()} style={{ width: "min(720px, 100%)", background: "var(--panel)", border: "1px solid var(--border)", borderRadius: 10, padding: 18, display: "flex", flexDirection: "column", gap: 12 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <h2 style={{ margin: 0, fontSize: 16, color: "var(--text)" }}>造工具 · 加入共享工具库</h2>
-          <button onClick={onClose} style={{ background: "none", border: "none", color: "var(--text-3)", fontSize: 18, cursor: "pointer" }}>✕</button>
+          <h2 style={{ margin: 0, fontSize: 16, color: "var(--text)" }}>{t("createToolModal.title")}</h2>
+          <button type="button" aria-label={t("createToolModal.cancel")} onClick={onClose} style={{ background: "none", border: "none", color: "var(--text-3)", fontSize: 18, cursor: "pointer" }}>✕</button>
         </div>
 
         {/* AI extract from a doc/URL */}
         <div style={{ border: "1px solid var(--signal)", borderRadius: 8, padding: 12, display: "flex", flexDirection: "column", gap: 8 }}>
-          <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--text)" }}>① 从 URL / 文档 让 AI 提炼（可选）</div>
-          <div><label style={lbl}>这个工具要干嘛（intent）</label><input style={inp} value={intent} onChange={(e) => setIntent(e.target.value)} placeholder="如：按 jobId 拉取职位详情" /></div>
-          <div><label style={lbl}>公网 API 文档 URL</label><input style={inp} value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://docs.example.com/api/jobs" /></div>
-          <div><label style={lbl}>或直接粘贴文档文本</label><textarea style={{ ...inp, minHeight: 56, resize: "vertical" }} value={docText} onChange={(e) => setDocText(e.target.value)} placeholder="把 API 文档相关段落贴进来…" /></div>
-          <div><Button small tone="primary" onClick={onExtract} disabled={gen.isPending}>{gen.isPending ? "提炼中…" : "✦ AI 提炼契约"}</Button>{notes && <span style={{ marginLeft: 10, fontSize: 11, color: "var(--text-3)" }}>{notes}</span>}</div>
+          <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--text)" }}>{t("createToolModal.extractSection.heading")}</div>
+          <div><label style={lbl}>{t("createToolModal.field.intentLabel")}</label><input style={inp} value={intent} onChange={(e) => setIntent(e.target.value)} placeholder={t("createToolModal.field.intentPlaceholder")} /></div>
+          <div><label style={lbl}>{t("createToolModal.field.urlLabel")}</label><input style={inp} value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://docs.example.com/api/jobs" /></div>
+          <div><label style={lbl}>{t("createToolModal.field.docTextLabel")}</label><textarea style={{ ...inp, minHeight: 56, resize: "vertical" }} value={docText} onChange={(e) => setDocText(e.target.value)} placeholder={t("createToolModal.field.docTextPlaceholder")} /></div>
+          <div><Button small tone="primary" onClick={onExtract} disabled={gen.isPending}>{gen.isPending ? t("createToolModal.extractButton.pending") : t("createToolModal.extractButton.idle")}</Button>{notes && <span style={{ marginLeft: 10, fontSize: 11, color: "var(--text-3)" }}>{notes}</span>}</div>
         </div>
 
         {/* the editable form */}
-        <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--text)" }}>② 核对 / 手填工具契约</div>
+        <div style={{ fontSize: 12.5, fontWeight: 700, color: "var(--text)" }}>{t("createToolModal.formSection.heading")}</div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-          <div><label style={lbl}>工具名（带命名空间）</label><input style={inp} value={name} onChange={(e) => setName(e.target.value)} placeholder="acme.createTicket" /></div>
-          <div><label style={lbl}>方法</label><select style={inp} value={method} onChange={(e) => setMethod(e.target.value)}>{["GET", "POST", "PUT", "DELETE", "PATCH"].map((m) => <option key={m} value={m}>{m}</option>)}</select></div>
+          <div><label style={lbl}>{t("createToolModal.field.nameLabel")}</label><input style={inp} value={name} onChange={(e) => setName(e.target.value)} placeholder="acme.createTicket" /></div>
+          <div><label style={lbl}>{t("createToolModal.field.methodLabel")}</label><select style={inp} value={method} onChange={(e) => setMethod(e.target.value)}>{["GET", "POST", "PUT", "DELETE", "PATCH"].map((m) => <option key={m} value={m}>{m}</option>)}</select></div>
         </div>
-        <div><label style={lbl}>描述</label><input style={inp} value={description} onChange={(e) => setDescription(e.target.value)} placeholder="一句话说明这个工具干嘛" /></div>
-        <div><label style={lbl}>URL 模板（可含 {"{placeholder}"}，运行时用事件 payload 填）</label><input style={inp} value={urlTemplate} onChange={(e) => setUrlTemplate(e.target.value)} placeholder="https://api.example.com/v1/jobs/{job_id}" /></div>
+        <div><label style={lbl}>{t("createToolModal.field.descriptionLabel")}</label><input style={inp} value={description} onChange={(e) => setDescription(e.target.value)} placeholder={t("createToolModal.field.descriptionPlaceholder")} /></div>
+        <div><label style={lbl}>{t("createToolModal.field.urlTemplateLabel")}</label><input style={inp} value={urlTemplate} onChange={(e) => setUrlTemplate(e.target.value)} placeholder="https://api.example.com/v1/jobs/{job_id}" /></div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-          <div><label style={lbl}>副作用</label><select style={inp} value={sideEffect} onChange={(e) => setSideEffect(e.target.value)}>{["read", "write", "dual"].map((m) => <option key={m} value={m}>{m}</option>)}</select></div>
-          <div style={{ display: "flex", alignItems: "flex-end", gap: 6 }}><label style={{ fontSize: 12, color: "var(--text-2)", display: "flex", gap: 6, alignItems: "center" }}><input type="checkbox" checked={shared} onChange={(e) => setShared(e.target.checked)} />共享（任何 domain 可绑），取消则仅本租户</label></div>
+          <div><label style={lbl}>{t("createToolModal.field.sideEffectLabel")}</label><select style={inp} value={sideEffect} onChange={(e) => setSideEffect(e.target.value)}>{["read", "write", "dual"].map((m) => <option key={m} value={m}>{m}</option>)}</select></div>
+          <div style={{ display: "flex", alignItems: "flex-end", gap: 6 }}><label style={{ fontSize: 12, color: "var(--text-2)", display: "flex", gap: 6, alignItems: "center" }}><input type="checkbox" checked={shared} onChange={(e) => setShared(e.target.checked)} />{t("createToolModal.field.sharedLabel")}</label></div>
         </div>
-        <div><label style={lbl}>headers（JSON，凭证可写 {"{ENV_NAME}"}，运行时从 config/env 填）</label><textarea style={{ ...inp, minHeight: 44, resize: "vertical" }} value={headers} onChange={(e) => setHeaders(e.target.value)} placeholder='{ "Authorization": "Bearer {ACME_KEY}" }' /></div>
-        {method !== "GET" && <div><label style={lbl}>body 模板（可含 {"{placeholder}"}）</label><textarea style={{ ...inp, minHeight: 44, resize: "vertical" }} value={bodyTemplate} onChange={(e) => setBodyTemplate(e.target.value)} placeholder='{ "title": "{title}" }' /></div>}
+        <div><label style={lbl}>{t("createToolModal.field.headersLabel")}</label><textarea style={{ ...inp, minHeight: 44, resize: "vertical" }} value={headers} onChange={(e) => setHeaders(e.target.value)} placeholder='{ "Authorization": "Bearer {ACME_KEY}" }' /></div>
+        {method !== "GET" && <div><label style={lbl}>{t("createToolModal.field.bodyTemplateLabel")}</label><textarea style={{ ...inp, minHeight: 44, resize: "vertical" }} value={bodyTemplate} onChange={(e) => setBodyTemplate(e.target.value)} placeholder='{ "title": "{title}" }' /></div>}
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-          <div><label style={lbl}>入参 schema（JSON）</label><textarea style={{ ...inp, minHeight: 56, resize: "vertical" }} value={paramsSchema} onChange={(e) => setParamsSchema(e.target.value)} placeholder='{ "job_id": "string · 职位ID" }' /></div>
-          <div><label style={lbl}>返回 schema（JSON）</label><textarea style={{ ...inp, minHeight: 56, resize: "vertical" }} value={returnsSchema} onChange={(e) => setReturnsSchema(e.target.value)} placeholder='{ "title": "string", "salary": "number" }' /></div>
+          <div><label style={lbl}>{t("createToolModal.field.paramsSchemaLabel")}</label><textarea style={{ ...inp, minHeight: 56, resize: "vertical" }} value={paramsSchema} onChange={(e) => setParamsSchema(e.target.value)} placeholder={t("createToolModal.field.paramsSchemaPlaceholder")} /></div>
+          <div><label style={lbl}>{t("createToolModal.field.returnsSchemaLabel")}</label><textarea style={{ ...inp, minHeight: 56, resize: "vertical" }} value={returnsSchema} onChange={(e) => setReturnsSchema(e.target.value)} placeholder='{ "title": "string", "salary": "number" }' /></div>
         </div>
 
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 4 }}>
-          <Button small tone="ghost" onClick={onClose}>取消</Button>
-          <Button small tone="primary" onClick={onSave} disabled={save.isPending}>{save.isPending ? "保存中…" : "保存到工具库"}</Button>
+          <Button small tone="ghost" onClick={onClose}>{t("createToolModal.cancel")}</Button>
+          <Button small tone="primary" onClick={onSave} disabled={save.isPending}>{save.isPending ? t("createToolModal.saveButton.pending") : t("createToolModal.saveButton.idle")}</Button>
         </div>
       </div>
     </div>

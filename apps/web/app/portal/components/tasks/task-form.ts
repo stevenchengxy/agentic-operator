@@ -1,3 +1,5 @@
+import type { Translate } from "@/app/portal/lib/preferences-context";
+
 export type TaskResolutionDecision = "approve" | "reject" | "supplement";
 
 export type TaskFormRawValue = string | boolean;
@@ -242,6 +244,7 @@ export function buildTaskResolutionPayload(
   definition: TaskFormDefinition,
   values: Record<string, TaskFormRawValue>,
   option: TaskDecisionOption,
+  t?: Translate,
 ): TaskPayloadBuildResult {
   const payload: Record<string, unknown> = {};
   const errors: Record<string, string> = {};
@@ -257,22 +260,33 @@ export function buildTaskResolutionPayload(
     }
     const text = typeof raw === "string" ? raw : String(raw);
     if (!text.trim()) {
-      if (field.required) errors[field.name] = `${field.label} is required.`;
+      if (field.required)
+        errors[field.name] =
+          t?.("tasks.validation.required", { label: field.label }) ??
+          `${field.label} is required.`;
       continue;
     }
     if (field.minLength !== undefined && text.length < field.minLength) {
       errors[field.name] =
-        `${field.label} must be at least ${field.minLength} characters.`;
+        t?.("tasks.validation.minLength", {
+          label: field.label,
+          count: field.minLength,
+        }) ?? `${field.label} must be at least ${field.minLength} characters.`;
       continue;
     }
     if (field.maxLength !== undefined && text.length > field.maxLength) {
       errors[field.name] =
-        `${field.label} must be at most ${field.maxLength} characters.`;
+        t?.("tasks.validation.maxLength", {
+          label: field.label,
+          count: field.maxLength,
+        }) ?? `${field.label} must be at most ${field.maxLength} characters.`;
       continue;
     }
     if (field.kind === "select") {
       if (!field.options.some((item) => item.value === text)) {
-        errors[field.name] = `Choose a valid ${field.label.toLowerCase()}.`;
+        errors[field.name] =
+          t?.("tasks.validation.validChoice", { label: field.label }) ??
+          `Choose a valid ${field.label.toLowerCase()}.`;
       } else {
         payload[field.name] = text;
       }
@@ -285,7 +299,10 @@ export function buildTaskResolutionPayload(
         (field.schemaType === "integer" && !Number.isInteger(number))
       ) {
         errors[field.name] =
-          `${field.label} must be a valid ${field.schemaType}.`;
+          t?.("tasks.validation.validType", {
+            label: field.label,
+            type: field.schemaType,
+          }) ?? `${field.label} must be a valid ${field.schemaType}.`;
       } else {
         payload[field.name] = number;
       }
@@ -302,12 +319,17 @@ export function buildTaskResolutionPayload(
               !Array.isArray(parsed);
         if (!validShape) {
           errors[field.name] =
-            `${field.label} must be a JSON ${field.schemaType}.`;
+            t?.("tasks.validation.jsonShape", {
+              label: field.label,
+              type: field.schemaType,
+            }) ?? `${field.label} must be a JSON ${field.schemaType}.`;
         } else {
           payload[field.name] = parsed;
         }
       } catch {
-        errors[field.name] = `${field.label} must contain valid JSON.`;
+        errors[field.name] =
+          t?.("tasks.validation.validJson", { label: field.label }) ??
+          `${field.label} must contain valid JSON.`;
       }
       continue;
     }

@@ -331,16 +331,37 @@ export async function eventsRoutes(app: FastifyInstance) {
     // first tool reads the local zhaopin inbox. Materialize before writing the
     // event: missing credentials, unsafe keys, 404s, and oversized files fail
     // loudly and never leave a durable event that can only fail downstream.
-    const eventPayload = normalized.raasTenant
-      ? await materializeRaasResume(bareName, parsed.payload ?? {})
-      : (parsed.payload ?? {});
+    const authoredPayload = parsed.payload ?? {};
+    const deliveryInput = normalized.raasTenant
+      ? { ...authoredPayload, ...(normalized.runtimeMetadata ?? {}) }
+      : authoredPayload;
+    const materializedPayload = normalized.raasTenant
+      ? await materializeRaasResume(bareName, deliveryInput)
+      : deliveryInput;
+    // `__*` keys are runtime-owned. Keep them out of the durable/public
+    // logical payload while preserving tenant-adapter metadata on the broker
+    // delivery copy (for example the legacy RAAS envelope and trace id).
+    const deliveryPrivateMetadata = Object.fromEntries(
+      Object.entries(materializedPayload).filter(([key]) =>
+        key.startsWith("__"),
+      ),
+    );
+    const eventPayload = Object.fromEntries(
+      Object.entries(materializedPayload).filter(
+        ([key]) => !key.startsWith("__"),
+      ),
+    );
+    const effectiveCorrelationId =
+      typeof deliveryPrivateMetadata.__correlationId === "string"
+        ? deliveryPrivateMetadata.__correlationId
+        : correlationId;
     // Canonical logical payload: runtime identity fields (event_id/request_id/
     // subject/prompt aliases) are normalized once at the publish edge so every
     // consumer sees the same envelope shape.
     const logicalPayload = buildCanonicalEventPayload({
       eventName: bareName,
       eventId,
-      correlationId,
+      correlationId: effectiveCorrelationId,
       subject: parsed.subject,
       payload: eventPayload,
     });
@@ -384,13 +405,14 @@ export async function eventsRoutes(app: FastifyInstance) {
     // traffic as test, breaking dashboards in the opposite direction.
     const inngestData: Record<string, unknown> = {
       ...logicalPayload,
+      ...deliveryPrivateMetadata,
       subject: parsed.subject,
       __triggerEventId: eventId,
-      __correlationId: correlationId,
+      __correlationId: effectiveCorrelationId,
       ...privateUsageAttributionMetadata(
         mergeUsageAttribution(currentUsageAttribution(), {
           billingAccountId: auth.tenantId,
-          correlationId,
+          correlationId: effectiveCorrelationId,
           invocationSource: "event",
         }),
       ),

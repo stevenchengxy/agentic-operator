@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
+import { translate } from "@/lib/i18n";
 import { toBlocks, deriveBrainFlow, type Block } from "./model";
 import type { BrainEvent } from "@/lib/hooks/useBrainStream";
+
+const t = (key: string, vars?: Record<string, string | number>) => translate("zh", key, vars);
 
 // #CLARIFY-CLEAR (Track 1-C) — the frontend projection of the ask_user lifecycle. The backend emits a
 // clarify(awaitingAnswer:true) frame when the run parks, and a clarify(awaitingAnswer:false) frame when
@@ -16,14 +19,14 @@ describe("clarify lifecycle projection", () => {
       { t: "message", text: "✅ 收到你的回答：A" },
       { t: "clarify", question: "用哪个集成？", awaitingAnswer: false },
     ];
-    const blocks = toBlocks(events);
+    const blocks = toBlocks(t, events);
     // exactly ONE clarify card (the clearing frame dedupes onto the pending one, not a second card)…
     expect(blocks.filter((b) => b.kind === "clarify")).toHaveLength(1);
     // …and it is now answered, not sticky-waiting
     expect(clarifyBlock(blocks)?.awaiting).toBe(false);
 
     // the timeline gate flips await→ok too (and does not push a duplicate "询问用户" step)
-    const steps = deriveBrainFlow(events);
+    const steps = deriveBrainFlow(t, events);
     const gateSteps = steps.filter((s) => s.kind === "gate" && s.label === "询问用户");
     expect(gateSteps).toHaveLength(1);
     expect(gateSteps[0]!.status).toBe("ok");
@@ -33,9 +36,9 @@ describe("clarify lifecycle projection", () => {
     const events: BrainEvent[] = [
       { t: "clarify", question: "用哪个集成？", awaitingAnswer: true },
     ];
-    const blocks = toBlocks(events);
+    const blocks = toBlocks(t, events);
     expect(clarifyBlock(blocks)?.awaiting).toBe(true);
-    const steps = deriveBrainFlow(events);
+    const steps = deriveBrainFlow(t, events);
     expect(steps.find((s) => s.kind === "gate" && s.label === "询问用户")?.status).toBe("await");
   });
 
@@ -47,8 +50,8 @@ describe("clarify lifecycle projection", () => {
       { t: "message", text: "✅ 收到你的回答：x" },
       { t: "clarify", question: "q", awaitingAnswer: false },
     ];
-    const first = clarifyBlock(toBlocks(events))?.awaiting;
-    const replay = clarifyBlock(toBlocks([...events]))?.awaiting;
+    const first = clarifyBlock(toBlocks(t, events))?.awaiting;
+    const replay = clarifyBlock(toBlocks(t, [...events]))?.awaiting;
     expect(first).toBe(false);
     expect(replay).toBe(false);
   });
@@ -59,12 +62,12 @@ describe("clarify lifecycle projection", () => {
       { t: "clarify", interactionId: "hitl_new", question: "新问题", awaitingAnswer: true },
       { t: "clarify", interactionId: "hitl_old", question: "旧问题", awaitingAnswer: false },
     ];
-    const cards = toBlocks(events).filter((block): block is Extract<Block, { kind: "clarify" }> => block.kind === "clarify");
+    const cards = toBlocks(t, events).filter((block): block is Extract<Block, { kind: "clarify" }> => block.kind === "clarify");
     expect(cards).toEqual([
       expect.objectContaining({ interactionId: "hitl_old", awaiting: false }),
       expect.objectContaining({ interactionId: "hitl_new", awaiting: true }),
     ]);
-    const gates = deriveBrainFlow(events).filter((step) => step.kind === "gate" && step.label === "询问用户");
+    const gates = deriveBrainFlow(t, events).filter((step) => step.kind === "gate" && step.label === "询问用户");
     expect(gates).toEqual([
       expect.objectContaining({ interactionId: "hitl_old", status: "ok" }),
       expect.objectContaining({ interactionId: "hitl_new", status: "await" }),
@@ -76,10 +79,10 @@ describe("clarify lifecycle projection", () => {
       { t: "clarify", interactionId: "hitl_current", question: "当前问题", awaitingAnswer: true },
       { t: "clarify", question: "旧问题", awaitingAnswer: false },
     ];
-    expect(clarifyBlock(toBlocks(events))).toMatchObject({
+    expect(clarifyBlock(toBlocks(t, events))).toMatchObject({
       interactionId: "hitl_current",
       awaiting: true,
     });
-    expect(deriveBrainFlow(events).find((step) => step.interactionId === "hitl_current")).toMatchObject({ status: "await" });
+    expect(deriveBrainFlow(t, events).find((step) => step.interactionId === "hitl_current")).toMatchObject({ status: "await" });
   });
 });

@@ -6,6 +6,7 @@ import {
   type WorkflowRunInputDescriptor,
   type WorkflowTestRunLimits,
 } from "@agentic/contracts";
+import type { Translate } from "@/app/portal/lib/preferences-context";
 
 function stableJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
@@ -49,7 +50,10 @@ function sameContract(
 }
 
 /** Client-side equivalent of the API profile builder for unsaved manifests. */
-export function deriveWorkflowEntrypoints(manifestInput: unknown): {
+export function deriveWorkflowEntrypoints(
+  manifestInput: unknown,
+  t?: Translate,
+): {
   entrypoints: WorkflowRunEntrypoint[];
   warnings: string[];
 } {
@@ -137,17 +141,25 @@ export function deriveWorkflowEntrypoints(manifestInput: unknown): {
 
   const warnings: string[] = [];
   if (entrypoints.length === 0) {
-    warnings.push("The workflow declares no trigger events.");
+    warnings.push(
+      t?.("workflowRunConsole.warningNoTriggers") ??
+        "The workflow declares no trigger events.",
+    );
   } else if (!entrypoints.some((entrypoint) => entrypoint.recommended)) {
     warnings.push(
-      "Every trigger is emitted internally. Choose an internal event deliberately and retain bounded test limits.",
+      t?.("workflowRunConsole.warningInternalOnly") ??
+        "Every trigger is emitted internally. Choose an internal event deliberately and retain bounded test limits.",
     );
   }
   for (const entrypoint of entrypoints) {
     const conflicts = entrypoint.inputs.filter((input) => input.conflict);
     if (conflicts.length > 0) {
       warnings.push(
-        `${entrypoint.event} has conflicting contracts for ${conflicts.map((input) => input.id).join(", ")}.`,
+        t?.("workflowRunConsole.warningConflicts", {
+          event: entrypoint.event,
+          inputs: conflicts.map((input) => input.id).join(", "),
+        }) ??
+          `${entrypoint.event} has conflicting contracts for ${conflicts.map((input) => input.id).join(", ")}.`,
       );
     }
   }
@@ -201,7 +213,7 @@ function meaningfulExample(value: unknown): boolean {
   return true;
 }
 
-function identifierExample(identifier: string): string {
+function identifierExample(identifier: string, t?: Translate): string {
   const normalized = identifier.toLowerCase().replace(/[^a-z0-9]+/g, "_");
   if (normalized.includes("email")) return "alex.morgan@example.com";
   if (normalized.includes("phone") || normalized.includes("mobile")) {
@@ -211,21 +223,32 @@ function identifierExample(identifier: string): string {
     return "https://example.com/resources/record-001";
   }
   if (normalized.includes("customer_message")) {
-    return "I was charged twice for invoice INV-2048. Please review the duplicate charge.";
+    return (
+      t?.("workflowRunConsole.exampleCustomerMessage") ??
+      "I was charged twice for invoice INV-2048. Please review the duplicate charge."
+    );
   }
   if (
     normalized.includes("prompt") ||
     normalized === "request" ||
     normalized.includes("instruction")
   ) {
-    return "Review the supplied event, validate the data, and return the expected workflow result.";
+    return (
+      t?.("workflowRunConsole.examplePrompt") ??
+      "Review the supplied event, validate the data, and return the expected workflow result."
+    );
   }
   if (normalized.includes("message") || normalized.includes("description")) {
-    return "Provide the business context and expected outcome for this workflow run.";
+    return (
+      t?.("workflowRunConsole.exampleBusinessContext") ??
+      "Provide the business context and expected outcome for this workflow run."
+    );
   }
   if (normalized.includes("priority")) return "normal";
   if (normalized.includes("status")) return "pending";
-  if (normalized.includes("name")) return "Example record";
+  if (normalized.includes("name")) {
+    return t?.("workflowRunConsole.exampleRecord") ?? "Example record";
+  }
   if (normalized.includes("request_id")) return "REQ-2026-001";
   if (normalized.includes("case_id")) return "CASE-2026-001";
   if (normalized.includes("customer_id")) return "CUS-2026-001";
@@ -241,7 +264,7 @@ function identifierExample(identifier: string): string {
       .toUpperCase();
     return `${prefix || "REQ"}-2026-001`;
   }
-  return "Example value";
+  return t?.("workflowRunConsole.exampleValue") ?? "Example value";
 }
 
 function schemaType(schema: Record<string, unknown>): string | undefined {
@@ -259,6 +282,7 @@ function schemaExample(
   identifier: string,
   kind: WorkflowRunInputDescriptor["kind"],
   depth = 0,
+  t?: Translate,
 ): unknown {
   if (depth > 5) return null;
   if (schema.const !== undefined) return structuredClone(schema.const);
@@ -273,7 +297,7 @@ function schemaExample(
   }
   for (const union of [schema.oneOf, schema.anyOf]) {
     if (Array.isArray(union) && isRecord(union[0])) {
-      return schemaExample(union[0], identifier, kind, depth + 1);
+      return schemaExample(union[0], identifier, kind, depth + 1, t);
     }
   }
 
@@ -291,6 +315,7 @@ function schemaExample(
               key,
               "value",
               depth + 1,
+              t,
             ),
           ]),
       );
@@ -298,7 +323,9 @@ function schemaExample(
     if (schema.additionalProperties === false) return {};
     return {
       request_id: "REQ-2026-001",
-      message: "Describe the event or work this workflow should process.",
+      message:
+        t?.("workflowRunConsole.exampleEventDescription") ??
+        "Describe the event or work this workflow should process.",
       source: "workflow-run-console",
     };
   }
@@ -310,7 +337,7 @@ function schemaExample(
       Math.max(1, typeof schema.minItems === "number" ? schema.minItems : 1),
     );
     return Array.from({ length: count }, (_, index) =>
-      schemaExample(items, `${identifier}_${index + 1}`, "value", depth + 1),
+      schemaExample(items, `${identifier}_${index + 1}`, "value", depth + 1, t),
     );
   }
   if (type === "boolean") return true;
@@ -337,13 +364,17 @@ function schemaExample(
     return "https://example.com/resources/record-001";
   }
   if (kind === "prompt") {
-    return "Review the supplied event, validate the data, and return the expected workflow result.";
+    return (
+      t?.("workflowRunConsole.examplePrompt") ??
+      "Review the supplied event, validate the data, and return the expected workflow result."
+    );
   }
-  return identifierExample(identifier);
+  return identifierExample(identifier, t);
 }
 
 export function workflowInputExampleValue(
   input: WorkflowRunInputDescriptor,
+  t?: Translate,
 ): unknown {
   if (input.kind === "file") return input.file?.multiple ? [] : null;
   if (input.example !== undefined) return structuredClone(input.example);
@@ -352,6 +383,8 @@ export function workflowInputExampleValue(
     input.schema as Record<string, unknown>,
     input.id,
     input.kind,
+    0,
+    t,
   );
 }
 
@@ -483,6 +516,7 @@ function templateEventPaths(template: string): string[] {
 
 function templateBindingExample(
   input: WorkflowRunInputDescriptor,
+  t?: Translate,
 ): string | undefined {
   const template = input.bindings.find(
     (binding) => binding.mode === "template" && binding.expression,
@@ -492,7 +526,7 @@ function templateBindingExample(
     /{{\s*(json\s+)?event((?:\.[A-Za-z_][A-Za-z0-9_-]*)+)\s*}}/g,
     (_token, jsonPrefix: string | undefined, path: string) => {
       const identifier = path.split(".").filter(Boolean).at(-1) ?? input.id;
-      const value = identifierExample(identifier);
+      const value = identifierExample(identifier, t);
       return jsonPrefix ? JSON.stringify(value) : value;
     },
   );
@@ -500,17 +534,29 @@ function templateBindingExample(
 
 export function workflowInputDisplayExample(
   input: WorkflowRunInputDescriptor,
+  t?: Translate,
 ): unknown {
-  return templateBindingExample(input) ?? workflowInputExampleValue(input);
+  return (
+    templateBindingExample(input, t) ?? workflowInputExampleValue(input, t)
+  );
 }
 
-function guideLocations(input: WorkflowRunInputDescriptor): string[] {
+function guideLocations(
+  input: WorkflowRunInputDescriptor,
+  t?: Translate,
+): string[] {
   const locations = new Set<string>();
   for (const binding of input.bindings) {
     if (binding.mode === "direct") {
-      locations.add(`named input · ${input.id}`);
+      locations.add(
+        t?.("workflowRunConsole.locationNamedInput", { id: input.id }) ??
+          `named input · ${input.id}`,
+      );
     } else if (binding.mode === "constant") {
-      locations.add("runtime constant · no value required");
+      locations.add(
+        t?.("workflowRunConsole.locationRuntimeConstant") ??
+          "runtime constant · no value required",
+      );
     } else if (binding.mode === "path" && binding.expression) {
       locations.add(binding.expression);
     } else if (binding.mode === "template") {
@@ -518,8 +564,18 @@ function guideLocations(input: WorkflowRunInputDescriptor): string[] {
         ? templateEventPaths(binding.expression)
         : [];
       if (paths.length > 0) {
-        paths.forEach((path) => locations.add("template reads " + path));
-      } else locations.add("runtime template");
+        paths.forEach((path) =>
+          locations.add(
+            t?.("workflowRunConsole.locationTemplateReads", { path }) ??
+              "template reads " + path,
+          ),
+        );
+      } else {
+        locations.add(
+          t?.("workflowRunConsole.locationRuntimeTemplate") ??
+            "runtime template",
+        );
+      }
     }
   }
   return [...locations];
@@ -528,6 +584,7 @@ function guideLocations(input: WorkflowRunInputDescriptor): string[] {
 /** Build a deterministic, caller-facing payload recipe from the entry contract. */
 export function buildWorkflowPayloadGuide(
   entrypoint: WorkflowRunEntrypoint,
+  t?: Translate,
 ): WorkflowPayloadGuide {
   const inputValues: Record<string, unknown> = {};
   let rawPayload: Record<string, unknown> = {};
@@ -535,8 +592,8 @@ export function buildWorkflowPayloadGuide(
 
   for (const input of entrypoint.inputs) {
     const runtimeProvided = workflowInputIsRuntimeProvided(input);
-    const bindingExample = templateBindingExample(input);
-    const example = workflowInputDisplayExample(input);
+    const bindingExample = templateBindingExample(input, t);
+    const example = workflowInputDisplayExample(input, t);
     if (!runtimeProvided && input.kind !== "file") {
       inputValues[input.id] = structuredClone(example);
     }
@@ -551,7 +608,7 @@ export function buildWorkflowPayloadGuide(
           rawPayload = setPayloadPath(
             rawPayload,
             path,
-            identifierExample(identifier),
+            identifierExample(identifier, t),
           );
         }
       }
@@ -563,7 +620,7 @@ export function buildWorkflowPayloadGuide(
       required: input.required,
       sensitivity: input.sensitivity,
       type: workflowInputSchemaSummary(input),
-      locations: guideLocations(input),
+      locations: guideLocations(input, t),
       example,
       runtimeProvided,
       exampleSource:
@@ -627,8 +684,14 @@ export function seedWorkflowInputValue(
 export function validateWorkflowInputValues(
   entrypoint: WorkflowRunEntrypoint | undefined,
   values: Record<string, unknown>,
+  t?: Translate,
+  includeConflicts = true,
 ): string[] {
-  if (!entrypoint) return ["Select an entry event."];
+  if (!entrypoint) {
+    return [
+      t?.("workflowRunConsole.selectEntryEvent") ?? "Select an entry event.",
+    ];
+  }
   const errors: string[] = [];
   for (const input of entrypoint.inputs) {
     const value = values[input.id];
@@ -638,22 +701,29 @@ export function validateWorkflowInputValues(
       value === "" ||
       (Array.isArray(value) && value.length === 0);
     if (input.required && empty) {
-      errors.push(`${input.label} is required.`);
-    }
-    if (input.conflict) {
       errors.push(
-        `${input.label} has conflicting listener schemas; verify the raw event payload.`,
+        t?.("workflowRunConsole.inputRequired", { label: input.label }) ??
+          `${input.label} is required.`,
+      );
+    }
+    if (input.conflict && includeConflicts) {
+      errors.push(
+        t?.("workflowRunConsole.inputConflict", { label: input.label }) ??
+          `${input.label} has conflicting listener schemas; verify the raw event payload.`,
       );
     }
   }
   return errors;
 }
 
-export function parseWorkflowTestLimits(values: {
-  maxAgentRuns: string;
-  maxEvents: string;
-  maxDepth: string;
-}): WorkflowTestRunLimits {
+export function parseWorkflowTestLimits(
+  values: {
+    maxAgentRuns: string;
+    maxEvents: string;
+    maxDepth: string;
+  },
+  t?: Translate,
+): WorkflowTestRunLimits {
   const limits = {
     maxAgentRuns: Number(values.maxAgentRuns),
     maxEvents: Number(values.maxEvents),
@@ -662,17 +732,29 @@ export function parseWorkflowTestLimits(values: {
   const constraints = [
     {
       key: "maxAgentRuns" as const,
-      label: "Agent runs",
+      label: t?.("workflowRunConsole.agentRuns") ?? "Agent runs",
       max: 100,
     },
-    { key: "maxEvents" as const, label: "Events", max: 250 },
-    { key: "maxDepth" as const, label: "Depth", max: 50 },
+    {
+      key: "maxEvents" as const,
+      label: t?.("workflowRunConsole.events") ?? "Events",
+      max: 250,
+    },
+    {
+      key: "maxDepth" as const,
+      label: t?.("workflowRunConsole.depth") ?? "Depth",
+      max: 50,
+    },
   ];
   for (const constraint of constraints) {
     const value = limits[constraint.key];
     if (!Number.isInteger(value) || value < 1 || value > constraint.max) {
       throw new Error(
-        `${constraint.label} budget must be a whole number from 1 to ${constraint.max}.`,
+        t?.("workflowRunConsole.budgetRange", {
+          label: constraint.label,
+          max: constraint.max,
+        }) ??
+          `${constraint.label} budget must be a whole number from 1 to ${constraint.max}.`,
       );
     }
   }

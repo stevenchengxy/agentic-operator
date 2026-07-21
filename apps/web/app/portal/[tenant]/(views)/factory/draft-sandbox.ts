@@ -2,6 +2,7 @@ import {
   DRAFT_SANDBOX_TEST_SENTINELS,
   findDraftSandboxTestSentinel,
 } from "@agentic/contracts";
+import type { Translate } from "@/app/portal/lib/preferences-context";
 
 import { draftEditContainsSensitiveData } from "./draft-editor";
 
@@ -98,14 +99,15 @@ function exactScope(value: unknown, expected: Omit<DraftSandboxScope, "tenantId"
 }
 
 export function readDraftSandboxInputContract(
+  t: Translate,
   value: unknown,
   expected: Omit<DraftSandboxScope, "tenantId">,
 ): DraftSandboxValidation<DraftSandboxInputContract> {
   if (!isRecord(value) || value.schema !== "agent-factory-draft-sandbox-input/v1" || !exactScope(value.scope, expected)) {
-    return { ok: false, message: "服务端返回的测试输入契约不属于当前草稿版本。" };
+    return { ok: false, message: t("factory.draftSandbox.error.inputContractWrongVersion") };
   }
   if (!Number.isInteger(value.specsCount) || Number(value.specsCount) < 1 || !Array.isArray(value.entryEvents) || !Array.isArray(value.unresolvedBoundaries)) {
-    return { ok: false, message: "测试输入契约不完整，请刷新后重试。" };
+    return { ok: false, message: t("factory.draftSandbox.error.inputContractIncomplete") };
   }
   const entries = value.entryEvents.map((entry) => {
     if (!isRecord(entry) || typeof entry.event !== "string" || !entry.event || !Array.isArray(entry.fields)) return null;
@@ -125,11 +127,11 @@ export function readDraftSandboxInputContract(
       ? { event: boundary.event, producers: [...boundary.producers] }
       : null);
   if (entries.some((entry) => !entry) || boundaries.some((boundary) => !boundary)) {
-    return { ok: false, message: "测试输入契约包含无法识别的事件字段。" };
+    return { ok: false, message: t("factory.draftSandbox.error.inputContractBadFields") };
   }
   const kinds = value.testKinds;
   if (!Array.isArray(kinds) || !["pass", "reject", "edge", "fault"].every((kind) => kinds.includes(kind))) {
-    return { ok: false, message: "测试用例类型契约不完整。" };
+    return { ok: false, message: t("factory.draftSandbox.error.testKindsIncomplete") };
   }
   return {
     ok: true,
@@ -140,7 +142,7 @@ export function readDraftSandboxInputContract(
       entryEvents: entries as DraftSandboxInputContract["entryEvents"],
       unresolvedBoundaries: boundaries as DraftSandboxInputContract["unresolvedBoundaries"],
       testKinds: ["pass", "reject", "edge", "fault"],
-      note: typeof value.note === "string" ? value.note : "请填写人工确认过的测试值。",
+      note: typeof value.note === "string" ? value.note : t("factory.draftSandbox.note.default"),
     },
   };
 }
@@ -149,10 +151,10 @@ function placeholder(type: string): unknown {
   return `${DRAFT_SANDBOX_TEST_SENTINELS.value}（${type || "unknown"}）`;
 }
 
-export function draftSandboxTestTemplate(contract: DraftSandboxInputContract): string {
+export function draftSandboxTestTemplate(t: Translate, contract: DraftSandboxInputContract): string {
   return JSON.stringify(contract.entryEvents.map((entry, index) => ({
     id: `manual_${index + 1}`,
-    name: `${entry.event} 人工测试`,
+    name: t("factory.draftSandbox.template.caseName", { event: entry.event }),
     scenario: DRAFT_SANDBOX_TEST_SENTINELS.scenario,
     kind: "pass",
     entryEvent: entry.event,
@@ -162,6 +164,7 @@ export function draftSandboxTestTemplate(contract: DraftSandboxInputContract): s
 }
 
 export function parseDraftSandboxSubmission(
+  t: Translate,
   testCasesText: string,
   boundaryEventsText: string,
 ): DraftSandboxValidation<{ testCases: unknown[]; boundaryEvents: unknown[] }> {
@@ -170,25 +173,25 @@ export function parseDraftSandboxSubmission(
   try {
     testCases = JSON.parse(testCasesText);
   } catch {
-    return { ok: false, message: "测试用例不是有效的 JSON。" };
+    return { ok: false, message: t("factory.draftSandbox.error.testCasesInvalidJson") };
   }
   try {
     boundaryEvents = JSON.parse(boundaryEventsText || "[]");
   } catch {
-    return { ok: false, message: "边界事件不是有效的 JSON。" };
+    return { ok: false, message: t("factory.draftSandbox.error.boundaryEventsInvalidJson") };
   }
   if (!Array.isArray(testCases) || testCases.length === 0) {
-    return { ok: false, message: "至少需要一个测试用例；不会用空 payload 自动补链。" };
+    return { ok: false, message: t("factory.draftSandbox.error.needAtLeastOneCase") };
   }
   if (!Array.isArray(boundaryEvents)) {
-    return { ok: false, message: "边界事件必须是 JSON 数组。" };
+    return { ok: false, message: t("factory.draftSandbox.error.boundaryEventsNotArray") };
   }
   const sentinelPath = findDraftSandboxTestSentinel(testCases);
   if (sentinelPath) {
-    return { ok: false, message: `测试用例 ${sentinelPath} 还是模板占位内容。请把场景、预期结果和 payload 全部换成你确认过的测试值。` };
+    return { ok: false, message: t("factory.draftSandbox.error.sentinelUntouched", { path: sentinelPath }) };
   }
   if (draftEditContainsSensitiveData(testCases) || draftEditContainsSensitiveData(boundaryEvents)) {
-    return { ok: false, message: "测试 JSON 里不能直接放密钥、认证头、文件 bytes 或旧 fixture ID。二进制文件请回 Agent 工厂会话上传。" };
+    return { ok: false, message: t("factory.draftSandbox.error.sensitiveData") };
   }
   return { ok: true, data: { testCases, boundaryEvents } };
 }
@@ -220,11 +223,12 @@ function validChallenge(value: unknown): value is DraftSandboxChallenge {
 }
 
 export function readDraftSandboxReview(
+  t: Translate,
   value: unknown,
   expected: Omit<DraftSandboxScope, "tenantId">,
 ): DraftSandboxValidation<DraftSandboxReview> {
   if (!isRecord(value) || value.schema !== "agent-factory-draft-sandbox-review/v1" || !exactScope(value.scope, expected)) {
-    return { ok: false, message: "沙箱审查回执不属于当前草稿版本。" };
+    return { ok: false, message: t("factory.draftSandbox.error.reviewWrongVersion") };
   }
   if (
     typeof value.fingerprint !== "string" || !/^sandbox-evidence:v\d+:[a-f0-9]{64}$/i.test(value.fingerprint)
@@ -239,10 +243,10 @@ export function readDraftSandboxReview(
     || value.testCoverage.uncoveredNeedingData.length > 0
     || !validChallenge(value.challenge)
   ) {
-    return { ok: false, message: "服务端没有返回完整、可确认的沙箱审查。" };
+    return { ok: false, message: t("factory.draftSandbox.error.reviewIncomplete") };
   }
   if (value.challenge.subjectDigest === "" || draftEditContainsSensitiveData(value.testCases) || draftEditContainsSensitiveData(value.boundaryEvents)) {
-    return { ok: false, message: "沙箱审查包含不应进入浏览器的敏感测试数据。" };
+    return { ok: false, message: t("factory.draftSandbox.error.reviewSensitiveData") };
   }
   return { ok: true, data: value as unknown as DraftSandboxReview };
 }
@@ -253,11 +257,12 @@ export function sandboxChallengeRef(challenge: DraftSandboxChallenge): Omit<Draf
 }
 
 export function readDraftSandboxFinishReceipt(
+  t: Translate,
   value: unknown,
   expected: Omit<DraftSandboxScope, "tenantId" | "versionId"> & { baseVersionId: string },
 ): DraftSandboxValidation<DraftSandboxFinishReceipt> {
   if (!isRecord(value) || value.schema !== "agent-factory-draft-sandbox-finish/v1" || !isRecord(value.scope)) {
-    return { ok: false, message: "服务端没有返回完整的沙箱完成回执。" };
+    return { ok: false, message: t("factory.draftSandbox.error.finishIncomplete") };
   }
   const scope = value.scope;
   if (
@@ -280,7 +285,7 @@ export function readDraftSandboxFinishReceipt(
     || typeof value.regressionReplay.suiteFingerprint !== "string" || !value.regressionReplay.suiteFingerprint
     || !Number.isInteger(value.regressionReplay.results) || Number(value.regressionReplay.results) < 1
   ) {
-    return { ok: false, message: "沙箱完成回执与当前版本不一致，或缺少清理/回归证据。" };
+    return { ok: false, message: t("factory.draftSandbox.error.finishMismatch") };
   }
   return { ok: true, data: value as unknown as DraftSandboxFinishReceipt };
 }

@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Icon, type IconName } from "../Icon";
 import styles from "./sidebar.module.css";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 
 /**
  * Sidebar nav primitives — NavGroup + NavItem.
@@ -59,11 +60,12 @@ export function NavItem({
   disabled,
   matchPrefix,
 }: NavItemProps) {
+  const { t } = useI18n();
   const pathname = usePathname() ?? "";
   const active = matchPrefix ? pathname.startsWith(href) : pathname === href;
 
   const accessibleLabel = liveCount
-    ? `${label}, ${liveCount} currently running`
+    ? t("sidebar.currentlyRunning", { label, count: liveCount })
     : count != null
       ? `${label}, ${count}`
       : label;

@@ -15,6 +15,7 @@ import {
   PreferencesProvider,
   useI18n,
 } from "@/app/portal/lib/preferences-context";
+import { LanguageToggle } from "@/app/portal/components/shell/appearance-controls";
 import { ApiResponseError, readApiData } from "@/lib/api-response";
 
 interface AuthResult {
@@ -141,6 +142,16 @@ function AuthFormInner({ initialMode }: { initialMode: "signin" | "signup" }) {
         padding: 20,
       }}
     >
+      <div
+        style={{
+          position: "fixed",
+          top: 20,
+          right: 20,
+          zIndex: 1,
+        }}
+      >
+        <LanguageToggle />
+      </div>
       <div
         style={{
           width: 380,

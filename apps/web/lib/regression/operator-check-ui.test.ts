@@ -28,16 +28,16 @@ describe("production two-agent system check UI", () => {
     expect(page).toContain('role="progressbar"');
     expect(page).toContain('role="alert"');
     expect(page).toContain("OPERATOR_CHECK_SCENARIOS.map");
-    expect(page).toContain("Open full run, trace, and logs");
-    expect(page).toContain("Manifest, deployment, and run evidence");
-    expect(page).toContain("Check history");
+    expect(page).toContain('t("systemCheck.openFullRun")');
+    expect(page).toContain('t("systemCheck.manifestEvidence")');
+    expect(page).toContain('t("systemCheck.historyTitle")');
   });
 
   it("starts from Dashboard in one click and navigates to the API-provided detail URL", () => {
     expect(dashboard).toContain("useStartOperatorCheck()");
     expect(dashboard).toContain("operatorCheckStartGuard.current");
     expect(dashboard).toContain("router.push(result.detailUrl as never)");
-    expect(dashboard).toContain("Run full check");
+    expect(dashboard).toContain('t("dashboard.runFullCheck")');
   });
 
   it("keeps saved checks discoverable in Manage navigation", () => {

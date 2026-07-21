@@ -14,24 +14,28 @@ describe("fmtAgo", () => {
     vi.setSystemTime(new Date("2026-05-19T12:00:00Z"));
     expect(fmtAgo(Date.now() - 5_000)).toBe("5s ago");
     expect(fmtAgo(Date.now())).toBe("1s ago"); // floor of zero clamps to 1
+    expect(fmtAgo(Date.now() - 5_000, "zh")).toBe("5 秒前");
   });
 
   it("returns Nm ago in minute range", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-05-19T12:00:00Z"));
     expect(fmtAgo(Date.now() - 2 * 60_000)).toBe("2m ago");
+    expect(fmtAgo(Date.now() - 2 * 60_000, "zh")).toBe("2 分钟前");
   });
 
   it("returns Nh ago in hour range", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-05-19T12:00:00Z"));
     expect(fmtAgo(Date.now() - 3 * 3_600_000)).toBe("3h ago");
+    expect(fmtAgo(Date.now() - 3 * 3_600_000, "zh")).toBe("3 小时前");
   });
 
   it("returns Nd ago beyond a day", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-05-19T12:00:00Z"));
     expect(fmtAgo(Date.now() - 2 * 86_400_000)).toBe("2d ago");
+    expect(fmtAgo(Date.now() - 2 * 86_400_000, "zh")).toBe("2 天前");
   });
 });
 

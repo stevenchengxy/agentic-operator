@@ -46,6 +46,41 @@ export class WorkflowAuthoringApiError extends Error {
   }
 }
 
+type WorkflowAuthoringClientErrorCode =
+  | "networkUnavailable"
+  | "requestFailed"
+  | "invalidResponse"
+  | "workflowRequired"
+  | "agentRequired";
+
+export class WorkflowAuthoringClientError extends Error {
+  constructor(
+    public readonly clientCode: WorkflowAuthoringClientErrorCode,
+    fallback: string,
+    public readonly status?: number,
+  ) {
+    super(fallback);
+    this.name = "WorkflowAuthoringClientError";
+  }
+}
+
+type WorkflowAuthoringTranslate = (
+  key: string,
+  vars?: Record<string, string | number>,
+) => string;
+
+export function formatWorkflowAuthoringError(
+  error: unknown,
+  t?: WorkflowAuthoringTranslate,
+): string {
+  if (error instanceof WorkflowAuthoringClientError && t) {
+    return t(`workflowAuthoringError.${error.clientCode}`, {
+      status: error.status ?? "—",
+    });
+  }
+  return error instanceof Error ? error.message : String(error);
+}
+
 async function callV1<T>(
   path: string,
   schema: ZodType<T>,
@@ -61,25 +96,50 @@ async function callV1<T>(
   if (rest.body != null && !headers["Content-Type"]) {
     headers["Content-Type"] = "application/json";
   }
-  const response = await fetch(path, {
-    credentials: "same-origin",
-    ...rest,
-    headers,
-  });
+  let response: Response;
+  try {
+    response = await fetch(path, {
+      credentials: "same-origin",
+      ...rest,
+      headers,
+    });
+  } catch {
+    throw new WorkflowAuthoringClientError(
+      "networkUnavailable",
+      "Could not reach the workflow authoring service.",
+    );
+  }
   const body = (await response.json().catch(() => null)) as
     | ApiOk
     | ApiErr
     | null;
   if (!response.ok || !body || body.ok !== true) {
     const error = body && body.ok === false ? body.error : null;
-    const code = error?.code ?? `HTTP ${response.status}`;
+    if (!error) {
+      throw new WorkflowAuthoringClientError(
+        response.ok ? "invalidResponse" : "requestFailed",
+        response.ok
+          ? "The workflow authoring service returned an invalid response."
+          : `Workflow authoring request failed (HTTP ${response.status}).`,
+        response.status,
+      );
+    }
+    const code = error.code;
     throw new WorkflowAuthoringApiError(
       code,
-      `${code}: ${error?.message ?? "Request failed"}${error?.hint ? ` — ${error.hint}` : ""}`,
-      error?.details,
+      `${code}: ${error.message}${error.hint ? ` — ${error.hint}` : ""}`,
+      error.details,
     );
   }
-  return schema.parse(body.data);
+  const parsed = schema.safeParse(body.data);
+  if (!parsed.success) {
+    throw new WorkflowAuthoringClientError(
+      "invalidResponse",
+      "The workflow authoring service returned an invalid response.",
+      response.status,
+    );
+  }
+  return parsed.data;
 }
 
 export const WORKFLOW_AUTHORING_KEYS = {
@@ -175,7 +235,12 @@ export function useGenerateWorkflow() {
 export function useRunWorkflowTest(slug?: string | null) {
   return useMutation({
     mutationFn: (body: WorkflowTestRunBody) => {
-      if (!slug) throw new Error("workflow slug is required");
+      if (!slug) {
+        throw new WorkflowAuthoringClientError(
+          "workflowRequired",
+          "A workflow must be selected.",
+        );
+      }
       return callV1(
         `/v1/workflows/${encodeURIComponent(slug)}/test-runs`,
         WorkflowTestRunResponseSchema,
@@ -194,8 +259,18 @@ export function useGenerateWorkflowAgentPrompt(
 ) {
   return useMutation({
     mutationFn: (body: WorkflowAgentPromptBody) => {
-      if (!slug) throw new Error("workflow slug is required");
-      if (!agentId) throw new Error("agent id is required");
+      if (!slug) {
+        throw new WorkflowAuthoringClientError(
+          "workflowRequired",
+          "A workflow must be selected.",
+        );
+      }
+      if (!agentId) {
+        throw new WorkflowAuthoringClientError(
+          "agentRequired",
+          "An agent must be selected.",
+        );
+      }
       return callV1(
         `/v1/workflows/${encodeURIComponent(slug)}/agents/${encodeURIComponent(agentId)}/generate-instructions`,
         WorkflowAgentPromptResponseSchema,
@@ -224,7 +299,12 @@ export function useSaveWorkflow(slug?: string | null) {
   const client = useQueryClient();
   return useMutation({
     mutationFn: (body: SaveWorkflowBody) => {
-      if (!slug) throw new Error("workflow slug is required");
+      if (!slug) {
+        throw new WorkflowAuthoringClientError(
+          "workflowRequired",
+          "A workflow must be selected.",
+        );
+      }
       return callV1(
         `/v1/workflows/${encodeURIComponent(slug)}`,
         WorkflowDetailSchema,
@@ -238,7 +318,12 @@ export function useSaveWorkflow(slug?: string | null) {
 export function useValidateWorkflow(slug?: string | null) {
   return useMutation({
     mutationFn: (body: ValidateWorkflowBody = {}) => {
-      if (!slug) throw new Error("workflow slug is required");
+      if (!slug) {
+        throw new WorkflowAuthoringClientError(
+          "workflowRequired",
+          "A workflow must be selected.",
+        );
+      }
       return callV1(
         `/v1/workflows/${encodeURIComponent(slug)}/validate`,
         WorkflowValidationResponseSchema,
@@ -252,7 +337,12 @@ export function usePublishWorkflow(slug?: string | null) {
   const client = useQueryClient();
   return useMutation({
     mutationFn: (body: { versionId?: string; note?: string } = {}) => {
-      if (!slug) throw new Error("workflow slug is required");
+      if (!slug) {
+        throw new WorkflowAuthoringClientError(
+          "workflowRequired",
+          "A workflow must be selected.",
+        );
+      }
       return callV1(
         `/v1/workflows/${encodeURIComponent(slug)}/publish`,
         ManifestImportCommit,

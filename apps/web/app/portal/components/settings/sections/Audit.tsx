@@ -80,7 +80,7 @@ function isRecord(x: unknown): x is Record<string, unknown> {
 }
 
 export function AuditSection() {
-  const { t } = useI18n();
+  const { language, t } = useI18n();
   const audit = useAuditPages({ limit: 100 });
   const [q, setQ] = useState("");
   const [filter, setFilter] = useState<
@@ -173,7 +173,7 @@ export function AuditSection() {
                 <Fragment key={a.id}>
                   <tr style={{ borderBottom: "1px solid var(--border)" }}>
                     <Td>
-                      <span style={{ color: "var(--text-3)" }}>{fmtAgo(a.at)}</span>
+                      <span style={{ color: "var(--text-3)" }}>{fmtAgo(a.at, language)}</span>
                     </Td>
                     <Td>
                       <span style={{ color: "var(--text-2)" }}>{a.actor}</span>

@@ -11,8 +11,14 @@ import type {
 } from "@agentic/contracts";
 import { Badge, Button, Icon, ModalOverlay } from "@/app/portal/components";
 import { useTenant } from "@/app/portal/lib/use-tenant";
+import { useI18n, type Translate } from "@/app/portal/lib/preferences-context";
+import {
+  runStatusLabel,
+  workflowTestStatusLabel,
+} from "@/app/portal/lib/protocol-labels";
 import { useEventCausality, useEmitEvent } from "@/lib/hooks/useEvents";
 import {
+  formatWorkflowAuthoringError,
   useRunWorkflowTest,
   useWorkflowRunProfile,
 } from "@/lib/hooks/useWorkflowAuthoring";
@@ -86,8 +92,12 @@ function inputSeedForForm(input: WorkflowRunInputDescriptor): unknown {
   return inputValueForForm(input, seedWorkflowInputValue(input));
 }
 
-function compactExample(value: unknown, maxLength = 150): string {
-  if (value === undefined) return "not supplied";
+function compactExample(
+  value: unknown,
+  maxLength = 150,
+  notSupplied = "not supplied",
+): string {
+  if (value === undefined) return notSupplied;
   const serialized = JSON.stringify(value);
   if (!serialized) return String(value);
   return serialized.length > maxLength
@@ -98,6 +108,7 @@ function compactExample(value: unknown, maxLength = 150): string {
 function coerceInputValue(
   input: WorkflowRunInputDescriptor,
   value: unknown,
+  t?: Translate,
 ): unknown {
   const control = workflowInputControl(input);
   if (control === "json") {
@@ -106,7 +117,11 @@ function coerceInputValue(
       return value.trim() ? JSON.parse(value) : null;
     } catch (error) {
       throw new Error(
-        `${input.label} must be valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+        t?.("workflowRunConsole.errorValidJson", {
+          label: input.label,
+          error: error instanceof Error ? error.message : String(error),
+        }) ??
+          `${input.label} must be valid JSON: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
   }
@@ -114,11 +129,17 @@ function coerceInputValue(
     if (value === "") return undefined;
     const number = Number(value);
     if (!Number.isFinite(number)) {
-      throw new Error(`${input.label} must be a number.`);
+      throw new Error(
+        t?.("workflowRunConsole.errorNumber", { label: input.label }) ??
+          `${input.label} must be a number.`,
+      );
     }
     const schema = input.schema as Record<string, unknown>;
     if (schema.type === "integer" && !Number.isInteger(number)) {
-      throw new Error(`${input.label} must be a whole number.`);
+      throw new Error(
+        t?.("workflowRunConsole.errorInteger", { label: input.label }) ??
+          `${input.label} must be a whole number.`,
+      );
     }
     return number;
   }
@@ -156,13 +177,37 @@ function formatFileBytes(bytes: number): string {
   return `${(bytes / 1_000_000).toFixed(1)} MB`;
 }
 
-function readRunFile(file: File): Promise<WorkflowRunFileValue> {
+function exampleSourceLabel(
+  source: WorkflowPayloadGuide["fields"][number]["exampleSource"],
+  t: Translate,
+): string {
+  return {
+    "authored example": t("workflowRunConsole.sourceAuthoredExample"),
+    "authored default": t("workflowRunConsole.sourceAuthoredDefault"),
+    "schema generated": t("workflowRunConsole.sourceSchemaGenerated"),
+    "binding generated": t("workflowRunConsole.sourceBindingGenerated"),
+  }[source];
+}
+
+function readRunFile(file: File, t?: Translate): Promise<WorkflowRunFileValue> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onerror = () => reject(new Error(`Could not read ${file.name}.`));
+    reader.onerror = () =>
+      reject(
+        new Error(
+          t?.("workflowRunConsole.couldNotReadFile", { name: file.name }) ??
+            `Could not read ${file.name}.`,
+        ),
+      );
     reader.onload = () => {
       if (typeof reader.result !== "string") {
-        reject(new Error(`Could not encode ${file.name}.`));
+        reject(
+          new Error(
+            t?.("workflowRunConsole.couldNotEncodeFile", {
+              name: file.name,
+            }) ?? `Could not encode ${file.name}.`,
+          ),
+        );
         return;
       }
       const encodedType = reader.result.match(/^data:([^;,]+)/)?.[1];
@@ -185,11 +230,12 @@ export function WorkflowRunConsole({
   liveVersionId,
   onClose,
 }: WorkflowRunConsoleProps) {
+  const { t } = useI18n();
   const tenant = useTenant();
   const router = useRouter();
   const draftProfile = useMemo(
-    () => deriveWorkflowEntrypoints(manifest),
-    [manifest],
+    () => deriveWorkflowEntrypoints(manifest, t),
+    [manifest, t],
   );
   const [target, setTarget] = useState<RunTarget>("draft");
   const liveProfile = useWorkflowRunProfile(
@@ -241,8 +287,8 @@ export function WorkflowRunConsole({
     (candidate) => candidate.event === selectedEvent,
   );
   const payloadGuide = useMemo(
-    () => (entrypoint ? buildWorkflowPayloadGuide(entrypoint) : null),
-    [entrypoint],
+    () => (entrypoint ? buildWorkflowPayloadGuide(entrypoint, t) : null),
+    [entrypoint, t],
   );
   const selectedAgentRun =
     result?.agentRuns.find((run) => run.id === selectedAgentRunId) ??
@@ -333,7 +379,9 @@ export function WorkflowRunConsole({
       showPayloadExampleStatus("copied");
     } catch (error) {
       setFormError(
-        `Could not copy the payload example: ${error instanceof Error ? error.message : String(error)}`,
+        t("workflowRunConsole.copyExampleFailed", {
+          error: error instanceof Error ? error.message : String(error),
+        }),
       );
     }
   }
@@ -342,13 +390,16 @@ export function WorkflowRunConsole({
     inputs: Record<string, unknown>;
     payload: Record<string, unknown>;
   } {
-    const errors = validateWorkflowInputValues(entrypoint, inputValues).filter(
-      (message) => !message.includes("conflicting listener schemas"),
+    const errors = validateWorkflowInputValues(
+      entrypoint,
+      inputValues,
+      t,
+      false,
     );
     if (errors.length > 0) throw new Error(errors[0]);
     const inputs: Record<string, unknown> = {};
     for (const input of entrypoint?.inputs ?? []) {
-      const value = coerceInputValue(input, inputValues[input.id]);
+      const value = coerceInputValue(input, inputValues[input.id], t);
       if (value !== undefined && value !== "") inputs[input.id] = value;
     }
     let payload: unknown;
@@ -356,11 +407,13 @@ export function WorkflowRunConsole({
       payload = rawPayload.trim() ? JSON.parse(rawPayload) : {};
     } catch (error) {
       throw new Error(
-        `Raw event payload must be valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+        t("workflowRunConsole.rawPayloadValidJson", {
+          error: error instanceof Error ? error.message : String(error),
+        }),
       );
     }
     if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-      throw new Error("Raw event payload must be a JSON object.");
+      throw new Error(t("workflowRunConsole.rawPayloadObject"));
     }
     return {
       inputs,
@@ -372,17 +425,20 @@ export function WorkflowRunConsole({
     setFormError(null);
     setCopied(false);
     if (!entrypoint) {
-      setFormError("Select an entry event.");
+      setFormError(t("workflowRunConsole.selectEntryEvent"));
       return;
     }
     try {
       const submission = buildSubmission();
       if (target === "draft") {
-        const limits = parseWorkflowTestLimits({
-          maxAgentRuns,
-          maxEvents,
-          maxDepth,
-        });
+        const limits = parseWorkflowTestLimits(
+          {
+            maxAgentRuns,
+            maxEvents,
+            maxDepth,
+          },
+          t,
+        );
         const response = await runTest.mutateAsync({
           manifest,
           triggerEvent: entrypoint.event,
@@ -402,9 +458,7 @@ export function WorkflowRunConsole({
       }
 
       if (!confirmLiveDispatch) {
-        throw new Error(
-          "Confirm that you intend to start the published workflow.",
-        );
+        throw new Error(t("workflowRunConsole.confirmPublishedStart"));
       }
       const response = await emitLive.mutateAsync({
         name: entrypoint.event,
@@ -423,7 +477,9 @@ export function WorkflowRunConsole({
       setResultTab("summary");
     } catch (error) {
       setFormError(
-        error instanceof Error ? error.message : "Workflow execution failed.",
+        error instanceof Error
+          ? error.message
+          : t("workflowRunConsole.executionFailed"),
       );
     }
   }
@@ -450,12 +506,14 @@ export function WorkflowRunConsole({
   return (
     <ModalOverlay
       onClose={requestClose}
-      ariaLabel={`Run workflow ${workflowName}`}
+      ariaLabel={t("workflowRunConsole.runWorkflowAria", {
+        name: workflowName,
+      })}
     >
       <div className={styles.console} style={consoleStyle}>
         <header className={styles.header} style={headerStyle}>
           <div style={{ minWidth: 0 }}>
-            <div style={eyebrowStyle}>WORKFLOW OPERATIONS</div>
+            <div style={eyebrowStyle}>{t("workflowRunConsole.operations")}</div>
             <div
               style={{
                 display: "flex",
@@ -464,20 +522,21 @@ export function WorkflowRunConsole({
                 flexWrap: "wrap",
               }}
             >
-              <h2 style={titleStyle}>Run · {workflowName}</h2>
+              <h2 style={titleStyle}>
+                {t("workflowRunConsole.runTitle", { name: workflowName })}
+              </h2>
               <Badge tone={target === "draft" ? "amber" : "green"}>
-                {target === "draft" ? "CURRENT DRAFT" : "PUBLISHED LIVE"}
+                {target === "draft"
+                  ? t("workflowRunConsole.currentDraftBadge")
+                  : t("workflowRunConsole.publishedLiveBadge")}
               </Badge>
             </div>
-            <p style={subtitleStyle}>
-              Configure an entry event, execute, and inspect agent-level
-              evidence without leaving the workflow.
-            </p>
+            <p style={subtitleStyle}>{t("workflowRunConsole.subtitle")}</p>
           </div>
           <Button
             icon="x"
             tone="ghost"
-            ariaLabel="Close workflow Run Console"
+            ariaLabel={t("workflowRunConsole.closeAria")}
             onClick={requestClose}
             disabled={pending}
           />
@@ -487,38 +546,42 @@ export function WorkflowRunConsole({
           <aside className={styles.setup} style={setupStyle}>
             <SetupSection
               number="01"
-              title="Execution target"
-              hint="Draft tests return bounded request-scoped evidence. Live runs enter the durable event runtime."
+              title={t("workflowRunConsole.executionTarget")}
+              hint={t("workflowRunConsole.executionTargetHint")}
             >
               <div className={styles.segmented} style={segmentedStyle}>
                 <TargetButton
                   selected={target === "draft"}
                   onClick={() => setTarget("draft")}
-                  title="Current draft test"
+                  title={t("workflowRunConsole.currentDraftTest")}
                   detail={currentVersion}
                 />
                 <TargetButton
                   selected={target === "live"}
                   disabled={!liveVersionId}
                   onClick={() => setTarget("live")}
-                  title="Published live"
-                  detail={liveVersionId ? "Durable execution" : "Not published"}
+                  title={t("workflowRunConsole.publishedLive")}
+                  detail={
+                    liveVersionId
+                      ? t("workflowRunConsole.durableExecution")
+                      : t("workflowRunConsole.notPublished")
+                  }
                 />
               </div>
               {target === "live" && liveProfile.isError ? (
                 <InlineNotice tone="red">
-                  {liveProfile.error.message}
+                  {formatWorkflowAuthoringError(liveProfile.error, t)}
                 </InlineNotice>
               ) : null}
             </SetupSection>
 
             <SetupSection
               number="02"
-              title="Entry event"
-              hint="External triggers are recommended. Internal events let you test a specific branch."
+              title={t("workflowRunConsole.entryEvent")}
+              hint={t("workflowRunConsole.entryEventHint")}
             >
               <label style={fieldLabelStyle}>
-                Trigger event
+                {t("workflowRunConsole.triggerEvent")}
                 <select
                   style={controlStyle}
                   value={selectedEvent}
@@ -531,30 +594,33 @@ export function WorkflowRunConsole({
                   {entrypoints.length === 0 ? (
                     <option value="">
                       {target === "live" && liveProfile.isLoading
-                        ? "Loading live entry points…"
-                        : "No trigger events declared"}
+                        ? t("workflowRunConsole.loadingEntrypoints")
+                        : t("workflowRunConsole.noTriggerEvents")}
                     </option>
                   ) : null}
                   {entrypoints.some((item) => item.recommended) ? (
-                    <optgroup label="Recommended external entry points">
+                    <optgroup
+                      label={t("workflowRunConsole.recommendedEntrypoints")}
+                    >
                       {entrypoints
                         .filter((item) => item.recommended)
                         .map((item) => (
                           <option key={item.event} value={item.event}>
                             {item.event} · {item.listenerAgentIds.length}{" "}
-                            listener
-                            {item.listenerAgentIds.length === 1 ? "" : "s"}
+                            {t("workflowRunConsole.listenerCount", {
+                              count: item.listenerAgentIds.length,
+                            })}
                           </option>
                         ))}
                     </optgroup>
                   ) : null}
                   {entrypoints.some((item) => !item.recommended) ? (
-                    <optgroup label="Internal branch events">
+                    <optgroup label={t("workflowRunConsole.internalEvents")}>
                       {entrypoints
                         .filter((item) => !item.recommended)
                         .map((item) => (
                           <option key={item.event} value={item.event}>
-                            {item.event} · internal
+                            {item.event} · {t("workflowRunConsole.internal")}
                           </option>
                         ))}
                     </optgroup>
@@ -564,19 +630,20 @@ export function WorkflowRunConsole({
               {entrypoint ? (
                 <div style={entrypointMetaStyle}>
                   <span>
-                    Starts{" "}
+                    {t("workflowRunConsole.starts")}{" "}
                     <strong style={{ color: "var(--text)" }}>
                       {entrypoint.listenerTitles.join(", ")}
                     </strong>
                   </span>
                   <span>
-                    {entrypoint.inputs.length} input
-                    {entrypoint.inputs.length === 1 ? "" : "s"}
+                    {t("workflowRunConsole.inputCount", {
+                      count: entrypoint.inputs.length,
+                    })}
                   </span>
                 </div>
               ) : null}
               <label style={fieldLabelStyle}>
-                Subject / correlation key
+                {t("workflowRunConsole.subjectKey")}
                 <input
                   style={controlStyle}
                   value={subject}
@@ -588,8 +655,8 @@ export function WorkflowRunConsole({
 
             <SetupSection
               number="03"
-              title="Input variables"
-              hint="Controls are generated from every listener's declared input ports."
+              title={t("workflowRunConsole.inputVariables")}
+              hint={t("workflowRunConsole.inputVariablesHint")}
             >
               {entrypoint && payloadGuide ? (
                 <PayloadRecipe
@@ -619,7 +686,7 @@ export function WorkflowRunConsole({
                 </div>
               ) : (
                 <div style={emptyInputStyle}>
-                  This event has no named input variables.
+                  {t("workflowRunConsole.noNamedInputs")}
                 </div>
               )}
               <button
@@ -629,9 +696,11 @@ export function WorkflowRunConsole({
                 style={rawToggleStyle}
               >
                 <span>{showRawPayload ? "▾" : "▸"}</span>
-                Raw event payload
+                {t("workflowRunConsole.rawEventPayload")}
                 {entrypoint?.requiresRawPayload ? (
-                  <Badge tone="amber">BINDINGS DETECTED</Badge>
+                  <Badge tone="amber">
+                    {t("workflowRunConsole.bindingsDetected")}
+                  </Badge>
                 ) : null}
               </button>
               {showRawPayload ? (
@@ -640,16 +709,17 @@ export function WorkflowRunConsole({
                     id="workflow-raw-payload-help"
                     className={styles.rawPayloadHelp}
                   >
-                    <strong>Advanced payload overlay</strong>
+                    <strong>
+                      {t("workflowRunConsole.advancedPayloadOverlay")}
+                    </strong>
                     <span>
-                      Enter extra top-level JSON or fields referenced by a path
-                      or template binding. Named controls are added
-                      automatically; the runtime-owned <code>inputs</code>{" "}
-                      envelope cannot be overridden here.
+                      {t("workflowRunConsole.advancedPayloadBefore")}{" "}
+                      <code>inputs</code>{" "}
+                      {t("workflowRunConsole.advancedPayloadAfter")}
                     </span>
                   </div>
                   <textarea
-                    aria-label="Raw event payload JSON"
+                    aria-label={t("workflowRunConsole.rawPayloadAria")}
                     aria-describedby="workflow-raw-payload-help"
                     value={rawPayload}
                     onChange={(event) => {
@@ -667,11 +737,11 @@ export function WorkflowRunConsole({
             {target === "draft" ? (
               <SetupSection
                 number="04"
-                title="Test policy"
-                hint="Budgets prevent cycles and fan-out from running indefinitely."
+                title={t("workflowRunConsole.testPolicy")}
+                hint={t("workflowRunConsole.testPolicyHint")}
               >
                 <label style={fieldLabelStyle}>
-                  Tool effects
+                  {t("workflowRunConsole.toolEffects")}
                   <select
                     style={controlStyle}
                     value={toolPolicy}
@@ -683,11 +753,13 @@ export function WorkflowRunConsole({
                     }}
                   >
                     <option value="safe">
-                      Safe test · approved test tools
+                      {t("workflowRunConsole.toolSafe")}
                     </option>
-                    <option value="simulate">Read-only · writes blocked</option>
+                    <option value="simulate">
+                      {t("workflowRunConsole.toolReadOnly")}
+                    </option>
                     <option value="live">
-                      Live effects · connected systems may change
+                      {t("workflowRunConsole.toolLive")}
                     </option>
                   </select>
                 </label>
@@ -697,12 +769,12 @@ export function WorkflowRunConsole({
                     onChange={setConfirmLiveEffects}
                     tone="red"
                   >
-                    I understand this draft test may change external systems.
+                    {t("workflowRunConsole.confirmLiveEffects")}
                   </ConfirmRow>
                 ) : null}
                 <div className={styles.twoColumn} style={twoColumnStyle}>
                   <label style={fieldLabelStyle}>
-                    Failure policy
+                    {t("workflowRunConsole.failurePolicy")}
                     <select
                       style={controlStyle}
                       value={failurePolicy}
@@ -713,13 +785,15 @@ export function WorkflowRunConsole({
                       }
                     >
                       <option value="continue">
-                        Continue independent branches
+                        {t("workflowRunConsole.continueBranches")}
                       </option>
-                      <option value="fail_fast">Stop on first failure</option>
+                      <option value="fail_fast">
+                        {t("workflowRunConsole.stopFirstFailure")}
+                      </option>
                     </select>
                   </label>
                   <label style={fieldLabelStyle}>
-                    Human test decision
+                    {t("workflowRunConsole.humanDecision")}
                     <select
                       style={controlStyle}
                       value={humanDecision}
@@ -732,25 +806,31 @@ export function WorkflowRunConsole({
                         )
                       }
                     >
-                      <option value="approve">Approve</option>
-                      <option value="reject">Reject</option>
-                      <option value="supplement">Supplement</option>
+                      <option value="approve">
+                        {t("workflowRunConsole.approve")}
+                      </option>
+                      <option value="reject">
+                        {t("workflowRunConsole.reject")}
+                      </option>
+                      <option value="supplement">
+                        {t("workflowRunConsole.supplement")}
+                      </option>
                     </select>
                   </label>
                 </div>
                 <div className={styles.threeColumn} style={threeColumnStyle}>
                   <BudgetField
-                    label="Agent runs"
+                    label={t("workflowRunConsole.agentRuns")}
                     value={maxAgentRuns}
                     onChange={setMaxAgentRuns}
                   />
                   <BudgetField
-                    label="Events"
+                    label={t("workflowRunConsole.events")}
                     value={maxEvents}
                     onChange={setMaxEvents}
                   />
                   <BudgetField
-                    label="Depth"
+                    label={t("workflowRunConsole.depth")}
                     value={maxDepth}
                     onChange={setMaxDepth}
                   />
@@ -759,15 +839,15 @@ export function WorkflowRunConsole({
             ) : (
               <SetupSection
                 number="04"
-                title="Production confirmation"
-                hint="This publishes an operator event into the immutable live workflow and may start multiple durable runs."
+                title={t("workflowRunConsole.productionConfirmation")}
+                hint={t("workflowRunConsole.productionConfirmationHint")}
               >
                 <ConfirmRow
                   checked={confirmLiveDispatch}
                   onChange={setConfirmLiveDispatch}
                   tone="amber"
                 >
-                  Start the published workflow with these inputs.
+                  {t("workflowRunConsole.startPublishedConfirm")}
                 </ConfirmRow>
               </SetupSection>
             )}
@@ -786,26 +866,34 @@ export function WorkflowRunConsole({
           <main className={styles.results} style={resultsStyle}>
             <div className={styles.resultsHeader} style={resultsHeaderStyle}>
               <div>
-                <div style={eyebrowStyle}>EXECUTION EVIDENCE</div>
+                <div style={eyebrowStyle}>
+                  {t("workflowRunConsole.executionEvidence")}
+                </div>
                 <h3 style={{ ...titleStyle, fontSize: 17 }}>
                   {target === "draft"
                     ? result
-                      ? `Test ${result.runId}`
-                      : "Draft test result"
+                      ? t("workflowRunConsole.testResultId", {
+                          id: result.runId,
+                        })
+                      : t("workflowRunConsole.draftTestResult")
                     : liveReceipt
-                      ? `Live dispatch ${liveReceipt.eventId}`
-                      : "Live run receipt"}
+                      ? t("workflowRunConsole.liveDispatchId", {
+                          id: liveReceipt.eventId,
+                        })
+                      : t("workflowRunConsole.liveRunReceipt")}
                 </h3>
               </div>
               <div style={{ display: "flex", gap: 7, alignItems: "center" }}>
                 {target === "draft" && result ? (
                   <Badge tone={statusTone(result.status)}>
-                    {result.status.toUpperCase()}
+                    {workflowTestStatusLabel(t, result.status)}
                   </Badge>
                 ) : null}
                 {target === "live" && liveReceipt ? (
                   <Badge tone={liveRunTerminal ? "green" : "blue"}>
-                    {liveRunTerminal ? "TERMINAL" : "TRACKING"}
+                    {liveRunTerminal
+                      ? t("workflowRunConsole.terminalBadge")
+                      : t("workflowRunConsole.trackingBadge")}
                   </Badge>
                 ) : null}
                 <Button
@@ -815,7 +903,9 @@ export function WorkflowRunConsole({
                   onClick={() => void copyReport()}
                   disabled={target === "draft" ? !result : !liveReceipt}
                 >
-                  {copied ? "Copied" : "Copy JSON"}
+                  {copied
+                    ? t("workflowRunConsole.copied")
+                    : t("workflowRunConsole.copyJson")}
                 </Button>
               </div>
             </div>
@@ -824,10 +914,10 @@ export function WorkflowRunConsole({
               <div role="tablist" style={tabsStyle}>
                 {(
                   [
-                    ["summary", "Summary"],
-                    ["agents", "Agent trace"],
-                    ["events", "Events"],
-                    ["json", "Raw JSON"],
+                    ["summary", t("workflowRunConsole.summary")],
+                    ["agents", t("workflowRunConsole.agentTrace")],
+                    ["events", t("workflowRunConsole.events")],
+                    ["json", t("workflowRunConsole.rawJson")],
                   ] as const
                 ).map(([value, label]) => (
                   <button
@@ -881,8 +971,8 @@ export function WorkflowRunConsole({
             ) : (
               <div style={{ color: "var(--text-3)", fontSize: 11.5 }}>
                 {target === "draft"
-                  ? "Runs the exact current canvas manifest. Production remains unchanged."
-                  : "Dispatches through POST /v1/events and the registered live runtime."}
+                  ? t("workflowRunConsole.draftFooterHint")
+                  : t("workflowRunConsole.liveFooterHint")}
               </div>
             )}
           </div>
@@ -891,7 +981,7 @@ export function WorkflowRunConsole({
             style={{ display: "flex", gap: 8 }}
           >
             <Button tone="ghost" onClick={requestClose} disabled={pending}>
-              Close
+              {t("workflowRunConsole.close")}
             </Button>
             <Button
               icon="run"
@@ -908,11 +998,11 @@ export function WorkflowRunConsole({
             >
               {pending
                 ? target === "draft"
-                  ? "Running draft…"
-                  : "Dispatching…"
+                  ? t("workflowRunConsole.runningDraft")
+                  : t("workflowRunConsole.dispatching")
                 : target === "draft"
-                  ? "Run draft test"
-                  : "Run published workflow"}
+                  ? t("workflowRunConsole.runDraftTest")
+                  : t("workflowRunConsole.runPublished")}
             </Button>
           </div>
         </footer>
@@ -934,6 +1024,7 @@ function PayloadRecipe({
   onLoad: () => void;
   onCopy: () => void;
 }) {
+  const { t } = useI18n();
   const requiredCount = guide.fields.filter((field) => field.required).length;
   const hasFileInput = guide.fields.some((field) =>
     field.type.startsWith("file"),
@@ -952,27 +1043,35 @@ function PayloadRecipe({
         <div style={{ minWidth: 0 }}>
           <div className={styles.payloadRecipeEyebrow}>
             <Icon name="code" size={11} />
-            PAYLOAD RECIPE
-            <Badge tone="signal">SCHEMA-GUIDED</Badge>
+            {t("workflowRunConsole.payloadRecipe")}
+            <Badge tone="signal">{t("workflowRunConsole.schemaGuided")}</Badge>
           </div>
           <strong className={styles.payloadRecipeTitle}>
-            Example event payload
+            {t("workflowRunConsole.examplePayload")}
           </strong>
           <p className={styles.payloadRecipeDescription}>
-            Use this shape to start <code>{entrypoint.event}</code>. Examples
-            prefer authored values, then derive safe placeholders from each
-            input schema and binding.
+            {t("workflowRunConsole.examplePayloadBefore")}{" "}
+            <code>{entrypoint.event}</code>.{" "}
+            {t("workflowRunConsole.examplePayloadAfter")}
           </p>
         </div>
         <div className={styles.payloadRecipeCounts}>
-          <span>{guide.fields.length} fields</span>
-          <span>{requiredCount} required</span>
+          <span>
+            {t("workflowRunConsole.fieldCount", {
+              count: guide.fields.length,
+            })}
+          </span>
+          <span>
+            {t("workflowRunConsole.requiredCount", { count: requiredCount })}
+          </span>
         </div>
       </div>
 
       <pre
         className={styles.payloadRecipeCode}
-        aria-label={"Example payload for " + entrypoint.event}
+        aria-label={t("workflowRunConsole.examplePayloadAria", {
+          event: entrypoint.event,
+        })}
       >
         {JSON.stringify(guide.eventPayload, null, 2)}
       </pre>
@@ -982,12 +1081,12 @@ function PayloadRecipe({
           small
           icon="replay"
           onClick={onLoad}
-          title="Replace current input values and advanced JSON with this example"
+          title={t("workflowRunConsole.loadExampleTitle")}
         >
-          Load example
+          {t("workflowRunConsole.loadExample")}
         </Button>
         <Button small tone="ghost" icon="code" onClick={onCopy}>
-          Copy JSON
+          {t("workflowRunConsole.copyJson")}
         </Button>
         <span
           className={styles.payloadRecipeStatus}
@@ -995,9 +1094,9 @@ function PayloadRecipe({
           aria-live="polite"
         >
           {status === "loaded"
-            ? "Example loaded"
+            ? t("workflowRunConsole.exampleLoaded")
             : status === "copied"
-              ? "Example copied"
+              ? t("workflowRunConsole.exampleCopied")
               : ""}
         </span>
       </div>
@@ -1008,7 +1107,7 @@ function PayloadRecipe({
         onToggle={(event) => setContractOpen(event.currentTarget.open)}
       >
         <summary>
-          Expected fields
+          {t("workflowRunConsole.expectedFields")}
           <span>{guide.fields.length}</span>
         </summary>
         {guide.fields.length > 0 ? (
@@ -1020,11 +1119,17 @@ function PayloadRecipe({
                     <strong>{field.label}</strong>
                     <code>{field.type}</code>
                     {field.runtimeProvided ? (
-                      <Badge tone="blue">DERIVED</Badge>
+                      <Badge tone="blue">
+                        {t("workflowRunConsole.derivedBadge")}
+                      </Badge>
                     ) : field.required ? (
-                      <Badge tone="amber">REQUIRED</Badge>
+                      <Badge tone="amber">
+                        {t("workflowRunConsole.requiredBadge")}
+                      </Badge>
                     ) : (
-                      <Badge tone="muted">OPTIONAL</Badge>
+                      <Badge tone="muted">
+                        {t("workflowRunConsole.optionalBadge")}
+                      </Badge>
                     )}
                     {field.sensitivity !== "none" ? (
                       <Badge tone="amber">
@@ -1040,10 +1145,18 @@ function PayloadRecipe({
                   {field.description ? <p>{field.description}</p> : null}
                   <div className={styles.payloadFieldExample}>
                     <span>
-                      {field.runtimeProvided ? "Derived example" : "Example"}
+                      {field.runtimeProvided
+                        ? t("workflowRunConsole.derivedExample")
+                        : t("workflowRunConsole.example")}
                     </span>
-                    <code>{compactExample(field.example)}</code>
-                    <span>{field.exampleSource}</span>
+                    <code>
+                      {compactExample(
+                        field.example,
+                        150,
+                        t("workflowRunConsole.notSupplied"),
+                      )}
+                    </code>
+                    <span>{exampleSourceLabel(field.exampleSource, t)}</span>
                   </div>
                 </div>
               );
@@ -1051,20 +1164,15 @@ function PayloadRecipe({
           </div>
         ) : (
           <div className={styles.payloadContractEmpty}>
-            No caller-supplied fields are declared. An empty JSON object is
-            valid.
+            {t("workflowRunConsole.noCallerFields")}
           </div>
         )}
       </details>
 
       <div className={styles.payloadRecipeNote}>
-        Named controls populate both top-level keys and the canonical{" "}
-        <code>inputs</code> envelope. Use Raw event payload only for additional
-        fields or explicit path/template bindings. Derived fields are shown for
-        clarity but do not require a caller value.
-        {hasFileInput
-          ? " File contents must be selected with the file control and are not embedded in this example."
-          : ""}
+        {t("workflowRunConsole.recipeNoteBefore")} <code>inputs</code>{" "}
+        {t("workflowRunConsole.recipeNoteAfter")}
+        {hasFileInput ? t("workflowRunConsole.fileExampleNote") : ""}
       </div>
     </div>
   );
@@ -1079,6 +1187,7 @@ function WorkflowInputField({
   value: unknown;
   onChange: (value: unknown) => void;
 }) {
+  const { t } = useI18n();
   const control = workflowInputControl(input);
   const schema = input.schema as Record<string, unknown>;
   const enumValues = Array.isArray(schema.enum) ? schema.enum : [];
@@ -1100,23 +1209,35 @@ function WorkflowInputField({
       const contentType = file.type || "application/octet-stream";
       if (!mediaTypeAllowed(contentType, allowedTypes)) {
         setFileError(
-          `${file.name} has type ${contentType}; allowed: ${allowedTypes.join(", ")}.`,
+          t("workflowRunConsole.fileTypeError", {
+            name: file.name,
+            type: contentType,
+            allowed: allowedTypes.join(", "),
+          }),
         );
         return;
       }
       if (maxBytes && file.size > maxBytes) {
         setFileError(
-          `${file.name} is ${formatFileBytes(file.size)}; maximum ${formatFileBytes(maxBytes)}.`,
+          t("workflowRunConsole.fileSizeError", {
+            name: file.name,
+            size: formatFileBytes(file.size),
+            max: formatFileBytes(maxBytes),
+          }),
         );
         return;
       }
     }
     try {
-      const encoded = await Promise.all(selected.map(readRunFile));
+      const encoded = await Promise.all(
+        selected.map((file) => readRunFile(file, t)),
+      );
       onChange(input.file?.multiple ? encoded : (encoded[0] ?? null));
     } catch (error) {
       setFileError(
-        error instanceof Error ? error.message : "Could not read the file.",
+        error instanceof Error
+          ? error.message
+          : t("workflowRunConsole.couldNotReadGeneric"),
       );
     }
   }
@@ -1133,7 +1254,7 @@ function WorkflowInputField({
       >
         {input.label}
         {runtimeProvided ? (
-          <Badge tone="blue">DERIVED</Badge>
+          <Badge tone="blue">{t("workflowRunConsole.derivedBadge")}</Badge>
         ) : input.required ? (
           <span style={{ color: "var(--amber)" }}>*</span>
         ) : null}
@@ -1141,21 +1262,23 @@ function WorkflowInputField({
         {input.sensitivity !== "none" ? (
           <Badge tone="amber">{input.sensitivity.toUpperCase()}</Badge>
         ) : null}
-        {input.conflict ? <Badge tone="red">SCHEMA CONFLICT</Badge> : null}
+        {input.conflict ? (
+          <Badge tone="red">{t("workflowRunConsole.schemaConflict")}</Badge>
+        ) : null}
       </span>
       {input.description ? (
         <span style={fieldHintStyle}>{input.description}</span>
       ) : null}
       {runtimeProvided ? (
         <div className={styles.runtimeInputNotice}>
-          <strong>No value to enter</strong>
+          <strong>{t("workflowRunConsole.noValueToEnter")}</strong>
           <span>
-            The workflow derives this input at runtime from{" "}
+            {t("workflowRunConsole.runtimeDerivesFrom")}{" "}
             {input.bindings
               .map((binding) =>
                 binding.mode === "template"
                   ? binding.expression
-                  : "an authored constant",
+                  : t("workflowRunConsole.authoredConstant"),
               )
               .join(" · ")}
           </span>
@@ -1174,7 +1297,9 @@ function WorkflowInputField({
           onChange={(event) => onChange(event.target.value)}
           style={controlStyle}
         >
-          {!input.required ? <option value="">— not supplied —</option> : null}
+          {!input.required ? (
+            <option value="">— {t("workflowRunConsole.notSupplied")} —</option>
+          ) : null}
           {enumValues.map((option) => (
             <option key={String(option)} value={String(option)}>
               {String(option)}
@@ -1207,12 +1332,16 @@ function WorkflowInputField({
           />
           {input.file ? (
             <span style={fieldHintStyle}>
-              {input.file.multiple ? "Multiple files allowed" : "One file"}
+              {input.file.multiple
+                ? t("workflowRunConsole.multipleFiles")
+                : t("workflowRunConsole.oneFile")}
               {input.file.media_types?.length
                 ? ` · ${input.file.media_types.join(", ")}`
                 : ""}
               {input.file.max_bytes
-                ? ` · max ${formatFileBytes(input.file.max_bytes)} each`
+                ? t("workflowRunConsole.maxEach", {
+                    size: formatFileBytes(input.file.max_bytes),
+                  })
                 : ""}
             </span>
           ) : null}
@@ -1239,11 +1368,16 @@ function WorkflowInputField({
       ) : null}
       {control !== "file" ? (
         <span className={styles.inputExample}>
-          Example <code>{compactExample(example, 120)}</code>
+          {t("workflowRunConsole.example")}{" "}
+          <code>
+            {compactExample(example, 120, t("workflowRunConsole.notSupplied"))}
+          </code>
         </span>
       ) : null}
       <span style={fieldHintStyle}>
-        Used by {input.consumers.join(", ")}
+        {t("workflowRunConsole.usedBy", {
+          consumers: input.consumers.join(", "),
+        })}
         {input.bindings.some((binding) => binding.mode !== "direct")
           ? ` · ${input.bindings
               .filter((binding) => binding.mode !== "direct")
@@ -1269,6 +1403,7 @@ function DraftEvidence({
   selectedAgentRun: WorkflowTestAgentRun | null;
   onSelectAgent: (id: string) => void;
 }) {
+  const { t } = useI18n();
   if (tab === "json") return <JsonPanel value={result} />;
   if (tab === "events") {
     return (
@@ -1279,12 +1414,21 @@ function DraftEvidence({
               <div style={rowTitleStyle}>
                 <Icon name="event" size={11} />
                 {event.name}
-                {event.terminal ? <Badge tone="muted">TERMINAL</Badge> : null}
+                {event.terminal ? (
+                  <Badge tone="muted">
+                    {t("workflowRunConsole.terminalBadge")}
+                  </Badge>
+                ) : null}
               </div>
               <div style={rowMetaStyle}>
-                {event.id} · depth {event.depth} ·{" "}
-                {event.consumerAgentIds.length} consumer
-                {event.consumerAgentIds.length === 1 ? "" : "s"}
+                {event.id} ·{" "}
+                {t("workflowRunConsole.depthValue", {
+                  depth: event.depth,
+                })}{" "}
+                ·{" "}
+                {t("workflowRunConsole.consumerCount", {
+                  count: event.consumerAgentIds.length,
+                })}
               </div>
             </div>
             <code style={payloadPreviewStyle}>
@@ -1324,12 +1468,14 @@ function DraftEvidence({
                   {run.agentTitle}
                 </strong>
                 <span style={rowMetaStyle}>
-                  {formatDuration(run.durationMs)} · {run.steps.length} step
-                  {run.steps.length === 1 ? "" : "s"}
+                  {formatDuration(run.durationMs)} ·{" "}
+                  {t("workflowRunConsole.stepCount", {
+                    count: run.steps.length,
+                  })}
                 </span>
               </span>
               <Badge tone={statusTone(run.status)}>
-                {run.status.toUpperCase()}
+                {workflowTestStatusLabel(t, run.status)}
               </Badge>
             </button>
           ))}
@@ -1337,7 +1483,9 @@ function DraftEvidence({
         {selectedAgentRun ? (
           <AgentRunEvidence run={selectedAgentRun} />
         ) : (
-          <div style={emptyInputStyle}>No agent execution was recorded.</div>
+          <div style={emptyInputStyle}>
+            {t("workflowRunConsole.noAgentExecution")}
+          </div>
         )}
       </div>
     );
@@ -1345,21 +1493,39 @@ function DraftEvidence({
   return (
     <div style={{ display: "grid", gap: 14 }}>
       <div style={metricGridStyle}>
-        <Metric label="Status" value={result.status.toUpperCase()} />
         <Metric
-          label="Agent runs"
-          value={`${result.summary.passed}/${result.summary.agentRuns} passed`}
-        />
-        <Metric label="Steps" value={String(result.summary.steps)} />
-        <Metric
-          label="Events"
-          value={`${result.summary.events} · ${result.summary.terminalEvents} terminal`}
+          label={t("workflowRunConsole.status")}
+          value={workflowTestStatusLabel(t, result.status)}
         />
         <Metric
-          label="Model tokens"
-          value={`${result.summary.tokensIn} in · ${result.summary.tokensOut} out`}
+          label={t("workflowRunConsole.agentRuns")}
+          value={t("workflowRunConsole.passedCount", {
+            passed: result.summary.passed,
+            total: result.summary.agentRuns,
+          })}
         />
-        <Metric label="Duration" value={formatDuration(result.durationMs)} />
+        <Metric
+          label={t("workflowRunConsole.steps")}
+          value={String(result.summary.steps)}
+        />
+        <Metric
+          label={t("workflowRunConsole.events")}
+          value={t("workflowRunConsole.eventsSummary", {
+            count: result.summary.events,
+            terminal: result.summary.terminalEvents,
+          })}
+        />
+        <Metric
+          label={t("workflowRunConsole.modelTokens")}
+          value={t("workflowRunConsole.tokenSummary", {
+            input: result.summary.tokensIn,
+            output: result.summary.tokensOut,
+          })}
+        />
+        <Metric
+          label={t("workflowRunConsole.duration")}
+          value={formatDuration(result.durationMs)}
+        />
       </div>
       {result.warnings.length > 0 ? (
         <div style={{ display: "grid", gap: 6 }}>
@@ -1371,7 +1537,9 @@ function DraftEvidence({
         </div>
       ) : null}
       <div>
-        <div style={sectionHeadingStyle}>Terminal outputs</div>
+        <div style={sectionHeadingStyle}>
+          {t("workflowRunConsole.terminalOutputs")}
+        </div>
         {result.terminalOutputs.length > 0 ? (
           <div style={{ display: "grid", gap: 8 }}>
             {result.terminalOutputs.map((output) => (
@@ -1393,7 +1561,7 @@ function DraftEvidence({
           </div>
         ) : (
           <div style={emptyInputStyle}>
-            No successful terminal output was produced.
+            {t("workflowRunConsole.noTerminalOutput")}
           </div>
         )}
       </div>
@@ -1402,18 +1570,28 @@ function DraftEvidence({
 }
 
 function AgentRunEvidence({ run }: { run: WorkflowTestAgentRun }) {
+  const { t } = useI18n();
   return (
     <div style={{ display: "grid", gap: 12, alignContent: "start" }}>
       <div style={metricGridStyle}>
-        <Metric label="Status" value={run.status.toUpperCase()} />
-        <Metric label="Triggered by" value={run.triggerEvent} />
-        <Metric label="Duration" value={formatDuration(run.durationMs)} />
         <Metric
-          label="Model"
+          label={t("workflowRunConsole.status")}
+          value={workflowTestStatusLabel(t, run.status)}
+        />
+        <Metric
+          label={t("workflowRunConsole.triggeredBy")}
+          value={run.triggerEvent}
+        />
+        <Metric
+          label={t("workflowRunConsole.duration")}
+          value={formatDuration(run.durationMs)}
+        />
+        <Metric
+          label={t("workflowRunConsole.model")}
           value={
             run.provider || run.model
-              ? `${run.provider ?? "default"} / ${run.model ?? "default"}`
-              : "No model call"
+              ? `${run.provider ?? t("workflowRunConsole.defaultValue")} / ${run.model ?? t("workflowRunConsole.defaultValue")}`
+              : t("workflowRunConsole.noModelCall")
           }
         />
       </div>
@@ -1423,11 +1601,15 @@ function AgentRunEvidence({ run }: { run: WorkflowTestAgentRun }) {
         </InlineNotice>
       ) : null}
       <div>
-        <div style={sectionHeadingStyle}>Validated inputs</div>
+        <div style={sectionHeadingStyle}>
+          {t("workflowRunConsole.validatedInputs")}
+        </div>
         <pre style={preStyle}>{JSON.stringify(run.inputs, null, 2)}</pre>
       </div>
       <div>
-        <div style={sectionHeadingStyle}>Action timeline</div>
+        <div style={sectionHeadingStyle}>
+          {t("workflowRunConsole.actionTimeline")}
+        </div>
         <div style={{ display: "grid", gap: 7 }}>
           {run.steps.map((step, index) => (
             <div key={step.id} style={stepStyle}>
@@ -1438,19 +1620,25 @@ function AgentRunEvidence({ run }: { run: WorkflowTestAgentRun }) {
                 <div style={rowTitleStyle}>
                   {step.name}
                   <Badge tone={statusTone(step.status)}>
-                    {step.status.toUpperCase()}
+                    {workflowTestStatusLabel(t, step.status)}
                   </Badge>
                   <Badge tone="muted">{step.type.toUpperCase()}</Badge>
                 </div>
                 <div style={rowMetaStyle}>
                   {formatDuration(step.durationMs)}
                   {step.provider || step.model
-                    ? ` · ${step.provider ?? "default"}/${step.model ?? "default"}`
+                    ? ` · ${step.provider ?? t("workflowRunConsole.defaultValue")}/${step.model ?? t("workflowRunConsole.defaultValue")}`
                     : ""}
                   {step.tokensIn + step.tokensOut > 0
-                    ? ` · ${step.tokensIn + step.tokensOut} tokens`
+                    ? t("workflowRunConsole.tokensSuffix", {
+                        count: step.tokensIn + step.tokensOut,
+                      })
                     : ""}
-                  {step.branchTarget ? ` · branch → ${step.branchTarget}` : ""}
+                  {step.branchTarget
+                    ? t("workflowRunConsole.branchSuffix", {
+                        target: step.branchTarget,
+                      })
+                    : ""}
                 </div>
                 {step.simulation ? (
                   <div style={{ ...fieldHintStyle, color: "var(--amber)" }}>
@@ -1463,7 +1651,9 @@ function AgentRunEvidence({ run }: { run: WorkflowTestAgentRun }) {
                   </div>
                 ) : null}
                 <details style={{ marginTop: 7 }}>
-                  <summary style={detailsSummaryStyle}>Input / output</summary>
+                  <summary style={detailsSummaryStyle}>
+                    {t("workflowRunConsole.inputOutput")}
+                  </summary>
                   <div className={styles.twoColumn} style={twoColumnStyle}>
                     <pre style={preStyle}>
                       {JSON.stringify(step.input, null, 2)}
@@ -1479,7 +1669,9 @@ function AgentRunEvidence({ run }: { run: WorkflowTestAgentRun }) {
         </div>
       </div>
       <div>
-        <div style={sectionHeadingStyle}>Validated output</div>
+        <div style={sectionHeadingStyle}>
+          {t("workflowRunConsole.validatedOutput")}
+        </div>
         <pre style={preStyle}>{JSON.stringify(run.output, null, 2)}</pre>
       </div>
     </div>
@@ -1501,6 +1693,7 @@ function LiveEvidence({
   data: ReturnType<typeof useEventCausality>["data"] | undefined;
   onOpenRun: (runId: string) => void;
 }) {
+  const { language, t } = useI18n();
   if (tab === "json") {
     return <JsonPanel value={{ receipt, causality: data ?? null }} />;
   }
@@ -1516,12 +1709,14 @@ function LiveEvidence({
                 {event.name}
               </div>
               <div style={rowMetaStyle}>
-                {event.id} · {event.subject ?? "no subject"}
+                {event.id} ·{" "}
+                {event.subject ?? t("workflowRunConsole.noSubject")}
               </div>
             </div>
             <span style={rowMetaStyle}>
-              {event.consumers?.length ?? 0} consumer
-              {(event.consumers?.length ?? 0) === 1 ? "" : "s"}
+              {t("workflowRunConsole.consumerCount", {
+                count: event.consumers?.length ?? 0,
+              })}
             </span>
           </div>
         ))}
@@ -1536,23 +1731,24 @@ function LiveEvidence({
             <div>
               <div style={rowTitleStyle}>
                 <Icon name="agent" size={11} />
-                {run.agentName ?? "Manifest agent"}
+                {run.agentName ?? t("workflowRunConsole.manifestAgent")}
                 <Badge tone={statusTone(run.status)}>
-                  {run.status.toUpperCase()}
+                  {runStatusLabel(t, run.status)}
                 </Badge>
               </div>
               <div style={rowMetaStyle}>
-                {run.id} · trigger {run.triggerEventId ?? "pending"}
+                {run.id} · {t("workflowRunConsole.triggerLabel")}{" "}
+                {run.triggerEventId ?? t("workflowRunConsole.pending")}
               </div>
             </div>
             <Button small icon="external" onClick={() => onOpenRun(run.id)}>
-              Open run
+              {t("workflowRunConsole.openRun")}
             </Button>
           </div>
         ))}
         {!loading && (data?.runs.length ?? 0) === 0 ? (
           <div style={emptyInputStyle}>
-            Event accepted. Waiting for the durable runtime to create a run.
+            {t("workflowRunConsole.waitingDurableRun")}
           </div>
         ) : null}
       </div>
@@ -1561,25 +1757,40 @@ function LiveEvidence({
   return (
     <div style={{ display: "grid", gap: 14 }}>
       <div style={metricGridStyle}>
-        <Metric label="Seed event" value={receipt.eventId} mono />
-        <Metric label="Event" value={receipt.eventName} mono />
-        <Metric label="Durable runs" value={String(data?.runs.length ?? 0)} />
         <Metric
-          label="Observed events"
+          label={t("workflowRunConsole.seedEvent")}
+          value={receipt.eventId}
+          mono
+        />
+        <Metric
+          label={t("workflowRunConsole.event")}
+          value={receipt.eventName}
+          mono
+        />
+        <Metric
+          label={t("workflowRunConsole.durableRuns")}
+          value={String(data?.runs.length ?? 0)}
+        />
+        <Metric
+          label={t("workflowRunConsole.observedEvents")}
           value={String(data?.events.length ?? 0)}
         />
       </div>
       <InlineNotice tone="green">
-        The published event was accepted at{" "}
-        {new Date(receipt.submittedAt).toLocaleTimeString()}. Causality polling
-        follows this exact event id, not a name or subject guess.
+        {t("workflowRunConsole.eventAcceptedBefore")}{" "}
+        {new Date(receipt.submittedAt).toLocaleTimeString(
+          language === "zh" ? "zh-CN" : "en-US",
+        )}
+        . {t("workflowRunConsole.eventAcceptedAfter")}
       </InlineNotice>
       {loading ? (
-        <div style={emptyInputStyle}>Reading durable run causality…</div>
+        <div style={emptyInputStyle}>
+          {t("workflowRunConsole.readingCausality")}
+        </div>
       ) : (data?.runs.length ?? 0) === 0 ? (
         <InlineNotice tone="amber">
-          No run has consumed the event yet. In local development, workflow
-          dispatch requires the full <code>pnpm dev</code> stack with Inngest.
+          {t("workflowRunConsole.noRunConsumedBefore")} <code>pnpm dev</code>{" "}
+          {t("workflowRunConsole.noRunConsumedAfter")}
         </InlineNotice>
       ) : (
         <div style={{ display: "grid", gap: 8 }}>
@@ -1587,15 +1798,15 @@ function LiveEvidence({
             <div key={run.id} style={evidenceRowStyle}>
               <div>
                 <div style={rowTitleStyle}>
-                  {run.agentName ?? "Manifest agent"}
+                  {run.agentName ?? t("workflowRunConsole.manifestAgent")}
                   <Badge tone={statusTone(run.status)}>
-                    {run.status.toUpperCase()}
+                    {runStatusLabel(t, run.status)}
                   </Badge>
                 </div>
                 <div style={rowMetaStyle}>{run.id}</div>
               </div>
               <Button small icon="external" onClick={() => onOpenRun(run.id)}>
-                Inspect evidence
+                {t("workflowRunConsole.inspectEvidence")}
               </Button>
             </div>
           ))}
@@ -1606,6 +1817,7 @@ function LiveEvidence({
 }
 
 function EmptyEvidence({ target }: { target: RunTarget }) {
+  const { t } = useI18n();
   return (
     <div style={emptyEvidenceStyle}>
       <div style={emptyIconStyle}>
@@ -1613,13 +1825,13 @@ function EmptyEvidence({ target }: { target: RunTarget }) {
       </div>
       <div style={{ fontSize: 15, color: "var(--text)", fontWeight: 650 }}>
         {target === "draft"
-          ? "Ready to test the current draft"
-          : "Ready to start the published workflow"}
+          ? t("workflowRunConsole.readyDraftTitle")
+          : t("workflowRunConsole.readyLiveTitle")}
       </div>
       <div style={{ maxWidth: 520, color: "var(--text-3)", lineHeight: 1.6 }}>
         {target === "draft"
-          ? "The harness will validate inputs, execute matching agents, follow emitted events, enforce budgets, and return a complete evidence report."
-          : "The event will enter the live Inngest runtime. This console will track exact event-to-run causality and link to durable run evidence."}
+          ? t("workflowRunConsole.readyDraftBody")
+          : t("workflowRunConsole.readyLiveBody")}
       </div>
     </div>
   );

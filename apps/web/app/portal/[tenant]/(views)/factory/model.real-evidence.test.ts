@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { translate } from "@/lib/i18n";
 import type { BrainEvent } from "@/lib/hooks/useBrainStream";
 import {
   deriveBrainFlow,
@@ -6,6 +7,8 @@ import {
   factoryRunDisplayStatus,
   sandboxEvidenceStatus,
 } from "./model";
+
+const t = (key: string, vars?: Record<string, string | number>) => translate("zh", key, vars);
 
 const event = (value: Record<string, unknown>): BrainEvent =>
   value as unknown as BrainEvent;
@@ -19,11 +22,11 @@ describe("Factory real execution evidence", () => {
       completionKind: "incomplete",
     })).toBe("waiting_human");
     const events = [event({ t: "done", status: "waiting_human", completionKind: "incomplete" })];
-    expect(deriveStages(events).stages.find((stage) => stage.id === "deliver")).toMatchObject({
+    expect(deriveStages(t, events).stages.find((stage) => stage.id === "deliver")).toMatchObject({
       label: "等待人工",
       status: "idle",
     });
-    expect(deriveBrainFlow(events).at(-1)).toMatchObject({
+    expect(deriveBrainFlow(t, events).at(-1)).toMatchObject({
       kind: "gate",
       status: "await",
     });
@@ -62,7 +65,7 @@ describe("Factory real execution evidence", () => {
     ];
 
     expect(sandboxEvidenceStatus(events)).toBe("simulated_only");
-    const stages = deriveStages(events).stages;
+    const stages = deriveStages(t, events).stages;
     expect(stages.find((stage) => stage.id === "sandbox")?.status).toBe(
       "error",
     );
@@ -70,7 +73,7 @@ describe("Factory real execution evidence", () => {
       "error",
     );
 
-    const flow = deriveBrainFlow(events);
+    const flow = deriveBrainFlow(t, events);
     expect(flow.find((step) => step.kind === "sandbox")).toMatchObject({
       status: "fail",
       label: "历史模拟记录 · 无效执行证据",
@@ -93,7 +96,7 @@ describe("Factory real execution evidence", () => {
 
     expect(sandboxEvidenceStatus(events)).toBe("real");
     expect(
-      deriveBrainFlow(events).filter((step) =>
+      deriveBrainFlow(t, events).filter((step) =>
         ["sandbox", "deliver"].includes(step.kind),
       ),
     ).toEqual(
@@ -117,13 +120,13 @@ describe("Factory real execution evidence", () => {
       completionKind: "answer",
     })).toBe("answer_completed");
 
-    const stages = deriveStages(events).stages;
+    const stages = deriveStages(t, events).stages;
     expect(stages.find((stage) => stage.id === "deliver")).toMatchObject({
       label: "回答",
       status: "ok",
     });
     expect(stages.find((stage) => stage.id === "sandbox")?.status).toBe("idle");
-    expect(deriveBrainFlow(events).at(-1)).toMatchObject({
+    expect(deriveBrainFlow(t, events).at(-1)).toMatchObject({
       kind: "answer",
       label: "回答完成",
       status: "ok",
@@ -132,11 +135,11 @@ describe("Factory real execution evidence", () => {
 
   it("keeps old done frames without completionKind explicitly unknown", () => {
     const events = [event({ t: "done", status: "finished" })];
-    expect(deriveStages(events).stages.at(-1)).toMatchObject({
+    expect(deriveStages(t, events).stages.at(-1)).toMatchObject({
       label: "结束（类型未知）",
       status: "error",
     });
-    expect(deriveBrainFlow(events).at(-1)).toMatchObject({
+    expect(deriveBrainFlow(t, events).at(-1)).toMatchObject({
       label: "结束 · 历史记录未标注完成类型",
       status: "warn",
     });

@@ -58,7 +58,9 @@ describe("production sidebar auto-collapse", () => {
   it("lets touch users expand before opening the tenant menu", () => {
     expect(tenantSwitcher).toContain("if (!expanded)");
     expect(tenantSwitcher).toContain("onRequestExpand()");
-    expect(tenantSwitcher).toContain("data-sidebar-tooltip={`Tenant:");
+    expect(tenantSwitcher).toContain(
+      'data-sidebar-tooltip={t("tenantSwitcher.tooltip"',
+    );
   });
 
   it("respects compact screens and reduced-motion preferences", () => {

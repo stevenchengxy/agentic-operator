@@ -31,6 +31,7 @@ import { GENERAL_MEMORY_SUBJECT } from "./ports";
 import { induceSkillsFromRun, kebab as kebabSkill } from "./skill-induction";
 import { humanMemoryQuestionKey, renderHumanMemorySeed } from "./human-memory";
 import { archiveEntriesFromDropped } from "./conversation-archive";
+import { isSideEffectTool } from "./side-effect-tools";
 import { coverageWaiverMatches, normalizeCoverageCells, parseCoverageWaiverTag } from "./coverage-waiver";
 import { isTestCaseDecisionTaggedMessage, parseTestCaseDecision } from "./test-case-decision";
 import { resolveClarificationTimeout } from "./clarification-policy";
@@ -2753,6 +2754,16 @@ export async function* runBrain(opts: {
           TOOL_RESULT_CAP,
         );
         messages.push({ role: "tool", tool_call_id: call.id, content: toolContent });
+
+        // #SIDE-EFFECT-CKPT (WS1) — a tool whose whole point is an irreversible/billed effect
+        // (sandbox_run, finish, save_draft, …) must become durable AT ONCE, not only at the
+        // end-of-turn #CRASH-CKPT below. Otherwise a process death after the effect but before the
+        // turn's checkpoint lets crash-resume replay the previous checkpoint and re-issue the call
+        // — re-deploying a sandbox, re-billing tests, appending a duplicate draft. One extra upsert
+        // per side-effect tool is cheap; the duplicated effect is not.
+        if (opts.conversationId && isSideEffectTool(call.name)) {
+          await checkpointConversation();
+        }
 
         // #3 FIX (memory safety net): if a grounding tool rejected an unknown action/event/field
         // name — the brain forgot the real symbol after compaction — don't just surface the error.

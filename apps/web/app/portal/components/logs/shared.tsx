@@ -9,6 +9,7 @@
 import type { ReactNode } from "react";
 import { fmtAgo } from "@/lib/format";
 import { CodeBlock, Icon } from "@/app/portal/components";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 
 /** Full-height column: a sticky toolbar over a single scroll region. */
 export function LogPane({
@@ -127,10 +128,16 @@ export const monoStyle: React.CSSProperties = {
 
 /** Relative + absolute time. Title carries the full local timestamp. */
 export function TimeCell({ ms }: { ms: number }) {
+  const { language } = useI18n();
   if (!ms || Number.isNaN(ms)) return <span style={monoStyle}>—</span>;
   return (
-    <span style={monoStyle} title={new Date(ms).toLocaleString()}>
-      {fmtAgo(ms)}
+    <span
+      style={monoStyle}
+      title={new Date(ms).toLocaleString(
+        language === "zh" ? "zh-CN" : "en-US",
+      )}
+    >
+      {fmtAgo(ms, language)}
     </span>
   );
 }

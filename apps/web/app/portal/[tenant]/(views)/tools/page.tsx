@@ -164,7 +164,7 @@ export default function ToolsPage() {
               overflow: "auto",
             }}
           >
-            <Button tone="primary" icon="plus" onClick={() => setShowCreate(true)}>造工具</Button>
+            <Button tone="primary" icon="plus" onClick={() => setShowCreate(true)}>{t("tools.createTool")}</Button>
             <input
               type="search"
               value={query}
@@ -268,14 +268,14 @@ export default function ToolsPage() {
 
                 {/* P3: where tools come from + the progressive doc→tool pipeline (cross-links the factory). */}
                 <Panel style={{ padding: "14px 16px", borderColor: "var(--signal)" }}>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text)", marginBottom: 6 }}>工具从哪来 · 不止这份目录</div>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text)", marginBottom: 6 }}>{t("tools.origin.heading")}</div>
                   <ol style={{ margin: 0, paddingLeft: 18, fontSize: 12.5, color: "var(--text-2)", lineHeight: 1.7 }}>
-                    <li><strong>全局注册表</strong>：下面这些是任何租户都能在 manifest 的 <code className="mono">tool_use[]</code> 里直接绑定的内置工具。</li>
-                    <li><strong>渐进式发现</strong>：Agent 工厂的大脑会按某个 Ontology 动作的语义，用 <code className="mono">search_tools</code> 在这份库里【按需检索】最贴切的工具，而不是把整份目录背下来。</li>
-                    <li><strong>文档造工具</strong>：库里没有现成的，用户给一个公网 API 文档/网址，大脑就 <code className="mono">fetch_doc</code> 抓取 → <code className="mono">extract_api_schema</code> 自动提炼出方法/URL/入参/返回契约 → 核对后 <code className="mono">create_tool</code> 落地，立刻能被 agent 绑定，并持久化供以后复用。</li>
+                    <li><strong>{t("tools.origin.globalTitle")}</strong>：{t("tools.origin.globalBefore")} <code className="mono">tool_use[]</code> {t("tools.origin.globalAfter")}</li>
+                    <li><strong>{t("tools.origin.discoveryTitle")}</strong>：{t("tools.origin.discoveryBefore")} <code className="mono">search_tools</code> {t("tools.origin.discoveryAfter")}</li>
+                    <li><strong>{t("tools.origin.docsTitle")}</strong>：{t("tools.origin.docsBefore")} <code className="mono">fetch_doc</code> {t("tools.origin.docsMiddle")} <code className="mono">extract_api_schema</code> {t("tools.origin.docsAfter")} <code className="mono">create_tool</code> {t("tools.origin.docsEnd")}</li>
                   </ol>
                   <div style={{ marginTop: 8, fontSize: 12 }}>
-                    <Link href={`/portal/${params.tenant}/factory`} style={{ color: "var(--signal)", textDecoration: "none" }}>→ 去 Agent 工厂，让大脑按本体动作自动找/造工具</Link>
+                    <Link href={`/portal/${params.tenant}/factory`} style={{ color: "var(--signal)", textDecoration: "none" }}>{t("tools.origin.goFactory")}</Link>
                   </div>
                 </Panel>
 
@@ -352,20 +352,43 @@ function ToolSection({ tool }: { tool: ToolCatalogEntry }) {
             {/* #SCALE-TOOLS — empirical sandbox effectiveness: green ≥70%, red below (the ranking
                 actually demotes <70% w/ ≥3 runs, so a red badge = "won't be recommended"). */}
             {typeof tool.successRate === "number" && (tool.invoked ?? 0) > 0 && (
-              <span title={`沙箱里被 ${tool.invoked} 次调用，成功 ${tool.succeeded}。低于 70%（≥3 次）时排序会自动降权。`}>
+              <span title={t("tools.effectiveness.tooltip", { invoked: tool.invoked ?? 0, succeeded: tool.succeeded ?? 0 })}>
                 <Badge tone={tool.successRate >= 0.7 ? "green" : "red"}>
-                  沙箱成功率 {Math.round(tool.successRate * 100)}% · {tool.invoked}次{tool.successRate < 0.7 && (tool.invoked ?? 0) >= 3 ? " · 已降权" : ""}
+                  {t("tools.effectiveness.badge", {
+                    rate: Math.round(tool.successRate * 100),
+                    invoked: tool.invoked ?? 0,
+                    demoted: tool.successRate < 0.7 && (tool.invoked ?? 0) >= 3
+                      ? t("tools.effectiveness.demoted")
+                      : "",
+                  })}
                 </Badge>
               </span>
             )}
-            {isCreated && <Badge tone="signal">自建</Badge>}
+            {isCreated && <Badge tone="signal">{t("tools.createdBadge")}</Badge>}
             {tool.chainsWith && tool.chainsWith.length > 0 && (
               <Badge tone="signal">
                 {t("tools.chainsWith", { tools: tool.chainsWith.join(", ") })}
               </Badge>
             )}
             {isCreated && (
-              <Button small tone="ghost" icon="trash" disabled={del.isPending} onClick={() => { if (confirm(`删除自建工具「${tool.name}」？`)) del.mutate(tool.name, { onError: (e) => toast({ tone: "red", title: `删除失败：${(e as Error).message}` }) }); }}>删除</Button>
+              <Button
+                small
+                tone="ghost"
+                icon="trash"
+                disabled={del.isPending}
+                onClick={() => {
+                  if (confirm(t("tools.deleteCreatedConfirm", { name: tool.name }))) {
+                    del.mutate(tool.name, {
+                      onError: (error) => toast({
+                        tone: "red",
+                        title: t("tools.deleteCreatedFailed", { message: (error as Error).message }),
+                      }),
+                    });
+                  }
+                }}
+              >
+                {t("tools.deleteCreated")}
+              </Button>
             )}
           </div>
         </div>

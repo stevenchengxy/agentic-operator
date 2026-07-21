@@ -10,27 +10,28 @@ import {
   type StartOperatorCheckResponse,
 } from "@agentic/contracts";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { ApiResponseError, fetchApiData } from "@/lib/api-response";
 import { tenantHeader } from "./tenant-header";
-
-interface ApiOk<T> {
-  ok: true;
-  data: T;
-}
-
-interface ApiErr {
-  ok: false;
-  error: {
-    code?: string;
-    message?: string;
-    hint?: string;
-  };
-}
 
 const TERMINAL_STATUSES = new Set(["passed", "failed"]);
 
+async function parseResponse<T>(
+  parse: () => T | Promise<T>,
+  path: string,
+  status: number,
+): Promise<T> {
+  try {
+    return await parse();
+  } catch {
+    throw new ApiResponseError(path, status, "invalid_response", "", {
+      clientKind: "invalidEnvelope",
+    });
+  }
+}
+
 async function callV1<T>(path: string, init: RequestInit = {}): Promise<T> {
   const { headers: initHeaders, ...rest } = init;
-  const response = await fetch(path, {
+  return fetchApiData<T>(path, {
     credentials: "same-origin",
     ...rest,
     headers: {
@@ -39,35 +40,6 @@ async function callV1<T>(path: string, init: RequestInit = {}): Promise<T> {
       ...(initHeaders as Record<string, string> | undefined),
     },
   });
-
-  const body = (await response.json().catch(() => null)) as
-    | ApiOk<T>
-    | ApiErr
-    | T
-    | null;
-
-  if (!response.ok) {
-    const error =
-      body && typeof body === "object" && "ok" in body && !body.ok
-        ? body.error
-        : null;
-    const hint = error?.hint ? ` ${error.hint}` : "";
-    throw new Error(
-      error?.message
-        ? `${error.message}${hint}`
-        : `${path}: HTTP ${response.status}`,
-    );
-  }
-
-  if (body && typeof body === "object" && "ok" in body) {
-    if (!body.ok) {
-      throw new Error(body.error.message ?? `${path} failed`);
-    }
-    return body.data;
-  }
-
-  if (body == null) throw new Error(`${path}: expected a JSON response`);
-  return body;
 }
 
 export const OPERATOR_CHECK_KEYS = {
@@ -96,10 +68,15 @@ async function invalidateOperatorCheckDependents(
 export function useStartOperatorCheck() {
   const client = useQueryClient();
   return useMutation<StartOperatorCheckResponse, Error>({
-    mutationFn: async () =>
-      StartOperatorCheckResponseSchema.parse(
-        await callV1<unknown>("/v1/operator-checks", { method: "POST" }),
-      ),
+    mutationFn: async () => {
+      const path = "/v1/operator-checks";
+      const value = await callV1<unknown>(path, { method: "POST" });
+      return parseResponse(
+        () => StartOperatorCheckResponseSchema.parse(value),
+        path,
+        202,
+      );
+    },
     onSuccess: async () => {
       await client.invalidateQueries({ queryKey: OPERATOR_CHECK_KEYS.lists });
     },
@@ -118,10 +95,15 @@ export function useOperatorCheck(id: string | null | undefined) {
     queryKey: id
       ? OPERATOR_CHECK_KEYS.detail(id)
       : (["operator-checks", "detail", "__none__"] as const),
-    queryFn: async () =>
-      GetOperatorCheckResponseSchema.parse(
-        await callV1<unknown>(`/v1/operator-checks/${encodeURIComponent(id!)}`),
-      ),
+    queryFn: async () => {
+      const path = `/v1/operator-checks/${encodeURIComponent(id!)}`;
+      const value = await callV1<unknown>(path);
+      return parseResponse(
+        () => GetOperatorCheckResponseSchema.parse(value),
+        path,
+        200,
+      );
+    },
     enabled: Boolean(id),
     staleTime: 0,
     refetchInterval: (state) => {
@@ -159,10 +141,15 @@ export function useOperatorCheckHistory(
 
   return useQuery<ListOperatorChecksResponse, Error>({
     queryKey: OPERATOR_CHECK_KEYS.list(limit, input.cursor),
-    queryFn: async () =>
-      ListOperatorChecksResponseSchema.parse(
-        await callV1<unknown>(`/v1/operator-checks?${params.toString()}`),
-      ),
+    queryFn: async () => {
+      const path = `/v1/operator-checks?${params.toString()}`;
+      const value = await callV1<unknown>(path);
+      return parseResponse(
+        () => ListOperatorChecksResponseSchema.parse(value),
+        path,
+        200,
+      );
+    },
     staleTime: 2_000,
   });
 }

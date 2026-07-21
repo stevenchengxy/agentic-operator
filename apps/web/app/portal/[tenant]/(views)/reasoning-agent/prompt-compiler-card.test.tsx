@@ -1,8 +1,13 @@
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import type { Translate } from "@/app/portal/lib/preferences-context";
+import { translate } from "@/lib/i18n";
 import type { CompiledPrompt, QualifiedAgentRunReceipt } from "./contracts";
 import { PromptCompilerCard } from "./page";
+
+const enT: Translate = (key, vars) => translate("en", key, vars);
+const zhT: Translate = (key, vars) => translate("zh", key, vars);
 
 const prompt: CompiledPrompt = {
   compilerId: "pc:v3",
@@ -66,6 +71,7 @@ describe("PromptCompilerCard", () => {
         receipt={null}
         qualifiedRun={qualifiedRun}
         ruleBundleId="sha256:bundle"
+        t={enT}
         executedPrompt={{
           source: "verified-qualified-child-step",
           runId: "run-child",
@@ -108,11 +114,44 @@ describe("PromptCompilerCard", () => {
         qualifiedRun={qualifiedRun}
         ruleBundleId="sha256:bundle"
         executedPrompt={null}
+        t={enT}
       />,
     );
 
     expect(html).toContain("compact compiler receipt");
     expect(html).not.toContain('data-testid="prompt-system-details"');
     expect(html).not.toContain("exact system prompt");
+  });
+
+  it("localizes human-readable receipt labels while preserving protocol identifiers", () => {
+    const html = renderToStaticMarkup(
+      <PromptCompilerCard
+        prompt={prompt}
+        receipt={null}
+        qualifiedRun={qualifiedRun}
+        ruleBundleId="sha256:bundle"
+        t={zhT}
+        executedPrompt={{
+          source: "verified-qualified-child-step",
+          runId: "run-child",
+          parentRunId: "run-parent",
+          runStatus: "ok",
+          provider: "custom",
+          model: "qualified-model",
+          systemPrompt: prompt.systemPrompt,
+          userPrompt: prompt.userPrompt,
+        }}
+      />,
+    );
+
+    expect(html).toContain("回执已验证");
+    expect(html).toContain("场景");
+    expect(html).toContain("Harness 方法");
+    expect(html).toContain("Prompt 来源");
+    expect(html).toContain("子运行");
+    expect(html).toContain("输入 / 20 输出");
+    expect(html).toContain("compiler id");
+    expect(html).toContain("prompt sha256");
+    expect(html).toContain("RuleBundle");
   });
 });

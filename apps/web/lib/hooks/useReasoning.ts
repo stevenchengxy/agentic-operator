@@ -8,15 +8,14 @@
 
 import { useQuery } from "@tanstack/react-query";
 import type { UseQueryResult } from "@tanstack/react-query";
-import { readApiData } from "@/lib/api-response";
+import { fetchApiData } from "@/lib/api-response";
 import { tenantHeader } from "./tenant-header";
 
 async function callV1<T>(path: string): Promise<T> {
-  const res = await fetch(path, {
+  return fetchApiData<T>(path, {
     credentials: "same-origin",
     headers: { Accept: "application/json", ...tenantHeader() },
   });
-  return readApiData<T>(res, path);
 }
 
 export interface ReasoningTurn {
@@ -61,7 +60,8 @@ export function useReasoning(
   const qs = sp.toString();
   return useQuery({
     queryKey: ["reasoning", "turns", opts],
-    queryFn: () => callV1<ReasoningTurn[]>(`/v1/reasoning${qs ? `?${qs}` : ""}`),
+    queryFn: () =>
+      callV1<ReasoningTurn[]>(`/v1/reasoning${qs ? `?${qs}` : ""}`),
     refetchInterval: 5_000,
     staleTime: 2_000,
   });

@@ -1,3 +1,4 @@
+import type { Translate } from "@/app/portal/lib/preferences-context";
 import type {
   CompiledPrompt,
   EvidenceAnalysis,
@@ -106,7 +107,7 @@ function addLegacyFact(
   facts.push({ ...fact, value: visible, verified: true });
 }
 
-function legacyFacts(input: unknown): VisibleEvidenceFact[] {
+function legacyFacts(input: unknown, t: Translate): VisibleEvidenceFact[] {
   const root = recordValue(input);
   const evidence = recordValue(root.evidence ?? root);
   const candidate = recordValue(evidence.candidate);
@@ -114,28 +115,28 @@ function legacyFacts(input: unknown): VisibleEvidenceFact[] {
   const jd = recordValue(evidence.jd);
   const resume = recordValue(evidence.resume);
   const facts: VisibleEvidenceFact[] = [];
-  const replay = "旧运行没有首轮 LLM 事实回执；此项由原始输入确定性回放。";
+  const replay = t("reasoningAgent.auditView.legacyReplayNote");
 
   addLegacyFact(facts, candidate.name, {
     category: "candidate",
     purpose: "context",
-    label: "候选人",
+    label: t("reasoningAgent.auditView.factLabel.candidate"),
     evidencePath: "candidate.name",
     relevance: replay,
   });
   addLegacyFact(facts, candidate.nationality, {
     category: "candidate",
     purpose: "rule_evaluation",
-    label: "国籍",
+    label: t("reasoningAgent.auditView.factLabel.nationality"),
     evidencePath: "candidate.nationality",
     relevance: replay,
   });
   addLegacyFact(facts, job.client_name ?? jd.client, {
     category: "target_job",
     purpose: "scope_selection",
-    label: "目标客户",
+    label: t("reasoningAgent.auditView.factLabel.targetClient"),
     evidencePath: job.client_name ? "jobRequisition.client_name" : "jd.client",
-    relevance: "决定客户通用规则作用域。",
+    relevance: t("reasoningAgent.auditView.relevance.clientScope"),
   });
   addLegacyFact(
     facts,
@@ -143,17 +144,17 @@ function legacyFacts(input: unknown): VisibleEvidenceFact[] {
     {
       category: "target_job",
       purpose: "scope_selection",
-      label: "目标部门",
+      label: t("reasoningAgent.auditView.factLabel.targetDepartment"),
       evidencePath: job.client_department_name
         ? "jobRequisition.client_department_name"
         : "jd.business_group",
-      relevance: "决定客户部门规则作用域。",
+      relevance: t("reasoningAgent.auditView.relevance.departmentScope"),
     },
   );
   addLegacyFact(facts, job.client_studio ?? jd.studio, {
     category: "target_job",
     purpose: "rule_evaluation",
-    label: "目标工作室",
+    label: t("reasoningAgent.auditView.factLabel.targetStudio"),
     evidencePath: job.client_studio
       ? "jobRequisition.client_studio"
       : "jd.studio",
@@ -162,7 +163,7 @@ function legacyFacts(input: unknown): VisibleEvidenceFact[] {
   addLegacyFact(facts, job.client_job_title ?? jd.title, {
     category: "target_job",
     purpose: "context",
-    label: "目标岗位",
+    label: t("reasoningAgent.auditView.factLabel.targetRole"),
     evidencePath: job.client_job_title
       ? "jobRequisition.client_job_title"
       : "jd.title",
@@ -177,14 +178,18 @@ function legacyFacts(input: unknown): VisibleEvidenceFact[] {
     addLegacyFact(facts, entry.company, {
       category: "employment_history",
       purpose: "rule_evaluation",
-      label: `历史任职 ${index + 1}`,
+      label: t("reasoningAgent.auditView.factLabel.employmentHistory", {
+        index: index + 1,
+      }),
       evidencePath: `resume.employment_history[${index}].company`,
       relevance: replay,
     });
     addLegacyFact(facts, entry.end_date, {
       category: "employment_history",
       purpose: "rule_evaluation",
-      label: `离职日期 ${index + 1}`,
+      label: t("reasoningAgent.auditView.factLabel.endDate", {
+        index: index + 1,
+      }),
       evidencePath: `resume.employment_history[${index}].end_date`,
       relevance: replay,
     });
@@ -196,6 +201,7 @@ export function projectVisibleEvidenceAnalysis(
   output: ReasoningOutput | null,
   selection: RuleSelectionToolData | null,
   input: unknown,
+  t: Translate,
   compiledPrompt?: CompiledPrompt | null,
 ): VisibleEvidenceAnalysis {
   const structured =
@@ -214,7 +220,7 @@ export function projectVisibleEvidenceAnalysis(
       unverifiedCount: structured.unverifiedCount,
     };
   }
-  const facts = legacyFacts(input);
+  const facts = legacyFacts(input, t);
   return {
     source: "legacy_input_projection",
     facts,
@@ -242,21 +248,31 @@ export function projectSelectionFunnel(
   };
 }
 
-export function humanizeMatchReason(reason: string): string {
+export function humanizeMatchReason(reason: string, t: Translate): string {
   const normalized = reason.trim();
   const lower = normalized.toLowerCase();
-  if (lower.includes("scoped_to")) return "作用域 Link";
-  if (lower.includes("governs")) return "显式流程 Link";
-  if (lower.includes("applies_to")) return "对象 Link";
-  if (lower.includes("relevant_to")) return "已审核语义 Link";
+  if (lower.includes("scoped_to"))
+    return t("reasoningAgent.auditView.matchReason.scopedTo");
+  if (lower.includes("governs"))
+    return t("reasoningAgent.auditView.matchReason.governs");
+  if (lower.includes("applies_to"))
+    return t("reasoningAgent.auditView.matchReason.appliesTo");
+  if (lower.includes("relevant_to"))
+    return t("reasoningAgent.auditView.matchReason.relevantTo");
   if (lower.includes("action") && lower.includes("link"))
-    return "Action 语义关联";
+    return t("reasoningAgent.auditView.matchReason.actionLink");
   if (lower.includes("csi") && lower.includes("universal"))
-    return "CSI 通用作用域";
-  if (lower.includes("department")) return "目标部门匹配";
-  if (lower.includes("client")) return "目标客户匹配";
-  if (lower.includes("object")) return "业务对象匹配";
-  if (lower.includes("keyword")) return `语义关键词 · ${normalized}`;
+    return t("reasoningAgent.auditView.matchReason.csiUniversal");
+  if (lower.includes("department"))
+    return t("reasoningAgent.auditView.matchReason.departmentMatch");
+  if (lower.includes("client"))
+    return t("reasoningAgent.auditView.matchReason.clientMatch");
+  if (lower.includes("object"))
+    return t("reasoningAgent.auditView.matchReason.objectMatch");
+  if (lower.includes("keyword"))
+    return t("reasoningAgent.auditView.matchReason.keyword", {
+      keyword: normalized,
+    });
   return normalized;
 }
 
@@ -289,18 +305,22 @@ function normalizedKey(key: string): string {
 
 /** Public log projection: preserves tool I/O while removing secrets and any
  * provider-private reasoning payload that must not be rendered as chain of thought. */
-export function publicAuditPayload(value: unknown, depth = 0): unknown {
-  if (depth > 12) return "[depth limited]";
+export function publicAuditPayload(
+  value: unknown,
+  t: Translate,
+  depth = 0,
+): unknown {
+  if (depth > 12) return t("reasoningAgent.auditView.depthLimited");
   if (Array.isArray(value)) {
-    return value.map((item) => publicAuditPayload(item, depth + 1));
+    return value.map((item) => publicAuditPayload(item, t, depth + 1));
   }
   if (!value || typeof value !== "object") return value;
   return Object.fromEntries(
     Object.entries(value as Record<string, unknown>).map(([key, child]) => [
       key,
       REDACTED_AUDIT_KEYS.has(normalizedKey(key))
-        ? "[redacted from public audit]"
-        : publicAuditPayload(child, depth + 1),
+        ? t("reasoningAgent.auditView.redactedFromPublicAudit")
+        : publicAuditPayload(child, t, depth + 1),
     ]),
   );
 }

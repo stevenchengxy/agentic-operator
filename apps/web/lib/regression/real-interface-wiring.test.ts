@@ -131,9 +131,11 @@ describe("production interfaces do not silently substitute fake success", () => 
     expect(page).toContain('data-testid="reasoning-evidence-analysis"');
     expect(page).toContain('data-testid="reasoning-selected-rule-pool"');
     expect(page).toContain('data-testid="qualified-agent-assessments"');
-    expect(page).toContain("为何进入 RuleBundle");
-    expect(page).toContain("逐条判定与证据");
-    expect(page).toContain("publicAuditPayload(step.output)");
+    expect(page).toContain('t("reasoningAgent.page.whyEnteredRuleBundle")');
+    expect(page).toContain(
+      't("reasoningAgent.page.perRuleAssessmentEvidence")',
+    );
+    expect(page).toContain("publicAuditPayload(step.output, t)");
     expect(auditView).toContain("legacy_input_projection");
     expect(auditView).toContain("reasoningcontent");
     expect(page).not.toContain("agent-factory");
@@ -182,7 +184,9 @@ describe("production interfaces do not silently substitute fake success", () => 
     // The deployed-source honesty contract now lives in the run detail's
     // agent tab, which still renders the exact deployed snapshot fields.
     const runDetail = read("app/portal/[tenant]/(views)/runs/[id]/page.tsx");
-    expect(runDetail).toContain("sourceUnavailable: agentDetail.sourceUnavailable");
+    expect(runDetail).toContain(
+      "sourceUnavailable: agentDetail.sourceUnavailable",
+    );
   });
 
   it("run agent tab uses the same deployed source snapshot", () => {

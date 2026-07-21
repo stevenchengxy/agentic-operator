@@ -12,10 +12,17 @@
  * headers itself). Result: events paint the instant they happen.
  */
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { RunStreamEvent } from "@agentic/contracts";
 import { Icon } from "@/app/portal/components";
-import { useI18n } from "@/app/portal/lib/preferences-context";
+import { useI18n, type Translate } from "@/app/portal/lib/preferences-context";
 import { useTenant } from "@/app/portal/lib/use-tenant";
 import { useStream, type StreamConnectionState } from "@/lib/hooks/useStream";
 
@@ -29,7 +36,10 @@ interface ActivityEnvelope {
 }
 
 class ActivityHistoryError extends Error {
-  constructor(message: string, readonly retryable: boolean) {
+  constructor(
+    message: string,
+    readonly retryable: boolean,
+  ) {
     super(message);
     this.name = "ActivityHistoryError";
   }
@@ -40,7 +50,10 @@ class ActivityHistoryError extends Error {
  * finished booting. During that window the proxy may return plain text or an
  * HTML error page, so never assume an error response is JSON.
  */
-async function readActivityResponse(response: Response): Promise<unknown[]> {
+async function readActivityResponse(
+  response: Response,
+  t?: Translate,
+): Promise<unknown[]> {
   const text = await response.text();
   let body: ActivityEnvelope | null = null;
 
@@ -54,8 +67,13 @@ async function readActivityResponse(response: Response): Promise<unknown[]> {
 
   if (!response.ok) {
     const plainText = text.replace(/\s+/g, " ").trim().slice(0, 240);
-    const detail = body?.error?.message?.trim() || plainText || response.statusText;
-    const retryable = response.status === 408 || response.status === 425 || response.status === 429 || response.status >= 500;
+    const detail =
+      body?.error?.message?.trim() || plainText || response.statusText;
+    const retryable =
+      response.status === 408 ||
+      response.status === 425 ||
+      response.status === 429 ||
+      response.status >= 500;
     throw new ActivityHistoryError(
       `HTTP ${response.status}${detail ? `: ${detail}` : ""}`,
       retryable,
@@ -64,7 +82,9 @@ async function readActivityResponse(response: Response): Promise<unknown[]> {
 
   if (!body || body.ok !== true || !Array.isArray(body.data)) {
     throw new ActivityHistoryError(
-      body?.error?.message?.trim() || "Activity API returned an invalid JSON response",
+      body?.error?.message?.trim() ||
+        t?.("logsExplorer.historyInvalidResponse") ||
+        "Activity API returned an invalid JSON response",
       true,
     );
   }
@@ -152,8 +172,23 @@ const C = {
   muted: "var(--text-3)",
 };
 
-/** Map a stream event to a colored console line. */
-function format(ev: RunStreamEvent): { kind: string; color: string; text: string } {
+function stepStatusLabel(status: string, t: Translate): string {
+  if (status === "ok") return t("logsExplorer.lineStatusOk");
+  if (status === "failed") return t("logsExplorer.lineStatusFailed");
+  if (status === "skipped") return t("logsExplorer.lineStatusSkipped");
+  return status;
+}
+
+/**
+ * Map a stream event to a colored console line. Only the client-authored
+ * lifecycle copy is translated; event names, subjects, errors, decisions,
+ * log messages, and the expandable raw frame remain byte-for-byte runtime
+ * evidence.
+ */
+export function formatStreamEvent(
+  ev: RunStreamEvent,
+  t: Translate,
+): { kind: string; color: string; text: string } {
   switch (ev.type) {
     case "run.started":
       return {
@@ -162,40 +197,71 @@ function format(ev: RunStreamEvent): { kind: string; color: string; text: string
         // Keep automated verification traffic visibly distinct from genuine
         // business runs. The flag comes from the persisted run row for
         // backfill and from the runtime event for live frames.
-        text: `▶ ${ev.agentName} started${ev.testRun ? " · TEST" : ""}${ev.triggerEvent ? ` ← ${ev.triggerEvent}` : ""}${ev.subject ? ` · ${ev.subject}` : ""}`,
+        text: `▶ ${t("logsExplorer.lineRunStarted", { agent: ev.agentName })}${ev.testRun ? ` · ${t("logsExplorer.testRun")}` : ""}${ev.triggerEvent ? ` ← ${ev.triggerEvent}` : ""}${ev.subject ? ` · ${ev.subject}` : ""}`,
       };
     case "run.step.started":
-      return { kind: "STEP", color: C.muted, text: `  · ${ev.name} (${ev.stepType}) …` };
+      return {
+        kind: "STEP",
+        color: C.muted,
+        text: `  · ${ev.name} (${ev.stepType}) …`,
+      };
     case "run.step.completed":
       return {
         kind: "STEP",
         color: ev.status === "failed" ? C.red : C.green,
-        text: `  ${ev.status === "failed" ? "✕" : "✓"} ${ev.name} ${ev.status}${ev.durationMs == null ? "" : ` · ${ev.durationMs}ms`}${ev.model ? ` · ${ev.model}` : ""}${ev.error ? ` · ${ev.error}` : ""}`,
+        text: `  ${ev.status === "failed" ? "✕" : "✓"} ${ev.name} ${stepStatusLabel(ev.status, t)}${ev.durationMs == null ? "" : ` · ${ev.durationMs}ms`}${ev.model ? ` · ${ev.model}` : ""}${ev.error ? ` · ${ev.error}` : ""}`,
       };
     case "run.completed":
       return {
         kind: "RUN",
         color: C.green,
-        text: `■ run ${ev.runId.slice(-6)} completed${ev.durationMs == null ? "" : ` · ${ev.durationMs}ms`}${ev.tokensIn != null || ev.tokensOut != null ? ` · ${(ev.tokensIn ?? 0) + (ev.tokensOut ?? 0)} tok` : ""}`,
+        text: `■ ${t("logsExplorer.lineRunCompleted", { id: ev.runId.slice(-6) })}${ev.durationMs == null ? "" : ` · ${ev.durationMs}ms`}${ev.tokensIn != null || ev.tokensOut != null ? ` · ${(ev.tokensIn ?? 0) + (ev.tokensOut ?? 0)} ${t("logsExplorer.lineTokensShort")}` : ""}`,
       };
     case "run.failed":
-      return { kind: "RUN", color: C.red, text: `✕ run ${ev.runId.slice(-6)} failed · ${ev.errorMessage}` };
+      return {
+        kind: "RUN",
+        color: C.red,
+        text: `✕ ${t("logsExplorer.lineRunFailed", { id: ev.runId.slice(-6) })} · ${ev.errorMessage}`,
+      };
     case "run.cancelled":
-      return { kind: "RUN", color: C.amber, text: `■ run ${ev.runId.slice(-6)} cancelled · ${ev.reason}` };
+      return {
+        kind: "RUN",
+        color: C.amber,
+        text: `■ ${t("logsExplorer.lineRunCancelled", { id: ev.runId.slice(-6) })} · ${ev.reason}`,
+      };
     case "event.emitted":
-      return { kind: "EVENT", color: C.signal, text: `⚡ ${ev.name}${ev.subject ? ` · ${ev.subject}` : ""}` };
+      return {
+        kind: "EVENT",
+        color: C.signal,
+        text: `⚡ ${ev.name}${ev.subject ? ` · ${ev.subject}` : ""}`,
+      };
     case "task.created":
-      return { kind: "TASK", color: C.amber, text: `☐ task ${ev.taskType}: ${ev.title}` };
+      return {
+        kind: "TASK",
+        color: C.amber,
+        text: `☐ ${t("logsExplorer.lineTaskCreated", { type: ev.taskType, title: ev.title })}`,
+      };
     case "task.resolved":
-      return { kind: "TASK", color: C.violet, text: `☑ task ${ev.taskId.slice(-6)} → ${ev.decision}` };
+      return {
+        kind: "TASK",
+        color: C.violet,
+        text: `☑ ${t("logsExplorer.lineTaskResolved", { id: ev.taskId.slice(-6), decision: ev.decision })}`,
+      };
     case "deployment.created":
       return {
         kind: "DEPLOY",
         color: C.signal,
-        text: `⬆ deployment ${ev.version} (${ev.kind})${ev.workflowSlug ? ` · ${ev.workflowSlug}` : ""}`,
+        text: `⬆ ${t("logsExplorer.lineDeploymentCreated", { version: ev.version, kind: ev.kind })}${ev.workflowSlug ? ` · ${ev.workflowSlug}` : ""}`,
       };
     case "log.line": {
-      const levelColor = ev.level === "ERROR" ? C.red : ev.level === "WARN" ? C.amber : ev.level === "DEBUG" ? C.muted : C.blue;
+      const levelColor =
+        ev.level === "ERROR"
+          ? C.red
+          : ev.level === "WARN"
+            ? C.amber
+            : ev.level === "DEBUG"
+              ? C.muted
+              : C.blue;
       return {
         kind: "LOG",
         color: levelColor,
@@ -214,13 +280,13 @@ function format(ev: RunStreamEvent): { kind: string; color: string; text: string
       return {
         kind: "LLM",
         color: ev.ok === false ? C.red : ev.ok === true ? C.violet : C.muted,
-        text: `${ev.provider ?? "unknown"}/${ev.servedModel ?? ev.requestedModel ?? "unknown"} ${ev.ok === true ? "completed" : ev.ok === false ? "failed" : "status unknown"}${ev.latencyMs != null ? ` · ${ev.latencyMs}ms` : ""}${ev.tokensIn != null || ev.tokensOut != null ? ` · ${(ev.tokensIn ?? 0) + (ev.tokensOut ?? 0)} tok${ev.tokenSource === "estimated_chars" ? " estimated" : ev.tokenSource == null ? " source unknown" : ""}` : ""}${ev.fallback ? " · fallback" : ""}${ev.failureReason ? ` · ${ev.failureReason}` : ""}`,
+        text: `${ev.provider ?? t("logsExplorer.lineUnknown")}/${ev.servedModel ?? ev.requestedModel ?? t("logsExplorer.lineUnknown")} ${ev.ok === true ? t("logsExplorer.lineLlmCompleted") : ev.ok === false ? t("logsExplorer.lineStatusFailed") : t("logsExplorer.lineStatusUnknown")}${ev.latencyMs != null ? ` · ${ev.latencyMs}ms` : ""}${ev.tokensIn != null || ev.tokensOut != null ? ` · ${(ev.tokensIn ?? 0) + (ev.tokensOut ?? 0)} ${t("logsExplorer.lineTokensShort")}${ev.tokenSource === "estimated_chars" ? ` ${t("logsExplorer.lineEstimated")}` : ev.tokenSource == null ? ` ${t("logsExplorer.lineSourceUnknown")}` : ""}` : ""}${ev.fallback ? ` · ${t("logsExplorer.lineFallback")}` : ""}${ev.failureReason ? ` · ${ev.failureReason}` : ""}`,
       };
     case "tool.call.completed":
       return {
         kind: "TOOL",
         color: ev.ok ? C.green : C.red,
-        text: `${ev.agentName ?? "agent"} → ${ev.toolName} ${ev.ok ? "ok" : "failed"}${ev.durationMs != null ? ` · ${ev.durationMs}ms` : ""}${ev.error ? ` · ${ev.error}` : ""}`,
+        text: `${ev.agentName ?? t("logsExplorer.lineDefaultAgent")} → ${ev.toolName} ${ev.ok ? t("logsExplorer.lineStatusOk") : t("logsExplorer.lineStatusFailed")}${ev.durationMs != null ? ` · ${ev.durationMs}ms` : ""}${ev.error ? ` · ${ev.error}` : ""}`,
       };
     default:
       return { kind: "•", color: C.muted, text: JSON.stringify(ev) };
@@ -264,7 +330,8 @@ export function streamEventIdentity(ev: RunStreamEvent): string {
       // Forward-compatible with additive stream variants. Prefer a stable
       // resource id when present; fall back to the serialized frame.
       const frame = ev as RunStreamEvent & Record<string, unknown>;
-      const resourceId = frame.logId ?? frame.auditId ?? frame.callId ?? frame.id;
+      const resourceId =
+        frame.logId ?? frame.auditId ?? frame.callId ?? frame.id;
       return `${frame.type}:${resourceId ?? JSON.stringify(frame)}:${frame.at}`;
     }
   }
@@ -276,7 +343,8 @@ export function TerminalLogTab() {
   const [lines, setLines] = useState<Line[]>([]);
   const [paused, setPaused] = useState(false);
   const [pendingCount, setPendingCount] = useState(0);
-  const [connection, setConnection] = useState<StreamConnectionState>("connecting");
+  const [connection, setConnection] =
+    useState<StreamConnectionState>("connecting");
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const pausedRef = useRef(false);
   const pendingRef = useRef<Line[]>([]);
@@ -288,38 +356,51 @@ export function TerminalLogTab() {
   // re-subscribe). useStream captures this once at mount.
   const [cat, setCat] = useState<Category>("ALL");
 
-  const toLine = useCallback((ev: RunStreamEvent): Line => {
-    const f = format(ev);
-    return {
-      key: seqRef.current++,
-      identity: streamEventIdentity(ev),
-      at: ev.at,
-      kind: f.kind,
-      color: f.color,
-      text: f.text,
-      isError: isErrorEvent(ev),
-      raw: ev,
-    };
-  }, []);
+  const toLine = useCallback(
+    (ev: RunStreamEvent): Line => {
+      const f = formatStreamEvent(ev, t);
+      return {
+        key: seqRef.current++,
+        identity: streamEventIdentity(ev),
+        at: ev.at,
+        kind: f.kind,
+        color: f.color,
+        text: f.text,
+        isError: isErrorEvent(ev),
+        raw: ev,
+      };
+    },
+    [t],
+  );
 
-  const mergeLines = useCallback((current: Line[], incoming: Line[]): Line[] => {
-    const byIdentity = new Map<string, Line>();
-    for (const line of [...current, ...incoming]) {
-      if (!byIdentity.has(line.identity)) byIdentity.set(line.identity, line);
-    }
-    const merged = Array.from(byIdentity.values()).sort((a, b) => a.at - b.at || a.key - b.key);
-    return merged.length > MAX_LINES ? merged.slice(merged.length - MAX_LINES) : merged;
-  }, []);
+  const mergeLines = useCallback(
+    (current: Line[], incoming: Line[]): Line[] => {
+      const byIdentity = new Map<string, Line>();
+      for (const line of [...current, ...incoming]) {
+        if (!byIdentity.has(line.identity)) byIdentity.set(line.identity, line);
+      }
+      const merged = Array.from(byIdentity.values()).sort(
+        (a, b) => a.at - b.at || a.key - b.key,
+      );
+      return merged.length > MAX_LINES
+        ? merged.slice(merged.length - MAX_LINES)
+        : merged;
+    },
+    [],
+  );
 
-  const append = useCallback((ev: RunStreamEvent) => {
-    const line = toLine(ev);
-    if (pausedRef.current) {
-      pendingRef.current = [...pendingRef.current, line].slice(-MAX_LINES);
-      setPendingCount(pendingRef.current.length);
-      return;
-    }
-    setLines((prev) => mergeLines(prev, [line]));
-  }, [mergeLines, toLine]);
+  const append = useCallback(
+    (ev: RunStreamEvent) => {
+      const line = toLine(ev);
+      if (pausedRef.current) {
+        pendingRef.current = [...pendingRef.current, line].slice(-MAX_LINES);
+        setPendingCount(pendingRef.current.length);
+        return;
+      }
+      setLines((prev) => mergeLines(prev, [line]));
+    },
+    [mergeLines, toLine],
+  );
 
   const toggleLine = (key: number) =>
     setExpanded((prev) => {
@@ -356,7 +437,11 @@ export function TerminalLogTab() {
     setPendingCount(0);
 
     async function backfill() {
-      for (let attempt = 0; attempt <= HISTORY_RETRY_DELAYS_MS.length; attempt += 1) {
+      for (
+        let attempt = 0;
+        attempt <= HISTORY_RETRY_DELAYS_MS.length;
+        attempt += 1
+      ) {
         if (cancelled) return;
         if (attempt > 0) {
           await waitForRetry(HISTORY_RETRY_DELAYS_MS[attempt - 1]!);
@@ -369,7 +454,7 @@ export function TerminalLogTab() {
             headers: { Accept: "application/json", "x-agentic-tenant": tenant },
             signal: controller.signal,
           });
-          const raw = await readActivityResponse(response);
+          const raw = await readActivityResponse(response, t);
           if (cancelled) return;
 
           const seeded = raw.flatMap((candidate) => {
@@ -382,10 +467,16 @@ export function TerminalLogTab() {
           setBackfilling(false);
           return;
         } catch (error: unknown) {
-          if (cancelled || (error instanceof DOMException && error.name === "AbortError")) return;
-          const message = error instanceof Error ? error.message : String(error);
+          if (
+            cancelled ||
+            (error instanceof DOMException && error.name === "AbortError")
+          )
+            return;
+          const message =
+            error instanceof Error ? error.message : String(error);
           setHistoryError(message);
-          const retryable = !(error instanceof ActivityHistoryError) || error.retryable;
+          const retryable =
+            !(error instanceof ActivityHistoryError) || error.retryable;
           if (!retryable || attempt === HISTORY_RETRY_DELAYS_MS.length) {
             setBackfilling(false);
             return;
@@ -401,7 +492,7 @@ export function TerminalLogTab() {
       if (retryTimer) clearTimeout(retryTimer);
       releaseRetryWait?.();
     };
-  }, [mergeLines, tenant, toLine]);
+  }, [mergeLines, t, tenant, toLine]);
 
   // Stream the VIEWED tenant's activity through the unbuffered /livefeed proxy.
   const onStatusChange = useCallback((status: StreamConnectionState) => {
@@ -433,7 +524,10 @@ export function TerminalLogTab() {
     }
     return c;
   }, [lines]);
-  const filtered = useMemo(() => lines.filter((l) => matchesCategory(l, cat)), [lines, cat]);
+  const filtered = useMemo(
+    () => lines.filter((l) => matchesCategory(l, cat)),
+    [lines, cat],
+  );
 
   useLayoutEffect(() => {
     const el = scrollRef.current;
@@ -443,7 +537,8 @@ export function TerminalLogTab() {
   function onScroll() {
     const el = scrollRef.current;
     if (!el) return;
-    autoScrollRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+    autoScrollRef.current =
+      el.scrollHeight - el.scrollTop - el.clientHeight < 40;
   }
   function togglePause() {
     const nextPaused = !pausedRef.current;
@@ -477,7 +572,15 @@ export function TerminalLogTab() {
     : t(`logsExplorer.connection_${connection}`);
 
   return (
-    <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", minHeight: 0 }}>
+    <div
+      style={{
+        flex: 1,
+        minWidth: 0,
+        display: "flex",
+        flexDirection: "column",
+        minHeight: 0,
+      }}
+    >
       <div
         style={{
           display: "flex",
@@ -510,18 +613,35 @@ export function TerminalLogTab() {
           />
           {connectionLabel}
         </span>
-        <span style={{ fontSize: 11, color: "var(--text-3)", fontFamily: "var(--mono)" }}>
+        <span
+          style={{
+            fontSize: 11,
+            color: "var(--text-3)",
+            fontFamily: "var(--mono)",
+          }}
+        >
           {cat === "ALL"
             ? t("logsExplorer.rowCount", { n: lines.length })
             : `${filtered.length} / ${lines.length}`}
         </span>
         {paused && pendingCount > 0 && (
-          <span style={{ fontSize: 11, color: "var(--amber)", fontFamily: "var(--mono)" }}>
+          <span
+            style={{
+              fontSize: 11,
+              color: "var(--amber)",
+              fontFamily: "var(--mono)",
+            }}
+          >
             {t("logsExplorer.buffered", { n: pendingCount })}
           </span>
         )}
         <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
-          <button onClick={togglePause} style={termBtn} type="button" aria-pressed={paused}>
+          <button
+            onClick={togglePause}
+            style={termBtn}
+            type="button"
+            aria-pressed={paused}
+          >
             <Icon name={paused ? "play" : "pause"} size={11} />
             {paused ? t("logsExplorer.resume") : t("logsExplorer.pause")}
           </button>
@@ -559,7 +679,9 @@ export function TerminalLogTab() {
                 borderRadius: 99,
                 cursor: "pointer",
                 border: `1px solid ${active ? color : "var(--border-2)"}`,
-                background: active ? `color-mix(in srgb, ${color} 14%, transparent)` : "transparent",
+                background: active
+                  ? `color-mix(in srgb, ${color} 14%, transparent)`
+                  : "transparent",
                 color: active ? color : "var(--text-3)",
               }}
             >
@@ -592,21 +714,49 @@ export function TerminalLogTab() {
               {t("logsExplorer.terminalLoading")}
             </div>
           ) : (
-            <div style={{ color: "var(--text-3)", padding: "20px 0", lineHeight: 1.8 }}>
+            <div
+              style={{
+                color: "var(--text-3)",
+                padding: "20px 0",
+                lineHeight: 1.8,
+              }}
+            >
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <span className="live-dot green" />
                 {t("logsExplorer.terminalWaiting")}
               </div>
-              <div style={{ fontSize: 11, color: "var(--text-4)", marginTop: 8, maxWidth: 560 }}>
+              <div
+                style={{
+                  fontSize: 11,
+                  color: "var(--text-4)",
+                  marginTop: 8,
+                  maxWidth: 560,
+                }}
+              >
                 {t("logsExplorer.terminalWaitingHint")}
               </div>
               {historyError && (
-                <div role="alert" style={{ fontSize: 11, color: "var(--red)", marginTop: 8, maxWidth: 680 }}>
+                <div
+                  role="alert"
+                  style={{
+                    fontSize: 11,
+                    color: "var(--red)",
+                    marginTop: 8,
+                    maxWidth: 680,
+                  }}
+                >
                   {t("logsExplorer.historyLoadFailed")}: {historyError}
                 </div>
               )}
               {connection !== "connected" && (
-                <div style={{ fontSize: 11, color: "var(--amber)", marginTop: 6, maxWidth: 680 }}>
+                <div
+                  style={{
+                    fontSize: 11,
+                    color: "var(--amber)",
+                    marginTop: 6,
+                    maxWidth: 680,
+                  }}
+                >
                   {t("logsExplorer.streamUnavailableHint")}
                 </div>
               )}
@@ -633,10 +783,27 @@ export function TerminalLogTab() {
                   tabIndex={0}
                   aria-expanded={isOpen}
                   className="hover-row"
-                  style={{ display: "flex", gap: 10, whiteSpace: "pre-wrap", cursor: "pointer", borderRadius: 3 }}
+                  style={{
+                    display: "flex",
+                    gap: 10,
+                    whiteSpace: "pre-wrap",
+                    cursor: "pointer",
+                    borderRadius: 3,
+                  }}
                 >
-                  <span style={{ color: "var(--text-3)", flexShrink: 0 }}>{clock(l.at)}</span>
-                  <span style={{ color: l.color, flexShrink: 0, width: 52, fontWeight: 500 }}>{l.kind}</span>
+                  <span style={{ color: "var(--text-3)", flexShrink: 0 }}>
+                    {clock(l.at)}
+                  </span>
+                  <span
+                    style={{
+                      color: l.color,
+                      flexShrink: 0,
+                      width: 52,
+                      fontWeight: 500,
+                    }}
+                  >
+                    {l.kind}
+                  </span>
                   <span style={{ color: "var(--text-2)" }}>{l.text}</span>
                 </div>
                 {isOpen && (

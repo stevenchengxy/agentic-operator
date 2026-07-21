@@ -1,6 +1,7 @@
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
+import { PreferencesProvider } from "@/app/portal/lib/preferences-context";
 
 import { DraftEditorModal } from "./draft-editor-modal";
 import type { DraftEditorContract } from "./draft-editor";
@@ -37,13 +38,15 @@ describe("Factory draft editor modal read-only fields", () => {
   it("shows the Ontology reason and disables both value editing and save", () => {
     vi.stubGlobal("React", React);
     const html = renderToStaticMarkup(
-      <DraftEditorModal contract={contract} onClose={vi.fn()} onSave={vi.fn()} />,
+      <PreferencesProvider>
+        <DraftEditorModal contract={contract} onClose={vi.fn()} onSave={vi.fn()} />
+      </PreferencesProvider>,
     );
 
-    expect(html).toContain("Ontology 只读");
+    expect(html).toContain("ontology, read-only");
     expect(html).toContain("先更新 Allmeta Ontology 后重新生成");
     expect(html).toMatch(/<textarea[^>]*id="factory-draft-edit-value"[^>]*disabled=""/);
-    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>确认并创建新版本<\/button>/);
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Confirm and create new version<\/button>/);
     vi.unstubAllGlobals();
   });
 });

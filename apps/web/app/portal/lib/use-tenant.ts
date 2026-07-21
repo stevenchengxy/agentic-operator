@@ -15,6 +15,7 @@
 import { useParams, usePathname, useRouter } from "next/navigation";
 import { useCallback } from "react";
 import { useDirty } from "./dirty-context";
+import { useI18n } from "./preferences-context";
 import { useSession } from "./session-context";
 
 /**
@@ -79,6 +80,7 @@ export function useTenantNavigate(): (nextTenant: string) => void {
   const router = useRouter();
   const pathname = usePathname() ?? "/portal";
   const dirty = useDirty();
+  const { t } = useI18n();
   return useCallback(
     (nextTenant: string) => {
       // UC-V11-15: when an editor has unsaved changes, require explicit
@@ -89,12 +91,14 @@ export function useTenantNavigate(): (nextTenant: string) => void {
         const ok =
           typeof window !== "undefined" &&
           window.confirm(
-            `You have unsaved changes${detail ? ` (${detail})` : ""}. Switch tenants anyway? Your draft will be lost.`,
+            detail
+              ? t("common.switchTenantUnsavedDetail", { detail })
+              : t("common.switchTenantUnsaved"),
           );
         if (!ok) return;
       }
       router.push(rewriteTenantInPath(pathname, nextTenant) as never);
     },
-    [pathname, router, dirty],
+    [pathname, router, dirty, t],
   );
 }

@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { translate } from "@/lib/i18n";
 import { buildHumanInteractionSubmission, decodeFactoryResponse, factoryNetworkFailure } from "./factory-api";
+
+const t = (key: string, vars?: Record<string, string | number>) => translate("zh", key, vars);
 
 function response(input: {
   httpOk: boolean;
@@ -21,7 +24,7 @@ function response(input: {
 
 describe("decodeFactoryResponse", () => {
   it("accepts only a successful HTTP response with an ok envelope", async () => {
-    await expect(decodeFactoryResponse<{ id: string }>(response({
+    await expect(decodeFactoryResponse<{ id: string }>(t, response({
       httpOk: true,
       status: 200,
       body: { ok: true, data: { id: "real-run" } },
@@ -29,7 +32,7 @@ describe("decodeFactoryResponse", () => {
   });
 
   it("rejects a deceptive ok envelope on an HTTP failure", async () => {
-    await expect(decodeFactoryResponse(response({
+    await expect(decodeFactoryResponse(t, response({
       httpOk: false,
       status: 503,
       body: { ok: true, data: { restored: true } },
@@ -37,7 +40,7 @@ describe("decodeFactoryResponse", () => {
   });
 
   it("surfaces an API error even when HTTP is 200", async () => {
-    await expect(decodeFactoryResponse(response({
+    await expect(decodeFactoryResponse(t, response({
       httpOk: true,
       status: 200,
       body: { ok: false, error: { message: "run is still active" } },
@@ -45,7 +48,7 @@ describe("decodeFactoryResponse", () => {
   });
 
   it("preserves the server error code for an explicit body-size failure", async () => {
-    await expect(decodeFactoryResponse(response({
+    await expect(decodeFactoryResponse(t, response({
       httpOk: false,
       status: 413,
       body: { ok: false, error: { code: "FST_ERR_CTP_BODY_TOO_LARGE", message: "Request body is too large" } },
@@ -58,7 +61,7 @@ describe("decodeFactoryResponse", () => {
   });
 
   it("rejects malformed JSON instead of reporting a mutation as successful", async () => {
-    await expect(decodeFactoryResponse(response({
+    await expect(decodeFactoryResponse(t, response({
       httpOk: true,
       status: 204,
       jsonError: true,
@@ -66,7 +69,7 @@ describe("decodeFactoryResponse", () => {
   });
 
   it("rejects an incomplete success envelope with no data", async () => {
-    await expect(decodeFactoryResponse(response({
+    await expect(decodeFactoryResponse(t, response({
       httpOk: true,
       status: 200,
       body: { ok: true },
@@ -76,7 +79,7 @@ describe("decodeFactoryResponse", () => {
 
 describe("factoryNetworkFailure", () => {
   it("preserves a real network error for the UI", () => {
-    expect(factoryNetworkFailure(new Error("connection refused"))).toEqual({
+    expect(factoryNetworkFailure(t, new Error("connection refused"))).toEqual({
       ok: false,
       status: 0,
       message: "connection refused",
@@ -86,7 +89,7 @@ describe("factoryNetworkFailure", () => {
 
 describe("buildHumanInteractionSubmission", () => {
   it("keeps the exact card id and kind beside the tagged answer", () => {
-    expect(buildHumanInteractionSubmission({
+    expect(buildHumanInteractionSubmission(t, {
       conversation: " run-1 ",
       interactionId: " hitl_exact ",
       kind: "clarify",
@@ -100,7 +103,7 @@ describe("buildHumanInteractionSubmission", () => {
   });
 
   it("refuses a text-only legacy submission", () => {
-    expect(() => buildHumanInteractionSubmission({
+    expect(() => buildHumanInteractionSubmission(t, {
       conversation: "run-1",
       interactionId: "",
       kind: "boundary",

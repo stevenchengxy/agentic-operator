@@ -16,10 +16,13 @@ import {
   type IconName,
 } from "@/app/portal/components";
 import { useTenant } from "@/app/portal/lib/use-tenant";
+import { useI18n } from "@/app/portal/lib/preferences-context";
+import { workflowStatusLabel } from "@/app/portal/lib/protocol-labels";
 import { useFleet } from "@/lib/hooks/useModelFleet";
 import {
   useCreateWorkflow,
   useGenerateWorkflow,
+  formatWorkflowAuthoringError,
   useWorkflowCatalog,
   useWorkflowDetail,
   useWorkflowDocumentFolders,
@@ -42,10 +45,14 @@ function slugify(value: string): string {
     .slice(0, 80);
 }
 
-function formatError(error: unknown): string {
+function formatError(
+  error: unknown,
+  fallback: string,
+  t: ReturnType<typeof useI18n>["t"],
+): string {
   return error instanceof Error
-    ? error.message
-    : "The request could not be completed.";
+    ? formatWorkflowAuthoringError(error, t)
+    : fallback;
 }
 
 /** Stable identity for every input that can change an AI proposal. */
@@ -84,6 +91,7 @@ export function NewWorkflowModal({
   onCreated,
   onImport,
 }: NewWorkflowModalProps) {
+  const { t } = useI18n();
   const tenant = useTenant();
   const templatesQuery = useWorkflowTemplates();
   const workflowsQuery = useWorkflowCatalog();
@@ -194,13 +202,15 @@ export function NewWorkflowModal({
       setPreviewFingerprint(requestedFingerprint);
       if (!name.trim()) changeName(result.summary.slice(0, 120));
     } catch (generationError) {
-      setError(formatError(generationError));
+      setError(
+        formatError(generationError, t("newWorkflowModal.requestFailed"), t),
+      );
     }
   }
 
   async function createDraft() {
     if (!name.trim() || !slug.trim()) {
-      setError("Display name and workflow slug are required.");
+      setError(t("newWorkflowModal.errIdentityRequired"));
       return;
     }
     if (path === "import") {
@@ -212,13 +222,13 @@ export function NewWorkflowModal({
     if (path === "blank") source = { type: "blank" };
     else if (path === "template") {
       if (!templateId) {
-        setError("Choose a template first.");
+        setError(t("newWorkflowModal.errChooseTemplate"));
         return;
       }
       source = { type: "template", templateId };
     } else if (path === "clone") {
       if (!cloneSlug) {
-        setError("Choose a source workflow first.");
+        setError(t("newWorkflowModal.errChooseSource"));
         return;
       }
       source = {
@@ -228,7 +238,7 @@ export function NewWorkflowModal({
       };
     } else {
       if (!previewIsCurrent || !preview) {
-        setError("Generate and review a current workflow proposal first.");
+        setError(t("newWorkflowModal.errGenerateFirst"));
         return;
       }
       source = { type: "manifest", manifest: preview.manifest };
@@ -240,14 +250,20 @@ export function NewWorkflowModal({
         name: name.trim(),
         slug: slug.trim(),
         description:
-          path === "generate" ? purpose.trim() : `Created from ${path}.`,
+          path === "generate"
+            ? purpose.trim()
+            : t("newWorkflowModal.createdFrom", {
+                source: t(`newWorkflowModal.path_${path}`),
+              }),
         source,
         model: path === "clone" && !overrideCloneModel ? undefined : model,
       });
       onCreated?.(workflow);
       onClose();
     } catch (createError) {
-      setError(formatError(createError));
+      setError(
+        formatError(createError, t("newWorkflowModal.requestFailed"), t),
+      );
     }
   }
 
@@ -258,7 +274,10 @@ export function NewWorkflowModal({
   const canCreate = ready && (path !== "generate" || previewIsCurrent);
 
   return (
-    <ModalOverlay onClose={onClose} ariaLabel="Create a new workflow">
+    <ModalOverlay
+      onClose={onClose}
+      ariaLabel={t("newWorkflowModal.createAria")}
+    >
       <div
         style={{
           width: "min(980px, calc(100vw - 32px))",
@@ -286,19 +305,18 @@ export function NewWorkflowModal({
             <div
               style={{ fontSize: 15, color: "var(--text)", fontWeight: 600 }}
             >
-              New workflow
+              {t("newWorkflowModal.title")}
             </div>
             <div
               style={{ fontSize: 11.5, color: "var(--text-3)", marginTop: 2 }}
             >
-              Every path creates an editable draft. Publishing live is a
-              separate action.
+              {t("newWorkflowModal.draftOnlySubtitle")}
             </div>
           </div>
           <button
             type="button"
             onClick={onClose}
-            aria-label="Close new workflow dialog"
+            aria-label={t("newWorkflowModal.closeAria")}
             style={{ color: "var(--text-3)" }}
           >
             <Icon name="x" size={13} />
@@ -306,7 +324,7 @@ export function NewWorkflowModal({
         </header>
 
         <div style={{ padding: 20, overflow: "auto", flex: 1 }}>
-          <SectionLabel>Start from</SectionLabel>
+          <SectionLabel>{t("newWorkflowModal.startFrom")}</SectionLabel>
           <div
             style={{
               display: "grid",
@@ -319,41 +337,41 @@ export function NewWorkflowModal({
               active={path === "generate"}
               onClick={() => choosePath("generate")}
               icon="spark"
-              title="Generate with AI"
-              sub="Purpose, research, and process documents."
+              title={t("newWorkflowModal.generateTitle")}
+              sub={t("newWorkflowModal.generateSub")}
             />
             <PathCard
               active={path === "blank"}
               onClick={() => choosePath("blank")}
               icon="plus"
-              title="Blank canvas"
-              sub="One safe starter agent."
+              title={t("newWorkflowModal.blankTitle")}
+              sub={t("newWorkflowModal.blankStarterSub")}
             />
             <PathCard
               active={path === "template"}
               onClick={() => choosePath("template")}
               icon="workflow"
-              title="Template"
-              sub="Maintained workflow patterns."
+              title={t("newWorkflowModal.templatePathTitle")}
+              sub={t("newWorkflowModal.templatePathSub")}
             />
             <PathCard
               active={path === "clone"}
               onClick={() => choosePath("clone")}
               icon="git"
-              title="Existing workflow"
-              sub="Clone a full draft snapshot."
+              title={t("newWorkflowModal.existingTitle")}
+              sub={t("newWorkflowModal.existingSub")}
             />
             <PathCard
               active={path === "import"}
               onClick={() => choosePath("import")}
               icon="upload"
-              title="Import manifest"
-              sub="Validate, resolve, and create an editable draft."
+              title={t("newWorkflowModal.importTitle")}
+              sub={t("newWorkflowModal.importDraftSub")}
             />
           </div>
 
           <>
-            <SectionLabel>Identity</SectionLabel>
+            <SectionLabel>{t("newWorkflowModal.identity")}</SectionLabel>
             <div
               style={{
                 display: "grid",
@@ -362,14 +380,14 @@ export function NewWorkflowModal({
                 marginBottom: 20,
               }}
             >
-              <Field label="Display name">
+              <Field label={t("newWorkflowModal.displayName")}>
                 <TextInput
                   value={name}
                   onChange={changeName}
-                  placeholder="Customer support triage"
+                  placeholder={t("newWorkflowModal.displayNamePlaceholder")}
                 />
               </Field>
-              <Field label="Workflow id (slug)">
+              <Field label={t("newWorkflowModal.workflowId")}>
                 <TextInput
                   value={slug}
                   onChange={(value) => {
@@ -380,14 +398,16 @@ export function NewWorkflowModal({
                   mono
                 />
               </Field>
-              <Field label="Tenant">
+              <Field label={t("newWorkflowModal.tenant")}>
                 <div style={readOnlyFieldStyle}>{tenant}</div>
               </Field>
               {path !== "import" &&
                 (path !== "clone" || overrideCloneModel) && (
                   <Field
                     label={
-                      path === "clone" ? "Model override" : "Default model"
+                      path === "clone"
+                        ? t("newWorkflowModal.modelOverride")
+                        : t("newWorkflowModal.defaultModel")
                     }
                   >
                     <select
@@ -396,7 +416,9 @@ export function NewWorkflowModal({
                       style={controlStyle}
                     >
                       {!fleet.length && (
-                        <option value="">Workspace default</option>
+                        <option value="">
+                          {t("newWorkflowModal.workspaceDefault")}
+                        </option>
                       )}
                       {fleet.map((entry) => (
                         <option
@@ -434,8 +456,8 @@ export function NewWorkflowModal({
 
           {path === "blank" && (
             <InfoPanel
-              title="Blank starter"
-              body="Creates one production-shaped starter agent with editable prompt, typed input/output, a logic action, conservative limits, and a completion event. Add and connect nodes on the canvas."
+              title={t("newWorkflowModal.blankStarterTitle")}
+              body={t("newWorkflowModal.blankStarterBody")}
             />
           )}
 
@@ -450,16 +472,18 @@ export function NewWorkflowModal({
 
           {path === "clone" && (
             <div>
-              <SectionLabel>Source workflow</SectionLabel>
+              <SectionLabel>
+                {t("newWorkflowModal.sourceWorkflow")}
+              </SectionLabel>
               {workflowsQuery.isLoading ? (
                 <InfoPanel
-                  title="Loading workflows…"
-                  body="Reading immutable workflow versions for this tenant."
+                  title={t("newWorkflowModal.loadingWorkflows")}
+                  body={t("newWorkflowModal.loadingWorkflowsBody")}
                 />
               ) : workflows.length === 0 ? (
                 <InfoPanel
-                  title="No workflows to clone"
-                  body="Create from AI, Blank canvas, Template, or Import instead."
+                  title={t("newWorkflowModal.noWorkflowsToClone")}
+                  body={t("newWorkflowModal.noWorkflowsToCloneBody")}
                 />
               ) : (
                 <div style={{ display: "grid", gap: 8 }}>
@@ -489,13 +513,16 @@ export function NewWorkflowModal({
                       <Badge
                         tone={workflow.status === "live" ? "green" : "muted"}
                       >
-                        {workflow.status}
+                        {workflowStatusLabel(t, workflow.status)}
                       </Badge>
                       <span
                         className="mono"
                         style={{ color: "var(--text-3)", marginLeft: "auto" }}
                       >
-                        {workflow.latestVersion} · {workflow.agentCount} agents
+                        {workflow.latestVersion} ·{" "}
+                        {t("newWorkflowModal.agentCount", {
+                          count: workflow.agentCount,
+                        })}
                       </span>
                     </button>
                   ))}
@@ -509,7 +536,9 @@ export function NewWorkflowModal({
                         marginTop: 4,
                       }}
                     >
-                      <Field label="Immutable source version">
+                      <Field
+                        label={t("newWorkflowModal.immutableSourceVersion")}
+                      >
                         <select
                           value={
                             cloneVersionId ||
@@ -522,8 +551,11 @@ export function NewWorkflowModal({
                         >
                           {cloneDetailQuery.data.versions.map((version) => (
                             <option key={version.id} value={version.id}>
-                              {version.version} · {version.status} ·{" "}
-                              {version.agentCount} agents
+                              {version.version} ·{" "}
+                              {workflowStatusLabel(t, version.status)} ·{" "}
+                              {t("newWorkflowModal.agentCount", {
+                                count: version.agentCount,
+                              })}
                             </option>
                           ))}
                         </select>
@@ -547,7 +579,7 @@ export function NewWorkflowModal({
                               fontSize: 12.5,
                             }}
                           >
-                            Override source models
+                            {t("newWorkflowModal.overrideSourceModels")}
                           </span>
                           <span
                             style={{
@@ -557,8 +589,7 @@ export function NewWorkflowModal({
                               marginTop: 3,
                             }}
                           >
-                            Off by default so prompts, parameters, tools,
-                            providers, and models are cloned exactly.
+                            {t("newWorkflowModal.overrideSourceModelsHelp")}
                           </span>
                         </span>
                       </label>
@@ -571,8 +602,8 @@ export function NewWorkflowModal({
 
           {path === "import" && (
             <InfoPanel
-              title="Advanced manifest import"
-              body="Continue to the six-step importer to upload or paste JSON, fetch an HTTPS source, validate the schema and graph, resolve conflicts, and create an editable server-backed draft. Live runs are unchanged."
+              title={t("newWorkflowModal.advancedImport")}
+              body={t("newWorkflowModal.advancedImportBody")}
             />
           )}
 
@@ -616,13 +647,13 @@ export function NewWorkflowModal({
             <Icon name="check" size={10} style={{ color: "var(--green)" }} />
             <span>
               {path === "import"
-                ? "The importer will validate before creating an editable draft."
-                : "Creates a server-backed draft; live runs are unchanged."}
+                ? t("newWorkflowModal.importerValidationNote")
+                : t("newWorkflowModal.serverDraftNote")}
             </span>
           </div>
           <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
             <Button tone="ghost" onClick={onClose}>
-              Cancel
+              {t("newWorkflowModal.cancel")}
             </Button>
             <Button
               tone="primary"
@@ -631,10 +662,10 @@ export function NewWorkflowModal({
               disabled={!canCreate || create.isPending}
             >
               {create.isPending
-                ? "Creating…"
+                ? t("newWorkflowModal.creating")
                 : path === "import"
-                  ? "Continue to import"
-                  : "Create draft"}
+                  ? t("newWorkflowModal.continueImport")
+                  : t("newWorkflowModal.createDraft")}
             </Button>
           </div>
         </footer>
@@ -676,16 +707,17 @@ function GenerationPanel({
   pending: boolean;
   onGenerate: () => void;
 }) {
+  const { language, t } = useI18n();
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
       <div>
-        <SectionLabel>Workflow purpose</SectionLabel>
+        <SectionLabel>{t("newWorkflowModal.workflowPurpose")}</SectionLabel>
         <textarea
           value={purpose}
           onChange={(event) => onPurpose(event.target.value)}
           rows={5}
           maxLength={12_000}
-          placeholder="Describe the business outcome, who or what starts the process, decisions and approvals, expected deliverables, systems involved, and important rules."
+          placeholder={t("newWorkflowModal.purposePlaceholder")}
           style={{ ...controlStyle, resize: "vertical", lineHeight: 1.55 }}
         />
         <div
@@ -697,10 +729,7 @@ function GenerationPanel({
             color: "var(--text-3)",
           }}
         >
-          <span>
-            Minimum 20 characters. Specific constraints produce better agent
-            prompts.
-          </span>
+          <span>{t("newWorkflowModal.purposeHint")}</span>
           <span className="mono">{purpose.length}/12000</span>
         </div>
       </div>
@@ -711,16 +740,17 @@ function GenerationPanel({
           gap: 10,
         }}
       >
-        <Field label="Process document folder (optional)">
+        <Field label={t("newWorkflowModal.documentFolder")}>
           <select
             value={folder}
             onChange={(event) => onFolder(event.target.value)}
             style={controlStyle}
           >
-            <option value="">No folder</option>
+            <option value="">{t("newWorkflowModal.noFolder")}</option>
             {folders.map((item) => (
               <option key={item.path || "__root__"} value={item.path || "."}>
-                {item.name} · {item.fileCount} files
+                {item.name} ·{" "}
+                {t("newWorkflowModal.fileCount", { count: item.fileCount })}
               </option>
             ))}
           </select>
@@ -736,7 +766,7 @@ function GenerationPanel({
             <span
               style={{ display: "block", color: "var(--text)", fontSize: 12.5 }}
             >
-              Research relevant functionality
+              {t("newWorkflowModal.webResearch")}
             </span>
             <span
               style={{
@@ -746,8 +776,7 @@ function GenerationPanel({
                 marginTop: 3,
               }}
             >
-              Uses the configured tenant search provider. Missing credentials
-              become a visible warning.
+              {t("newWorkflowModal.webResearchHelp")}
             </span>
           </span>
         </label>
@@ -759,27 +788,25 @@ function GenerationPanel({
           gap: 10,
         }}
       >
-        <Field label="Constraints (one per line)">
+        <Field label={t("newWorkflowModal.constraints")}>
           <textarea
-            aria-label="Workflow constraints"
+            aria-label={t("newWorkflowModal.constraintsAria")}
             value={constraints}
             onChange={(event) => onConstraints(event.target.value)}
             rows={4}
             maxLength={60_000}
-            placeholder={
-              "Keep customer data in-region\nRequire human approval above $10,000"
-            }
+            placeholder={t("newWorkflowModal.constraintsPlaceholder")}
             style={{ ...controlStyle, resize: "vertical", lineHeight: 1.45 }}
           />
         </Field>
-        <Field label="Expected outputs (one per line)">
+        <Field label={t("newWorkflowModal.expectedOutputs")}>
           <textarea
-            aria-label="Expected workflow outputs"
+            aria-label={t("newWorkflowModal.expectedOutputsAria")}
             value={expectedOutputs}
             onChange={(event) => onExpectedOutputs(event.target.value)}
             rows={4}
             maxLength={30_000}
-            placeholder={"Approved case decision\nAuditable decision record"}
+            placeholder={t("newWorkflowModal.expectedOutputsPlaceholder")}
             style={{ ...controlStyle, resize: "vertical", lineHeight: 1.45 }}
           />
         </Field>
@@ -792,10 +819,10 @@ function GenerationPanel({
           disabled={pending || purpose.trim().length < 20}
         >
           {pending
-            ? "Architecting workflow…"
+            ? t("newWorkflowModal.architecting")
             : preview
-              ? "Regenerate proposal"
-              : "Generate proposal"}
+              ? t("newWorkflowModal.regenerateProposal")
+              : t("newWorkflowModal.generateProposal")}
         </Button>
       </div>
       {preview && (
@@ -824,10 +851,10 @@ function GenerationPanel({
             </span>
             <Badge tone={preview.validation.valid ? "green" : "amber"}>
               {previewStale
-                ? "STALE — REGENERATE"
+                ? t("newWorkflowModal.previewStaleBadge")
                 : preview.validation.valid
-                  ? "VALID"
-                  : "NEEDS REVIEW"}
+                  ? t("newWorkflowModal.previewValidBadge")
+                  : t("newWorkflowModal.previewReviewBadge")}
             </Badge>
             <span
               className="mono"
@@ -837,8 +864,10 @@ function GenerationPanel({
                 fontSize: 10.5,
               }}
             >
-              {preview.manifest.agents.length} agents ·{" "}
-              {preview.modelSelection.provider}/{preview.modelSelection.model}
+              {t("newWorkflowModal.agentCount", {
+                count: preview.manifest.agents.length,
+              })}{" "}
+              · {preview.modelSelection.provider}/{preview.modelSelection.model}
             </span>
           </div>
           <div style={{ padding: 14 }}>
@@ -847,9 +876,7 @@ function GenerationPanel({
                 role="alert"
                 style={{ ...previewAlertStyle, marginBottom: 10 }}
               >
-                Generator inputs changed after this proposal was created. This
-                preview cannot be used to create a draft until it is
-                regenerated.
+                {t("newWorkflowModal.previewStaleHelp")}
               </div>
             )}
             <div
@@ -898,7 +925,9 @@ function GenerationPanel({
                       <Badge
                         tone={agent.actor[0] === "Human" ? "violet" : "muted"}
                       >
-                        {agent.actor[0]}
+                        {agent.actor[0] === "Human"
+                          ? t("common.actorHuman")
+                          : t("common.actorAgent")}
                       </Badge>
                     </div>
                     <div
@@ -921,8 +950,8 @@ function GenerationPanel({
                           marginTop: 5,
                         }}
                       >
-                        Prompt rubric {score?.score ?? 0}/
-                        {score?.required ?? 11}
+                        {t("newWorkflowModal.promptRubric")} {score?.score ?? 0}
+                        /{score?.required ?? 11}
                       </div>
                     )}
                   </div>
@@ -938,36 +967,57 @@ function GenerationPanel({
                   .join(" · ")}
               </div>
             )}
-            <PreviewSection title="Assumptions" items={preview.assumptions} />
-            <PreviewSection title="Risks" items={preview.risks} />
-            <PreviewSection title="Warnings" items={preview.warnings} />
             <PreviewSection
-              title="Validation"
+              title={t("newWorkflowModal.assumptions")}
+              items={preview.assumptions}
+            />
+            <PreviewSection
+              title={t("newWorkflowModal.risks")}
+              items={preview.risks}
+            />
+            <PreviewSection
+              title={t("newWorkflowModal.warnings")}
+              items={preview.warnings}
+            />
+            <PreviewSection
+              title={t("newWorkflowModal.validation")}
               items={preview.validation.issues.map(
                 (issue) =>
                   `${issue.severity.toUpperCase()} · ${issue.path}: ${issue.message}`,
               )}
-              empty="No manifest validation issues."
+              empty={t("newWorkflowModal.noValidationIssues")}
             />
             <PreviewSection
-              title="Sources"
+              title={t("newWorkflowModal.sources")}
               items={preview.sources.map((source) =>
                 [
                   `${source.kind.toUpperCase()} · ${source.title}`,
                   source.reference,
-                  source.query ? `query: ${source.query}` : "",
+                  source.query
+                    ? `${t("newWorkflowModal.queryLabel")}: ${source.query}`
+                    : "",
                   source.snippet ?? "",
                 ]
                   .filter(Boolean)
                   .join(" — "),
               )}
-              empty="No external sources were used."
+              empty={t("newWorkflowModal.noExternalSources")}
             />
             {preview.documents && (
               <PreviewSection
-                title="Document diagnostics"
+                title={t("newWorkflowModal.documentDiagnostics")}
                 items={[
-                  `${preview.documents.filesIncluded}/${preview.documents.filesSeen} files included · ${preview.documents.totalCharacters.toLocaleString()} characters${preview.documents.truncated ? " · truncated" : ""}`,
+                  t("newWorkflowModal.documentSummary", {
+                    included: preview.documents.filesIncluded,
+                    seen: preview.documents.filesSeen,
+                    characters:
+                      preview.documents.totalCharacters.toLocaleString(
+                        language === "zh" ? "zh-CN" : "en-US",
+                      ),
+                    truncated: preview.documents.truncated
+                      ? t("newWorkflowModal.truncatedSuffix")
+                      : "",
+                  }),
                   ...preview.documents.diagnostics.map(
                     (diagnostic) =>
                       `${diagnostic.status.toUpperCase()} · ${diagnostic.path}${diagnostic.reason ? `: ${diagnostic.reason}` : ""}`,
@@ -976,28 +1026,36 @@ function GenerationPanel({
               />
             )}
             <div style={{ marginTop: 12, display: "grid", gap: 8 }}>
-              <div style={previewSectionTitleStyle}>Agent design details</div>
+              <div style={previewSectionTitleStyle}>
+                {t("newWorkflowModal.agentDesignDetails")}
+              </div>
               {preview.manifest.agents.map((agent) => (
                 <details
                   key={`${agent.id}-details`}
                   style={previewDetailsStyle}
                 >
                   <summary style={previewSummaryStyle}>
-                    {agent.title ?? agent.name} · prompts, actions, tools,
-                    events
+                    {agent.title ?? agent.name} ·{" "}
+                    {t("newWorkflowModal.agentDesignSummary")}
                   </summary>
                   <PreviewCode
-                    label="System prompt"
+                    label={t("newWorkflowModal.systemPrompt")}
                     value={agent.ontology_instructions}
                   />
                   <PreviewCode
-                    label="User prompt"
+                    label={t("newWorkflowModal.userPrompt")}
                     value={agent.user_prompt_template}
                   />
-                  <PreviewCode label="Actions" value={agent.actions} />
-                  <PreviewCode label="Tools" value={agent.tool_use ?? []} />
                   <PreviewCode
-                    label="Events"
+                    label={t("newWorkflowModal.actions")}
+                    value={agent.actions}
+                  />
+                  <PreviewCode
+                    label={t("newWorkflowModal.tools")}
+                    value={agent.tool_use ?? []}
+                  />
+                  <PreviewCode
+                    label={t("newWorkflowModal.events")}
                     value={{
                       listensFor: agent.trigger,
                       emits: agent.triggered_event,
@@ -1022,6 +1080,7 @@ function PreviewSection({
   items: string[];
   empty?: string;
 }) {
+  const { t } = useI18n();
   if (items.length === 0 && !empty) return null;
   return (
     <div style={{ marginTop: 12 }}>
@@ -1029,20 +1088,23 @@ function PreviewSection({
       <ul
         style={{ margin: "6px 0 0", paddingLeft: 18, color: "var(--text-2)" }}
       >
-        {(items.length ? items : [empty ?? "None"]).map((item, index) => (
-          <li
-            key={`${title}-${index}`}
-            style={{ fontSize: 11, lineHeight: 1.55 }}
-          >
-            {item}
-          </li>
-        ))}
+        {(items.length ? items : [empty ?? t("newWorkflowModal.none")]).map(
+          (item, index) => (
+            <li
+              key={`${title}-${index}`}
+              style={{ fontSize: 11, lineHeight: 1.55 }}
+            >
+              {item}
+            </li>
+          ),
+        )}
       </ul>
     </div>
   );
 }
 
 function PreviewCode({ label, value }: { label: string; value: unknown }) {
+  const { t } = useI18n();
   const rendered =
     typeof value === "string" ? value : JSON.stringify(value ?? null, null, 2);
   return (
@@ -1063,7 +1125,7 @@ function PreviewCode({ label, value }: { label: string; value: unknown }) {
           lineHeight: 1.5,
         }}
       >
-        {rendered || "(not configured)"}
+        {rendered || t("newWorkflowModal.notConfigured")}
       </pre>
     </div>
   );
@@ -1088,13 +1150,14 @@ function TemplatePicker({
   onSelect: (id: string) => void;
   loading: boolean;
 }) {
+  const { t } = useI18n();
   return (
     <div>
-      <SectionLabel>Template catalog</SectionLabel>
+      <SectionLabel>{t("newWorkflowModal.templateCatalog")}</SectionLabel>
       {loading ? (
         <InfoPanel
-          title="Loading templates…"
-          body="Validating the server-owned catalog."
+          title={t("newWorkflowModal.loadingTemplates")}
+          body={t("newWorkflowModal.loadingTemplatesBody")}
         />
       ) : (
         <div
@@ -1163,8 +1226,11 @@ function TemplatePicker({
                 className="mono"
                 style={{ color: "var(--text-3)", fontSize: 10.5, marginTop: 7 }}
               >
-                {template.agentCount} agents · {template.actionCount} actions ·{" "}
-                {template.eventCount} events
+                {t("newWorkflowModal.templateCounts", {
+                  agents: template.agentCount,
+                  actions: template.actionCount,
+                  events: template.eventCount,
+                })}
               </div>
             </button>
           ))}

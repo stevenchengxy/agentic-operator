@@ -10,23 +10,25 @@
 
 import Link from "next/link";
 import { Button, ViewHeader } from "@/app/portal/components";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 import { useTenant } from "@/app/portal/lib/use-tenant";
 import { AuditSection } from "@/app/portal/components/settings/sections/Audit";
 
 export default function AuditPage() {
+  const { t } = useI18n();
   const tenant = useTenant();
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
       <ViewHeader
-        title="Audit log"
-        subtitle="Every workspace mutation lands here with actor, action, target, timestamp."
+        title={t("auditSection.pageTitle")}
+        subtitle={t("auditSection.pageSubtitle")}
         action={
           <Link
             href={`/portal/${tenant}/settings` as never}
             style={{ textDecoration: "none" }}
           >
             <Button small icon="chevron-left" tone="ghost">
-              Back to Settings
+              {t("auditSection.backSettings")}
             </Button>
           </Link>
         }

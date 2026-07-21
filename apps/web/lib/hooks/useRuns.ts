@@ -15,13 +15,13 @@ import {
   keepPreviousData,
 } from "@tanstack/react-query";
 import type { UseQueryResult } from "@tanstack/react-query";
-import { readApiData } from "@/lib/api-response";
+import { fetchApiData } from "@/lib/api-response";
 import { RUN_KEYS, COUNT_KEYS } from "./useStream";
 import { tenantHeader } from "./tenant-header";
 
 async function callV1<T>(path: string, init: RequestInit = {}): Promise<T> {
   const { headers: initHeaders, ...rest } = init;
-  const res = await fetch(path, {
+  return fetchApiData<T>(path, {
     credentials: "same-origin",
     ...rest,
     headers: {
@@ -30,7 +30,6 @@ async function callV1<T>(path: string, init: RequestInit = {}): Promise<T> {
       ...(initHeaders as Record<string, string> | undefined),
     },
   });
-  return readApiData<T>(res, path);
 }
 
 export interface RunListFilter {
@@ -59,7 +58,11 @@ export type CodeActAttestationStatus =
 export interface CodeActReceiptFields {
   codeRan?: boolean | null;
   codeExecuted?: boolean | null;
-  codeIsolation?: "worker_thread" | "isolated_subprocess" | "isolated_container" | null;
+  codeIsolation?:
+    | "worker_thread"
+    | "isolated_subprocess"
+    | "isolated_container"
+    | null;
   codeSha256?: string | null;
   codeAttestation?: CodeActAttestationStatus | null;
   codeExecutionFailure?: string | null;
@@ -163,7 +166,10 @@ export function useRunsPaged(
 ): UseQueryResult<PaginatedRuns> {
   const query = buildPageQuery(filter);
   return useQuery({
-    queryKey: RUN_KEYS.list({ paged: true, ...filter } as Record<string, unknown>),
+    queryKey: RUN_KEYS.list({ paged: true, ...filter } as Record<
+      string,
+      unknown
+    >),
     queryFn: () => callV1<PaginatedRuns>(`/v1/runs${query}`),
     placeholderData: keepPreviousData,
     staleTime: 2_000,
@@ -251,7 +257,10 @@ export function useRunSummary(
 ): UseQueryResult<{ summary: RunSummary | null }> {
   return useQuery({
     queryKey: id ? SUMMARY_KEY(id) : (["runs", "summary", "__none__"] as const),
-    queryFn: () => callV1<{ summary: RunSummary | null }>(`/v1/runs/${encodeURIComponent(id!)}/summary`),
+    queryFn: () =>
+      callV1<{ summary: RunSummary | null }>(
+        `/v1/runs/${encodeURIComponent(id!)}/summary`,
+      ),
     enabled: Boolean(id),
     staleTime: 60_000,
   });
@@ -341,10 +350,15 @@ export interface RunChain {
 
 /** The whole cross-run cascade sharing this run's correlationId, in pipeline
  *  order — the zhaopin 6-agent chain the parentRunId-based trace tree can't show. */
-export function useRunChain(id: string | null | undefined): UseQueryResult<RunChain> {
+export function useRunChain(
+  id: string | null | undefined,
+): UseQueryResult<RunChain> {
   return useQuery({
-    queryKey: id ? (["runs", "chain", id] as const) : (["runs", "chain", "__none__"] as const),
-    queryFn: () => callV1<RunChain>(`/v1/runs/${encodeURIComponent(id!)}/chain`),
+    queryKey: id
+      ? (["runs", "chain", id] as const)
+      : (["runs", "chain", "__none__"] as const),
+    queryFn: () =>
+      callV1<RunChain>(`/v1/runs/${encodeURIComponent(id!)}/chain`),
     enabled: Boolean(id),
     staleTime: 2_000,
   });

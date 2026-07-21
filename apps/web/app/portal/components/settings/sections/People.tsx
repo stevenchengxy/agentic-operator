@@ -16,23 +16,20 @@ import { useTenant } from "@/app/portal/lib/use-tenant";
 import { useMe } from "@/lib/hooks/useMe";
 import { useMembers } from "@/lib/hooks/useAccess";
 import { fmtAgo } from "@/lib/format";
+import { formatApiError } from "@/lib/api-response";
 
 export function PeopleSection() {
-  const { t } = useI18n();
+  const { language, t } = useI18n();
   const tenant = useTenant();
   const me = useMe();
   const canRead = me.data?.capabilities.includes("members.read") ?? false;
-  const {
-    data: members,
-    isLoading,
-    isError,
-    error,
-  } = useMembers(canRead);
-  const memberCount: string | number = me.isError || !me.data || !canRead || isError
-    ? "—"
-    : isLoading && !members
-      ? "…"
-      : (members?.length ?? 0);
+  const { data: members, isLoading, isError, error } = useMembers(canRead);
+  const memberCount: string | number =
+    me.isError || !me.data || !canRead || isError
+      ? "—"
+      : isLoading && !members
+        ? "…"
+        : (members?.length ?? 0);
 
   const accessHref = `/portal/${tenant}/access`;
 
@@ -54,11 +51,18 @@ export function PeopleSection() {
           { role: "Operator", hint: t("access.roleHintOperator") },
           { role: "Viewer", hint: t("access.roleHintViewer") },
         ].map((r) => (
-          <div key={r.role} style={{ padding: "10px 12px", background: "var(--panel)" }}>
+          <div
+            key={r.role}
+            style={{ padding: "10px 12px", background: "var(--panel)" }}
+          >
             <div style={{ marginBottom: 5 }}>
               <RoleBadge role={r.role} />
             </div>
-            <div style={{ fontSize: 11, color: "var(--text-3)", lineHeight: 1.45 }}>{r.hint}</div>
+            <div
+              style={{ fontSize: 11, color: "var(--text-3)", lineHeight: 1.45 }}
+            >
+              {r.hint}
+            </div>
           </div>
         ))}
       </div>
@@ -67,12 +71,24 @@ export function PeopleSection() {
         title={t("people.membersCount", { count: memberCount })}
         padded={false}
         action={
-          <Button small icon="human" tone="primary" onClick={() => (window.location.href = accessHref)}>
+          <Button
+            small
+            icon="human"
+            tone="primary"
+            onClick={() => (window.location.href = accessHref)}
+          >
             {t("people.openAccess")}
           </Button>
         }
       >
-        <div style={{ padding: "10px 14px", borderBottom: "1px solid var(--border)", fontSize: 12, color: "var(--text-3)" }}>
+        <div
+          style={{
+            padding: "10px 14px",
+            borderBottom: "1px solid var(--border)",
+            fontSize: 12,
+            color: "var(--text-3)",
+          }}
+        >
           {t("people.managedNote")}
         </div>
         {me.isLoading && !me.data ? (
@@ -83,7 +99,7 @@ export function PeopleSection() {
           <div style={{ padding: 24 }}>
             <Empty
               title={t("access.loadFailed")}
-              hint={me.error.message}
+              hint={formatApiError(me.error, t)}
             />
           </div>
         ) : !canRead ? (
@@ -94,7 +110,7 @@ export function PeopleSection() {
           <div style={{ padding: 24 }}>
             <Empty
               title={t("access.loadFailed")}
-              hint={error instanceof Error ? error.message : t("access.apiUnreachable")}
+              hint={formatApiError(error, t, "access.apiUnreachable")}
             />
           </div>
         ) : isLoading ? (
@@ -106,7 +122,13 @@ export function PeopleSection() {
             <Empty title={t("access.emptyMembers")} />
           </div>
         ) : (
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+          <table
+            style={{
+              width: "100%",
+              borderCollapse: "collapse",
+              fontSize: 12.5,
+            }}
+          >
             <thead>
               <tr style={{ borderBottom: "1px solid var(--border)" }}>
                 <Th>{t("access.colMember")}</Th>
@@ -117,7 +139,10 @@ export function PeopleSection() {
             </thead>
             <tbody>
               {members.map((m) => (
-                <tr key={m.userId} style={{ borderBottom: "1px solid var(--border)" }}>
+                <tr
+                  key={m.userId}
+                  style={{ borderBottom: "1px solid var(--border)" }}
+                >
                   <Td>
                     <div style={{ display: "flex", flexDirection: "column" }}>
                       <span style={{ color: "var(--text)" }}>
@@ -128,16 +153,25 @@ export function PeopleSection() {
                           </Badge>
                         ) : null}
                       </span>
-                      <span className="mono" style={{ fontSize: 10.5, color: "var(--text-3)" }}>
+                      <span
+                        className="mono"
+                        style={{ fontSize: 10.5, color: "var(--text-3)" }}
+                      >
                         {m.email}
                       </span>
                     </div>
                   </Td>
                   <Td>
-                    <Badge tone="muted">{t(`access.role${m.role[0]!.toUpperCase()}${m.role.slice(1)}`)}</Badge>
+                    <Badge tone="muted">
+                      {t(
+                        `access.role${m.role[0]!.toUpperCase()}${m.role.slice(1)}`,
+                      )}
+                    </Badge>
                   </Td>
                   <Td>
-                    <span style={{ color: "var(--text-3)" }}>{fmtAgo(m.createdAt)}</span>
+                    <span style={{ color: "var(--text-3)" }}>
+                      {fmtAgo(m.createdAt, language)}
+                    </span>
                   </Td>
                   <Td style={{ textAlign: "right" }} />
                 </tr>

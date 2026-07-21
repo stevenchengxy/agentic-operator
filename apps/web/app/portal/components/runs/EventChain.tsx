@@ -11,9 +11,16 @@
  */
 
 import Link from "next/link";
-import { Badge, Empty, Icon, StatusDot, type StatusName } from "@/app/portal/components";
+import {
+  Badge,
+  Empty,
+  Icon,
+  StatusDot,
+  type StatusName,
+} from "@/app/portal/components";
 import { fmtDur } from "@/app/portal/lib/format";
 import { useI18n } from "@/app/portal/lib/preferences-context";
+import { runStatusLabel } from "@/app/portal/lib/protocol-labels";
 import type { RunListRow } from "@/lib/hooks/useRuns";
 import { useRunChain, type RunChainRow } from "@/lib/hooks/useRuns";
 
@@ -35,14 +42,23 @@ function tone(status: string): string {
   return "var(--text-3)";
 }
 
-export function EventChain({ run, tenant }: { run: RunListRow; tenant: string }) {
+export function EventChain({
+  run,
+  tenant,
+}: {
+  run: RunListRow;
+  tenant: string;
+}) {
   const { t } = useI18n();
   const { data, isLoading, isError, error } = useRunChain(run.id);
   const chain = data?.runs ?? [];
 
-  if (isLoading) return <Empty title={t("runDetail.chainLoading")} hint={run.id} />;
+  if (isLoading)
+    return <Empty title={t("runDetail.chainLoading")} hint={run.id} />;
   if (isError) {
-    return <Empty title={t("runDetail.chainLoadFailed")} hint={error.message} />;
+    return (
+      <Empty title={t("runDetail.chainLoadFailed")} hint={error.message} />
+    );
   }
   if (chain.length <= 1) {
     return (
@@ -124,14 +140,19 @@ function ChainRunRow({
           <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
             {row.agentTitle ?? row.agentName}
           </span>
-          {isAnchor && <Badge tone="muted">{t("runDetail.chainThisRun")}</Badge>}
+          {isAnchor && (
+            <Badge tone="muted">{t("runDetail.chainThisRun")}</Badge>
+          )}
         </div>
-        <div className="mono" style={{ fontSize: 10.5, color: "var(--text-3)" }}>
+        <div
+          className="mono"
+          style={{ fontSize: 10.5, color: "var(--text-3)" }}
+        >
           {row.triggerEvent ?? "—"}
           {row.subject ? ` · ${row.subject}` : ""}
         </div>
       </div>
-      <Badge tone="muted">{row.status}</Badge>
+      <Badge tone="muted">{runStatusLabel(t, row.status)}</Badge>
       <span
         className="mono"
         style={{ fontSize: 11, color: tone(row.status), textAlign: "right" }}

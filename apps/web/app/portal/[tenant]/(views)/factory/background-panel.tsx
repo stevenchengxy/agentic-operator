@@ -15,6 +15,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button, HelpTip, Markdown } from "@/app/portal/components";
+import { useI18n, type Translate } from "@/app/portal/lib/preferences-context";
 import { tenantHeader } from "@/lib/hooks/tenant-header";
 import type { BrainEvent } from "@/lib/hooks/useBrainStream";
 import { FactoryRequestGate } from "@/lib/factory-request-gate";
@@ -32,22 +33,22 @@ function isViewedTenant(tenant: string): boolean {
   return tenantHeader()["x-agentic-tenant"] === tenant;
 }
 
-async function apiGet<T>(tenant: string, path: string): Promise<FactoryApiResult<T>> {
+async function apiGet<T>(t: Translate, tenant: string, path: string): Promise<FactoryApiResult<T>> {
   try {
     const r = await fetch(path, { credentials: "same-origin", headers: { Accept: "application/json", ...tenantHeaders(tenant) } });
-    return await decodeFactoryResponse<T>(r);
+    return await decodeFactoryResponse<T>(t, r);
   } catch (error) {
-    return factoryNetworkFailure(error);
+    return factoryNetworkFailure(t, error);
   }
 }
-async function apiSend<T = unknown>(tenant: string, path: string, method: "POST" | "DELETE", body?: unknown): Promise<FactoryApiResult<T>> {
+async function apiSend<T = unknown>(t: Translate, tenant: string, path: string, method: "POST" | "DELETE", body?: unknown): Promise<FactoryApiResult<T>> {
   try {
     const headers: Record<string, string> = { Accept: "application/json", ...tenantHeaders(tenant) };
     if (body !== undefined) headers["Content-Type"] = "application/json";
     const r = await fetch(path, { method, credentials: "same-origin", headers, body: body !== undefined ? JSON.stringify(body) : undefined });
-    return await decodeFactoryResponse<T>(r);
+    return await decodeFactoryResponse<T>(t, r);
   } catch (e) {
-    return factoryNetworkFailure(e);
+    return factoryNetworkFailure(t, e);
   }
 }
 
@@ -85,7 +86,6 @@ const STATUS_COLOR: Record<SessionTaskStatus, string> = {
   error: "var(--red)",
   idle: "var(--text-3)",
 };
-const STATUS_LABEL: Record<SessionTaskStatus, string> = { running: "运行中", ok: "已完成", error: "失败", idle: "—" };
 // Claude-Desktop grouping: 运行中 → 等待 → 完成/失败. Recency (workers' order-desc) is the in-group tiebreak.
 const STATUS_RANK: Record<SessionTaskStatus, number> = { running: 0, idle: 1, ok: 2, error: 2 };
 
@@ -100,10 +100,10 @@ function Dot({ status, size = 8 }: { status: SessionTaskStatus; size?: number })
   );
 }
 
-const timeOf = (v: string | number | undefined): string => {
+const timeOf = (v: string | number | undefined, locale: string): string => {
   if (!v) return "";
   const d = new Date(v);
-  return Number.isNaN(d.getTime()) ? "" : d.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
+  return Number.isNaN(d.getTime()) ? "" : d.toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" });
 };
 const durOf = (a?: number, b?: number): string => {
   if (!a || !b || b <= a) return "";
@@ -116,9 +116,10 @@ const ICON_OF_KIND: Record<string, string> = { think: "🧠", message: "💬", t
 /** Per-task 推理过程 timeline. Exported so the right-rail AgentInspector renders the SAME
  *  per-agent stream (reasoning.step/strategy/tool/think attribution) instead of duplicating it. */
 export function TaskTranscript({ task }: { task: SessionTask }) {
+  const { t } = useI18n();
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-      {task.transcript.length === 0 && <div style={{ fontSize: 12, color: "var(--text-4)", padding: 12 }}>暂无过程记录</div>}
+      {task.transcript.length === 0 && <div style={{ fontSize: 12, color: "var(--text-4)", padding: 12 }}>{t("factory.backgroundPanel.transcript.empty")}</div>}
       {task.transcript.map((it) => (
         <div key={it.id} style={{ display: "flex", gap: 8, padding: "6px 4px", borderBottom: "1px solid var(--border)", fontSize: 12, lineHeight: 1.55 }}>
           <span style={{ width: 18, textAlign: "center", color: it.ok === false || it.kind === "error" ? "var(--red)" : "var(--text-3)" }}>{ICON_OF_KIND[it.kind] ?? "•"}</span>
@@ -153,6 +154,7 @@ type DrillPart = "reasoning" | "tools" | "problems" | "subs" | "io";
  *  slice this into 工作流/决策 · Sub-agents · 测试 sections; omit it (or pass nothing) for the full set.
  *  `flush` drops the left rail + top margin when the caller is already a section body (drawer). */
 function AgentDrillIn({ task, taskBySlug, depth = 0, parts, flush }: { task: SessionTask; taskBySlug: Map<string, SessionTask>; depth?: number; parts?: DrillPart[]; flush?: boolean }) {
+  const { t } = useI18n();
   const [openSub, setOpenSub] = useState<string | null>(null);
   const d = task.drill;
   if (!d) return null;
@@ -164,14 +166,14 @@ function AgentDrillIn({ task, taskBySlug, depth = 0, parts, flush }: { task: Ses
   return (
     <div style={wrap}>
       {show("reasoning") && d.strategy && (
-        <DrillCard icon="🧭" title="推理方法（AI 自选，非默认 ReAct）">
+        <DrillCard icon="🧭" title={t("factory.backgroundPanel.drill.reasoningMethod")}>
           <span style={{ fontFamily: "var(--mono)", fontSize: 12, color: "var(--signal)", fontWeight: 600 }}>{d.strategy}</span>
         </DrillCard>
       )}
-      {show("reasoning") && d.reasoning && <DrillCard icon="🧠" title="计划 · 设计推理"><Markdown>{d.reasoning.slice(0, 500)}</Markdown></DrillCard>}
-      {show("reasoning") && d.decisionLogic && <DrillCard icon="🔀" title="分支决策逻辑"><Markdown>{d.decisionLogic.slice(0, 400)}</Markdown></DrillCard>}
+      {show("reasoning") && d.reasoning && <DrillCard icon="🧠" title={t("factory.backgroundPanel.drill.planReasoning")}><Markdown>{d.reasoning.slice(0, 500)}</Markdown></DrillCard>}
+      {show("reasoning") && d.decisionLogic && <DrillCard icon="🔀" title={t("factory.backgroundPanel.drill.branchLogic")}><Markdown>{d.decisionLogic.slice(0, 400)}</Markdown></DrillCard>}
       {show("tools") && toolItems.length > 0 && (
-        <DrillCard icon="🔧" title="用了什么工具（harness 归组）">
+        <DrillCard icon="🔧" title={t("factory.backgroundPanel.drill.toolsUsed")}>
           {toolItems.map((it) => (
             <div key={it.id}>
               {it.label}{it.ok !== undefined ? (it.ok ? " ✓" : " ✗") : ""}{it.detail ? ` — ${it.detail}` : ""}
@@ -180,14 +182,14 @@ function AgentDrillIn({ task, taskBySlug, depth = 0, parts, flush }: { task: Ses
         </DrillCard>
       )}
       {show("problems") && (d.problems.length > 0 || d.refineCritiques.length > 0) && (
-        <DrillCard icon="⚠️" title="发现的问题 · 修订" color="var(--amber)">
+        <DrillCard icon="⚠️" title={t("factory.backgroundPanel.drill.problemsRevisions")} color="var(--amber)">
           {d.problems.map((p, i) => <div key={`p${i}`}>· {p}</div>)}
           {d.refineCritiques.slice(-3).map((c, i) => <div key={`c${i}`} style={{ color: "var(--text-4)" }}>↻ {c}</div>)}
         </DrillCard>
       )}
       {/* #CHECKLIST — harness 持有的该 agent 验收清单：大脑无权删改，翻绿只能靠真实执行证据 */}
       {show("problems") && d.checklist && d.checklist.length > 0 && (
-        <DrillCard icon="🧾" title={`验收清单（harness 持有 · 真实证据翻绿）${d.checklist.every((c) => c.pass) ? " ✓" : ""}`} color={d.checklist.every((c) => c.pass) ? "var(--green)" : "var(--amber)"}>
+        <DrillCard icon="🧾" title={`${t("factory.backgroundPanel.drill.checklistTitle")}${d.checklist.every((c) => c.pass) ? " ✓" : ""}`} color={d.checklist.every((c) => c.pass) ? "var(--green)" : "var(--amber)"}>
           {d.checklist.map((c) => (
             <div key={c.key} style={{ color: c.pass ? "var(--text-3)" : "var(--amber)" }}>
               {c.pass ? "✓" : "✗"} {c.label}{c.detail ? ` — ${c.detail}` : ""}
@@ -196,7 +198,7 @@ function AgentDrillIn({ task, taskBySlug, depth = 0, parts, flush }: { task: Ses
         </DrillCard>
       )}
       {show("subs") && d.subAgents.length > 0 && (
-        <DrillCard icon="🧩" title="生成的 sub-agent / phases" color="var(--violet)">
+        <DrillCard icon="🧩" title={t("factory.backgroundPanel.drill.subAgentsTitle")} color="var(--violet)">
           <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
             {d.subAgents.map((sub) => (
               <button key={sub.slug} onClick={() => setOpenSub(openSub === sub.slug ? null : sub.slug)}
@@ -211,15 +213,15 @@ function AgentDrillIn({ task, taskBySlug, depth = 0, parts, flush }: { task: Ses
         </DrillCard>
       )}
       {show("io") && d.io && (
-        <DrillCard icon="📦" title={`真实执行 I/O${d.fidelityFail ? " · ⚠ 契约违约" : ""}`} color={d.fidelityFail ? "var(--red)" : "var(--green)"}>
+        <DrillCard icon="📦" title={`${t("factory.backgroundPanel.drill.realIoTitle")}${d.fidelityFail ? ` · ⚠ ${t("factory.backgroundPanel.common.contractViolation")}` : ""}`} color={d.fidelityFail ? "var(--red)" : "var(--green)"}>
           <div style={{ fontFamily: "var(--mono)", fontSize: 10.5 }}>
-            ◂ {d.io.triggerEvent ?? "—"} → ▸ {d.io.outputEvent ?? "（无产出事件）"} · {d.io.status ?? ""}
+            ◂ {d.io.triggerEvent ?? "—"} → ▸ {d.io.outputEvent ?? t("factory.backgroundPanel.io.noOutputEvent")} · {d.io.status ?? ""}
           </div>
           {d.io.output && <div style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--text-4)", marginTop: 2 }}>{d.io.output.slice(0, 300)}</div>}
         </DrillCard>
       )}
       {!parts && !d.reasoning && !toolItems.length && !d.problems.length && !d.subAgents.length && !d.io && (
-        <div style={{ fontSize: 10.5, color: "var(--text-4)" }}>这个 agent 还没有可下钻的决策记录。</div>
+        <div style={{ fontSize: 10.5, color: "var(--text-4)" }}>{t("factory.backgroundPanel.drill.noDecisions")}</div>
       )}
     </div>
   );
@@ -229,22 +231,23 @@ const KIND_ICON: Record<SessionTask["kind"], string> = { harness: "🧠", agent:
 
 // ── 测试 · I/O section — the agent's real sandbox trigger→emit + input/output payload snapshots. ──
 function AgentIoPanel({ io, fidelityFail }: { io: { triggerEvent?: string; outputEvent?: string; status?: string; input?: string; output?: string }; fidelityFail?: boolean }) {
+  const { t } = useI18n();
   const label: React.CSSProperties = { fontSize: 10, color: "var(--text-3)", fontFamily: "var(--mono)", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 3 };
   const box: React.CSSProperties = { fontFamily: "var(--mono)", fontSize: 10.5, color: "var(--text-2)", background: "var(--panel-3)", borderRadius: 6, padding: "6px 8px", whiteSpace: "pre-wrap", wordBreak: "break-word", lineHeight: 1.5, maxHeight: 260, overflow: "auto" };
   const statusColor = /error|fail/i.test(io.status ?? "") ? "var(--red)" : /ok|complet/i.test(io.status ?? "") ? "var(--green)" : "var(--text-3)";
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-        <span style={{ fontSize: 11.5, fontFamily: "var(--mono)", color: statusColor }}>状态 {io.status || "—"}</span>
-        {fidelityFail && <span style={{ fontSize: 10.5, color: "var(--red)", border: "1px solid var(--red)", borderRadius: 6, padding: "1px 7px" }}>⚠ 契约违约</span>}
+        <span style={{ fontSize: 11.5, fontFamily: "var(--mono)", color: statusColor }}>{t("factory.backgroundPanel.io.statusLabel", { status: io.status || "—" })}</span>
+        {fidelityFail && <span style={{ fontSize: 10.5, color: "var(--red)", border: "1px solid var(--red)", borderRadius: 6, padding: "1px 7px" }}>⚠ {t("factory.backgroundPanel.common.contractViolation")}</span>}
       </div>
       <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
         {io.triggerEvent && chip(`◂ ${io.triggerEvent}`, "var(--blue)")}
         {io.outputEvent && chip(`▸ ${io.outputEvent}`, "var(--violet)")}
       </div>
-      {io.input && <div><div style={label}>输入 payload</div><div style={box}>{io.input}</div></div>}
-      {io.output && <div><div style={label}>输出 payload</div><div style={box}>{io.output}</div></div>}
-      {!io.input && !io.output && <div style={{ fontSize: 11, color: "var(--text-4)" }}>本次沙箱运行没有记录到载荷快照。</div>}
+      {io.input && <div><div style={label}>{t("factory.backgroundPanel.io.inputPayload")}</div><div style={box}>{io.input}</div></div>}
+      {io.output && <div><div style={label}>{t("factory.backgroundPanel.io.outputPayload")}</div><div style={box}>{io.output}</div></div>}
+      {!io.input && !io.output && <div style={{ fontSize: 11, color: "var(--text-4)" }}>{t("factory.backgroundPanel.io.noSnapshot")}</div>}
     </div>
   );
 }
@@ -254,6 +257,7 @@ function AgentIoPanel({ io, fidelityFail }: { io: { triggerEvent?: string; outpu
    A fixed sheet on wide screens; on a phone `min(472px,100vw)` collapses it to full-width. Esc or a
    backdrop click closes. Non-agent tasks (harness/tool/sandbox) show just the 推理过程 transcript. ── */
 function AgentDetailDrawer({ task, taskBySlug, onClose, onSelectAgent }: { task: SessionTask; taskBySlug: Map<string, SessionTask>; onClose: () => void; onSelectAgent?: (slug: string) => void }) {
+  const { t } = useI18n();
   const d = task.drill;
   const hasWorkflow = !!(d && (d.reasoning || d.decisionLogic || task.transcript.some((it) => it.kind === "tool") || d.problems.length || d.refineCritiques.length));
   const hasSubs = !!(d && d.subAgents.length);
@@ -261,12 +265,12 @@ function AgentDetailDrawer({ task, taskBySlug, onClose, onSelectAgent }: { task:
   const hasIo = !!(io && (io.triggerEvent || io.outputEvent || io.input || io.output || d?.fidelityFail));
   const sections = useMemo(() => {
     const out: Array<{ key: string; label: string }> = [];
-    if (hasWorkflow) out.push({ key: "flow", label: "工作流 · 决策" });
-    if (hasSubs) out.push({ key: "subs", label: `Sub-agents · ${d!.subAgents.length}` });
-    out.push({ key: "transcript", label: "推理过程" });
-    if (hasIo) out.push({ key: "test", label: "测试 · I/O" });
+    if (hasWorkflow) out.push({ key: "flow", label: t("factory.backgroundPanel.drawer.sectionFlow") });
+    if (hasSubs) out.push({ key: "subs", label: t("factory.backgroundPanel.drawer.sectionSubs", { count: d!.subAgents.length }) });
+    out.push({ key: "transcript", label: t("factory.backgroundPanel.drawer.sectionTranscript") });
+    if (hasIo) out.push({ key: "test", label: t("factory.backgroundPanel.drawer.sectionTest") });
     return out;
-  }, [hasWorkflow, hasSubs, hasIo, d]);
+  }, [hasWorkflow, hasSubs, hasIo, d, t]);
   const [sec, setSec] = useState<string>(sections[0]?.key ?? "transcript");
   // Sections grow as events stream in (io/subs appear late) — keep the active one valid.
   useEffect(() => { setSec((cur) => (sections.some((s) => s.key === cur) ? cur : sections[0]?.key ?? "transcript")); }, [sections]);
@@ -278,15 +282,15 @@ function AgentDetailDrawer({ task, taskBySlug, onClose, onSelectAgent }: { task:
   return (
     <>
       <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.4)", zIndex: "var(--z-modal)" as unknown as number }} />
-      <div className="rise" role="dialog" aria-label={`${task.title} 详情`} style={{ position: "fixed", top: 0, right: 0, bottom: 0, width: "min(472px, 100vw)", zIndex: "var(--z-modal)" as unknown as number, background: "var(--panel-2)", borderLeft: "2px solid var(--signal)", boxShadow: "-16px 0 44px rgba(0,0,0,.32)", display: "flex", flexDirection: "column" }}>
+      <div className="rise" role="dialog" aria-label={t("factory.backgroundPanel.drawer.ariaLabel", { title: task.title })} style={{ position: "fixed", top: 0, right: 0, bottom: 0, width: "min(472px, 100vw)", zIndex: "var(--z-modal)" as unknown as number, background: "var(--panel-2)", borderLeft: "2px solid var(--signal)", boxShadow: "-16px 0 44px rgba(0,0,0,.32)", display: "flex", flexDirection: "column" }}>
         <div style={{ display: "flex", alignItems: "flex-start", gap: 9, padding: "13px 14px", borderBottom: "1px solid var(--border)" }}>
           <span style={{ marginTop: 4 }}><Dot status={task.status} /></span>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontSize: 13.5, fontWeight: 700, color: "var(--text)", lineHeight: 1.4 }}>{KIND_ICON[task.kind]} {task.title}</div>
-            <div style={{ fontSize: 10.5, color: "var(--text-3)", fontFamily: "var(--mono)", marginTop: 3, lineHeight: 1.5, wordBreak: "break-word" }}>{task.typeLabel} · {STATUS_LABEL[task.status]}{task.meta ? ` · ${task.meta}` : ""}</div>
+            <div style={{ fontSize: 10.5, color: "var(--text-3)", fontFamily: "var(--mono)", marginTop: 3, lineHeight: 1.5, wordBreak: "break-word" }}>{task.typeLabel} · {task.status === "idle" ? "—" : t(`factory.backgroundPanel.status.${task.status}`)}{task.meta ? ` · ${task.meta}` : ""}</div>
           </div>
-          {task.agentSlug && onSelectAgent && <button onClick={() => onSelectAgent(task.agentSlug!)} style={primaryLinkBtn} title="在右栏打开完整检查器">检查器 →</button>}
-          <button onClick={onClose} title="关闭 (Esc)" style={{ background: "none", border: "none", color: "var(--text-3)", cursor: "pointer", fontSize: 17, lineHeight: 1 }}>✕</button>
+          {task.agentSlug && onSelectAgent && <button onClick={() => onSelectAgent(task.agentSlug!)} style={primaryLinkBtn} title={t("factory.backgroundPanel.drawer.inspectorTitle")}>{t("factory.backgroundPanel.drawer.inspectorBtn")}</button>}
+          <button onClick={onClose} title={t("factory.backgroundPanel.common.closeEsc")} style={{ background: "none", border: "none", color: "var(--text-3)", cursor: "pointer", fontSize: 17, lineHeight: 1 }}>✕</button>
         </div>
         {sections.length > 1 && (
           <div style={{ display: "flex", gap: 5, padding: "9px 12px 0", flexWrap: "wrap" }}>
@@ -334,6 +338,7 @@ function fmtMs(ms: number): string {
 function fmtTok(n: number): string { return n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(n); }
 
 function PhaseRow({ p }: { p: PhaseGroup }) {
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const dot: SessionTaskStatus = p.status === "active" ? "running" : p.status === "error" ? "error" : "ok";
   return (
@@ -342,8 +347,8 @@ function PhaseRow({ p }: { p: PhaseGroup }) {
         <Dot status={dot} size={7} />
         <span style={{ fontSize: 12.5, fontWeight: 600, flex: 1, textAlign: "left" }}>{p.label}</span>
         <span style={{ fontFamily: "var(--mono)", fontSize: 10.5, color: "var(--text-3)", display: "flex", gap: 8 }}>
-          {p.agents.length > 0 && <span>{p.agents.length} 子脑</span>}
-          <span>{p.tools} 工具</span>
+          {p.agents.length > 0 && <span>{t("factory.backgroundPanel.phase.subBrains", { count: p.agents.length })}</span>}
+          <span>{t("factory.backgroundPanel.common.toolsCount", { count: p.tools })}</span>
           {p.tokens > 0 && <span>{fmtTok(p.tokens)} tok</span>}
           <span>{fmtMs(p.durationMs)}</span>
         </span>
@@ -365,14 +370,15 @@ function PhaseRow({ p }: { p: PhaseGroup }) {
 }
 
 function PhaseTimelineView({ events }: { events: BrainEvent[] }) {
-  const tl = useMemo(() => derivePhaseTimeline(events), [events]);
+  const { t } = useI18n();
+  const tl = useMemo(() => derivePhaseTimeline(t, events), [events, t]);
   if (tl.phases.length < 2 && tl.totalTools === 0) return null; // nothing meaningful yet
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 6, border: "1px solid var(--border)", borderRadius: 10, padding: "9px 10px", background: "var(--panel)" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11 }}>
-        <span style={{ fontWeight: 700, color: "var(--text-2)" }}>工作流 · {tl.phases.length} 阶段</span>
+        <span style={{ fontWeight: 700, color: "var(--text-2)" }}>{t("factory.backgroundPanel.phase.workflowPhases", { count: tl.phases.length })}</span>
         <span style={{ fontFamily: "var(--mono)", fontSize: 10, color: "var(--text-3)", marginLeft: "auto", display: "flex", gap: 8 }}>
-          <span>{tl.totalTools} 工具</span>
+          <span>{t("factory.backgroundPanel.common.toolsCount", { count: tl.totalTools })}</span>
           {tl.totalTokens > 0 && <span>{fmtTok(tl.totalTokens)} tok</span>}
           <span>{fmtMs(tl.totalDurationMs)}</span>
         </span>
@@ -385,7 +391,8 @@ function PhaseTimelineView({ events }: { events: BrainEvent[] }) {
 /** #CHECKLIST — 舰队级验收清单（harness 持有）：finish 每次尝试的快照。全绿=交付达标；
  *  未过项直接点名（大脑无权改任何一项——翻绿只能靠注册/真跑/code_ran 回执/保真评分这类真实证据）。 */
 function AcceptanceChecklistView({ events }: { events: BrainEvent[] }) {
-  const snap = useMemo(() => deriveAcceptance(events), [events]);
+  const { t } = useI18n();
+  const snap = useMemo(() => deriveAcceptance(t, events), [events, t]);
   const [open, setOpen] = useState(true);
   if (!snap) return null;
   const passed = snap.criteria.filter((c) => c.pass).length;
@@ -393,9 +400,9 @@ function AcceptanceChecklistView({ events }: { events: BrainEvent[] }) {
     <div style={{ display: "flex", flexDirection: "column", gap: 5, border: `1px solid ${snap.allPass ? "var(--green)" : "var(--border)"}`, borderRadius: 10, padding: "9px 10px", background: "var(--panel)" }}>
       <button onClick={() => setOpen(!open)} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11, background: "none", border: "none", padding: 0, cursor: "pointer", color: "inherit", textAlign: "left" }}>
         <span style={{ fontWeight: 700, color: snap.allPass ? "var(--green)" : "var(--text-2)" }}>
-          🧾 验收清单（harness 持有）{snap.allPass ? " · 全绿 ✓" : ` · ${passed}/${snap.criteria.length}`}
+          {t("factory.backgroundPanel.acceptance.title")}{snap.allPass ? ` · ${t("factory.backgroundPanel.acceptance.allGreen")} ✓` : ` · ${passed}/${snap.criteria.length}`}
         </span>
-        <span style={{ marginLeft: "auto", fontFamily: "var(--mono)", fontSize: 10, color: "var(--text-3)" }}>{open ? "▾" : "▸"} 真实证据翻绿 · 大脑无权删改</span>
+        <span style={{ marginLeft: "auto", fontFamily: "var(--mono)", fontSize: 10, color: "var(--text-3)" }}>{open ? "▾" : "▸"} {t("factory.backgroundPanel.acceptance.evidenceNote")}</span>
       </button>
       {open && (
         <div style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 11 }}>
@@ -423,8 +430,10 @@ function AcceptanceChecklistView({ events }: { events: BrainEvent[] }) {
 }
 
 export function BackgroundPanel({ tenant, domain, events, running, convId, viewingRunId, liveRunId, awaitingHint, onReconnectRun, onSelectAgent, onClose, inline }: BackgroundPanelProps) {
+  const { language, t } = useI18n();
+  const locale = language === "zh" ? "zh-CN" : "en-US";
   const [requestGate] = useState(() => new FactoryRequestGate());
-  const sessionTasks = useMemo(() => deriveSessionTasks(events, running), [events, running]);
+  const sessionTasks = useMemo(() => deriveSessionTasks(t, events, running), [events, running, t]);
   // #UI-DRILL — slug→task 索引供子 agent 递归下钻（抽屉里的 Sub-agents 分区用）。
   const taskBySlug = useMemo(() => new Map(sessionTasks.filter((t) => t.agentSlug).map((t) => [t.agentSlug!, t])), [sessionTasks]);
   const runTools = useMemo(() => deriveGeneratedTools(events), [events]);
@@ -452,24 +461,24 @@ export function BackgroundPanel({ tenant, domain, events, running, convId, viewi
   const refreshBg = useCallback(() => {
     const scope = { tenant };
     const ticket = requestGate.begin("background", scope);
-    void apiGet<{ runs: BgRun[]; jobs: ReportJobRow[] }>(tenant, "/v1/agent-factory/background").then((result) => {
+    void apiGet<{ runs: BgRun[]; jobs: ReportJobRow[] }>(t, tenant, "/v1/agent-factory/background").then((result) => {
       if (!requestGate.isCurrent(ticket, scope)) return;
       if (!result.ok) {
-        setReadError("background", `后台任务读取失败：${result.message}`);
+        setReadError("background", t("factory.backgroundPanel.error.backgroundReadFailed", { message: result.message }));
         return;
       }
       if (!result.data || !Array.isArray(result.data.runs) || !Array.isArray(result.data.jobs)) {
-        setReadError("background", "后台任务读取失败：接口响应结构无效");
+        setReadError("background", t("factory.backgroundPanel.error.backgroundReadInvalid"));
         return;
       }
       setReadError("background");
       setBgSnapshot({ tenant, value: result.data });
     });
-  }, [requestGate, setReadError, tenant]);
+  }, [requestGate, setReadError, t, tenant]);
   useEffect(() => {
     refreshBg();
-    const t = setInterval(refreshBg, 5000);
-    return () => clearInterval(t);
+    const timer = setInterval(refreshBg, 5000);
+    return () => clearInterval(timer);
   }, [refreshBg]);
   useEffect(() => {
     if (!convId) {
@@ -481,14 +490,14 @@ export function BackgroundPanel({ tenant, domain, events, running, convId, viewi
     const scope = { tenant, domain: `${domain}\u0000${convId}` };
     const tick = () => {
       const ticket = requestGate.begin("mailbox", scope);
-      void apiGet<{ pending: number }>(tenant, `/v1/agent-factory/mailbox?conversation=${encodeURIComponent(convId)}`).then((result) => {
+      void apiGet<{ pending: number }>(t, tenant, `/v1/agent-factory/mailbox?conversation=${encodeURIComponent(convId)}`).then((result) => {
         if (!requestGate.isCurrent(ticket, scope)) return;
         if (!result.ok) {
-          setReadError("mailbox", `介入队列读取失败：${result.message}`);
+          setReadError("mailbox", t("factory.backgroundPanel.error.mailboxReadFailed", { message: result.message }));
           return;
         }
         if (!result.data || typeof result.data.pending !== "number") {
-          setReadError("mailbox", "介入队列读取失败：接口响应结构无效");
+          setReadError("mailbox", t("factory.backgroundPanel.error.mailboxReadInvalid"));
           return;
         }
         setReadError("mailbox");
@@ -496,9 +505,9 @@ export function BackgroundPanel({ tenant, domain, events, running, convId, viewi
       });
     };
     tick();
-    const t = setInterval(tick, 6000);
-    return () => clearInterval(t);
-  }, [convId, domain, requestGate, setReadError, tenant]);
+    const timer = setInterval(tick, 6000);
+    return () => clearInterval(timer);
+  }, [convId, domain, requestGate, setReadError, t, tenant]);
   useEffect(() => {
     if (inline || !onClose) return;
     const h = (e: KeyboardEvent) => e.key === "Escape" && onClose();
@@ -539,20 +548,20 @@ export function BackgroundPanel({ tenant, domain, events, running, convId, viewi
   const refreshLibTools = useCallback(() => {
     const scope = { tenant, domain };
     const ticket = requestGate.begin("generated-tools", scope);
-    void apiGet<{ tools: LibToolRow[] }>(tenant, "/v1/agent-factory/generated-tools").then((result) => {
+    void apiGet<{ tools: LibToolRow[] }>(t, tenant, "/v1/agent-factory/generated-tools").then((result) => {
       if (!requestGate.isCurrent(ticket, scope)) return;
       if (!result.ok) {
-        setReadError("tools", `工具库读取失败：${result.message}`);
+        setReadError("tools", t("factory.backgroundPanel.error.toolsReadFailed", { message: result.message }));
         return;
       }
       if (!result.data || !Array.isArray(result.data.tools)) {
-        setReadError("tools", "工具库读取失败：接口响应结构无效");
+        setReadError("tools", t("factory.backgroundPanel.error.toolsReadInvalid"));
         return;
       }
       setReadError("tools");
       setLibToolsSnapshot({ tenant, domain, tools: result.data.tools });
     });
-  }, [domain, requestGate, setReadError, tenant]);
+  }, [domain, requestGate, setReadError, t, tenant]);
   useEffect(() => {
     refreshLibTools();
   }, [refreshLibTools, runTools.length]);
@@ -564,10 +573,10 @@ export function BackgroundPanel({ tenant, domain, events, running, convId, viewi
   const acceptTool = async (name: string) => {
     setNote("");
     if (running && convId) {
-      const result = await apiSend<{ queued: boolean }>(tenant, "/v1/agent-factory/inject", "POST", { conversation: convId, text: `工具「${name}」我已确认保留在工具库，可以在后续设计中放心复用。` });
+      const result = await apiSend<{ queued: boolean }>(t, tenant, "/v1/agent-factory/inject", "POST", { conversation: convId, text: t("factory.backgroundPanel.inject.keepTool", { name }) });
       if (!isViewedTenant(tenant)) return;
       if (!result.ok || result.data.queued !== true) {
-        setNote(`保留确认未送达大脑：${result.ok ? "服务端未确认消息已入队" : result.message}`);
+        setNote(t("factory.backgroundPanel.error.keepConfirmUndelivered", { detail: result.ok ? t("factory.backgroundPanel.error.serverNotQueued") : result.message }));
         return;
       }
     }
@@ -577,18 +586,18 @@ export function BackgroundPanel({ tenant, domain, events, running, convId, viewi
     const scope = { tenant, domain };
     const ticket = requestGate.begin("tool-mutation", scope);
     setNote("");
-    const r = await apiSend<{ deleted: boolean }>(tenant, `/v1/agent-factory/generated-tools/${encodeURIComponent(name)}`, "DELETE");
+    const r = await apiSend<{ deleted: boolean }>(t, tenant, `/v1/agent-factory/generated-tools/${encodeURIComponent(name)}`, "DELETE");
     if (!isViewedTenant(tenant) || !requestGate.isCurrent(ticket, scope)) return;
     if (!r.ok || r.data.deleted !== true) {
-      setNote(`删除「${name}」失败：${r.ok ? "服务端未确认删除" : r.message}`);
+      setNote(t("factory.backgroundPanel.error.deleteToolFailed", { name, detail: r.ok ? t("factory.backgroundPanel.error.serverNotDeleted") : r.message }));
       refreshLibTools();
       return;
     }
     markKept(name);
     if (running && convId) {
-      const notifyResult = await apiSend<{ queued: boolean }>(tenant, "/v1/agent-factory/inject", "POST", { conversation: convId, text: `我已从工具库删除工具「${name}」，请不要在后续设计中使用它。` });
+      const notifyResult = await apiSend<{ queued: boolean }>(t, tenant, "/v1/agent-factory/inject", "POST", { conversation: convId, text: t("factory.backgroundPanel.inject.deleteTool", { name }) });
       if (!isViewedTenant(tenant) || !requestGate.isCurrent(ticket, scope)) return;
-      if (!notifyResult.ok || notifyResult.data.queued !== true) setNote(`工具已删除，但未能通知运行中的大脑：${notifyResult.ok ? "服务端未确认消息已入队" : notifyResult.message}`);
+      if (!notifyResult.ok || notifyResult.data.queued !== true) setNote(t("factory.backgroundPanel.error.toolDeletedNotNotified", { detail: notifyResult.ok ? t("factory.backgroundPanel.error.serverNotQueued") : notifyResult.message }));
     }
     refreshLibTools();
   };
@@ -614,11 +623,11 @@ export function BackgroundPanel({ tenant, domain, events, running, convId, viewi
     const ticket = requestGate.begin("report-mutation", scope);
     setReportBusy(true);
     setNote("");
-    const r = await apiSend<{ job: ReportJobRow }>(tenant, "/v1/agent-factory/report", "POST", { domain, format: reportFormat, focus: reportFocus.trim() || undefined });
+    const r = await apiSend<{ job: ReportJobRow }>(t, tenant, "/v1/agent-factory/report", "POST", { domain, format: reportFormat, focus: reportFocus.trim() || undefined });
     if (!isViewedTenant(tenant) || !requestGate.isCurrent(ticket, scope)) return;
     setReportBusy(false);
     if (!r.ok || !r.data.job?.id || r.data.job.status !== "running") {
-      setNote(`报告启动失败：${r.ok ? "服务端未确认后台任务已运行" : r.message}`);
+      setNote(t("factory.backgroundPanel.error.reportStartFailed", { detail: r.ok ? t("factory.backgroundPanel.error.serverNotRunning") : r.message }));
       return;
     }
     setReportFocus("");
@@ -632,7 +641,7 @@ export function BackgroundPanel({ tenant, domain, events, running, convId, viewi
       const r = await fetch(`/v1/artifacts/${a.id}`, { credentials: "same-origin", headers: { ...tenantHeaders(tenant) } });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const blob = await r.blob();
-      if (blob.size === 0) throw new Error("服务端返回了空文件");
+      if (blob.size === 0) throw new Error(t("factory.backgroundPanel.error.emptyFile"));
       const url = URL.createObjectURL(blob);
       const ext = a.kind.includes("pdf") ? "pdf" : a.kind.includes("html") ? "html" : "bin";
       const el = document.createElement("a");
@@ -643,7 +652,7 @@ export function BackgroundPanel({ tenant, domain, events, running, convId, viewi
       el.remove();
       setTimeout(() => URL.revokeObjectURL(url), 10_000);
     } catch (e) {
-      if (isViewedTenant(tenant)) setNote(`下载失败：${(e as Error).message}`);
+      if (isViewedTenant(tenant)) setNote(t("factory.backgroundPanel.error.downloadFailed", { message: (e as Error).message }));
     }
   };
 
@@ -653,22 +662,23 @@ export function BackgroundPanel({ tenant, domain, events, running, convId, viewi
     setNote("");
     const results = await Promise.all(finished.map(async (job) => ({
       job,
-      result: await apiSend<{ deleted: boolean }>(tenant, `/v1/agent-factory/report/${encodeURIComponent(job.id)}`, "DELETE"),
+      result: await apiSend<{ deleted: boolean }>(t, tenant, `/v1/agent-factory/report/${encodeURIComponent(job.id)}`, "DELETE"),
     })));
     if (!isViewedTenant(tenant)) return;
     const failures = results.filter(({ result }) => !result.ok || result.data.deleted !== true);
     if (failures.length) {
-      setNote(`有 ${failures.length} 个报告未能清除：${failures.map(({ job, result }) => `${job.title ?? job.id}（${result.ok ? "服务端未确认删除" : result.message}）`).join("；")}`);
+      const details = failures.map(({ job, result }) => `${job.title ?? job.id} (${result.ok ? t("factory.backgroundPanel.error.serverNotDeleted") : result.message})`).join("; ");
+      setNote(t("factory.backgroundPanel.error.clearReportsPartial", { count: failures.length, details }));
     }
     refreshBg();
   };
 
   const clearReportJob = async (job: ReportJobRow) => {
     setNote("");
-    const result = await apiSend<{ deleted: boolean }>(tenant, `/v1/agent-factory/report/${encodeURIComponent(job.id)}`, "DELETE");
+    const result = await apiSend<{ deleted: boolean }>(t, tenant, `/v1/agent-factory/report/${encodeURIComponent(job.id)}`, "DELETE");
     if (!isViewedTenant(tenant)) return;
     if (!result.ok || result.data.deleted !== true) {
-      setNote(`清除报告「${job.title ?? job.id}」失败：${result.ok ? "服务端未确认删除" : result.message}`);
+      setNote(t("factory.backgroundPanel.error.clearReportFailed", { title: job.title ?? job.id, detail: result.ok ? t("factory.backgroundPanel.error.serverNotDeleted") : result.message }));
       return;
     }
     refreshBg();
@@ -688,7 +698,7 @@ export function BackgroundPanel({ tenant, domain, events, running, convId, viewi
   return (
     <div
       role="complementary"
-      aria-label="后台任务"
+      aria-label={t("factory.backgroundPanel.common.backgroundTasks")}
       className={inline ? undefined : "rise"}
       style={inline
         ? { display: "flex", flexDirection: "column" }
@@ -707,23 +717,23 @@ export function BackgroundPanel({ tenant, domain, events, running, convId, viewi
       {/* header（浮出模式才有标题/✕；inline 时 报告 按钮并入筛选行） */}
       {!inline && (
         <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "13px 14px", borderBottom: "1px solid var(--border)" }}>
-          <b style={{ fontSize: 13.5, color: "var(--text)", flex: 1 }}>后台任务</b>
-          <Button icon="spark" onClick={() => setShowReportForm((v) => !v)}>报告</Button>
-          {onClose && <button onClick={onClose} title="关闭 (Esc)" style={{ background: "none", border: "none", color: "var(--text-3)", cursor: "pointer", fontSize: 17, lineHeight: 1 }}>✕</button>}
+          <b style={{ fontSize: 13.5, color: "var(--text)", flex: 1 }}>{t("factory.backgroundPanel.common.backgroundTasks")}</b>
+          <Button icon="spark" onClick={() => setShowReportForm((v) => !v)}>{t("factory.backgroundPanel.action.report")}</Button>
+          {onClose && <button onClick={onClose} title={t("factory.backgroundPanel.common.closeEsc")} style={{ background: "none", border: "none", color: "var(--text-3)", cursor: "pointer", fontSize: 17, lineHeight: 1 }}>✕</button>}
         </div>
       )}
 
       {/* filter strip */}
       <div style={{ display: "flex", alignItems: "center", gap: 6, padding: inline ? "0 0 9px" : "9px 14px", borderBottom: "1px solid var(--border)" }}>
-        {inline && <Button icon="spark" onClick={() => setShowReportForm((v) => !v)}>报告</Button>}
+        {inline && <Button icon="spark" onClick={() => setShowReportForm((v) => !v)}>{t("factory.backgroundPanel.action.report")}</Button>}
         <select value={filter} onChange={(e) => setFilter(e.target.value as FilterKey)} style={{ fontSize: 11.5, padding: "3px 6px", background: "var(--panel-2)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 7 }}>
-          <option value="all">全部 · {sessionTasks.length + bg.jobs.length + otherLiveRuns.length}</option>
-          <option value="running">运行中 · {runningCount}</option>
-          <option value="done">已完成</option>
-          <option value="failed">失败</option>
+          <option value="all">{t("factory.backgroundPanel.filter.all", { count: sessionTasks.length + bg.jobs.length + otherLiveRuns.length })}</option>
+          <option value="running">{t("factory.backgroundPanel.filter.running", { count: runningCount })}</option>
+          <option value="done">{t("factory.backgroundPanel.filter.done")}</option>
+          <option value="failed">{t("factory.backgroundPanel.filter.failed")}</option>
         </select>
         <span style={{ flex: 1 }} />
-        <button onClick={() => void clearFinishedJobs()} disabled={!bg.jobs.some((j) => j.status !== "running")} style={{ ...linkBtn, opacity: bg.jobs.some((j) => j.status !== "running") ? 1 : 0.4 }}>Clear</button>
+        <button onClick={() => void clearFinishedJobs()} disabled={!bg.jobs.some((j) => j.status !== "running")} style={{ ...linkBtn, opacity: bg.jobs.some((j) => j.status !== "running") ? 1 : 0.4 }}>{t("factory.backgroundPanel.action.clear")}</button>
       </div>
 
       <div style={inline ? { padding: "12px 0 0", display: "flex", flexDirection: "column", gap: 8 } : { flex: 1, overflow: "auto", padding: 12, display: "flex", flexDirection: "column", gap: 8 }}>
@@ -736,22 +746,22 @@ export function BackgroundPanel({ tenant, domain, events, running, convId, viewi
         {awaitingHint && (
           <div style={{ border: "1px solid var(--amber)", borderRadius: 10, padding: "8px 11px", background: "var(--panel-2)", fontSize: 11.5, color: "var(--amber)", display: "flex", alignItems: "center", gap: 7 }}>
             <span className="health-pulse" style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--amber)", display: "inline-block" }} />
-            等你决定：{awaitingHint}（去聊天区回答）
+            {t("factory.backgroundPanel.signal.awaiting", { hint: awaitingHint })}
           </div>
         )}
-        {pending > 0 && <div style={{ fontSize: 11, color: "var(--text-3)", padding: "0 2px" }}>💬 介入排队 {pending} 条</div>}
+        {pending > 0 && <div style={{ fontSize: 11, color: "var(--text-3)", padding: "0 2px" }}>{t("factory.backgroundPanel.signal.interventionQueue", { count: pending })}</div>}
 
         {/* 报告 quick form */}
         {showReportForm && (
           <div style={{ border: "1px solid var(--border)", borderRadius: 10, padding: "9px 11px", background: "var(--panel-2)", display: "flex", flexDirection: "column", gap: 7 }}>
-            <div style={{ fontSize: 11.5, color: "var(--text-2)" }}>为已连接本体「{domain || "—"}」生成 Ontology 分析报告（含确定性 SVG 图表）：</div>
+            <div style={{ fontSize: 11.5, color: "var(--text-2)" }}>{t("factory.backgroundPanel.report.formPrompt", { domain: domain || "—" })}</div>
             <div style={{ display: "flex", gap: 6 }}>
-              {([["html", "HTML"], ["pdf", "PDF"], ["both", "双格式"]] as Array<["html" | "pdf" | "both", string]>).map(([k, l]) => (
+              {([["html", "HTML"], ["pdf", "PDF"], ["both", t("factory.backgroundPanel.report.formatBoth")]] as Array<["html" | "pdf" | "both", string]>).map(([k, l]) => (
                 <button key={k} onClick={() => setReportFormat(k)} style={{ fontSize: 11, padding: "3px 12px", borderRadius: 20, cursor: "pointer", border: `1px solid ${reportFormat === k ? "var(--signal)" : "var(--border)"}`, background: reportFormat === k ? "var(--panel-3)" : "transparent", color: reportFormat === k ? "var(--text)" : "var(--text-3)" }}>{l}</button>
               ))}
             </div>
-            <input value={reportFocus} onChange={(e) => setReportFocus(e.target.value)} placeholder="分析重点（可留空），如：事件链断点与规则覆盖" style={{ fontSize: 11.5, padding: "6px 9px", background: "var(--panel-3)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 7 }} />
-            <Button icon="spark" tone="primary" onClick={() => void startReport()} disabled={!domain || reportBusy}>{reportBusy ? "启动中…" : "生成，进入后台"}</Button>
+            <input value={reportFocus} onChange={(e) => setReportFocus(e.target.value)} placeholder={t("factory.backgroundPanel.report.focusPlaceholder")} style={{ fontSize: 11.5, padding: "6px 9px", background: "var(--panel-3)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 7 }} />
+            <Button icon="spark" tone="primary" onClick={() => void startReport()} disabled={!domain || reportBusy}>{reportBusy ? t("factory.backgroundPanel.report.starting") : t("factory.backgroundPanel.report.generate")}</Button>
           </div>
         )}
 
@@ -764,58 +774,58 @@ export function BackgroundPanel({ tenant, domain, events, running, convId, viewi
         {/* ── 本会话任务（Harness / Agents / Sub-agents / Tools / Sandbox）—— 点卡片进入详情抽屉 ── */}
         {visibleTasks.length > 0 && (
           <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "0 2px 1px", fontSize: 11 }}>
-            <span style={{ fontWeight: 600, color: "var(--text-2)" }}>{visibleTasks.length} 项后台任务</span>
+            <span style={{ fontWeight: 600, color: "var(--text-2)" }}>{t("factory.backgroundPanel.session.taskCount", { count: visibleTasks.length })}</span>
             {visibleRunningCount > 0 && (
               <span style={{ color: "var(--signal)", display: "inline-flex", alignItems: "center", gap: 5 }}>
-                <Dot status="running" size={7} />{visibleRunningCount} 运行中
+                <Dot status="running" size={7} />{t("factory.backgroundPanel.session.runningCount", { count: visibleRunningCount })}
               </span>
             )}
           </div>
         )}
-        {visibleTasks.map((t) => {
-          const askThis = t.kind === "tool" && pendingToolNames.has(t.title.replace(/^造工具 /, ""));
-          const toolName = t.title.replace(/^造工具 /, "");
+        {visibleTasks.map((task) => {
+          const toolName = task.toolName ?? "";
+          const askThis = task.kind === "tool" && !!toolName && pendingToolNames.has(toolName);
           return (
             <div
-              key={t.id}
+              key={task.id}
               className="factory-cta"
               role="button"
               tabIndex={0}
-              title="查看详情"
-              onClick={() => setOpenTaskId(t.id)}
-              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setOpenTaskId(t.id); } }}
+              title={t("factory.backgroundPanel.drawer.ariaLabel", { title: task.title })}
+              onClick={() => setOpenTaskId(task.id)}
+              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setOpenTaskId(task.id); } }}
               style={{ border: `1px solid ${askThis ? "var(--amber)" : "var(--border)"}`, borderRadius: 10, padding: "9px 11px", background: "var(--panel-2)", display: "flex", flexDirection: "column", gap: 6, cursor: "pointer" }}
             >
               <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
-                <span style={{ marginTop: 5 }}><Dot status={t.status} /></span>
+                <span style={{ marginTop: 5 }}><Dot status={task.status} /></span>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 12.5, color: "var(--text)", fontWeight: 600, lineHeight: 1.45, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>
-                    {KIND_ICON[t.kind]} {t.title}
+                    {KIND_ICON[task.kind]} {task.title}
                   </div>
-                  <div style={{ fontSize: 10.5, color: t.kind === "agent" && t.typeLabel.includes("CodeAct") ? "var(--violet)" : "var(--text-3)", fontFamily: "var(--mono)", marginTop: 2 }}>
-                    {t.typeLabel} · {STATUS_LABEL[t.status]}
+                  <div style={{ fontSize: 10.5, color: task.kind === "agent" && task.typeLabel.includes("CodeAct") ? "var(--violet)" : "var(--text-3)", fontFamily: "var(--mono)", marginTop: 2 }}>
+                    {task.typeLabel} · {task.status === "idle" ? "—" : t(`factory.backgroundPanel.status.${task.status}`)}
                   </div>
-                  {t.meta && <div style={{ fontSize: 10.5, color: "var(--text-3)", fontFamily: "var(--mono)", marginTop: 1 }}>{t.meta}</div>}
+                  {task.meta && <div style={{ fontSize: 10.5, color: "var(--text-3)", fontFamily: "var(--mono)", marginTop: 1 }}>{task.meta}</div>}
                 </div>
                 <span aria-hidden style={{ color: "var(--text-4)", fontSize: 16, lineHeight: 1, alignSelf: "center", flexShrink: 0 }}>›</span>
               </div>
-              {askThis && <div style={{ fontSize: 11, color: "var(--amber)", paddingLeft: 16 }}>大脑已把这个工具真实写入工具库 —— 保留供以后复用，还是立即删除？</div>}
+              {askThis && <div style={{ fontSize: 11, color: "var(--amber)", paddingLeft: 16 }}>{t("factory.backgroundPanel.tool.keepOrDelete")}</div>}
               {askThis && (
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap", paddingLeft: 16 }}>
-                  <button onClick={(e) => { e.stopPropagation(); void acceptTool(toolName); }} style={{ ...linkBtn, border: "1px solid var(--green)", color: "var(--green)" }}>✓ 确认保留</button>
-                  <button onClick={(e) => { e.stopPropagation(); void declineTool(toolName); }} style={linkBtn}>✗ 删除</button>
+                  <button onClick={(e) => { e.stopPropagation(); void acceptTool(toolName); }} style={{ ...linkBtn, border: "1px solid var(--green)", color: "var(--green)" }}>{t("factory.backgroundPanel.tool.keep")}</button>
+                  <button onClick={(e) => { e.stopPropagation(); void declineTool(toolName); }} style={linkBtn}>{t("factory.backgroundPanel.tool.delete")}</button>
                 </div>
               )}
             </div>
           );
         })}
         {sessionTasks.length === 0 && (
-          <div style={{ fontSize: 11.5, color: "var(--text-4)", padding: 8, display: "flex", alignItems: "center", gap: 6 }}>本会话暂无后台分解 <HelpTip>开始一次生成后，这里会分解展示本会话的 Harness、各智能体构建、子智能体、造工具与沙箱部署。</HelpTip></div>
+          <div style={{ fontSize: 11.5, color: "var(--text-4)", padding: 8, display: "flex", alignItems: "center", gap: 6 }}>{t("factory.backgroundPanel.session.emptyState")} <HelpTip>{t("factory.backgroundPanel.session.emptyHelp")}</HelpTip></div>
         )}
 
         {/* ── 跨会话后台：报告任务 + 其它运行中的会话 ── */}
         {(visibleJobs.length > 0 || otherLiveRuns.length > 0) && (
-          <div style={{ fontSize: 10, color: "var(--text-4)", textTransform: "uppercase", letterSpacing: "0.06em", padding: "6px 2px 0" }}>跨会话后台</div>
+          <div style={{ fontSize: 10, color: "var(--text-4)", textTransform: "uppercase", letterSpacing: "0.06em", padding: "6px 2px 0" }}>{t("factory.backgroundPanel.crossSession.header")}</div>
         )}
         {visibleJobs.map((j) => {
           const st: SessionTaskStatus = j.status === "running" ? "running" : j.status === "done" ? "ok" : "error";
@@ -824,13 +834,13 @@ export function BackgroundPanel({ tenant, domain, events, running, convId, viewi
               <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
                 <span style={{ marginTop: 5 }}><Dot status={st} /></span>
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 12.5, color: "var(--text)", fontWeight: 600, lineHeight: 1.45, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>📊 {j.title ?? `${j.domainName ?? j.domain} · Ontology 分析报告`}</div>
+                  <div style={{ fontSize: 12.5, color: "var(--text)", fontWeight: 600, lineHeight: 1.45, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>📊 {j.title ?? t("factory.backgroundPanel.report.jobFallbackTitle", { name: j.domainName ?? j.domain })}</div>
                   <div style={{ fontSize: 10.5, color: "var(--text-3)", fontFamily: "var(--mono)", marginTop: 2 }}>
-                    Report · {STATUS_LABEL[st]} · {j.format.toUpperCase()} · {timeOf(j.createdAt)}{durOf(j.createdAt, j.finishedAt) ? ` · ${durOf(j.createdAt, j.finishedAt)}` : ""}
+                    {t("factory.backgroundPanel.report.typeLabel")} · {t(`factory.backgroundPanel.status.${st}`)} · {j.format.toUpperCase()} · {timeOf(j.createdAt, locale)}{durOf(j.createdAt, j.finishedAt) ? ` · ${durOf(j.createdAt, j.finishedAt)}` : ""}
                   </div>
                 </div>
               </div>
-              {st === "running" && <div style={{ fontSize: 11, color: "var(--signal)", paddingLeft: 16 }}>⏳ {j.phase ?? "执行中"}…</div>}
+              {st === "running" && <div style={{ fontSize: 11, color: "var(--signal)", paddingLeft: 16 }}>⏳ {j.phase ?? t("factory.backgroundPanel.report.runningPhase")}…</div>}
               {j.status === "error" && <div style={{ fontSize: 11, color: "var(--red)", paddingLeft: 16 }}>{j.error}</div>}
               {j.note && <div style={{ fontSize: 11, color: "var(--amber)", paddingLeft: 16 }}>{j.note}</div>}
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap", paddingLeft: 16 }}>
@@ -839,7 +849,7 @@ export function BackgroundPanel({ tenant, domain, events, running, convId, viewi
                     ⬇ {a.label} · {Math.max(1, Math.round(a.size / 1024))}KB
                   </button>
                 ))}
-                {st !== "running" && <button onClick={() => void clearReportJob(j)} style={linkBtn}>清除</button>}
+                {st !== "running" && <button onClick={() => void clearReportJob(j)} style={linkBtn}>{t("factory.backgroundPanel.action.clear")}</button>}
               </div>
             </div>
           );
@@ -848,10 +858,10 @@ export function BackgroundPanel({ tenant, domain, events, running, convId, viewi
           <div key={r.id} style={{ border: "1px solid var(--border)", borderRadius: 10, padding: "9px 11px", background: "var(--panel-2)", display: "flex", alignItems: "center", gap: 8 }}>
             <Dot status="running" />
             <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: 12, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>⚙ {r.goal || "（无目标描述）"}</div>
-              <div style={{ fontSize: 10, color: "var(--text-3)", fontFamily: "var(--mono)" }}>其它会话 · {r.domain} · {r.agentsCount} agent · {Math.round((r.tokensUsed ?? 0) / 1000)}k tok · {timeOf(r.createdAt)}</div>
+              <div style={{ fontSize: 12, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>⚙ {r.goal || t("factory.backgroundPanel.run.noGoal")}</div>
+              <div style={{ fontSize: 10, color: "var(--text-3)", fontFamily: "var(--mono)" }}>{t("factory.backgroundPanel.run.otherSession")} · {r.domain} · {r.agentsCount} agent · {Math.round((r.tokensUsed ?? 0) / 1000)}k tok · {timeOf(r.createdAt, locale)}</div>
             </div>
-            <button onClick={() => onReconnectRun(r.id)} style={primaryLinkBtn}>连接查看 →</button>
+            <button onClick={() => onReconnectRun(r.id)} style={primaryLinkBtn}>{t("factory.backgroundPanel.run.connectView")}</button>
           </div>
         ))}
       </div>

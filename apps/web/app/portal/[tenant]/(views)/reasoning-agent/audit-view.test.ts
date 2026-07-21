@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import type { Translate } from "@/app/portal/lib/preferences-context";
+import { translate } from "@/lib/i18n";
 import {
   hasVerifiedSemanticLinkReceipt,
   humanizeMatchReason,
@@ -8,23 +10,31 @@ import {
   publicAuditPayload,
 } from "./audit-view";
 
+const enT: Translate = (key, vars) => translate("en", key, vars);
+const zhT: Translate = (key, vars) => translate("zh", key, vars);
+
 describe("reasoning audit view model", () => {
   it("projects legacy source facts without claiming they came from hidden reasoning", () => {
-    const projected = projectVisibleEvidenceAnalysis(null, null, {
-      evidence: {
-        candidate: { name: "林澈", nationality: "中国" },
-        jobRequisition: {
-          client_name: "腾讯",
-          client_department_name: "IEG",
-          client_studio: "光子工作室",
-        },
-        resume: {
-          employment_history: [
-            { company: "荣耀终端有限公司", end_date: "2026-06-20" },
-          ],
+    const projected = projectVisibleEvidenceAnalysis(
+      null,
+      null,
+      {
+        evidence: {
+          candidate: { name: "林澈", nationality: "中国" },
+          jobRequisition: {
+            client_name: "腾讯",
+            client_department_name: "IEG",
+            client_studio: "光子工作室",
+          },
+          resume: {
+            employment_history: [
+              { company: "荣耀终端有限公司", end_date: "2026-06-20" },
+            ],
+          },
         },
       },
-    });
+      zhT,
+    );
 
     expect(projected.source).toBe("legacy_input_projection");
     expect(projected.facts).toEqual(
@@ -53,9 +63,14 @@ describe("reasoning audit view model", () => {
         6,
       ),
     ).toEqual({ scanned: 262, matched: 6, selected: 6 });
-    expect(humanizeMatchReason("action-linked")).toBe("Action 语义关联");
-    expect(humanizeMatchReason("SCOPED_TO:client:tencent")).toBe("作用域 Link");
-    expect(humanizeMatchReason("client-exact")).toBe("目标客户匹配");
+    expect(humanizeMatchReason("action-linked", zhT)).toBe("Action 语义关联");
+    expect(humanizeMatchReason("SCOPED_TO:client:tencent", zhT)).toBe(
+      "作用域 Link",
+    );
+    expect(humanizeMatchReason("client-exact", zhT)).toBe("目标客户匹配");
+    expect(humanizeMatchReason("client-exact", enT)).toBe(
+      "Target client match",
+    );
   });
 
   it("only verifies semantic links from an explicit non-fallback execution receipt", () => {
@@ -126,16 +141,19 @@ describe("reasoning audit view model", () => {
 
   it("redacts provider-private reasoning and credentials from public logs", () => {
     expect(
-      publicAuditPayload({
-        text: "public result",
-        reasoning_content: "private chain",
-        headers: { authorization: "Bearer secret" },
-        children: [
-          {
-            steps: [{ output: { thinking: "private child chain" } }],
-          },
-        ],
-      }),
+      publicAuditPayload(
+        {
+          text: "public result",
+          reasoning_content: "private chain",
+          headers: { authorization: "Bearer secret" },
+          children: [
+            {
+              steps: [{ output: { thinking: "private child chain" } }],
+            },
+          ],
+        },
+        enT,
+      ),
     ).toEqual({
       text: "public result",
       reasoning_content: "[redacted from public audit]",

@@ -246,7 +246,7 @@ export function VersionsTab({ agent }: { agent: ViewAgent }) {
   // it was a synthetic field from the bootstrap mock that never matched
   // real deploys.
   void agent;
-  const { t } = useI18n();
+  const { language, t } = useI18n();
   const deploymentsQuery = useDeployments();
   const rollback = useRollbackDeployment();
   const versions = deploymentsQuery.data?.list ?? [];
@@ -303,7 +303,7 @@ export function VersionsTab({ agent }: { agent: ViewAgent }) {
                     <span style={{ color: "var(--text-2)" }}>{v.deployedBy ?? "—"}</span>
                   </Td>
                   <Td>
-                    <span style={{ color: "var(--text-3)" }}>{at > 0 ? fmtAgo(at) : "—"}</span>
+                    <span style={{ color: "var(--text-3)" }}>{at > 0 ? fmtAgo(at, language) : "—"}</span>
                   </Td>
                   <Td>
                     <span style={{ color: "var(--text-2)" }}>{v.note ?? ""}</span>
@@ -346,7 +346,7 @@ export function RunsTab({
   runs: RunRow[];
   onOpenRun: (id: string) => void;
 }) {
-  const { t } = useI18n();
+  const { language, t } = useI18n();
   if (runs.length === 0) return <Empty title={t("agentTabs.noRecentRuns")} />;
   const testCount = runs.filter((r) => r.testRun).length;
   return (
@@ -393,7 +393,7 @@ export function RunsTab({
               </Td>
               <Td>
                 <span style={{ color: "var(--text-3)" }}>
-                  {r.startedAt ? fmtAgo(Date.parse(r.startedAt)) : "—"}
+                  {r.startedAt ? fmtAgo(Date.parse(r.startedAt), language) : "—"}
                 </span>
               </Td>
             </tr>

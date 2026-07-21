@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/app/portal/components";
+import { useI18n, type Translate } from "@/app/portal/lib/preferences-context";
 import { tenantHeader } from "@/lib/hooks/tenant-header";
 import {
   containsDomainKnowledgeSecret,
@@ -19,11 +20,11 @@ interface DomainKnowledgePanelProps {
   domain: string;
 }
 
-const KIND_LABEL: Record<HumanDomainMemory["kind"], string> = {
-  clarify: "澄清回答",
-  boundary: "边界决定",
-  test_approval: "测试决定",
-  directive: "人工指令",
+const KIND_KEY: Record<HumanDomainMemory["kind"], string> = {
+  clarify: "clarify",
+  boundary: "boundary",
+  test_approval: "testApproval",
+  directive: "directive",
 };
 
 function tenantHeaders(tenant: string): Record<string, string> {
@@ -31,6 +32,7 @@ function tenantHeaders(tenant: string): Record<string, string> {
 }
 
 async function factoryRequest<T>(
+  t: Translate,
   tenant: string,
   path: string,
   init: RequestInit = {},
@@ -46,14 +48,14 @@ async function factoryRequest<T>(
       ...init,
       headers,
     });
-    return await decodeFactoryResponse<T>(response);
+    return await decodeFactoryResponse<T>(t, response);
   } catch (error) {
-    return factoryNetworkFailure(error);
+    return factoryNetworkFailure(t, error);
   }
 }
 
-const formatUpdatedAt = (value: string): string =>
-  new Date(value).toLocaleString("zh-CN", {
+const formatUpdatedAt = (value: string, language: "en" | "zh"): string =>
+  new Date(value).toLocaleString(language === "zh" ? "zh-CN" : "en-US", {
     month: "numeric",
     day: "numeric",
     hour: "2-digit",
@@ -66,6 +68,7 @@ export function DomainKnowledgePanel({
   tenant,
   domain,
 }: DomainKnowledgePanelProps) {
+  const { language, t } = useI18n();
   const [memories, setMemories] = useState<HumanDomainMemory[]>([]);
   const [loading, setLoading] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -81,17 +84,18 @@ export function DomainKnowledgePanel({
     }
     setLoading(true);
     const result = await factoryRequest<unknown>(
+      t,
       tenant,
       `/v1/agent-factory/memories?domain=${encodeURIComponent(domain)}&limit=200`,
     );
     setLoading(false);
     if (!result.ok) {
-      setError(`领域知识读取失败：${result.message}`);
+      setError(t("factory.domainKnowledge.error.loadFailed", { message: result.message }));
       return;
     }
     setError("");
     setMemories(parseHumanDomainMemories(result.data, domain));
-  }, [domain, tenant]);
+  }, [domain, t, tenant]);
 
   useEffect(() => {
     setEditingId(null);
@@ -110,6 +114,7 @@ export function DomainKnowledgePanel({
     setBusyId(memory.id);
     setError("");
     const result = await factoryRequest<{ updated: boolean }>(
+      t,
       tenant,
       `/v1/agent-factory/memories/${encodeURIComponent(memory.id)}/pin`,
       {
@@ -121,7 +126,11 @@ export function DomainKnowledgePanel({
     setBusyId(null);
     if (!result.ok || result.data.updated !== true) {
       setError(
-        `更新置顶状态失败：${result.ok ? "服务端未确认更新" : result.message}`,
+        t("factory.domainKnowledge.error.pinFailed", {
+          detail: result.ok
+            ? t("factory.domainKnowledge.error.serverNotConfirmedUpdate")
+            : result.message,
+        }),
       );
       return;
     }
@@ -132,21 +141,20 @@ export function DomainKnowledgePanel({
     const answer = answerDraft.trim();
     const context = contextDraft.trim();
     if (!answer) {
-      setError("人工结论不能为空。");
+      setError(t("factory.domainKnowledge.error.answerEmpty"));
       return;
     }
     if (
       containsDomainKnowledgeSecret(answer) ||
       containsDomainKnowledgeSecret(context)
     ) {
-      setError(
-        "这里不能保存密钥、Token、密码或数据库连接串。请把凭证放进密钥管理，再只写业务结论。",
-      );
+      setError(t("factory.domainKnowledge.error.secretBlocked"));
       return;
     }
     setBusyId(memory.id);
     setError("");
     const result = await factoryRequest<{ memory: unknown }>(
+      t,
       tenant,
       `/v1/agent-factory/memories/${encodeURIComponent(memory.id)}`,
       {
@@ -161,7 +169,7 @@ export function DomainKnowledgePanel({
     );
     setBusyId(null);
     if (!result.ok) {
-      setError(`保存人工结论失败：${result.message}`);
+      setError(t("factory.domainKnowledge.error.saveFailed", { message: result.message }));
       return;
     }
     setEditingId(null);
@@ -170,15 +178,14 @@ export function DomainKnowledgePanel({
 
   const deleteMemory = async (memory: HumanDomainMemory) => {
     if (
-      !window.confirm(
-        `确认删除这条人工领域知识？\n\n${memory.question}\n\n删除后，新会话不会再自动读取它。`,
-      )
+      !window.confirm(t("factory.domainKnowledge.confirmDelete", { question: memory.question }))
     ) {
       return;
     }
     setBusyId(memory.id);
     setError("");
     const result = await factoryRequest<{ deleted: boolean }>(
+      t,
       tenant,
       `/v1/agent-factory/memories/${encodeURIComponent(memory.id)}?domain=${encodeURIComponent(domain)}`,
       { method: "DELETE" },
@@ -186,7 +193,11 @@ export function DomainKnowledgePanel({
     setBusyId(null);
     if (!result.ok || result.data.deleted !== true) {
       setError(
-        `删除人工结论失败：${result.ok ? "服务端未确认删除" : result.message}`,
+        t("factory.domainKnowledge.error.deleteFailed", {
+          detail: result.ok
+            ? t("factory.domainKnowledge.error.serverNotConfirmedDelete")
+            : result.message,
+        }),
       );
       return;
     }
@@ -207,7 +218,7 @@ export function DomainKnowledgePanel({
           lineHeight: 1.5,
         }}
       >
-        只显示人确认过的业务知识。密钥、Token、密码和连接串不会显示，也不能在这里保存。
+        {t("factory.domainKnowledge.privacyNotice")}
       </div>
 
       {error && (
@@ -219,11 +230,11 @@ export function DomainKnowledgePanel({
         </div>
       )}
       {loading && memories.length === 0 && (
-        <div style={{ color: "var(--text-4)", fontSize: 11 }}>正在读取…</div>
+        <div style={{ color: "var(--text-4)", fontSize: 11 }}>{t("factory.domainKnowledge.loading")}</div>
       )}
       {!loading && memories.length === 0 && !error && (
         <div style={{ color: "var(--text-4)", fontSize: 11, lineHeight: 1.5 }}>
-          还没有人工确认的领域知识。工厂在 ask_user 后会把可复用的业务答案记录在这里。
+          {t("factory.domainKnowledge.empty")}
         </div>
       )}
 
@@ -252,11 +263,11 @@ export function DomainKnowledgePanel({
                 color: "var(--text-3)",
               }}
             >
-              {memory.pinned && <span style={{ color: "var(--signal)" }}>置顶</span>}
-              <span>{KIND_LABEL[memory.kind]}</span>
-              <span>· 来源：人工</span>
+              {memory.pinned && <span style={{ color: "var(--signal)" }}>{t("factory.domainKnowledge.pinnedBadge")}</span>}
+              <span>{t(`factory.domainKnowledge.kind.${KIND_KEY[memory.kind]}`)}</span>
+              <span>{t("factory.domainKnowledge.sourceManual")}</span>
               <span style={{ marginLeft: "auto" }}>
-                更新 {formatUpdatedAt(memory.updatedAt)}
+                {t("factory.domainKnowledge.updatedAt", { time: formatUpdatedAt(memory.updatedAt, language) })}
               </span>
             </div>
             <div
@@ -274,7 +285,7 @@ export function DomainKnowledgePanel({
             {editing ? (
               <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 7 }}>
                 <label style={{ color: "var(--text-3)", fontSize: 10.5 }}>
-                  人工结论
+                  {t("factory.domainKnowledge.answerLabel")}
                   <textarea
                     value={answerDraft}
                     onChange={(event) => setAnswerDraft(event.target.value)}
@@ -295,7 +306,7 @@ export function DomainKnowledgePanel({
                   />
                 </label>
                 <label style={{ color: "var(--text-3)", fontSize: 10.5 }}>
-                  补充上下文（可空）
+                  {t("factory.domainKnowledge.contextInputLabel")}
                   <textarea
                     value={contextDraft}
                     onChange={(event) => setContextDraft(event.target.value)}
@@ -317,7 +328,7 @@ export function DomainKnowledgePanel({
                 </label>
                 <div style={{ display: "flex", gap: 6 }}>
                   <Button small disabled={busy} onClick={() => void saveEdit(memory)}>
-                    {busy ? "保存中…" : "保存"}
+                    {busy ? t("factory.domainKnowledge.saving") : t("factory.domainKnowledge.save")}
                   </Button>
                   <Button
                     small
@@ -325,7 +336,7 @@ export function DomainKnowledgePanel({
                     disabled={busy}
                     onClick={() => setEditingId(null)}
                   >
-                    取消
+                    {t("factory.domainKnowledge.cancel")}
                   </Button>
                 </div>
               </div>
@@ -356,7 +367,7 @@ export function DomainKnowledgePanel({
                       overflowWrap: "anywhere",
                     }}
                   >
-                    上下文：{memory.context}
+                    {t("factory.domainKnowledge.contextLabel")}{memory.context}
                   </div>
                 )}
                 <div style={{ display: "flex", gap: 9, marginTop: 7 }}>
@@ -372,7 +383,7 @@ export function DomainKnowledgePanel({
                       fontSize: 10.5,
                     }}
                   >
-                    {memory.pinned ? "取消置顶" : "置顶"}
+                    {memory.pinned ? t("factory.domainKnowledge.unpin") : t("factory.domainKnowledge.pin")}
                   </button>
                   <button
                     disabled={busy}
@@ -386,7 +397,7 @@ export function DomainKnowledgePanel({
                       fontSize: 10.5,
                     }}
                   >
-                    编辑
+                    {t("factory.domainKnowledge.edit")}
                   </button>
                   <button
                     disabled={busy}
@@ -400,7 +411,7 @@ export function DomainKnowledgePanel({
                       fontSize: 10.5,
                     }}
                   >
-                    删除
+                    {t("factory.domainKnowledge.delete")}
                   </button>
                 </div>
               </>

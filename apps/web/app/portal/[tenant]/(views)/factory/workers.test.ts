@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { translate } from "@/lib/i18n";
 import { deriveSessionTasks } from "./workers";
 import type { BrainEvent } from "@/lib/hooks/useBrainStream";
 
@@ -6,6 +7,7 @@ import type { BrainEvent } from "@/lib/hooks/useBrainStream";
 // validation problems, sandbox real I/O + fidelity badge. Pure over BrainEvent[] (replay-safe).
 
 const ev = (o: Record<string, unknown>): BrainEvent => o as unknown as BrainEvent;
+const tr = (key: string, vars?: Record<string, string | number>) => translate("zh", key, vars);
 
 const created = (slug: string, actionName: string, extra: Record<string, unknown> = {}) =>
   ev({
@@ -17,7 +19,7 @@ const created = (slug: string, actionName: string, extra: Record<string, unknown
 
 describe("deriveSessionTasks drill (#UI-DRILL)", () => {
   it("groups tool calls to the agent via forAgent (reliable path, no substring guess needed)", () => {
-    const tasks = deriveSessionTasks(
+    const tasks = deriveSessionTasks(tr,
       [
         created("d-processResume", "processResume"),
         ev({ t: "tool.call", id: "c1", name: "refine_agent", reasoning: "对齐类型", input: {}, forAgent: "processResume" }),
@@ -32,7 +34,7 @@ describe("deriveSessionTasks drill (#UI-DRILL)", () => {
   });
 
   it("#P4+ projects a forAgent strategy choice onto that agent's drill (each agent's own reasoning method)", () => {
-    const tasks = deriveSessionTasks(
+    const tasks = deriveSessionTasks(tr,
       [
         created("d-processResume", "processResume"),
         ev({ t: "strategy", mode: "combo", steps: ["tot", "debate", "reflection"], chosenBy: "ai", rationale: "复杂设计+高风险落地", forAgent: "processResume" }),
@@ -45,7 +47,7 @@ describe("deriveSessionTasks drill (#UI-DRILL)", () => {
   });
 
   it("attaches sub-agents via parentAgent and marks isSubAgent from the spec flag", () => {
-    const tasks = deriveSessionTasks(
+    const tasks = deriveSessionTasks(tr,
       [
         created("d-processResume", "processResume"),
         created("d-processresume-helper", "lockOwnership", { parentAgent: "processResume", spec: { slug: "d-processresume-helper", actionName: "lockOwnership", short: "lockOwnership", nameZh: "锁定归属", trigger: [], emit: [], tools: [], isSubAgent: true } }),
@@ -61,7 +63,7 @@ describe("deriveSessionTasks drill (#UI-DRILL)", () => {
 
   // #ROLE — 过程角色显示：AI 设定的子大脑角色进 typeLabel；工具行带过程角色前缀。
   it("AI-assigned sub-brain role shows in the spawn card; tool rows carry the process role", () => {
-    const tasks = deriveSessionTasks(
+    const tasks = deriveSessionTasks(tr,
       [
         ev({ t: "subagent.start", task: "调查历史失败的根因", role: "证据调查员" }),
         ev({ t: "subagent.done", task: "调查历史失败的根因", summary: "找到两条线索" }),
@@ -78,7 +80,7 @@ describe("deriveSessionTasks drill (#UI-DRILL)", () => {
   // #per-agent-think — the attribution cursor routes think/message bursts onto the agent currently
   // being worked on, so its card shows its own reasoning stream (not just event summaries).
   it("attaches per-agent think slices to the current agent while keeping them in the harness too", () => {
-    const tasks = deriveSessionTasks(
+    const tasks = deriveSessionTasks(tr,
       [
         created("d-processResume", "processResume"),
         ev({ t: "think", delta: "先确认 processResume 的输出契约字段，再决定要不要精修" }),
@@ -95,7 +97,7 @@ describe("deriveSessionTasks drill (#UI-DRILL)", () => {
   });
 
   it("routes a free-form message to the current agent and does NOT leak harness reasoning onto it", () => {
-    const tasks = deriveSessionTasks(
+    const tasks = deriveSessionTasks(tr,
       [
         created("d-processResume", "processResume"),
         ev({ t: "message", text: "processResume 设计完成，输出契约已对齐下游。" }),
@@ -114,7 +116,7 @@ describe("deriveSessionTasks drill (#UI-DRILL)", () => {
   });
 
   it("captures validation problems per agent and sandbox real I/O + fidelity failure", () => {
-    const tasks = deriveSessionTasks(
+    const tasks = deriveSessionTasks(tr,
       [
         created("d-processResume", "processResume"),
         ev({ t: "validation", ok: false, issues: ["x"], agentIssueMap: { processResume: [{ kind: "type_mismatch", event: "E_OUT", field: "score" }] } }),
@@ -142,7 +144,7 @@ describe("deriveSessionTasks drill (#UI-DRILL)", () => {
 
 describe("completionKind projection", () => {
   it("projects waiting-human as an idle gate instead of a failed harness", () => {
-    const harness = deriveSessionTasks([
+    const harness = deriveSessionTasks(tr, [
       ev({ t: "clarify", question: "请选择", awaitingAnswer: true }),
       ev({ t: "done", status: "waiting_human", completionKind: "incomplete" }),
     ], false).find((task) => task.kind === "harness")!;
@@ -151,7 +153,7 @@ describe("completionKind projection", () => {
   });
 
   it("marks informational answers successful without a delivery claim", () => {
-    const harness = deriveSessionTasks([
+    const harness = deriveSessionTasks(tr, [
       ev({ t: "message", text: "回答" }),
       ev({ t: "done", status: "incomplete", completionKind: "answer" }),
     ], false).find((task) => task.kind === "harness")!;
@@ -163,7 +165,7 @@ describe("completionKind projection", () => {
   });
 
   it("does not guess completion type for legacy done frames", () => {
-    const harness = deriveSessionTasks([
+    const harness = deriveSessionTasks(tr, [
       ev({ t: "done", status: "finished" }),
     ], false).find((task) => task.kind === "harness")!;
     expect(harness.status).toBe("idle");
@@ -189,8 +191,8 @@ describe("acceptance checklist projection (#CHECKLIST)", () => {
 
   it("deriveAcceptance returns the LAST snapshot; none → null", async () => {
     const { deriveAcceptance } = await import("./workers");
-    expect(deriveAcceptance([created("a", "a")])).toBeNull();
-    const snap = deriveAcceptance([
+    expect(deriveAcceptance(tr, [created("a", "a")])).toBeNull();
+    const snap = deriveAcceptance(tr, [
       ev({
         t: "sandbox",
         simulated: false,
@@ -227,12 +229,12 @@ describe("acceptance checklist projection (#CHECKLIST)", () => {
       acceptanceEv(true),
     ];
 
-    const snap = deriveAcceptance(events);
+    const snap = deriveAcceptance(tr, events);
     expect(snap).toMatchObject({ allPass: false, evidenceValid: false });
     expect(snap!.criteria.every((criterion) => !criterion.pass)).toBe(true);
     expect(snap!.perAgent.every((agent) => !agent.pass)).toBe(true);
 
-    const tasks = deriveSessionTasks(events, false);
+    const tasks = deriveSessionTasks(tr, events, false);
     const sandbox = tasks.find((task) => task.kind === "sandbox")!;
     expect(sandbox.status).toBe("error");
     expect(sandbox.typeLabel).toContain("invalid evidence");
@@ -244,7 +246,7 @@ describe("acceptance checklist projection (#CHECKLIST)", () => {
   });
 
   it("folds perAgent items into the agent's drill.checklist + a harness gate item", () => {
-    const tasks = deriveSessionTasks([created("d-processResume", "processResume"), acceptanceEv(false)], false);
+    const tasks = deriveSessionTasks(tr, [created("d-processResume", "processResume"), acceptanceEv(false)], false);
     const agent = tasks.find((x) => x.agentSlug === "d-processResume")!;
     expect(agent.drill?.checklist).toHaveLength(1);
     expect(agent.drill?.checklist?.[0]?.pass).toBe(false);

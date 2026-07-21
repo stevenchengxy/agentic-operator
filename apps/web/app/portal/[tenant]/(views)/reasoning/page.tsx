@@ -187,7 +187,7 @@ function ReasoningFeed({
 }
 
 function ReasoningCard({ turn, tenant }: { turn: ReasoningTurn; tenant: string }) {
-  const { t } = useI18n();
+  const { language, t } = useI18n();
   const [showReasoning, setShowReasoning] = useState(false);
   const longReasoning = (turn.reasoning?.length ?? 0) > 360;
 
@@ -219,7 +219,7 @@ function ReasoningCard({ turn, tenant }: { turn: ReasoningTurn; tenant: string }
           )}
           {turn.createdAt && (
             <span style={{ fontSize: 10.5, color: "var(--text-3)", fontFamily: "var(--mono)" }}>
-              {fmtAgo(Date.parse(turn.createdAt))}
+              {fmtAgo(Date.parse(turn.createdAt), language)}
             </span>
           )}
           <Link
@@ -308,7 +308,7 @@ function AuditFeed({
 }
 
 function AuditCard({ row, tenant }: { row: RuleAuditRow; tenant: string }) {
-  const { t } = useI18n();
+  const { language, t } = useI18n();
   const [open, setOpen] = useState(false);
   const verdict =
     row.verdict === "pass"
@@ -347,7 +347,7 @@ function AuditCard({ row, tenant }: { row: RuleAuditRow; tenant: string }) {
           )}
           {row.receivedAt && (
             <span style={{ fontSize: 10.5, color: "var(--text-3)", fontFamily: "var(--mono)" }}>
-              {fmtAgo(Date.parse(row.receivedAt))}
+              {fmtAgo(Date.parse(row.receivedAt), language)}
             </span>
           )}
           {row.consumerRunId && (

@@ -1,15 +1,14 @@
 "use client";
 
 import { useQuery, type UseQueryResult } from "@tanstack/react-query";
-import { readApiData } from "@/lib/api-response";
+import { fetchApiData } from "@/lib/api-response";
 import { tenantHeader } from "./tenant-header";
 
 async function callV1<T>(path: string): Promise<T> {
-  const response = await fetch(path, {
+  return fetchApiData<T>(path, {
     credentials: "same-origin",
     headers: { Accept: "application/json", ...tenantHeader() },
   });
-  return readApiData<T>(response, path);
 }
 
 export interface ObservabilitySummary {

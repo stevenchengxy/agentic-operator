@@ -1,3 +1,4 @@
+import type { Translate } from "@/app/portal/lib/preferences-context";
 import type { FactoryApiResult } from "./factory-api";
 
 export type BinaryFixturePlacement = "object" | "data_url" | "base64_string";
@@ -17,28 +18,28 @@ export interface BinaryFixtureFile {
   arrayBuffer: () => Promise<ArrayBuffer>;
 }
 
-function requiredText(value: string, label: string): string {
-  if (!value.trim()) throw new Error(`${label}不能为空`);
+function requiredText(t: Translate, value: string, label: string): string {
+  if (!value.trim()) throw new Error(t("factory.testFixture.validation.required", { label }));
   return value;
 }
 
 /** Parse one complete test-case payload. Arrays and scalar JSON are not event payloads. */
-export function parseTestCasePayload(source: string): Record<string, unknown> {
+export function parseTestCasePayload(source: string, t: Translate): Record<string, unknown> {
   let parsed: unknown;
   try {
     parsed = JSON.parse(source);
   } catch {
-    throw new Error("payload 不是有效的 JSON");
+    throw new Error(t("factory.testFixture.validation.invalidJson"));
   }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    throw new Error("payload 必须是一个 JSON 对象");
+    throw new Error(t("factory.testFixture.validation.objectRequired"));
   }
   return parsed as Record<string, unknown>;
 }
 
-export function buildCasePayloadDecision(caseId: string, payload: Record<string, unknown>): string {
+export function buildCasePayloadDecision(caseId: string, payload: Record<string, unknown>, t: Translate): string {
   return `[测试用例决策: 补数据] ${JSON.stringify({
-    case_payloads: [{ case_id: requiredText(caseId, "测试用例 ID"), payload }],
+    case_payloads: [{ case_id: requiredText(t, caseId, t("factory.testFixture.field.caseId")), payload }],
   })}`;
 }
 
@@ -47,14 +48,14 @@ export function buildBinaryAssetDecision(input: {
   path: string;
   placement: BinaryFixturePlacement;
   receipt: FixtureAssetReceipt;
-}): string {
+}, t: Translate): string {
   const { receipt } = input;
   return `[测试用例决策: 补数据] ${JSON.stringify({
     binary_files: [{
-      case_id: requiredText(input.caseId, "测试用例 ID"),
-      path: requiredText(input.path, "JSON Pointer"),
-      asset_id: requiredText(receipt.assetId, "fixture asset ID"),
-      sha256: requiredText(receipt.sha256, "fixture sha256"),
+      case_id: requiredText(t, input.caseId, t("factory.testFixture.field.caseId")),
+      path: requiredText(t, input.path, "JSON Pointer"),
+      asset_id: requiredText(t, receipt.assetId, "fixture asset ID"),
+      sha256: requiredText(t, receipt.sha256, "fixture sha256"),
       as: input.placement,
       ...(receipt.mimeType ? { mime_type: receipt.mimeType } : {}),
       ...(receipt.filename ? { filename: receipt.filename } : {}),
@@ -62,18 +63,18 @@ export function buildBinaryAssetDecision(input: {
   })}`;
 }
 
-async function fileAsBase64(file: BinaryFixtureFile): Promise<string> {
+async function fileAsBase64(file: BinaryFixtureFile, t: Translate): Promise<string> {
   const bytes = new Uint8Array(await file.arrayBuffer());
   let binary = "";
   const chunkSize = 0x8000;
   for (let offset = 0; offset < bytes.length; offset += chunkSize) {
     binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
   }
-  if (typeof btoa !== "function") throw new Error("当前浏览器无法编码上传文件");
+  if (typeof btoa !== "function") throw new Error(t("factory.testFixture.validation.browserEncodingUnavailable"));
   return btoa(binary);
 }
 
-function validReceipt(value: FixtureAssetReceipt): FixtureAssetReceipt {
+function validReceipt(value: FixtureAssetReceipt, t: Translate): FixtureAssetReceipt {
   if (
     !value
     || typeof value.assetId !== "string"
@@ -84,7 +85,7 @@ function validReceipt(value: FixtureAssetReceipt): FixtureAssetReceipt {
     || !Number.isFinite(value.bytes)
     || value.bytes < 0
   ) {
-    throw new Error("fixture 上传接口返回了无效资产回执");
+    throw new Error(t("factory.testFixture.validation.invalidReceipt"));
   }
   return value;
 }
@@ -94,6 +95,7 @@ function validReceipt(value: FixtureAssetReceipt): FixtureAssetReceipt {
  * immutable asset reference. The base64 value never enters inject/transcript.
  */
 export async function uploadBinaryFixtureAndInject(input: {
+  t: Translate;
   runId: string;
   caseId: string;
   path: string;
@@ -102,13 +104,13 @@ export async function uploadBinaryFixtureAndInject(input: {
   upload: (path: string, body: Record<string, unknown>) => Promise<FactoryApiResult<FixtureAssetReceipt>>;
   inject: (text: string) => Promise<void>;
 }): Promise<FixtureAssetReceipt> {
-  const runId = requiredText(input.runId, "运行 ID");
-  const caseId = requiredText(input.caseId, "测试用例 ID");
-  const path = requiredText(input.path, "JSON Pointer");
-  if (!path.startsWith("/")) throw new Error("JSON Pointer 必须以 / 开头");
-  if (!input.file.name.trim()) throw new Error("文件名不能为空");
+  const runId = requiredText(input.t, input.runId, input.t("factory.testFixture.field.runId"));
+  const caseId = requiredText(input.t, input.caseId, input.t("factory.testFixture.field.caseId"));
+  const path = requiredText(input.t, input.path, "JSON Pointer");
+  if (!path.startsWith("/")) throw new Error(input.t("factory.testFixture.validation.pointerSlash"));
+  if (!input.file.name.trim()) throw new Error(input.t("factory.testFixture.validation.filenameRequired"));
 
-  const base64 = await fileAsBase64(input.file);
+  const base64 = await fileAsBase64(input.file, input.t);
   const result = await input.upload(
     `/v1/agent-factory/runs/${encodeURIComponent(runId)}/fixtures`,
     {
@@ -121,12 +123,12 @@ export async function uploadBinaryFixtureAndInject(input: {
   );
   if (!result.ok) throw new Error(result.message);
 
-  const receipt = validReceipt(result.data);
+  const receipt = validReceipt(result.data, input.t);
   await input.inject(buildBinaryAssetDecision({
     caseId,
     path,
     placement: input.placement,
     receipt,
-  }));
+  }, input.t));
   return receipt;
 }

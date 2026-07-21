@@ -1,3 +1,5 @@
+import type { Translate } from "@/app/portal/lib/preferences-context";
+
 export const MATCH_RESUME_PROMPT =
   "请依据 Candidate、Resume、目标 Job Requisition 与 JD 执行简历匹配前规则检查。目标客户和部门只能从目标岗位结构化证据解析，简历中的历史客户经历不得改变规则作用域。通过 SCOPED_TO、GOVERNS、APPLIES_TO、RELEVANT_TO 语义 Links 纳入 CSI 通用、目标客户通用及目标客户部门规则，并排除其他客户和部门；规范 Action 必须通过 GOVERNS/RELEVANT_TO 构成能力语义门。对每条规则给出可核验 evidence path，mandatory 决定阻断，optional 未满足仅 flag。";
 
@@ -467,17 +469,19 @@ export const BYTEDANCE_MATCH_RESUME_EXAMPLE = serializeExample(
   BYTEDANCE_MATCH_RESUME_EXAMPLE_DATA,
 );
 
-export const REASONING_TEST_EXAMPLES = [
-  {
-    id: "tencent-ieg",
-    label: "腾讯 · IEG",
-    prompt: MATCH_RESUME_PROMPT,
-    context: MATCH_RESUME_EXAMPLE,
-  },
-  {
-    id: "bytedance-ecommerce",
-    label: "字节 · 抖音电商",
-    prompt: BYTEDANCE_MATCH_RESUME_PROMPT,
-    context: BYTEDANCE_MATCH_RESUME_EXAMPLE,
-  },
-] as const;
+export function getReasoningTestExamples(t: Translate) {
+  return [
+    {
+      id: "tencent-ieg",
+      label: t("reasoningAgent.examples.tencentIeg.label"),
+      prompt: MATCH_RESUME_PROMPT,
+      context: MATCH_RESUME_EXAMPLE,
+    },
+    {
+      id: "bytedance-ecommerce",
+      label: t("reasoningAgent.examples.bytedanceEcommerce.label"),
+      prompt: BYTEDANCE_MATCH_RESUME_PROMPT,
+      context: BYTEDANCE_MATCH_RESUME_EXAMPLE,
+    },
+  ] as const;
+}

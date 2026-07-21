@@ -9,6 +9,7 @@
 
 import React, { useMemo } from "react";
 import { Empty, HelpTip } from "@/app/portal/components";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 import type { BrainEvent } from "@/lib/hooks/useBrainStream";
 
 interface BpAnchor { kind: string; id: string; evidence?: string }
@@ -37,16 +38,18 @@ const ANCHOR_COLOR: Record<string, string> = {
   rule: "var(--amber)",
   event: "var(--violet)",
 };
-const ANCHOR_LABEL: Record<string, string> = { entity: "实体", action: "动作", rule: "规则", event: "事件" };
+const KNOWN_ANCHOR_KINDS = new Set(["entity", "action", "rule", "event"]);
 
 function AnchorChips({ anchors }: { anchors?: BpAnchor[] }) {
+  const { t } = useI18n();
   if (!anchors?.length) return null;
   return (
     <span style={{ display: "inline-flex", flexWrap: "wrap", gap: 4 }}>
       {anchors.map((a, i) => {
         const color = ANCHOR_COLOR[a.kind] ?? "var(--text-3)";
+        const label = KNOWN_ANCHOR_KINDS.has(a.kind) ? t("factory.blueprintPanel.anchorLabel." + a.kind) : a.kind;
         return (
-          <span key={`${a.kind}:${a.id}:${i}`} title={`${ANCHOR_LABEL[a.kind] ?? a.kind}${a.evidence ? " · " + a.evidence : ""}`} style={{ fontSize: 10, fontFamily: "var(--mono)", color, border: `1px solid ${color}`, borderRadius: 5, padding: "0 5px", opacity: 0.9 }}>
+          <span key={`${a.kind}:${a.id}:${i}`} title={`${label}${a.evidence ? " · " + a.evidence : ""}`} style={{ fontSize: 10, fontFamily: "var(--mono)", color, border: `1px solid ${color}`, borderRadius: 5, padding: "0 5px", opacity: 0.9 }}>
             {a.id}
           </span>
         );
@@ -56,9 +59,10 @@ function AnchorChips({ anchors }: { anchors?: BpAnchor[] }) {
 }
 
 export function BlueprintPanel({ events }: { events: BrainEvent[] }) {
+  const { t } = useI18n();
   const model = useMemo(() => deriveBlueprintModel(events), [events]);
   if (!model) {
-    return <Empty title={<>还没有蓝图 <HelpTip>蓝图由 <span style={{ fontFamily: "var(--mono)" }}>build_blueprint</span> 基于本体推理生成——它把领域梳理成分阶段的工作流，每个节点都锚定本体的实体/动作/规则/事件。</HelpTip></>} />;
+    return <Empty title={<>{t("factory.blueprintPanel.empty.title")} <HelpTip>{t("factory.blueprintPanel.empty.helpPre")}<span style={{ fontFamily: "var(--mono)" }}>build_blueprint</span>{t("factory.blueprintPanel.empty.helpPost")}</HelpTip></>} />;
   }
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -74,7 +78,7 @@ export function BlueprintPanel({ events }: { events: BrainEvent[] }) {
             ? <div style={{ minWidth: 720 }} dangerouslySetInnerHTML={{ __html: d.svg }} />
             : d.source
               ? <pre style={{ fontSize: 11, fontFamily: "var(--mono)", color: "var(--text-2)", margin: 0, whiteSpace: "pre-wrap" }}>{d.source}</pre>
-              : <div style={{ fontSize: 11, color: "var(--text-3)" }}>（此图未预渲染）</div>}
+              : <div style={{ fontSize: 11, color: "var(--text-3)" }}>{t("factory.blueprintPanel.diagram.notPreRendered")}</div>}
         </div>
       ))}
 
@@ -90,9 +94,9 @@ export function BlueprintPanel({ events }: { events: BrainEvent[] }) {
             <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 6 }}>
               {(p.steps ?? []).map((s, j) => {
                 const io: string[] = [];
-                if (s.reads?.length) io.push(`读 ${s.reads.join(", ")}`);
-                if (s.writes?.length) io.push(`写 ${s.writes.join(", ")}`);
-                if (s.emits?.length) io.push(`发 ${s.emits.join(", ")}`);
+                if (s.reads?.length) io.push(t("factory.blueprintPanel.io.read", { items: s.reads.join(", ") }));
+                if (s.writes?.length) io.push(t("factory.blueprintPanel.io.write", { items: s.writes.join(", ") }));
+                if (s.emits?.length) io.push(t("factory.blueprintPanel.io.emit", { items: s.emits.join(", ") }));
                 return (
                   <div key={j} style={{ display: "flex", flexDirection: "column", gap: 1 }}>
                     <div style={{ display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap", fontSize: 11 }}>
@@ -110,7 +114,7 @@ export function BlueprintPanel({ events }: { events: BrainEvent[] }) {
             </div>
             {p.deliberation && (
               <div style={{ marginTop: 7, padding: "6px 9px", borderLeft: "2px solid var(--violet)", background: "var(--panel-3)", borderRadius: "0 6px 6px 0" }}>
-                <div style={{ fontSize: 10, fontWeight: 700, color: "var(--violet)", marginBottom: 2 }}>推理细化 <HelpTip>build_blueprint 对每个阶段跑一遍 cot 推理内核，从本体证据推导出该阶段每步的业务逻辑。这段是该阶段的推理结论；运行时你也能在推理流里看到同一条 reasoning.step。</HelpTip></div>
+                <div style={{ fontSize: 10, fontWeight: 700, color: "var(--violet)", marginBottom: 2 }}>{t("factory.blueprintPanel.deliberation.label")} <HelpTip>{t("factory.blueprintPanel.deliberation.help")}</HelpTip></div>
                 <div style={{ fontSize: 11, color: "var(--text-2)", whiteSpace: "pre-wrap", lineHeight: 1.5 }}>{p.deliberation}</div>
               </div>
             )}
@@ -121,14 +125,14 @@ export function BlueprintPanel({ events }: { events: BrainEvent[] }) {
       {/* 未接地项（fail-closed 如实标注，非编造） */}
       {model.unresolved.length > 0 && (
         <div style={{ border: "1px solid var(--red)", borderRadius: 10, background: "var(--panel-2)", padding: "9px 11px" }}>
-          <div style={{ fontSize: 11, fontWeight: 700, color: "var(--red)", marginBottom: 5 }}>缺本体证据 · 未接地（{model.unresolved.length}）——已如实标注，未编造</div>
+          <div style={{ fontSize: 11, fontWeight: 700, color: "var(--red)", marginBottom: 5 }}>{t("factory.blueprintPanel.unresolved.heading", { count: model.unresolved.length })}</div>
           <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
             {model.unresolved.slice(0, 12).map((u, i) => (
               <div key={i} style={{ fontSize: 10.5, color: "var(--text-2)", fontFamily: "var(--mono)" }}>
                 {u.scope} · {u.ref} — {u.reason}
               </div>
             ))}
-            {model.unresolved.length > 12 && <div style={{ fontSize: 10.5, color: "var(--text-3)" }}>…还有 {model.unresolved.length - 12} 项</div>}
+            {model.unresolved.length > 12 && <div style={{ fontSize: 10.5, color: "var(--text-3)" }}>{t("factory.blueprintPanel.unresolved.more", { count: model.unresolved.length - 12 })}</div>}
           </div>
         </div>
       )}

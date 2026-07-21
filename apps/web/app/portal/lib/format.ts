@@ -5,14 +5,19 @@
  * formatters use local TZ today (matches prototype); see audit §7 R-10 for
  * the multi-tenant TZ follow-up.
  */
+import type { Language } from "@/lib/i18n/types";
 
-export function fmtAgo(ms: number): string {
+export function fmtAgo(ms: number, language: Language = "en"): string {
   if (!Number.isFinite(ms) || ms <= 0) return "—";
   const d = Math.max(0, Date.now() - ms);
-  if (d < 60_000) return `${Math.max(1, Math.floor(d / 1000))}s ago`;
-  if (d < 3_600_000) return `${Math.floor(d / 60_000)}m ago`;
-  if (d < 86_400_000) return `${Math.floor(d / 3_600_000)}h ago`;
-  return `${Math.floor(d / 86_400_000)}d ago`;
+  const [value, enUnit, zhUnit] = d < 60_000
+    ? [Math.max(1, Math.floor(d / 1000)), "s", "秒"] as const
+    : d < 3_600_000
+      ? [Math.floor(d / 60_000), "m", "分钟"] as const
+      : d < 86_400_000
+        ? [Math.floor(d / 3_600_000), "h", "小时"] as const
+        : [Math.floor(d / 86_400_000), "d", "天"] as const;
+  return language === "zh" ? `${value} ${zhUnit}前` : `${value}${enUnit} ago`;
 }
 
 export function fmtDur(ms: number | null | undefined): string {

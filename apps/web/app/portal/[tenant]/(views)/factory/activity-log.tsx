@@ -10,6 +10,7 @@
 
 import { useState } from "react";
 import { Empty, StatusDot, HelpTip, Markdown } from "@/app/portal/components";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 import { CodeBox } from "./atoms";
 import {
   isAnswerCompletion,
@@ -20,7 +21,7 @@ import {
 type ToolBlock = Extract<Block, { kind: "tool" }>;
 
 // #7 — difficulty tier the model was routed by (fast=便宜读/规划, default=设计, hard=写码/精修/评审).
-const TIER_LABEL: Record<string, string> = { fast: "快", default: "设计", hard: "强" };
+const TIER_KEYS = new Set(["fast", "default", "hard"]);
 const TIER_COLOR: Record<string, string> = { fast: "var(--text-3)", default: "var(--signal)", hard: "var(--green)" };
 
 const labelStyle: React.CSSProperties = { fontSize: 10.5, color: "var(--text-3)", fontFamily: "var(--mono)", textTransform: "uppercase", letterSpacing: "0.04em", margin: "6px 0 3px" };
@@ -28,25 +29,27 @@ const rowStyle = (color: string): React.CSSProperties => ({ borderLeft: `2px sol
 const headStyle: React.CSSProperties = { display: "flex", alignItems: "center", gap: 7, fontSize: 12.5, lineHeight: 1.5 };
 
 function ToolStep({ s }: { s: ToolBlock }) {
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const pending = s.ok === undefined;
   const hasIO = s.input !== undefined || !!s.summary || !!s.output;
   const col = pending ? "var(--text-3)" : s.ok ? "var(--green)" : "var(--red)";
+  const tierLabel = (tier: string): string => (TIER_KEYS.has(tier) ? t(`factory.activityLog.tier.${tier}`) : tier);
   return (
     <div style={rowStyle(col)}>
       <button onClick={() => hasIO && setOpen((o) => !o)} style={{ display: "flex", alignItems: "center", gap: 7, width: "100%", textAlign: "left", background: "none", border: "none", cursor: hasIO ? "pointer" : "default", padding: 0 }}>
         <StatusDot status={pending ? "running" : s.ok ? "ok" : "failed"} size={6} />
         <span style={{ fontSize: 12.5, fontWeight: 600, color: "var(--text)", fontFamily: "var(--mono)" }}>{s.role && <span style={{ color: "var(--signal)" }}>{s.role} · </span>}{s.name}</span>
-        <span style={{ fontSize: 11, color: col }}>{pending ? `运行中…${s.elapsedS ? ` 已 ${s.elapsedS >= 60 ? `${Math.floor(s.elapsedS / 60)}m${s.elapsedS % 60}s` : `${s.elapsedS}s`}` : ""}` : s.ok ? "✓" : "✗"}</span>
-        {s.model && <span title={`本步使用的模型${s.tier ? ` · ${TIER_LABEL[s.tier] ?? s.tier} 档` : ""}`} style={{ fontSize: 9.5, color: "var(--text-3)", fontFamily: "var(--mono)", border: "1px solid var(--border)", borderRadius: 4, padding: "0 4px" }}>🧠 {s.model.split("/").pop()}{s.tier && <span style={{ marginLeft: 4, color: TIER_COLOR[s.tier] ?? "var(--text-3)" }}>·{TIER_LABEL[s.tier] ?? s.tier}</span>}</span>}
-        {hasIO && <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--signal)" }}>{open ? "收起" : "输入/输出"}</span>}
+        <span style={{ fontSize: 11, color: col }}>{pending ? `${t("factory.activityLog.tool.running")}${s.elapsedS ? t("factory.activityLog.tool.elapsed", { time: s.elapsedS >= 60 ? `${Math.floor(s.elapsedS / 60)}m${s.elapsedS % 60}s` : `${s.elapsedS}s` }) : ""}` : s.ok ? "✓" : "✗"}</span>
+        {s.model && <span title={`${t("factory.activityLog.tool.modelTitle")}${s.tier ? t("factory.activityLog.tool.tierSuffix", { tier: tierLabel(s.tier) }) : ""}`} style={{ fontSize: 9.5, color: "var(--text-3)", fontFamily: "var(--mono)", border: "1px solid var(--border)", borderRadius: 4, padding: "0 4px" }}>🧠 {s.model.split("/").pop()}{s.tier && <span style={{ marginLeft: 4, color: TIER_COLOR[s.tier] ?? "var(--text-3)" }}>·{tierLabel(s.tier)}</span>}</span>}
+        {hasIO && <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--signal)" }}>{open ? t("factory.activityLog.common.collapse") : t("factory.activityLog.tool.io")}</span>}
       </button>
       {s.reasoning && <div style={{ fontSize: 12, color: "var(--text-2)", marginTop: 3, lineHeight: 1.5 }}><Markdown>{s.reasoning}</Markdown></div>}
       {open && (
         <div style={{ marginTop: 4 }}>
-          {s.input !== undefined && (<><div style={labelStyle}>输入</div><CodeBox code={typeof s.input === "string" ? s.input : JSON.stringify(s.input, null, 2)} /></>)}
-          {s.summary && (<><div style={labelStyle}>结果（摘要）</div><div style={{ fontSize: 12, color: "var(--text-2)", lineHeight: 1.6, background: "var(--panel-3)", borderRadius: 6, padding: "6px 8px" }}><Markdown>{s.summary}</Markdown></div></>)}
-          {s.output && (<><div style={labelStyle}>完整输出</div><CodeBox code={s.output} /></>)}
+          {s.input !== undefined && (<><div style={labelStyle}>{t("factory.activityLog.tool.input")}</div><CodeBox code={typeof s.input === "string" ? s.input : JSON.stringify(s.input, null, 2)} /></>)}
+          {s.summary && (<><div style={labelStyle}>{t("factory.activityLog.tool.resultSummary")}</div><div style={{ fontSize: 12, color: "var(--text-2)", lineHeight: 1.6, background: "var(--panel-3)", borderRadius: 6, padding: "6px 8px" }}><Markdown>{s.summary}</Markdown></div></>)}
+          {s.output && (<><div style={labelStyle}>{t("factory.activityLog.tool.fullOutput")}</div><CodeBox code={s.output} /></>)}
         </div>
       )}
     </div>
@@ -55,13 +58,14 @@ function ToolStep({ s }: { s: ToolBlock }) {
 
 /** A compact one-line activity row with an icon + label + text; optional expandable detail. */
 function Row({ icon, color, title, text, detail, markdown }: { icon: string; color: string; title: string; text?: string; detail?: string; markdown?: boolean }) {
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
   return (
     <div style={rowStyle(color)}>
       <div style={headStyle}>
         <span>{icon}</span>
         <span style={{ fontWeight: 600, color: "var(--text)" }}>{title}</span>
-        {detail && <button onClick={() => setOpen((o) => !o)} style={{ marginLeft: "auto", fontSize: 11, color: "var(--signal)", background: "none", border: "none", cursor: "pointer" }}>{open ? "收起" : "展开"}</button>}
+        {detail && <button onClick={() => setOpen((o) => !o)} style={{ marginLeft: "auto", fontSize: 11, color: "var(--signal)", background: "none", border: "none", cursor: "pointer" }}>{open ? t("factory.activityLog.common.collapse") : t("factory.activityLog.common.expand")}</button>}
       </div>
       {text && <div style={{ fontSize: 12, color: "var(--text-2)", marginTop: 2, lineHeight: 1.55, whiteSpace: markdown ? "normal" : "pre-wrap" }}>{markdown ? <Markdown>{text}</Markdown> : text}</div>}
       {detail && open && <div style={{ marginTop: 4 }}><CodeBox code={detail} /></div>}
@@ -70,57 +74,63 @@ function Row({ icon, color, title, text, detail, markdown }: { icon: string; col
 }
 
 function ActivityRow({ b }: { b: Block }) {
+  const { t } = useI18n();
   switch (b.kind) {
     case "tool": return <ToolStep s={b} />;
-    case "think": return <Row icon="💭" color="var(--border-2)" title="思考" text={b.text} markdown />;
-    case "message": return <Row icon="🗣" color="var(--signal)" title="大脑" text={b.text} markdown />;
-    case "plan": return <Row icon="🗺" color="var(--signal)" title={`规划 · ${b.agents} 个智能体`} text={b.summary} markdown />;
-    case "code": return <Row icon="📝" color="var(--signal)" title={`写代码 · ${b.actionName} (${b.codeSource})`} />;
-    case "validation": return <Row icon="🔎" color={b.ok ? "var(--green)" : "var(--red)"} title={b.ok ? "校验闭合" : "校验未闭合"} text={b.ok ? undefined : b.issues.join("；")} />;
-    case "refine": return <Row icon="♻" color="var(--amber)" title={`精修 · ${b.action}`} text={b.critique} markdown />;
-    case "score": return <Row icon="📊" color={b.regression ? "var(--red)" : "var(--green)"} title={`评分 · ${b.action}`} text={`${b.prior} → ${b.next}（${b.delta >= 0 ? "+" : ""}${b.delta}${b.regression ? " 退步" : ""}）`} />;
-    case "revert": return <Row icon="⏪" color="var(--amber)" title={`回滚 · ${b.action}`} text={`回到第 ${b.toAttempt} 次之前`} />;
-    case "clarify": return <Row icon="❓" color="var(--amber)" title="询问用户" text={b.question} markdown />;
-    case "compaction": return <Row icon="🗜" color="var(--border-2)" title="上下文自动压缩" text={b.summary} detail={b.state || undefined} markdown />;
+    case "think": return <Row icon="💭" color="var(--border-2)" title={t("factory.activityLog.block.think")} text={b.text} markdown />;
+    case "message": return <Row icon="🗣" color="var(--signal)" title={t("factory.activityLog.block.brain")} text={b.text} markdown />;
+    case "plan": return <Row icon="🗺" color="var(--signal)" title={t("factory.activityLog.block.plan", { count: b.agents })} text={b.summary} markdown />;
+    case "code": return <Row icon="📝" color="var(--signal)" title={t("factory.activityLog.block.code", { actionName: b.actionName, codeSource: b.codeSource })} />;
+    case "validation": return <Row icon="🔎" color={b.ok ? "var(--green)" : "var(--red)"} title={b.ok ? t("factory.activityLog.block.validationOk") : t("factory.activityLog.block.validationFail")} text={b.ok ? undefined : b.issues.join(t("factory.activityLog.common.listSeparator"))} />;
+    case "refine": return <Row icon="♻" color="var(--amber)" title={t("factory.activityLog.block.refine", { action: b.action })} text={b.critique} markdown />;
+    case "score": return <Row icon="📊" color={b.regression ? "var(--red)" : "var(--green)"} title={t("factory.activityLog.block.score", { action: b.action })} text={t("factory.activityLog.block.scoreChange", { prior: b.prior, next: b.next, delta: `${b.delta >= 0 ? "+" : ""}${b.delta}`, regression: b.regression ? t("factory.activityLog.block.regressedSuffix") : "" })} />;
+    case "revert": return <Row icon="⏪" color="var(--amber)" title={t("factory.activityLog.block.revert", { action: b.action })} text={t("factory.activityLog.block.revertText", { n: b.toAttempt })} />;
+    case "clarify": return <Row icon="❓" color="var(--amber)" title={t("factory.activityLog.block.clarify")} text={b.question} markdown />;
+    case "compaction": return <Row icon="🗜" color="var(--border-2)" title={t("factory.activityLog.block.compaction")} text={b.summary} detail={b.state || undefined} markdown />;
     case "sandbox": {
       const ev = b.ev as Record<string, unknown>;
       const simulated = Boolean(ev.simulated);
       const ok =
         !simulated &&
         (Boolean(ev.fullChainRan) || Boolean(ev.reachedSuccessTerminal));
+      const outcome = ok
+        ? t("factory.activityLog.sandbox.fullChain")
+        : simulated
+          ? t("factory.activityLog.sandbox.notExecuted")
+          : t("factory.activityLog.sandbox.notRun");
       return (
         <Row
           icon="🧪"
           color={ok ? "var(--green)" : "var(--red)"}
           title={
             simulated
-              ? "历史模拟记录 · legacy / invalid evidence"
-              : "沙箱（真实）"
+              ? t("factory.activityLog.sandbox.simulatedTitle")
+              : t("factory.activityLog.sandbox.realTitle")
           }
-          text={`部署 ${ev.functionsRegistered ?? 0} · 跑 ${ev.ran ?? 0} · ${ok ? "整链跑通" : simulated ? "未真实执行，不计入成功统计" : "未跑通"}`}
+          text={t("factory.activityLog.sandbox.stats", { deployed: String(ev.functionsRegistered ?? 0), ran: String(ev.ran ?? 0), outcome })}
         />
       );
     }
-    case "reflect": return <Row icon="💡" color="var(--border-2)" title="反思" text={b.text} markdown />;
-    case "subagent": return <Row icon="🧩" color="var(--signal)" title="子智能体" text={b.summary ?? b.task} markdown />;
-    case "toolnew": return <Row icon="🛠" color="var(--signal)" title={`新建工具 · ${b.name}`} text={b.desc} markdown />;
-    case "web": return <Row icon="🌐" color="var(--signal)" title={`联网检索 · ${b.count} 条`} text={b.query} />;
-    case "inspect": return <Row icon="🔬" color={b.degraded ? "var(--amber)" : "var(--text-3)"} title={`检视 · ${b.agentSlug}`} text={b.error || b.status} />;
-    case "error": return <Row icon="⛔" color="var(--red)" title="错误" text={b.text} />;
+    case "reflect": return <Row icon="💡" color="var(--border-2)" title={t("factory.activityLog.block.reflect")} text={b.text} markdown />;
+    case "subagent": return <Row icon="🧩" color="var(--signal)" title={t("factory.activityLog.block.subagent")} text={b.summary ?? b.task} markdown />;
+    case "toolnew": return <Row icon="🛠" color="var(--signal)" title={t("factory.activityLog.block.toolnew", { name: b.name })} text={b.desc} markdown />;
+    case "web": return <Row icon="🌐" color="var(--signal)" title={t("factory.activityLog.block.web", { count: b.count })} text={b.query} />;
+    case "inspect": return <Row icon="🔬" color={b.degraded ? "var(--amber)" : "var(--text-3)"} title={t("factory.activityLog.block.inspect", { agentSlug: b.agentSlug })} text={b.error || b.status} />;
+    case "error": return <Row icon="⛔" color="var(--red)" title={t("factory.activityLog.block.error")} text={b.text} />;
     case "done": {
       if (b.status === "waiting_human") {
-        return <Row icon="⏸" color="var(--amber)" title="等待人工回复" text="运行已安全挂起；回复当前交互后会从检查点继续。" />;
+        return <Row icon="⏸" color="var(--amber)" title={t("factory.activityLog.done.waitingTitle")} text={t("factory.activityLog.done.waitingText")} />;
       }
       if (isAnswerCompletion(b.status, b.completionKind)) {
-        return <Row icon="🏁" color="var(--green)" title="回答完成" text="信息回答已完成；未产生交付或沙箱证据。" />;
+        return <Row icon="🏁" color="var(--green)" title={t("factory.activityLog.done.answerTitle")} text={t("factory.activityLog.done.answerText")} />;
       }
       if (isDeliveryCompletion(b.status, b.completionKind)) {
-        return <Row icon="🏁" color="var(--green)" title="交付完成" />;
+        return <Row icon="🏁" color="var(--green)" title={t("factory.activityLog.done.deliveryTitle")} />;
       }
       if (b.completionKind === "legacy_unknown") {
-        return <Row icon="🏁" color="var(--amber)" title="结束 · 完成类型未知" text="历史记录未包含 completionKind，未推断为回答或交付。" />;
+        return <Row icon="🏁" color="var(--amber)" title={t("factory.activityLog.done.unknownTitle")} text={t("factory.activityLog.done.unknownText")} />;
       }
-      return <Row icon="🏁" color="var(--text-3)" title={`结束 · ${b.status}`} />;
+      return <Row icon="🏁" color="var(--text-3)" title={t("factory.activityLog.done.finished", { status: b.status })} />;
     }
     default: return null;
   }
@@ -131,12 +141,13 @@ function ActivityRow({ b }: { b: Block }) {
 const SHOWN = new Set<Block["kind"]>(["tool", "think", "message", "plan", "code", "validation", "refine", "score", "revert", "clarify", "compaction", "sandbox", "reflect", "subagent", "toolnew", "web", "inspect", "error", "done"]);
 
 export function ActivityLog({ blocks }: { blocks: Block[] }) {
+  const { t } = useI18n();
   const steps = blocks.filter((b) => SHOWN.has(b.kind));
-  if (!steps.length) return <Empty title={<>还没有活动 <HelpTip>运行后，这里完整记录大脑每一步：思考、工具调用(输入/输出)、写的代码、评审与精修、沙箱结果——不遗漏</HelpTip></>} />;
+  if (!steps.length) return <Empty title={<>{t("factory.activityLog.empty.title")} <HelpTip>{t("factory.activityLog.empty.hint")}</HelpTip></>} />;
   const toolCount = steps.filter((b) => b.kind === "tool").length;
   return (
     <div>
-      <div style={{ fontSize: 11, color: "var(--text-3)", marginBottom: 8 }}>完整活动叙事 · {steps.length} 条（{toolCount} 次工具调用）</div>
+      <div style={{ fontSize: 11, color: "var(--text-3)", marginBottom: 8 }}>{t("factory.activityLog.summary", { count: steps.length, toolCount })}</div>
       {steps.map((b) => <ActivityRow key={b.id} b={b} />)}
     </div>
   );

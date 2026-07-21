@@ -39,7 +39,7 @@ describe("Agent Studio edit-mode wiring", () => {
       /const editable = Boolean\([\s\S]{0,160}editing &&[\s\S]{0,160}draft &&[\s\S]{0,160}!codeCompatibility/,
     );
     expect(source).toMatch(
-      /codeCompatibility[\s\S]{0,120}\? "Read only"[\s\S]{0,120}: editing[\s\S]{0,80}\? "Editing"[\s\S]{0,80}: "View mode"/,
+      /codeCompatibility[\s\S]{0,160}\? studioUi\(t, "Read only"\)[\s\S]{0,160}: editing[\s\S]{0,120}\? studioUi\(t, "Editing"\)[\s\S]{0,120}: studioUi\(t, "View mode"\)/,
     );
   });
 
@@ -139,7 +139,7 @@ describe("Agent Studio edit-mode wiring", () => {
       /async function finishEditing\(\)[\s\S]{0,300}dirty && !\(await persist\(true\)\)[\s\S]{0,300}setEditing\(false\)/,
     );
     expect(source).toMatch(
-      /async function cancelEditing\(\)[\s\S]{0,1400}persist\(true, cloneDefinition\(original\)\)[\s\S]{0,500}setEditing\(false\)/,
+      /async function cancelEditing\(\)[\s\S]{0,2200}persist\(true, cloneDefinition\(original\)\)[\s\S]{0,700}setEditing\(false\)/,
     );
     expect(source).toContain(
       "Changes already saved by autosave will also be safely restored.",
@@ -168,10 +168,10 @@ describe("Agent Studio edit-mode wiring", () => {
 
   it("keeps code-defined compatibility agents visibly read-only", () => {
     expect(source).toMatch(
-      /codeCompatibility[\s\S]{0,120}\? "Read only"[\s\S]{0,120}: editing[\s\S]{0,80}\? "Editing"[\s\S]{0,80}: "View mode"/,
+      /codeCompatibility[\s\S]{0,160}\? studioUi\(t, "Read only"\)[\s\S]{0,160}: editing[\s\S]{0,120}\? studioUi\(t, "Editing"\)[\s\S]{0,120}: studioUi\(t, "View mode"\)/,
     );
     expect(source).toMatch(
-      /codeCompatibility \?\s*\(\s*<Button[\s\S]{0,220}disabled[\s\S]{0,220}Edit unavailable/,
+      /codeCompatibility \?\s*\(\s*<Button[\s\S]{0,320}disabled[\s\S]{0,320}Edit unavailable/,
     );
   });
 

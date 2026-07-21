@@ -1,3 +1,4 @@
+import type { Translate } from "@/app/portal/lib/preferences-context";
 import type {
   ReasoningRunResponse,
   ReasoningRunStep,
@@ -155,6 +156,7 @@ export function projectExecutedQualifiedPrompt(
  */
 export function projectReasoningToolAudit(
   steps: ReasoningRunStep[],
+  t: Translate,
   children: ReasoningRunResponse["children"] = [],
 ): ReasoningToolAudit {
   let ruleSelection: RuleSelectionToolData | null = null;
@@ -179,7 +181,9 @@ export function projectReasoningToolAudit(
             compilerReceipt: {
               compilerId: data.compilerId,
               compilerVersion: data.compilerVersion,
-              promptSha256: data.promptSha256 ?? "legacy / hash unverified",
+              promptSha256:
+                data.promptSha256 ??
+                t("reasoningAgent.auditProjection.legacyHashUnverified"),
               ...(data.fullSemanticPathsSha256
                 ? {
                     fullSemanticPathsSha256: data.fullSemanticPathsSha256,

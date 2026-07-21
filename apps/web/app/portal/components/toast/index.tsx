@@ -28,6 +28,7 @@ import {
   type ReactNode,
 } from "react";
 import { Icon } from "../Icon";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 
 export type ToastTone = "default" | "signal" | "green" | "amber" | "red";
 
@@ -146,6 +147,7 @@ const TONE_STYLES: Record<
 // ─── Region (mounted once in layout) ───────────────────────────────────────
 
 export function ToastRegion() {
+  const { t } = useI18n();
   const items = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
   // Avoid a hydration flicker: render an empty region during SSR; on mount,
   // start showing real toasts.
@@ -169,7 +171,7 @@ export function ToastRegion() {
         pointerEvents: "none",
       }}
       role="region"
-      aria-label="Notifications"
+      aria-label={t("toast.regionLabel")}
     >
       {items.map((t) => (
         <ToastCard key={t.id} toast={t} />
@@ -179,6 +181,7 @@ export function ToastRegion() {
 }
 
 function ToastCard({ toast: t }: { toast: Toast }) {
+  const { t: translate } = useI18n();
   const s = TONE_STYLES[t.tone];
   return (
     <div
@@ -218,7 +221,7 @@ function ToastCard({ toast: t }: { toast: Toast }) {
       </div>
       <button
         onClick={() => dismiss(t.id)}
-        aria-label="Dismiss"
+        aria-label={translate("toast.dismiss")}
         style={{
           flexShrink: 0,
           color: "var(--text-3)",

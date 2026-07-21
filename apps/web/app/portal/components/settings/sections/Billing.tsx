@@ -14,8 +14,10 @@ import {
 import { useBudget, useUpdateBudget } from "@/lib/hooks/useUsage";
 import { fmtNum } from "@/app/portal/lib/format";
 import { formatUsdNanos } from "@/lib/format-usd";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 
 export function BillingSection() {
+  const { t, language } = useI18n();
   const tenant = useTenant();
   const budget = useBudget();
   const update = useUpdateBudget();
@@ -45,8 +47,14 @@ export function BillingSection() {
     } catch (cause) {
       setError(
         cause instanceof Error
-          ? cause.message
-          : "The budget could not be saved.",
+          ? cause.message.includes("whole number")
+            ? t("billingSection.tokenCapWholeNumber")
+            : cause.message.startsWith("Token cap")
+              ? t("billingSection.tokenCapNonNegative")
+              : cause.message.startsWith("USD cap")
+                ? t("billingSection.usdCapNonNegative")
+                : cause.message
+          : t("billingSection.saveFailed"),
       );
     }
   }
@@ -56,8 +64,8 @@ export function BillingSection() {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
       <Panel
-        title="Monthly cost caps"
-        subtitle="Live limits for the current tenant. Blank means unlimited."
+        title={t("billingSection.capsTitle")}
+        subtitle={t("billingSection.capsSubtitle")}
         padded
         action={
           <Link
@@ -65,7 +73,7 @@ export function BillingSection() {
             style={{ textDecoration: "none" }}
           >
             <Button small icon="dashboard" tone="ghost">
-              Open usage details
+              {t("billingSection.openUsageDetails")}
             </Button>
           </Link>
         }
@@ -74,20 +82,20 @@ export function BillingSection() {
           <div
             style={{ padding: "18px 0", color: "var(--text-3)", fontSize: 12 }}
           >
-            Loading the tenant budget…
+            {t("billingSection.loadingBudget")}
           </div>
         )}
         {budget.isError && (
           <Empty
-            title="Budget data is unavailable"
-            hint="The API did not return a tenant budget. No plan or spend figures are being inferred."
+            title={t("billingSection.unavailableTitle")}
+            hint={t("billingSection.unavailableHint")}
           />
         )}
         {row && (
           <>
             <Field
-              label="Monthly token cap"
-              hint="Whole tokens. Leave blank for no token cap."
+              label={t("billing.tokenCap")}
+              hint={t("billingSection.tokenCapHint")}
             >
               <TextIn
                 value={tokenCap}
@@ -95,15 +103,15 @@ export function BillingSection() {
                   setTokenCap(value);
                   setSaved(false);
                 }}
-                placeholder="Unlimited"
-                ariaLabel="Monthly token cap"
+                placeholder={t("billing.unlimited")}
+                ariaLabel={t("billing.tokenCap")}
                 mono
-                suffix="tokens"
+                suffix={t("billingSection.tokensUnit")}
               />
             </Field>
             <Field
-              label="Monthly USD cap"
-              hint="Stored by the API in cents. Leave blank for no cost cap."
+              label={t("billing.usdCap")}
+              hint={t("billingSection.usdCapHint")}
             >
               <TextIn
                 value={usdCap}
@@ -111,8 +119,8 @@ export function BillingSection() {
                   setUsdCap(value);
                   setSaved(false);
                 }}
-                placeholder="Unlimited"
-                ariaLabel="Monthly USD cap"
+                placeholder={t("billing.unlimited")}
+                ariaLabel={t("billing.usdCap")}
                 mono
                 prefix="$"
               />
@@ -126,7 +134,7 @@ export function BillingSection() {
                   color: error ? "var(--red)" : "var(--green)",
                 }}
               >
-                {error ?? "Budget caps saved."}
+                {error ?? t("billingSection.saved")}
               </div>
             )}
             <div
@@ -142,7 +150,9 @@ export function BillingSection() {
                 onClick={() => void saveCaps()}
                 disabled={update.isPending}
               >
-                {update.isPending ? "Saving…" : "Save caps"}
+                {update.isPending
+                  ? t("common.saving")
+                  : t("billingSection.saveCaps")}
               </Button>
             </div>
           </>
@@ -151,26 +161,36 @@ export function BillingSection() {
 
       {row && (
         <Panel
-          title="Current budget period"
-          subtitle={`Started ${new Date(row.periodStart).toLocaleDateString()}. Usage is measured by the gateway ledger.`}
+          title={t("billingSection.currentPeriod")}
+          subtitle={t("billingSection.periodSubtitle", {
+            date: new Date(row.periodStart).toLocaleDateString(
+              language === "zh" ? "zh-CN" : "en-US",
+            ),
+          })}
           padded
         >
           <BudgetProgress
-            label="Tokens"
+            label={t("billingSection.tokens")}
+            ariaLabel={t("billingSection.usageAria", {
+              resource: t("billingSection.tokens"),
+            })}
             usedLabel={fmtNum(row.usedTokensMonth)}
             capLabel={
               row.monthlyTokenCap == null
-                ? "unlimited"
+                ? t("billing.unlimited")
                 : fmtNum(row.monthlyTokenCap)
             }
             percent={percentage(row.usedTokensMonth, row.monthlyTokenCap)}
           />
           <BudgetProgress
-            label="Cost"
+            label={t("billingSection.cost")}
+            ariaLabel={t("billingSection.usageAria", {
+              resource: t("billingSection.cost"),
+            })}
             usedLabel={formatUsdNanos(row.usedUsdNanos)}
             capLabel={
               row.monthlyUsdCap == null
-                ? "unlimited"
+                ? t("billing.unlimited")
                 : `$${(row.monthlyUsdCap / 100).toFixed(2)}`
             }
             percent={percentage(
@@ -195,11 +215,13 @@ function BudgetProgress({
   usedLabel,
   capLabel,
   percent,
+  ariaLabel,
 }: {
   label: string;
   usedLabel: string;
   capLabel: string;
   percent: number | null;
+  ariaLabel: string;
 }) {
   return (
     <div style={{ padding: "10px 0", borderBottom: "1px solid var(--border)" }}>
@@ -213,7 +235,7 @@ function BudgetProgress({
         </span>
       </div>
       <div
-        aria-label={`${label} budget usage`}
+        aria-label={ariaLabel}
         aria-valuenow={percent ?? undefined}
         role={percent == null ? undefined : "progressbar"}
         style={{

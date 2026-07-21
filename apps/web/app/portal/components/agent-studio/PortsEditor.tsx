@@ -2,6 +2,8 @@
 
 import { useMemo, useState } from "react";
 import { Badge, Button, Icon } from "@/app/portal/components";
+import { useI18n } from "@/app/portal/lib/preferences-context";
+import { studioUi } from "./copy";
 import {
   EmptySection,
   Field,
@@ -26,6 +28,7 @@ export function PortsEditor({
   onChange: (ports: Port[]) => void;
   disabled?: boolean;
 }) {
+  const { t } = useI18n();
   const [selectedId, setSelectedId] = useState(ports[0]?.id ?? "");
   const selected = useMemo(
     () => ports.find((port) => port.id === selectedId) ?? ports[0],
@@ -61,7 +64,7 @@ export function PortsEditor({
       kind === "input"
         ? {
             id,
-            label: `Input ${index}`,
+            label: studioUi(t, "Input {index}", { index }),
             kind: "value",
             required: false,
             schema: { type: "string" },
@@ -69,7 +72,7 @@ export function PortsEditor({
           }
         : {
             id,
-            label: `Output ${index}`,
+            label: studioUi(t, "Output {index}", { index }),
             required: true,
             schema: { type: "string" },
             sensitivity: "none",
@@ -81,9 +84,27 @@ export function PortsEditor({
   if (ports.length === 0) {
     return (
       <EmptySection
-        title={`No ${kind}s yet`}
-        hint={`Add the first piece of information this agent will ${kind === "input" ? "receive" : "return"}.`}
-        actionLabel={`Add ${kind}`}
+        title={
+          kind === "input"
+            ? studioUi(t, "No inputs yet")
+            : studioUi(t, "No outputs yet")
+        }
+        hint={
+          kind === "input"
+            ? studioUi(
+                t,
+                "Add the first piece of information this agent will receive.",
+              )
+            : studioUi(
+                t,
+                "Add the first piece of information this agent will return.",
+              )
+        }
+        actionLabel={
+          kind === "input"
+            ? studioUi(t, "Add input")
+            : studioUi(t, "Add output")
+        }
         onAction={add}
       />
     );
@@ -118,10 +139,17 @@ export function PortsEditor({
               fontWeight: 600,
             }}
           >
-            {ports.length} {ports.length === 1 ? kind : `${kind}s`}
+            {ports.length}{" "}
+            {kind === "input"
+              ? ports.length === 1
+                ? studioUi(t, "input")
+                : studioUi(t, "inputs")
+              : ports.length === 1
+                ? studioUi(t, "output")
+                : studioUi(t, "outputs")}
           </span>
           <Button small icon="plus" onClick={add} disabled={disabled}>
-            Add
+            {studioUi(t, "Add")}
           </Button>
         </div>
         <div style={{ display: "grid", gap: 5 }}>
@@ -166,7 +194,7 @@ export function PortsEditor({
                   lineHeight: 1.4,
                 }}
               >
-                {port.label} · {String(port.schema.type ?? "any")}
+                {port.label} · {studioUi(t, String(port.schema.type ?? "any"))}
               </div>
             </button>
           ))}
@@ -193,13 +221,17 @@ export function PortsEditor({
           >
             <div style={{ display: "flex", gap: 7 }}>
               <Badge tone={selected.required ? "amber" : "muted"}>
-                {selected.required ? "Required" : "Optional"}
+                {selected.required
+                  ? studioUi(t, "Required")
+                  : studioUi(t, "Optional")}
               </Badge>
               {kind === "input" && (
-                <Badge tone="blue">{(selected as StudioInputPort).kind}</Badge>
+                <Badge tone="blue">
+                  {studioUi(t, (selected as StudioInputPort).kind)}
+                </Badge>
               )}
               <Badge tone={selected.sensitivity === "none" ? "muted" : "red"}>
-                {selected.sensitivity}
+                {studioUi(t, selected.sensitivity)}
               </Badge>
             </div>
             <Button
@@ -213,7 +245,7 @@ export function PortsEditor({
                 setSelectedId(next[0]?.id ?? "");
               }}
             >
-              Remove
+              {studioUi(t, "Remove")}
             </Button>
           </div>
           <div
@@ -221,12 +253,18 @@ export function PortsEditor({
             style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}
           >
             <Field
-              label="Internal field name"
+              label={studioUi(t, "Internal field name")}
               required
               hint={
                 selectedInput?.kind === "prompt"
-                  ? 'The chat request always uses the reserved name "prompt".'
-                  : "A short permanent name used to connect this field to prompts and workflows. Use letters, numbers, and underscores; do not use spaces."
+                  ? studioUi(
+                      t,
+                      'The chat request always uses the reserved name "prompt".',
+                    )
+                  : studioUi(
+                      t,
+                      "A short permanent name used to connect this field to prompts and workflows. Use letters, numbers, and underscores; do not use spaces.",
+                    )
               }
               example={
                 selectedInput?.kind === "prompt"
@@ -244,11 +282,16 @@ export function PortsEditor({
               />
             </Field>
             <Field
-              label="Question shown to users"
+              label={studioUi(t, "Question shown to users")}
               required
-              hint="The friendly label displayed in the Test Lab form."
+              hint={studioUi(
+                t,
+                "The friendly label displayed in the Test Lab form.",
+              )}
               example={
-                kind === "input" ? "Customer message" : "Suggested reply"
+                kind === "input"
+                  ? studioUi(t, "Customer message")
+                  : studioUi(t, "Suggested reply")
               }
             >
               <TextInput
@@ -259,8 +302,11 @@ export function PortsEditor({
             </Field>
             {kind === "input" && (
               <Field
-                label="How this input is provided"
-                hint="Choose Chat request for the main user message, Form value for a separate field, or File upload for an attachment."
+                label={studioUi(t, "How this input is provided")}
+                hint={studioUi(
+                  t,
+                  "Choose Chat request for the main user message, Form value for a separate field, or File upload for an attachment.",
+                )}
               >
                 <SelectInput
                   value={(selected as StudioInputPort).kind}
@@ -292,21 +338,27 @@ export function PortsEditor({
                   options={[
                     {
                       value: "prompt",
-                      label: "Chat request — main user message",
+                      label: studioUi(t, "Chat request — main user message"),
                       disabled: promptUsedByAnother,
                     },
                     {
                       value: "value",
-                      label: "Form value — separate input field",
+                      label: studioUi(t, "Form value — separate input field"),
                     },
-                    { value: "file", label: "File upload — attachment" },
+                    {
+                      value: "file",
+                      label: studioUi(t, "File upload — attachment"),
+                    },
                   ]}
                 />
               </Field>
             )}
             <Field
-              label="Privacy level"
-              hint="Choose the safest category that describes the value. Sensitive values are hidden or reduced in traces and logs."
+              label={studioUi(t, "Privacy level")}
+              hint={studioUi(
+                t,
+                "Choose the safest category that describes the value. Sensitive values are hidden or reduced in traces and logs.",
+              )}
             >
               <SelectInput
                 value={selected.sensitivity}
@@ -315,30 +367,42 @@ export function PortsEditor({
                   update({ sensitivity: value as Port["sensitivity"] })
                 }
                 options={[
-                  { value: "none", label: "Normal — safe to show in traces" },
+                  {
+                    value: "none",
+                    label: studioUi(t, "Normal — safe to show in traces"),
+                  },
                   {
                     value: "personal",
-                    label: "Personal — identifies a person",
+                    label: studioUi(t, "Personal — identifies a person"),
                   },
                   {
                     value: "confidential",
-                    label: "Confidential — business-sensitive",
+                    label: studioUi(t, "Confidential — business-sensitive"),
                   },
                   {
                     value: "secret",
-                    label: "Secret — credentials or restricted data",
+                    label: studioUi(
+                      t,
+                      "Secret — credentials or restricted data",
+                    ),
                   },
                 ]}
               />
             </Field>
           </div>
           <Field
-            label="Help text for this field"
-            hint="Tell the person running the agent exactly what to enter. This appears below the field in the Test Lab."
+            label={studioUi(t, "Help text for this field")}
+            hint={studioUi(
+              t,
+              "Tell the person running the agent exactly what to enter. This appears below the field in the Test Lab.",
+            )}
             example={
               kind === "input"
-                ? "Paste the full customer email, including the subject line."
-                : "A short answer ready to send to the customer."
+                ? studioUi(
+                    t,
+                    "Paste the full customer email, including the subject line.",
+                  )
+                : studioUi(t, "A short answer ready to send to the customer.")
             }
           >
             <TextArea
@@ -352,28 +416,47 @@ export function PortsEditor({
             checked={selected.required}
             disabled={disabled}
             onChange={(required) => update({ required })}
-            label={`Require this ${kind}`}
+            label={
+              kind === "input"
+                ? studioUi(t, "Require this input")
+                : studioUi(t, "Require this output")
+            }
             hint={
               kind === "output"
-                ? "A run fails output validation when this value is missing."
-                : "A run cannot start until this value is supplied."
+                ? studioUi(
+                    t,
+                    "A run fails output validation when this value is missing.",
+                  )
+                : studioUi(
+                    t,
+                    "A run cannot start until this value is supplied.",
+                  )
             }
           />
           <Field
-            label="Type of information"
-            hint="Pick the simple format users should provide or receive. Most fields only need one of these choices."
+            label={studioUi(t, "Type of information")}
+            hint={studioUi(
+              t,
+              "Pick the simple format users should provide or receive. Most fields only need one of these choices.",
+            )}
           >
             <SelectInput
               value={String(selected.schema.type ?? "string")}
               disabled={disabled}
               onChange={(type) => update({ schema: { type } })}
               options={[
-                { value: "string", label: "Text" },
-                { value: "number", label: "Number (may include decimals)" },
-                { value: "integer", label: "Whole number" },
-                { value: "boolean", label: "Yes / No" },
-                { value: "array", label: "List of values" },
-                { value: "object", label: "Group of named values" },
+                { value: "string", label: studioUi(t, "Text") },
+                {
+                  value: "number",
+                  label: studioUi(t, "Number (may include decimals)"),
+                },
+                { value: "integer", label: studioUi(t, "Whole number") },
+                { value: "boolean", label: studioUi(t, "Yes / No") },
+                { value: "array", label: studioUi(t, "List of values") },
+                {
+                  value: "object",
+                  label: studioUi(t, "Group of named values"),
+                },
               ]}
             />
           </Field>
@@ -393,7 +476,7 @@ export function PortsEditor({
                 fontWeight: 600,
               }}
             >
-              Advanced validation rules
+              {studioUi(t, "Advanced validation rules")}
             </summary>
             <div style={{ marginTop: 10 }}>
               <JsonValueEditor
@@ -403,7 +486,10 @@ export function PortsEditor({
                 }
                 height={205}
                 label="JSON Schema"
-                hint="Optional expert settings for limits, allowed values, or nested objects. The basic type above is enough for most agents."
+                hint={studioUi(
+                  t,
+                  "Optional expert settings for limits, allowed values, or nested objects. The basic type above is enough for most agents.",
+                )}
                 example={
                   '{"type":"string","enum":["billing","technical","other"]}'
                 }
@@ -416,8 +502,11 @@ export function PortsEditor({
               value={(selected as StudioInputPort).default ?? null}
               onChange={(defaultValue) => update({ default: defaultValue })}
               height={120}
-              label="Pre-filled value"
-              hint="Optional value used when the runner does not enter anything. Leave null when the user must decide."
+              label={studioUi(t, "Pre-filled value")}
+              hint={studioUi(
+                t,
+                "Optional value used when the runner does not enter anything. Leave null when the user must decide.",
+              )}
               example={
                 selected.schema.type === "string" ? '"standard"' : "null"
               }
@@ -428,12 +517,15 @@ export function PortsEditor({
             value={selected.example ?? null}
             onChange={(example) => update({ example })}
             height={120}
-            label="Example shown to builders"
-            hint="A realistic sample that helps people understand the expected value. It is not automatically used in production."
+            label={studioUi(t, "Example shown to builders")}
+            hint={studioUi(
+              t,
+              "A realistic sample that helps people understand the expected value. It is not automatically used in production.",
+            )}
             example={
               selected.schema.type === "string"
                 ? '"My invoice shows the wrong amount."'
-                : "Use the same shape as the selected type."
+                : studioUi(t, "Use the same shape as the selected type.")
             }
             readOnly={disabled}
           />
@@ -456,11 +548,14 @@ export function PortsEditor({
                     fontWeight: 600,
                   }}
                 >
-                  FILE POLICY
+                  {studioUi(t, "FILE POLICY")}
                 </div>
                 <Field
-                  label="Allowed file types"
-                  hint="Enter standard media types separated by commas. Leave empty to use the workspace file policy."
+                  label={studioUi(t, "Allowed file types")}
+                  hint={studioUi(
+                    t,
+                    "Enter standard media types separated by commas. Leave empty to use the workspace file policy.",
+                  )}
                   example="application/pdf, image/png"
                 >
                   <TextInput
@@ -487,9 +582,9 @@ export function PortsEditor({
                   />
                 </Field>
                 <Field
-                  label="Maximum file size"
-                  hint="Size limit in bytes for each upload."
-                  example="10000000 is about 10 MB"
+                  label={studioUi(t, "Maximum file size")}
+                  hint={studioUi(t, "Size limit in bytes for each upload.")}
+                  example={studioUi(t, "10000000 is about 10 MB")}
                 >
                   <TextInput
                     value={Number(
@@ -514,8 +609,11 @@ export function PortsEditor({
                   onChange={(multiple) =>
                     update({ file: { ...asFilePolicy(selected), multiple } })
                   }
-                  label="Allow more than one file"
-                  hint="Turn this on only when the agent is designed to process a group of files in one run."
+                  label={studioUi(t, "Allow more than one file")}
+                  hint={studioUi(
+                    t,
+                    "Turn this on only when the agent is designed to process a group of files in one run.",
+                  )}
                 />
               </div>
             )}

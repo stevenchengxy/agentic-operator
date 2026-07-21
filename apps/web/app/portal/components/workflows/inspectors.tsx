@@ -10,6 +10,7 @@ import {
   eventTone,
 } from "@/app/portal/components";
 import { fmtAgo } from "@/lib/format";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 import { useAgent, type DagAgent } from "@/lib/hooks/useAgents";
 import { useEvents, type EventRow } from "@/lib/hooks/useEvents";
 import { WORKFLOW_AGENT_DRAG_TYPE } from "./canvas-interactions";
@@ -91,6 +92,7 @@ export function DefaultInspector({
   agents: DagAgent[];
   onPick: (name: string) => void;
 }) {
+  const { t } = useI18n();
   const grouped: Record<string, EventCatalogItem[]> = {
     agent: [],
     human: [],
@@ -104,12 +106,12 @@ export function DefaultInspector({
     if (bucket) bucket.push(e);
   });
   const labels: Record<string, string> = {
-    agent: "From agents",
-    human: "From humans",
-    data: "Data",
-    external: "External",
-    alert: "Alerts",
-    system: "System",
+    agent: t("inspectors.catFromAgents"),
+    human: t("inspectors.catFromHumans"),
+    data: t("inspectors.catData"),
+    external: t("inspectors.catExternal"),
+    alert: t("inspectors.catAlerts"),
+    system: t("inspectors.catSystem"),
   };
 
   return (
@@ -129,7 +131,7 @@ export function DefaultInspector({
             letterSpacing: "0.08em",
           }}
         >
-          Legend
+          {t("inspectors.legend")}
         </div>
         <div
           style={{
@@ -142,13 +144,17 @@ export function DefaultInspector({
         >
           <LegendRow
             color="var(--signal)"
-            label="Agent node"
-            sub={`${agents.filter((a) => a.actor === "Agent").length} in workflow`}
+            label={t("inspectors.agentNode")}
+            sub={t("inspectors.inWorkflow", {
+              count: agents.filter((a) => a.actor === "Agent").length,
+            })}
           />
           <LegendRow
             color="var(--violet)"
-            label="Human node"
-            sub={`${agents.filter((a) => a.actor === "Human").length} in workflow`}
+            label={t("inspectors.humanNode")}
+            sub={t("inspectors.inWorkflow", {
+              count: agents.filter((a) => a.actor === "Human").length,
+            })}
           />
         </div>
       </div>
@@ -168,7 +174,7 @@ export function DefaultInspector({
             marginBottom: 8,
           }}
         >
-          Events · click to trace
+          {t("inspectors.eventsClickToTrace")}
         </div>
         {Object.entries(grouped).map(([cat, items]) =>
           items.length > 0 ? (
@@ -211,11 +217,12 @@ export function DefaultInspector({
           lineHeight: 1.55,
         }}
       >
-        <strong style={{ color: "var(--text-2)", fontWeight: 500 }}>Tip</strong>
+        <strong style={{ color: "var(--text-2)", fontWeight: 500 }}>
+          {t("inspectors.tip")}
+        </strong>
         <span>
-          {" "}
-          · Click any node to see what triggers and emits from it. Click any
-          event to highlight every edge carrying it.
+          {" · "}
+          {t("inspectors.tipBody")}
         </span>
       </div>
     </div>
@@ -237,6 +244,7 @@ export function AgentInspector({
   canResize: boolean;
   workflowLabel: string;
 }) {
+  const { t } = useI18n();
   // Complete workflow definitions are authoritative. Only fetch the live
   // AgentDetail as a compatibility fallback for an older DAG projection that
   // does not yet carry its source definition.
@@ -275,7 +283,14 @@ export function AgentInspector({
       >
         <div>
           <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
-            <ActorTag actor={agent.actor} />
+            <ActorTag
+              actor={agent.actor}
+              label={t(
+                agent.actor === "Agent"
+                  ? "common.actorAgent"
+                  : "common.actorHuman",
+              )}
+            />
             <Badge tone="muted">{agent.kebabId}</Badge>
           </div>
           <div
@@ -292,7 +307,7 @@ export function AgentInspector({
         <Button small icon="x" tone="ghost" onClick={onClose} />
       </header>
       {actionNames.length > 0 && (
-        <Section title="Steps">
+        <Section title={t("inspectors.steps")}>
           <ol style={{ margin: 0, padding: 0, listStyle: "none" }}>
             {actionNames.map((s, i) => (
               <li
@@ -321,7 +336,7 @@ export function AgentInspector({
           </ol>
         </Section>
       )}
-      <Section title="Triggers">
+      <Section title={t("inspectors.triggers")}>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
           {triggers.length > 0 ? (
             triggers.map((t) => (
@@ -331,12 +346,12 @@ export function AgentInspector({
             ))
           ) : (
             <span style={{ fontSize: 11, color: "var(--text-3)" }}>
-              None (manual)
+              {t("inspectors.noneManual")}
             </span>
           )}
         </div>
       </Section>
-      <Section title="Emits">
+      <Section title={t("inspectors.emits")}>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
           {emits.map((e) => (
             <Badge key={e} tone="green">
@@ -345,12 +360,12 @@ export function AgentInspector({
           ))}
         </div>
       </Section>
-      <Section title="Workflow">
+      <Section title={t("inspectors.workflow")}>
         <span className="mono" style={{ fontSize: 12, color: "var(--text)" }}>
           {workflowLabel}
         </span>
       </Section>
-      <Section title="Complete agent settings">
+      <Section title={t("inspectors.completeAgentSettings")}>
         {agent.definition ? (
           <details
             key={isWide ? "wide" : "standard"}
@@ -371,10 +386,12 @@ export function AgentInspector({
                 cursor: "pointer",
               }}
             >
-              View complete manifest JSON
+              {t("inspectors.viewCompleteManifest")}
             </summary>
             <pre
-              aria-label={`Complete settings for ${agent.title}`}
+              aria-label={t("inspectors.completeSettingsFor", {
+                title: agent.title,
+              })}
               style={{
                 margin: 0,
                 padding: 12,
@@ -394,8 +411,7 @@ export function AgentInspector({
           </details>
         ) : (
           <span style={{ color: "var(--text-3)", fontSize: 11.5 }}>
-            The complete definition is unavailable in this older workflow
-            projection. Edit the workflow to load or regenerate it.
+            {t("inspectors.completeDefinitionUnavailable")}
           </span>
         )}
       </Section>
@@ -415,12 +431,14 @@ export function AgentInspector({
             onClick={onToggleWidth}
             ariaLabel={
               isWide
-                ? "Restore standard agent details width"
-                : "Expand agent details panel"
+                ? t("inspectors.restoreWidthAria")
+                : t("inspectors.expandWidthAria")
             }
             style={{ flex: 1, justifyContent: "center" }}
           >
-            {isWide ? "Restore panel" : "Expand details"}
+            {isWide
+              ? t("inspectors.restorePanel")
+              : t("inspectors.expandDetails")}
           </Button>
         ) : (
           <span
@@ -431,7 +449,7 @@ export function AgentInspector({
               textAlign: "center",
             }}
           >
-            Full width on this screen
+            {t("inspectors.fullWidth")}
           </span>
         )}
       </div>
@@ -452,6 +470,7 @@ export function EventInspector({
   onNavigateAgent: (id: string) => void;
   onNavigateEvents: (eventName: string) => void;
 }) {
+  const { language, t } = useI18n();
   // Live event-name filter — bounded to 8 so the "recent" panel only shows
   // the most useful entries even if the tenant's event history is large.
   const eventsQuery = useEvents({ name: eventName, limit: 8 });
@@ -489,18 +508,18 @@ export function EventInspector({
             {eventName}
           </Badge>
           <div style={{ fontSize: 11, color: "var(--text-3)" }}>
-            category · {catalogRow?.category ?? "—"}
+            {t("inspectors.categoryLabel")} · {catalogRow?.category ?? "—"}
           </div>
         </div>
         <Button small icon="x" tone="ghost" onClick={onClose} />
       </header>
-      <Section title={`Emitted by · ${emitters.length}`}>
+      <Section title={t("inspectors.emittedBy", { count: emitters.length })}>
         <NodeList agents={emitters} onPick={onNavigateAgent} />
       </Section>
-      <Section title={`Listened by · ${listeners.length}`}>
+      <Section title={t("inspectors.listenedBy", { count: listeners.length })}>
         <NodeList agents={listeners} onPick={onNavigateAgent} />
       </Section>
-      <Section title={`Recent · ${recent.length}`}>
+      <Section title={t("inspectors.recent", { count: recent.length })}>
         {recent.map((row: EventRow) => {
           const at = row.receivedAt ? Date.parse(row.receivedAt) : null;
           return (
@@ -517,7 +536,9 @@ export function EventInspector({
                 {row.id}
               </span>
               <span style={{ color: "var(--text-3)" }}>
-                {at != null && Number.isFinite(at) ? fmtAgo(at) : "—"}
+                {at != null && Number.isFinite(at)
+                  ? fmtAgo(at, language)
+                  : "—"}
               </span>
             </div>
           );
@@ -535,7 +556,7 @@ export function EventInspector({
           onClick={() => onNavigateEvents(eventName)}
           style={{ width: "100%" }}
         >
-          View in event stream
+          {t("inspectors.viewInEventStream")}
         </Button>
       </div>
     </div>
@@ -549,6 +570,8 @@ function NodeList({
   agents: DagAgent[];
   onPick: (id: string) => void;
 }) {
+  const { t } = useI18n();
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
       {agents.map((a) => (
@@ -568,7 +591,12 @@ function NodeList({
             color: "var(--text)",
           }}
         >
-          <ActorTag actor={a.actor} />
+          <ActorTag
+            actor={a.actor}
+            label={t(
+              a.actor === "Agent" ? "common.actorAgent" : "common.actorHuman",
+            )}
+          />
           <span
             style={{
               overflow: "hidden",
@@ -589,6 +617,7 @@ export function EditDraftBanner({
 }: {
   counts: { added: number; modified: number; removed: number };
 }) {
+  const { t } = useI18n();
   return (
     <div
       style={{
@@ -623,11 +652,14 @@ export function EditDraftBanner({
             fontSize: 10.5,
           }}
         >
-          EDITING DRAFT
+          {t("inspectors.editingDraft")}
         </span>
         <span style={{ color: "var(--text-2)" }}>
-          {counts.added} added · {counts.modified} modified · {counts.removed}{" "}
-          removed
+          {t("inspectors.draftDiffSummary", {
+            added: counts.added,
+            modified: counts.modified,
+            removed: counts.removed,
+          })}
         </span>
         <span
           style={{
@@ -635,7 +667,7 @@ export function EditDraftBanner({
             fontFamily: "var(--mono)",
           }}
         >
-          saved in this browser as you edit
+          {t("inspectors.savedInBrowser")}
         </span>
       </div>
     </div>
@@ -655,13 +687,14 @@ export function EditToolbar({
   onAutoLayout: () => void;
   onZoomToFit: () => void;
 }) {
+  const { t } = useI18n();
   const tools = [
-    { id: "select", icon: "filter" as const, label: "Select" },
-    { id: "connect", icon: "git" as const, label: "Connect" },
+    { id: "select", icon: "filter" as const, label: t("inspectors.toolSelect") },
+    { id: "connect", icon: "git" as const, label: t("inspectors.toolConnect") },
     {
       id: "add",
       icon: "plus" as const,
-      label: "Place agent on canvas",
+      label: t("inspectors.placeAgentOnCanvas"),
     },
   ];
   return (
@@ -709,8 +742,8 @@ export function EditToolbar({
       />
       <button
         type="button"
-        title="Add a new automated agent at the center of this canvas view"
-        aria-label="Add agent"
+        title={t("inspectors.addAgentTitle")}
+        aria-label={t("inspectors.addAgent")}
         onClick={onAddAgent}
         style={{
           height: 32,
@@ -728,15 +761,15 @@ export function EditToolbar({
         }}
       >
         <Icon name="plus" size={12} />
-        <span>Add agent</span>
+        <span>{t("inspectors.addAgent")}</span>
       </button>
       <div
         style={{ width: 1, background: "var(--border)", margin: "4px 4px" }}
       />
       <button
         type="button"
-        title="Auto-layout"
-        aria-label="Auto-layout"
+        title={t("inspectors.autoLayout")}
+        aria-label={t("inspectors.autoLayout")}
         onClick={onAutoLayout}
         style={{
           width: 32,
@@ -751,8 +784,8 @@ export function EditToolbar({
       </button>
       <button
         type="button"
-        title="Zoom to fit"
-        aria-label="Zoom to fit"
+        title={t("inspectors.zoomToFit")}
+        aria-label={t("inspectors.zoomToFit")}
         onClick={onZoomToFit}
         style={{
           width: 32,
@@ -784,6 +817,7 @@ export function DraftPalette({
   onAddAutomated: () => void;
   onAddHuman: () => void;
 }) {
+  const { t } = useI18n();
   const added = Array.from(draft.added).sort();
   const modified = Object.keys(draft.agents)
     .filter((id) => !draft.added.has(id) && !draft.removed.has(id))
@@ -829,7 +863,7 @@ export function DraftPalette({
             marginBottom: 4,
           }}
         >
-          Editing
+          {t("inspectors.editing")}
         </div>
         <div style={{ fontSize: 14, color: "var(--text)" }}>
           {workflowName}{" "}
@@ -840,7 +874,7 @@ export function DraftPalette({
               fontSize: 11,
             }}
           >
-            · LOCAL DRAFT
+            · {t("inspectors.localDraft")}
           </span>
         </div>
       </div>
@@ -861,7 +895,7 @@ export function DraftPalette({
             marginBottom: 8,
           }}
         >
-          Add a node
+          {t("inspectors.addNode")}
         </div>
         <div
           style={{
@@ -871,8 +905,7 @@ export function DraftPalette({
             marginBottom: 9,
           }}
         >
-          Drag a node onto the canvas to place it precisely, or click to add it
-          at the center.
+          {t("inspectors.addNodeHelp")}
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           <button
@@ -880,8 +913,8 @@ export function DraftPalette({
             draggable
             onDragStart={(event) => startAgentDrag(event, "Agent")}
             onClick={onAddAutomated}
-            aria-label="Drag or click to add an automated agent"
-            title="Drag to the canvas or click to add at the center"
+            aria-label={t("inspectors.addAutomatedAria")}
+            title={t("inspectors.dragOrClickTitle")}
             style={{
               padding: "8px 10px",
               background: "var(--panel-2)",
@@ -893,10 +926,10 @@ export function DraftPalette({
             }}
           >
             <div style={{ fontSize: 12, color: "var(--text)" }}>
-              Automated agent
+              {t("inspectors.automatedAgent")}
             </div>
             <div style={{ fontSize: 10.5, color: "var(--text-3)" }}>
-              Complete starter prompt, action, events, and runtime defaults
+              {t("inspectors.automatedAgentSub")}
             </div>
           </button>
           <button
@@ -904,8 +937,8 @@ export function DraftPalette({
             draggable
             onDragStart={(event) => startAgentDrag(event, "Human")}
             onClick={onAddHuman}
-            aria-label="Drag or click to add a human review"
-            title="Drag to the canvas or click to add at the center"
+            aria-label={t("inspectors.addHumanAria")}
+            title={t("inspectors.dragOrClickTitle")}
             style={{
               padding: "8px 10px",
               background: "var(--panel-2)",
@@ -917,10 +950,10 @@ export function DraftPalette({
             }}
           >
             <div style={{ fontSize: 12, color: "var(--text)" }}>
-              Human review
+              {t("inspectors.humanReview")}
             </div>
             <div style={{ fontSize: 10.5, color: "var(--text-3)" }}>
-              Auditable approval task with a decision form
+              {t("inspectors.humanReviewSub")}
             </div>
           </button>
           <div
@@ -935,11 +968,12 @@ export function DraftPalette({
           >
             {connectFrom ? (
               <>
-                Connection source: <span className="mono">{connectFrom}</span>.
-                Click the target node to create a shared event.
+                {t("inspectors.connectionSource")}:{" "}
+                <span className="mono">{connectFrom}</span>.{" "}
+                {t("inspectors.connectionTargetHelp")}
               </>
             ) : (
-              "Choose Connect in the canvas toolbar, then click source and target nodes."
+              t("inspectors.connectionIdleHelp")
             )}
           </div>
         </div>
@@ -961,7 +995,7 @@ export function DraftPalette({
             marginBottom: 8,
           }}
         >
-          Unsaved browser changes
+          {t("inspectors.unsavedBrowserChanges")}
         </div>
         <div
           style={{
@@ -973,17 +1007,32 @@ export function DraftPalette({
         >
           {changeCount === 0 && (
             <div style={{ color: "var(--text-3)", padding: "5px 0" }}>
-              No unsaved changes. Add, connect, move, or edit an agent.
+              {t("inspectors.noUnsavedChanges")}
             </div>
           )}
           {added.map((id) => (
-            <DiffRow key={`add-${id}`} kind="add" name={id} hint="new node" />
+            <DiffRow
+              key={`add-${id}`}
+              kind="add"
+              name={id}
+              hint={t("inspectors.diffNewNode")}
+            />
           ))}
           {modified.map((id) => (
-            <DiffRow key={`mod-${id}`} kind="mod" name={id} hint="edited" />
+            <DiffRow
+              key={`mod-${id}`}
+              kind="mod"
+              name={id}
+              hint={t("inspectors.diffEdited")}
+            />
           ))}
           {removed.map((id) => (
-            <DiffRow key={`del-${id}`} kind="del" name={id} hint="removed" />
+            <DiffRow
+              key={`del-${id}`}
+              kind="del"
+              name={id}
+              hint={t("inspectors.diffRemoved")}
+            />
           ))}
         </div>
       </div>
@@ -1016,10 +1065,15 @@ export function DraftPalette({
           }}
         />{" "}
         {validation === null
-          ? "Not validated since the last edit"
+          ? t("inspectors.notValidated")
           : validation.valid
-            ? `Validated · ${validation.promptScores.length} prompt checks passed`
-            : `${errors.length} error${errors.length === 1 ? "" : "s"} · ${warnings.length} warning${warnings.length === 1 ? "" : "s"}`}
+            ? t("inspectors.validated", {
+                count: validation.promptScores.length,
+              })
+            : t("inspectors.validationIssues", {
+                errors: errors.length,
+                warnings: warnings.length,
+              })}
       </div>
     </div>
   );

@@ -34,16 +34,19 @@ describe("New Agent wizard wiring", () => {
     expect(modal).toContain("modelChoice === AUTO_MODEL");
   });
 
-  it("uses the requested product language and live publish completion", () => {
-    expect(modal).toContain('"New Agent"');
-    expect(modal).toContain("Create & publish");
-    expect(modal).toContain("Open &amp; run");
+  it("uses the runtime language and live publish completion", () => {
+    expect(modal).toContain("useI18n");
+    expect(modal).toContain("deployAgentBuilder.header.newTitle");
+    expect(modal).toContain("deployAgentBuilder.actions.createPublish");
+    expect(modal).toContain("deployAgentBuilder.actions.openRun");
     expect(presets).toContain('name: "Deep Search"');
     expect(presets).not.toContain("RAG retriever");
   });
 
   it("makes ontology access part of every agent", () => {
-    expect(modal).toContain("Every agent can discover the graph schema");
+    expect(modal).toContain(
+      "deployAgentBuilder.capabilities.ontologyDescription",
+    );
     expect(modal).toContain('["ontology.query"]');
   });
 
@@ -53,8 +56,8 @@ describe("New Agent wizard wiring", () => {
     expect(modal).toMatch(
       /const identityValid\s*=\s*[\s\S]*?nameAvailable[\s\S]*?title\.trim\(\)/,
     );
-    expect(modal).toContain("Checking whether this agent ID is available");
-    expect(modal).toContain("Choose a different name");
+    expect(modal).toContain("deployAgentBuilder.identity.checkingName");
+    expect(modal).toContain("deployAgentBuilder.identity.nameConflict");
   });
 
   it("debounces and schema-validates the tenant-scoped availability request", () => {
@@ -91,8 +94,8 @@ describe("New Agent wizard wiring", () => {
     expect(modal).toContain('role="status"');
     expect(modal).toContain('aria-live="polite"');
     expect(modal).toContain("aria-busy={generatePrompt.isPending}");
-    expect(modal).toContain("Generating system prompt");
-    expect(modal).toContain("Generating prompt…");
+    expect(modal).toContain("deployAgentBuilder.progress.title");
+    expect(modal).toContain("deployAgentBuilder.build.generatingPrompt");
     expect(modal).toContain("new-agent-generate-icon--active");
     expect(globalCss).toContain("@keyframes new-agent-prompt-glow");
     expect(globalCss).toContain(".new-agent-prompt-progress");
@@ -116,6 +119,6 @@ describe("New Agent wizard wiring", () => {
     expect(modal).toContain(
       "setGeneratedPromptFingerprint(promptSourceFingerprint)",
     );
-    expect(modal).toContain("Agent details changed after this prompt");
+    expect(modal).toContain("deployAgentBuilder.build.promptStale");
   });
 });

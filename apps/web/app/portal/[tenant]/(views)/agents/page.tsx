@@ -29,12 +29,10 @@ import { useAgents, type AgentListRow } from "@/lib/hooks/useAgents";
 import { useRuns } from "@/lib/hooks/useRuns";
 import { useTenant } from "@/app/portal/lib/use-tenant";
 import { useI18n } from "@/app/portal/lib/preferences-context";
+import { agentKindLabel } from "@/app/portal/lib/protocol-labels";
 import { ImportManifestModal } from "@/app/portal/components/import-manifest/ImportManifestModal";
 import { DeployAgentModal } from "@/app/portal/components/agents/DeployAgentModal";
-import {
-  buildAgentStats,
-  type AgentStatsSnapshot,
-} from "@/lib/agent-stats";
+import { buildAgentStats, type AgentStatsSnapshot } from "@/lib/agent-stats";
 
 export default function AgentsPage() {
   const router = useRouter();
@@ -45,7 +43,9 @@ export default function AgentsPage() {
   const agents = agentsQuery.data ?? [];
   const runs = runsQuery.data ?? [];
   const [query, setQuery] = useState("");
-  const [actorFilter, setActorFilter] = useState<"all" | "Agent" | "Human">("all");
+  const [actorFilter, setActorFilter] = useState<"all" | "Agent" | "Human">(
+    "all",
+  );
   const [importOpen, setImportOpen] = useState(false);
   const [newAgentOpen, setNewAgentOpen] = useState(false);
 
@@ -118,12 +118,21 @@ export default function AgentsPage() {
       />
 
       {runsQuery.isError ? (
-        <div role="alert" style={{ padding: "8px 16px", color: "var(--amber)", borderBottom: "1px solid var(--border)" }}>
+        <div
+          role="alert"
+          style={{
+            padding: "8px 16px",
+            color: "var(--amber)",
+            borderBottom: "1px solid var(--border)",
+          }}
+        >
           {t("agents.statsUnavailable")}: {runsQuery.error.message}
         </div>
       ) : null}
 
-      <div style={{ flex: 1, display: "flex", flexDirection: "row", minHeight: 0 }}>
+      <div
+        style={{ flex: 1, display: "flex", flexDirection: "row", minHeight: 0 }}
+      >
         <aside
           style={{
             width: "100%",
@@ -142,7 +151,11 @@ export default function AgentsPage() {
               gap: 8,
             }}
           >
-            <SearchInput value={query} onChange={setQuery} placeholder={t("agents.searchPlaceholder")} />
+            <SearchInput
+              value={query}
+              onChange={setQuery}
+              placeholder={t("agents.searchPlaceholder")}
+            />
           </div>
           <div
             style={{
@@ -152,13 +165,22 @@ export default function AgentsPage() {
               gap: 6,
             }}
           >
-            <FilterChip active={actorFilter === "all"} onClick={() => setActorFilter("all")}>
+            <FilterChip
+              active={actorFilter === "all"}
+              onClick={() => setActorFilter("all")}
+            >
               {t("agents.filterAll")}
             </FilterChip>
-            <FilterChip active={actorFilter === "Agent"} onClick={() => setActorFilter("Agent")}>
+            <FilterChip
+              active={actorFilter === "Agent"}
+              onClick={() => setActorFilter("Agent")}
+            >
               {t("agents.filterAgents")}
             </FilterChip>
-            <FilterChip active={actorFilter === "Human"} onClick={() => setActorFilter("Human")}>
+            <FilterChip
+              active={actorFilter === "Human"}
+              onClick={() => setActorFilter("Human")}
+            >
               {t("agents.filterHuman")}
             </FilterChip>
           </div>
@@ -195,7 +217,12 @@ export default function AgentsPage() {
       {newAgentOpen && (
         <DeployAgentModal onClose={() => setNewAgentOpen(false)} />
       )}
-      {importOpen && <ImportManifestModal onClose={() => setImportOpen(false)} mode="agent" />}
+      {importOpen && (
+        <ImportManifestModal
+          onClose={() => setImportOpen(false)}
+          mode="agent"
+        />
+      )}
     </div>
   );
 }
@@ -213,7 +240,7 @@ function AgentsGrid({
   runSampleReady: boolean;
   onPick: (kebabId: string) => void;
 }) {
-  const { t } = useI18n();
+  const { language, t } = useI18n();
   return (
     <div
       style={{
@@ -240,15 +267,32 @@ function AgentsGrid({
               cursor: "pointer",
             }}
             onMouseEnter={(e) => {
-              (e.currentTarget as HTMLButtonElement).style.background = "var(--panel-2)";
+              (e.currentTarget as HTMLButtonElement).style.background =
+                "var(--panel-2)";
             }}
             onMouseLeave={(e) => {
-              (e.currentTarget as HTMLButtonElement).style.background = "var(--panel)";
+              (e.currentTarget as HTMLButtonElement).style.background =
+                "var(--panel)";
             }}
           >
-            <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6, minWidth: 0 }}>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                marginBottom: 6,
+                minWidth: 0,
+              }}
+            >
               <span style={{ flexShrink: 0, display: "inline-flex" }}>
-                <ActorTag actor={a.actor} />
+                <ActorTag
+                  actor={a.actor}
+                  label={
+                    a.actor === "Agent"
+                      ? t("common.actorAgent")
+                      : t("common.actorHuman")
+                  }
+                />
               </span>
               <Badge
                 tone="muted"
@@ -274,7 +318,7 @@ function AgentsGrid({
               >
                 {statsReady
                   ? (s?.lastRun ?? 0) > 0
-                    ? fmtAgo(s!.lastRun)
+                    ? fmtAgo(s!.lastRun, language)
                     : t("agents.idle")
                   : "—"}
               </span>
@@ -325,14 +369,20 @@ function AgentsGrid({
                 <span>{t("agents.statsUnavailable")}</span>
               )}
               {statsReady && (s?.errors ?? 0) > 0 && (
-                <span style={{ color: "var(--red)" }}>{t("agents.errCount", { count: s?.errors ?? 0 })}</span>
+                <span style={{ color: "var(--red)" }}>
+                  {t("agents.errCount", { count: s?.errors ?? 0 })}
+                </span>
               )}
               {runSampleReady && (s?.sampledTests ?? 0) > 0 && (
                 <span style={{ color: "var(--accent-text)" }}>
-                  {t("agents.sampledTestCount", { count: s?.sampledTests ?? 0 })}
+                  {t("agents.sampledTestCount", {
+                    count: s?.sampledTests ?? 0,
+                  })}
                 </span>
               )}
-              <span style={{ marginLeft: "auto" }}>{a.kind}</span>
+              <span style={{ marginLeft: "auto" }}>
+                {agentKindLabel(t, a.kind)}
+              </span>
             </div>
           </button>
         );

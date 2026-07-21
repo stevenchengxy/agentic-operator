@@ -74,6 +74,29 @@ export class AgentStudioApiError extends Error {
   }
 }
 
+type AgentStudioTranslate = (
+  key: string,
+  vars?: Record<string, string | number>,
+) => string;
+
+type AgentStudioClientErrorCode =
+  | "draftRequiredSave"
+  | "draftRequiredValidate"
+  | "draftRequiredGenerate"
+  | "draftRequiredPublish"
+  | "serviceUnavailable"
+  | "invalidResponse";
+
+export class AgentStudioClientError extends Error {
+  readonly code: AgentStudioClientErrorCode;
+
+  constructor(code: AgentStudioClientErrorCode, fallback: string) {
+    super(fallback);
+    this.name = "AgentStudioClientError";
+    this.code = code;
+  }
+}
+
 /**
  * Turn an API failure into a useful operator-facing message.
  *
@@ -81,10 +104,27 @@ export class AgentStudioApiError extends Error {
  * message, and recovery hint. Keeping all three in the toast makes publish
  * failures actionable without asking an operator to inspect DevTools.
  */
-export function formatAgentStudioError(error: unknown): string {
+export function formatAgentStudioError(
+  error: unknown,
+  t?: AgentStudioTranslate,
+): string {
+  if (error instanceof AgentStudioClientError) {
+    return t ? t(`agentStudioError.${error.code}`) : error.message;
+  }
   if (error instanceof AgentStudioApiError) {
-    const parts = [error.message, `Error code: ${error.code}`];
-    if (error.hint) parts.push(`What to do: ${error.hint}`);
+    const parts = [
+      error.message,
+      t
+        ? t("agentStudioError.errorCode", { code: error.code })
+        : `Error code: ${error.code}`,
+    ];
+    if (error.hint) {
+      parts.push(
+        t
+          ? t("agentStudioError.whatToDo", { hint: error.hint })
+          : `What to do: ${error.hint}`,
+      );
+    }
     return parts.join(" · ");
   }
   return error instanceof Error ? error.message : String(error);
@@ -106,11 +146,19 @@ async function callV1<T>(path: string, init: RequestInit = {}): Promise<T> {
     headers["Content-Type"] = "application/json";
   }
 
-  const response = await fetch(path, {
-    credentials: "same-origin",
-    ...rest,
-    headers,
-  });
+  let response: Response;
+  try {
+    response = await fetch(path, {
+      credentials: "same-origin",
+      ...rest,
+      headers,
+    });
+  } catch {
+    throw new AgentStudioClientError(
+      "serviceUnavailable",
+      "Could not reach Agent Studio. Check the connection and retry.",
+    );
+  }
   let body: ApiOk<T> | ApiErr | null = null;
   try {
     body = (await response.json()) as ApiOk<T> | ApiErr;
@@ -136,11 +184,10 @@ async function callV1<T>(path: string, init: RequestInit = {}): Promise<T> {
   }
 
   if (!body || !body.ok) {
-    throw new AgentStudioApiError({
-      status: response.status,
-      code: "invalid_response",
-      message: `${path}: expected a JSON API envelope`,
-    });
+    throw new AgentStudioClientError(
+      "invalidResponse",
+      `${path}: expected a JSON API envelope`,
+    );
   }
   return body.data;
 }
@@ -324,7 +371,12 @@ export function useSaveAgentDraft(draftId: string | null | undefined) {
       definition: StudioDefinition;
       revision: number;
     }) => {
-      if (!draftId) throw new Error("Create a draft before saving changes.");
+      if (!draftId) {
+        throw new AgentStudioClientError(
+          "draftRequiredSave",
+          "Create a draft before saving changes.",
+        );
+      }
       const payload = PatchAgentDraftBodySchema.parse({
         definition: prepareDefinition(vars.definition),
       });
@@ -349,7 +401,12 @@ export function useValidateAgentDraft(
   const client = useQueryClient();
   return useMutation({
     mutationFn: () => {
-      if (!draftId) throw new Error("Create a draft before validating it.");
+      if (!draftId) {
+        throw new AgentStudioClientError(
+          "draftRequiredValidate",
+          "Create a draft before validating it.",
+        );
+      }
       return callV1<unknown>(
         `/v1/agent-drafts/${encodeURIComponent(draftId)}/validate`,
         { method: "POST" },
@@ -368,8 +425,12 @@ export function useGenerateDraftInstructions(
 ) {
   return useMutation({
     mutationFn: async (body: GenerateInstructionsRequest) => {
-      if (!draftId)
-        throw new Error("Create a draft before generating instructions.");
+      if (!draftId) {
+        throw new AgentStudioClientError(
+          "draftRequiredGenerate",
+          "Create a draft before generating instructions.",
+        );
+      }
       const payload = GenerateDraftInstructionsBodySchema.parse(body);
       return GenerateDraftInstructionsResponseSchema.parse(
         await callV1<unknown>(
@@ -390,7 +451,12 @@ export function usePublishAgentDraft(
     mutationFn: async (
       body: { note?: string; confirmImpact?: boolean } = {},
     ) => {
-      if (!draftId) throw new Error("Create a draft before publishing it.");
+      if (!draftId) {
+        throw new AgentStudioClientError(
+          "draftRequiredPublish",
+          "Create a draft before publishing it.",
+        );
+      }
       const payload = PublishAgentDraftBodySchema.parse(body);
       return PublishAgentDraftResponseSchema.parse(
         await callV1<unknown>(

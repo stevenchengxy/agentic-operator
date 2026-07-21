@@ -20,7 +20,7 @@ describe("generated manual-task portal wiring", () => {
 
   it("submits validated form payload through the canonical resolution hook", () => {
     expect(page).toContain(
-      "buildTaskResolutionPayload(definition, values, option)",
+      "buildTaskResolutionPayload(definition, values, option, t)",
     );
     expect(page).toContain("await resolveTask.mutateAsync({");
     expect(page).toContain("decision: option.decision");

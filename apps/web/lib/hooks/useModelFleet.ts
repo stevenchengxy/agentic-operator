@@ -23,7 +23,7 @@ import type {
   TemperatureRange,
   TextVerbosity,
 } from "@agentic/contracts";
-import { readApiData } from "@/lib/api-response";
+import { fetchApiData } from "@/lib/api-response";
 import { tenantFromPathname, tenantHeader } from "./tenant-header";
 
 async function callV1<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -44,12 +44,11 @@ async function callV1<T>(path: string, init: RequestInit = {}): Promise<T> {
   ) {
     headers["Content-Type"] = "application/json";
   }
-  const res = await fetch(path, {
+  return fetchApiData<T>(path, {
     credentials: "same-origin",
     ...rest,
     headers,
   });
-  return readApiData<T>(res, path);
 }
 
 export type FleetRole = "primary" | "fallback" | "shadow";
@@ -180,10 +179,13 @@ export function useSaveProviderKey() {
   const tenant = useTenantQueryScope();
   return useMutation({
     mutationFn: ({ provider, apiKey }: { provider: string; apiKey: string }) =>
-      callV1<ProviderKeyMeta>(`/v1/llm/providers/${encodeURIComponent(provider)}/key`, {
-        method: "POST",
-        body: JSON.stringify({ apiKey, scope: "workspace" }),
-      }),
+      callV1<ProviderKeyMeta>(
+        `/v1/llm/providers/${encodeURIComponent(provider)}/key`,
+        {
+          method: "POST",
+          body: JSON.stringify({ apiKey, scope: "workspace" }),
+        },
+      ),
     onSuccess: async (_data, vars) => {
       await Promise.all([
         client.invalidateQueries({ queryKey: FLEET_KEYS.providers }),
@@ -226,10 +228,13 @@ export function useDeleteProviderKey() {
 export function useTestProviderKey() {
   return useMutation({
     mutationFn: ({ provider, apiKey }: { provider: string; apiKey?: string }) =>
-      callV1<ProviderTestResult>(`/v1/llm/providers/${encodeURIComponent(provider)}/test`, {
-        method: "POST",
-        body: JSON.stringify(apiKey?.trim() ? { apiKey: apiKey.trim() } : {}),
-      }),
+      callV1<ProviderTestResult>(
+        `/v1/llm/providers/${encodeURIComponent(provider)}/test`,
+        {
+          method: "POST",
+          body: JSON.stringify(apiKey?.trim() ? { apiKey: apiKey.trim() } : {}),
+        },
+      ),
   });
 }
 

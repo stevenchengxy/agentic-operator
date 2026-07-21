@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { translate } from "@/lib/i18n";
 
 import {
   draftSandboxTestTemplate,
@@ -10,6 +11,8 @@ import {
   type DraftSandboxChallenge,
   type DraftSandboxInputContract,
 } from "./draft-sandbox";
+
+const t = (key: string, vars?: Record<string, string | number>) => translate("zh", key, vars);
 
 const scope = {
   tenantId: "ten-one",
@@ -67,16 +70,16 @@ function challenge(): DraftSandboxChallenge {
 
 describe("Factory draft sandbox input", () => {
   it("binds the server contract to the exact patched version and creates placeholders, not evidence", () => {
-    const read = readDraftSandboxInputContract(inputContract(), expected);
+    const read = readDraftSandboxInputContract(t, inputContract(), expected);
     expect(read).toMatchObject({ ok: true, data: { scope, specsCount: 2 } });
-    expect(readDraftSandboxInputContract(inputContract(), { ...expected, versionId: "v-other" })).toMatchObject({ ok: false });
+    expect(readDraftSandboxInputContract(t, inputContract(), { ...expected, versionId: "v-other" })).toMatchObject({ ok: false });
 
-    const template = JSON.parse(draftSandboxTestTemplate(inputContract()));
+    const template = JSON.parse(draftSandboxTestTemplate(t, inputContract()));
     expect(template).toEqual([expect.objectContaining({
       entryEvent: "RESUME_RECEIVED",
       payload: { candidate_id: "请填写真实测试值（string）", attempts: "请填写真实测试值（integer）" },
     })]);
-    expect(parseDraftSandboxSubmission(JSON.stringify(template), "[]")).toMatchObject({
+    expect(parseDraftSandboxSubmission(t, JSON.stringify(template), "[]")).toMatchObject({
       ok: false,
       message: expect.stringContaining("模板占位"),
     });
@@ -92,9 +95,9 @@ describe("Factory draft sandbox input", () => {
       payload: { candidate_id: "candidate-1", "~key": "business-value", authHeaderEnv: "AUTH_HEADER_ENV" },
       expectedOutcome: "成功",
     }];
-    expect(parseDraftSandboxSubmission(JSON.stringify(base), "[]")).toMatchObject({ ok: true });
-    expect(parseDraftSandboxSubmission(JSON.stringify([{ ...base[0], payload: { authHeader: "literal-auth-value" } }]), "[]")).toMatchObject({ ok: false });
-    expect(parseDraftSandboxSubmission(JSON.stringify([{ ...base[0], payload: { key: "literal-signing-value" } }]), "[]")).toMatchObject({ ok: false });
+    expect(parseDraftSandboxSubmission(t, JSON.stringify(base), "[]")).toMatchObject({ ok: true });
+    expect(parseDraftSandboxSubmission(t, JSON.stringify([{ ...base[0], payload: { authHeader: "literal-auth-value" } }]), "[]")).toMatchObject({ ok: false });
+    expect(parseDraftSandboxSubmission(t, JSON.stringify([{ ...base[0], payload: { key: "literal-signing-value" } }]), "[]")).toMatchObject({ ok: false });
   });
 });
 
@@ -110,9 +113,9 @@ describe("Factory draft sandbox review and finish receipts", () => {
       boundaryEvents: [{ event: "INTERVIEW_REQUESTED", kind: "external" }],
       challenge: challenge(),
     };
-    expect(readDraftSandboxReview(review, expected)).toMatchObject({ ok: true });
-    expect(readDraftSandboxReview({ ...review, scope: { ...scope, versionId: "v-stale" } }, expected)).toMatchObject({ ok: false });
-    expect(readDraftSandboxReview({
+    expect(readDraftSandboxReview(t, review, expected)).toMatchObject({ ok: true });
+    expect(readDraftSandboxReview(t, { ...review, scope: { ...scope, versionId: "v-stale" } }, expected)).toMatchObject({ ok: false });
+    expect(readDraftSandboxReview(t, {
       ...review,
       challenge: { ...challenge(), options: challenge().options.map((option) => ({ ...option, recommended: false })) },
     }, expected)).toMatchObject({ ok: false });
@@ -142,9 +145,9 @@ describe("Factory draft sandbox review and finish receipts", () => {
       regressionReplay: { pass: true, suiteFingerprint: "suite-one", results: 2 },
     };
     const finishScope = { tenantSlug: scope.tenantSlug, domain: scope.domain, slug: scope.slug, baseVersionId: scope.versionId };
-    expect(readDraftSandboxFinishReceipt(receipt, finishScope)).toMatchObject({ ok: true });
-    expect(readDraftSandboxFinishReceipt({ ...receipt, versionId: scope.versionId }, finishScope)).toMatchObject({ ok: false });
-    expect(readDraftSandboxFinishReceipt({ ...receipt, sandbox: { ...receipt.sandbox, cleanupVerified: false } }, finishScope)).toMatchObject({ ok: false });
-    expect(readDraftSandboxFinishReceipt({ ...receipt, regressionReplay: { ...receipt.regressionReplay, results: 0 } }, finishScope)).toMatchObject({ ok: false });
+    expect(readDraftSandboxFinishReceipt(t, receipt, finishScope)).toMatchObject({ ok: true });
+    expect(readDraftSandboxFinishReceipt(t, { ...receipt, versionId: scope.versionId }, finishScope)).toMatchObject({ ok: false });
+    expect(readDraftSandboxFinishReceipt(t, { ...receipt, sandbox: { ...receipt.sandbox, cleanupVerified: false } }, finishScope)).toMatchObject({ ok: false });
+    expect(readDraftSandboxFinishReceipt(t, { ...receipt, regressionReplay: { ...receipt.regressionReplay, results: 0 } }, finishScope)).toMatchObject({ ok: false });
   });
 });

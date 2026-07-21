@@ -1,8 +1,10 @@
 import { describe, it, expect } from "vitest";
+import { translate } from "@/lib/i18n";
 import { derivePhaseTimeline } from "./phase-timeline";
 import type { BrainEvent } from "@/lib/hooks/useBrainStream";
 
 const ev = (o: Record<string, unknown>): BrainEvent => o as unknown as BrainEvent;
+const t = (key: string, vars?: Record<string, string | number>) => translate("zh", key, vars);
 
 // #OBSERVABILITY — lock the Workflow→Phase→Agent projection: phases from stage events, REAL rolled-up
 // tokens (budget delta) / tools (tool.call count) / time (server ts), sub-agents per phase with real
@@ -10,7 +12,7 @@ const ev = (o: Record<string, unknown>): BrainEvent => o as unknown as BrainEven
 
 describe("derivePhaseTimeline (#OBSERVABILITY)", () => {
   it("does not paint a waiting-human suspension as an execution error", () => {
-    const timeline = derivePhaseTimeline([
+    const timeline = derivePhaseTimeline(t, [
       ev({ t: "stage", stage: "validate", status: "active", ts: 100 }),
       ev({ t: "done", status: "waiting_human", completionKind: "incomplete", ts: 200 }),
     ]);
@@ -18,7 +20,7 @@ describe("derivePhaseTimeline (#OBSERVABILITY)", () => {
   });
 
   it("groups by stage; per-phase tokens=budget delta, tools=count, time=ts span", () => {
-    const tl = derivePhaseTimeline([
+    const tl = derivePhaseTimeline(t, [
       ev({ t: "budget", tokens: 100, ts: 1000 }),
       ev({ t: "stage", stage: "read", status: "active", ts: 1000 }),
       ev({ t: "tool.call", id: "a", name: "read_ontology", ts: 1100 }),
@@ -42,7 +44,7 @@ describe("derivePhaseTimeline (#OBSERVABILITY)", () => {
   });
 
   it("attaches sub-agents to their phase with REAL start→done durations", () => {
-    const tl = derivePhaseTimeline([
+    const tl = derivePhaseTimeline(t, [
       ev({ t: "stage", stage: "read", status: "active", ts: 1000 }),
       ev({ t: "subagent.start", role: "objects 专家", task: "读对象", ts: 1000 }),
       ev({ t: "subagent.start", role: "rules 专家", task: "读规则", ts: 1000 }),
@@ -57,7 +59,7 @@ describe("derivePhaseTimeline (#OBSERVABILITY)", () => {
   });
 
   it("events before the first stage land in an intake phase", () => {
-    const tl = derivePhaseTimeline([
+    const tl = derivePhaseTimeline(t, [
       ev({ t: "policy", pipeline: "full", strategy: "react", ts: 1000 }),
       ev({ t: "tool.call", id: "x", name: "read_ontology", ts: 1100 }),
     ]);
@@ -74,15 +76,15 @@ describe("derivePhaseTimeline (#OBSERVABILITY)", () => {
       ev({ t: "tool.call", id: "b", name: "sandbox_run", ts: 300 }),
       ev({ t: "budget", tokens: 800, ts: 400 }),
     ];
-    const a = derivePhaseTimeline(events);
-    const b = derivePhaseTimeline(events);
+    const a = derivePhaseTimeline(t, events);
+    const b = derivePhaseTimeline(t, events);
     expect(a).toEqual(b);
     expect(a.totalTools).toBe(2);
     expect(a.totalTokens).toBeGreaterThanOrEqual(600);
   });
 
   it("no ts (older/replayed w/o stamp) → durations 0, still groups", () => {
-    const tl = derivePhaseTimeline([
+    const tl = derivePhaseTimeline(t, [
       ev({ t: "stage", stage: "design", status: "active" }),
       ev({ t: "tool.call", id: "a", name: "design_agent" }),
     ]);
@@ -92,7 +94,7 @@ describe("derivePhaseTimeline (#OBSERVABILITY)", () => {
   });
 
   it("projects answer completion as its own successful phase, never as delivery", () => {
-    const tl = derivePhaseTimeline([
+    const tl = derivePhaseTimeline(t, [
       ev({ t: "message", text: "answer", ts: 1000 }),
       ev({ t: "done", status: "incomplete", completionKind: "answer", ts: 1100 }),
     ]);
@@ -101,7 +103,7 @@ describe("derivePhaseTimeline (#OBSERVABILITY)", () => {
   });
 
   it("keeps old terminal frames without completionKind unknown", () => {
-    const tl = derivePhaseTimeline([
+    const tl = derivePhaseTimeline(t, [
       ev({ t: "done", status: "finished", ts: 1000 }),
     ]);
     expect(tl.phases.at(-1)).toMatchObject({

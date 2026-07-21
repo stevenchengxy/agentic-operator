@@ -32,6 +32,7 @@ import {
   useToast,
 } from "@/app/portal/components";
 import { fmtAgo, fmtTime } from "@/app/portal/lib/format";
+import { runStatusLabel } from "@/app/portal/lib/protocol-labels";
 import { useTenant } from "@/app/portal/lib/use-tenant";
 import { useI18n } from "@/app/portal/lib/preferences-context";
 import {
@@ -70,9 +71,10 @@ function fromApiRow(r: EventRow): EventItem {
     category: r.category ?? "agent",
     // Missing/invalid timestamps stay unknown. Substituting Date.now() made
     // malformed rows look like events that had just fired.
-    at: r.receivedAt && Number.isFinite(Date.parse(r.receivedAt))
-      ? Date.parse(r.receivedAt)
-      : 0,
+    at:
+      r.receivedAt && Number.isFinite(Date.parse(r.receivedAt))
+        ? Date.parse(r.receivedAt)
+        : 0,
     source: r.sourceAgentName ?? "external",
     sourceTitle: r.sourceAgentTitle ?? r.sourceAgentName ?? null,
     subject: r.subject ?? "",
@@ -108,14 +110,17 @@ export default function EventsPage() {
   const eventTypes = useMemo(() => {
     const names = new Map<string, { name: string; color: string }>();
     for (const e of stream) {
-      if (!names.has(e.name)) names.set(e.name, { name: e.name, color: e.color });
+      if (!names.has(e.name))
+        names.set(e.name, { name: e.name, color: e.color });
     }
     for (const a of agents) {
       for (const n of [...a.triggers, ...a.emits]) {
         if (!names.has(n)) names.set(n, { name: n, color: "muted" });
       }
     }
-    return Array.from(names.values()).sort((a, b) => a.name.localeCompare(b.name));
+    return Array.from(names.values()).sort((a, b) =>
+      a.name.localeCompare(b.name),
+    );
   }, [stream, agents]);
 
   const requestedType = searchParams.get("type") ?? searchParams.get("name");
@@ -124,8 +129,8 @@ export default function EventsPage() {
   const [query, setQuery] = useState("");
   // `?eventId=` deep-links a specific event row (e.g. from a run detail's
   // emitted-event chip) — initialize the selection from the URL once.
-  const [selectedId, setSelectedId] = useState<string | null>(
-    () => searchParams.get("eventId"),
+  const [selectedId, setSelectedId] = useState<string | null>(() =>
+    searchParams.get("eventId"),
   );
 
   const [publishOpen, setPublishOpen] = useState(false);
@@ -205,7 +210,15 @@ export default function EventsPage() {
       )}
 
       {dagQuery.isError ? (
-        <div role="alert" style={{ padding: "8px 24px", color: "var(--amber)", borderBottom: "1px solid var(--border)", fontSize: 12 }}>
+        <div
+          role="alert"
+          style={{
+            padding: "8px 24px",
+            color: "var(--amber)",
+            borderBottom: "1px solid var(--border)",
+            fontSize: 12,
+          }}
+        >
           {t("events.graphUnavailable")}: {dagQuery.error.message}
         </div>
       ) : null}
@@ -375,7 +388,9 @@ export default function EventsPage() {
             <Empty title={t("events.loading")} hint="" />
           ) : filtered.length === 0 ? (
             <Empty
-              title={stream.length === 0 ? t("events.noneYet") : t("events.none")}
+              title={
+                stream.length === 0 ? t("events.noneYet") : t("events.none")
+              }
               hint={
                 stream.length === 0
                   ? t("events.noneYetHint")
@@ -440,9 +455,7 @@ export default function EventsPage() {
                       <Badge tone={eventTone(e.color)}>{e.name}</Badge>
                     </Td>
                     <Td>
-                      <span
-                        style={{ fontSize: 11.5, color: "var(--text-2)" }}
-                      >
+                      <span style={{ fontSize: 11.5, color: "var(--text-2)" }}>
                         {e.sourceTitle ?? t("events.externalSystem")}
                       </span>
                     </Td>
@@ -480,7 +493,11 @@ export default function EventsPage() {
           }}
         >
           {explicitSel ? (
-            <EventDetail event={explicitSel} agents={agents} graphState={graphState} />
+            <EventDetail
+              event={explicitSel}
+              agents={agents}
+              graphState={graphState}
+            />
           ) : typeFilter !== "all" ? (
             <EventTypeSummary
               eventName={typeFilter}
@@ -489,7 +506,11 @@ export default function EventsPage() {
               graphState={graphState}
             />
           ) : selected ? (
-            <EventDetail event={selected} agents={agents} graphState={graphState} />
+            <EventDetail
+              event={selected}
+              agents={agents}
+              graphState={graphState}
+            />
           ) : (
             <Empty title={t("events.selectAnEvent")} />
           )}
@@ -669,7 +690,7 @@ function EventTypeSummary({
   stream: EventItem[];
   graphState: GraphState;
 }) {
-  const { t } = useI18n();
+  const { language, t } = useI18n();
   const tenant = useTenant();
   const emitters = useMemo(
     () => agents.filter((a) => a.emits.includes(eventName)),
@@ -694,30 +715,62 @@ function EventTypeSummary({
 
   return (
     <div style={{ display: "flex", flexDirection: "column" }}>
-      <header style={{ padding: "14px 18px", borderBottom: "1px solid var(--border)" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+      <header
+        style={{
+          padding: "14px 18px",
+          borderBottom: "1px solid var(--border)",
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            marginBottom: 8,
+          }}
+        >
           <Badge tone={eventTone(color)}>{eventName}</Badge>
           {category && (
-            <span style={{ fontSize: 11, color: "var(--text-3)", fontFamily: "var(--mono)" }}>
+            <span
+              style={{
+                fontSize: 11,
+                color: "var(--text-3)",
+                fontFamily: "var(--mono)",
+              }}
+            >
               {category}
             </span>
           )}
         </div>
-        <div style={{ fontSize: 11.5, color: "var(--text-3)", lineHeight: 1.5 }}>
+        <div
+          style={{ fontSize: 11.5, color: "var(--text-3)", lineHeight: 1.5 }}
+        >
           {t("events.typeSummaryHint")}
         </div>
         <div style={{ marginTop: 10, display: "flex", gap: 18 }}>
-          <TypeStat label={t("events.statProducers")} value={graphState.ready ? emitters.length : graphCount} />
-          <TypeStat label={t("events.statConsumers")} value={graphState.ready ? listeners.length : graphCount} />
+          <TypeStat
+            label={t("events.statProducers")}
+            value={graphState.ready ? emitters.length : graphCount}
+          />
+          <TypeStat
+            label={t("events.statConsumers")}
+            value={graphState.ready ? listeners.length : graphCount}
+          />
           <TypeStat label={t("events.statFired")} value={instances.length} />
         </div>
       </header>
 
-      <Section title={t("events.sectionEmitters", { count: graphState.ready ? emitters.length : graphCount })}>
+      <Section
+        title={t("events.sectionEmitters", {
+          count: graphState.ready ? emitters.length : graphCount,
+        })}
+      >
         {!graphState.ready ? (
           <GraphUnavailable state={graphState} />
         ) : emitters.length === 0 ? (
-          <span style={{ fontSize: 11.5, color: "var(--text-3)" }}>{t("events.noEmitter")}</span>
+          <span style={{ fontSize: 11.5, color: "var(--text-3)" }}>
+            {t("events.noEmitter")}
+          </span>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
             {emitters.map((a) => (
@@ -727,11 +780,17 @@ function EventTypeSummary({
         )}
       </Section>
 
-      <Section title={t("events.sectionListeners", { count: graphState.ready ? listeners.length : graphCount })}>
+      <Section
+        title={t("events.sectionListeners", {
+          count: graphState.ready ? listeners.length : graphCount,
+        })}
+      >
         {!graphState.ready ? (
           <GraphUnavailable state={graphState} />
         ) : listeners.length === 0 ? (
-          <span style={{ fontSize: 11.5, color: "var(--text-3)" }}>{t("events.noListeners")}</span>
+          <span style={{ fontSize: 11.5, color: "var(--text-3)" }}>
+            {t("events.noListeners")}
+          </span>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
             {listeners.map((a) => (
@@ -741,9 +800,13 @@ function EventTypeSummary({
         )}
       </Section>
 
-      <Section title={t("events.sectionRecentFirings", { count: instances.length })}>
+      <Section
+        title={t("events.sectionRecentFirings", { count: instances.length })}
+      >
         {recent.length === 0 ? (
-          <span style={{ fontSize: 11.5, color: "var(--text-3)" }}>{t("events.noFirings")}</span>
+          <span style={{ fontSize: 11.5, color: "var(--text-3)" }}>
+            {t("events.noFirings")}
+          </span>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
             {recent.map((e) => (
@@ -758,10 +821,20 @@ function EventTypeSummary({
                   padding: "3px 0",
                 }}
               >
-                <span title={e.at > 0 ? new Date(e.at).toLocaleString() : undefined}>
-                  {e.at > 0 ? fmtAgo(e.at) : "—"}
+                <span
+                  title={
+                    e.at > 0
+                      ? new Date(e.at).toLocaleString(
+                          language === "zh" ? "zh-CN" : "en-US",
+                        )
+                      : undefined
+                  }
+                >
+                  {e.at > 0 ? fmtAgo(e.at, language) : "—"}
                 </span>
-                <span style={{ color: "var(--text-2)" }}>{e.subject || "—"}</span>
+                <span style={{ color: "var(--text-2)" }}>
+                  {e.subject || "—"}
+                </span>
               </div>
             ))}
           </div>
@@ -774,7 +847,15 @@ function EventTypeSummary({
 function TypeStat({ label, value }: { label: string; value: string | number }) {
   return (
     <div>
-      <div style={{ fontSize: 18, fontFamily: "var(--mono)", color: "var(--text)" }}>{value}</div>
+      <div
+        style={{
+          fontSize: 18,
+          fontFamily: "var(--mono)",
+          color: "var(--text)",
+        }}
+      >
+        {value}
+      </div>
       <div
         style={{
           fontSize: 9.5,
@@ -793,7 +874,12 @@ function TypeStat({ label, value }: { label: string; value: string | number }) {
 function GraphUnavailable({ state }: { state: GraphState }) {
   const { t } = useI18n();
   return (
-    <span style={{ fontSize: 11.5, color: state.error ? "var(--amber)" : "var(--text-3)" }}>
+    <span
+      style={{
+        fontSize: 11.5,
+        color: state.error ? "var(--amber)" : "var(--text-3)",
+      }}
+    >
       {state.loading
         ? t("events.loadingGraph")
         : `${t("events.graphUnavailable")}${state.error ? `: ${state.error}` : ""}`}
@@ -810,7 +896,7 @@ function EventDetail({
   agents: DagAgent[];
   graphState: GraphState;
 }) {
-  const { t } = useI18n();
+  const { language, t } = useI18n();
   const tenant = useTenant();
   // Fetch the REAL payload + actual consumers (the runs this instance fired).
   const detail = useEvent(event.id);
@@ -883,10 +969,7 @@ function EventDetail({
             {event.category}
           </span>
         </div>
-        <div
-          className="mono"
-          style={{ fontSize: 13, color: "var(--text)" }}
-        >
+        <div className="mono" style={{ fontSize: 13, color: "var(--text)" }}>
           {event.id}
         </div>
         <div
@@ -897,7 +980,7 @@ function EventDetail({
           }}
         >
           {event.at > 0
-            ? `${new Date(event.at).toLocaleString()} · ${fmtAgo(event.at)}`
+            ? `${new Date(event.at).toLocaleString(language === "zh" ? "zh-CN" : "en-US")} · ${fmtAgo(event.at, language)}`
             : "—"}
         </div>
       </header>
@@ -940,7 +1023,14 @@ function EventDetail({
                 textAlign: "left",
               }}
             >
-              <ActorTag actor={source.actor} />
+              <ActorTag
+                actor={source.actor}
+                label={
+                  source.actor === "Agent"
+                    ? t("common.actorAgent")
+                    : t("common.actorHuman")
+                }
+              />
               <span style={{ fontSize: 12.5, color: "var(--text)" }}>
                 {source.title}
               </span>
@@ -958,7 +1048,11 @@ function EventDetail({
         )}
       </Section>
 
-      <Section title={t("events.sectionEmitters", { count: graphState.ready ? emitters.length : graphCount })}>
+      <Section
+        title={t("events.sectionEmitters", {
+          count: graphState.ready ? emitters.length : graphCount,
+        })}
+      >
         {!graphState.ready ? (
           <GraphUnavailable state={graphState} />
         ) : emitters.length === 0 ? (
@@ -975,7 +1069,9 @@ function EventDetail({
       </Section>
 
       <Section
-        title={t("events.sectionListeners", { count: graphState.ready ? listeners.length : graphCount })}
+        title={t("events.sectionListeners", {
+          count: graphState.ready ? listeners.length : graphCount,
+        })}
       >
         {!graphState.ready ? (
           <GraphUnavailable state={graphState} />
@@ -994,7 +1090,9 @@ function EventDetail({
 
       {/* Actual consumption — the runs this specific event instance fired
           (real data), distinct from the DAG-declared listeners above. */}
-      <Section title={t("events.sectionConsumedBy", { count: consumers.length })}>
+      <Section
+        title={t("events.sectionConsumedBy", { count: consumers.length })}
+      >
         {consumers.length === 0 ? (
           <span style={{ fontSize: 11.5, color: "var(--text-3)" }}>
             {detail.isLoading
@@ -1030,11 +1128,19 @@ function EventDetail({
                   </span>
                   <span
                     className="mono"
-                    style={{ marginLeft: "auto", fontSize: 10.5, color: "var(--text-3)" }}
+                    style={{
+                      marginLeft: "auto",
+                      fontSize: 10.5,
+                      color: "var(--text-3)",
+                    }}
                   >
-                    {c.status}
+                    {runStatusLabel(t, c.status)}
                   </span>
-                  <Icon name="external" size={11} style={{ color: "var(--text-3)" }} />
+                  <Icon
+                    name="external"
+                    size={11}
+                    style={{ color: "var(--text-3)" }}
+                  />
                 </button>
               </Link>
             ))}
@@ -1083,13 +1189,8 @@ function EventDetail({
   );
 }
 
-function AgentLinkRow({
-  agent,
-  tenant,
-}: {
-  agent: DagAgent;
-  tenant: string;
-}) {
+function AgentLinkRow({ agent, tenant }: { agent: DagAgent; tenant: string }) {
+  const { t } = useI18n();
   return (
     <Link
       href={`/portal/${tenant}/agents/${agent.kebabId}` as never}
@@ -1105,7 +1206,14 @@ function AgentLinkRow({
         textDecoration: "none",
       }}
     >
-      <ActorTag actor={agent.actor} />
+      <ActorTag
+        actor={agent.actor}
+        label={
+          agent.actor === "Agent"
+            ? t("common.actorAgent")
+            : t("common.actorHuman")
+        }
+      />
       <span
         style={{
           fontSize: 12,
@@ -1118,11 +1226,7 @@ function AgentLinkRow({
       >
         {agent.title}
       </span>
-      <Icon
-        name="chevron-right"
-        size={11}
-        style={{ color: "var(--text-3)" }}
-      />
+      <Icon name="chevron-right" size={11} style={{ color: "var(--text-3)" }} />
     </Link>
   );
 }

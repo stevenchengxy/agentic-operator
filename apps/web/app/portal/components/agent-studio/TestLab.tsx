@@ -21,6 +21,7 @@ import {
 } from "@agentic/contracts";
 import { Badge, Button, Empty, Splitter } from "@/app/portal/components";
 import { useTenant } from "@/app/portal/lib/use-tenant";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 import {
   useAgentRunHistory,
   useCreateAgentRun,
@@ -80,6 +81,7 @@ import {
   providerOverrideNeedsModel,
   testModelOptions,
 } from "./test-model-selector";
+import { studioLocale, studioUi, type StudioTranslate } from "./copy";
 
 type ResultTab = "chat" | "trace" | "output" | "logs" | "artifacts";
 const RUN_PROVIDERS = ["", ...PROVIDER_IDS];
@@ -150,13 +152,23 @@ function formatFileBytes(bytes: number): string {
   return `${(bytes / 1_000_000).toFixed(1)} MB`;
 }
 
-function readFileValue(file: File): Promise<StudioFileValue> {
+function readFileValue(
+  file: File,
+  t: StudioTranslate,
+): Promise<StudioFileValue> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onerror = () => reject(new Error(`Could not read ${file.name}.`));
+    reader.onerror = () =>
+      reject(
+        new Error(studioUi(t, "Could not read {file}.", { file: file.name })),
+      );
     reader.onload = () => {
       if (typeof reader.result !== "string") {
-        reject(new Error(`Could not encode ${file.name}.`));
+        reject(
+          new Error(
+            studioUi(t, "Could not encode {file}.", { file: file.name }),
+          ),
+        );
         return;
       }
       const encodedType = reader.result.match(/^data:([^;,]+)/)?.[1];
@@ -193,10 +205,13 @@ function valueForInput(input: StudioInputPort): unknown {
   return "";
 }
 
-function displayTime(value: Date | string | null | undefined): string {
+function displayTime(
+  value: Date | string | null | undefined,
+  locale: string,
+): string {
   if (!value) return "—";
   const date = value instanceof Date ? value : new Date(value);
-  return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString();
+  return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString(locale);
 }
 
 function TraceRow({ event }: { event: RunTraceEvent }) {
@@ -268,6 +283,7 @@ function VariableControl({
   value: unknown;
   onChange: (value: unknown) => void;
 }) {
+  const { t } = useI18n();
   const [fileError, setFileError] = useState<string | null>(null);
   const [readingFiles, setReadingFiles] = useState(false);
 
@@ -296,7 +312,15 @@ function VariableControl({
             const oversized = files.find((file) => file.size > policy.maxBytes);
             if (oversized) {
               setFileError(
-                `${oversized.name} is ${formatFileBytes(oversized.size)}; the limit is ${formatFileBytes(policy.maxBytes)} per file.`,
+                studioUi(
+                  t,
+                  "{file} is {size}; the limit is {limit} per file.",
+                  {
+                    file: oversized.name,
+                    size: formatFileBytes(oversized.size),
+                    limit: formatFileBytes(policy.maxBytes),
+                  },
+                ),
               );
               element.value = "";
               onChange(policy.multiple ? [] : null);
@@ -312,7 +336,11 @@ function VariableControl({
             );
             if (disallowed) {
               setFileError(
-                `${disallowed.name} has media type ${disallowed.type || "application/octet-stream"}. Choose ${policy.mediaTypes.join(", ")}.`,
+                studioUi(t, "{file} has media type {type}. Choose {allowed}.", {
+                  file: disallowed.name,
+                  type: disallowed.type || "application/octet-stream",
+                  allowed: policy.mediaTypes.join(", "),
+                }),
               );
               element.value = "";
               onChange(policy.multiple ? [] : null);
@@ -322,7 +350,7 @@ function VariableControl({
             setFileError(null);
             setReadingFiles(true);
             onChange(policy.multiple ? [] : null);
-            void Promise.all(files.map(readFileValue))
+            void Promise.all(files.map((file) => readFileValue(file, t)))
               .then((encoded) =>
                 onChange(policy.multiple ? encoded : (encoded[0] ?? null)),
               )
@@ -330,7 +358,7 @@ function VariableControl({
                 setFileError(
                   error instanceof Error
                     ? error.message
-                    : "Could not read the selected file.",
+                    : studioUi(t, "Could not read the selected file."),
                 );
                 element.value = "";
                 onChange(policy.multiple ? [] : null);
@@ -355,8 +383,19 @@ function VariableControl({
         >
           {fileError ??
             (readingFiles
-              ? `Preparing ${policy.multiple ? "files" : "file"}…`
-              : `${policy.mediaTypes.length > 0 ? policy.mediaTypes.join(", ") : "Any media type"} · ${formatFileBytes(policy.maxBytes)} max per file${policy.multiple ? " · Multiple files allowed" : ""}`)}
+              ? policy.multiple
+                ? studioUi(t, "Preparing files…")
+                : studioUi(t, "Preparing file…")
+              : studioUi(t, "{types} · {size} max per file{multiple}", {
+                  types:
+                    policy.mediaTypes.length > 0
+                      ? policy.mediaTypes.join(", ")
+                      : studioUi(t, "Any media type"),
+                  size: formatFileBytes(policy.maxBytes),
+                  multiple: policy.multiple
+                    ? studioUi(t, " · Multiple files allowed")
+                    : "",
+                }))}
         </div>
       </div>
     );
@@ -367,8 +406,8 @@ function VariableControl({
         value={value === true ? "true" : "false"}
         onChange={(next) => onChange(next === "true")}
         options={[
-          { value: "false", label: "No" },
-          { value: "true", label: "Yes" },
+          { value: "false", label: studioUi(t, "No") },
+          { value: "true", label: studioUi(t, "Yes") },
         ]}
       />
     );
@@ -420,6 +459,7 @@ function ChatBubble({
   textOutputKeys: readonly string[];
   onInspectRun: (runId: string) => void;
 }) {
+  const { language, t } = useI18n();
   const assistantText =
     message.role === "assistant"
       ? assistantTextFromValue(message.content, textOutputKeys)
@@ -428,25 +468,33 @@ function ChatBubble({
     assistantText == null && isStructuredChatValue(message.content);
   const stateLabel =
     message.state === "working"
-      ? "Working"
+      ? studioUi(t, "Working")
       : message.state === "failed"
-        ? "Failed"
+        ? studioUi(t, "Failed")
         : message.state === "cancelled"
-          ? "Cancelled"
+          ? studioUi(t, "Cancelled")
           : message.state === "empty"
-            ? "No result"
+            ? studioUi(t, "No result")
             : null;
   return (
     <article
       className={`agent-studio-chat-message agent-studio-chat-message--${message.role}${selected ? " agent-studio-chat-message--selected" : ""}`}
-      aria-label={`${message.role === "user" ? "You" : "Agent"} message`}
+      aria-label={
+        message.role === "user"
+          ? studioUi(t, "Your message")
+          : studioUi(t, "Agent message")
+      }
     >
       <div className="agent-studio-chat-avatar" aria-hidden="true">
-        {message.role === "user" ? "YOU" : "AI"}
+        {message.role === "user" ? studioUi(t, "YOU") : "AI"}
       </div>
       <div className="agent-studio-chat-body">
         <div className="agent-studio-chat-byline">
-          <span>{message.role === "user" ? "You" : "Agent"}</span>
+          <span>
+            {message.role === "user"
+              ? studioUi(t, "You")
+              : studioUi(t, "Agent")}
+          </span>
           {stateLabel && (
             <span
               className={`agent-studio-chat-state agent-studio-chat-state--${message.state}`}
@@ -470,7 +518,11 @@ function ChatBubble({
           </div>
         )}
         <div className="agent-studio-chat-meta">
-          {message.createdAt && <span>{displayTime(message.createdAt)}</span>}
+          {message.createdAt && (
+            <span>
+              {displayTime(message.createdAt, studioLocale(language))}
+            </span>
+          )}
           {message.runId && (
             <button
               type="button"
@@ -478,7 +530,9 @@ function ChatBubble({
               aria-pressed={selected}
               onClick={() => onInspectRun(message.runId!)}
             >
-              {selected ? "Inspecting this run" : "Inspect run"}
+              {selected
+                ? studioUi(t, "Inspecting this run")
+                : studioUi(t, "Inspect run")}
             </button>
           )}
         </div>
@@ -503,6 +557,7 @@ export function TestLab({
   draftHasUnsavedChanges: boolean;
 }) {
   const tenant = useTenant();
+  const { language, t } = useI18n();
   const promptInput = definition.inputs.find(
     (input) => input.kind === "prompt",
   );
@@ -731,14 +786,17 @@ export function TestLab({
   const selectedOutputText =
     output.data?.output == null ? "" : prettyJsonOutput(output.data.output);
   const selectedOutputPlaceholder = !selectedRunId
-    ? "Run the agent or select a saved run to inspect its JSON output."
+    ? studioUi(
+        t,
+        "Run the agent or select a saved run to inspect its JSON output.",
+      )
     : output.isLoading
-      ? "Loading the selected run output…"
+      ? studioUi(t, "Loading the selected run output…")
       : output.isError
-        ? formatAgentStudioError(output.error)
+        ? formatAgentStudioError(output.error, t)
         : output.data && !isTerminalStatus(output.data.status)
-          ? "The selected run is still producing output…"
-          : "This run did not produce a validated JSON output.";
+          ? studioUi(t, "The selected run is still producing output…")
+          : studioUi(t, "This run did not produce a validated JSON output.");
   const reasoningSummaries = useMemo(
     () =>
       (trace.data?.events ?? []).filter(
@@ -1036,16 +1094,24 @@ export function TestLab({
 
   return (
     <div className="agent-studio-test-lab" style={{ display: "grid", gap: 14 }}>
-      <InlineNotice tone="signal" title="Test Lab uses the real runtime">
-        Send publishes a runtime event that triggers this agent. Your chat
-        message is copied exactly into the event as the agent&apos;s prompt
-        input. Structured variables stay separate, and every run, trace event,
-        log, and JSON artifact is retained in history.
+      <InlineNotice
+        tone="signal"
+        title={studioUi(t, "Test Lab uses the real runtime")}
+      >
+        {studioUi(
+          t,
+          "Send publishes a runtime event that triggers this agent. Your chat message is copied exactly into the event as the agent's prompt input. Structured variables stay separate, and every run, trace event, log, and JSON artifact is retained in history.",
+        )}
       </InlineNotice>
       {hasPreviewSteps && (
-        <InlineNotice tone="amber" title="Preview steps in this definition">
-          Delay and subflow steps are recorded in the trace, but delays do not
-          wait and subflows are not invoked by the production runtime yet.
+        <InlineNotice
+          tone="amber"
+          title={studioUi(t, "Preview steps in this definition")}
+        >
+          {studioUi(
+            t,
+            "Delay and subflow steps are recorded in the trace, but delays do not wait and subflows are not invoked by the production runtime yet.",
+          )}
         </InlineNotice>
       )}
       <div
@@ -1093,27 +1159,42 @@ export function TestLab({
               <div
                 style={{ color: "var(--text)", fontSize: 12, fontWeight: 600 }}
               >
-                Test setup
+                {studioUi(t, "Test setup")}
               </div>
               <div
                 style={{ color: "var(--text-3)", fontSize: 10.5, marginTop: 2 }}
               >
-                Structured inputs and runtime settings
+                {studioUi(t, "Structured inputs and runtime settings")}
               </div>
             </div>
             {sessionId ? (
-              <Badge tone="blue">{target} · locked</Badge>
+              <Badge tone="blue">
+                {target === "draft"
+                  ? studioUi(t, "Draft")
+                  : studioUi(t, "Live")}{" "}
+                · {studioUi(t, "locked")}
+              </Badge>
             ) : (
               <Segmented
-                ariaLabel="Version to test"
+                ariaLabel={studioUi(t, "Version to test")}
                 value={target}
                 onChange={setTarget}
                 options={[
                   ...(draft
-                    ? [{ value: "draft" as const, label: "Draft" }]
+                    ? [
+                        {
+                          value: "draft" as const,
+                          label: studioUi(t, "Draft"),
+                        },
+                      ]
                     : []),
                   ...(liveVersionId
-                    ? [{ value: "live" as const, label: "Live" }]
+                    ? [
+                        {
+                          value: "live" as const,
+                          label: studioUi(t, "Live"),
+                        },
+                      ]
                     : []),
                 ]}
               />
@@ -1130,10 +1211,25 @@ export function TestLab({
             }}
           >
             {sessionId
-              ? `${target === "draft" ? "Draft" : "Live"} is pinned for this conversation. Start a new chat to change it.`
+              ? studioUi(
+                  t,
+                  "{target} is pinned for this conversation. Start a new chat to change it.",
+                  {
+                    target:
+                      target === "draft"
+                        ? studioUi(t, "Draft")
+                        : studioUi(t, "Live"),
+                  },
+                )
               : target === "draft"
-                ? "Draft runs test your saved changes without changing the live agent."
-                : "Live runs use the currently published version—the same version production callers use."}
+                ? studioUi(
+                    t,
+                    "Draft runs test your saved changes without changing the live agent.",
+                  )
+                : studioUi(
+                    t,
+                    "Live runs use the currently published version—the same version production callers use.",
+                  )}
           </div>
           <div
             className="agent-studio-test-setup-body"
@@ -1164,14 +1260,14 @@ export function TestLab({
                       fontWeight: 500,
                     }}
                   >
-                    Input variables
+                    {studioUi(t, "Input variables")}
                   </span>
                   <Segmented
-                    ariaLabel="Input editor view"
+                    ariaLabel={studioUi(t, "Input editor view")}
                     value={inputMode}
                     onChange={setInputMode}
                     options={[
-                      { value: "form", label: "Form" },
+                      { value: "form", label: studioUi(t, "Form") },
                       { value: "json", label: "JSON" },
                     ]}
                   />
@@ -1181,8 +1277,11 @@ export function TestLab({
                     value={inputs}
                     onChange={(value) => setInputs(asRecord(value))}
                     height={230}
-                    label="All test inputs"
-                    hint="Advanced view of the same form fields. Each key must match an input's internal field name."
+                    label={studioUi(t, "All test inputs")}
+                    hint={studioUi(
+                      t,
+                      "Advanced view of the same form fields. Each key must match an input's internal field name.",
+                    )}
                     example={'{"customer_tier":"gold","language":"en"}'}
                   />
                 ) : (
@@ -1194,7 +1293,11 @@ export function TestLab({
                         required={input.required}
                         hint={
                           input.description ||
-                          `Enter the ${input.label.toLowerCase()} expected by this agent.`
+                          studioUi(
+                            t,
+                            "Enter the {field} expected by this agent.",
+                            { field: input.label.toLowerCase() },
+                          )
                         }
                         example={
                           input.example == null
@@ -1222,11 +1325,17 @@ export function TestLab({
             )}
             {triggerEvents.length > 0 && (
               <Field
-                label="Trigger event"
+                label={studioUi(t, "Trigger event")}
                 hint={
                   sessionId
-                    ? "Pinned for every message in this conversation."
-                    : "Pressing Send publishes this event to start the agent."
+                    ? studioUi(
+                        t,
+                        "Pinned for every message in this conversation.",
+                      )
+                    : studioUi(
+                        t,
+                        "Pressing Send publishes this event to start the agent.",
+                      )
                 }
               >
                 <SelectInput
@@ -1253,7 +1362,9 @@ export function TestLab({
                   fontWeight: 500,
                 }}
               >
-                {emittedEvents.length === 1 ? "Emit event" : "Emit events"}
+                {emittedEvents.length === 1
+                  ? studioUi(t, "Emit event")
+                  : studioUi(t, "Emit events")}
               </div>
               <div
                 style={{
@@ -1263,14 +1374,16 @@ export function TestLab({
                   lineHeight: 1.45,
                 }}
               >
-                Configured outgoing events. Successful runs can publish them to
-                continue downstream workflow steps.
+                {studioUi(
+                  t,
+                  "Configured outgoing events. Successful runs can publish them to continue downstream workflow steps.",
+                )}
               </div>
               {emittedEvents.length > 0 ? (
                 <div
                   className="agent-studio-test-event-list"
                   role="list"
-                  aria-label="Emitted events"
+                  aria-label={studioUi(t, "Emitted events")}
                 >
                   {emittedEvents.map((name) => (
                     <span
@@ -1288,22 +1401,22 @@ export function TestLab({
                   className="agent-studio-test-event-list agent-studio-test-event-empty"
                   role="status"
                 >
-                  No emitted events configured
+                  {studioUi(t, "No emitted events configured")}
                 </div>
               )}
             </div>
             <details className="agent-studio-output-details">
               <summary>
-                <span>JSON OUTPUT</span>
+                <span>{studioUi(t, "JSON OUTPUT")}</span>
                 <span>
                   {selectedRunId
-                    ? (activeStatus ?? "selected run")
-                    : "no run selected"}
+                    ? (activeStatus ?? studioUi(t, "selected run"))
+                    : studioUi(t, "no run selected")}
                 </span>
               </summary>
               <div className="agent-studio-output-details__body">
                 <textarea
-                  aria-label="Selected run JSON output"
+                  aria-label={studioUi(t, "Selected run JSON output")}
                   aria-busy={output.isLoading}
                   readOnly
                   spellCheck={false}
@@ -1313,7 +1426,10 @@ export function TestLab({
                 />
                 <div className="agent-studio-output-details__hint">
                   {selectedOutputText
-                    ? "Complete validated output for the selected run. This remains JSON even when the conversation shows only its response text."
+                    ? studioUi(
+                        t,
+                        "Complete validated output for the selected run. This remains JSON even when the conversation shows only its response text.",
+                      )
                     : selectedOutputPlaceholder}
                 </div>
               </div>
@@ -1332,15 +1448,18 @@ export function TestLab({
                   fontSize: 10.5,
                 }}
               >
-                ADVANCED TEST SETTINGS
+                {studioUi(t, "ADVANCED TEST SETTINGS")}
               </summary>
               <div
                 className="agent-studio-test-advanced-body"
                 style={{ display: "grid", gap: 10, marginTop: 10 }}
               >
                 <Field
-                  label="What tools may change"
-                  hint="Safe is recommended and runs only tools explicitly approved for tests. Read-only permits approved reads but blocks writes. Live can change connected systems."
+                  label={studioUi(t, "What tools may change")}
+                  hint={studioUi(
+                    t,
+                    "Safe is recommended and runs only tools explicitly approved for tests. Read-only permits approved reads but blocks writes. Live can change connected systems.",
+                  )}
                 >
                   <SelectInput
                     value={toolPolicy}
@@ -1350,15 +1469,24 @@ export function TestLab({
                     options={[
                       {
                         value: "safe",
-                        label: "Safe test — approved test tools only",
+                        label: studioUi(
+                          t,
+                          "Safe test — approved test tools only",
+                        ),
                       },
                       {
                         value: "simulate",
-                        label: "Read-only — approved reads, writes blocked",
+                        label: studioUi(
+                          t,
+                          "Read-only — approved reads, writes blocked",
+                        ),
                       },
                       {
                         value: "live",
-                        label: "Live effects — allow configured changes",
+                        label: studioUi(
+                          t,
+                          "Live effects — allow configured changes",
+                        ),
                       },
                     ]}
                   />
@@ -1366,17 +1494,21 @@ export function TestLab({
                 {toolPolicy === "live" && (
                   <InlineNotice
                     tone="amber"
-                    title="External side effects enabled"
+                    title={studioUi(t, "External side effects enabled")}
                   >
-                    This run may write files, call third-party services, or
-                    change downstream systems through the agent&apos;s allowed
-                    tools.
+                    {studioUi(
+                      t,
+                      "This run may write files, call third-party services, or change downstream systems through the agent's allowed tools.",
+                    )}
                   </InlineNotice>
                 )}
                 <div className="agent-studio-test-runtime-grid agent-studio-test-runtime-grid--pair">
                   <Field
-                    label="Temporary AI provider"
-                    hint="Only changes this test run. Leave inherited to test the agent exactly as configured."
+                    label={studioUi(t, "Temporary AI provider")}
+                    hint={studioUi(
+                      t,
+                      "Only changes this test run. Leave inherited to test the agent exactly as configured.",
+                    )}
                   >
                     <SelectInput
                       value={provider}
@@ -1385,21 +1517,40 @@ export function TestLab({
                         value,
                         label:
                           value ||
-                          `Use agent / workspace${definition.provider ? ` (${definition.provider})` : ""}`,
+                          studioUi(t, "Use agent / workspace{provider}", {
+                            provider: definition.provider
+                              ? ` (${definition.provider})`
+                              : "",
+                          }),
                       }))}
                     />
                   </Field>
                   <Field
-                    label="Temporary AI model"
+                    label={studioUi(t, "Temporary AI model")}
                     required={providerModelMissing}
                     hint={
                       providerModelMissing
-                        ? `Choose or enter a model for ${effectiveProvider}. A temporary provider override must send an explicit provider/model pair.`
+                        ? studioUi(
+                            t,
+                            "Choose or enter a model for {provider}. A temporary provider override must send an explicit provider/model pair.",
+                            { provider: effectiveProvider },
+                          )
                         : !effectiveProvider
-                          ? "Select a provider to browse its models, or enter a workspace model ID manually."
+                          ? studioUi(
+                              t,
+                              "Select a provider to browse its models, or enter a workspace model ID manually.",
+                            )
                           : showModelSelector
-                            ? `Choose a model available from ${effectiveProvider}, or enter a custom model ID.`
-                            : `Enter the model or deployment ID expected by ${effectiveProvider}; no provider model list is available.`
+                            ? studioUi(
+                                t,
+                                "Choose a model available from {provider}, or enter a custom model ID.",
+                                { provider: effectiveProvider },
+                              )
+                            : studioUi(
+                                t,
+                                "Enter the model or deployment ID expected by {provider}; no provider model list is available.",
+                                { provider: effectiveProvider },
+                              )
                     }
                   >
                     <div style={{ display: "grid", gap: 6 }}>
@@ -1413,10 +1564,37 @@ export function TestLab({
                               ? [
                                   {
                                     value: "",
-                                    label: `Loading ${effectiveProvider} models…`,
+                                    label: studioUi(
+                                      t,
+                                      "Loading {provider} models…",
+                                      { provider: effectiveProvider },
+                                    ),
                                   },
                                 ]
-                              : modelOptions
+                              : modelOptions.map((option) => ({
+                                  ...option,
+                                  label:
+                                    option.value === CUSTOM_MODEL_OPTION
+                                      ? studioUi(t, "Enter a custom model ID…")
+                                      : option.value
+                                        ? option.label
+                                        : provider
+                                          ? studioUi(
+                                              t,
+                                              "Choose a model from {provider}",
+                                              { provider: effectiveProvider },
+                                            )
+                                          : definition.model
+                                            ? studioUi(
+                                                t,
+                                                "Use agent / workspace ({model})",
+                                                { model: definition.model },
+                                              )
+                                            : studioUi(
+                                                t,
+                                                "Use agent / workspace model",
+                                              ),
+                                }))
                           }
                         />
                       ) : null}
@@ -1426,9 +1604,11 @@ export function TestLab({
                           mono
                           placeholder={
                             provider
-                              ? `Enter a ${provider} model ID`
+                              ? studioUi(t, "Enter a {provider} model ID", {
+                                  provider,
+                                })
                               : definition.model ||
-                                "Use agent / workspace model"
+                                studioUi(t, "Use agent / workspace model")
                           }
                           onChange={changeManualModel}
                         />
@@ -1446,8 +1626,11 @@ export function TestLab({
                   <div className="agent-studio-test-runtime-grid agent-studio-test-runtime-grid--pair">
                     {modelCapabilities?.reasoningModes?.length ? (
                       <Field
-                        label="Temporary reasoning mode"
-                        hint="Standard balances quality and latency; Pro uses the model's highest-compute execution path."
+                        label={studioUi(t, "Temporary reasoning mode")}
+                        hint={studioUi(
+                          t,
+                          "Standard balances quality and latency; Pro uses the model's highest-compute execution path.",
+                        )}
                       >
                         <SelectInput
                           value={reasoningMode}
@@ -1455,7 +1638,11 @@ export function TestLab({
                           options={[
                             {
                               value: "",
-                              label: `Use agent / model${asRecord(definition.reasoning).mode ? ` (${String(asRecord(definition.reasoning).mode)})` : " default"}`,
+                              label: studioUi(t, "Use agent / model{setting}", {
+                                setting: asRecord(definition.reasoning).mode
+                                  ? ` (${String(asRecord(definition.reasoning).mode)})`
+                                  : ` ${studioUi(t, "default")}`,
+                              }),
                             },
                             ...modelCapabilities.reasoningModes.map(
                               (value) => ({
@@ -1469,8 +1656,11 @@ export function TestLab({
                     ) : null}
                     {modelCapabilities?.reasoningEfforts?.length ? (
                       <Field
-                        label="Temporary reasoning effort"
-                        hint="Higher effort may improve difficult reasoning while increasing latency and reasoning-token cost."
+                        label={studioUi(t, "Temporary reasoning effort")}
+                        hint={studioUi(
+                          t,
+                          "Higher effort may improve difficult reasoning while increasing latency and reasoning-token cost.",
+                        )}
                       >
                         <SelectInput
                           value={reasoningEffort}
@@ -1478,7 +1668,11 @@ export function TestLab({
                           options={[
                             {
                               value: "",
-                              label: `Use agent / model${asRecord(definition.reasoning).effort ? ` (${String(asRecord(definition.reasoning).effort)})` : " default"}`,
+                              label: studioUi(t, "Use agent / model{setting}", {
+                                setting: asRecord(definition.reasoning).effort
+                                  ? ` (${String(asRecord(definition.reasoning).effort)})`
+                                  : ` ${studioUi(t, "default")}`,
+                              }),
                             },
                             ...modelCapabilities.reasoningEfforts.map(
                               (value) => ({
@@ -1492,14 +1686,20 @@ export function TestLab({
                     ) : null}
                     {modelCapabilities?.reasoningSummaries?.length ? (
                       <Field
-                        label="Temporary reasoning summary"
-                        hint="Requests a safe provider-generated summary; raw chain-of-thought is never recorded."
+                        label={studioUi(t, "Temporary reasoning summary")}
+                        hint={studioUi(
+                          t,
+                          "Requests a safe provider-generated summary; raw chain-of-thought is never recorded.",
+                        )}
                       >
                         <SelectInput
                           value={reasoningSummary}
                           onChange={setReasoningSummary}
                           options={[
-                            { value: "", label: "Use agent / model default" },
+                            {
+                              value: "",
+                              label: studioUi(t, "Use agent / model default"),
+                            },
                             ...modelCapabilities.reasoningSummaries.map(
                               (value) => ({
                                 value,
@@ -1512,14 +1712,20 @@ export function TestLab({
                     ) : null}
                     {modelCapabilities?.reasoningContexts?.length ? (
                       <Field
-                        label="Temporary reasoning context"
-                        hint="Controls which persisted reasoning items may be reused on later conversation turns."
+                        label={studioUi(t, "Temporary reasoning context")}
+                        hint={studioUi(
+                          t,
+                          "Controls which persisted reasoning items may be reused on later conversation turns.",
+                        )}
                       >
                         <SelectInput
                           value={reasoningContext}
                           onChange={setReasoningContext}
                           options={[
-                            { value: "", label: "Use agent / model default" },
+                            {
+                              value: "",
+                              label: studioUi(t, "Use agent / model default"),
+                            },
                             ...modelCapabilities.reasoningContexts.map(
                               (value) => ({
                                 value,
@@ -1532,8 +1738,11 @@ export function TestLab({
                     ) : null}
                     {modelCapabilities?.textVerbosities?.length ? (
                       <Field
-                        label="Temporary answer verbosity"
-                        hint="Controls how concise or detailed the model's visible answer should be."
+                        label={studioUi(t, "Temporary answer verbosity")}
+                        hint={studioUi(
+                          t,
+                          "Controls how concise or detailed the model's visible answer should be.",
+                        )}
                       >
                         <SelectInput
                           value={verbosity}
@@ -1541,7 +1750,11 @@ export function TestLab({
                           options={[
                             {
                               value: "",
-                              label: `Use agent / model${definition.verbosity ? ` (${definition.verbosity})` : " default"}`,
+                              label: studioUi(t, "Use agent / model{setting}", {
+                                setting: definition.verbosity
+                                  ? ` (${definition.verbosity})`
+                                  : ` ${studioUi(t, "default")}`,
+                              }),
                             },
                             ...modelCapabilities.textVerbosities.map(
                               (value) => ({
@@ -1556,17 +1769,31 @@ export function TestLab({
                     {effectiveProvider === "openai" ||
                     effectiveProvider === "openrouter" ? (
                       <Field
-                        label="Temporary provider storage"
-                        hint="Controls upstream response retention for this test. Local run logs and usage accounting are separate."
+                        label={studioUi(t, "Temporary provider storage")}
+                        hint={studioUi(
+                          t,
+                          "Controls upstream response retention for this test. Local run logs and usage accounting are separate.",
+                        )}
                       >
                         <SelectInput
                           value={storeResponse}
                           onChange={setStoreResponse}
                           options={[
-                            { value: "", label: "Use agent / service default" },
-                            { value: "false", label: "Do not store upstream" },
+                            {
+                              value: "",
+                              label: studioUi(t, "Use agent / service default"),
+                            },
+                            {
+                              value: "false",
+                              label: studioUi(t, "Do not store upstream"),
+                            },
                             ...(effectiveProvider === "openai"
-                              ? [{ value: "true", label: "Store upstream" }]
+                              ? [
+                                  {
+                                    value: "true",
+                                    label: studioUi(t, "Store upstream"),
+                                  },
+                                ]
                               : []),
                           ]}
                         />
@@ -1576,11 +1803,28 @@ export function TestLab({
                 )}
                 <div className="agent-studio-test-runtime-grid agent-studio-test-runtime-grid--numeric">
                   <Field
-                    label="Temporary creativity"
+                    label={studioUi(t, "Temporary creativity")}
                     hint={
                       temperatureUnsupported
-                        ? `${effectiveProvider}/${effectiveModel.replace(/^~/, "")} does not support temperature. The saved agent setting is omitted for this test.`
-                        : `0 is consistent; higher values are more varied. Leave blank to use the agent setting.${modelCapabilities.temperatureRange ? ` Accepted range: ${temperatureMin}–${temperatureMax}.` : ""}`
+                        ? studioUi(
+                            t,
+                            "{model} does not support temperature. The saved agent setting is omitted for this test.",
+                            {
+                              model: `${effectiveProvider}/${effectiveModel.replace(/^~/, "")}`,
+                            },
+                          )
+                        : `${studioUi(t, "0 is consistent; higher values are more varied. Leave blank to use the agent setting.")}${
+                            modelCapabilities.temperatureRange
+                              ? ` ${studioUi(
+                                  t,
+                                  "Accepted range: {min}–{max}.",
+                                  {
+                                    min: temperatureMin,
+                                    max: temperatureMax,
+                                  },
+                                )}`
+                              : ""
+                          }`
                     }
                     example={temperatureUnsupported ? undefined : "0.2"}
                   >
@@ -1592,44 +1836,58 @@ export function TestLab({
                       disabled={temperatureUnsupported}
                       placeholder={
                         temperatureUnsupported
-                          ? "Not supported — omitted"
-                          : `Agent: ${definition.temperature}`
+                          ? studioUi(t, "Not supported — omitted")
+                          : studioUi(t, "Agent: {value}", {
+                              value: definition.temperature,
+                            })
                       }
                       onChange={setTemperature}
                     />
                   </Field>
                   <Field
-                    label="Temporary answer length"
-                    hint="Maximum tokens for this test. Leave blank to use the agent setting."
+                    label={studioUi(t, "Temporary answer length")}
+                    hint={studioUi(
+                      t,
+                      "Maximum tokens for this test. Leave blank to use the agent setting.",
+                    )}
                     example="2000"
                   >
                     <TextInput
                       value={maxTokens}
                       type="number"
                       min={1}
-                      placeholder={`Agent: ${definition.max_tokens}`}
+                      placeholder={studioUi(t, "Agent: {value}", {
+                        value: definition.max_tokens,
+                      })}
                       onChange={setMaxTokens}
                     />
                   </Field>
                   <Field
-                    label="Temporary time limit"
-                    hint="Stop this test after this many seconds. Leave blank to use the agent setting."
+                    label={studioUi(t, "Temporary time limit")}
+                    hint={studioUi(
+                      t,
+                      "Stop this test after this many seconds. Leave blank to use the agent setting.",
+                    )}
                     example="120"
                   >
                     <TextInput
                       value={timeoutSeconds}
                       type="number"
                       min={1}
-                      placeholder={`Agent: ${definition.timeout_s}`}
+                      placeholder={studioUi(t, "Agent: {value}", {
+                        value: definition.timeout_s,
+                      })}
                       onChange={setTimeoutSeconds}
                     />
                   </Field>
                 </div>
                 {numericRuntimeOverridesInvalid && (
                   <div style={{ color: "var(--red)", fontSize: 10.5 }}>
-                    Temperature must be between {temperatureMin} and{" "}
-                    {temperatureMax}; max tokens and timeout must be positive
-                    whole numbers.
+                    {studioUi(
+                      t,
+                      "Temperature must be between {min} and {max}; max tokens and timeout must be positive whole numbers.",
+                      { min: temperatureMin, max: temperatureMax },
+                    )}
                   </div>
                 )}
               </div>
@@ -1643,8 +1901,10 @@ export function TestLab({
                 fontSize: 10.5,
               }}
             >
-              Save the current draft changes before running so the test is
-              pinned to this exact revision.
+              {studioUi(
+                t,
+                "Save the current draft changes before running so the test is pinned to this exact revision.",
+              )}
             </div>
           )}
           {missingRequired.length > 0 && (
@@ -1655,7 +1915,7 @@ export function TestLab({
                 fontSize: 10.5,
               }}
             >
-              Complete required inputs:{" "}
+              {studioUi(t, "Complete required inputs:")}{" "}
               {missingRequired.map((input) => input.label).join(", ")}
             </div>
           )}
@@ -1674,7 +1934,7 @@ export function TestLab({
             setValue={setSetupPanelWidth}
             min={TEST_SETUP_MIN_WIDTH}
             max={setupPanelMaxWidth}
-            ariaLabel="Resize Test setup and Conversation panels"
+            ariaLabel={studioUi(t, "Resize Test setup and Conversation panels")}
             ariaControls="agent-studio-test-setup-panel agent-studio-test-conversation-panel"
           />
         </div>
@@ -1708,25 +1968,31 @@ export function TestLab({
                     fontWeight: 600,
                   }}
                 >
-                  Conversation
+                  {studioUi(t, "Conversation")}
                 </span>
                 {activeStatus && (
-                  <Badge tone={statusTone(activeStatus)}>{activeStatus}</Badge>
+                  <Badge tone={statusTone(activeStatus)}>
+                    {studioUi(t, activeStatus)}
+                  </Badge>
                 )}
                 {output.data?.outputValid != null && (
                   <Badge tone={output.data.outputValid ? "green" : "red"}>
                     {output.data.outputValid
-                      ? "Schema valid"
-                      : "Invalid output"}
+                      ? studioUi(t, "Schema valid")
+                      : studioUi(t, "Invalid output")}
                   </Badge>
                 )}
                 {lastDispatch?.runId === selectedRunId && (
                   <Link
                     href={`/portal/${tenant}/events?eventId=${encodeURIComponent(lastDispatch.eventId)}`}
-                    title={`Trigger event ${lastDispatch.eventId}`}
+                    title={studioUi(t, "Trigger event {event}", {
+                      event: lastDispatch.eventId,
+                    })}
                     style={{ display: "inline-flex" }}
                   >
-                    <Badge tone="muted">event · {lastDispatch.eventName}</Badge>
+                    <Badge tone="muted">
+                      {studioUi(t, "event")} · {lastDispatch.eventName}
+                    </Badge>
                   </Link>
                 )}
               </div>
@@ -1735,8 +2001,10 @@ export function TestLab({
               >
                 {sessionId
                   ? session.data?.session.title ||
-                    `Session ${sessionId.slice(0, 12)}…`
-                  : "Start a chat to test the agent"}
+                    studioUi(t, "Session {id}…", {
+                      id: sessionId.slice(0, 12),
+                    })
+                  : studioUi(t, "Start a chat to test the agent")}
               </div>
             </div>
             <div
@@ -1752,19 +2020,25 @@ export function TestLab({
                 small
                 tone="ghost"
                 icon="logs"
-                title={historyOpen ? "Hide run history" : "Show run history"}
+                title={
+                  historyOpen
+                    ? studioUi(t, "Hide run history")
+                    : studioUi(t, "Show run history")
+                }
                 onClick={() => setHistoryOpen((open) => !open)}
                 ariaLabel={
-                  historyOpen ? "Hide run history" : "Show run history"
+                  historyOpen
+                    ? studioUi(t, "Hide run history")
+                    : studioUi(t, "Show run history")
                 }
                 ariaControls="agent-studio-test-history-panel"
                 ariaExpanded={historyOpen}
               >
-                History
+                {studioUi(t, "History")}
               </Button>
               {sessionId && (
                 <Button small disabled={conversationBusy} onClick={newChat}>
-                  New chat
+                  {studioUi(t, "New chat")}
                 </Button>
               )}
               {activeStatus && !isTerminalStatus(activeStatus) && (
@@ -1777,7 +2051,7 @@ export function TestLab({
                     selectedRunId && cancelRun.mutate(selectedRunId)
                   }
                 >
-                  Stop
+                  {studioUi(t, "Stop")}
                 </Button>
               )}
               {selectedRunId && (
@@ -1785,14 +2059,14 @@ export function TestLab({
                   href={`/portal/${tenant}/runs/${selectedRunId}`}
                   style={{ color: "var(--blue)", fontSize: 10.5 }}
                 >
-                  Open full run ↗
+                  {studioUi(t, "Open full run ↗")}
                 </Link>
               )}
             </div>
           </div>
           <div
             role="tablist"
-            aria-label="Run details"
+            aria-label={studioUi(t, "Run details")}
             className="agent-studio-test-result-tabs"
             style={{
               padding: "8px 12px",
@@ -1818,7 +2092,7 @@ export function TestLab({
                     fontSize: 10.5,
                   }}
                 >
-                  {tab}
+                  {studioUi(t, tab)}
                 </button>
               ),
             )}
@@ -1839,16 +2113,16 @@ export function TestLab({
               <div
                 className="agent-studio-chat-log"
                 role="log"
-                aria-label="Test Lab conversation"
+                aria-label={studioUi(t, "Test Lab conversation")}
                 aria-live="polite"
                 aria-relevant="additions text"
                 aria-busy={conversationBusy}
               >
                 {session.isLoading ? (
-                  <Empty title="Loading conversation…" />
+                  <Empty title={studioUi(t, "Loading conversation…")} />
                 ) : session.isError ? (
                   <Empty
-                    title="Conversation unavailable"
+                    title={studioUi(t, "Conversation unavailable")}
                     hint={session.error.message}
                   />
                 ) : chatTranscript.length ? (
@@ -1864,11 +2138,12 @@ export function TestLab({
                 ) : !pendingTurn ? (
                   <div className="agent-studio-chat-welcome">
                     <div className="agent-studio-chat-welcome-mark">AI</div>
-                    <h3>Test your agent in a conversation</h3>
+                    <h3>{studioUi(t, "Test your agent in a conversation")}</h3>
                     <p>
-                      Send an end-user prompt below. The result appears here,
-                      and follow-up messages continue with the same session
-                      context.
+                      {studioUi(
+                        t,
+                        "Send an end-user prompt below. The result appears here, and follow-up messages continue with the same session context.",
+                      )}
                     </p>
                   </div>
                 ) : null}
@@ -1897,8 +2172,22 @@ export function TestLab({
                         runId: pendingTurn.runId,
                         content:
                           pendingTurn.state === "publishing"
-                            ? "Publishing the trigger event to the agent runtime…"
-                            : `${pendingTurn.eventName ?? "The trigger event"}${pendingTurn.eventId ? ` (${pendingTurn.eventId})` : ""} was accepted. The agent is working on this request…`,
+                            ? studioUi(
+                                t,
+                                "Publishing the trigger event to the agent runtime…",
+                              )
+                            : studioUi(
+                                t,
+                                "{event}{id} was accepted. The agent is working on this request…",
+                                {
+                                  event:
+                                    pendingTurn.eventName ??
+                                    studioUi(t, "The trigger event"),
+                                  id: pendingTurn.eventId
+                                    ? ` (${pendingTurn.eventId})`
+                                    : "",
+                                },
+                              ),
                         state: "working",
                         createdAt: null,
                       }}
@@ -1915,15 +2204,19 @@ export function TestLab({
               </div>
             ) : !selectedRunId ? (
               <Empty
-                title="Run the agent to inspect it"
-                hint="The live sequence, reasoning summaries, logs, and output appear here."
+                title={studioUi(t, "Run the agent to inspect it")}
+                hint={studioUi(
+                  t,
+                  "The live sequence, reasoning summaries, logs, and output appear here.",
+                )}
               />
             ) : resultTab === "trace" ? (
               <div>
-                <InlineNotice title="Reasoning visibility">
-                  The studio shows concise model reasoning summaries and tool
-                  decisions when enabled. Hidden chain-of-thought is never
-                  exposed.
+                <InlineNotice title={studioUi(t, "Reasoning visibility")}>
+                  {studioUi(
+                    t,
+                    "The studio shows concise model reasoning summaries and tool decisions when enabled. Hidden chain-of-thought is never exposed.",
+                  )}
                 </InlineNotice>
                 {reasoningSummaries.length > 0 && (
                   <div
@@ -1943,7 +2236,7 @@ export function TestLab({
                         marginBottom: 6,
                       }}
                     >
-                      REASONING SUMMARY
+                      {studioUi(t, "REASONING SUMMARY")}
                     </div>
                     {reasoningSummaries.map((event) => (
                       <div
@@ -1962,10 +2255,10 @@ export function TestLab({
                 )}
                 <div style={{ marginTop: 10 }}>
                   {trace.isLoading ? (
-                    <Empty title="Loading trace…" />
+                    <Empty title={studioUi(t, "Loading trace…")} />
                   ) : trace.isError ? (
                     <Empty
-                      title="Trace unavailable"
+                      title={studioUi(t, "Trace unavailable")}
                       hint={trace.error.message}
                     />
                   ) : trace.data?.events.length ? (
@@ -1973,29 +2266,39 @@ export function TestLab({
                       <TraceRow key={event.id} event={event} />
                     ))
                   ) : (
-                    <Empty title="Waiting for the first trace event…" />
+                    <Empty
+                      title={studioUi(t, "Waiting for the first trace event…")}
+                    />
                   )}
                 </div>
               </div>
             ) : resultTab === "output" ? (
               output.isLoading ? (
-                <Empty title="Waiting for output…" />
+                <Empty title={studioUi(t, "Waiting for output…")} />
               ) : output.isError ? (
                 <Empty
-                  title="Output is not ready"
+                  title={studioUi(t, "Output is not ready")}
                   hint={output.error.message}
                 />
               ) : output.data && !isTerminalStatus(output.data.status) ? (
                 <Empty
-                  title="Run is still producing output…"
-                  hint="The validated JSON artifact will appear when the run completes."
+                  title={studioUi(t, "Run is still producing output…")}
+                  hint={studioUi(
+                    t,
+                    "The validated JSON artifact will appear when the run completes.",
+                  )}
                 />
               ) : output.data?.output == null ? (
                 <Empty
-                  title="No validated output"
+                  title={studioUi(t, "No validated output")}
                   hint={
                     selectedHistory?.error ??
-                    `The run finished with status ${output.data?.status ?? activeStatus ?? "unknown"}.`
+                    studioUi(t, "The run finished with status {status}.", {
+                      status:
+                        output.data?.status ??
+                        activeStatus ??
+                        studioUi(t, "unknown"),
+                    })
                   }
                 />
               ) : (
@@ -2006,7 +2309,9 @@ export function TestLab({
                     </Badge>
                     {output.data.artifact && (
                       <Badge tone="muted">
-                        {output.data.artifact.size} bytes
+                        {studioUi(t, "{count} bytes", {
+                          count: output.data.artifact.size,
+                        })}
                       </Badge>
                     )}
                   </div>
@@ -2032,11 +2337,15 @@ export function TestLab({
               <div>
                 <div style={{ display: "flex", gap: 7, marginBottom: 8 }}>
                   <Badge tone={logs.connected ? "green" : "muted"}>
-                    {logs.connected ? "Live" : "Closed"}
+                    {logs.connected
+                      ? studioUi(t, "Live")
+                      : studioUi(t, "Closed")}
                   </Badge>
                   {logs.error && (
                     <span style={{ color: "var(--amber)", fontSize: 10.5 }}>
-                      {logs.error}
+                      {studioUi(t, "Disconnected — retry in {seconds}s", {
+                        seconds: logs.error.retrySeconds,
+                      })}
                     </span>
                   )}
                 </div>
@@ -2055,15 +2364,20 @@ export function TestLab({
                     whiteSpace: "pre-wrap",
                   }}
                 >
-                  {logs.lines.map((line) => line.text).join("\n") ||
-                    "Waiting for runtime logs…"}
+                  {logs.lines
+                    .map((line) =>
+                      line.kind === "end"
+                        ? studioUi(t, "Stream closed by server")
+                        : line.text,
+                    )
+                    .join("\n") || studioUi(t, "Waiting for runtime logs…")}
                 </pre>
               </div>
             ) : artifacts.isLoading ? (
-              <Empty title="Loading artifacts…" />
+              <Empty title={studioUi(t, "Loading artifacts…")} />
             ) : artifacts.isError ? (
               <Empty
-                title="Artifacts unavailable"
+                title={studioUi(t, "Artifacts unavailable")}
                 hint={artifacts.error.message}
               />
             ) : artifacts.data?.length ? (
@@ -2119,8 +2433,11 @@ export function TestLab({
               </div>
             ) : (
               <Empty
-                title="No artifacts yet"
-                hint="Every completed Studio run stores its aggregate JSON output as an artifact."
+                title={studioUi(t, "No artifacts yet")}
+                hint={studioUi(
+                  t,
+                  "Every completed Studio run stores its aggregate JSON output as an artifact.",
+                )}
               />
             )}
           </div>
@@ -2135,11 +2452,13 @@ export function TestLab({
               <div className="agent-studio-chat-composer-box">
                 <textarea
                   value={prompt}
-                  aria-label={`Message for the agent (${promptInput?.id ?? "prompt"})`}
+                  aria-label={studioUi(t, "Message for the agent ({input})", {
+                    input: promptInput?.id ?? "prompt",
+                  })}
                   placeholder={
                     sessionId
-                      ? "Ask a follow-up…"
-                      : "Message the agent to start a test…"
+                      ? studioUi(t, "Ask a follow-up…")
+                      : studioUi(t, "Message the agent to start a test…")
                   }
                   rows={3}
                   disabled={createRun.isPending || targetUnavailable}
@@ -2162,51 +2481,73 @@ export function TestLab({
                   style={{ alignSelf: "flex-end" }}
                 >
                   {createRun.isPending
-                    ? "Sending event…"
+                    ? studioUi(t, "Sending event…")
                     : conversationBusy
-                      ? "Agent running…"
-                      : "Send"}
+                      ? studioUi(t, "Agent running…")
+                      : studioUi(t, "Send")}
                 </Button>
               </div>
               <div className="agent-studio-chat-composer-meta">
                 <span>
                   {createRun.isPending
-                    ? "Publishing the agent trigger event…"
+                    ? studioUi(t, "Publishing the agent trigger event…")
                     : sessionHasActiveRun
-                      ? "Wait for this response before sending a follow-up"
-                      : "Enter to send · Shift+Enter for a new line"}
+                      ? studioUi(
+                          t,
+                          "Wait for this response before sending a follow-up",
+                        )
+                      : studioUi(
+                          t,
+                          "Enter to send · Shift+Enter for a new line",
+                        )}
                 </span>
                 <span>
                   {sessionId
-                    ? `${target} target · session context`
-                    : `${target} target · new conversation`}
+                    ? studioUi(t, "{target} target · session context", {
+                        target:
+                          target === "draft"
+                            ? studioUi(t, "Draft")
+                            : studioUi(t, "Live"),
+                      })
+                    : studioUi(t, "{target} target · new conversation", {
+                        target:
+                          target === "draft"
+                            ? studioUi(t, "Draft")
+                            : studioUi(t, "Live"),
+                      })}
                 </span>
               </div>
               {draftNotReady && (
                 <div className="agent-studio-chat-composer-error">
-                  Save the draft before starting this conversation.
+                  {studioUi(
+                    t,
+                    "Save the draft before starting this conversation.",
+                  )}
                 </div>
               )}
               {missingRequired.length > 0 && (
                 <div className="agent-studio-chat-composer-error">
-                  Complete required inputs in Test setup:{" "}
+                  {studioUi(t, "Complete required inputs in Test setup:")}{" "}
                   {missingRequired.map((input) => input.label).join(", ")}
                 </div>
               )}
               {sessionId && targetUnavailable && (
                 <div className="agent-studio-chat-composer-error">
-                  This saved conversation cannot safely reuse its pinned target.
-                  Start a new chat to continue.
+                  {studioUi(
+                    t,
+                    "This saved conversation cannot safely reuse its pinned target. Start a new chat to continue.",
+                  )}
                 </div>
               )}
               {createRun.isError && (
                 <div className="agent-studio-chat-composer-error">
-                  {formatAgentStudioError(createRun.error)}
+                  {formatAgentStudioError(createRun.error, t)}
                 </div>
               )}
               {cancelRun.isError && (
                 <div className="agent-studio-chat-composer-error">
-                  Could not stop the run: {cancelRun.error.message}
+                  {studioUi(t, "Could not stop the run:")}{" "}
+                  {cancelRun.error.message}
                 </div>
               )}
             </form>
@@ -2234,8 +2575,8 @@ export function TestLab({
               invert
               ariaLabel={
                 historyInline
-                  ? "Resize Conversation and Run history panels"
-                  : "Resize Conversation and Run history rows"
+                  ? studioUi(t, "Resize Conversation and Run history panels")
+                  : studioUi(t, "Resize Conversation and Run history rows")
               }
               ariaControls="agent-studio-test-conversation-panel agent-studio-test-history-panel"
             />
@@ -2257,20 +2598,23 @@ export function TestLab({
               <div
                 style={{ color: "var(--text)", fontSize: 12, fontWeight: 600 }}
               >
-                Run history
+                {studioUi(t, "Run history")}
               </div>
               <div
                 style={{ color: "var(--text-3)", fontSize: 10.5, marginTop: 2 }}
               >
-                Saved for this agent
+                {studioUi(t, "Saved for this agent")}
               </div>
             </div>
           </div>
           <div style={{ flex: 1, overflow: "auto" }}>
             {history.isLoading ? (
-              <Empty title="Loading history…" />
+              <Empty title={studioUi(t, "Loading history…")} />
             ) : history.isError ? (
-              <Empty title="History unavailable" hint={history.error.message} />
+              <Empty
+                title={studioUi(t, "History unavailable")}
+                hint={history.error.message}
+              />
             ) : history.data?.items.length ? (
               history.data.items.map((row: AgentStudioRunRow) => (
                 <button
@@ -2310,8 +2654,10 @@ export function TestLab({
                   <div
                     style={{ display: "flex", gap: 6, alignItems: "center" }}
                   >
-                    <Badge tone={statusTone(row.status)}>{row.status}</Badge>
-                    <Badge tone="muted">{row.target.kind}</Badge>
+                    <Badge tone={statusTone(row.status)}>
+                      {studioUi(t, row.status)}
+                    </Badge>
+                    <Badge tone="muted">{studioUi(t, row.target.kind)}</Badge>
                   </div>
                   <div
                     style={{
@@ -2325,7 +2671,9 @@ export function TestLab({
                       WebkitBoxOrient: "vertical",
                     }}
                   >
-                    {row.promptPreview || row.subject || "No prompt preview"}
+                    {row.promptPreview ||
+                      row.subject ||
+                      studioUi(t, "No prompt preview")}
                   </div>
                   <div
                     className="mono"
@@ -2337,7 +2685,12 @@ export function TestLab({
                       fontSize: 9.5,
                     }}
                   >
-                    <span>{displayTime(row.startedAt ?? row.queuedAt)}</span>
+                    <span>
+                      {displayTime(
+                        row.startedAt ?? row.queuedAt,
+                        studioLocale(language),
+                      )}
+                    </span>
                     <span>
                       {row.durationMs == null ? "" : `${row.durationMs}ms`}
                     </span>
@@ -2346,8 +2699,8 @@ export function TestLab({
               ))
             ) : (
               <Empty
-                title="No runs yet"
-                hint="Your first test run will be retained here."
+                title={studioUi(t, "No runs yet")}
+                hint={studioUi(t, "Your first test run will be retained here.")}
               />
             )}
           </div>

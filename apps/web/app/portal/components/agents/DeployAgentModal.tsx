@@ -34,7 +34,9 @@ import {
   useAgentNameAvailability,
   type GenerateAgentPromptBody,
 } from "@/lib/hooks/useAgentAuthoring";
+import { formatAgentAuthoringError } from "@/lib/hooks/agent-authoring-response";
 import { useTenant } from "@/app/portal/lib/use-tenant";
+import { useI18n, type Translate } from "@/app/portal/lib/preferences-context";
 import { useToast } from "@/app/portal/components/toast";
 import { normalizeAuthoredEventName } from "./event-name";
 import {
@@ -42,7 +44,6 @@ import {
   deepSearchStepsForMode,
   defaultStepModels,
   modelLabel,
-  modelSelectionReason,
   recommendFleetModel,
   type AgentBuilderStep,
   type AgentBuilderTemplate,
@@ -61,6 +62,7 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
   const router = useRouter();
   const tenant = useTenant();
   const toast = useToast();
+  const { t } = useI18n();
   const { data: dag } = useDag();
   const { data: liveEvents = [] } = useEvents({ limit: 100 });
   const { data: eventCatalog = [] } = useEventCatalog();
@@ -123,12 +125,12 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
   const currentPromptFingerprintRef = useRef("");
 
   const wizardSteps = [
-    "Template",
-    "Identity",
-    "Events",
-    "Build",
-    "Runtime",
-    "Review",
+    t("deployAgentModal.stepTemplate"),
+    t("deployAgentModal.stepIdentity"),
+    t("deployAgentModal.stepEvents"),
+    t("deployAgentBuilder.stepBuild"),
+    t("deployAgentBuilder.stepRuntime"),
+    t("deployAgentModal.stepReview"),
   ];
 
   const availableTools = toolCatalog?.tools ?? [];
@@ -148,11 +150,10 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
   const displayModel =
     modelChoice === AUTO_MODEL && autoModelSelection
       ? `${autoModelSelection.model} · ${autoModelSelection.provider}`
-      : modelLabel(selectedModel);
-  const displayModelReason =
-    modelChoice === AUTO_MODEL && autoModelSelection
-      ? autoModelSelection.reason
-      : modelSelectionReason(template, desc);
+      : selectedModel
+        ? modelLabel(selectedModel)
+        : t("deployAgentBuilder.model.workspaceDefault");
+  const displayModelReason = localizedModelSelectionReason(t, template, desc);
   const nameValid = /^[a-z][A-Za-z0-9]*$/.test(name);
   const nameAvailability = useAgentNameAvailability(name, nameValid);
   const nameAvailable = nameAvailability.data?.available === true;
@@ -312,8 +313,10 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
       }
       setPromptError(
         error instanceof Error
-          ? error.message
-          : "Could not generate the system prompt",
+          ? t("deployAgentBuilder.errors.promptGenerationDetail", {
+              message: formatAgentAuthoringError(error, t),
+            })
+          : t("deployAgentBuilder.errors.promptGeneration"),
       );
     }
   }
@@ -435,15 +438,36 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
       });
       toast({
         tone: "green",
-        title: `${result.agent.title} is live`,
-        description: `${result.runtime.functionId} is published and ready to run.${result.events.created.length > 0 ? ` ${result.events.created.length} new event type${result.events.created.length === 1 ? "" : "s"} created.` : ""}`,
+        title: t("deployAgentBuilder.toast.liveTitle", {
+          title: result.agent.title,
+        }),
+        description: t("deployAgentBuilder.toast.liveDescription", {
+          functionId: result.runtime.functionId,
+          events:
+            result.events.created.length > 0
+              ? ` ${t(
+                  result.events.created.length === 1
+                    ? "deployAgentBuilder.toast.createdEventOne"
+                    : "deployAgentBuilder.toast.createdEventMany",
+                  { count: result.events.created.length },
+                )}`
+              : "",
+        }),
       });
       setPublished(result);
     } catch (error) {
       const message =
-        error instanceof Error ? error.message : "Agent publishing failed";
+        error instanceof Error
+          ? t("deployAgentBuilder.errors.publishDetail", {
+              message: formatAgentAuthoringError(error, t),
+            })
+          : t("deployAgentBuilder.errors.publish");
       setDeployError(message);
-      toast({ tone: "red", title: "Publish failed", description: message });
+      toast({
+        tone: "red",
+        title: t("deployAgentBuilder.toast.publishFailed"),
+        description: message,
+      });
     }
   }
 
@@ -476,25 +500,19 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
             <div
               style={{ fontSize: 14, color: "var(--text)", fontWeight: 500 }}
             >
-              {published ? "Agent is live" : "New Agent"}
+              {published
+                ? t("deployAgentBuilder.header.liveTitle")
+                : t("deployAgentBuilder.header.newTitle")}
             </div>
             <div style={{ fontSize: 11, color: "var(--text-3)" }}>
-              {published ? (
-                <>
-                  Published to <span className="mono">{tenant}</span> and ready
-                  for events.
-                </>
-              ) : (
-                <>
-                  Design an event-driven agent, publish it, and run it in{" "}
-                  <span className="mono">{tenant}</span>.
-                </>
-              )}
+              {published
+                ? t("deployAgentBuilder.header.liveSubtitle", { tenant })
+                : t("deployAgentBuilder.header.newSubtitle", { tenant })}
             </div>
           </div>
           <button
             onClick={onClose}
-            aria-label="Close New Agent builder"
+            aria-label={t("deployAgentBuilder.header.closeAria")}
             style={{ color: "var(--text-3)" }}
           >
             <Icon name="x" size={13} />
@@ -575,7 +593,9 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
           )}
           {!published && step === 0 && (
             <div>
-              <SectionLabel>Choose how this agent works</SectionLabel>
+              <SectionLabel>
+                {t("deployAgentBuilder.templates.heading")}
+              </SectionLabel>
               <div
                 style={{
                   fontSize: 12,
@@ -584,9 +604,7 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
                   margin: "-2px 0 12px",
                 }}
               >
-                Each pattern includes a production execution plan, safeguards,
-                and an automatic model recommendation. Everything stays
-                editable.
+                {t("deployAgentBuilder.templates.intro")}
               </div>
               <div
                 style={{
@@ -595,15 +613,15 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
                   gap: 10,
                 }}
               >
-                {AGENT_BUILDER_TEMPLATES.map((t) => (
+                {AGENT_BUILDER_TEMPLATES.map((templateOption) => (
                   <button
-                    key={t.id}
-                    onClick={() => pickTemplate(t)}
+                    key={templateOption.id}
+                    onClick={() => pickTemplate(templateOption)}
                     style={{
                       padding: "12px 14px",
                       background: "var(--panel-2)",
                       border: "1px solid var(--border)",
-                      borderLeft: `3px solid ${t.color}`,
+                      borderLeft: `3px solid ${templateOption.color}`,
                       borderRadius: 5,
                       textAlign: "left",
                       cursor: "pointer",
@@ -618,7 +636,14 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
                         marginBottom: 6,
                       }}
                     >
-                      <ActorTag actor={t.actor} />
+                      <ActorTag
+                        actor={templateOption.actor}
+                        label={t(
+                          templateOption.actor === "Agent"
+                            ? "common.actorAgent"
+                            : "common.actorHuman",
+                        )}
+                      />
                     </div>
                     <div
                       style={{
@@ -628,7 +653,7 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
                         marginBottom: 3,
                       }}
                     >
-                      {t.name}
+                      {templateCopy(t, templateOption, "name")}
                     </div>
                     <div
                       style={{
@@ -637,7 +662,7 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
                         lineHeight: 1.5,
                       }}
                     >
-                      {t.description}
+                      {templateCopy(t, templateOption, "description")}
                     </div>
                     <div
                       style={{
@@ -647,9 +672,9 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
                         marginTop: 9,
                       }}
                     >
-                      {t.bestFor.slice(0, 2).map((useCase) => (
+                      {templateOption.bestFor.slice(0, 2).map((_, index) => (
                         <span
-                          key={useCase}
+                          key={`${templateOption.id}-best-for-${index}`}
                           style={{
                             padding: "2px 5px",
                             border: "1px solid var(--border)",
@@ -659,7 +684,12 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
                             fontSize: 9.5,
                           }}
                         >
-                          {useCase}
+                          {templateListCopy(
+                            t,
+                            templateOption,
+                            "bestFor",
+                            index,
+                          )}
                         </span>
                       ))}
                     </div>
@@ -684,8 +714,8 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
               <EditField
                 className="new-agent-paired-field"
                 htmlFor="new-agent-name"
-                label="Name (id)"
-                hint="lowercase camelCase, used in events & logs"
+                label={t("deployAgentModal.nameLabel")}
+                hint={t("deployAgentModal.nameHint")}
               >
                 <EditText
                   id="new-agent-name"
@@ -695,39 +725,40 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
                 />
                 {name.length > 0 && !nameValid && (
                   <InlineMessage tone="red">
-                    Start with a lowercase letter and use letters or numbers
-                    only.
+                    {t("deployAgentBuilder.identity.nameInvalid")}
                   </InlineMessage>
                 )}
                 {nameValid && (
                   <div aria-live="polite">
                     {nameAvailability.isChecking && (
                       <InlineMessage tone="signal">
-                        Checking whether this agent ID is available…
+                        {t("deployAgentBuilder.identity.checkingName")}
                       </InlineMessage>
                     )}
                     {!nameAvailability.isChecking &&
                       nameAvailability.data?.available && (
                         <InlineMessage tone="green">
-                          Agent ID {nameAvailability.data.id} is available.
+                          {t("deployAgentBuilder.identity.nameAvailable", {
+                            id: nameAvailability.data.id,
+                          })}
                         </InlineMessage>
                       )}
                     {!nameAvailability.isChecking &&
                       nameAvailability.data &&
                       !nameAvailability.data.available && (
                         <InlineMessage tone="red">
-                          An agent with this{" "}
-                          {nameAvailability.data.conflict?.field ?? "name"}{" "}
-                          already exists:{" "}
-                          {nameAvailability.data.conflict?.value ?? name}.
-                          Choose a different name.
+                          {t("deployAgentBuilder.identity.nameConflict", {
+                            field:
+                              nameAvailability.data.conflict?.field ?? "name",
+                            value:
+                              nameAvailability.data.conflict?.value ?? name,
+                          })}
                         </InlineMessage>
                       )}
                     {!nameAvailability.isChecking &&
                       nameAvailability.isError && (
                         <InlineMessage tone="red">
-                          Could not verify this agent ID. Continue is disabled
-                          until the check succeeds.{" "}
+                          {t("deployAgentBuilder.identity.nameCheckFailed")}{" "}
                           <button
                             type="button"
                             onClick={() => void nameAvailability.refetch()}
@@ -737,7 +768,7 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
                               font: "inherit",
                             }}
                           >
-                            Try again
+                            {t("deployAgentBuilder.actions.tryAgain")}
                           </button>
                         </InlineMessage>
                       )}
@@ -747,8 +778,8 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
               <EditField
                 className="new-agent-paired-field"
                 htmlFor="new-agent-title"
-                label="Title"
-                hint="Shown in the operator UI"
+                label={t("deployAgentModal.titleLabel")}
+                hint={t("deployAgentModal.titleHint")}
               >
                 <EditText
                   id="new-agent-title"
@@ -759,8 +790,8 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
               <div style={{ gridColumn: "1 / -1" }}>
                 <EditField
                   htmlFor="new-agent-purpose"
-                  label="Purpose and success criteria"
-                  hint="Explain what the agent should accomplish, the context it can trust, and what a successful result contains. Auto model selection uses this brief."
+                  label={t("deployAgentBuilder.identity.purposeLabel")}
+                  hint={t("deployAgentBuilder.identity.purposeHint")}
                 >
                   <EditTextarea
                     id="new-agent-purpose"
@@ -773,29 +804,38 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
                   />
                   {desc.length > 0 && desc.trim().length < 10 && (
                     <InlineMessage tone="red">
-                      Describe the agent in at least 10 characters.
+                      {t("deployAgentBuilder.identity.purposeInvalid")}
                     </InlineMessage>
                   )}
                 </EditField>
               </div>
               <EditField
                 className="new-agent-paired-field"
-                label="Execution"
-                hint="Agents are placed by their event contract, not a workflow stage."
+                label={t("deployAgentBuilder.identity.executionLabel")}
+                hint={t("deployAgentBuilder.identity.executionHint")}
               >
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <ActorTag actor={template.actor} />
+                  <ActorTag
+                    actor={template.actor}
+                    label={t(
+                      template.actor === "Agent"
+                        ? "common.actorAgent"
+                        : "common.actorHuman",
+                    )}
+                  />
                   <span style={{ color: "var(--text-3)", fontSize: 11 }}>
-                    {template.actor === "Human"
-                      ? "Prepares context and pauses for operator authority"
-                      : "Runs automatically when a trigger event arrives"}
+                    {t(
+                      template.actor === "Human"
+                        ? "deployAgentBuilder.identity.executionHuman"
+                        : "deployAgentBuilder.identity.executionAgent",
+                    )}
                   </span>
                 </div>
               </EditField>
               <EditField
                 className="new-agent-paired-field"
-                label="Architecture"
-                hint="Every agent is independent and event-driven."
+                label={t("deployAgentBuilder.identity.architectureLabel")}
+                hint={t("deployAgentBuilder.identity.architectureHint")}
               >
                 <div
                   style={{
@@ -807,7 +847,7 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
                   }}
                 >
                   <Icon name="check" size={11} />
-                  No workflow stage required
+                  {t("deployAgentBuilder.identity.noStage")}
                 </div>
               </EditField>
             </div>
@@ -840,7 +880,9 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
                     size={11}
                     style={{ color: "var(--signal)" }}
                   />
-                  <span>Use suggested contract</span>
+                  <span>
+                    {t("deployAgentBuilder.events.useSuggestedContract")}
+                  </span>
                   <span
                     className="mono"
                     style={{ marginLeft: "auto", color: "var(--blue)" }}
@@ -857,8 +899,8 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
                 <EditField
                   className="new-agent-paired-field new-agent-events-field"
                   htmlFor="new-agent-trigger-event"
-                  label="Trigger events"
-                  hint="The agent starts whenever any selected event arrives. Pick an existing event or create a new type."
+                  label={t("deployAgentBuilder.events.triggersLabel")}
+                  hint={t("deployAgentBuilder.events.triggersHint")}
                 >
                   <EventPicker
                     inputId="new-agent-trigger-event"
@@ -871,16 +913,15 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
                   />
                   {triggers.length === 0 && (
                     <InlineMessage tone="amber">
-                      At least one trigger is required so the runtime can start
-                      this agent.
+                      {t("deployAgentBuilder.events.triggerRequired")}
                     </InlineMessage>
                   )}
                 </EditField>
                 <EditField
                   className="new-agent-paired-field new-agent-events-field"
                   htmlFor="new-agent-emit-event"
-                  label="Emit events"
-                  hint="Publish one or more result events so downstream agents can continue the work."
+                  label={t("deployAgentBuilder.events.emitsLabel")}
+                  hint={t("deployAgentBuilder.events.emitsHint")}
                 >
                   <EventPicker
                     inputId="new-agent-emit-event"
@@ -893,15 +934,13 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
                   />
                   {emits.length === 0 && (
                     <InlineMessage tone="amber">
-                      At least one emitted event is required to complete the
-                      event contract.
+                      {t("deployAgentBuilder.events.emitRequired")}
                     </InlineMessage>
                   )}
                 </EditField>
               </div>
               <InlineMessage tone="signal">
-                Event names are the agent&apos;s API. New event types are
-                created only when you publish.
+                {t("deployAgentBuilder.events.apiNote")}
               </InlineMessage>
             </div>
           )}
@@ -920,23 +959,23 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
                   [
                     {
                       id: "plan",
-                      label: "Execution plan",
+                      label: t("deployAgentBuilder.build.tabPlan"),
                       icon: "git" as const,
                     },
                     {
                       id: "prompt",
-                      label: "System prompt",
+                      label: t("deployAgentModal.tabPrompt"),
                       icon: "logs" as const,
                     },
                     {
                       id: "code",
-                      label: "TypeScript code",
+                      label: t("deployAgentModal.tabCode"),
                       icon: "code" as const,
                     },
                     { id: "tools", label: "tool_use", icon: "spark" as const },
                     {
                       id: "bind",
-                      label: "Capabilities",
+                      label: t("deployAgentBuilder.build.tabCapabilities"),
                       icon: "deploy" as const,
                     },
                   ] as const
@@ -1002,7 +1041,7 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
                   }}
                 >
                   <span style={{ fontSize: 11, color: "var(--text-3)" }}>
-                    Model
+                    {t("deployAgentModal.model")}
                   </span>
                   <select
                     value={modelChoice}
@@ -1023,11 +1062,13 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
                   >
                     <option value={AUTO_MODEL}>
                       {fleetLoading
-                        ? "Auto · loading fleet…"
-                        : `Auto · ${
+                        ? t("deployAgentBuilder.model.autoLoading")
+                        : `${t("deployAgentBuilder.model.auto")} · ${
                             autoModelSelection
                               ? `${autoModelSelection.model} · ${autoModelSelection.provider}`
-                              : modelLabel(recommendedModel)
+                              : recommendedModel
+                                ? modelLabel(recommendedModel)
+                                : t("deployAgentBuilder.model.workspaceDefault")
                           }`}
                     </option>
                     {!fleetLoading &&
@@ -1062,7 +1103,9 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
                   )}
                   {promptError && (
                     <InlineMessage tone="red">
-                      {promptError} Open System prompt to retry.
+                      {t("deployAgentBuilder.build.promptErrorRetry", {
+                        message: promptError,
+                      })}
                     </InlineMessage>
                   )}
                 </>
@@ -1079,12 +1122,10 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
                         className="new-agent-edit-field-label"
                         htmlFor="new-agent-system-prompt"
                       >
-                        System prompt
+                        {t("deployAgentModal.systemPromptLabel")}
                       </label>
                       <div className="new-agent-edit-field-hint">
-                        Generated from the purpose, event contract, execution
-                        pattern, model policy, ontology, and tools. Review it
-                        before publishing.
+                        {t("deployAgentBuilder.build.promptHint")}
                       </div>
                     </div>
                     <Button
@@ -1117,17 +1158,17 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
                         <Icon name="spark" size={12} />
                       </span>
                       {generatePrompt.isPending
-                        ? "Generating prompt…"
+                        ? t("deployAgentBuilder.build.generatingPrompt")
                         : systemPrompt
-                          ? "Regenerate"
-                          : "Generate"}
+                          ? t("deployAgentBuilder.actions.regenerate")
+                          : t("deployAgentBuilder.actions.generate")}
                     </Button>
                   </div>
                   {generatePrompt.isPending && <PromptGenerationProgress />}
                   <EditTextarea
                     id="new-agent-system-prompt"
                     className="new-agent-system-prompt-input"
-                    ariaLabel="Generated system prompt"
+                    ariaLabel={t("deployAgentBuilder.build.promptAria")}
                     value={systemPrompt}
                     onChange={(value) => {
                       setSystemPrompt(value);
@@ -1143,9 +1184,7 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
                   )}
                   {promptIsStale && (
                     <InlineMessage tone="signal">
-                      Agent details changed after this prompt was generated.
-                      Regenerate it, or edit the prompt to confirm your custom
-                      version.
+                      {t("deployAgentBuilder.build.promptStale")}
                     </InlineMessage>
                   )}
                   {!generatePrompt.isPending &&
@@ -1153,7 +1192,7 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
                     systemPrompt.trim().length > 0 &&
                     systemPrompt.trim().length < 40 && (
                       <InlineMessage tone="red">
-                        The system prompt must contain at least 40 characters.
+                        {t("deployAgentBuilder.build.promptTooShort")}
                       </InlineMessage>
                     )}
                 </div>
@@ -1162,8 +1201,8 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
               {implTab === "code" && (
                 <EditField
                   htmlFor="new-agent-typescript"
-                  label="TypeScript source (optional)"
-                  hint="Stored with the manifest as implementation metadata. Generated manifest agents execute through the system prompt and runtime tool loop."
+                  label={t("deployAgentBuilder.build.typescriptLabel")}
+                  hint={t("deployAgentBuilder.build.typescriptHint")}
                 >
                   <EditTextarea
                     id="new-agent-typescript"
@@ -1192,11 +1231,11 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
                       lineHeight: 1.6,
                     }}
                   >
-                    No tools selected. Choose workspace tools under{" "}
+                    {t("deployAgentBuilder.build.noToolsPrefix")}{" "}
                     <span className="mono" style={{ color: "var(--text-2)" }}>
-                      Tool bindings
+                      {t("deployAgentModal.tabBind")}
                     </span>
-                    ; their live schemas will appear here for editing.
+                    {t("deployAgentBuilder.build.noToolsSuffix")}
                   </div>
                 ))}
 
@@ -1207,8 +1246,13 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
                     tools={ontologyTools}
                   />
                   <EditField
-                    label={`Additional capabilities · ${Math.max(0, tools.length - ontologyTools.length)} selected`}
-                    hint="Choose only the workspace tools this agent may invoke. Ontology access is included for every agent."
+                    label={t(
+                      "deployAgentBuilder.capabilities.additionalLabel",
+                      {
+                        count: Math.max(0, tools.length - ontologyTools.length),
+                      },
+                    )}
+                    hint={t("deployAgentBuilder.capabilities.additionalHint")}
                   >
                     <div
                       style={{
@@ -1222,12 +1266,12 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
                     >
                       {toolsLoading && (
                         <div style={{ color: "var(--text-3)", fontSize: 11.5 }}>
-                          Loading workspace tools…
+                          {t("deployAgentBuilder.capabilities.loadingTools")}
                         </div>
                       )}
                       {!toolsLoading && availableTools.length === 0 && (
                         <div style={{ color: "var(--text-3)", fontSize: 11.5 }}>
-                          No workspace tools are registered.
+                          {t("deployAgentBuilder.capabilities.noTools")}
                         </div>
                       )}
                       {availableTools.map((tool) => {
@@ -1243,7 +1287,9 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
                             }}
                             title={
                               ontologyTool
-                                ? "Included with Ontology API"
+                                ? t(
+                                    "deployAgentBuilder.capabilities.includedTitle",
+                                  )
                                 : (tool.description ?? tool.summary)
                             }
                             aria-disabled={ontologyTool}
@@ -1290,7 +1336,9 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
                               {tool.name}
                             </span>
                             {ontologyTool && (
-                              <Badge tone="violet">included</Badge>
+                              <Badge tone="violet">
+                                {t("deployAgentBuilder.capabilities.included")}
+                              </Badge>
                             )}
                             <Badge tone="muted" style={{ marginLeft: "auto" }}>
                               {tool.category}
@@ -1315,7 +1363,10 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
               }}
             >
               <div style={{ gridColumn: "1 / -1" }}>
-                <Panel title="Model policy" padded>
+                <Panel
+                  title={t("deployAgentBuilder.runtime.modelPolicy")}
+                  padded
+                >
                   <div
                     style={{ display: "flex", alignItems: "center", gap: 8 }}
                   >
@@ -1323,8 +1374,8 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
                       tone={modelChoice === AUTO_MODEL ? "signal" : "blue"}
                     >
                       {modelChoice === AUTO_MODEL
-                        ? "Auto selected"
-                        : "User selected"}
+                        ? t("deployAgentBuilder.model.autoSelected")
+                        : t("deployAgentBuilder.model.userSelected")}
                     </Badge>
                     <span
                       className="mono"
@@ -1341,56 +1392,55 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
                       lineHeight: 1.55,
                     }}
                   >
-                    {displayModelReason} Per-step overrides are configured in
-                    the execution plan.
+                    {displayModelReason}{" "}
+                    {t("deployAgentBuilder.runtime.overrideNote")}
                   </div>
                 </Panel>
               </div>
               <EditField
                 className="new-agent-paired-field"
                 htmlFor="new-agent-retries"
-                label="Retries"
-                hint="Maximum immediate retry attempts for a failed model action."
+                label={t("deployAgentModal.retriesLabel")}
+                hint={t("deployAgentBuilder.runtime.retriesHint")}
               >
                 <EditText
                   id="new-agent-retries"
                   value={String(retries)}
                   onChange={(v) => setRetries(parseInt(v, 10) || 0)}
                   mono
-                  suffix="attempts"
+                  suffix={t("deployAgentModal.suffixAttempts")}
                 />
               </EditField>
               <EditField
                 className="new-agent-paired-field"
                 htmlFor="new-agent-timeout"
-                label="Per-call timeout"
-                hint="Maximum duration of each model gateway call; a multi-step run may take longer."
+                label={t("deployAgentBuilder.runtime.timeoutLabel")}
+                hint={t("deployAgentBuilder.runtime.timeoutHint")}
               >
                 <EditText
                   id="new-agent-timeout"
                   value={String(timeout)}
                   onChange={(v) => setTimeoutVal(parseInt(v, 10) || 0)}
                   mono
-                  suffix="seconds"
+                  suffix={t("deployAgentModal.suffixSeconds")}
                 />
               </EditField>
               <EditField
                 htmlFor="new-agent-concurrency"
-                label="Concurrency"
-                hint="Max simultaneous runs."
+                label={t("deployAgentModal.concurrencyLabel")}
+                hint={t("deployAgentModal.concurrencyHint")}
               >
                 <EditText
                   id="new-agent-concurrency"
                   value={String(concurrency)}
                   onChange={(v) => setConcurrency(parseInt(v, 10) || 0)}
                   mono
-                  suffix="runs"
+                  suffix={t("deployAgentModal.suffixRuns")}
                 />
               </EditField>
               <div style={{ gridColumn: "1 / -1" }}>
                 <InlineMessage tone="signal">
-                  Concurrency is partitioned by the runtime event subject.
-                  Exhausted retries are recorded in the run and audit logs.
+                  {t("deployAgentBuilder.runtime.limitsNote")}
                 </InlineMessage>
               </div>
             </div>
@@ -1404,7 +1454,7 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
                 gap: 14,
               }}
             >
-              <Panel title="Manifest" padded={false}>
+              <Panel title={t("deployAgentModal.manifestPanel")} padded={false}>
                 <CodeBlock>
                   {JSON.stringify(
                     {
@@ -1478,60 +1528,78 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
                 </CodeBlock>
               </Panel>
               <div>
-                <Panel title="Pre-flight" padded>
+                <Panel title={t("deployAgentModal.preflightPanel")} padded>
                   <ValidationLine
                     ok={identityValid}
-                    label="Identity valid"
+                    label={t("deployAgentModal.identityValid")}
                     hint={
                       identityValid
-                        ? "ready"
-                        : "available name, title, description required"
+                        ? t("deployAgentBuilder.review.ready")
+                        : t("deployAgentBuilder.review.identityRequired")
                     }
                   />
                   <ValidationLine
                     ok={nameAvailable}
-                    label="Agent ID available"
+                    label={t("deployAgentBuilder.review.nameAvailable")}
                     hint={nameAvailability.data?.id}
                   />
                   <ValidationLine
                     ok={triggers.length > 0}
-                    label={`${triggers.length} trigger event(s)`}
+                    label={t("deployAgentModal.triggerEvents", {
+                      n: triggers.length,
+                    })}
                   />
                   <ValidationLine
                     ok={emits.length > 0}
                     warn={emits.length === 0}
-                    label={`${emits.length} emit event(s)`}
+                    label={t("deployAgentModal.emitEvents", {
+                      n: emits.length,
+                    })}
                   />
                   <ValidationLine
                     ok={implementationValid}
-                    label="System prompt ready"
-                    hint={`${systemPrompt.trim().length} chars`}
+                    label={t("deployAgentBuilder.review.promptReady")}
+                    hint={t("deployAgentBuilder.review.charCount", {
+                      count: systemPrompt.trim().length,
+                    })}
                   />
                   <ValidationLine
                     ok
-                    label="Ontology API"
+                    label={t("deployAgentBuilder.capabilities.ontologyApi")}
                     hint={
                       ontologyTools.length > 0
-                        ? `${ontologyTools.length} graph tool(s)`
-                        : "ontology.query · server managed"
+                        ? t("deployAgentBuilder.review.graphToolCount", {
+                            count: ontologyTools.length,
+                          })
+                        : t("deployAgentBuilder.review.ontologyServerManaged")
                     }
                   />
                   <ValidationLine
                     ok
-                    label={`${executionSteps.length} execution step(s)`}
-                    hint={`${executionSteps.filter((item) => item.modelOverride !== INHERIT_MODEL).length} model override(s)`}
+                    label={t("deployAgentBuilder.review.executionStepCount", {
+                      count: executionSteps.length,
+                    })}
+                    hint={t("deployAgentBuilder.review.modelOverrideCount", {
+                      count: executionSteps.filter(
+                        (item) => item.modelOverride !== INHERIT_MODEL,
+                      ).length,
+                    })}
                   />
                   <ValidationLine
                     ok
-                    label={`${tools.length} live tool binding(s)`}
+                    label={t("deployAgentBuilder.review.liveToolCount", {
+                      count: tools.length,
+                    })}
                   />
                   {template?.actor !== "Human" && (
                     <ValidationLine
                       ok
                       label={
                         tsCode.trim()
-                          ? `typescript_code metadata · ${tsCode.split("\n").length} lines`
-                          : "No TypeScript metadata"
+                          ? t("deployAgentBuilder.review.typescriptMetadata", {
+                              count: tsCode.split("\n").length,
+                            })
+                          : t("deployAgentBuilder.review.noTypescriptMetadata")
                       }
                     />
                   )}
@@ -1539,23 +1607,31 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
                     <ValidationLine
                       ok
                       warn={toolUse.length === 0}
-                      label={`tool_use · ${toolUse.length} defined`}
+                      label={t("deployAgentModal.toolUseDefined", {
+                        n: toolUse.length,
+                      })}
                       hint={
-                        toolUse.length ? "live catalog schemas" : "optional"
+                        toolUse.length
+                          ? t("deployAgentBuilder.review.liveCatalogSchemas")
+                          : t("deployAgentBuilder.review.optional")
                       }
                     />
                   )}
                   <ValidationLine
                     ok
-                    label="Model selection"
-                    hint={`${modelChoice === AUTO_MODEL ? "auto · " : ""}${displayModel}`}
+                    label={t("deployAgentBuilder.review.modelSelection")}
+                    hint={`${modelChoice === AUTO_MODEL ? `${t("deployAgentBuilder.model.auto")} · ` : ""}${displayModel}`}
                   />
                   <ValidationLine
                     ok={behaviorValid}
-                    label="Runtime limits valid"
+                    label={t("deployAgentBuilder.review.runtimeValid")}
                   />
                 </Panel>
-                <Panel title="Publish target" padded style={{ marginTop: 12 }}>
+                <Panel
+                  title={t("deployAgentBuilder.review.publishTarget")}
+                  padded
+                  style={{ marginTop: 12 }}
+                >
                   <div
                     style={{
                       display: "flex",
@@ -1574,11 +1650,10 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
                     />
                     <div>
                       <div style={{ fontSize: 12, color: "var(--text)" }}>
-                        Live runtime · <span className="mono">{tenant}</span>
+                        {t("deployAgentBuilder.review.liveRuntime", { tenant })}
                       </div>
                       <div style={{ fontSize: 10.5, color: "var(--text-3)" }}>
-                        Persist manifest, create a workflow version, and
-                        hot-load the runtime function
+                        {t("deployAgentBuilder.review.publishActions")}
                       </div>
                     </div>
                   </div>
@@ -1594,11 +1669,11 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
                       lineHeight: 1.55,
                     }}
                   >
-                    Publishing succeeds only after the API confirms{" "}
+                    {t("deployAgentBuilder.review.publishGatePrefix")}{" "}
                     <span className="mono" style={{ color: "var(--text-2)" }}>
                       {tenant}.{name || "agentName"}
                     </span>{" "}
-                    is registered, live, and ready for its trigger events.
+                    {t("deployAgentBuilder.review.publishGateSuffix")}
                   </div>
                 </Panel>
                 {deployError && (
@@ -1621,19 +1696,22 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
         >
           {!published && step > 0 && (
             <Button tone="ghost" icon="chevron-left" onClick={back}>
-              Back
+              {t("deployAgentModal.back")}
             </Button>
           )}
           {!published && (
             <span style={{ fontSize: 11, color: "var(--text-3)" }}>
-              Step {step + 1} of {wizardSteps.length}
+              {t("deployAgentModal.stepOf", {
+                n: step + 1,
+                total: wizardSteps.length,
+              })}
             </span>
           )}
           <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
             {published ? (
               <>
                 <Button tone="ghost" onClick={onClose}>
-                  Done
+                  {t("deployAgentBuilder.actions.done")}
                 </Button>
                 <Button
                   tone="primary"
@@ -1645,13 +1723,13 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
                     onClose();
                   }}
                 >
-                  Open &amp; run
+                  {t("deployAgentBuilder.actions.openRun")}
                 </Button>
               </>
             ) : (
               <>
                 <Button tone="ghost" onClick={onClose}>
-                  Cancel
+                  {t("deployAgentModal.cancel")}
                 </Button>
                 {step < wizardSteps.length - 1 ? (
                   <Button
@@ -1660,8 +1738,8 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
                     disabled={!canContinue()}
                   >
                     {step >= 2 && generatePrompt.isPending
-                      ? "Generating prompt…"
-                      : "Continue"}
+                      ? t("deployAgentBuilder.build.generatingPrompt")
+                      : t("deployAgentModal.continue")}
                   </Button>
                 ) : (
                   <Button
@@ -1670,7 +1748,9 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
                     onClick={() => void deploy()}
                     disabled={!allValid || deployAgent.isPending}
                   >
-                    {deployAgent.isPending ? "Publishing…" : "Create & publish"}
+                    {deployAgent.isPending
+                      ? t("deployAgentBuilder.actions.publishing")
+                      : t("deployAgentBuilder.actions.createPublish")}
                   </Button>
                 )}
               </>
@@ -1684,7 +1764,85 @@ export function DeployAgentModal({ onClose }: { onClose: () => void }) {
 
 // ---- small atoms (settings-local pattern) ----
 
+function templateCopy(
+  t: Translate,
+  template: AgentBuilderTemplate,
+  field: "name" | "description" | "outcome",
+): string {
+  return t(`deployAgentBuilder.templates.${template.id}.${field}`);
+}
+
+function templateListCopy(
+  t: Translate,
+  template: AgentBuilderTemplate,
+  field: "bestFor" | "safeguards",
+  index: number,
+): string {
+  return t(`deployAgentBuilder.templates.${template.id}.${field}.${index}`);
+}
+
+const STEP_TRANSLATION_IDS: Record<string, string> = {
+  "Understand & plan": "understandPlan",
+  "Execute & verify": "executeVerify",
+  Classify: "classify",
+  "Extract with evidence": "extractEvidence",
+  "Validate & repair": "validateRepair",
+  "Plan the investigation": "planInvestigation",
+  "Search & follow leads": "searchLeads",
+  "Synthesize with citations": "synthesizeCitations",
+  Plan: "plan",
+  "Act, observe & recover": "actObserveRecover",
+  "Verify & emit": "verifyEmit",
+  "Prepare decision brief": "prepareDecision",
+  "Human decision": "humanDecision",
+  "Retrieve focused evidence": "retrieveEvidence",
+  "Answer with citations": "answerCitations",
+  "Clarify scope": "clarifyScope",
+  "Review research plan": "reviewResearchPlan",
+  "Run research workstreams": "researchWorkstreams",
+  "Close evidence gaps": "closeEvidenceGaps",
+  "Verify citations": "verifyCitations",
+  "Synthesize report": "synthesizeReport",
+};
+
+function stepCopy(
+  t: Translate,
+  step: AgentBuilderStep,
+  field: "title" | "description",
+): string {
+  const id = STEP_TRANSLATION_IDS[step.title];
+  return id ? t(`deployAgentBuilder.steps.${id}.${field}`) : step[field];
+}
+
+function localizedModelSelectionReason(
+  t: Translate,
+  template: AgentBuilderTemplate | null,
+  purpose: string,
+): string {
+  const base = t(
+    template
+      ? `deployAgentBuilder.model.reasons.${template.id}`
+      : "deployAgentBuilder.model.reasons.default",
+  );
+  if (
+    /research|investigat|complex|reason|strategy|compare|synthesi|研究|调查|复杂|推理|策略|比较|综合/i.test(
+      purpose,
+    )
+  ) {
+    return `${base} ${t("deployAgentBuilder.model.reasons.reasoningSignal")}`;
+  }
+  if (
+    /high volume|latency|realtime|real-time|triage|route|classif|高并发|高吞吐|延迟|实时|分诊|路由|分类/i.test(
+      purpose,
+    )
+  ) {
+    return `${base} ${t("deployAgentBuilder.model.reasons.latencySignal")}`;
+  }
+  return base;
+}
+
 function TemplateBrief({ template }: { template: AgentBuilderTemplate }) {
+  const { t } = useI18n();
   return (
     <div
       style={{
@@ -1700,7 +1858,7 @@ function TemplateBrief({ template }: { template: AgentBuilderTemplate }) {
     >
       <div>
         <div style={{ color: "var(--text)", fontSize: 12.5, fontWeight: 500 }}>
-          {template.name}
+          {templateCopy(t, template, "name")}
         </div>
         <div
           style={{
@@ -1710,7 +1868,7 @@ function TemplateBrief({ template }: { template: AgentBuilderTemplate }) {
             marginTop: 4,
           }}
         >
-          {template.outcome}
+          {templateCopy(t, template, "outcome")}
         </div>
       </div>
       <div>
@@ -1723,14 +1881,14 @@ function TemplateBrief({ template }: { template: AgentBuilderTemplate }) {
             marginBottom: 5,
           }}
         >
-          Best for
+          {t("deployAgentBuilder.templates.bestFor")}
         </div>
-        {template.bestFor.map((item) => (
+        {template.bestFor.map((_, index) => (
           <div
-            key={item}
+            key={`${template.id}-best-for-${index}`}
             style={{ color: "var(--text-2)", fontSize: 10.5, lineHeight: 1.55 }}
           >
-            • {item}
+            • {templateListCopy(t, template, "bestFor", index)}
           </div>
         ))}
       </div>
@@ -1744,14 +1902,14 @@ function TemplateBrief({ template }: { template: AgentBuilderTemplate }) {
             marginBottom: 5,
           }}
         >
-          Built-in safeguards
+          {t("deployAgentBuilder.templates.safeguards")}
         </div>
-        {template.safeguards.map((item) => (
+        {template.safeguards.map((_, index) => (
           <div
-            key={item}
+            key={`${template.id}-safeguard-${index}`}
             style={{ color: "var(--text-2)", fontSize: 10.5, lineHeight: 1.55 }}
           >
-            • {item}
+            • {templateListCopy(t, template, "safeguards", index)}
           </div>
         ))}
       </div>
@@ -1766,6 +1924,7 @@ function DeepSearchModePicker({
   value: DeepSearchMode;
   onChange: (value: DeepSearchMode) => void;
 }) {
+  const { t } = useI18n();
   const modes: Array<{
     id: DeepSearchMode;
     title: string;
@@ -1774,27 +1933,26 @@ function DeepSearchModePicker({
   }> = [
     {
       id: "answer",
-      title: "Answer",
-      time: "seconds",
-      description: "Focused retrieval and a concise cited response.",
+      title: t("deployAgentBuilder.search.answer.title"),
+      time: t("deployAgentBuilder.search.answer.time"),
+      description: t("deployAgentBuilder.search.answer.description"),
     },
     {
       id: "investigate",
-      title: "Investigate",
-      time: "minutes",
-      description: "Iterative search, gap analysis, and evidence synthesis.",
+      title: t("deployAgentBuilder.search.investigate.title"),
+      time: t("deployAgentBuilder.search.investigate.time"),
+      description: t("deployAgentBuilder.search.investigate.description"),
     },
     {
       id: "deep_research",
-      title: "Deep Research",
-      time: "background",
-      description:
-        "Reviewable plan, parallel workstreams, evidence ledger, and citation verification.",
+      title: t("deployAgentBuilder.search.deepResearch.title"),
+      time: t("deployAgentBuilder.search.deepResearch.time"),
+      description: t("deployAgentBuilder.search.deepResearch.description"),
     },
   ];
   return (
     <div style={{ marginBottom: 12 }}>
-      <SectionLabel>Research depth</SectionLabel>
+      <SectionLabel>{t("deployAgentBuilder.search.heading")}</SectionLabel>
       <div
         style={{
           display: "grid",
@@ -1875,6 +2033,7 @@ function ExecutionPlanEditor({
   modelReason: string;
   onModelChange: (stepId: string, value: string) => void;
 }) {
+  const { t } = useI18n();
   return (
     <div>
       <div
@@ -1904,7 +2063,9 @@ function ExecutionPlanEditor({
             }}
           >
             <Badge tone={modelChoice === AUTO_MODEL ? "signal" : "blue"}>
-              {modelChoice === AUTO_MODEL ? "Auto model" : "Fixed model"}
+              {modelChoice === AUTO_MODEL
+                ? t("deployAgentBuilder.model.autoModel")
+                : t("deployAgentBuilder.model.fixedModel")}
             </Badge>
             <span
               className="mono"
@@ -1926,7 +2087,10 @@ function ExecutionPlanEditor({
         </div>
       </div>
       <SectionLabel>
-        {template.name} plan · {steps.length} steps
+        {t("deployAgentBuilder.plan.heading", {
+          template: templateCopy(t, template, "name"),
+          count: steps.length,
+        })}
       </SectionLabel>
       <div style={{ display: "grid", gap: 7 }}>
         {steps.map((item, index) => {
@@ -1969,7 +2133,7 @@ function ExecutionPlanEditor({
                     fontWeight: 500,
                   }}
                 >
-                  {item.title}
+                  {stepCopy(t, item, "title")}
                 </div>
                 <div
                   style={{
@@ -1979,7 +2143,7 @@ function ExecutionPlanEditor({
                     marginTop: 2,
                   }}
                 >
-                  {item.description}
+                  {stepCopy(t, item, "description")}
                 </div>
               </div>
               {!usesModel ? (
@@ -1990,11 +2154,13 @@ function ExecutionPlanEditor({
                     textAlign: "right",
                   }}
                 >
-                  Human checkpoint · no LLM
+                  {t("deployAgentBuilder.plan.humanCheckpoint")}
                 </div>
               ) : (
                 <select
-                  aria-label={`Model for ${item.title}`}
+                  aria-label={t("deployAgentBuilder.plan.modelAria", {
+                    step: stepCopy(t, item, "title"),
+                  })}
                   value={item.modelOverride ?? INHERIT_MODEL}
                   onChange={(event) =>
                     onModelChange(item.id, event.target.value)
@@ -2002,7 +2168,9 @@ function ExecutionPlanEditor({
                   style={editSelectStyle}
                 >
                   <option value={INHERIT_MODEL}>
-                    Inherit agent model · {selectedModel}
+                    {t("deployAgentBuilder.plan.inheritModel", {
+                      model: selectedModel,
+                    })}
                   </option>
                   {fleet.map((entry) => (
                     <option key={entry.id} value={entry.id}>
@@ -2016,8 +2184,7 @@ function ExecutionPlanEditor({
         })}
       </div>
       <InlineMessage tone="signal">
-        Override only the steps that need a different cost, latency, context, or
-        reasoning profile. Other steps inherit the agent model.
+        {t("deployAgentBuilder.plan.overrideHint")}
       </InlineMessage>
     </div>
   );
@@ -2030,6 +2197,7 @@ function OntologyCapability({
   isLoading: boolean;
   tools: ToolCatalogEntry[];
 }) {
+  const { t } = useI18n();
   return (
     <div
       style={{
@@ -2051,9 +2219,11 @@ function OntologyCapability({
       <div style={{ minWidth: 0, flex: 1 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
           <span style={{ color: "var(--text)", fontSize: 12, fontWeight: 500 }}>
-            Ontology API
+            {t("deployAgentBuilder.capabilities.ontologyApi")}
           </span>
-          <Badge tone="violet">Included</Badge>
+          <Badge tone="violet">
+            {t("deployAgentBuilder.capabilities.included")}
+          </Badge>
         </div>
         <div
           style={{
@@ -2063,19 +2233,17 @@ function OntologyCapability({
             marginTop: 4,
           }}
         >
-          Every agent can discover the graph schema, resolve entities, and run
-          tenant-scoped Neo4j reads through approved tools. The runtime supplies
-          credentials; prompts never see them.
+          {t("deployAgentBuilder.capabilities.ontologyDescription")}
         </div>
         <div
           className="mono"
           style={{ color: "var(--text-3)", fontSize: 9.75, marginTop: 6 }}
         >
           {isLoading
-            ? "Loading graph capabilities…"
+            ? t("deployAgentBuilder.capabilities.loadingGraph")
             : tools.length > 0
               ? tools.map((tool) => tool.name).join(" · ")
-              : "Ontology binding will be resolved when the agent is published."}
+              : t("deployAgentBuilder.capabilities.resolveOnPublish")}
         </div>
       </div>
     </div>
@@ -2089,6 +2257,7 @@ function PublishedAgentSummary({
   result: DeployAuthoredAgentResponse;
   tenant: string;
 }) {
+  const { t } = useI18n();
   return (
     <div style={{ maxWidth: 680, margin: "20px auto" }}>
       <div
@@ -2108,7 +2277,9 @@ function PublishedAgentSummary({
         <Icon name="check" size={20} />
       </div>
       <div style={{ color: "var(--text)", fontSize: 21, fontWeight: 500 }}>
-        {result.agent.title} is live
+        {t("deployAgentBuilder.published.title", {
+          title: result.agent.title,
+        })}
       </div>
       <div
         style={{
@@ -2118,9 +2289,7 @@ function PublishedAgentSummary({
           marginTop: 6,
         }}
       >
-        The agent is published in <span className="mono">{tenant}</span>,
-        registered with the runtime, and ready to run whenever one of its
-        trigger events arrives.
+        {t("deployAgentBuilder.published.description", { tenant })}
       </div>
       <div
         style={{
@@ -2130,34 +2299,40 @@ function PublishedAgentSummary({
           marginTop: 18,
         }}
       >
-        <Panel title="Runtime" padded>
+        <Panel title={t("deployAgentBuilder.published.runtime")} padded>
           <ValidationLine
             ok
-            label="Function registered"
+            label={t("deployAgentBuilder.published.functionRegistered")}
             hint={result.runtime.functionId}
           />
-          <ValidationLine ok label="Workflow version" hint={result.version} />
           <ValidationLine
             ok
-            label="Live deployment"
+            label={t("deployAgentBuilder.published.workflowVersion")}
+            hint={result.version}
+          />
+          <ValidationLine
+            ok
+            label={t("deployAgentBuilder.published.liveDeployment")}
             hint={result.deploymentId}
           />
         </Panel>
-        <Panel title="Next step" padded>
+        <Panel title={t("deployAgentBuilder.published.nextStep")} padded>
           <div
             style={{ color: "var(--text-2)", fontSize: 11, lineHeight: 1.6 }}
           >
-            Open the agent to test it with a message or send one of its trigger
-            events. Live runs, steps, logs, and emitted events will appear in
-            Agent Studio.
+            {t("deployAgentBuilder.published.nextStepDescription")}
           </div>
           {result.events.created.length > 0 && (
             <div
               className="mono"
               style={{ color: "var(--green)", fontSize: 10, marginTop: 8 }}
             >
-              {result.events.created.length} event type
-              {result.events.created.length === 1 ? "" : "s"} created
+              {t(
+                result.events.created.length === 1
+                  ? "deployAgentBuilder.published.createdEventOne"
+                  : "deployAgentBuilder.published.createdEventMany",
+                { count: result.events.created.length },
+              )}
             </div>
           )}
         </Panel>
@@ -2184,6 +2359,7 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
 }
 
 function PromptGenerationProgress({ compact = false }: { compact?: boolean }) {
+  const { t } = useI18n();
   return (
     <div
       className={`new-agent-prompt-progress${compact ? " new-agent-prompt-progress--compact" : ""}`}
@@ -2194,11 +2370,8 @@ function PromptGenerationProgress({ compact = false }: { compact?: boolean }) {
         <Icon name="spark" size={compact ? 12 : 14} />
       </span>
       <span className="new-agent-prompt-progress__copy">
-        <strong>Generating system prompt</strong>
-        <span>
-          Analyzing purpose, event contract, execution plan, tools, and model
-          policy…
-        </span>
+        <strong>{t("deployAgentBuilder.progress.title")}</strong>
+        <span>{t("deployAgentBuilder.progress.description")}</span>
       </span>
       <span className="new-agent-prompt-progress__dots" aria-hidden="true">
         <i />
@@ -2388,6 +2561,7 @@ function EventPicker({
   all: string[];
   newEvents: string[];
 }) {
+  const { t } = useI18n();
   const [input, setInput] = useState("");
   const colorMap = {
     blue: {
@@ -2436,12 +2610,12 @@ function EventPicker({
       >
         {selected.length === 0 && (
           <span style={{ fontSize: 11, color: "var(--text-3)" }}>
-            None yet — type a name below to add.
+            {t("deployAgentModal.eventPickerEmpty")}
           </span>
         )}
-        {selected.map((t) => (
+        {selected.map((eventName) => (
           <span
-            key={t}
+            key={eventName}
             style={{
               display: "inline-flex",
               alignItems: "center",
@@ -2456,8 +2630,8 @@ function EventPicker({
               borderRadius: 3,
             }}
           >
-            {t}
-            {newEvents.includes(t) && (
+            {eventName}
+            {newEvents.includes(eventName) && (
               <span
                 style={{
                   fontSize: 8,
@@ -2466,12 +2640,14 @@ function EventPicker({
                   opacity: 0.75,
                 }}
               >
-                NEW
+                {t("deployAgentBuilder.events.newBadge")}
               </span>
             )}
             <button
-              onClick={() => onRemove(t)}
-              aria-label={`Remove ${t}`}
+              onClick={() => onRemove(eventName)}
+              aria-label={t("deployAgentModal.removeEvent", {
+                name: eventName,
+              })}
               style={{ color: "currentColor", opacity: 0.6, padding: 1 }}
             >
               <Icon name="x" size={8} />
@@ -2491,7 +2667,7 @@ function EventPicker({
               commitInput();
             }
           }}
-          placeholder="Search or name a new event…"
+          placeholder={t("deployAgentBuilder.events.pickerPlaceholder")}
           style={{
             width: "100%",
             background: "var(--panel-2)",
@@ -2542,7 +2718,13 @@ function EventPicker({
                 }}
               >
                 <Icon name="plus" size={10} />
-                <span>{isNewInput ? "Create new event" : "Use event"}</span>
+                <span>
+                  {t(
+                    isNewInput
+                      ? "deployAgentBuilder.events.createNew"
+                      : "deployAgentBuilder.events.useEvent",
+                  )}
+                </span>
                 <span
                   className="mono"
                   style={{ marginLeft: "auto", color: "var(--text)" }}

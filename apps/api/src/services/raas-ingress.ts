@@ -33,6 +33,12 @@ export class RaasIngressError extends Error {
 export interface NormalizedEventIngest {
   /** Body accepted by `IngestEventBody`. */
   body: unknown;
+  /**
+   * Runtime-owned transport metadata kept outside the public payload schema.
+   * The events route adds this only to the broker delivery copy, never to the
+   * caller-authored payload or public ledger entry.
+   */
+  runtimeMetadata?: Record<string, unknown>;
   /** True when the active tenant is the RAAS-backed recruitment tenant. */
   raasTenant: boolean;
   /** Stable tenant-scoped fallback when RAAS omitted Idempotency-Key. */
@@ -325,17 +331,14 @@ export function normalizeEventIngestBody(
   const trace = envelope ? record(envelope.trace) : null;
   const traceId =
     nonEmptyString(trace?.trace_id) ?? nonEmptyString(trace?.request_id);
-  if (traceId && payload.__correlationId === undefined) {
-    payload.__correlationId = traceId;
-  }
   validateResumeDownloaded(name, payload, Boolean(envelope));
 
   const externalEventId = envelope ? nonEmptyString(envelope.event_id) : null;
   const legacyShape = Boolean(envelope || root.data !== undefined);
+  const runtimeMetadata: Record<string, unknown> = {};
+  if (traceId) runtimeMetadata.__correlationId = traceId;
   if (legacyShape) {
-    const existingMeta = record(payload.__raas) ?? {};
-    payload.__raas = {
-      ...existingMeta,
+    runtimeMetadata.__raas = {
       protocol: "raas-v1",
       external_event_id: externalEventId,
       entity_type: envelope ? nonEmptyString(envelope.entity_type) : null,
@@ -367,6 +370,7 @@ export function normalizeEventIngestBody(
       ...(typeof root.test === "boolean" ? { test: root.test } : {}),
       source,
     },
+    runtimeMetadata,
     raasTenant: true,
     idempotencyKey: idempotencyKey(name, externalEventId, payload),
     legacyShape,

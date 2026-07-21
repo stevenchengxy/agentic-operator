@@ -4,6 +4,10 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button, useToast } from "@/app/portal/components";
 import { ModalOverlay } from "@/app/portal/components/Modal";
+import {
+  useI18n,
+  type Translate,
+} from "@/app/portal/lib/preferences-context";
 import { tenantHeader } from "@/lib/hooks/tenant-header";
 import { useAgentFactoryDomains } from "@/lib/hooks/useAgentFactoryDomains";
 import { activeRunKey } from "@/lib/hooks/useBrainStream";
@@ -28,6 +32,7 @@ interface ProductionReworkControlProps {
 }
 
 async function factoryRequest<T>(
+  t: Translate,
   tenant: string,
   path: string,
   init: RequestInit,
@@ -44,9 +49,9 @@ async function factoryRequest<T>(
       ...init,
       headers,
     });
-    return await decodeFactoryResponse<T>(response);
+    return await decodeFactoryResponse<T>(t, response);
   } catch (error) {
-    return factoryNetworkFailure(error);
+    return factoryNetworkFailure(t, error);
   }
 }
 
@@ -62,6 +67,7 @@ export function ProductionReworkControl({
   runStatus,
   testRun,
 }: ProductionReworkControlProps) {
+  const { t } = useI18n();
   const router = useRouter();
   const toast = useToast();
   const domainsQuery = useAgentFactoryDomains(tenant);
@@ -79,14 +85,17 @@ export function ProductionReworkControl({
     if (!domain) {
       setError(
         domainsQuery.isError
-          ? `无法读取 Agent 工厂的本体连接：${domainsQuery.error.message}`
-          : "Agent 工厂尚未连接本体，不能判断这个线上 agent 属于哪个领域。",
+          ? t("runDetail.rework.error.domainReadFailed", {
+              message: domainsQuery.error.message,
+            })
+          : t("runDetail.rework.error.ontologyNotConnected"),
       );
       return;
     }
     setPreparing(true);
     setError("");
     const result = await factoryRequest<unknown>(
+      t,
       tenant,
       "/v1/agent-factory/rework-seed",
       {
@@ -97,10 +106,12 @@ export function ProductionReworkControl({
     );
     setPreparing(false);
     if (!result.ok) {
-      setError(`准备返工证据失败：${result.message}`);
+      setError(
+        t("runDetail.rework.error.seedFailed", { message: result.message }),
+      );
       return;
     }
-    const parsed = parseProductionReworkPreview(result.data, runId, {
+    const parsed = parseProductionReworkPreview(t, result.data, runId, {
       domain,
       slug: agentSlug,
     });
@@ -126,6 +137,7 @@ export function ProductionReworkControl({
     setStarting(true);
     setError("");
     const result = await factoryRequest<unknown>(
+      t,
       tenant,
       "/v1/agent-factory/runs/start",
       {
@@ -139,7 +151,9 @@ export function ProductionReworkControl({
     );
     setStarting(false);
     if (!result.ok) {
-      setError(`启动返工会话失败：${result.message}`);
+      setError(
+        t("runDetail.rework.error.startFailed", { message: result.message }),
+      );
       return;
     }
     if (
@@ -148,7 +162,7 @@ export function ProductionReworkControl({
       result.data.mode !== "started"
     ) {
       setError(
-        "服务端没有返回新的返工会话启动回执；请到 Agent 工厂历史运行核对，页面不会再次提交。",
+        t("runDetail.rework.error.noStartReceipt"),
       );
       return;
     }
@@ -165,10 +179,14 @@ export function ProductionReworkControl({
     }
     toast({
       tone: "signal",
-      title: "返工会话已启动",
+      title: t("runDetail.rework.toast.startedTitle"),
       description: savedLocally
-        ? `会话 ${result.data.runId} 已创建；它会先询问你的人工诊断，不会自动晋升。`
-        : `会话 ${result.data.runId} 已创建，但浏览器没能保存会话编号；请从 Agent 工厂历史运行打开。`,
+        ? t("runDetail.rework.toast.startedSaved", {
+            runId: result.data.runId,
+          })
+        : t("runDetail.rework.toast.startedNotSaved", {
+            runId: result.data.runId,
+          }),
     });
     setPreview(null);
     router.push(`/portal/${tenant}/factory` as never);
@@ -182,7 +200,9 @@ export function ProductionReworkControl({
         disabled={preparing || domainsQuery.isLoading || !agentSlug}
         onClick={() => void prepare()}
       >
-        {preparing ? "准备证据中…" : "用此失败运行准备返工"}
+        {preparing
+          ? t("runDetail.rework.trigger.preparing")
+          : t("runDetail.rework.trigger.label")}
       </Button>
       {error && !preview && (
         <div
@@ -200,7 +220,7 @@ export function ProductionReworkControl({
 
       {preview && (
         <ModalOverlay
-          ariaLabel="确认是否启动生产返工会话"
+          ariaLabel={t("runDetail.rework.modal.ariaLabel")}
           onClose={() => {
             if (!starting) {
               setPreview(null);
@@ -231,7 +251,9 @@ export function ProductionReworkControl({
             >
               <div style={{ flex: 1 }}>
                 <div style={{ color: "var(--text)", fontSize: 15, fontWeight: 700 }}>
-                  返工预览 · {preview.slug}
+                  {t("runDetail.rework.preview.heading", {
+                    slug: preview.slug,
+                  })}
                 </div>
                 <div
                   className="mono"
@@ -241,7 +263,7 @@ export function ProductionReworkControl({
                 </div>
               </div>
               <button
-                aria-label="关闭返工预览"
+                aria-label={t("runDetail.rework.preview.closeAriaLabel")}
                 disabled={starting}
                 onClick={() => setPreview(null)}
                 style={{
@@ -268,7 +290,9 @@ export function ProductionReworkControl({
                   lineHeight: 1.55,
                 }}
               >
-                当前只是证据预览。服务端明确返回 <code>started=false</code>，尚未创建或运行返工会话。
+                {t("runDetail.rework.preview.evidenceNoticePrefix")}
+                <code>started=false</code>
+                {t("runDetail.rework.preview.evidenceNoticeSuffix")}
               </div>
 
               <div
@@ -279,25 +303,37 @@ export function ProductionReworkControl({
                   fontSize: 11.5,
                 }}
               >
-                <PreviewField label="当前失败运行" value={preview.selectedRun.runId} />
-                <PreviewField label="immutable draft" value={preview.draftVersionId} />
                 <PreviewField
-                  label="证据窗口"
-                  value={`${preview.evidenceTotal} 次生产运行 · ${preview.evidenceFailed} 次失败`}
+                  label={t("runDetail.rework.field.selectedRun")}
+                  value={preview.selectedRun.runId}
                 />
-                <PreviewField label="窗口失败率" value={percent(preview.failureRate)} />
                 <PreviewField
-                  label="本次代码实际运行"
+                  label={t("runDetail.rework.field.immutableDraft")}
+                  value={preview.draftVersionId}
+                />
+                <PreviewField
+                  label={t("runDetail.rework.field.evidenceWindow")}
+                  value={t("runDetail.rework.field.evidenceWindowValue", {
+                    total: preview.evidenceTotal,
+                    failed: preview.evidenceFailed,
+                  })}
+                />
+                <PreviewField
+                  label={t("runDetail.rework.field.windowFailureRate")}
+                  value={percent(preview.failureRate)}
+                />
+                <PreviewField
+                  label={t("runDetail.rework.field.codeRan")}
                   value={
                     preview.selectedRun.codeRan == null
-                      ? "没有运行时回执"
+                      ? t("runDetail.rework.value.noRuntimeReceipt")
                       : preview.selectedRun.codeRan
-                        ? "是"
-                        : "否"
+                        ? t("runDetail.rework.value.yes")
+                        : t("runDetail.rework.value.no")
                   }
                 />
                 <PreviewField
-                  label="本次耗时"
+                  label={t("runDetail.rework.field.duration")}
                   value={
                     preview.selectedRun.durationMs == null
                       ? "—"
@@ -308,7 +344,7 @@ export function ProductionReworkControl({
 
               <div>
                 <div style={{ color: "var(--text-3)", fontSize: 10.5, marginBottom: 4 }}>
-                  当前失败
+                  {t("runDetail.rework.preview.currentFailureLabel")}
                 </div>
                 <div
                   className="mono"
@@ -324,14 +360,15 @@ export function ProductionReworkControl({
                     overflowWrap: "anywhere",
                   }}
                 >
-                  {preview.selectedRun.error ?? "运行失败，但没有错误文本。"}
+                  {preview.selectedRun.error ??
+                    t("runDetail.rework.preview.noErrorText")}
                 </div>
               </div>
 
               {preview.selectedRun.failedSteps.length > 0 && (
                 <div>
                   <div style={{ color: "var(--text-3)", fontSize: 10.5, marginBottom: 4 }}>
-                    失败步骤
+                    {t("runDetail.rework.preview.failedStepsLabel")}
                   </div>
                   {preview.selectedRun.failedSteps.map((step, index) => (
                     <div
@@ -344,7 +381,10 @@ export function ProductionReworkControl({
                         lineHeight: 1.45,
                       }}
                     >
-                      <strong>{step.name}</strong> · 尝试 {step.attempts} 次
+                      <strong>{step.name}</strong> ·{" "}
+                      {t("runDetail.rework.preview.stepAttempts", {
+                        attempts: step.attempts,
+                      })}
                       {step.error ? ` · ${step.error}` : ""}
                     </div>
                   ))}
@@ -362,7 +402,7 @@ export function ProductionReworkControl({
                   lineHeight: 1.55,
                 }}
               >
-                确认后只会创建一个新的 Agent 工厂会话。它会先请你补充人工诊断；不会自动改线上 agent，也不会自动晋升。
+                {t("runDetail.rework.preview.confirmNotice")}
               </div>
 
               <label
@@ -383,7 +423,7 @@ export function ProductionReworkControl({
                   onChange={(event) => setConfirmed(event.target.checked)}
                   style={{ marginTop: 2 }}
                 />
-                我确认：基于这次失败创建返工会话，并在会话里再次提供人工诊断；后续仍需测试、人工审查和显式晋升。
+                {t("runDetail.rework.confirm.checkboxLabel")}
               </label>
 
               {error && (
@@ -398,7 +438,7 @@ export function ProductionReworkControl({
                   disabled={starting}
                   onClick={() => setPreview(null)}
                 >
-                  先不启动
+                  {t("runDetail.rework.confirm.cancel")}
                 </Button>
                 <Button
                   tone="primary"
@@ -406,10 +446,10 @@ export function ProductionReworkControl({
                   onClick={() => void start()}
                 >
                   {starting
-                    ? "正在创建会话…"
+                    ? t("runDetail.rework.confirm.creating")
                     : startAttempted
-                      ? "已提交，请先核对历史运行"
-                      : "确认并启动返工会话"}
+                      ? t("runDetail.rework.confirm.submitted")
+                      : t("runDetail.rework.confirm.submit")}
                 </Button>
               </div>
             </div>

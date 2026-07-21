@@ -1,18 +1,21 @@
 import { describe, expect, it } from "vitest";
+import { translate } from "@/lib/i18n";
 import { buildFactoryGoalSuggestions } from "./factory-goals";
+
+const t = (key: string, vars?: Record<string, string | number>) => translate("zh", key, vars);
 
 describe("factory goal suggestions", () => {
   it("does not invent a goal without bound ontology action evidence", () => {
-    expect(buildFactoryGoalSuggestions(null, [{ name: "doWork" }])).toEqual(
+    expect(buildFactoryGoalSuggestions(t, null, [{ name: "doWork" }])).toEqual(
       [],
     );
     expect(
-      buildFactoryGoalSuggestions({ id: "empty", name: "Empty" }, []),
+      buildFactoryGoalSuggestions(t, { id: "empty", name: "Empty" }, []),
     ).toEqual([]);
   });
 
   it("derives suggestions from the selected domain and its real actions", () => {
-    const suggestions = buildFactoryGoalSuggestions(
+    const suggestions = buildFactoryGoalSuggestions(t,
       {
         id: "support",
         name: "客户支持",
@@ -30,7 +33,7 @@ describe("factory goal suggestions", () => {
   });
 
   it("does not claim rules when the ontology reports none", () => {
-    const suggestions = buildFactoryGoalSuggestions(
+    const suggestions = buildFactoryGoalSuggestions(t,
       { id: "ops", name: "运维", counts: { actions: 1, events: 0, objects: 0, rules: 0, workflow: 0 } },
       [{ name: "重启服务" }],
     );
@@ -42,7 +45,7 @@ describe("factory goal suggestions", () => {
   it("only suggests Agent-executed actions and excludes Human actions", () => {
     // Mirrors the real Agents-generation ontology: createJD is an Agent action;
     // approveInterviewInvitation / confirmRequirementClarification are Human.
-    const suggestions = buildFactoryGoalSuggestions(
+    const suggestions = buildFactoryGoalSuggestions(t,
       { id: "hiring", name: "招聘", counts: { actions: 3, events: 0, objects: 0, rules: 0, workflow: 0 } },
       [
         { name: "createJD", actor: ["Agent"] },
@@ -60,7 +63,7 @@ describe("factory goal suggestions", () => {
 
   it("returns no suggestions when every bound action is Human", () => {
     expect(
-      buildFactoryGoalSuggestions(
+      buildFactoryGoalSuggestions(t,
         { id: "manual", name: "人工域", counts: { actions: 1, events: 0, objects: 0, rules: 2, workflow: 0 } },
         [{ name: "manualEntry", actor: ["Human"] }],
       ),
@@ -68,7 +71,7 @@ describe("factory goal suggestions", () => {
   });
 
   it("treats actions with no actor designation as automatable (back-compat)", () => {
-    const suggestions = buildFactoryGoalSuggestions(
+    const suggestions = buildFactoryGoalSuggestions(t,
       { id: "legacy", name: "旧本体", counts: { actions: 1, events: 0, objects: 0, rules: 0, workflow: 0 } },
       [{ name: "doThing" }],
     );
@@ -76,7 +79,7 @@ describe("factory goal suggestions", () => {
   });
 
   it("collapses a compounded uploaded marker in the domain label", () => {
-    const suggestions = buildFactoryGoalSuggestions(
+    const suggestions = buildFactoryGoalSuggestions(t,
       {
         id: "up",
         name: "Agents Generation（上传）（上传）",

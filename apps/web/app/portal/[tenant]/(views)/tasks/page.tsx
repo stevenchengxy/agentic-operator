@@ -14,7 +14,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
-  ActorTag,
   Badge,
   Button,
   Empty,
@@ -23,8 +22,8 @@ import {
   ViewHeader,
   FilterChip,
 } from "@/app/portal/components";
+import { useI18n, type Translate } from "@/app/portal/lib/preferences-context";
 import { fmtAgo } from "@/app/portal/lib/format";
-import { useI18n } from "@/app/portal/lib/preferences-context";
 import {
   useResolveTask,
   useTasks,
@@ -39,6 +38,7 @@ import {
   type TaskDecisionOption,
   type TaskFormRawValue,
 } from "@/app/portal/components/tasks/task-form";
+import { formatApiError } from "@/lib/api-response";
 
 // Local narrow types for the task records the page renders.
 interface TaskItem {
@@ -86,43 +86,76 @@ interface HumanInputDescriptor {
   prompt: string;
 }
 
-function humanInputDescriptor(payload: Record<string, unknown>): HumanInputDescriptor | null {
+function humanInputDescriptor(
+  payload: Record<string, unknown>,
+): HumanInputDescriptor | null {
   const value = payload.inputBinding;
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const row = value as Record<string, unknown>;
   if (
-    row.kind !== "human_input"
-    || typeof row.field !== "string"
-    || typeof row.type !== "string"
-    || typeof row.required !== "boolean"
-    || typeof row.prompt !== "string"
-  ) return null;
+    row.kind !== "human_input" ||
+    typeof row.field !== "string" ||
+    typeof row.type !== "string" ||
+    typeof row.required !== "boolean" ||
+    typeof row.prompt !== "string"
+  )
+    return null;
   return row as unknown as HumanInputDescriptor;
 }
 
-function humanInputType(type: string): "string" | "number" | "integer" | "boolean" | "json" {
+function humanInputType(
+  type: string,
+): "string" | "number" | "integer" | "boolean" | "json" {
   const normalized = type.trim().toLowerCase().replace(/\s+/g, "");
-  if (["number", "float", "double", "decimal", "numeric"].includes(normalized)) return "number";
-  if (["integer", "int", "int32", "int64", "long"].includes(normalized)) return "integer";
+  if (["number", "float", "double", "decimal", "numeric"].includes(normalized))
+    return "number";
+  if (["integer", "int", "int32", "int64", "long"].includes(normalized))
+    return "integer";
   if (["boolean", "bool"].includes(normalized)) return "boolean";
-  if (/\[\]$/.test(normalized) || /^(array|list|set|object|record|map|json)/.test(normalized)) return "json";
+  if (
+    /\[\]$/.test(normalized) ||
+    /^(array|list|set|object|record|map|json)/.test(normalized)
+  )
+    return "json";
   return "string";
 }
 
-function parseHumanInputValue(descriptor: HumanInputDescriptor, raw: string): unknown {
+function parseHumanInputValue(
+  descriptor: HumanInputDescriptor,
+  raw: string,
+  t: Translate,
+): unknown {
   const kind = humanInputType(descriptor.type);
-  if (kind === "boolean") return raw === "true" ? true : raw === "false" ? false : undefined;
+  if (kind === "boolean")
+    return raw === "true" ? true : raw === "false" ? false : undefined;
   if (kind === "number" || kind === "integer") {
     if (!raw.trim()) return undefined;
     const value = Number(raw);
-    if (!Number.isFinite(value) || (kind === "integer" && !Number.isSafeInteger(value))) {
-      throw new Error(`「${descriptor.field}」不是有效的 ${descriptor.type}`);
+    if (
+      !Number.isFinite(value) ||
+      (kind === "integer" && !Number.isSafeInteger(value))
+    ) {
+      throw new Error(
+        t("tasks.humanInputInvalid", {
+          field: descriptor.field,
+          type: descriptor.type,
+        }),
+      );
     }
     return value;
   }
   if (kind === "json") {
     if (!raw.trim()) return undefined;
-    return JSON.parse(raw) as unknown;
+    try {
+      return JSON.parse(raw) as unknown;
+    } catch {
+      throw new Error(
+        t("tasks.humanInputInvalid", {
+          field: descriptor.field,
+          type: descriptor.type,
+        }),
+      );
+    }
   }
   return raw.trim() ? raw : undefined;
 }
@@ -187,7 +220,8 @@ export default function TasksPage() {
   const [filter, setFilter] = useState<"all" | "high" | "med" | "low">("all");
 
   const filtered = useMemo(
-    () => tasks.filter((t) => (filter === "all" ? true : t.priority === filter)),
+    () =>
+      tasks.filter((t) => (filter === "all" ? true : t.priority === filter)),
     [tasks, filter],
   );
   const requestedId = searchParams.get("selected");
@@ -204,7 +238,9 @@ export default function TasksPage() {
     (id: string) => {
       const next = new URLSearchParams(searchParams.toString());
       next.set("selected", id);
-      router.replace(`${pathname}?${next.toString()}` as never, { scroll: false });
+      router.replace(`${pathname}?${next.toString()}` as never, {
+        scroll: false,
+      });
     },
     [pathname, router, searchParams],
   );
@@ -218,7 +254,9 @@ export default function TasksPage() {
           high: highValue,
         })}
         badge={
-          <Badge tone={tasksQuery.isError ? "red" : tasksReady ? "amber" : "muted"}>
+          <Badge
+            tone={tasksQuery.isError ? "red" : tasksReady ? "amber" : "muted"}
+          >
             {t("tasks.openBadge", { count: countValue })}
           </Badge>
         }
@@ -234,7 +272,8 @@ export default function TasksPage() {
             fontSize: 12,
           }}
         >
-          {t("tasks.workflowContextUnavailable")}: {dagQuery.error.message}
+          {t("tasks.workflowContextUnavailable")}:{" "}
+          {formatApiError(dagQuery.error, t)}
         </div>
       ) : null}
 
@@ -282,7 +321,11 @@ export default function TasksPage() {
               <Empty title={t("tasks.loadingTitle")} hint="" />
             ) : filtered.length === 0 ? (
               <Empty
-                title={tasks.length === 0 ? t("tasks.emptyAllTitle") : t("tasks.emptyPriorityTitle")}
+                title={
+                  tasks.length === 0
+                    ? t("tasks.emptyAllTitle")
+                    : t("tasks.emptyPriorityTitle")
+                }
                 hint={tasks.length === 0 ? t("tasks.emptyAllHint") : ""}
               />
             ) : (
@@ -298,11 +341,11 @@ export default function TasksPage() {
           </div>
         </aside>
 
-          <div style={{ overflow: "auto", minHeight: 0 }}>
+        <div style={{ overflow: "auto", minHeight: 0 }}>
           {tasksQuery.isError ? (
             <Empty
               title={t("tasks.loadErrorTitle")}
-              hint={tasksQuery.error.message}
+              hint={formatApiError(tasksQuery.error, t)}
             />
           ) : tasksQuery.isLoading && !tasksQuery.data ? (
             <Empty title={t("tasks.loadingTitle")} hint="" />
@@ -319,7 +362,10 @@ export default function TasksPage() {
               }
             />
           ) : (
-            <Empty title={t("tasks.inboxZeroTitle")} hint={t("tasks.inboxZeroHint")} />
+            <Empty
+              title={t("tasks.inboxZeroTitle")}
+              hint={t("tasks.inboxZeroHint")}
+            />
           )}
         </div>
       </div>
@@ -336,6 +382,7 @@ function TaskRow({
   active: boolean;
   onClick: () => void;
 }) {
+  const { language } = useI18n();
   return (
     <button
       onClick={onClick}
@@ -346,7 +393,9 @@ function TaskRow({
         padding: "12px 14px",
         borderBottom: "1px solid var(--border)",
         background: active ? "var(--panel-2)" : "transparent",
-        borderLeft: active ? "2px solid var(--signal)" : "2px solid transparent",
+        borderLeft: active
+          ? "2px solid var(--signal)"
+          : "2px solid transparent",
       }}
     >
       <div
@@ -383,7 +432,7 @@ function TaskRow({
             fontFamily: "var(--mono)",
           }}
         >
-          {task.createdAt ? fmtAgo(task.createdAt) : "—"}
+          {task.createdAt ? fmtAgo(task.createdAt, language) : "—"}
         </span>
       </div>
       <div
@@ -415,10 +464,12 @@ function TaskDetail({
   agents: DagAgent[];
   workflowStatus: "loading" | "ready" | "error";
 }) {
-  const { t } = useI18n();
+  const { language, t } = useI18n();
   const resolveTask = useResolveTask();
   const [decisionError, setDecisionError] = useState<string | null>(null);
-  const [clarificationAnswers, setClarificationAnswers] = useState<string[]>([]);
+  const [clarificationAnswers, setClarificationAnswers] = useState<string[]>(
+    [],
+  );
   const [humanInputAnswer, setHumanInputAnswer] = useState("");
   const inputDescriptor = humanInputDescriptor(task.payload);
   // Generated manual steps (authored formSchema, or unknown types without a
@@ -465,7 +516,11 @@ function TaskDetail({
               }
             : undefined;
         if (decision === "approve" && inputDescriptor) {
-          const value = parseHumanInputValue(inputDescriptor, humanInputAnswer);
+          const value = parseHumanInputValue(
+            inputDescriptor,
+            humanInputAnswer,
+            t,
+          );
           if (inputDescriptor.required && value === undefined) {
             throw new Error(t("tasks.humanInputRequired"));
           }
@@ -473,12 +528,19 @@ function TaskDetail({
         }
         await resolveTask.mutateAsync({ id: task.id, decision, payload });
       } catch (error) {
-        setDecisionError(
-          error instanceof Error ? error.message : t("tasks.resolveFailed"),
-        );
+        setDecisionError(formatApiError(error, t, "tasks.resolveFailed"));
       }
     },
-    [clarificationAnswers, humanInputAnswer, inputDescriptor, resolveTask, task.id, task.payload.questions, task.type, t],
+    [
+      clarificationAnswers,
+      humanInputAnswer,
+      inputDescriptor,
+      resolveTask,
+      task.id,
+      task.payload.questions,
+      task.type,
+      t,
+    ],
   );
 
   const clarificationQuestions = Array.isArray(task.payload.questions)
@@ -525,13 +587,17 @@ function TaskDetail({
                   : "muted"
             }
           >
-            {t("tasks.priorityBadge", { priority: task.priority.toUpperCase() })}
+            {t("tasks.priorityBadge", {
+              priority: task.priority.toUpperCase(),
+            })}
           </Badge>
           <Badge tone="muted">{task.id}</Badge>
-          <ActorTag actor="Human" />
+          <Badge tone="violet">
+            <Icon name="human" size={9} /> {t("events.catHuman")}
+          </Badge>
           <span style={{ fontSize: 11, color: "var(--text-3)" }}>
             {t("tasks.createdAgo", {
-              ago: task.createdAt ? fmtAgo(task.createdAt) : "—",
+              ago: task.createdAt ? fmtAgo(task.createdAt, language) : "—",
             })}
           </span>
         </div>
@@ -560,9 +626,7 @@ function TaskDetail({
       {task.type === "packageReview" && (
         <PackagePayload payload={task.payload} />
       )}
-      {task.type === "resumeFix" && (
-        <ResumeFixPayload payload={task.payload} />
-      )}
+      {task.type === "resumeFix" && <ResumeFixPayload payload={task.payload} />}
       {task.type === "requirementReClarification" && (
         <ClarificationPayload
           payload={task.payload}
@@ -596,9 +660,9 @@ function TaskDetail({
         "requirementReClarification",
         "packageSupplement",
         "manualPublish",
-      ].includes(task.type) && !inputDescriptor && !task.formSchema && (
-        <GenericTaskPayload payload={task.payload} />
-      )}
+      ].includes(task.type) &&
+        !inputDescriptor &&
+        !task.formSchema && <GenericTaskPayload payload={task.payload} />}
 
       {/* Generated manual steps: authored description + prepared context. */}
       {!LEGACY_TASK_TYPES.has(task.type) || task.formSchema ? (
@@ -606,65 +670,79 @@ function TaskDetail({
       ) : null}
 
       {/* Decision actions. Generated manual steps resolve through the
-        * authored form schema; the bespoke legacy flows (clarification
-        * answers, human-input binding) keep their dedicated panel. */}
+       * authored form schema; the bespoke legacy flows (clarification
+       * answers, human-input binding) keep their dedicated panel. */}
       {useSchemaForm ? (
         <TaskDecisionPanel task={task} />
       ) : (
-      <div
-        style={{
-          marginTop: 20,
-          padding: 16,
-          background: "var(--panel)",
-          border: "1px solid var(--border)",
-          borderRadius: 6,
-        }}
-      >
         <div
           style={{
-            fontSize: 10.5,
-            fontFamily: "var(--mono)",
-            textTransform: "uppercase",
-            color: "var(--text-3)",
-            letterSpacing: "0.08em",
-            marginBottom: 10,
+            marginTop: 20,
+            padding: 16,
+            background: "var(--panel)",
+            border: "1px solid var(--border)",
+            borderRadius: 6,
           }}
         >
-          {t("tasks.decide")}
-        </div>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <Button
-            tone="primary"
-            icon="check"
-            onClick={() => void resolve("approve")}
-            disabled={resolveTask.isPending || clarificationIncomplete || humanInputIncomplete}
-            title={clarificationIncomplete ? t("tasks.answerRequired") : humanInputIncomplete ? t("tasks.humanInputRequired") : undefined}
-          >
-            {decisionLabel(task.type, "primary", t)}
-          </Button>
-          {decisionLabel(task.type, "secondary", t) && (
-            <Button
-              tone="danger"
-              onClick={() => void resolve("reject")}
-              disabled={resolveTask.isPending}
-            >
-              {decisionLabel(task.type, "secondary", t)}
-            </Button>
-          )}
-        </div>
-        {decisionError ? (
           <div
-            role="alert"
-            style={{ marginTop: 10, fontSize: 11.5, color: "var(--red)" }}
+            style={{
+              fontSize: 10.5,
+              fontFamily: "var(--mono)",
+              textTransform: "uppercase",
+              color: "var(--text-3)",
+              letterSpacing: "0.08em",
+              marginBottom: 10,
+            }}
           >
-            {decisionError}
+            {t("tasks.decide")}
           </div>
-        ) : null}
-      </div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <Button
+              tone="primary"
+              icon="check"
+              onClick={() => void resolve("approve")}
+              disabled={
+                resolveTask.isPending ||
+                clarificationIncomplete ||
+                humanInputIncomplete
+              }
+              title={
+                clarificationIncomplete
+                  ? t("tasks.answerRequired")
+                  : humanInputIncomplete
+                    ? t("tasks.humanInputRequired")
+                    : undefined
+              }
+            >
+              {decisionLabel(task.type, "primary", t)}
+            </Button>
+            {decisionLabel(task.type, "secondary", t) && (
+              <Button
+                tone="danger"
+                onClick={() => void resolve("reject")}
+                disabled={resolveTask.isPending}
+              >
+                {decisionLabel(task.type, "secondary", t)}
+              </Button>
+            )}
+          </div>
+          {decisionError ? (
+            <div
+              role="alert"
+              style={{ marginTop: 10, fontSize: 11.5, color: "var(--red)" }}
+            >
+              {decisionError}
+            </div>
+          ) : null}
+        </div>
       )}
 
       {/* Run context */}
-      <Panel title={t("tasks.workflowContext")} padded style={{ marginTop: 16 }}>
+      <Panel
+        title={t("tasks.workflowContext")}
+        padded
+        style={{ marginTop: 16 }}
+      >
         {workflowStatus !== "ready" ? (
           <Empty
             title={
@@ -676,34 +754,36 @@ function TaskDetail({
           />
         ) : (
           <>
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 10,
-            fontSize: 12,
-          }}
-        >
-          <span style={{ color: "var(--text-3)" }}>{t("tasks.willEmitOnApprove")}</span>
-          {agent?.emits?.map((e) => (
-            <Badge key={e} tone="green">
-              {e}
-            </Badge>
-          )) ?? null}
-        </div>
-        <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-3)" }}>
-          {t("tasks.downstreamListeners")}{" "}
-          {(() => {
-            const evs = agent?.emits ?? [];
-            const listeners = new Set<string>();
-            evs.forEach((e) => {
-              agents
-                .filter((a) => a.triggers?.includes(e))
-                .forEach((a) => listeners.add(a.title));
-            });
-            return Array.from(listeners).join(", ") || "—";
-          })()}
-        </div>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 10,
+                fontSize: 12,
+              }}
+            >
+              <span style={{ color: "var(--text-3)" }}>
+                {t("tasks.willEmitOnApprove")}
+              </span>
+              {agent?.emits?.map((e) => (
+                <Badge key={e} tone="green">
+                  {e}
+                </Badge>
+              )) ?? null}
+            </div>
+            <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-3)" }}>
+              {t("tasks.downstreamListeners")}{" "}
+              {(() => {
+                const evs = agent?.emits ?? [];
+                const listeners = new Set<string>();
+                evs.forEach((e) => {
+                  agents
+                    .filter((a) => a.triggers?.includes(e))
+                    .forEach((a) => listeners.add(a.title));
+                });
+                return Array.from(listeners).join(", ") || "—";
+              })()}
+            </div>
           </>
         )}
       </Panel>
@@ -718,10 +798,7 @@ function decisionLabel(
 ): string | null {
   // Keys are stable per task-type + slot; resolve to translated labels at the
   // render site (the map is a structural lookup, not a string table).
-  const map: Record<
-    string,
-    { primary: string; secondary: string | null }
-  > = {
+  const map: Record<string, { primary: string; secondary: string | null }> = {
     jdReview: {
       primary: t("tasks.decision.jdReview.primary"),
       secondary: t("tasks.decision.jdReview.secondary"),
@@ -791,7 +868,7 @@ function GenericTaskContext({ task }: { task: TaskItem }) {
       ) : null}
       {hasContext ? (
         <pre
-          aria-label="Prepared decision context"
+          aria-label={t("tasks.preparedContextAriaLabel")}
           style={{
             margin: 0,
             maxHeight: 320,
@@ -843,7 +920,7 @@ function TaskDecisionPanel({ task }: { task: TaskItem }) {
   }
 
   async function submit(option: TaskDecisionOption) {
-    const result = buildTaskResolutionPayload(definition, values, option);
+    const result = buildTaskResolutionPayload(definition, values, option, t);
     if (!result.ok) {
       setErrors(result.errors);
       return;
@@ -888,6 +965,8 @@ function TaskDecisionPanel({ task }: { task: TaskItem }) {
         values={values}
         errors={errors}
         disabled={resolveTask.isPending}
+        selectPlaceholder={t("tasks.selectPlaceholder")}
+        confirmLabel={t("tasks.confirmField")}
         onChange={changeField}
       />
       <div
@@ -919,7 +998,13 @@ function TaskDecisionPanel({ task }: { task: TaskItem }) {
             onClick={() => void submit(option)}
           >
             {task.formSchema
-              ? option.label
+              ? option.decision === "approve"
+                ? t("tasks.approve")
+                : option.decision === "reject"
+                  ? t("tasks.reject")
+                  : option.formValue.trim().toLowerCase() === "supplement"
+                    ? t("tasks.requestSupplement")
+                    : t("tasks.requestRevision")
               : option.decision === "approve"
                 ? decisionLabel(task.type, "primary", t)
                 : (decisionLabel(task.type, "secondary", t) ?? option.label)}
@@ -939,7 +1024,7 @@ function TaskDecisionPanel({ task }: { task: TaskItem }) {
           style={{ marginTop: 10, color: "var(--red)", fontSize: 11.5 }}
         >
           {resolveTask.error instanceof Error
-            ? resolveTask.error.message
+            ? formatApiError(resolveTask.error, t, "tasks.resolveFailed")
             : t("tasks.resolveFailed")}
         </div>
       ) : null}
@@ -949,11 +1034,7 @@ function TaskDecisionPanel({ task }: { task: TaskItem }) {
 
 // ─── Payload renderers (6 of 6) ──────────────────────────────────────────────
 
-function JDReviewPayload({
-  payload,
-}: {
-  payload: Record<string, unknown>;
-}) {
+function JDReviewPayload({ payload }: { payload: Record<string, unknown> }) {
   const { t } = useI18n();
   const p = payload as {
     title?: string;
@@ -1018,13 +1099,19 @@ function JDReviewPayload({
             <KV label={t("tasks.level")} value={p.level ?? "—"} mono />
             <KV label={t("tasks.city")} value={p.city ?? "—"} />
             <KV label={t("tasks.salary")} value={p.salary ?? "—"} />
-            <KV label={t("tasks.status")} value={<Badge tone="signal">OPEN</Badge>} />
+            <KV
+              label={t("tasks.status")}
+              value={<Badge tone="signal">{t("tasks.statusOpen")}</Badge>}
+            />
           </div>
           <SectionList
             label={t("tasks.responsibilities")}
             items={p.responsibilities ?? []}
           />
-          <SectionList label={t("tasks.requirements")} items={p.requirements ?? []} />
+          <SectionList
+            label={t("tasks.requirements")}
+            items={p.requirements ?? []}
+          />
         </div>
       </Panel>
       <Panel title={t("tasks.agentReasoning")} padded>
@@ -1032,18 +1119,17 @@ function JDReviewPayload({
           <KV label={t("tasks.agent")} value={p.agentName ?? "—"} mono />
           <KV label={t("tasks.action")} value={p.actionName ?? "—"} mono />
           <KV label={t("tasks.subject")} value={p.subject ?? "—"} mono />
-          <KV label={t("tasks.reason")} value={p.description ?? p.condition ?? "—"} />
+          <KV
+            label={t("tasks.reason")}
+            value={p.description ?? p.condition ?? "—"}
+          />
         </div>
       </Panel>
     </div>
   );
 }
 
-function PackagePayload({
-  payload,
-}: {
-  payload: Record<string, unknown>;
-}) {
+function PackagePayload({ payload }: { payload: Record<string, unknown> }) {
   const { t } = useI18n();
   const p = payload as {
     candidate?: string;
@@ -1068,7 +1154,9 @@ function PackagePayload({
         title={t("tasks.candidatePackage")}
         padded
         action={
-          <Badge tone="signal">{t("tasks.scoreBadge", { score: p.matchScore ?? "—" })}</Badge>
+          <Badge tone="signal">
+            {t("tasks.scoreBadge", { score: p.matchScore ?? "—" })}
+          </Badge>
         }
       >
         <div
@@ -1087,21 +1175,31 @@ function PackagePayload({
             gap: 8,
           }}
         >
-          <KV label={t("tasks.match")} value={`${p.matchScore ?? "—"}/100`} mono />
+          <KV
+            label={t("tasks.match")}
+            value={`${p.matchScore ?? "—"}/100`}
+            mono
+          />
           <KV
             label={t("tasks.missingItems")}
             value={
               (p.missingItems?.length ?? 0) === 0 ? (
-                <Badge tone="green">COMPLETE</Badge>
+                <Badge tone="green">{t("tasks.missingComplete")}</Badge>
               ) : (
                 (p.missingItems ?? []).join(", ")
               )
             }
           />
-          <SectionList label={t("tasks.highlights")} items={p.highlights ?? []} />
+          <SectionList
+            label={t("tasks.highlights")}
+            items={p.highlights ?? []}
+          />
         </div>
         {(p.attachments?.length ?? 0) > 0 ? (
-          <SectionList label={t("tasks.attachments")} items={p.attachments ?? []} />
+          <SectionList
+            label={t("tasks.attachments")}
+            items={p.attachments ?? []}
+          />
         ) : null}
       </Panel>
       <Panel title={t("tasks.submissionPreview")} padded>
@@ -1119,9 +1217,13 @@ function PackagePayload({
           <KV
             label={t("tasks.preflightCheck")}
             value={
-              p.dryRun == null ? "—" : (
+              p.dryRun == null ? (
+                "—"
+              ) : (
                 <Badge tone={p.dryRun ? "green" : "muted"}>
-                  {p.dryRun ? t("tasks.preflightPassed") : t("tasks.preflightNotPassed")}
+                  {p.dryRun
+                    ? t("tasks.preflightPassed")
+                    : t("tasks.preflightNotPassed")}
                 </Badge>
               )
             }
@@ -1136,21 +1238,20 @@ function PackagePayload({
   );
 }
 
-function ResumeFixPayload({
-  payload,
-}: {
-  payload: Record<string, unknown>;
-}) {
+function ResumeFixPayload({ payload }: { payload: Record<string, unknown> }) {
   const { t } = useI18n();
   const p = payload as { file?: string; error?: string };
   return (
     <Panel
       title={t("tasks.parseError")}
       padded
-      action={<Badge tone="red">PARSE FAIL</Badge>}
+      action={<Badge tone="red">{t("tasks.parseFailBadge")}</Badge>}
     >
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-        <KV label={t("tasks.file")} value={<span className="mono">{p.file ?? "—"}</span>} />
+        <KV
+          label={t("tasks.file")}
+          value={<span className="mono">{p.file ?? "—"}</span>}
+        />
         <div>
           <div
             className="mono"
@@ -1169,7 +1270,8 @@ function ResumeFixPayload({
               color: "var(--red)",
               padding: 10,
               background: "color-mix(in srgb, var(--red) 6%, transparent)",
-              border: "1px solid color-mix(in srgb, var(--red) 25%, transparent)",
+              border:
+                "1px solid color-mix(in srgb, var(--red) 25%, transparent)",
               borderRadius: 4,
             }}
           >
@@ -1237,11 +1339,7 @@ function ClarificationPayload({
   );
 }
 
-function SupplementPayload({
-  payload,
-}: {
-  payload: Record<string, unknown>;
-}) {
+function SupplementPayload({ payload }: { payload: Record<string, unknown> }) {
   const { t } = useI18n();
   const p = payload as { missing?: string[] };
   return (
@@ -1260,11 +1358,7 @@ function SupplementPayload({
               borderRadius: 4,
             }}
           >
-            <Icon
-              name="upload"
-              size={12}
-              style={{ color: "var(--text-3)" }}
-            />
+            <Icon name="upload" size={12} style={{ color: "var(--text-3)" }} />
             <span
               className="mono"
               style={{ fontSize: 12, color: "var(--text)" }}
@@ -1333,12 +1427,28 @@ function HumanInputPayload({
   };
   return (
     <Panel title={t("tasks.humanInputTitle")} padded>
-      <label htmlFor={`human-input-${descriptor.field}`} style={{ display: "block" }}>
-        <div style={{ fontSize: 13, lineHeight: 1.5, color: "var(--text)", marginBottom: 8 }}>
+      <label
+        htmlFor={`human-input-${descriptor.field}`}
+        style={{ display: "block" }}
+      >
+        <div
+          style={{
+            fontSize: 13,
+            lineHeight: 1.5,
+            color: "var(--text)",
+            marginBottom: 8,
+          }}
+        >
           {descriptor.prompt}
         </div>
-        <div className="mono" style={{ fontSize: 10.5, color: "var(--text-3)", marginBottom: 6 }}>
-          {descriptor.field} · {descriptor.type}{descriptor.required ? ` · ${t("tasks.humanInputRequiredBadge")}` : ""}
+        <div
+          className="mono"
+          style={{ fontSize: 10.5, color: "var(--text-3)", marginBottom: 6 }}
+        >
+          {descriptor.field} · {descriptor.type}
+          {descriptor.required
+            ? ` · ${t("tasks.humanInputRequiredBadge")}`
+            : ""}
         </div>
         {kind === "boolean" ? (
           <select
@@ -1367,7 +1477,11 @@ function HumanInputPayload({
             rows={kind === "json" ? 7 : 3}
             value={value}
             onChange={(event) => onChange(event.target.value)}
-            placeholder={kind === "json" ? t("tasks.humanInputJsonPlaceholder") : t("tasks.humanInputPlaceholder")}
+            placeholder={
+              kind === "json"
+                ? t("tasks.humanInputJsonPlaceholder")
+                : t("tasks.humanInputPlaceholder")
+            }
             style={{ ...sharedStyle, resize: "vertical" }}
           />
         )}
@@ -1404,13 +1518,7 @@ function GenericTaskPayload({ payload }: { payload: Record<string, unknown> }) {
 
 // ─── shared bits ─────────────────────────────────────────────────────────────
 
-function SectionList({
-  label,
-  items,
-}: {
-  label: string;
-  items: string[];
-}) {
+function SectionList({ label, items }: { label: string; items: string[] }) {
   return (
     <div>
       <div

@@ -76,12 +76,13 @@ describe("Test Lab chat wiring", () => {
     expect(source).toContain("runId: response.runId");
     expect(source).toContain("eventId: response.eventId");
     expect(source).toContain("eventName: response.eventName");
-    expect(source).toContain("event · {lastDispatch.eventName}");
+    expect(source).toContain('studioUi(t, "event")');
+    expect(source).toContain("{lastDispatch.eventName}");
     expect(source).toContain("events?eventId=");
     expect(source).toContain(
       "Publishing the trigger event to the agent runtime…",
     );
-    expect(source).toContain('pendingTurn.eventName ?? "The trigger event"');
+    expect(source).toContain('studioUi(t, "The trigger event")');
   });
 
   it("pins the target for a conversation and makes New chat reset it", () => {
@@ -100,7 +101,7 @@ describe("Test Lab chat wiring", () => {
   });
 
   it("selects an authored trigger once and pins it for follow-ups", () => {
-    expect(source).toContain('label="Trigger event"');
+    expect(source).toContain('label={studioUi(t, "Trigger event")}');
     expect(source).toContain("definition.trigger[0]");
     expect(source).toContain("requestedTriggerEvent");
     expect(source).toContain("triggerEvent: requestedTriggerEvent");
@@ -171,7 +172,9 @@ describe("Test Lab chat wiring", () => {
     expect(source).not.toContain(
       '<details open className="agent-studio-output-details">',
     );
-    expect(source).toContain('aria-label="Selected run JSON output"');
+    expect(source).toContain(
+      'aria-label={studioUi(t, "Selected run JSON output")}',
+    );
     expect(source).toContain("readOnly");
     expect(source).toContain("value={selectedOutputText}");
     expect(source).toContain("prettyJsonOutput(output.data.output)");
@@ -179,9 +182,7 @@ describe("Test Lab chat wiring", () => {
   });
 
   it("adds accessible splitters and keeps history vertically resizable on mobile", () => {
-    expect(source).toContain(
-      'ariaLabel="Resize Test setup and Conversation panels"',
-    );
+    expect(source).toContain('"Resize Test setup and Conversation panels"');
     expect(source).toContain('"Resize Conversation and Run history panels"');
     expect(source).toContain('"Resize Conversation and Run history rows"');
     expect(source).toContain("max={setupPanelMaxWidth}");
@@ -221,8 +222,8 @@ describe("Test Lab chat wiring", () => {
     );
     expect(source).toContain("agent-studio-test-grid--history-closed");
     expect(source).toContain("historyInline && historyOpen");
-    expect(source).toContain(
-      'historyOpen ? "Hide run history" : "Show run history"',
+    expect(source).toMatch(
+      /historyOpen[\s\S]{0,80}\? studioUi\(t, "Hide run history"\)[\s\S]{0,80}: studioUi\(t, "Show run history"\)/,
     );
     expect(source).toContain("ariaExpanded={historyOpen}");
     expect(source).toContain("setHistoryOpen((open) => !open)");
@@ -235,7 +236,7 @@ describe("Test Lab chat wiring", () => {
   it("shows the authored emitted events beside the trigger event setting", () => {
     expect(source).toContain("definition.triggered_event");
     expect(source).toContain("new Set(");
-    expect(source).toContain('aria-label="Emitted events"');
+    expect(source).toContain('aria-label={studioUi(t, "Emitted events")}');
     expect(source).toContain("emittedEvents.map");
     expect(source).toContain("Configured outgoing events.");
     expect(source).toContain("title={name}");

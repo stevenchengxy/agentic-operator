@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { readAgentAuthoringResponse } from "./agent-authoring-response";
+import {
+  AgentAuthoringClientError,
+  formatAgentAuthoringError,
+  readAgentAuthoringResponse,
+} from "./agent-authoring-response";
 
 describe("agent authoring API response decoding", () => {
   it("returns data from a valid success envelope", async () => {
@@ -79,5 +83,23 @@ describe("agent authoring API response decoding", () => {
     ).rejects.toThrow(
       "Prompt generation returned an invalid response (HTTP 200). Please retry.",
     );
+  });
+
+  it("localizes client-owned response failures", () => {
+    const error = new AgentAuthoringClientError({
+      code: "unavailable",
+      operation: "promptGeneration",
+      status: 503,
+      fallback:
+        "Prompt generation is temporarily unavailable (HTTP 503). Please retry.",
+    });
+    const message = formatAgentAuthoringError(error, (key, vars) =>
+      key === "agentAuthoringError.operation.promptGeneration"
+        ? "提示词生成"
+        : key === "agentAuthoringError.unavailable"
+          ? `${vars?.operation}暂时不可用（HTTP ${vars?.status}）。请重试。`
+          : key,
+    );
+    expect(message).toBe("提示词生成暂时不可用（HTTP 503）。请重试。");
   });
 });

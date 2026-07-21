@@ -1,9 +1,14 @@
 import { describe, expect, it } from "vitest";
+import type { Translate } from "@/app/portal/lib/preferences-context";
+import { translate } from "@/lib/i18n";
 import type {
   ReasoningRunResponse,
   ReasoningRunStep,
 } from "@/lib/hooks/useReasoningAgentContext";
 import { humanStepName, projectRuntimeAgents } from "./run-projection";
+
+const enT: Translate = (key, vars) => translate("en", key, vars);
+const zhT: Translate = (key, vars) => translate("zh", key, vars);
 
 function step(
   ord: number,
@@ -57,7 +62,7 @@ function qualifiedChild(
 
 describe("reasoning runtime projection", () => {
   it("shows no synthetic graph before a durable run exists", () => {
-    expect(projectRuntimeAgents(null, [], null)).toEqual([]);
+    expect(projectRuntimeAgents(null, [], null, zhT)).toEqual([]);
   });
 
   it("projects real tool steps into the five logical agents", () => {
@@ -71,6 +76,7 @@ describe("reasoning runtime projection", () => {
         step(5, "llm.call", "running"),
       ],
       null,
+      zhT,
       [qualifiedChild("running")],
     );
 
@@ -88,6 +94,7 @@ describe("reasoning runtime projection", () => {
       "failed",
       [step(1, "llm.call"), step(2, "select_applicable_rules", "failed")],
       null,
+      zhT,
     );
     expect(projected.find((agent) => agent.id === "query")?.status).toBe(
       "blocked",
@@ -113,6 +120,7 @@ describe("reasoning runtime projection", () => {
         step(4, "compile_qualified_prompt", "running"),
       ],
       null,
+      zhT,
       [qualifiedChild("running")],
     );
     expect(projected.map((agent) => [agent.id, agent.status])).toEqual([
@@ -132,12 +140,13 @@ describe("reasoning runtime projection", () => {
       step(4, "compile_qualified_prompt"),
       step(5, "llm.call", "running"),
     ];
-    const projected = projectRuntimeAgents("running", steps, null, []);
+    const projected = projectRuntimeAgents("running", steps, null, zhT, []);
     expect(projected.find((agent) => agent.id === "qualified")?.status).toBe(
       "waiting",
     );
-    expect(humanStepName(steps[4]!, steps)).toContain(
-      "Reasoning Orchestrator",
+    expect(humanStepName(steps[4]!, zhT, steps)).toContain("推理编排器");
+    expect(humanStepName(steps[4]!, enT, steps)).toBe(
+      "Reasoning Orchestrator · Child Handoff Confirmation",
     );
   });
 });

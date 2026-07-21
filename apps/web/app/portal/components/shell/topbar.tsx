@@ -22,6 +22,7 @@ import { ThemeToggle, LanguageToggle } from "./appearance-controls";
 import { useCommandPalette } from "../cmd-k";
 import { useTenant } from "../../lib/use-tenant";
 import { useMe, useLogout, useChangePassword } from "@/lib/hooks/useMe";
+import { formatApiError } from "@/lib/api-response";
 
 export interface TopBarProps {
   /** Display name + avatar initials for the user chip. */
@@ -78,7 +79,10 @@ export function TopBar({ user }: TopBarProps) {
           }
           if (c.href) {
             return (
-              <span key={i} style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+              <span
+                key={i}
+                style={{ display: "inline-flex", alignItems: "center", gap: 8 }}
+              >
                 <Link href={c.href as never} style={{ color: "var(--text-2)" }}>
                   {c.label}
                 </Link>
@@ -91,7 +95,10 @@ export function TopBar({ user }: TopBarProps) {
             );
           }
           return (
-            <span key={i} style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+            <span
+              key={i}
+              style={{ display: "inline-flex", alignItems: "center", gap: 8 }}
+            >
               <span style={{ color: "var(--text-2)" }}>{c.label}</span>
               <Icon
                 name="chevron-right"
@@ -105,7 +112,7 @@ export function TopBar({ user }: TopBarProps) {
 
       <button
         onClick={() => cmdK.setOpen(true)}
-        aria-label="Open command palette"
+        aria-label={t("topbar.openCommandPalette")}
         style={{
           marginLeft: "auto",
           display: "flex",
@@ -218,9 +225,24 @@ function UserMenu({
             }}
           >
             <div style={{ padding: "8px 10px 10px" }}>
-              <div style={{ fontSize: 12.5, color: "var(--text)", fontWeight: 600 }}>{name}</div>
+              <div
+                style={{
+                  fontSize: 12.5,
+                  color: "var(--text)",
+                  fontWeight: 600,
+                }}
+              >
+                {name}
+              </div>
               {email ? (
-                <div style={{ fontSize: 11, color: "var(--text-3)", fontFamily: "var(--mono)", marginTop: 2 }}>
+                <div
+                  style={{
+                    fontSize: 11,
+                    color: "var(--text-3)",
+                    fontFamily: "var(--mono)",
+                    marginTop: 2,
+                  }}
+                >
                   {email}
                 </div>
               ) : null}
@@ -228,11 +250,22 @@ function UserMenu({
                 {isSuper ? (
                   <Pill text={t("access.platformSuperadmin")} tone="signal" />
                 ) : role ? (
-                  <Pill text={t(`access.role${role[0]!.toUpperCase()}${role.slice(1)}`)} tone="muted" />
+                  <Pill
+                    text={t(
+                      `access.role${role[0]!.toUpperCase()}${role.slice(1)}`,
+                    )}
+                    tone="muted"
+                  />
                 ) : null}
               </div>
             </div>
-            <div style={{ height: 1, background: "var(--border)", margin: "2px 0" }} />
+            <div
+              style={{
+                height: 1,
+                background: "var(--border)",
+                margin: "2px 0",
+              }}
+            />
             <button
               role="menuitem"
               onClick={() => {
@@ -248,18 +281,25 @@ function UserMenu({
               onClick={() => {
                 setLogoutError(null);
                 logout.mutate(undefined, {
-                  onError: (error) => setLogoutError(error.message),
+                  onError: (error) => setLogoutError(formatApiError(error, t)),
                 });
               }}
               disabled={logout.isPending}
-              style={{ ...menuItemStyle, cursor: logout.isPending ? "wait" : "pointer" }}
+              style={{
+                ...menuItemStyle,
+                cursor: logout.isPending ? "wait" : "pointer",
+              }}
             >
               {logout.isPending ? "…" : t("auth.signOut")}
             </button>
             {logoutError ? (
               <div
                 role="alert"
-                style={{ padding: "5px 10px", fontSize: 11, color: "var(--red)" }}
+                style={{
+                  padding: "5px 10px",
+                  fontSize: 11,
+                  color: "var(--red)",
+                }}
               >
                 {t("auth.signOutFailed")}: {logoutError}
               </div>
@@ -300,13 +340,14 @@ function ChangePasswordModal({ onClose }: { onClose: () => void }) {
       return;
     }
     try {
-      await changePw.mutateAsync({ currentPassword: current, newPassword: next });
+      await changePw.mutateAsync({
+        currentPassword: current,
+        newPassword: next,
+      });
       setDone(true);
       setTimeout(onClose, 900);
     } catch (caught) {
-      setError(
-        caught instanceof Error ? caught.message : t("auth.passwordChangeFailed"),
-      );
+      setError(formatApiError(caught, t, "auth.passwordChangeFailed"));
     }
   }
 
@@ -334,23 +375,54 @@ function ChangePasswordModal({ onClose }: { onClose: () => void }) {
           padding: 22,
         }}
       >
-        <h2 style={{ margin: "0 0 14px", fontSize: 17, fontFamily: "var(--display)", fontWeight: 400, color: "var(--text)" }}>
+        <h2
+          style={{
+            margin: "0 0 14px",
+            fontSize: 17,
+            fontFamily: "var(--display)",
+            fontWeight: 400,
+            color: "var(--text)",
+          }}
+        >
           {t("auth.changePassword")}
         </h2>
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          <PwField label={t("auth.currentPassword")} value={current} onChange={setCurrent} />
-          <PwField label={t("auth.newPassword")} value={next} onChange={setNext} />
+          <PwField
+            label={t("auth.currentPassword")}
+            value={current}
+            onChange={setCurrent}
+          />
+          <PwField
+            label={t("auth.newPassword")}
+            value={next}
+            onChange={setNext}
+          />
         </div>
         {error ? (
-          <div role="alert" style={{ marginTop: 12, fontSize: 12, color: "var(--red)" }}>
+          <div
+            role="alert"
+            style={{ marginTop: 12, fontSize: 12, color: "var(--red)" }}
+          >
             {error}
           </div>
         ) : null}
         {done ? (
-          <div style={{ marginTop: 12, fontSize: 12, color: "var(--green)" }}>{t("auth.passwordChanged")}</div>
+          <div style={{ marginTop: 12, fontSize: 12, color: "var(--green)" }}>
+            {t("auth.passwordChanged")}
+          </div>
         ) : null}
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 18 }}>
-          <button onClick={onClose} style={{ ...menuItemStyle, width: "auto", padding: "7px 12px" }}>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "flex-end",
+            gap: 8,
+            marginTop: 18,
+          }}
+        >
+          <button
+            onClick={onClose}
+            style={{ ...menuItemStyle, width: "auto", padding: "7px 12px" }}
+          >
             {t("auth.cancel")}
           </button>
           <button

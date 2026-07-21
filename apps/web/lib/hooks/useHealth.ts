@@ -19,6 +19,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import type { UseQueryResult } from "@tanstack/react-query";
+import { ApiResponseError, fetchApiResponse } from "@/lib/api-response";
 
 export interface HealthReport {
   ok: boolean;
@@ -59,23 +60,73 @@ export const HEALTH_KEYS = {
  * fetch (we still want the report on 503).
  */
 async function fetchHealth(): Promise<HealthReport> {
-  const res = await fetch("/health", {
+  const res = await fetchApiResponse("/health", {
     credentials: "same-origin",
     headers: { Accept: "application/json" },
   });
   // 200 = all-ok, 503 = at least one sub-component failed — both deliver
   // the full report body that we want to surface in the UI.
+  const raw = await res.text();
   if (res.status !== 200 && res.status !== 503) {
-    throw new Error(`/health: HTTP ${res.status}`);
+    let error: Record<string, unknown> | null = null;
+    try {
+      const decoded = raw ? (JSON.parse(raw) as unknown) : null;
+      if (
+        decoded &&
+        typeof decoded === "object" &&
+        !Array.isArray(decoded) &&
+        "error" in decoded &&
+        decoded.error &&
+        typeof decoded.error === "object" &&
+        !Array.isArray(decoded.error)
+      ) {
+        error = decoded.error as Record<string, unknown>;
+      }
+    } catch {
+      // The translated client fallback below retains the raw proxy response.
+    }
+    const serverMessage =
+      error && typeof error.message === "string" ? error.message : null;
+    throw new ApiResponseError(
+      "/health",
+      res.status,
+      error && typeof error.code === "string"
+        ? error.code
+        : `http_${res.status}`,
+      serverMessage ?? "",
+      {
+        clientKind: serverMessage ? undefined : "requestFailed",
+        detail: serverMessage
+          ? undefined
+          : raw.replace(/\s+/g, " ").trim().slice(0, 240) || res.statusText,
+        hint: error && typeof error.hint === "string" ? error.hint : undefined,
+        serverMessage: serverMessage !== null,
+      },
+    );
   }
   let body: unknown;
   try {
-    body = await res.json();
+    body = raw ? JSON.parse(raw) : null;
   } catch {
-    throw new Error(`/health: HTTP ${res.status} returned invalid JSON`);
+    throw new ApiResponseError(
+      "/health",
+      res.status,
+      `http_${res.status}`,
+      "",
+      {
+        clientKind: "invalidJson",
+        detail: raw.replace(/\s+/g, " ").trim().slice(0, 240),
+      },
+    );
   }
   if (!isHealthReport(body)) {
-    throw new Error(`/health: HTTP ${res.status} returned an invalid health report`);
+    throw new ApiResponseError(
+      "/health",
+      res.status,
+      "invalid_health_report",
+      "",
+      { clientKind: "invalidHealthReport" },
+    );
   }
   return body;
 }

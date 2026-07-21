@@ -13,12 +13,14 @@
 import { Fragment, useMemo } from "react";
 import { Empty, HelpTip } from "@/app/portal/components";
 import { fmtNum } from "@/app/portal/lib/format";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 import type { AgentCardData, FactoryStageId, StageState } from "./model";
 
 // ── stage rail (compact, always-pinned progress) ──────────────────────────────────
 const STATUS_COLOR: Record<string, string> = { idle: "var(--text-3)", active: "var(--signal)", ok: "var(--green)", error: "var(--red)", warn: "var(--amber)" };
 
 export function StageRail({ stages, current, running, refineCount }: { stages: StageState[]; current: FactoryStageId | null; running: boolean; refineCount: number }) {
+  const { t } = useI18n();
   const reached = stages.reduce((mx, s, i) => (s.status !== "idle" ? i : mx), -1);
   const pct = Math.round(((reached + 1) / stages.length) * 100);
   return (
@@ -41,7 +43,7 @@ export function StageRail({ stages, current, running, refineCount }: { stages: S
       <div style={{ position: "relative", height: 3, borderRadius: 2, background: "var(--border)", marginTop: 7 }}>
         <div style={{ position: "absolute", left: 0, top: 0, height: 3, borderRadius: 2, width: `${pct}%`, background: "var(--signal)", transition: "width 0.4s ease" }} />
       </div>
-      {refineCount > 0 && <div style={{ fontSize: 10.5, color: "var(--amber)", marginTop: 5 }}>↺ 修订回环 ×{refineCount}</div>}
+      {refineCount > 0 && <div style={{ fontSize: 10.5, color: "var(--amber)", marginTop: 5 }}>{t("factory.canvas.rework.loopBadge", { count: refineCount })}</div>}
     </div>
   );
 }
@@ -66,11 +68,12 @@ export function FactorySpine({
   awaitingHint: string | null;
   onOpenBg: () => void;
 }) {
+  const { t } = useI18n();
   const pipColor = (ok: boolean | undefined) => (ok === true ? "var(--green)" : ok === false ? "var(--amber)" : "var(--text-4)");
   return (
     <div style={{ display: "flex", alignItems: "stretch", gap: 12, minHeight: 46, padding: "0 14px", borderBottom: "1px solid var(--border)", background: "var(--panel-3)", flexShrink: 0 }}>
       <div title={domainName} style={{ display: "flex", alignItems: "center", gap: 7, alignSelf: "center", background: "var(--panel)", border: "1px solid var(--border)", borderRadius: 8, padding: "5px 10px", fontSize: 12, color: "var(--text-2)", whiteSpace: "nowrap", maxWidth: 210, minWidth: 0 }}>
-        🗂 本体 · <b style={{ color: "var(--text)", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis" }}>{domainName || "未连接"}</b>
+        {t("factory.canvas.spine.ontologyLabel")}<b style={{ color: "var(--text)", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis" }}>{domainName || t("factory.canvas.spine.ontologyNotConnected")}</b>
       </div>
       <div style={{ flex: 1, display: "flex", alignItems: "center", gap: 2, minWidth: 0, overflow: "hidden" }}>
         {stages.map((s, i) => {
@@ -93,10 +96,10 @@ export function FactorySpine({
         })}
       </div>
       <div style={{ display: "flex", alignItems: "center", gap: 9, alignSelf: "center", flexShrink: 0 }}>
-        {refineCount > 0 && <span title="修订回环" style={{ fontSize: 10.5, color: "var(--amber)", fontFamily: "var(--mono)" }}>↺ ×{refineCount}</span>}
-        {budgetTokens != null && <span title="本次运行的累计 token" style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-3)" }}>◷ {fmtNum(budgetTokens)} tok</span>}
-        <button onClick={onOpenBg} title="后台任务" style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, color: "var(--text-2)", background: "var(--panel)", border: `1px solid ${awaitingHint ? "var(--amber)" : "var(--border)"}`, borderRadius: 20, padding: "4px 10px", cursor: "pointer" }}>
-          后台{awaitingHint && <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--amber)" }} />}
+        {refineCount > 0 && <span title={t("factory.canvas.spine.revisionLoopTitle")} style={{ fontSize: 10.5, color: "var(--amber)", fontFamily: "var(--mono)" }}>↺ ×{refineCount}</span>}
+        {budgetTokens != null && <span title={t("factory.canvas.spine.budgetTokensTitle")} style={{ fontFamily: "var(--mono)", fontSize: 11, color: "var(--text-3)" }}>◷ {fmtNum(budgetTokens)} tok</span>}
+        <button onClick={onOpenBg} title={t("factory.canvas.spine.backgroundTasksTitle")} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, color: "var(--text-2)", background: "var(--panel)", border: `1px solid ${awaitingHint ? "var(--amber)" : "var(--border)"}`, borderRadius: 20, padding: "4px 10px", cursor: "pointer" }}>
+          {t("factory.canvas.spine.backgroundButton")}{awaitingHint && <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--amber)" }} />}
         </button>
       </div>
     </div>
@@ -117,6 +120,7 @@ export function EventGraph({
   selectedSlug: string | null;
   onSelect: (slug: string) => void;
 }) {
+  const { t } = useI18n();
   const g = useMemo(() => {
     const nodeMap = new Map<string, GNode>();
     const producers = new Map<string, number>();
@@ -155,7 +159,7 @@ export function EventGraph({
     return { nodes, edges, pos, Wd, Hd, producers, consumers };
   }, [agents]);
 
-  if (!agents.length) return <Empty title={<>还没有智能体 <HelpTip>大脑进入「设计」阶段后，事件流图会随生成逐个长出来</HelpTip></>} />;
+  if (!agents.length) return <Empty title={<>{t("factory.canvas.graph.emptyTitle")} <HelpTip>{t("factory.canvas.graph.emptyHint")}</HelpTip></>} />;
 
   const curve = (x1: number, y1: number, x2: number, y2: number) => `M ${x1} ${y1} C ${x1} ${(y1 + y2) / 2}, ${x2} ${(y1 + y2) / 2}, ${x2} ${y2}`;
   return (
@@ -191,7 +195,7 @@ export function EventGraph({
                     <text x={20} y={11} textAnchor="middle" fontSize={9} fontWeight={700} fill="var(--on-accent)">{sc.delta >= 0 ? "▲" : "▼"}{Math.abs(sc.delta)}</text>
                   </g>
                 )}
-                <title>{n.title}{sc ? ` · 评分 ${sc.next}（${sc.delta >= 0 ? "+" : ""}${sc.delta}）` : ""}</title>
+                <title>{n.title}{sc ? t("factory.canvas.graph.scoreTitle", { next: sc.next, delta: `${sc.delta >= 0 ? "+" : ""}${sc.delta}` }) : ""}</title>
               </g>
             );
           }
@@ -204,7 +208,7 @@ export function EventGraph({
             <g key={n.id} className="fct-in">
               <rect x={p.x - ew / 2} y={p.y - EH / 2} width={ew} height={EH} rx={14} fill="var(--panel)" stroke={col} strokeWidth={1.2} strokeDasharray={entry ? "4 3" : undefined} />
               <text x={p.x} y={p.y + 4} textAnchor="middle" fontSize={10.5} fill={terminal ? "var(--green)" : "var(--text-2)"} fontFamily="var(--mono)">{trunc(ev, 24)}</text>
-              <title>{ev}{entry ? " · 入口事件" : terminal ? " · 终态/外部交接" : ""}</title>
+              <title>{ev}{entry ? t("factory.canvas.graph.entryEventTitle") : terminal ? t("factory.canvas.graph.terminalEventTitle") : ""}</title>
             </g>
           );
         })}

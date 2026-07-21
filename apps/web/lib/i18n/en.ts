@@ -10,6 +10,44 @@ export const en = {
   common: {
     notConnected: "Not connected yet",
     loading: "Loading…",
+    saving: "Saving…",
+    discard: "Discard",
+    loadingEditor: "Loading editor…",
+    unknownError: "Unknown error",
+    actorAgent: "AGENT",
+    actorHuman: "HUMAN",
+    dialog: "Dialog",
+    panelSplitter: "Panel splitter",
+    switchTenantUnsaved:
+      "You have unsaved changes. Switch domains anyway? Your draft will be lost.",
+    switchTenantUnsavedDetail:
+      "You have unsaved changes ({detail}). Switch domains anyway? Your draft will be lost.",
+  },
+  protocol: {
+    runStatus: {
+      queued: "Queued",
+      running: "Running",
+      ok: "Succeeded",
+      failed: "Failed",
+      waiting: "Waiting",
+      cancelled: "Cancelled",
+    },
+    testStatus: {
+      ok: "Passed",
+      failed: "Failed",
+      partial: "Partially passed",
+      blocked: "Blocked",
+      skipped: "Skipped",
+    },
+    workflowStatus: {
+      draft: "Draft",
+      live: "Live",
+      superseded: "Superseded",
+    },
+    agentKind: {
+      manifest: "Manifest",
+      code: "Code",
+    },
   },
   nav: {
     group: { run: "Run", observe: "Observe", manage: "Manage" },
@@ -29,10 +67,372 @@ export const en = {
     access: "Access & roles",
     settings: "Settings",
     factory: "Agent Factory",
+    ontocode: "OntoCode",
     toolLibrary: "Tool Library",
     systemCheck: "System check",
   },
   reasoningAgent: {
+    examples: {
+      tencentIeg: {
+        label: "Tencent · IEG",
+      },
+      bytedanceEcommerce: {
+        label: "ByteDance · Douyin E-commerce",
+      },
+    },
+    auditView: {
+      legacyReplayNote:
+        "This run has no first-turn LLM fact receipt; this item is deterministically replayed from the raw input.",
+      factLabel: {
+        candidate: "Candidate",
+        nationality: "Nationality",
+        targetClient: "Target client",
+        targetDepartment: "Target department",
+        targetStudio: "Target studio",
+        targetRole: "Target role",
+        employmentHistory: "Employment #{index}",
+        endDate: "End date #{index}",
+      },
+      relevance: {
+        clientScope: "Determines the client-wide rule scope.",
+        departmentScope: "Determines the client department rule scope.",
+      },
+      matchReason: {
+        scopedTo: "Scope link",
+        governs: "Explicit process link",
+        appliesTo: "Object link",
+        relevantTo: "Reviewed semantic link",
+        actionLink: "Action semantic link",
+        csiUniversal: "CSI universal scope",
+        departmentMatch: "Target department match",
+        clientMatch: "Target client match",
+        objectMatch: "Business object match",
+        keyword: "Semantic keyword · {keyword}",
+      },
+      depthLimited: "[depth limited]",
+      redactedFromPublicAudit: "[redacted from public audit]",
+    },
+    runProjection: {
+      agent: {
+        reasoning: {
+          label: "Intent Reasoner",
+          detailReady:
+            "Public Harness, semantic anchors, and evidence structure generated.",
+          detailWorking:
+            "Parsing intent and designing the dynamic Reasoning Harness…",
+        },
+        query: {
+          label: "Rule Selector / QueryAgent",
+          detailOk:
+            "Allmeta Link-only Cypher and semantic-path receipts complete.",
+          detailStatus: "Allmeta rule selection: {status}",
+          detailWaiting: "Waiting for Harness anchors…",
+        },
+        compiler: {
+          label: "Prompt Compiler",
+          detailOk: "QualifiedAgent prompt compiled.",
+          detailStatus: "Prompt compile: {status}",
+          detailUpstreamFailed:
+            "Upstream run failed; Prompt Compiler did not execute.",
+          detailWaiting: "Waiting for RuleBundle…",
+        },
+        qualified: {
+          label: "QualifiedAgent",
+          detailDone:
+            "Independent child run {runId} finished per-rule quality checks.",
+          detailStatus: "Independent child run {runId}: {status}",
+          detailUpstreamFailed:
+            "Upstream run failed; QualifiedAgent produced no verdict.",
+          detailWaiting: "Waiting for the compiled rule-verdict harness…",
+        },
+        fold: {
+          label: "Deterministic Fold",
+          detailFailed: "Run failed; no clearance verdict was produced.",
+          detailWaiting: "Waiting for QualifiedAgent output…",
+        },
+      },
+      stepName: {
+        qualifiedJsonRepair: "QualifiedAgent · JSON Repair",
+        qualifiedPerRuleVerdict: "QualifiedAgent · Per-rule Verdict",
+        qualifiedGeneric: "QualifiedAgent · {name}",
+        ruleSelector: "Rule Selector / QueryAgent",
+        promptCompiler: "Prompt Compiler",
+        ontologySearch: "Ontology Search",
+        ontologyDetail: "Ontology Detail",
+        orchestratorJsonRepair: "Reasoning Orchestrator · JSON Repair",
+        orchestratorChildHandoff:
+          "Reasoning Orchestrator · Child Handoff Confirmation",
+        intentReasonerPlanning: "Intent Reasoner · Planning & Tool Selection",
+        orchestratorToolReceipt:
+          "Reasoning Orchestrator · Tool Receipt Processing",
+      },
+    },
+    auditProjection: {
+      legacyHashUnverified: "legacy / hash unverified",
+    },
+    page: {
+      meta: {
+        client: "Client",
+        clientSource: "Client source",
+        department: "Department",
+        departmentSource: "Department source",
+        objects: "Objects",
+        keywords: "Keywords",
+        status: "Status",
+        model: "Model",
+        tokens: "Tokens",
+        duration: "Duration",
+        steps: "Steps",
+        childRun: "Child run",
+        childStep: "Child step {ordinal}.",
+        promptReceipt: "Prompt receipt",
+        providerModel: "Provider / model",
+        capabilities: "Capabilities",
+        fingerprint: "Fingerprint",
+        pathPattern: "Path pattern",
+        signal: "Signal",
+        matchedAnchors: "Matched anchors",
+        confidence: "Confidence",
+        scenario: "Scenario",
+        harnessMethods: "Harness methods",
+        promptSource: "Prompt source",
+        promptCharacters: "Prompt characters",
+        compilerChild: "Compiler ↔ child",
+        compiledChildMessages: "Compiled ↔ child messages",
+        durationAssessments: "Duration / assessments",
+      },
+      status: {
+        completed: "Completed",
+        warning: "Warning",
+        blocked: "Blocked",
+        running: "Running",
+        waiting: "Waiting",
+        queued: "Queued",
+        ok: "Succeeded",
+        failed: "Failed",
+        cancelled: "Cancelled",
+        active: "Active",
+        satisfied: "Satisfied",
+        violated: "Violated",
+        optionalUnmet: "Optional condition unmet",
+        notApplicable: "Not applicable",
+        insufficientEvidence: "Insufficient evidence",
+      },
+      format: {
+        tokenIo: "{input} in / {output} out",
+        promptCharacters: "{system} system / {user} user",
+      },
+      rawStatusTitle: "Raw audit status: {status}",
+      legacyReplay: "legacy replay",
+      scopeSource: {
+        jobRequisition: "Job Requisition",
+        jd: "JD",
+        explicitFallback: "Explicit fallback",
+        genericInputsFallback: "Generic Inputs fallback",
+        missing: "Missing",
+        unknown: "Legacy run / not recorded",
+      },
+      runEndedWith: "run ended with {status}",
+      jsonObjectRequired: "JSON object required",
+      noDurableRunId: "Reasoning runtime did not return a durable runId",
+      readOnly: "read-only",
+      rulesCount: "{count} rules",
+      actionInline: "Action",
+      unknownError: "unknown error",
+      rulesTab: "Rules",
+      logTab: "Log",
+      readOnlyOntology: "read-only ontology",
+      charsJson: "{count} chars · JSON",
+      runAuditReadFailed: "Failed to read the run audit: {detail}",
+      viewDynamicAgentGraph: "View the dynamic agent execution graph",
+      scope: {
+        csiUniversal: "CSI universal",
+        clientGeneral: "Client general",
+        clientDepartment: "Client department",
+      },
+      generatingBoundedQueryIr:
+        "Generating a bounded Query IR and auditable selection basis…",
+      card: {
+        auditableReasoning: "Auditable reasoning this round",
+        durableRun: "Durable Run",
+        qualifiedAgentChildRun: "QualifiedAgent Child Run",
+        instanceInputEvidence: "Instance input / Evidence",
+        intentReasoner: "Intent Reasoner",
+        qualifiedAgentQualityCheck: "QualifiedAgent Quality Check",
+        deterministicFold: "Deterministic Fold",
+        auditTimeline: "Audit timeline",
+        realStepsTerminated: "Real execution steps (run terminated)",
+        realSteps: "Real execution steps",
+        realStepsWriting: "Real steps are being written",
+        evidenceAnalysis: "Fact extraction / Evidence Analysis",
+        dynamicReasoningHarness: "Dynamic Reasoning Harness",
+        ruleSelectorQueryAgent: "Rule Selector / QueryAgent",
+        generatedCypherQueryAgent: "Generated Cypher / QueryAgent",
+        ruleBundleSelected: "RuleBundle · selected rules and fact linkage",
+        promptCompiler: "Prompt Compiler",
+        fullPublicAuditLog: "Full public audit log",
+      },
+      legacyResultSchema:
+        "Legacy result schema ({version}): compatibility replay only; it does not assert v2 child receipts, prompt hash, Link-only, or the dual-query guarantee.",
+      unversioned: "unversioned",
+      showsIntentSummary:
+        "Shows the intent summary, selection strategy, tool parameters, and evidence basis; it does not show the model's private hidden chain of thought.",
+      canonicalCapabilityBoundary: "canonical capability boundary",
+      semanticLinksOnly: "semantic links only",
+      linkContractUnverified: "legacy / link contract unverified",
+      scopeConflictIsolated: "Scope conflicts isolated",
+      scopeConflictDetail:
+        "{field}: using {selectedValue} ({selectedSource}), ignoring {ignoredValue} ({ignoredSource})",
+      awaitingProvider: "Waiting for provider…",
+      inProgress: "Running",
+      instanceInputBody:
+        "Candidate, Resume, Job Requisition, JD, and the generic Inputs are the single source of truth for this round.",
+      viewFullInstanceJson: "View the full instance data JSON",
+      strategyPrefix: "strategy",
+      intentReasonerBody:
+        "This shows the verifiable intent summary and strategy choice, not the model's private hidden chain of thought.",
+      legacyNoChildRun:
+        "This is a legacy run and did not record a separate QualifiedAgent child run; new runs display the full parent-child receipts.",
+      metric: {
+        checked: "checked",
+        satisfied: "satisfied",
+        violated: "violated",
+        optionalFlags: "optional flags",
+        mandatoryPending: "mandatory pending",
+        notApplicable: "not applicable",
+        selectionRows: "selection rows",
+        totalDuration: "total duration",
+        maxHops: "max hops",
+        allmetaScanned: "Allmeta scanned",
+        semanticMatched: "semantic matched",
+        selected: "selected",
+      },
+      optionalFlagsLabel: "Optional flags",
+      missingEvidenceLabel: "Missing evidence",
+      llmPathRuntimeValues: "LLM-submitted path · runtime values",
+      legacyInputDeterministicReplay: "Legacy run · deterministic input replay",
+      verifiedCount: "{count} verified",
+      unverifiedCount: "{count} unverified",
+      evidenceAnalysisBody:
+        "This shows the fact paths the model selected and the real values the system parsed from the raw JSON. Target-job facts are used to narrow the scope; candidate and resume facts are used only for per-rule assessment and never prune rules ahead of time.",
+      legacyEvidenceReplayNote:
+        "This legacy run predates structured fact receipts; the content below is replayed from persisted input and does not impersonate the model's hidden thinking at the time. Re-run to get the LLM path + runtime verification.",
+      forRuleScope: "For rule scope",
+      forPerRuleAssessment: "For per-rule assessment",
+      awaitingIntentReasonerFacts:
+        "Waiting for the Intent Reasoner to write fact paths…",
+      viewTemporalFacts: "View {count} deterministic temporal facts",
+      temporalFactDetail:
+        "{value} · {relation} · {days} days · {months} complete months",
+      harnessLegacyNote:
+        "This legacy run has no persisted Harness receipt. Re-run to see the model's chosen methods, semantic anchors, evidence anchors, and stop conditions.",
+      harnessBody:
+        "This is the reasoning plan the model publicly submitted and the runtime verified; it shows auditable methods and boundaries, not the private chain of thought.",
+      evidenceAnchorsGroups: "{count} evidence anchors",
+      stopConditions: "Stop conditions",
+      cypherLegacyNote:
+        "This legacy run only recorded {source}, and did not save the actually executed Cypher. Re-run to see the full query, parameters, fingerprint, path pattern, and row count.",
+      templateId: "template {id}",
+      legacySelectionReceipt: "a legacy selection receipt",
+      queryIrReplay: "Query IR replay",
+      cypherLegacyV1Note:
+        "Legacy v1 query receipts: the original replay is preserved, but they do not assert the v2 Link-only dual-query contract.",
+      domainLocked: "domain-locked",
+      linkOnly: "link-only",
+      linkContractUnverifiedShort: "link contract unverified",
+      fallbackFalse: "fallback=false",
+      fallbackUnverified: "fallback unverified",
+      queryReceiptsCount: "{count} query receipts",
+      rowsCount: "{count} rows",
+      executedCypher: "Executed Cypher",
+      boundParameters: "Bound parameters",
+      viewQueryIrDiagnostics: "View Query IR and Allmeta diagnostics",
+      queryIr: "Query IR",
+      allmetaDiagnostics: "Allmeta diagnostics",
+      noDiagnostics: "no diagnostics",
+      executionPurpose: {
+        mandatoryLinkCoverage: "Mandatory Link Coverage",
+        semanticRuleSelection: "Semantic Rule Selection",
+      },
+      verified: "verified",
+      unverified: "unverified",
+      unparsed: "Not parsed",
+      rulePoolBody:
+        'Rules enter the rule pool through the SCOPED_TO, GOVERNS, APPLIES_TO, and RELEVANT_TO triples; the canonical Action must form a capability semantic gate via GOVERNS/RELEVANT_TO. The "fact linkage" below is the QualifiedAgent\'s verification route, and is not equivalent to pass or violate.',
+      scoreLabel: "score {score}",
+      linkTriplesCount: "{count} link triples",
+      whyEnteredRuleBundle: "Why it entered the RuleBundle",
+      allmetaSemanticLinkMatch: "Allmeta semantic Link path match",
+      llmFactLinkage: "LLM fact linkage",
+      noDirectFactSignal: "No direct fact signal",
+      noStructuredFactRoute:
+        "No structured fact → rule route yet; see the QualifiedAgent assessment card for the final cited evidence.",
+      noSemanticLinkReceipt:
+        "This legacy rule has no semantic Link receipt; new runs will not accept this result.",
+      semanticLinkPaths: "Semantic Link Paths",
+      linkEvidenceCount: "{count} link evidence",
+      perRuleAssessmentEvidence: "Per-rule assessment and evidence",
+      noDirectEvidencePath: "No direct evidence path referenced",
+      lockedScenarioAction:
+        "Locked the {scenario} scenario and the {action} Action.",
+      toolAuditableSelectionSummary:
+        "This is the auditable selection summary of the tool call; it does not show the model's private hidden chain of thought.",
+      receiptMismatch: "receipt mismatch",
+      receiptVerified: "receipt verified",
+      awaitingChild: "awaiting child",
+      legacyUnverified: "legacy / unverified",
+      unknownCompiler: "unknown compiler",
+      promptSourceReasoningResult: "reasoning-result compiledPrompt",
+      promptSourceVerifiedChild: "verified QualifiedAgent child input",
+      promptSourceCompactReceipt: "compact compiler receipt",
+      evidenceKeysCount: "{count} evidence keys",
+      semanticLinksCount: "{count} semantic links",
+      evidenceRoutesCount: "{count} evidence routes",
+      promptCompilerBody:
+        "This card shows the actual execution input dynamically compiled from Intent/Harness, the QueryAgent RuleBundle, and the instance evidence; the fixed safety instructions and the dynamic business data stay layered, and it does not show the model's private hidden chain of thought.",
+      compactReceiptSeeRuntime: "compact receipt / see runtime input",
+      immutableReceipts: "Immutable receipts",
+      legacyNotRecorded: "legacy / not recorded",
+      childInputRecovered: "child input recovered",
+      childMessagesNotLoaded: "child messages not loaded",
+      exactMatch: "exact match",
+      mismatch: "mismatch",
+      qualifiedAgentExecutionReceipt: "QualifiedAgent execution receipt",
+      receiptMismatchWarning:
+        "The compile receipt, RuleBundle, or QualifiedAgent actual input do not match. This Prompt should not be treated as verified execution input; export the audit log to investigate.",
+      promptPrivacyNotice:
+        "The full Prompt contains this round's instance data and is expanded on demand only on this permission-protected Reasoning audit page.",
+      viewFullSystemPrompt: "View the full system prompt",
+      viewFullUserPrompt: "View the full user prompt + RuleBundle",
+      viewFactRuleRoutes: "View {count} fact → rule verification routes",
+      compactReceiptOnly:
+        "Only a compact receipt was received; the full Prompt will be recovered from the verified QualifiedAgent child step input, or shown after the final reasoning-result is generated.",
+      rulesEmptyHint:
+        "After the Rule Selector finishes, the full rules returned by Allmeta and the QualifiedAgent assessment will appear here.",
+      allmetaRuleBundle: "Allmeta RuleBundle",
+      mandatoryOptionalCount: "{mandatory} mandatory · {optional} optional",
+      ruleSelectorDoneNoAssessment:
+        "The Rule Selector has finished; the QualifiedAgent has not yet produced the final per-rule assessment.",
+      selectionBasis: "Selection basis",
+      field: {
+        scopePath: "Scope path",
+        matchedAnchors: "Matched anchors",
+        ruleLogic: "Rule logic",
+        submissionCriteria: "Submission criteria",
+        businessReason: "Business reason",
+        applicableClientDept: "Applicable client / department",
+        relatedObjects: "Related objects",
+      },
+      generic: "generic",
+      qualifiedAgentAssessmentBasis: "QualifiedAgent assessment basis",
+      logEmptyHint:
+        "After the run starts, the real LLM and tool-call logs are written here step by step.",
+      auditLogBody:
+        "Keeps the real LLM / tool I/O; credentials, session information, and provider private-thought fields are redacted.",
+      input: "Input",
+      output: "Output",
+      runtimeGraphAriaLabel: "Reasoning Agent runtime graph",
+    },
     title: "Reasoning Agent",
     subtitle:
       "Universal recruitment rule brain: intent, selection, prompt compilation, qualification, and auditable decisions",
@@ -122,15 +522,1792 @@ export const en = {
     payload: "Decision detail",
   },
   factory: {
+    streamError: {
+      missingRunId:
+        "Could not connect to Agent Factory because the server run ID is missing.",
+      runUnresponsive:
+        "This run is no longer responding and may have been interrupted earlier. The composer is unlocked, so you can start again.",
+      connectionInterrupted:
+        "The connection was interrupted, but the server run may still be active. Refresh the page or reopen this conversation to reconnect and replay the complete process.",
+    },
+    interactionDock: {
+      submitErrorRetry: "Submission failed, please try again",
+      brainPaused: "Brain paused, awaiting your decision",
+      legacyCardError:
+        "This is a legacy interaction card missing a safety id, so it cannot be submitted. Refresh or reopen the task and wait for the system to generate a new card.",
+      submitting: "Submitting to the live run…",
+      delivered:
+        "Delivered. Waiting for the agent factory to confirm and continue. This panel disappears automatically once the server truly resumes.",
+      submitFailed: "Submission failed: {error}",
+      chip: {
+        clarify: "Clarify",
+        testData: "Test data & confirm",
+        boundary: "Boundary classification",
+      },
+      recommended: "Recommended",
+      otherPlaceholder: "Other (free text)…",
+      answerPlaceholder: "Enter your answer…",
+      answerButton: "Answer ↵",
+      fixtureSubmittedTitle:
+        "Supplemental data submitted, waiting for the factory to update test cases",
+      approvalTitle: "Review and confirm these {count} test cases",
+      approvalHint:
+        "When data is insufficient, add it in the matching test case first; once the data is adequate, run the trial, or state a reason to request regeneration.",
+      missingCaseId: "Missing case.id",
+      binaryDisabledNoRunId:
+        "The current run has no run id, so isolated file assets cannot be created.",
+      fixtureSubmittedNotice:
+        "Supplemental data submitted. This approval version is now invalid; once the brain applies the data it will show approvable test cases again.",
+      waiverConsent:
+        "I explicitly agree not to cover the following cells that require real business data; this waiver binds only to the current exact list and expires automatically when the list or cases change:",
+      waiverRequiredTitle:
+        "You must explicitly confirm the coverage waiver first",
+      runTrialButton: "✓ Run trial",
+      reworkNotePlaceholder: "Rework note (optional)…",
+      regenerateButton: "↻ Regenerate",
+      boundaryKind: {
+        external: "External handoff",
+        terminal: "Terminal",
+        break: "Break to fix",
+      },
+      boundaryTitle: "{count} boundary events need classification",
+      suggestedSuffix: "·suggested",
+      submitClassificationButton: "✓ Submit classification",
+    },
+    testFixture: {
+      notice: {
+        payloadSubmitted:
+          "The complete payload was submitted. The current approval is now invalid; confirm again after the updated case appears.",
+        binarySaved:
+          "The file was saved as an isolated asset ({bytes} bytes, {sha256}). The current approval is now invalid; wait for a new confirmation.",
+      },
+      error: {
+        payloadSubmitFailed: "Payload submission failed",
+        binaryUploadFailed: "File upload failed",
+        submissionFailed: "Submission failed: {message}",
+      },
+      unavailable:
+        "This case has no canonical id, so test data cannot be bound safely. Ask the factory to regenerate the case.",
+      toggle: {
+        collapse: "Collapse test data",
+        expand: "Add or replace test data",
+      },
+      missing: "Missing",
+      payload: {
+        label: "Complete nested JSON payload",
+        ariaLabel: "{name} complete JSON payload",
+        submitting: "Submitting…",
+        save: "Save complete payload",
+      },
+      binary: {
+        title: "Binary fixture",
+        help: "File contents are uploaded only to this run's isolated asset area. The UI never displays the contents or internal asset id; the factory uses only the bound reference during execution.",
+        pathAriaLabel: "{name} binary JSON Pointer destination",
+        pathPlaceholder: "JSON Pointer, e.g. /resume/file",
+        placementAriaLabel: "{name} binary insertion mode",
+        placementSelect: "Select insertion mode…",
+        placementObject: "Object reference",
+        placementDataUrl: "data URL",
+        placementBase64: "Base64 string",
+        fileAriaLabel: "{name} binary file",
+        uploading: "Uploading…",
+        upload: "Upload and bind file",
+      },
+      validation: {
+        required: "{label} is required",
+        invalidJson: "The payload is not valid JSON",
+        objectRequired: "The payload must be a JSON object",
+        browserEncodingUnavailable:
+          "This browser cannot encode the uploaded file",
+        invalidReceipt:
+          "The fixture upload API returned an invalid asset receipt",
+        pointerSlash: "The JSON Pointer must start with /",
+        filenameRequired: "The filename is required",
+      },
+      field: {
+        runId: "Run ID",
+        caseId: "Test case ID",
+      },
+    },
+    inspector: {
+      codeSource: {
+        aiShort: "AI code",
+        rendered: "Rendered",
+        aiWritten: "AI-written",
+        aiParen: "(AI-written)",
+        renderedParen: "(rendered)",
+      },
+      versionHistory: {
+        title: "Revisions ({count})",
+        current: "Current",
+        toolCount: "{count} tools",
+        viewCode: "View code ⛶",
+      },
+      common: {
+        collapse: "Collapse",
+        expand: "Expand",
+      },
+      regenerate: {
+        error: "Regenerate request failed",
+        heading: "Add context · Regenerate",
+        placeholder:
+          "Add background / requirements / corrections (e.g. this external API returns fields …); the brain will rebuild only this one agent.",
+        submitting: "Submitting…",
+        submit: "Regenerate this agent",
+      },
+      reasoningStream: {
+        title: "Internal reasoning stream ({count} steps)",
+        method: "Reasoning method {strategy}",
+      },
+      actions: {
+        backToCanvas: "Back to canvas",
+        viewCode: "View code",
+      },
+      score: {
+        label: "Score",
+        lastRefinement: "Last refinement round",
+        regression: "(regression)",
+      },
+      fields: {
+        designReasoning: "Design reasoning",
+        branchLogic: "Branch decision logic",
+        systemPrompt: "System prompt (instructions)",
+      },
+      io: {
+        title: "Real run I/O",
+        degraded: " · Degraded",
+        input: "Input",
+        output: "Output",
+      },
+    },
+    activityLog: {
+      tier: {
+        fast: "Fast",
+        default: "Design",
+        hard: "Strong",
+      },
+      tool: {
+        running: "Running…",
+        elapsed: " · {time}",
+        modelTitle: "Model used for this step",
+        tierSuffix: " · {tier} tier",
+        io: "Input/Output",
+        input: "Input",
+        resultSummary: "Result (summary)",
+        fullOutput: "Full output",
+      },
+      common: {
+        collapse: "Collapse",
+        expand: "Expand",
+        listSeparator: "; ",
+      },
+      block: {
+        think: "Thinking",
+        brain: "Brain",
+        plan: "Planning · {count} agents",
+        code: "Write code · {actionName} ({codeSource})",
+        validationOk: "Validation closed",
+        validationFail: "Validation not closed",
+        refine: "Refine · {action}",
+        score: "Score · {action}",
+        scoreChange: "{prior} → {next} ({delta}{regression})",
+        regressedSuffix: " regressed",
+        revert: "Revert · {action}",
+        revertText: "Back to before attempt {n}",
+        clarify: "Ask user",
+        compaction: "Context auto-compaction",
+        reflect: "Reflect",
+        subagent: "Sub-agent",
+        toolnew: "New tool · {name}",
+        web: "Web search · {count} results",
+        inspect: "Inspect · {agentSlug}",
+        error: "Error",
+      },
+      sandbox: {
+        simulatedTitle:
+          "Historical simulated record · legacy / invalid evidence",
+        realTitle: "Sandbox (real)",
+        stats: "Deployed {deployed} · Ran {ran} · {outcome}",
+        fullChain: "Full chain ran",
+        notExecuted: "Not actually executed; not counted toward success",
+        notRun: "Did not run through",
+      },
+      done: {
+        waitingTitle: "Waiting for human reply",
+        waitingText:
+          "The run is safely paused; it resumes from the checkpoint after you reply to the current interaction.",
+        answerTitle: "Answer complete",
+        answerText:
+          "The information answer is complete; no delivery or sandbox evidence was produced.",
+        deliveryTitle: "Delivery complete",
+        unknownTitle: "Finished · completion type unknown",
+        unknownText:
+          "The historical record has no completionKind; it was not inferred as answer or delivery.",
+        finished: "Finished · {status}",
+      },
+      empty: {
+        title: "No activity yet",
+        hint: "After a run, this records every step the brain took: thinking, tool calls (input/output), code written, review and refinement, sandbox results — nothing omitted.",
+      },
+      summary:
+        "Full activity narrative · {count} items ({toolCount} tool calls)",
+    },
+    agentCards: {
+      status: {
+        degraded: "Degraded",
+        ranOk: "Ran OK",
+        draft: "Draft",
+        notTriggered: "Not triggered",
+      },
+      regenerateFailed: "Regenerate request failed",
+      codeExecuted: {
+        codeactTitle:
+          "Code passed compile + safety + load probes; executed for real in the sandbox (CodeAct)",
+        declarativeTitle: "Declarative execution",
+        declarativeProbeReason: " (code failed the load probe: {reason})",
+      },
+      badge: {
+        codeact: "⚙ CodeAct",
+        declarative: "📄 Declarative",
+      },
+      tab: {
+        prompt: "Instructions",
+        code: "Code",
+        codeAiSuffix: "✦AI-written",
+        logic: "Decision logic",
+      },
+      regenerating: "Submitting…",
+      regenerate: "↻ Rethink",
+      field: {
+        systemPrompt: "system prompt (instructions)",
+        branchLogic: "Branch decision logic",
+        inputPayload: "Input payload",
+        input: "Input",
+        output: "Output",
+      },
+      fullscreen: "Fullscreen ⛶",
+      emptyAgents: {
+        title: "No agents yet",
+        help: "After a run, each generated agent appears as a card — status + event graph + instructions/code/decision logic — expandable one at a time",
+      },
+      agentsCount: "Agents · {count}",
+      emptySandbox: {
+        title: "No sandbox I/O yet",
+        help: "After you generate test cases and sandbox_run, this shows each case's input, each agent run's input and output, and the verdict",
+      },
+      testCasesCount: "Test cases · {count} (with input payload)",
+      expectedOutcome: "Expected: {outcome}",
+      agentRunsCount: "Real runs per agent · {count} (input + output)",
+      degradedSuffix: " · degraded",
+      runRecord: {
+        title:
+          "Open this run's full record on the platform (timeline / logs / IO)",
+        link: "Run record ↗",
+      },
+    },
+    brainFlow: {
+      emptyTitle: "The brain hasn't started reasoning yet",
+      emptyHelp:
+        "After a run, this draws the brain's decision path step by step: validate / refine / wait for you / sandbox / deliver",
+      selfReviseCount: "↺ Self-revision ×{count}",
+    },
+    leftRail: {
+      domain: {
+        searchPlaceholder: "Search ontology catalog…",
+        searchAriaLabel: "Search ontology catalog",
+        noMatch: "No matching ontology",
+        counts: "{actions} actions · {events} events",
+        connected: "Connected",
+        deleteUploadTitle: "Delete tenant-uploaded ontology",
+        deleteUploadAriaLabel: "Delete local ontology {name}",
+      },
+      statusFilter: {
+        all: "All",
+        done: "Done",
+        waiting: "Awaiting you",
+        failed: "Failed / invalid evidence",
+        running: "Running",
+      },
+      runStatus: {
+        answerCompleted: "Answer completed (not delivery or sandbox evidence)",
+        finished: "Completed (real execution succeeded)",
+        waitingHuman: "Waiting for your reply · click to continue",
+        failedRealExecution:
+          "Completion-state anomaly · last real execution failed",
+        invalidEvidence: "Historical simulation · invalid evidence",
+        unverifiedEvidence: "Completion state · no real execution evidence",
+        legacyUnknown: "Historical end · completion type unknown",
+        failed: "Failed",
+        running: "Running",
+        incomplete: "Incomplete",
+      },
+      relTime: {
+        justNow: "just now",
+        minutesAgo: "{count} min ago",
+        hoursAgo: "{count} h ago",
+        daysAgo: "{count} d ago",
+      },
+      history: {
+        noMatch: "No matching runs",
+        empty: "Runs you start will show up here",
+        runOfAgents: "Run of {count} agents",
+        agentCount: "{count} agents",
+        deleteRunTitle: "Delete this run (restorable from the recycle bin)",
+        clearCompleted: "Clear completed",
+        recycleBin: "Recycle bin",
+        recycleBinEmpty: "The recycle bin is empty",
+        deleted: "Deleted",
+        restoreTitle: "Restore this run",
+        restore: "Restore",
+      },
+      health: {
+        title: "Run health",
+      },
+      draft: {
+        empty:
+          "Agents generated after a successful run appear here—select them to promote live or delete",
+        notPromotable: "Not promotable",
+        toolCount: "{count} tools",
+        sandboxVerifiedBlocked:
+          "✓ Sandbox orchestration verified · ⛔ Cannot go live yet",
+        regressionReplayable:
+          "✓ Regression replayable · ✓ Current production evidence ready",
+        editTitle:
+          "Edit fields and derive a new version that requires re-review and sandbox testing",
+        editDisabledTitle:
+          "Legacy draft has no immutable versionId; it cannot be edited safely",
+        editAriaLabel: "Edit draft {name}",
+        sandboxRetestTitle:
+          "Re-create an isolated sandbox with a fresh set of test inputs and derive a new regression version",
+        sandboxCreateTitle:
+          "Create an isolated sandbox for this evidence-less version; a clean successful run produces a new regression version",
+        sandboxAriaLabel: "Re-run sandbox test for {name}",
+        deleteTitle: "Delete this draft (does not affect live agents)",
+        promoteTitle:
+          "Merge the selected drafts into this tenant's workflow and register them as real running agents (existing agents are not overwritten)",
+        promoting: "Promoting…",
+        promoteSelected: "↑ Promote selected ({count})",
+        reason: {
+          sandboxScaffold:
+            "Sandbox platform stand-ins are for isolated testing only and cannot be promoted to real runs",
+          noVersionId:
+            "Legacy draft has no immutable versionId; it must be regenerated",
+          missingRegression:
+            "Draft lacks replayable regression evidence; re-run a real sandbox and complete delivery",
+          pendingReplay:
+            "Regression artifact is still validating; it cannot be promoted until that finishes",
+          invalidArtifact:
+            "Regression artifact validation failed; fix it and re-create the sandbox",
+          missingStatus:
+            "This version has no valid regression validation status",
+          notConfirmed:
+            "The server hasn't confirmed this version as promotable; refresh or re-run the sandbox",
+          liveProbeRequired:
+            "Sandbox orchestration verified but it cannot go live now; a signed fixture/replay cannot substitute for a live probe against the current production profile{blockers}",
+        },
+      },
+    },
+    blueprintPanel: {
+      anchorLabel: {
+        entity: "Entity",
+        action: "Action",
+        rule: "Rule",
+        event: "Event",
+      },
+      empty: {
+        title: "No blueprint yet",
+        helpPre: "The blueprint is generated by ",
+        helpPost:
+          " reasoning over the ontology — it organizes the domain into a phased workflow, with every node anchored to the ontology's entities / actions / rules / events.",
+      },
+      diagram: {
+        notPreRendered: "(this diagram was not pre-rendered)",
+      },
+      io: {
+        read: "Read {items}",
+        write: "Write {items}",
+        emit: "Emit {items}",
+      },
+      deliberation: {
+        label: "Reasoning refinement",
+        help: "build_blueprint runs a cot reasoning kernel over each phase, deriving each step's business logic in that phase from ontology evidence. This is that phase's reasoning conclusion; at runtime you'll see the same reasoning.step in the reasoning stream.",
+      },
+      unresolved: {
+        heading:
+          "Missing ontology evidence · ungrounded ({count}) — reported honestly, not fabricated",
+        more: "…{count} more",
+      },
+    },
+    canvas: {
+      rework: {
+        loopBadge: "↺ Revision loop ×{count}",
+      },
+      spine: {
+        ontologyLabel: "🗂 Ontology · ",
+        ontologyNotConnected: "Not connected",
+        revisionLoopTitle: "Revision loop",
+        budgetTokensTitle: "Cumulative tokens for this run",
+        backgroundTasksTitle: "Background tasks",
+        backgroundButton: "Background",
+      },
+      graph: {
+        emptyTitle: "No agents yet",
+        emptyHint:
+          'Once the brain enters the "Design" stage, the event flow graph grows agent by agent as they\'re generated.',
+        scoreTitle: " · score {next} ({delta})",
+        entryEventTitle: " · entry event",
+        terminalEventTitle: " · terminal / external handoff",
+      },
+    },
+    domainKnowledge: {
+      kind: {
+        clarify: "Clarification answer",
+        boundary: "Boundary decision",
+        testApproval: "Test decision",
+        directive: "Manual directive",
+      },
+      error: {
+        loadFailed: "Failed to load domain knowledge: {message}",
+        pinFailed: "Failed to update pin status: {detail}",
+        serverNotConfirmedUpdate: "server did not confirm the update",
+        answerEmpty: "The manual conclusion cannot be empty.",
+        secretBlocked:
+          "You cannot save secrets, tokens, passwords, or database connection strings here. Put credentials in secret management, then write only the business conclusion.",
+        saveFailed: "Failed to save the manual conclusion: {message}",
+        deleteFailed: "Failed to delete the manual conclusion: {detail}",
+        serverNotConfirmedDelete: "server did not confirm the deletion",
+      },
+      confirmDelete:
+        "Delete this manual domain knowledge?\\n\\n{question}\\n\\nOnce deleted, new sessions will no longer read it automatically.",
+      privacyNotice:
+        "Only business knowledge a person has confirmed is shown. Secrets, tokens, passwords, and connection strings are never shown and cannot be saved here.",
+      loading: "Loading…",
+      empty:
+        "No human-confirmed domain knowledge yet. After ask_user, the factory records reusable business answers here.",
+      pinnedBadge: "Pinned",
+      sourceManual: "· Source: manual",
+      updatedAt: "Updated {time}",
+      answerLabel: "Manual conclusion",
+      contextInputLabel: "Additional context (optional)",
+      saving: "Saving…",
+      save: "Save",
+      cancel: "Cancel",
+      contextLabel: "Context: ",
+      unpin: "Unpin",
+      pin: "Pin",
+      edit: "Edit",
+      delete: "Delete",
+    },
+    businessFlow: {
+      semantic: {
+        internal: "In-chain",
+        success: "Success",
+        terminal: "Terminal",
+        failure: "Failure",
+        park: "Parked",
+        external: "External handoff",
+      },
+      empty: {
+        title: "No business flow overview yet",
+      },
+      emptyTip: {
+        before: "The business flow overview is generated after ",
+        after:
+          " — once you finish designing and validate once, you'll see external platforms, reads/calls/writes, and branch semantics.",
+      },
+      externals: {
+        heading: "External platforms / dependencies ({count})",
+        usedByTitle: "Used by {usedBy} · {roles}",
+      },
+      trigger: {
+        externalSourceFallback: "External business system",
+      },
+      subAgents: {
+        heading:
+          "invoke sub-agents (called synchronously by the parent agent, not on the event bus)",
+      },
+    },
+    draftEditor: {
+      saveFailed: "No new version was created. Please try again later.",
+      ariaLabel: "Edit agent draft by field",
+      title: "Edit draft field",
+      close: "Close",
+      derivedVersionNotice:
+        "Editing does not overwrite this immutable version — it derives a new version. The new version does not inherit the old manual review, sandbox, regression, or promotion-preview evidence; after saving it must be re-reviewed and re-run in the sandbox.",
+      selectFieldLabel: "Select field",
+      ontologyReadonlySuffix: " (ontology, read-only)",
+      originalHiddenSuffix: " (original value hidden)",
+      sensitiveWithheldNotice:
+        "The old value of this field contains sensitive data and the server did not send it to the browser. It is only changed when you explicitly enter a complete replacement value; secrets may only use *_env/profile, and fixtures should be uploaded in the test-data UI.",
+      newValueLabel: "New value",
+      currentValueReadonlyLabel: "Current value (read-only)",
+      selectPlaceholder: "Select…",
+      removeOptionalField: "Remove this optional field from the new version",
+      diffHeading: "Edit diff · {label}",
+      oldVersion: "Old version",
+      newVersion: "New version",
+      confirmReviewCheckbox:
+        "I have checked the diff for this single field and understand that the new version must be re-reviewed manually, re-run in an isolated sandbox, and then generate a new promotion preview.",
+      cancel: "Cancel",
+      creatingVersion: "Creating new version…",
+      confirmCreateVersion: "Confirm and create new version",
+      contract: {
+        unrecognized:
+          "The server did not return a recognizable draft-editing contract.",
+        scopeChanged:
+          "The draft-editing scope has changed. Refresh and reopen.",
+        incomplete:
+          "The draft-editing contract is incomplete; editing stopped.",
+        uneditableFields:
+          "The server returned field definitions that cannot be edited.",
+        duplicateFields:
+          "Draft field definitions are duplicated; editing stopped.",
+      },
+      validation: {
+        enumNotAllowed: "Choose a value allowed by the server.",
+        booleanOnly: "A boolean can only be true or false.",
+        integerRequired: "Enter an integer.",
+        integerOutOfRange: "The integer is out of the safe range.",
+        numberInvalid: "Enter a valid number.",
+        stringArrayInvalid: "Enter a JSON array of non-empty strings.",
+        jsonInvalid: "The content is not valid JSON.",
+      },
+      edit: {
+        ontologyReadonly:
+          "This field is maintained by the Allmeta ontology; update the Allmeta ontology and regenerate first.",
+        requiredCannotUnset: "This required field cannot be removed.",
+        fieldAlreadyAbsent: "This field no longer exists.",
+        sensitiveNotAllowed:
+          "Draft edits cannot contain keys, credentials, fixture bytes, or fixture asset IDs. Use *_env/profile for secrets, and upload fixtures from the test-data screen.",
+        noChange: "The content is unchanged; no new version is needed.",
+      },
+      receipt: {
+        incomplete: "The server did not return a complete new-version receipt.",
+        mismatch:
+          "The new-version receipt does not match the current tenant, domain, or draft.",
+        versionNotConfirmed:
+          "The server did not confirm that a new evidence-free version was created.",
+      },
+      diff: {
+        valueWithheld:
+          "(The original value contains sensitive data and was not returned by the server.)",
+        fieldAbsent: "(Field does not exist.)",
+      },
+      failure: {
+        noReason:
+          "The server gave no reason for the failure. Refresh the draft and retry.",
+        sensitiveHidden:
+          "The server error contained sensitive content and has been hidden. Check your secret references or how the test fixture is placed.",
+        draftVersionGone:
+          "This draft version has changed or no longer exists. Refresh and reopen.",
+        systemManagedField:
+          "This field is system-maintained and cannot be changed in the draft editor.",
+        codeCheckFailed:
+          "The edited code failed the safety check or TypeScript compilation. Fix the code first.",
+        contractMismatch:
+          "The edited content does not satisfy the agent run contract. Check that field types, events, tools, and the plan are consistent.",
+        noActualChange: "No actual change was detected. Change a field first.",
+      },
+    },
+    backgroundPanel: {
+      status: {
+        running: "Running",
+        ok: "Done",
+        error: "Failed",
+      },
+      transcript: {
+        empty: "No trace yet",
+      },
+      drill: {
+        reasoningMethod:
+          "Reasoning method (AI-selected, not the default ReAct)",
+        planReasoning: "Plan · design reasoning",
+        branchLogic: "Branch decision logic",
+        toolsUsed: "Tools used (grouped by harness)",
+        problemsRevisions: "Problems found · revisions",
+        checklistTitle:
+          "Acceptance checklist (held by harness · real evidence turns it green)",
+        subAgentsTitle: "Generated sub-agents / phases",
+        realIoTitle: "Real execution I/O",
+        noDecisions: "This agent has no drill-down decision records yet.",
+      },
+      common: {
+        contractViolation: "contract violation",
+        closeEsc: "Close (Esc)",
+        toolsCount: "{count} tools",
+        backgroundTasks: "Background tasks",
+      },
+      io: {
+        noOutputEvent: "(no output event)",
+        statusLabel: "Status {status}",
+        inputPayload: "Input payload",
+        outputPayload: "Output payload",
+        noSnapshot: "This sandbox run recorded no payload snapshots.",
+      },
+      drawer: {
+        sectionFlow: "Workflow · decisions",
+        sectionSubs: "Sub-agents · {count}",
+        sectionTranscript: "Reasoning trace",
+        sectionTest: "Test · I/O",
+        ariaLabel: "{title} details",
+        inspectorTitle: "Open the full inspector in the right rail",
+        inspectorBtn: "Inspector →",
+      },
+      phase: {
+        subBrains: "{count} sub-brains",
+        workflowPhases: "Workflow · {count} phases",
+      },
+      acceptance: {
+        title: "🧾 Acceptance checklist (held by harness)",
+        allGreen: "all green",
+        evidenceNote: "Real evidence turns it green · the brain cannot edit it",
+      },
+      error: {
+        backgroundReadFailed: "Failed to read background tasks: {message}",
+        backgroundReadInvalid:
+          "Failed to read background tasks: invalid response structure",
+        mailboxReadFailed: "Failed to read the intervention queue: {message}",
+        mailboxReadInvalid:
+          "Failed to read the intervention queue: invalid response structure",
+        toolsReadFailed: "Failed to read the tool library: {message}",
+        toolsReadInvalid:
+          "Failed to read the tool library: invalid response structure",
+        keepConfirmUndelivered:
+          "The keep confirmation didn't reach the brain: {detail}",
+        serverNotQueued: "the server didn't confirm the message was queued",
+        deleteToolFailed: 'Failed to delete "{name}": {detail}',
+        serverNotDeleted: "the server didn't confirm the deletion",
+        toolDeletedNotNotified:
+          "The tool was deleted, but the running brain couldn't be notified: {detail}",
+        reportStartFailed: "Failed to start the report: {detail}",
+        serverNotRunning:
+          "the server didn't confirm the background task is running",
+        emptyFile: "The server returned an empty file",
+        downloadFailed: "Download failed: {message}",
+        clearReportsPartial: "{count} reports couldn't be cleared: {details}",
+        clearReportFailed: 'Failed to clear report "{title}": {detail}',
+      },
+      inject: {
+        keepTool:
+          'I\'ve confirmed keeping the tool "{name}" in the tool library; feel free to reuse it in later designs.',
+        deleteTool:
+          "I've removed the tool \"{name}\" from the tool library; please don't use it in later designs.",
+      },
+      action: {
+        report: "Report",
+        clear: "Clear",
+      },
+      filter: {
+        all: "All · {count}",
+        running: "Running · {count}",
+        done: "Done",
+        failed: "Failed",
+      },
+      signal: {
+        awaiting: "Waiting on you: {hint} (answer in the chat)",
+        interventionQueue: "💬 {count} queued interventions",
+      },
+      report: {
+        formPrompt:
+          'Generate an ontology analysis report for the connected ontology "{domain}" (with deterministic SVG charts):',
+        formatBoth: "Both",
+        focusPlaceholder:
+          "Analysis focus (optional), e.g. event-chain breaks and rule coverage",
+        starting: "Starting…",
+        generate: "Generate in background",
+        jobFallbackTitle: "{name} · Ontology analysis report",
+        typeLabel: "Report",
+        runningPhase: "Running",
+      },
+      session: {
+        taskCount: "{count} background tasks",
+        runningCount: "{count} running",
+        emptyState: "No background breakdown for this session yet",
+        emptyHelp:
+          "Once you start a generation, this breaks down and shows this session's Harness, each agent build, sub-agents, tool creation, and sandbox deployment.",
+      },
+      tool: {
+        keepOrDelete:
+          "The brain actually wrote this tool into the tool library — keep it for later reuse, or delete it now?",
+        keep: "✓ Keep",
+        delete: "✗ Delete",
+      },
+      crossSession: {
+        header: "Cross-session background",
+      },
+      run: {
+        noGoal: "(no goal description)",
+        otherSession: "Other session",
+        connectView: "Connect & view →",
+      },
+    },
+    draftSandbox: {
+      ariaLabel: "Re-run the isolated sandbox for the agent draft",
+      header: {
+        confirmTitle: "Confirm one-time sandbox review",
+        inputTitle: "Enter real sandbox test inputs",
+      },
+      close: "Close",
+      warning:
+        "This tests all {count} agents in the whole immutable version, not just this one card. Each confirmation creates a brand-new Inngest test App; success, failure, or interruption all go through deletion and absence verification. The test App never becomes a real deployment.",
+      entry: {
+        heading: "External entry points from the ontology",
+        noFields:
+          "The ontology declares no payload fields; fill them in according to real platform events.",
+        none: "This version has no recognizable external entry points, so testing cannot start automatically.",
+      },
+      tests: {
+        label: "Test cases JSON",
+        hint: 'The "fill in…" placeholders and 0/false in the template are only field skeletons, not business data the factory guessed. Replace them with values you have verified, and add reject, edge, and fault cases as needed.',
+      },
+      boundaries: {
+        label: "Boundary events JSON",
+        unresolved:
+          "These outputs are not in the ontology's terminal states and have no internal consumers: {items}. If they are external handoffs or real terminal states, mark them explicitly as external/terminal below; if they are truly break points, write break and fix the code first.",
+        placeholder:
+          '[{"event":"EVENT_NAME","kind":"external","consumer":"platform name","payloadContract":"field description"}]',
+      },
+      review: {
+        heading: "Full review content recomputed by the server",
+        backfilled:
+          "The server backfilled these deterministic coverage items per the contract: {items}. They are already shown below and must be confirmed together with the other cases.",
+        viewJson: "View the full test JSON that will actually be delivered",
+        consent:
+          "I have checked this version's code, events, tools, boundaries, and the full test payload above; I understand that when reasoning is required, this test data is sent through the internal proxy to the real model provider configured for the target tenant. Model calls are metered separately, and externalLiveCalls=0 only means external tools were not called directly. I approve creating this one temporary sandbox only, which does not approve promotion or real external write operations.",
+        finishing:
+          "Creating an isolated App, delivering the cases, observing the whole chain, and forcing cleanup. This can take several minutes; please do not submit again.",
+      },
+      back: "Back to edit test inputs",
+      cancel: "Cancel",
+      prepare: {
+        busy: "Recomputing review…",
+        idle: "Prepare sandbox review",
+      },
+      finish: {
+        busy: "Running and cleaning up…",
+        idle: "Approve and run one sandbox",
+      },
+      error: {
+        inputContractWrongVersion:
+          "The test input contract returned by the server does not belong to the current draft version.",
+        inputContractIncomplete:
+          "The test input contract is incomplete. Please refresh and try again.",
+        inputContractBadFields:
+          "The test input contract contains unrecognized event fields.",
+        testKindsIncomplete: "The test-case kind contract is incomplete.",
+        testCasesInvalidJson: "Test cases are not valid JSON.",
+        boundaryEventsInvalidJson: "Boundary events are not valid JSON.",
+        needAtLeastOneCase:
+          "At least one test case is required; the event chain will not be auto-completed with empty payloads.",
+        boundaryEventsNotArray: "Boundary events must be a JSON array.",
+        sentinelUntouched:
+          "Test case {path} is still template placeholder content. Replace the scenario, expected outcome, and payload with test values you have confirmed.",
+        sensitiveData:
+          "Test JSON must not contain raw secrets, auth headers, file bytes, or old fixture IDs. Upload binary files back in the Agent factory session.",
+        reviewWrongVersion:
+          "The sandbox review receipt does not belong to the current draft version.",
+        reviewIncomplete:
+          "The server did not return a complete, confirmable sandbox review.",
+        reviewSensitiveData:
+          "The sandbox review contains sensitive test data that should not reach the browser.",
+        finishIncomplete:
+          "The server did not return a complete sandbox finish receipt.",
+        finishMismatch:
+          "The sandbox finish receipt does not match the current version, or is missing cleanup/regression evidence.",
+      },
+      note: {
+        default: "Fill in test values you have manually confirmed.",
+      },
+      template: {
+        caseName: "{event} manual test",
+      },
+    },
+    systemMap: {
+      roleTranscript: {
+        empty: "This role hasn't done anything this run yet.",
+      },
+      emptyState: "Both systems' live activity appears here after a run.",
+      roleModalTitle: "{name} · Process",
+      systemA: {
+        title: "System A · Generation",
+        subAgentsSummary:
+          "Generation-domain sub-agents: cognitive specialists ×{specialists} · sub-brains ×{subBrains} (never enter deliverables)",
+      },
+      roleCard: {
+        hintTooltip: "{hint} · Click to view process",
+        toolCalls: "{count} calls",
+      },
+      badge: {
+        codeact: "CodeAct: write code / drive execution",
+        spawns: "Spawn sub-agents (cognitive specialists / sub-brains)",
+        tools: "Build tools",
+        skills: "Build skills",
+      },
+      systemB: {
+        promotionLabel: "↓ Promotion · Delivery",
+        summary:
+          "System B · {functions} functions ({subAgents} delivery-domain sub-agents)",
+        goToAgents: "Go to Agents →",
+      },
+    },
+    promotion: {
+      changeList: {
+        noChanges: "No changes",
+        agentsTitle: "Agents",
+        modifiedSuffix: "{item} (modified)",
+        eventsTitle: "Events",
+        toolsTitle: "Tools",
+      },
+      error: {
+        approveFailed: "Sign-off or promotion failed",
+      },
+      modalAriaLabel: "Manually review and promote agent draft",
+      title: "Manual review · promote after sign-off",
+      subtitle: "Immutable version {version} · {count} drafts · preview {hash}",
+      close: "Close",
+      status: {
+        regressionReplay: "Regression replay",
+        commitGate: "Can enter production commit gate",
+        evidenceReady: "✓ Production evidence ready",
+        cannotGoLive: "⛔ Cannot go live now",
+      },
+      alert: {
+        noRegressionEvidence:
+          "This version has no immutable regression evidence, so the server will reject promotion. Re-run a real sandbox and complete delivery.",
+        sandboxVerifiedNotLive:
+          "Sandbox orchestration is verified but it cannot go live yet. A signed fixture only proves replay and business orchestration; final eligibility must still pass the current production profile, live probe, and write-probe gates.",
+        codeIncomplete:
+          "Could not load all code for the selected version; sign-off is disabled.",
+      },
+      section: {
+        designDiff: "1. Design and runtime manifest diff",
+        deployableCode: "2. Actual deployable code for this version",
+      },
+      configChanges: "Config changes · {count}",
+      noConfigChanges: "No config changes",
+      contractChanges: "Input/output and business contract changes · {count}",
+      noContractChanges: "No added or modified contracts",
+      checkbox: {
+        codeReviewed:
+          "I have reviewed every piece of the actual deployable code for the selected immutable version above.",
+        designReviewed:
+          "I have reviewed the live → candidate diff of agents, events, tools, config, and business contracts.",
+      },
+      hashFootnote:
+        "Current live {liveHash} → candidate {candidateHash}; on promotion the server re-verifies the hashes and replays regression.",
+      cancel: "Cancel",
+      approveSubmitting: "Signing off and promoting on the server…",
+      approve: "Sign off and promote",
+      blockerSeparator: "; ",
+    },
+    runSummary: {
+      understandingTitle: "How the brain understands you",
+      understandingHelp:
+        "Intents and interventions survive compaction — however long the conversation or however many restarts, the brain still remembers them.",
+      intentGateTitle: "Intent-gate parse",
+      interventionTitle: "Your intervention",
+      specialistsTitle: "Cognitive specialists (spawned inside the factory)",
+      inProgress: "In progress…",
+      reviewTitle: "AI run review",
+      reviewing: "Reviewing…",
+      reviewCta: "🔎 AI-review this run",
+      reviewAfterFinish: "Available to review after the run finishes",
+      reviewModelTitle: "Model used for the review",
+      reReview: "Re-review",
+      problems: "Problems",
+      suggestions: "Suggestions",
+      strengths: "Strengths",
+      costTitle: "Cost",
+      costLine: "{tokens}k tokens · {turn} turns · {sandbox} sandbox runs",
+      costHigh: " · ⚠ High cost",
+      costElevated: " · Elevated cost",
+      timelineTitle: "Refinement timeline",
+      timelineEmpty: "No refinements yet",
+      timelineHelp:
+        "After the brain validates, any problems it finds are logged here as per-round score changes.",
+      roundN: "round {n}",
+      revertLine: '↩ Reverted "{action}" to before attempt {n}',
+      refineItem: "{action}: {critique}",
+      plansTitle: "Build plans",
+      plansEmpty: "No plans yet",
+      revisionsTitle: "Revisions",
+      revisionsEmpty: "No revisions yet",
+      reflectionsTitle: "Lessons learned (reflections)",
+      reflectionsEmpty: "No reflections yet",
+      skillsTitle: "Skills",
+      skillsEmpty: "No skills created this run",
+    },
+    transcript: {
+      filter: {
+        all: "All",
+        think: "Thinking",
+        tool: "Tools",
+        decide: "Decisions",
+        refine: "Revisions",
+        error: "Errors",
+      },
+      dim: {
+        toolResolution: "Tool resolution",
+        promptRichness: "Prompt richness",
+        decisionCoverage: "Branch coverage",
+        refineHealth: "Refine health",
+      },
+      think: {
+        label: "Thinking",
+      },
+      action: {
+        collapse: "Collapse",
+        expand: "Expand",
+      },
+      strategy: {
+        cot: "Chain of thought",
+        reflection: "Reflection rewrite",
+        debate: "Debate",
+        tot: "Tree of thought",
+        react: "Action planning",
+      },
+      reasoning: {
+        label: "Reasoning · {strategy}",
+      },
+      user: {
+        you: "You",
+      },
+      viz: {
+        zoomOut: "Zoom out",
+        fitWidth: "Fit width",
+        zoomIn: "Zoom in",
+        downloadSvg: "⬇ Download SVG",
+        close: "Close",
+        lightboxHint: "Esc to close · +/− to zoom · click background to close",
+        clickToZoom: "Click to enlarge · {title}",
+        enlargeBadge: "{title} · 🔍 Enlarge",
+      },
+      boundary: {
+        kind: {
+          external: "External handoff",
+          terminal: "Terminal",
+          break: "True break",
+        },
+        title: "🔗 These events have no internal consumer · you decide",
+        submitted: "(submitted)",
+        desc: "Inngest events are global; an emit may be consumed by an external platform. Those classified as external handoff / terminal no longer count as breaks; true breaks will be fixed.",
+        from: "from {producers}",
+        consumerPlaceholder: "External consumer (platform / service / team)",
+        contractPlaceholder:
+          "Payload contract (which fields the external party receives)",
+        confirmClassify: "Confirm classification",
+      },
+      compaction: {
+        viewFolded: "View folded content",
+      },
+      clarify: {
+        title: "❓ The brain is asking you",
+        waitingHint:
+          "(waiting for your reply · answer in the interaction area below)",
+        answered: "(answered)",
+        recommended: "★ Recommended",
+        selected: "✓ Selected",
+        confirmChoice: "Confirm choice: {label}?",
+        confirm: "Confirm",
+        cancel: "Cancel",
+        answerPlaceholder: "Or type your own answer…",
+        answer: "Answer",
+      },
+      boundarydecided: {
+        title: "🔗 Boundary events confirmed",
+        kindBreak: "Break to fix",
+        contract: "Contract: {contract}",
+      },
+      caseKind: {
+        pass: "Normal pass",
+        reject: "Rule block",
+        edge: "Edge",
+        faultEmoji: "⚡ Fault injection",
+        fault: "Fault injection",
+      },
+      testcase: {
+        title: "🧪 Test cases ({count})",
+        awaitingConfirm: "· Awaiting your confirmation",
+        coverage: "Coverage {covered}/{required} cells",
+        backfilled: "Matrix backfill {count}",
+        missingData: "⚠ {count} cells need real data ({cells})",
+        entryExpected: "Entry {entry} · Expected {expected}",
+        confirmExemption: "Confirm coverage exemption in the interaction area",
+        runCases: "Run these cases",
+        regenerate: "Regenerate",
+      },
+      plan: {
+        title: "📋 Plan · {count} agents",
+      },
+      validation: {
+        closed: "✓ Event graph closed (incl. field contracts)",
+        notClosed: "⚠ Event graph not closed",
+      },
+      sandbox: {
+        title: {
+          simulated:
+            "🧪 Historical simulation record · legacy / invalid evidence",
+          deployFailed: "🧪 Real sandbox deployment did not take effect",
+          passed: "🧪 Sandbox ran end-to-end for real ✓",
+          notFull: "🧪 Real sandbox did not fully run",
+        },
+        chip: {
+          notExecuted:
+            "⚠ Not really executed · excluded from success/coverage/acceptance",
+          realDeploy: "Real deployment execution",
+          deployed: "Deployed {count}",
+          ran: "Ran {count}",
+          successNoEvidence: "Success terminal: no valid evidence",
+          successTerminal: "Success terminal {value}",
+          chains:
+            "{internal} internal chains + {external} external handoff terminals",
+        },
+        appLabel: "Inngest sandbox App:",
+        functionsRegistered: "{count} functions registered",
+        agentsRecorded: "· {count} agents recorded",
+        status: {
+          simulated: "Historical simulation record, no execution proof",
+          ranOk: "Registered · ran",
+          running: "Registered · running",
+          registeredWith: "Registered · {status}",
+          registered: "Registered",
+        },
+        codeRan: {
+          title: "Generated code really executed in the sandbox (CodeAct)",
+          label: "Code ran",
+        },
+        declarative: {
+          title: "Declarative execution (generated code not run)",
+          label: "Declarative",
+        },
+        verdicts: {
+          title: "Case verdicts · by kind",
+          simulated: "Historical value · not counted toward acceptance",
+          allPass: "All kinds pass",
+          someFail: "Some kinds failed",
+        },
+        externalNote:
+          "{count} agents' output goes to external platforms — external handoff terminals with real receipts.",
+        simulatedAlert:
+          "This is a simulated diagnostic left by an old build or the test environment, kept only as a troubleshooting record; it did not run a real deployment and does not count toward success, coverage, acceptance, or delivery status. Please re-run the real sandbox and obtain execution receipts.",
+      },
+      common: {
+        yes: "Yes",
+        no: "No",
+      },
+      refine: {
+        label: "🔧 Refine {action}: {critique}",
+        promptChanged: "Prompt changed",
+        logicChanged: "Branch logic changed",
+      },
+      score: {
+        label: "📈 Score: {action}",
+        regression: "· regression",
+      },
+      revert: {
+        text: "Rolled back {action} to before refine #{attempt} (this round regressed).",
+      },
+      skill: {
+        label: "✨ Created skill {name}: {purpose}",
+      },
+      subagent: {
+        label: "🧠 Sub-brain: {task}",
+      },
+      progress: {
+        inProgress: "(in progress…)",
+      },
+      group: {
+        title: "🧩 Sub-agent group {label}",
+        members: "{count} members",
+        mode: {
+          research: "Read-only research",
+          build: "Design & build",
+          design: "Parallel design",
+          review: "Parallel review",
+          refine: "Parallel refine",
+        },
+        landed: "landed",
+        succeeded: "succeeded",
+        mergedConclusion: "Merged conclusion: {summary}",
+      },
+      reflect: {
+        label: "🧠 Reflection: {text}",
+      },
+      toolnew: {
+        label: "🔧 Built tool {name}",
+      },
+      web: {
+        label: "🔍 Searched {query} · {count} results",
+      },
+      toolsearch: {
+        label: "🔎 Tool search {query} · {count} candidates",
+      },
+      toolschema: {
+        label: "🔗 Parsed tool {name} ({method} · {fields} fields)",
+      },
+      inspect: {
+        label: "🔬 Diagnose {agent}: {status}",
+        degraded: "· degraded",
+      },
+      code: {
+        for: "✍️ For {action}",
+        aiWritten: "hand-wrote the code (AI)",
+        scaffold: "rendered scaffold code",
+      },
+      done: {
+        waitingHuman: "⏸ Safely suspended, waiting for your reply",
+        answerCompleted:
+          "✅ Answer completed (no delivery or sandbox evidence)",
+        deliveryCompleted: "✅ Delivery completed",
+        legacyUnknown: "Ended (historical record has no completion type)",
+        endedWith: "Ended ({status})",
+      },
+      tool: {
+        running: "Running…",
+        heartbeat: " {elapsed} elapsed (heartbeat alive, not stuck)",
+      },
+      cluster: {
+        think: "Thinking",
+        reasoning: "Reasoning",
+        reflect: "Reflection",
+        tool: "Tools",
+        search: "Search",
+        code: "Code",
+        refine: "Revisions",
+        steps: "{count} steps",
+      },
+    },
+    phaseTimeline: {
+      stage: {
+        intake: "Intake · Understand",
+        read: "Read business",
+        plan: "Plan",
+        design: "Design",
+        validate: "Validate",
+        sandbox: "Trial run",
+        deliver: "Deliver",
+        answer: "Answer",
+        incomplete: "Incomplete",
+        completionUnknown: "Ended (unknown type)",
+      },
+      subBrainFallback: "Sub-brain",
+    },
+    page: {
+      errors: {
+        runsReadFailed: "Failed to load run history: {message}",
+        runsReadShape: "Failed to load run history: invalid response shape",
+        trashReadFailed: "Failed to load recycle bin: {message}",
+        trashReadShape: "Failed to load recycle bin: invalid response shape",
+        restoreFailed: "Failed to restore run: {reason}",
+        serverNoConfirmRestore: "the server did not confirm the restore",
+        draftsReadFailed: "Failed to load drafts: {message}",
+        draftsReadShape: "Failed to load drafts: invalid response shape",
+        domainsReadFailed: "Failed to load ontology binding: {message}",
+        domainsReadShape:
+          "Failed to load ontology binding: invalid response shape",
+        uploadsReadFailed:
+          "Failed to load uploaded-ontology catalog: {message}",
+        uploadsReadShape:
+          "Failed to load uploaded-ontology catalog: invalid response shape",
+        bindFailed: "Binding failed: {message}",
+        bindInconsistent:
+          "Binding failed: the server did not return consistent ontology-binding credentials",
+        cannotDeleteStarting:
+          "A run-start request is being submitted; you can't delete the ontology right now.",
+        cannotDeleteRunning:
+          "A run is in progress; you can't delete this tenant's ontology upload — stop the run first.",
+        deleteOntologyFailed: "Failed to delete ontology: {reason}",
+        serverNoConfirmDelete: "the server did not confirm the deletion",
+        runDetailReadFailed: "Failed to load run details: {message}",
+        runDetailReadShape:
+          "Failed to load run details: invalid response shape",
+        deleteRunFailed: "Failed to delete run: {reason}",
+        clearRunsFailed: "Failed to clear runs: {reason}",
+        serverNoClearCount: "the server did not return the cleared count",
+        networkUnavailable:
+          "the network is temporarily unavailable, please retry.",
+      },
+      stop: {
+        noRunId: "Stop failed: there is no run ID to target.",
+        stopping: "Stopping the run…",
+        failed: "Stop failed: {reason}",
+        serverNoConfirmAbort: "the server did not confirm the run was aborted",
+        submitted:
+          "✓ Stop request submitted; waiting for the run-finished event.",
+      },
+      awaiting: {
+        clarify: "Answer the brain's question",
+        boundary: "Classify boundary events",
+        testcases: "Confirm test cases",
+      },
+      health: {
+        answerComplete:
+          "Answer complete (no deliverable or sandbox evidence produced)",
+        agentsDesigned: "{count} agents designed",
+        toolsBound: "All tools bound",
+        codeComplete: "Code complete",
+        eventGraphClosed: "Event graph closed",
+        sandboxInvalid:
+          "Sandbox evidence invalid (historical simulation, not real execution)",
+        sandboxRealRun: "Sandbox ran end-to-end for real",
+      },
+      confirm: {
+        switchOntology:
+          'Switch the run domain "{tenant}" from ontology "{from}" to "{to}"?\n\nThe old ontology\'s run history and drafts will not be treated as content of the new ontology.',
+        deleteUpload:
+          'Delete the uploaded ontology "{name}"? If the binding becomes invalid as a result, the agent factory will stop running until you explicitly connect another ontology.',
+        deleteRun:
+          "Delete this run? (soft delete — you can restore it from the recycle bin)",
+        clearRuns:
+          "Clear all finished runs under the current ontology binding? (soft delete)",
+        deleteDraft:
+          "Delete this generated draft? (does not affect agents already promoted to production)",
+      },
+      upload: {
+        cannotRead: "Cannot read: {names}",
+        emptyFiles: "Empty files: {names}",
+        readIssueSuffix:
+          "{issue}. These files were not added; please fix and retry.",
+        malformedJson:
+          "{names} is not valid JSON and was skipped — please fix and re-upload.",
+        skippedInvalidJson: " Skipped invalid JSON: {names}.",
+        noAction:
+          "The upload contains no action and can't be used as an ontology.{skipNote}",
+        defaultOntologyName: "{tenant} ontology",
+        uploadFailed: "Ontology upload failed: {message}{skipNote}",
+        uploadNoId:
+          "Ontology upload failed: the server did not return an upload ID{skipNote}",
+        mergedNote: "{count} files merged → ",
+        uploadSuccess:
+          '✓ {mergedNote}Uploaded and connected ontology "{name}" ({actionCount} actions · {eventCount} events · {ruleCount} rules); describe your goal below to start.{skipNote}',
+      },
+      start: {
+        alreadyStarting:
+          "A start request is already being submitted; please wait for the server to confirm.",
+        tooLarge:
+          "The attachment or goal content exceeds the server's allowed request size: {message}{code}",
+        badStatus:
+          "The server returned HTTP {status} and did not confirm the run started asynchronously.",
+        badReceipt: "The server's start receipt has an invalid shape.",
+        attachedNoConversation:
+          'The server returned "attached", but the request has no session to attach to.',
+        cannotPersistConv:
+          "The run started, but the browser couldn't save the session ID; after a refresh you may need to reopen it from run history.",
+      },
+      composer: {
+        needBinding:
+          "First connect the current run domain to an ontology, or click 📎 to upload ontology JSON and establish a binding.",
+        startFailed: "Start failed: {message}",
+        unboundWarning:
+          "The current run domain {tenant} isn't connected to an available ontology. Explicitly connect an ontology from the catalog on the left, or click 📎 below to upload one; the agent factory won't start before a binding exists.",
+        backNewSession: "← Back, start a new session",
+        awaitingPlaceholder:
+          "Submit via the interaction card above; a normal message can't replace the current answer",
+        runningPlaceholder:
+          'Running — type to intervene anytime (enter "stop" to abort)',
+        intervene: "Intervene ↵",
+        stopping: "Stopping…",
+        stop: "Stop",
+        waitingHuman:
+          "The current run is waiting for your explicit reply. Answer using the interaction card above; after you submit it will resume from the checkpoint automatically.",
+        docTag: "📄 Doc",
+        attachTitle:
+          "Upload ontology JSON (overwrites the connected ontology; creates a binding if none) or tool/reference docs",
+        placeholderNoBinding:
+          "Connect an ontology first, or click 📎 to upload ontology JSON…",
+        placeholderContinue: "Continue the conversation…  ⌘/Ctrl+Enter to send",
+        placeholderAddGoal: "Add a goal (optional)…  ⌘/Ctrl+Enter to send",
+        placeholderDefault:
+          "Describe what you want to do, or click 📎 to upload ontology JSON / attach tool docs…  ⌘/Ctrl+Enter to send",
+        starting: "Starting…",
+        send: "Send",
+        start: "Start",
+      },
+      inject: {
+        noConversation:
+          "Send failed: the current run has no session ID to target.",
+        sendFailed: "Send failed: {reason}",
+        serverNoConfirmQueue:
+          "the server did not confirm the message was queued",
+        persisted:
+          "Saved — there's no running task right now; your addition will be attached automatically the next time you continue this conversation.",
+        sent: "✓ Sent; it will be included in the next step.",
+      },
+      common: {
+        sending: "Sending…",
+        collapse: "Collapse",
+        expand: "Expand",
+        remove: "Remove",
+      },
+      interaction: {
+        noConversation: "The current run has no session ID to target",
+        serverNoConfirmDecision:
+          "the server did not confirm the decision was queued",
+        noRunIdForAsset:
+          "The current run has no run ID to target, so an isolated file asset can't be created",
+      },
+      regen: {
+        noBinding:
+          "The current run domain has no available ontology binding, so the agent can't be regenerated.",
+        directive:
+          'Please redesign only the agent "{actionName}"{supplement}, and leave the other adopted agents untouched.',
+        directiveSupplement: ", additional info: {supplement}",
+        requestFailed: "Regenerate request failed: {reason}",
+        serverNoConfirmRequest:
+          "the server did not confirm the request was queued",
+      },
+      modal: {
+        agentCodeTitle: "{name} · Code",
+      },
+      analyze: {
+        failed: "Analysis failed: {reason}",
+        serverNoResult: "the server did not return an analysis result",
+      },
+      draft: {
+        noVersionEdit:
+          "This old draft has no immutable version ID and can't be safely edited; regenerate it before modifying.",
+        openEditorFailed: "Failed to open the draft editor: {message}",
+        scopeChangedReopenEditor:
+          "The tenant or domain has changed; close and reopen the draft.",
+        scopeChangedDiscardEdit:
+          "The tenant or domain has changed; this edit result was discarded.",
+        saveFailed: "Save failed: {message}",
+        newVersionCreated:
+          "Created new version {versionId}. The old version is kept; the new version inherits no review, sandbox, regression, or promotion evidence — please re-review and run the sandbox.",
+        openSandboxFailed: "Failed to open the sandbox test: {message}",
+        scopeChangedReopenSandbox:
+          "The tenant or domain has changed; close and reopen the sandbox test.",
+        scopeChangedDiscardReview:
+          "The tenant or domain has changed; this review result was discarded.",
+        scopeChangedNoSandbox:
+          "The tenant or domain has changed; no sandbox was created.",
+        reviewVersionMismatch:
+          "The sandbox review doesn't belong to the current immutable version; please prepare again.",
+        scopeChangedDiscardSandbox:
+          "The tenant or domain has changed; the page result was discarded, but the server will still finish cleaning up the temporary app.",
+        sandboxComplete:
+          "The temporary app ran and its deletion was confirmed; the regression artifacts for new version {versionId} were replayed and passed again. You can now run a manual review and promotion preview for this new version.",
+        deleteFailed: "Failed to delete draft: {reason}",
+      },
+      promote: {
+        draftsChanged:
+          "Promotion failed: the selected drafts have changed; refresh and reselect.",
+        notReplayValidated:
+          "Promotion failed: the selected version hasn't finished server-side regression-replay validation.",
+        blocked:
+          "Promotion blocked: sandbox orchestration is validated but can't go live yet. A signed fixture/replay can't substitute for a production live probe — please supply real integration evidence first.",
+        mixedVersions:
+          "Promotion failed: select drafts from the same immutable version; old drafts without a versionId must be regenerated.",
+        previewFailed: "Promotion preview failed: {message}",
+        previewIncomplete:
+          "Promotion preview failed: the response is missing a complete diff/hash, or the selected version is inconsistent.",
+        previewCodeReadFailed:
+          "Promotion preview failed: couldn't read the complete code of the immutable version ({slug}){message}",
+        previewReady:
+          "Promotion preview generated; review the code and design diffs item by item in the review window.",
+        reviewContextChanged:
+          "The review context has changed; regenerate the promotion preview.",
+        domainSwitchedSignoff:
+          "The business domain has switched; the sign-off result was discarded.",
+        signoffFailed: "Manual sign-off failed: {reason}",
+        serverNoReceipt: "the server did not issue a credential",
+        domainSwitchedResult:
+          "The business domain has switched; the promotion result was discarded.",
+        failed: "Promotion failed: {reason}",
+        serverNoConfirmLive:
+          "the server did not confirm all drafts went live and registered real functions",
+        success:
+          "Promoted {promoted} · registered {functions} functions · workflow now has {liveAgents} agents",
+      },
+      working: {
+        sandbox: "Deploying the sandbox and test-running…",
+        report: "Generating the domain analysis report…",
+        callingTool: "Calling {name}…",
+        thinking: "Thinking…",
+        working: "Working…",
+      },
+      brainView: {
+        flow: "Decision flow",
+        map: "System map",
+        log: "Activity log",
+      },
+      deliverView: {
+        cards: "Card list",
+        graph: "Event graph",
+        biz: "Business flow",
+        blueprint: "Blueprint",
+      },
+      tabs: {
+        flowFull: "Agents · Delivery",
+        brain: "Brain",
+        testFull: "Tests · Sandbox I/O",
+        summary: "Summary",
+        bg: "Background tasks",
+        agents: "Agents",
+        test: "Tests",
+      },
+      header: {
+        runDomain: "Run domain · {tenant}",
+        ontology: "Ontology · {name}",
+        ontologyUnbound: "Ontology not connected",
+        running: "Running",
+        viewingHistory: "Viewing history",
+        newSession: "New session",
+      },
+      a11y: {
+        closeActionError: "Close action error",
+      },
+      fullscreen: {
+        fallbackTitle: "Fullscreen",
+        suffix: "{title} · Fullscreen",
+        viewTitle: "View the current tab in fullscreen",
+      },
+      resize: {
+        leftTitle: "Drag to adjust the left rail width (double-click to reset)",
+        rightTitle:
+          "Drag to adjust the right rail width (double-click to reset)",
+      },
+      collapse: {
+        leftHide: "Collapse left rail",
+        leftShow: "Expand left rail",
+        rightHide: "Collapse right rail",
+        rightShow: "Expand right rail",
+      },
+      leftRail: {
+        bindingTitle: "Ontology binding",
+        bindingHelp:
+          "The run domain is the tenant boundary; the ontology is the factory's knowledge source. The two are linked only through the explicit binding saved here, never guessed by name or alias.",
+        productionTarget: "Production target (run domain)",
+        knowledgeSource: "Knowledge source (ontology)",
+        bindingUnavailable: "Binding unavailable · {id}",
+        notConnected: "Not connected yet; running is not allowed",
+        cancelSwitch: "Cancel switch",
+        switchBinding: "Change ontology binding",
+        connecting: "Connecting…",
+        switch: "Switch",
+        connect: "Connect",
+        catalogEmpty:
+          "The catalog is empty. Click 📎 below to upload ontology JSON; a binding is established on a successful upload.",
+        historyTitle: "Run history",
+        knowledgeTitle: "Domain knowledge",
+        draftsTitle: "Generated · Drafts",
+        miniExpand: "{label} (click to expand the left rail)",
+      },
+      gateway: {
+        notConfigured:
+          "⚠ LLM gateway not configured — the brain can't run. Set {baseUrl} + {apiKey} (or {openaiKey}) in {env}, then restart the API to take effect.",
+      },
+      transcript: {
+        filter: "⚲ Filter",
+        emptyFilter: "No content under this filter",
+      },
+      density: {
+        briefDesc: "Conversation view · process folded into clusters",
+        fullDesc: "Full-process view · line by line + full reasoning",
+        briefTitle:
+          "Brief: like a chat, see only conclusions and milestones; thinking/tools fold into expandable clusters",
+        fullTitle:
+          "Detailed: the full process stream, laid out line by line with long reasoning expanded by default",
+        brief: "Brief",
+        full: "Detailed",
+      },
+      route: {
+        label: "🧭 Decision path · {count} steps",
+      },
+      hero: {
+        title: "Autonomous agent factory",
+        help: "Describe a goal or upload an ontology; agents are automatically generated, validated, and delivered ready to run.",
+        suggestions: "Goal suggestions based on the current ontology",
+      },
+    },
+    systemView: {
+      role: {
+        understand: {
+          name: "Understanding",
+          hint: "Read ontology · Digest · Resolve capability",
+        },
+        plan: {
+          name: "Planning",
+          hint: "Decompose · Independent review",
+        },
+        design: {
+          name: "Design",
+          hint: "Design · Write code · Refine",
+        },
+        verify: {
+          name: "Verification",
+          hint: "Graph closure · Test cases",
+        },
+        sandbox: {
+          name: "Trial run",
+          hint: "Real sandbox deployment & observation",
+        },
+        asset: {
+          name: "Assets",
+          hint: "Build tools · Build skills · Search",
+        },
+        deliver: {
+          name: "Delivery",
+          hint: "Review · Acceptance · Delivery",
+        },
+      },
+      transcript: {
+        spawnSpecialist: "Spawn {name}",
+        spawnSubbrain: "Spawn sub-brain",
+        toolCreated: "Create tool {name}",
+        skillCreated: "Create skill {name}",
+        codeGenerated: "Generate code ({source})",
+        simulatedRecord: "Legacy simulated record · invalid execution evidence",
+        realSandbox: "Real sandbox deployment",
+        sandboxDetail: "Deployed {registered} · Ran {ran}",
+      },
+    },
+    api: {
+      invalidJson: "HTTP {status} returned invalid JSON",
+      noSuccessStatus: "The API did not return a success status",
+      missingData: "The success response is missing data",
+      networkFailure: "Network request failed",
+      interactionIncomplete:
+        "This interaction is missing the session, card id, or reply text and cannot be submitted safely",
+    },
+    model: {
+      redact: {
+        assetRefHidden: "[internal test asset reference hidden]",
+        fileContentHidden: "[test file content hidden]",
+      },
+      viz: {
+        diagramFallbackTitle: "Diagram",
+        blueprintTitle:
+          "🗺 Ontology blueprint · {phases} phases · {count} diagrams",
+        blueprintUnresolvedPrefix:
+          "{count} items lack ontology evidence and are ungrounded · ",
+        blueprintNote:
+          "Click a diagram to enlarge; the full blueprint (with reasoning refinement / ungrounded list) is in the Blueprint tab",
+      },
+      testDecision: {
+        approved: "✅ Confirmed running the test cases",
+        regenerate: "🔄 Requested regenerating the test cases",
+        regenerateWithNote: "🔄 Requested regenerating the test cases: {note}",
+        supplyData:
+          "📎 Test data supplied; the factory is applying it — you still need to confirm the test cases once applied",
+        recorded:
+          "Test-case decision recorded; waiting for the factory to confirm status",
+      },
+      block: {
+        subagentGroupFallback: "Sub-agent group",
+        budget:
+          "Used {turn}/{maxTurns} turns · {tokensK}k tokens · {specsBuilt} agents",
+        catalog:
+          "Ontology read: {actions} actions ({agentActions} need agents) · {events} events",
+      },
+      stage: {
+        read: "Read business",
+        plan: "Plan",
+        design: "Design",
+        validate: "Validate",
+        sandbox: "Sandbox",
+        deliver: "Deliver",
+        finalWaitingHuman: "Waiting for human",
+        finalAnswer: "Answer",
+        finalEndedUnknown: "Ended (type unknown)",
+        finalEnded: "Ended",
+      },
+      flow: {
+        readOntology: "Read ontology",
+        readOntologyDetail: "{actions} actions · {events} events",
+        plan: "Plan",
+        planDetail: "{count} agents",
+        subagent: "🧩 Sub-agent",
+        subagentGroup: "🧩 Sub-agent group",
+        subagentGroupDetail: "{label} ({members} members)",
+        subagentGroupDone: "🧩 Sub-agent group done",
+        subagentGroupDoneDetail: "{label} · {ok}/{total} succeeded",
+        createSkill: "🛠 Create skill {name}",
+        reflect: "💡 Reflection",
+        design: "Design {name}",
+        validateClosed: "Validation closed",
+        validateNotClosed: "Validation not closed",
+        validateHasFieldContract: "Includes field contracts",
+        validateIssues: "{count} issues",
+        refine: "Refine {name}",
+        scoreUp: "Score ▲+{delta}",
+        scoreDown: "Score ▼{delta}",
+        revert: "Revert {name}",
+        revertDetail: "to before attempt {n}",
+        testCasesGate: "Test-case confirmation",
+        testCasesDetail: "{count} test cases",
+        supplyDataPending:
+          "Supplied data submitted · still needs confirmation after applying",
+        boundaryGate: "Boundary event classification",
+        boundaryDetail: "{count} items",
+        askUser: "Ask user",
+        sandboxSimulated:
+          "Legacy simulated record · invalid execution evidence",
+        sandboxOk: "Real sandbox passed",
+        sandboxFail: "Real sandbox did not pass",
+        sandboxRealExec: "Real execution",
+        sandboxLegacyEvidence: "legacy / invalid evidence",
+        sandboxDetail: "{kind} · deployed {deployed} · ran {ran}",
+        waitingHuman: "Waiting for human reply",
+        waitingHumanDetail: "Checkpoint saved; continues after reply",
+        answerDone: "Answer complete",
+        answerDoneDetail:
+          "Informational answer · no delivery or sandbox evidence produced",
+        deliverDone: "Delivery complete",
+        deliverNoEvidence: "Delivery record · no valid real success evidence",
+        deliverLegacyUnknown: "Ended · legacy record has no completion type",
+        deliverEnded: "Ended · {status}",
+        error: "Error",
+      },
+    },
+    goals: {
+      actionSeparator: ", ",
+      actionOverflowSuffix: " etc.",
+      coverActions:
+        "Generate agents for {domain} covering {count} agent-executed actions, and validate the complete event chain through a real run.",
+      prioritizeActions:
+        "Prioritize generating agents around the agent actions {actions}, and validate each action's real tools and input/output contract.",
+      basedOnRules:
+        "Generate agents based on the {count} ontology rules connected to {domain}, and validate the rule constraints with real execution evidence.",
+    },
+    workers: {
+      acceptance: {
+        realSandboxEvidenceLabel: "Real sandbox execution evidence",
+        invalidEvidenceDetail:
+          "legacy / invalid evidence: simulated or missing execution records cannot be used for acceptance",
+        noRealEvidenceSuffix: "{detail} · no real execution evidence",
+      },
+      transcript: {
+        thinkLabel: "Reasoning",
+        messageLabel: "Reply",
+        designDoneV1: "Design complete · v1",
+        redesignVersion: "Redesign · v{version}",
+        producedAgent: "Produced agent {name}",
+        generateCode: "Generate code ({source})",
+        refineLabel: "Revision",
+        score: "Score {delta}",
+        revert: "Rolled back to before v{attempt}",
+        trialRun: "Trial run {status}",
+        noOutputEvent: "(no output event)",
+        sandboxIo: "Sandbox I/O · {status}",
+        simulatedRecord:
+          "Historical simulated record · invalid execution evidence",
+        realSandboxDeploy: "Real sandbox deploy",
+        sandboxDeployDetail: "Deployed {fns} · ran {ran}",
+        missingFields: " · missing {fields}",
+        validationPassed: "Validation passed",
+        validationFoundIssues: "Validation found problems",
+        spawnStart: "Start",
+        spawnCognitiveSpecialist: "Spawn cognitive specialist",
+        spawnSubBrain: "Spawn sub-brain",
+        spawnDone: "Done",
+        groupStart: 'Spawn sub-agent group "{label}"',
+        groupStartDetail: "{count} members digging in parallel",
+        groupDone: 'Sub-agent group "{label}" done',
+        groupDoneDetail: "{ok}/{total} succeeded",
+        toolCreated: "Build tool {name}",
+        toolSchema: "Extract API schema · {name}",
+        toolSearch: 'Search tools "{query}"',
+        toolSearchDetail: "{count} candidates",
+        skillCreated: "Build skill {name}",
+        acceptanceAllGreen: "Acceptance checklist all green ✓",
+        acceptanceProgress: "Acceptance checklist {passed}/{total}",
+        acceptanceNoEvidence:
+          "No real sandbox execution evidence; historical simulated records cannot be used for acceptance",
+        reasoningMethod: "Reasoning method: {chain}",
+        reasoningMethodVia: "Reasoning method: {chain} ({via})",
+        reasoningExec: "Reasoning execution: {strat}{steps}",
+        compaction: "Context compaction",
+        ontologyRevision: "Ontology revision proposals · {count}",
+        reasoningRoute: "Reasoning route · {pipeline} ({band})",
+        routeDeepRead: " · deep read",
+        routeDeepCritique: " · deep critique",
+        routeTier: " · {tier} tier",
+        askUser: "Ask user",
+        awaitTestCases: "Awaiting test-case confirmation",
+        testCasesDetail: "{count} test cases",
+        awaitBoundaryCases: "Awaiting boundary-event classification",
+        boundaryCasesDetail: "{count} items",
+        enterStage: "Enter stage · {stage}{role}",
+        errorLabel: "Error",
+        awaitHumanReply: "Awaiting human reply",
+        checkpointSaved: "Checkpoint saved",
+        answerComplete: "Answer complete · no delivery/sandbox claim",
+        deliveryCompletePass: "Delivery complete · real sandbox passed",
+        deliveryRecordNoEvidence:
+          "Delivery record · missing real sandbox success evidence",
+        endUnknownKind: "Ended · completion type unknown",
+        endStatus: "Ended · {status}",
+      },
+      agent: {
+        runError: "Run error",
+      },
+      sandbox: {
+        invalidEvidencePrefix: "legacy / invalid evidence · ",
+        meta: "{fns} functions · {ran} runs",
+        reachedTerminal: " · reached terminal",
+      },
+      strategy: {
+        chosenByAi: "AI-chosen",
+        chosenByDefault: "Default",
+        defaultStrategyName: "reasoning",
+      },
+      pipeline: {
+        full: "Full generation",
+        skinny: "Targeted edit",
+        analyze: "Read-only analysis",
+        askFirst: "Clarify first",
+      },
+      task: {
+        harnessTypeLabel: "Harness · ReAct main loop",
+        harnessTitle: "Factory brain",
+        harnessMeta:
+          "{turns} turns · {toolCalls} tool calls · {thinkBursts} reasoning bursts",
+        harnessMetaTokens: " · {tokens}k tok",
+        metaRevisions: " · {refines} revisions",
+        subagentDeployable: "Sub-agent · deployable",
+        agentCodeAct: "Agent · CodeAct",
+        agentDeclarative: "Agent · declarative workflow",
+        agentMeta: "{tools} tools · v{versions}",
+        agentMetaSandbox: " · sandbox {status}",
+        agentMetaContractViolation: " · ⚠contract violation",
+        subagentCognitiveSpecialist: "Sub-agent · cognitive specialist",
+        subagentSubBrain: "Sub-agent · sub-brain",
+        subagentFallbackTitle: "Sub-agent #{n}",
+        subagentReasoning: "Reasoning…",
+        toolTypeLabel: "Tool · declarative",
+        toolTitle: "Build tool {name}",
+        toolMetaWritten: "Written to tool library",
+        sandboxInvalidTypeLabel: "Sandbox · legacy / invalid evidence",
+        sandboxRealTypeLabel: "Sandbox · real Inngest",
+        sandboxTitle: "Sandbox deploy #{n}",
+      },
+      drill: {
+        fidelityFailProblem:
+          "Execution fidelity failure: real emit payload does not satisfy downstream contract",
+      },
+    },
+    runStart: {
+      defaultGenerationGoal:
+        "Based on this, generate agents that actually run end-to-end for the current run domain and verify the entire event chain.",
+      documentHeader: "--- Document {index}: {name} ---",
+      documentsAttachedPrefix:
+        "[Attached {count} document(s): read and reason through them first, then use create_tool to consolidate any usable APIs into tools and store them in the current run domain's tool library, then continue generating/verifying agents]",
+    },
     subtitle:
       "Autonomous brain: read ontology → plan → design → AI-write code → validate → real sandbox deploy → iterate → ship",
   },
   toolLibrary: {
+    redirect: {
+      title: "Tool Library has merged into Tools (/tools)",
+      hint: "Redirecting…",
+    },
     subtitle:
       "The bindable agent tool library — every tool the factory can wire into a generated agent, with its side-effect class and I/O signature.",
   },
   topbar: {
     search: "Jump to agent, event, run…",
+    openCommandPalette: "Open command palette",
     live: "LIVE",
     paused: "PAUSED",
     theme: "Theme",
@@ -138,6 +2315,19 @@ export const en = {
     themeLight: "Light",
     themeDark: "Dark",
     language: "Language",
+  },
+  sidebar: {
+    primaryNavigation: "Primary navigation",
+    returnAutomatic: "Return navigation to automatic collapse",
+    keepOpen: "Keep navigation open",
+    useAutomatic: "Use automatic collapse",
+    openNavigation: "Open navigation",
+    portalSections: "Portal sections",
+    systemStatus: "System status",
+    currentlyRunning: "{label}, {count} currently running",
+    healthChecking: "Checking…",
+    healthReachable: "Reachable",
+    healthUnreachable: "Unreachable",
   },
   settings: {
     title: "Settings",
@@ -233,6 +2423,8 @@ export const en = {
     noSubscribers: "no subscribers",
     consumedBy: "consumed by",
     agentFallback: "agent",
+    unknownAgent: "unknown agent",
+    consumerTooltip: "{agent} · run {runId} · {status}",
     allClear: "All clear",
     noPendingTasks: "No pending tasks",
     awaiting: "awaiting · {role}",
@@ -261,6 +2453,12 @@ export const en = {
     cancelAllConfirm: "Cancel all {count} loaded active runs?",
     cancelAllResult:
       "Cancel results: {cancelled} accepted, {failed} failed or unchanged",
+    systemCheckStartFailed: "System check could not start",
+    unknownStartupError: "Unknown startup error",
+    runSystemCheckAria: "Run two-agent system check",
+    startingSystemCheck: "Starting…",
+    openingSystemCheck: "Opening check…",
+    runFullCheck: "Run full check",
     verdictOk: "All systems normal",
     verdictWarn: "Needs attention",
     verdictDown: "System degraded",
@@ -387,6 +2585,81 @@ export const en = {
     restoreFailed: "Could not restore run",
   },
   runDetail: {
+    rework: {
+      errNotStartedUnconfirmed:
+        "The server did not explicitly confirm started=false; stopped to avoid an accidental start.",
+      errInvalidStructure:
+        "The rework preview structure is invalid; no rework was started.",
+      errEvidenceMismatch:
+        "The rework evidence totals do not match the run details; no rework was started.",
+      errRunNotInEvidence:
+        "The current run is not in the production evidence returned by the server; another run cannot be treated as this failure, so no rework was started.",
+      errRunNotFailed:
+        "The current run is not marked failed in the rework evidence; no rework was started.",
+      errSeedDomainMismatch:
+        "The rework seed does not match the current ontology domain or agent; no rework was started.",
+      unnamedStep: "Unnamed step",
+      error: {
+        domainReadFailed:
+          "Couldn't read the agent factory's ontology connection: {message}",
+        ontologyNotConnected:
+          "The agent factory isn't connected to an ontology yet, so we can't tell which domain this production agent belongs to.",
+        seedFailed: "Failed to prepare rework evidence: {message}",
+        startFailed: "Failed to start the rework session: {message}",
+        noStartReceipt:
+          "The server didn't return a start receipt for a new rework session. Check the agent factory run history — this page won't submit again.",
+      },
+      toast: {
+        startedTitle: "Rework session started",
+        startedSaved:
+          "Session {runId} created; it will first ask for your manual diagnosis and won't auto-promote.",
+        startedNotSaved:
+          "Session {runId} created, but the browser couldn't save the session id — open it from the agent factory run history.",
+      },
+      trigger: {
+        preparing: "Preparing evidence…",
+        label: "Prepare rework from this failed run",
+      },
+      modal: {
+        ariaLabel: "Confirm whether to start a production rework session",
+      },
+      preview: {
+        heading: "Rework preview · {slug}",
+        closeAriaLabel: "Close rework preview",
+        evidenceNoticePrefix:
+          "This is only an evidence preview. The server explicitly returned ",
+        evidenceNoticeSuffix:
+          ", so no rework session has been created or run yet.",
+        currentFailureLabel: "Current failure",
+        noErrorText: "The run failed, but there's no error text.",
+        failedStepsLabel: "Failed steps",
+        stepAttempts: "attempted {attempts} times",
+        confirmNotice:
+          "Confirming only creates a new agent factory session. It will first ask you to add a manual diagnosis; it won't change the production agent or auto-promote.",
+      },
+      field: {
+        selectedRun: "Current failed run",
+        immutableDraft: "Immutable draft",
+        evidenceWindow: "Evidence window",
+        evidenceWindowValue: "{total} production runs · {failed} failed",
+        windowFailureRate: "Window failure rate",
+        codeRan: "Code actually ran this time",
+        duration: "Duration this time",
+      },
+      value: {
+        noRuntimeReceipt: "No runtime receipt",
+        yes: "Yes",
+        no: "No",
+      },
+      confirm: {
+        checkboxLabel:
+          "I confirm: create a rework session based on this failure and provide a manual diagnosis again in the session; testing, human review, and explicit promotion are still required afterward.",
+        cancel: "Not yet",
+        creating: "Creating session…",
+        submitted: "Submitted — check run history first",
+        submit: "Confirm and start rework session",
+      },
+    },
     noRunId: "No run id",
     loadingRun: "Loading run…",
     loadFailed: "Failed to load run",
@@ -429,6 +2702,8 @@ export const en = {
     artifactsEmpty: "No JSON artifacts yet",
     artifactsEmptyHint: "Run {runId} has not produced a persisted output file.",
     artifactsLoading: "Loading JSON…",
+    artifactRequestFailed: "Artifact request failed (HTTP {status})",
+    artifactLoadFailed: "Could not load artifact",
     aiGenerating: "AI is reading the run log and summarizing…",
     aiLoadFailed: "Failed to load AI summary",
     aiGenerationFailed: "Failed to generate AI summary",
@@ -582,6 +2857,13 @@ export const en = {
     inngestConsole: "Inngest console",
   },
   tasks: {
+    humanInputInvalid: "{field} is not a valid {type}",
+    selectPlaceholder: "Select…",
+    confirmField: "Confirm",
+    preparedContextAriaLabel: "Prepared decision context",
+    statusOpen: "OPEN",
+    missingComplete: "COMPLETE",
+    parseFailBadge: "PARSE FAIL",
     subtitle: "{pending} pending · {high} high priority",
     openBadge: "{count} OPEN",
     filterAll: "All",
@@ -600,12 +2882,25 @@ export const en = {
     decide: "Decide",
     decisionContext: "Decision context",
     createdBy: "Created by",
-    noPreparedContext: "No prepared context was supplied by the preceding step.",
+    noPreparedContext:
+      "No prepared context was supplied by the preceding step.",
     submittingDecision: "Submitting decision\u2026",
-    formBecomesOutput: "The submitted form becomes the workflow's manual-step output.",
+    formBecomesOutput:
+      "The submitted form becomes the workflow's manual-step output.",
     snooze: "Snooze",
     approve: "approve",
     reject: "reject",
+    requestSupplement: "Request supplement",
+    requestRevision: "Request revision",
+    validation: {
+      required: "{label} is required.",
+      minLength: "{label} must be at least {count} characters.",
+      maxLength: "{label} must be at most {count} characters.",
+      validChoice: "Choose a valid {label}.",
+      validType: "{label} must be a valid {type}.",
+      jsonShape: "{label} must be a JSON {type}.",
+      validJson: "{label} must contain valid JSON.",
+    },
     resolveFailed: "Failed to resolve task",
     answerRequired: "Answer every question before submitting",
     humanInputTitle: "One detail is needed from you",
@@ -709,6 +3004,38 @@ export const en = {
     taskPayload: "Task payload",
   },
   tools: {
+    createTool: "Create tool",
+    origin: {
+      heading: "Where tools come from · beyond this catalog",
+      globalTitle: "Global registry",
+      globalBefore:
+        "These built-in tools can be bound directly in any tenant manifest's",
+      globalAfter: "array.",
+      discoveryTitle: "Progressive discovery",
+      discoveryBefore:
+        "The Agent Factory brain uses an Ontology action's semantics and",
+      discoveryAfter:
+        "to retrieve the best-matching tools on demand instead of loading the whole catalog into context.",
+      docsTitle: "Build from documentation",
+      docsBefore:
+        "When no tool fits, give the brain a public API document or URL. It uses",
+      docsMiddle: "to fetch it,",
+      docsAfter:
+        "to derive the method, URL, input, and return contracts, then saves the reviewed result with",
+      docsEnd: "so agents can bind it immediately and reuse it later.",
+      goFactory:
+        "→ Go to Agent Factory and let the brain find or build tools from ontology actions",
+    },
+    effectiveness: {
+      tooltip:
+        "Called {invoked} times in the sandbox, with {succeeded} successes. Ranking is automatically reduced below 70% after at least 3 calls.",
+      badge: "Sandbox success {rate}% · {invoked} calls{demoted}",
+      demoted: " · demoted",
+    },
+    createdBadge: "Custom",
+    deleteCreatedConfirm: "Delete custom tool “{name}”?",
+    deleteCreatedFailed: "Delete failed: {message}",
+    deleteCreated: "Delete",
     subtitle:
       "Globally-registered tools any workflow can call. Configure per Domain via the manifest's tool_use[].config block — no code changes required.",
     countBadge: "{count} tools · {categories} categories",
@@ -932,6 +3259,25 @@ export const en = {
     agentCount: "{count} agents",
   },
   tenants: {
+    domainSync: {
+      source: {
+        explicit: "Manual connection",
+        auto: "Migration confirmed",
+        upload: "Uploaded ontology",
+      },
+      panelTitle: "Runtime domain ↔ ontology connection",
+      runtimeDomainLabel: "Runtime domain (tenant)",
+      readError: "Failed to read ontology connection: {message}",
+      connectedLabel: "Connected ontology",
+      viewOrChange: "View or change connection",
+      unavailableLabel: "Connection unavailable",
+      missingOntology:
+        "This ontology is no longer in the catalog; the factory has stopped running.",
+      reconnect: "Reconnect",
+      notConnected:
+        "No ontology connected yet; this tenant is still valid, but the agent factory will not guess an ontology.",
+      goToFactory: "Connect in the agent factory",
+    },
     subtitle:
       "Business boundaries. Each Domain is an isolated stack of agents, workflows, runs, events, budgets, and audit trail.",
     countSingular: "DOMAIN",
@@ -1038,6 +3384,25 @@ export const en = {
     terminalWaiting:
       "Waiting for live activity… runs, events, steps and tasks stream here in real time.",
     terminalLoading: "Loading recent activity…",
+    historyInvalidResponse: "The activity API returned an invalid response.",
+    lineRunStarted: "{agent} started",
+    lineRunCompleted: "run {id} completed",
+    lineRunFailed: "run {id} failed",
+    lineRunCancelled: "run {id} cancelled",
+    lineTaskCreated: "task {type}: {title}",
+    lineTaskResolved: "task {id} → {decision}",
+    lineDeploymentCreated: "deployment {version} ({kind})",
+    lineStatusOk: "ok",
+    lineStatusFailed: "failed",
+    lineStatusSkipped: "skipped",
+    lineStatusUnknown: "status unknown",
+    lineLlmCompleted: "completed",
+    lineUnknown: "unknown",
+    lineTokensShort: "tok",
+    lineEstimated: "estimated",
+    lineSourceUnknown: "source unknown",
+    lineFallback: "fallback",
+    lineDefaultAgent: "agent",
     cat_ALL: "All",
     cat_ERROR: "Errors",
     cat_LOG: "Runtime logs",
@@ -1195,6 +3560,27 @@ export const en = {
     workspaceLabel: "Workspace",
     regionLabel: "region",
     operatorLabel: "operator",
+    unsavedConfirm:
+      "You have unsaved changes. Leave this settings section anyway? Your draft will be lost.",
+    unsavedConfirmWithDetail:
+      "You have unsaved changes ({detail}). Leave this settings section anyway? Your draft will be lost.",
+  },
+  apiError: {
+    invalidJson: "The API returned a response that is not valid JSON.",
+    networkFailure: "The API service could not be reached.",
+    requestFailed: "The request failed without an API error message.",
+    invalidEnvelope: "The API response is missing the expected success data.",
+    invalidHealthReport:
+      "The health endpoint returned an invalid health report.",
+    passwordChangeUnconfirmed:
+      "The password-change response did not confirm success.",
+    logoutUnconfirmed: "The sign-out response did not confirm success.",
+    taskResolutionUnconfirmed:
+      "The task response did not confirm the requested decision.",
+    rawDetail: "Raw response: {detail}",
+    withContext: "{message} [{path} · {code} · HTTP {status}]",
+    withoutStatus: "{message} [{path} · {code}]",
+    unknown: "The request could not be completed.",
   },
   usage: {
     title: "Usage & cost",
@@ -1269,6 +3655,8 @@ export const en = {
     validate: "Validate",
     continue: "Continue",
     deploying: "Deploying…",
+    creatingDraft: "Creating draft…",
+    createWorkflowDraft: "Create workflow draft",
     deployToProd: "Deploy to prod",
     deployToStaging: "Deploy to staging",
     source: "Source",
@@ -1347,6 +3735,15 @@ export const en = {
     errUnknownFileRole: "File name must match workflow*.json or actions*.json.",
     errInvalidFetchResponse: "The fetch endpoint returned no workflow field.",
     errInvalidPreview: "Invalid validation response",
+    errUnknownSchema: "unknown schema error",
+    errResolveBlockingBeforeDraft:
+      "Resolve every blocking validation issue before creating the draft.",
+    errMissingNormalizedWorkflow:
+      "Validation did not return a normalized workflow.",
+    importedDraftDescription: "Created from an imported manifest.",
+    toastDraftCreated: "Workflow draft created",
+    toastDraftReady: "{name} is ready to edit.",
+    errDraftCreationFailed: "Draft creation failed.",
     errInvalidOverwriteResponse: "Invalid overwrite-confirmation response",
     errInvalidCommitResponse: "Invalid commit response",
     errNetworkValidate: "Network error during validate",
@@ -1489,6 +3886,10 @@ export const en = {
     displayName: "Display name",
     displayNameHint: "Shown in the sidebar Domain switcher and domain lists.",
     displayNamePlaceholder: "e.g. Acme Recruiting",
+    slugPlaceholder: "acme",
+    subtitlePlaceholder: "Recruitment-as-a-Service · Asia-Pac",
+    tokenCapPlaceholder: "e.g. 50000000",
+    usdCapPlaceholder: "e.g. 500.00",
     slug: "Domain slug",
     slugHint:
       "Immutable. Used in URLs, log paths, and Inngest function IDs. [a-z][a-z0-9-]{1,31}",
@@ -1581,6 +3982,62 @@ export const en = {
     dragOntoCanvas: "Drag onto canvas",
     pendingChanges: "Pending changes",
     graphValid: "Graph valid · {cycles} cycles · {orphans} orphan nodes",
+    completeAgentSettings: "Complete agent settings",
+    viewCompleteManifest: "View complete manifest JSON",
+    completeSettingsFor: "Complete settings for {title}",
+    completeDefinitionUnavailable:
+      "The complete definition is unavailable in this older workflow projection. Edit the workflow to load or regenerate it.",
+    restoreWidthAria: "Restore standard agent details width",
+    expandWidthAria: "Expand agent details panel",
+    restorePanel: "Restore panel",
+    expandDetails: "Expand details",
+    fullWidth: "Full width on this screen",
+    savedInBrowser: "saved in this browser as you edit",
+    placeAgentOnCanvas: "Place agent on canvas",
+    addAgentTitle:
+      "Add a new automated agent at the center of this canvas view",
+    addAgent: "Add agent",
+    localDraft: "LOCAL DRAFT",
+    addNode: "Add a node",
+    addNodeHelp:
+      "Drag a node onto the canvas to place it precisely, or click to add it at the center.",
+    addAutomatedAria: "Drag or click to add an automated agent",
+    addHumanAria: "Drag or click to add a human review",
+    dragOrClickTitle: "Drag to the canvas or click to add at the center",
+    automatedAgent: "Automated agent",
+    automatedAgentSub:
+      "Complete starter prompt, action, events, and runtime defaults",
+    humanReview: "Human review",
+    humanReviewSub: "Auditable approval task with a decision form",
+    newNodeDefaults: {
+      automatedTitle: "New automated step",
+      automatedDescription:
+        "Process the incoming workflow request and return a verified result.",
+      automatedActionDescription:
+        "Process the request and verify the result before emitting success.",
+      automatedActionPrompt:
+        "Use the agent instructions and supplied inputs. Do not invent missing facts. Return a concise, verifiable result.",
+      automatedOntologyInstructions:
+        "You are {title}. Validate the incoming data, perform only the requested work, and report uncertainty or missing information explicitly.",
+      humanTitle: "Human review",
+      humanDescription:
+        "Review the supplied evidence and record an accountable decision.",
+      humanActionDescription:
+        "Review the evidence and submit a decision with rationale.",
+    },
+    connectionSource: "Connection source",
+    connectionTargetHelp: "Click the target node to create a shared event.",
+    connectionIdleHelp:
+      "Choose Connect in the canvas toolbar, then click source and target nodes.",
+    unsavedBrowserChanges: "Unsaved browser changes",
+    noUnsavedChanges:
+      "No unsaved changes. Add, connect, move, or edit an agent.",
+    diffNewNode: "new node",
+    diffEdited: "edited",
+    diffRemoved: "removed",
+    notValidated: "Not validated since the last edit",
+    validated: "Validated · {count} prompt checks passed",
+    validationIssues: "{errors} errors · {warnings} warnings",
   },
   agentTabs: {
     manifest: "Manifest",
@@ -1744,6 +4201,107 @@ export const en = {
     draftNote: "Will save as draft. Deploy later from the workflow page.",
     cancel: "Cancel",
     create: "Create workflow",
+    createAria: "Create a new workflow",
+    draftOnlySubtitle:
+      "Every path creates an editable draft. Publishing live is a separate action.",
+    requestFailed: "The request could not be completed.",
+    errIdentityRequired: "Display name and workflow slug are required.",
+    errChooseTemplate: "Choose a template first.",
+    errChooseSource: "Choose a source workflow first.",
+    errGenerateFirst: "Generate and review a current workflow proposal first.",
+    createdFrom: "Created from {source}.",
+    path_blank: "blank canvas",
+    path_template: "template",
+    path_clone: "existing workflow",
+    path_import: "manifest import",
+    generateTitle: "Generate with AI",
+    generateSub: "Purpose, research, and process documents.",
+    blankStarterSub: "One safe starter agent.",
+    templatePathTitle: "Template",
+    templatePathSub: "Maintained workflow patterns.",
+    existingTitle: "Existing workflow",
+    existingSub: "Clone a full draft snapshot.",
+    importDraftSub: "Validate, resolve, and create an editable draft.",
+    displayNamePlaceholder: "Customer support triage",
+    modelOverride: "Model override",
+    workspaceDefault: "Workspace default",
+    blankStarterTitle: "Blank starter",
+    blankStarterBody:
+      "Creates one production-shaped starter agent with editable prompt, typed input/output, a logic action, conservative limits, and a completion event. Add and connect nodes on the canvas.",
+    sourceWorkflow: "Source workflow",
+    loadingWorkflows: "Loading workflows…",
+    loadingWorkflowsBody:
+      "Reading immutable workflow versions for this tenant.",
+    noWorkflowsToClone: "No workflows to clone",
+    noWorkflowsToCloneBody:
+      "Create from AI, Blank canvas, Template, or Import instead.",
+    agentCount: "{count} agents",
+    immutableSourceVersion: "Immutable source version",
+    overrideSourceModels: "Override source models",
+    overrideSourceModelsHelp:
+      "Off by default so prompts, parameters, tools, providers, and models are cloned exactly.",
+    advancedImport: "Advanced manifest import",
+    advancedImportBody:
+      "Continue to the six-step importer to upload or paste JSON, fetch an HTTPS source, validate the schema and graph, resolve conflicts, and create an editable server-backed draft. Live runs are unchanged.",
+    importerValidationNote:
+      "The importer will validate before creating an editable draft.",
+    serverDraftNote: "Creates a server-backed draft; live runs are unchanged.",
+    creating: "Creating…",
+    continueImport: "Continue to import",
+    createDraft: "Create draft",
+    workflowPurpose: "Workflow purpose",
+    purposePlaceholder:
+      "Describe the business outcome, who or what starts the process, decisions and approvals, expected deliverables, systems involved, and important rules.",
+    purposeHint:
+      "Minimum 20 characters. Specific constraints produce better agent prompts.",
+    documentFolder: "Process document folder (optional)",
+    noFolder: "No folder",
+    fileCount: "{count} files",
+    webResearch: "Research relevant functionality",
+    webResearchHelp:
+      "Uses the configured tenant search provider. Missing credentials become a visible warning.",
+    constraints: "Constraints (one per line)",
+    constraintsAria: "Workflow constraints",
+    constraintsPlaceholder:
+      "Keep customer data in-region\nRequire human approval above $10,000",
+    expectedOutputs: "Expected outputs (one per line)",
+    expectedOutputsAria: "Expected workflow outputs",
+    expectedOutputsPlaceholder:
+      "Approved case decision\nAuditable decision record",
+    architecting: "Architecting workflow…",
+    regenerateProposal: "Regenerate proposal",
+    generateProposal: "Generate proposal",
+    previewStaleBadge: "STALE — REGENERATE",
+    previewValidBadge: "VALID",
+    previewReviewBadge: "NEEDS REVIEW",
+    previewStaleHelp:
+      "Generator inputs changed after this proposal was created. This preview cannot be used to create a draft until it is regenerated.",
+    promptRubric: "Prompt rubric",
+    assumptions: "Assumptions",
+    risks: "Risks",
+    warnings: "Warnings",
+    validation: "Validation",
+    noValidationIssues: "No manifest validation issues.",
+    sources: "Sources",
+    queryLabel: "query",
+    noExternalSources: "No external sources were used.",
+    documentDiagnostics: "Document diagnostics",
+    documentSummary:
+      "{included}/{seen} files included · {characters} characters{truncated}",
+    truncatedSuffix: " · truncated",
+    agentDesignDetails: "Agent design details",
+    agentDesignSummary: "prompts, actions, tools, events",
+    systemPrompt: "System prompt",
+    userPrompt: "User prompt",
+    actions: "Actions",
+    tools: "Tools",
+    events: "Events",
+    none: "None",
+    notConfigured: "(not configured)",
+    templateCatalog: "Template catalog",
+    loadingTemplates: "Loading templates…",
+    loadingTemplatesBody: "Validating the server-owned catalog.",
+    templateCounts: "{agents} agents · {actions} actions · {events} events",
   },
   publishEventModal: {
     ariaLabel: "Publish event",
@@ -1778,6 +4336,7 @@ export const en = {
     declaredFieldMany: "{count} declared fields",
     toggleForm: "Form",
     toggleRawJson: "Raw JSON",
+    jsonPlaceholder: "[] or {}",
     serverPrefix: "Server:",
     published: "✓ Event published",
     close: "Close",
@@ -1788,6 +4347,27 @@ export const en = {
     errPayloadObject: "Payload must be a JSON object.",
     errJsonParse: "JSON parse error — {message}",
     errNameRequired: "Event name is required.",
+    sendToAria: "Send event to {title}",
+    sendTo: "Send event to {title}",
+    agentIntro:
+      "Publishes one of this agent's declared trigger events and waits for the runtime to create its run. The exact event → run link is tracked below.",
+    errRequiredFields: "Required payload field(s) missing: {fields}.",
+    errSubjectBusinessId:
+      "Subject is required — use the real business identifier.",
+    liveWorkflowReadFailed: "The live workflow could not be read: {error}",
+    agentNotLive: "{title} is not present in the live workflow.",
+    subjectPlaceholderShort: "REQ-…",
+    agentStarted: "✓ Agent started",
+    openRun: "Open run",
+    deliveryReadFailed:
+      "Event accepted, but delivery status could not be read: {error}",
+    agentStartDelayedBefore:
+      "Event accepted, but {title} has not started yet. Check that the runtime and Inngest worker are connected; local development requires the full",
+    agentStartDelayedAfter: "command.",
+    waitingForAgent: "Waiting for {title} to start…",
+    sending: "Sending…",
+    sendAgain: "Send again",
+    sendEvent: "Send event",
   },
   people: {
     permsOwner: "Everything · billing · destroy",
@@ -1835,6 +4415,12 @@ export const en = {
     keyStatus: "Credential",
     keySource: "Source · scope",
     keyUpdated: "Updated",
+    keySource_vault: "vault",
+    keySource_env: "environment",
+    keySource_none: "none",
+    keySource_runtime: "runtime",
+    keyScope_workspace: "workspace",
+    keyScope_tenant: "tenant",
     keyConfigured: "configured",
     keyMissing: "missing",
     configureKey: "Configure key",
@@ -1897,6 +4483,24 @@ export const en = {
     colTier: "Tier",
     notSelectable: "Not selectable",
     tierUnclassified: "unclassified",
+    tier_top: "top tier",
+    tier_mid: "mid tier",
+    tier_low: "low tier",
+    tier_free: "free tier",
+    status_current: "current",
+    status_legacy: "legacy",
+    status_unverified: "unverified",
+    origin_live: "live",
+    origin_catalog: "catalog",
+    contextTokens: "{count} tokens",
+    policyReason_catalog_policy: "catalog policy",
+    policyReason_current: "current model",
+    policyReason_unverified: "unverified lifecycle",
+    policyReason_older_than_365_days: "older than 365 days",
+    policyReason_deprecated: "deprecated",
+    policyReason_sunset: "sunset reached",
+    policyReason_expired: "expired",
+    policyReason_restricted: "restricted access",
     colContext: "Context",
     colPrice: "$ / Mtok in→out",
     colCapabilities: "Capabilities",
@@ -1969,6 +4573,10 @@ export const en = {
     descriptionHelp:
       "The LLM uses this to decide when to call. Be specific about inputs, side effects, and when NOT to use it.",
     inputSchemaLabel: "input_schema · JSON Schema",
+    invalidJson: "Invalid JSON",
+    newToolDescription:
+      "Describe what this tool does and when the LLM should call it.",
+    removeToolAria: "Remove tool {name}",
   },
   editCode: {
     modified: "modified",
@@ -1997,6 +4605,10 @@ export const en = {
     defaultNote: "In-portal edit of {name}",
   },
   auditSection: {
+    pageTitle: "Audit log",
+    pageSubtitle:
+      "Every workspace mutation lands here with actor, action, target, and timestamp.",
+    backSettings: "Back to Settings",
     panelTitle: "Audit log · {count}",
     subtitleLive: "Live · /v1/audit · most recent first",
     subtitleReadOnly:
@@ -2025,19 +4637,62 @@ export const en = {
     noFields: "(no fields)",
   },
   tokensSection: {
+    requestFailed: "The request could not be completed.",
     workspaceTokensTitle: "Workspace API tokens",
     workspaceTokensSubtitle:
       "Use these to call the runtime from CI, scripts, or downstream services.",
     newToken: "New token",
+    cancel: "Cancel",
+    tokenLabel: "Token label",
+    tokenLabelPlaceholder: "Production deployment",
+    creating: "Creating…",
+    createToken: "Create token",
+    loading: "Loading API tokens…",
+    loadFailed: "Could not load API tokens: {message}",
+    retry: "Retry",
+    empty:
+      "No API tokens yet. Create one for a service, CI job, or local script.",
     colLabel: "Label",
     colTokenPrefix: "Token prefix",
     colScopes: "Scopes",
     colCreated: "Created",
     colLastUsed: "Last used",
+    never: "Never",
     byAuthor: "by {author}",
     expiresInDays: "Expires in {n}d",
     rotate: "Rotate",
+    rotating: "Rotating…",
     revoke: "Revoke",
+    revoking: "Revoking…",
+    rotateConfirm:
+      "Rotate “{label}”? The current token will stop working immediately.",
+    revokeConfirm:
+      "Revoke “{label}”? Services using this token will lose access immediately.",
+    apiAuthTitle: "API authentication",
+    apiAuthDescription:
+      "Send the token as a bearer credential. Keep it in an environment variable or secrets manager rather than source control.",
+    reveal: {
+      ariaCreated: "New API token for {name}",
+      ariaRotated: "Rotated API token for {name}",
+      titleCreated: "API token created",
+      titleRotated: "API token rotated",
+      closeAria: "Close API token dialog",
+      close: "Close",
+      confirmBeforeClose: "Confirm secure storage before closing",
+      warning:
+        "This is the only time the plaintext token will be shown. Store it in a secrets manager now; the server keeps only its hash.",
+      plaintextAria: "API token plaintext",
+      hiddenAria: "API token hidden",
+      scope: "Scope: {scopes}",
+      hide: "Hide",
+      show: "Reveal",
+      copied: "Copied",
+      copy: "Copy token",
+      copyFailed:
+        "Clipboard access failed. Reveal the token and copy it manually.",
+      acknowledged: "I have stored this token securely",
+      done: "Done",
+    },
     cliAuthTitle: "CLI authentication",
     cliAuthDescPrefix: "Authenticate the",
     cliAuthDescSuffix: "CLI for shell deploys and tail logs.",
@@ -2054,6 +4709,7 @@ export const en = {
     parseErrorPrefix: "JSON parse error — {msg}",
     serverError: "Server returned an error:",
     protocolError: "Invocation response protocol error — {detail}",
+    invalidResponse: "invalid response",
     runCompleted: "Run completed",
     manifestQueued: "Manifest run queued",
     eventLabel: "event",
@@ -2213,6 +4869,630 @@ export const en = {
     statusDegraded: "DEGRADED",
     statusError: "ERROR",
     statusDisconnected: "DISCONNECTED",
+    roleOwner: "Owner",
+    roleAdmin: "Admin",
+    roleOperator: "Operator",
+    roleViewer: "Viewer",
+    roleService: "Service",
+  },
+  workflowRunConsole: {
+    operations: "WORKFLOW OPERATIONS",
+    runTitle: "Run · {name}",
+    runWorkflowAria: "Run workflow {name}",
+    currentDraftBadge: "CURRENT DRAFT",
+    publishedLiveBadge: "PUBLISHED LIVE",
+    subtitle:
+      "Configure an entry event, execute, and inspect agent-level evidence without leaving the workflow.",
+    closeAria: "Close workflow Run Console",
+    executionTarget: "Execution target",
+    executionTargetHint:
+      "Draft tests return bounded request-scoped evidence. Live runs enter the durable event runtime.",
+    currentDraftTest: "Current draft test",
+    publishedLive: "Published live",
+    durableExecution: "Durable execution",
+    notPublished: "Not published",
+    entryEvent: "Entry event",
+    entryEventHint:
+      "External triggers are recommended. Internal events let you test a specific branch.",
+    triggerEvent: "Trigger event",
+    loadingEntrypoints: "Loading live entry points…",
+    noTriggerEvents: "No trigger events declared",
+    recommendedEntrypoints: "Recommended external entry points",
+    listenerCount: "{count} listener(s)",
+    internalEvents: "Internal branch events",
+    internal: "internal",
+    starts: "Starts",
+    inputCount: "{count} input(s)",
+    subjectKey: "Subject / correlation key",
+    inputVariables: "Input variables",
+    inputVariablesHint:
+      "Controls are generated from every listener's declared input ports.",
+    noNamedInputs: "This event has no named input variables.",
+    rawEventPayload: "Raw event payload",
+    bindingsDetected: "BINDINGS DETECTED",
+    advancedPayloadOverlay: "Advanced payload overlay",
+    advancedPayloadBefore:
+      "Enter extra top-level JSON or fields referenced by a path or template binding. Named controls are added automatically; the runtime-owned",
+    advancedPayloadAfter: "envelope cannot be overridden here.",
+    rawPayloadAria: "Raw event payload JSON",
+    testPolicy: "Test policy",
+    testPolicyHint:
+      "Budgets prevent cycles and fan-out from running indefinitely.",
+    toolEffects: "Tool effects",
+    toolSafe: "Safe test · approved test tools",
+    toolReadOnly: "Read-only · writes blocked",
+    toolLive: "Live effects · connected systems may change",
+    confirmLiveEffects:
+      "I understand this draft test may change external systems.",
+    failurePolicy: "Failure policy",
+    continueBranches: "Continue independent branches",
+    stopFirstFailure: "Stop on first failure",
+    humanDecision: "Human test decision",
+    approve: "Approve",
+    reject: "Reject",
+    supplement: "Supplement",
+    agentRuns: "Agent runs",
+    events: "Events",
+    depth: "Depth",
+    productionConfirmation: "Production confirmation",
+    productionConfirmationHint:
+      "This publishes an operator event into the immutable live workflow and may start multiple durable runs.",
+    startPublishedConfirm: "Start the published workflow with these inputs.",
+    executionEvidence: "EXECUTION EVIDENCE",
+    testResultId: "Test {id}",
+    draftTestResult: "Draft test result",
+    liveDispatchId: "Live dispatch {id}",
+    liveRunReceipt: "Live run receipt",
+    terminalBadge: "TERMINAL",
+    trackingBadge: "TRACKING",
+    copied: "Copied",
+    copyJson: "Copy JSON",
+    summary: "Summary",
+    agentTrace: "Agent trace",
+    rawJson: "Raw JSON",
+    draftFooterHint:
+      "Runs the exact current canvas manifest. Production remains unchanged.",
+    liveFooterHint:
+      "Dispatches through POST /v1/events and the registered live runtime.",
+    close: "Close",
+    runningDraft: "Running draft…",
+    dispatching: "Dispatching…",
+    runDraftTest: "Run draft test",
+    runPublished: "Run published workflow",
+    payloadRecipe: "PAYLOAD RECIPE",
+    schemaGuided: "SCHEMA-GUIDED",
+    exampleCustomerMessage:
+      "I was charged twice for invoice INV-2048. Please review the duplicate charge.",
+    examplePrompt:
+      "Review the supplied event, validate the data, and return the expected workflow result.",
+    exampleBusinessContext:
+      "Provide the business context and expected outcome for this workflow run.",
+    exampleRecord: "Example record",
+    exampleValue: "Example value",
+    exampleEventDescription:
+      "Describe the event or work this workflow should process.",
+    examplePayload: "Example event payload",
+    examplePayloadBefore: "Use this shape to start",
+    examplePayloadAfter:
+      "Examples prefer authored values, then derive safe placeholders from each input schema and binding.",
+    fieldCount: "{count} fields",
+    requiredCount: "{count} required",
+    examplePayloadAria: "Example payload for {event}",
+    loadExampleTitle:
+      "Replace current input values and advanced JSON with this example",
+    loadExample: "Load example",
+    exampleLoaded: "Example loaded",
+    exampleCopied: "Example copied",
+    expectedFields: "Expected fields",
+    derivedBadge: "DERIVED",
+    requiredBadge: "REQUIRED",
+    optionalBadge: "OPTIONAL",
+    derivedExample: "Derived example",
+    example: "Example",
+    notSupplied: "not supplied",
+    noCallerFields:
+      "No caller-supplied fields are declared. An empty JSON object is valid.",
+    recipeNoteBefore:
+      "Named controls populate both top-level keys and the canonical",
+    recipeNoteAfter:
+      "envelope. Use Raw event payload only for additional fields or explicit path/template bindings. Derived fields are shown for clarity but do not require a caller value.",
+    fileExampleNote:
+      " File contents must be selected with the file control and are not embedded in this example.",
+    schemaConflict: "SCHEMA CONFLICT",
+    noValueToEnter: "No value to enter",
+    runtimeDerivesFrom: "The workflow derives this input at runtime from",
+    authoredConstant: "an authored constant",
+    multipleFiles: "Multiple files allowed",
+    oneFile: "One file",
+    maxEach: " · max {size} each",
+    usedBy: "Used by {consumers}",
+    fileTypeError: "{name} has type {type}; allowed: {allowed}.",
+    fileSizeError: "{name} is {size}; maximum {max}.",
+    couldNotReadFile: "Could not read {name}.",
+    couldNotEncodeFile: "Could not encode {name}.",
+    couldNotReadGeneric: "Could not read the file.",
+    depthValue: "depth {depth}",
+    consumerCount: "{count} consumer(s)",
+    stepCount: "{count} step(s)",
+    noAgentExecution: "No agent execution was recorded.",
+    status: "Status",
+    passedCount: "{passed}/{total} passed",
+    steps: "Steps",
+    eventsSummary: "{count} · {terminal} terminal",
+    modelTokens: "Model tokens",
+    tokenSummary: "{input} in · {output} out",
+    duration: "Duration",
+    terminalOutputs: "Terminal outputs",
+    noTerminalOutput: "No successful terminal output was produced.",
+    triggeredBy: "Triggered by",
+    model: "Model",
+    defaultValue: "default",
+    noModelCall: "No model call",
+    validatedInputs: "Validated inputs",
+    actionTimeline: "Action timeline",
+    tokensSuffix: " · {count} tokens",
+    branchSuffix: " · branch → {target}",
+    inputOutput: "Input / output",
+    validatedOutput: "Validated output",
+    noSubject: "no subject",
+    manifestAgent: "Manifest agent",
+    triggerLabel: "trigger",
+    pending: "pending",
+    openRun: "Open run",
+    waitingDurableRun:
+      "Event accepted. Waiting for the durable runtime to create a run.",
+    seedEvent: "Seed event",
+    event: "Event",
+    durableRuns: "Durable runs",
+    observedEvents: "Observed events",
+    eventAcceptedBefore: "The published event was accepted at",
+    eventAcceptedAfter:
+      "Causality polling follows this exact event id, not a name or subject guess.",
+    readingCausality: "Reading durable run causality…",
+    noRunConsumedBefore:
+      "No run has consumed the event yet. In local development, workflow dispatch requires the full",
+    noRunConsumedAfter: "stack with Inngest.",
+    inspectEvidence: "Inspect evidence",
+    readyDraftTitle: "Ready to test the current draft",
+    readyLiveTitle: "Ready to start the published workflow",
+    readyDraftBody:
+      "The harness will validate inputs, execute matching agents, follow emitted events, enforce budgets, and return a complete evidence report.",
+    readyLiveBody:
+      "The event will enter the live Inngest runtime. This console will track exact event-to-run causality and link to durable run evidence.",
+    errorValidJson: "{label} must be valid JSON: {error}",
+    errorNumber: "{label} must be a number.",
+    errorInteger: "{label} must be a whole number.",
+    copyExampleFailed: "Could not copy the payload example: {error}",
+    rawPayloadValidJson: "Raw event payload must be valid JSON: {error}",
+    rawPayloadObject: "Raw event payload must be a JSON object.",
+    selectEntryEvent: "Select an entry event.",
+    confirmPublishedStart:
+      "Confirm that you intend to start the published workflow.",
+    executionFailed: "Workflow execution failed.",
+    warningNoTriggers: "The workflow declares no trigger events.",
+    warningInternalOnly:
+      "Every trigger is emitted internally. Choose an internal event deliberately and retain bounded test limits.",
+    warningConflicts: "{event} has conflicting contracts for {inputs}.",
+    locationNamedInput: "named input · {id}",
+    locationRuntimeConstant: "runtime constant · no value required",
+    locationTemplateReads: "template reads {path}",
+    locationRuntimeTemplate: "runtime template",
+    inputRequired: "{label} is required.",
+    inputConflict:
+      "{label} has conflicting listener schemas; verify the raw event payload.",
+    budgetRange: "{label} budget must be a whole number from 1 to {max}.",
+    sourceAuthoredExample: "authored example",
+    sourceAuthoredDefault: "authored default",
+    sourceSchemaGenerated: "schema generated",
+    sourceBindingGenerated: "binding generated",
+  },
+  workflowHelp: {
+    title: "Workflows user guide",
+    helpBadge: "Help",
+    subtitle:
+      "Understand, trace, and safely change a workflow—no coding required.",
+    closeAria: "Close Workflows user guide",
+    closeTitle: "Close guide (Escape)",
+    topicsAria: "Workflow help topics",
+    userGuide: "USER GUIDE",
+    safeRule: "Safe rule",
+    safeRuleBody:
+      "Trace the current flow, edit a draft, review the change count, then deploy deliberately.",
+    topic: {
+      start: { label: "Start here", eyebrow: "A five-minute tour" },
+      read: { label: "Read a workflow", eyebrow: "Nodes, lines, and events" },
+      edit: { label: "Edit safely", eyebrow: "Draft to publication" },
+      fields: {
+        label: "Fields & buttons",
+        eyebrow: "Plain-language reference",
+      },
+      examples: {
+        label: "Worked examples",
+        eyebrow: "Follow two common flows",
+      },
+      troubleshooting: {
+        label: "Troubleshooting",
+        eyebrow: "What to do when stuck",
+      },
+    },
+    start: {
+      eyebrow: "Start here",
+      title: "A workflow is a shared plan",
+      intro:
+        "Each box is a person or agent doing one part of the work. A named event carries the work from one box to the next. The canvas helps you see the complete process without reading code.",
+      lookTitle: "Looking does not change anything",
+      lookBody:
+        "Clicking a box or event only highlights and explains it. Live behavior changes only after someone enters Edit workflow, makes a draft, and deploys that draft.",
+      findLabel: "1 · Find",
+      findTitle: "Locate the work",
+      findBody:
+        "Read the stage headings and find the box whose name matches the task you care about.",
+      traceLabel: "2 · Trace",
+      traceTitle: "Follow the hand-off",
+      traceBody:
+        "Click the box, then click its incoming or outgoing event to see all connected steps.",
+      inspectLabel: "3 · Inspect",
+      inspectTitle: "Read the details",
+      inspectBody:
+        "Use the right panel to see what starts the step, what it emits, and recent activity.",
+      canvasTitle: "What you see on the canvas",
+      canvasColumns:
+        "Columns are stages such as Intake, Analyze, or Submit. Work usually moves from left to right.",
+      canvasBoxes:
+        "Boxes are nodes. A lime edge means an AI agent; a violet edge means a human task.",
+      canvasLines:
+        "Lines show event hand-offs. The arrow points to the next listener.",
+      canvasPanel:
+        "The right panel explains the selected box or event. With nothing selected, it shows the legend and event list.",
+      jumpTraceTitle: "Need to trace a problem?",
+      jumpTraceBody: "Learn how to follow boxes and events.",
+      jumpEditTitle: "Need to change the flow?",
+      jumpEditBody: "Use a safe draft and deploy deliberately.",
+      jumpExampleTitle: "Prefer an example?",
+      jumpExampleBody: "Follow support and invoice workflows.",
+      jumpExampleAction: "View examples",
+    },
+    read: {
+      eyebrow: "View & trace",
+      title: "Follow the work from start to finish",
+      intro:
+        "Start with a business question: “What happens after this?” or “Why did this step run?” Then use selections to narrow the canvas.",
+      boxTitle: "Trace from a box",
+      box1: "Click the agent or human-task box you want to understand.",
+      box2: "The connected boxes and lines stay bright; unrelated work dims.",
+      box3: "Read Triggers in the right panel to learn what can start it.",
+      box4: "Read Emits to learn what it announces after success.",
+      box5: "Double-click the box to widen the right panel. Drag the divider when you want more room for instructions, inputs, outputs, tools, runtime settings, or the complete definition.",
+      eventTitle: "Trace an event hand-off",
+      event1:
+        "Click a line, or choose an event from the right-side event list.",
+      event2: "Every line carrying that event is highlighted.",
+      event3:
+        "The inspector lists which boxes emit the event and which boxes listen for it.",
+      event4:
+        "Use View in event stream to inspect recent real occurrences and timestamps.",
+      lineTitle: "A line is a promise, not proof of a successful run",
+      lineBody:
+        "The graph shows configured hand-offs. Use the event stream and Runs pages to confirm that a particular event was emitted and processed.",
+      runTitle: "Run with evidence",
+      run1: "Choose Run workflow to open the Run Console.",
+      run2: "Use Current draft test for bounded execution of the exact canvas definition, or Published live for the durable runtime.",
+      run3: "Enter the generated variables, choose the tool and failure policy, and keep the agent, event, and depth budgets bounded.",
+      run4: "Inspect summary, agent trace, events, terminal outputs, tokens, and raw JSON before accepting the result.",
+      questionsTitle: "Questions this view can answer",
+      question1: "What starts this agent, and what happens after it finishes?",
+      question2: "Which agents depend on this event?",
+      question3: "Where does a person review or approve the work?",
+      question4: "Which stage contains the problem?",
+      question5: "Will renaming an event affect more than one listener?",
+    },
+    edit: {
+      eyebrow: "Edit mode",
+      title: "Change a draft, not the live workflow",
+      intro:
+        "Edit mode gives you a working copy. Your live workflow keeps running until you deliberately deploy the draft.",
+      sequenceTitle: "Recommended sequence",
+      sequenceBody:
+        "Understand the current path → enter Edit workflow → change one idea at a time → save → validate → run representative tests → publish deliberately.",
+      startTitle: "Start a draft",
+      start1: "Choose Edit workflow in the page header.",
+      start2:
+        "Confirm the amber Draft badge is visible. This means you are not changing the live version yet.",
+      start3: "Click a box. Its editable details appear on the right.",
+      boxTitle: "Edit a box",
+      box1: "Title: change the friendly name people see.",
+      box2: "Triggered by: list events that are allowed to start this box.",
+      box3: "Triggered event: list events announced when the box succeeds.",
+      box4: "Instructions: generate or regenerate a reviewable system-prompt proposal from the current role, ontology, inputs, outputs, tools, and actions. Applying it is always explicit.",
+      box5: "Model and runtime: set provider, model, reasoning, temperature, tokens, retries, timeout, concurrency, schedule, observability, tool-loop, output, and artifact controls.",
+      box6: "Complete definition · all settings: inspect or edit the entire lossless agent JSON contract.",
+      box7: "Remove node: removes the box from this draft. It does not delete past versions or run history.",
+      eventsTitle: "Event names connect the workflow",
+      eventsBody:
+        "An emitted event must exactly match the event a downstream box listens for. As soon as the names match, the canvas draws the link automatically. Changing spelling, spaces, or capitalization removes that hand-off.",
+      reviewTitle: "Review, test, and publish",
+      review1: "Review the header count for added, changed, and removed boxes.",
+      review2:
+        "Ask the affected process owner to review changes to events or human approval steps.",
+      review3:
+        "Choose Save draft, then Validate. Resolve every blocking server finding.",
+      review4:
+        "Choose Run and test representative entry events, values, failure paths, and human decisions.",
+      review5:
+        "Choose Publish only after the exact saved revision and its evidence are acceptable.",
+      validateTitle: "About the Validate button",
+      validateBody:
+        "Validate runs authoritative server checks against the saved immutable draft. It reports blocking graph, manifest, model, tool, and prompt findings without publishing or replacing the live version.",
+      laterTitle: "Stop or continue later",
+      later1: "Discard draft abandons the current working changes.",
+      later2:
+        "Unsaved draft state is kept in this browser for the current tenant. If it is restored later, a banner shows when it was saved.",
+      later3:
+        "A browser draft is not a team hand-off. Save and publish it, or coordinate with another editor before switching devices.",
+    },
+    fields: {
+      eyebrow: "Reference",
+      title: "Every workflow field in plain language",
+      intro:
+        "Use the label you see in the page to find what it means and what you should do. Import files and technical identifiers are best reviewed with an engineer.",
+      whatToDo: "What to do:",
+      canvas: {
+        title: "Canvas and inspector",
+        summary: "Controls used to explore the live workflow.",
+        stage: {
+          name: "Stage heading",
+          meaning: "A business phase of the workflow.",
+          use: "Use it to find where work is in the overall process.",
+        },
+        agent: {
+          name: "Agent node",
+          meaning: "An automated unit of work.",
+          use: "Click it to highlight its hand-offs and read its triggers and emitted events.",
+        },
+        human: {
+          name: "Human node",
+          meaning: "A step that waits for a person.",
+          use: "Click it to see where review or approval fits in the process.",
+        },
+        event: {
+          name: "Event line",
+          meaning: "A named message connecting one box to another.",
+          use: "Click it to highlight every sender and listener for that event.",
+        },
+        triggers: {
+          name: "Triggers",
+          meaning: "Events that are allowed to start the selected box.",
+          use: "Use these to work backward to the source.",
+        },
+        emits: {
+          name: "Emits",
+          meaning: "Events announced after the selected box succeeds.",
+          use: "Use these to follow the process forward.",
+        },
+        details: {
+          name: "Resizable agent details",
+          meaning:
+            "Keeps the selected agent and its complete definition beside the canvas.",
+          use: "Drag the divider or double-click a box to make room for instructions, input/output contracts, tools, runtime, and advanced JSON.",
+        },
+        eventStream: {
+          name: "View in event stream",
+          meaning: "Opens recent occurrences of one event.",
+          use: "Use it to confirm that a configured hand-off actually happened.",
+        },
+      },
+      actions: {
+        title: "Page actions",
+        summary: "Actions that create, import, or change a workflow.",
+        edit: {
+          name: "Edit workflow",
+          meaning: "Starts a safe working draft of the current workflow.",
+          use: "Use it when changing box titles or event connections.",
+        },
+        run: {
+          name: "Run workflow",
+          meaning:
+            "Opens typed draft testing and published-live execution in one operational console.",
+          use: "Use draft mode for bounded multi-agent evidence; use live mode only when you intend to dispatch the published workflow.",
+        },
+        new: {
+          name: "New workflow",
+          meaning:
+            "Creates a tenant-scoped server draft from a blank canvas, template, clone, or manifest.",
+          use: "Complete, validate, and test the resulting draft before publishing it.",
+        },
+        import: {
+          name: "Import manifest",
+          meaning: "Loads workflow definition files.",
+          use: "This is for technical users with reviewed workflow.json and actions.json files.",
+        },
+        help: {
+          name: "Help",
+          meaning: "Opens this guide.",
+          use: "It is available in both view and edit modes.",
+        },
+      },
+      edit: {
+        title: "Edit-mode fields and actions",
+        summary: "What you can change in a workflow draft.",
+        titleField: {
+          name: "Title",
+          meaning: "The friendly box name on the canvas.",
+          use: "Use a short verb-and-object name, such as Classify ticket.",
+        },
+        triggeredBy: {
+          name: "Triggered by",
+          meaning: "The list of event names that start this box.",
+          use: "Enter exact registered names, separated by commas or new lines.",
+        },
+        triggeredEvent: {
+          name: "Triggered event",
+          meaning: "The list of event names emitted after success.",
+          use: "Enter the exact names expected by downstream listeners.",
+        },
+        generatePrompt: {
+          name: "Generate prompt",
+          meaning:
+            "Creates a non-destructive system/ontology prompt proposal from the complete current agent definition.",
+          use: "Review the proposal and provenance, then explicitly apply or discard it.",
+        },
+        runtime: {
+          name: "Model & runtime",
+          meaning:
+            "Controls provider/model, reasoning, sampling, tokens, retries, timeout, concurrency, schedule, observability, tool loop, and persistence.",
+          use: "Use inherited defaults unless the workflow needs an intentional, reviewed override.",
+        },
+        complete: {
+          name: "Complete definition · all settings",
+          meaning: "The lossless JSON contract for every agent setting.",
+          use: "Use it for expert review or fields not convenient in the guided controls.",
+        },
+        remove: {
+          name: "Remove node",
+          meaning: "Excludes the box from the new draft version.",
+          use: "Use only after checking every incoming and outgoing event dependency.",
+        },
+        validate: {
+          name: "Validate",
+          meaning:
+            "Runs authoritative server checks against the saved draft revision.",
+          use: "Resolve blocking findings and save a new revision before publishing.",
+        },
+        run: {
+          name: "Run",
+          meaning:
+            "Executes the exact current canvas in the bounded draft harness.",
+          use: "Supply representative inputs and review agent, event, output, token, and warning evidence.",
+        },
+        publish: {
+          name: "Publish",
+          meaning: "Promotes one immutable workflow version to live.",
+          use: "Publish only after save, validation, testing, and affected-owner review.",
+        },
+        discard: {
+          name: "Discard draft",
+          meaning: "Abandons the current working changes.",
+          use: "Use it when you want to return to the live definition without deploying.",
+        },
+      },
+      newWorkflow: {
+        title: "New workflow fields",
+        summary: "Choices shown when starting a workflow.",
+        startFrom: {
+          name: "Start from",
+          meaning: "How the first draft is created.",
+          use: "Choose Blank canvas, From template, or Import manifest.",
+        },
+        displayName: {
+          name: "Display name",
+          meaning: "The friendly workflow name.",
+          use: "Use the business process name, such as Customer Support Triage.",
+        },
+        workflowId: {
+          name: "Workflow ID",
+          meaning: "The stable technical identifier.",
+          use: "Accept the suggested lowercase ID unless your naming policy says otherwise.",
+        },
+        tenant: {
+          name: "Tenant",
+          meaning: "The workspace that owns the workflow.",
+          use: "Choose the team or organization whose agents and runs this workflow belongs to.",
+        },
+        defaultModel: {
+          name: "Default model",
+          meaning: "The starting AI model for new automated steps.",
+          use: "Use the approved workspace default unless an expert recommends a change.",
+        },
+        triggerType: {
+          name: "Trigger type",
+          meaning: "How a blank workflow begins.",
+          use: "Choose Event, Scheduled, Webhook, or Manual based on the real business start.",
+        },
+        firstAgent: {
+          name: "First agent name",
+          meaning: "The first box created on a blank canvas.",
+          use: "Use a short technical name describing the first action.",
+        },
+        template: {
+          name: "Template",
+          meaning: "A prepared multi-step pattern.",
+          use: "Choose the closest business process, then review every box and event before publication.",
+        },
+      },
+    },
+    examples: {
+      eyebrow: "Worked examples",
+      title: "See how events move real work",
+      intro:
+        "These examples use ordinary business language first, then show the event names a workflow builder would configure.",
+      support: {
+        title: "Customer support triage",
+        goal: "Classify a new ticket and route urgent cases for immediate human attention.",
+        step1: "Receive ticket",
+        step2: "Classify topic and urgency",
+        step3: "Human priority review",
+        step4: "Assign service queue",
+        try1: "Click Classify topic and urgency.",
+        try2: "Confirm support.ticket.received is a trigger.",
+        try3: "Click support.ticket.classified and verify the review and routing listeners.",
+        watch:
+          "If you rename support.ticket.classified, update every listener using it or the route will break.",
+      },
+      invoice: {
+        title: "Invoice approval",
+        goal: "Check an invoice, pause for approval when needed, then send it to payment.",
+        step1: "Read invoice",
+        step2: "Check amount and supplier",
+        step3: "Manager approval",
+        step4: "Schedule payment",
+        try1: "Click Manager approval to locate the human step.",
+        try2: "Trace invoice.checked backward to the automated check.",
+        try3: "Trace invoice.approved forward to Schedule payment.",
+        watch:
+          "Removing the approval box can change a financial control. Ask the process owner before deploying.",
+      },
+      testTitle: "A useful design test",
+      testBody:
+        "Explain every box as “When [trigger] happens, this box [does one job], then emits [event].” If that sentence is unclear, rename the title or event before adding more steps.",
+    },
+    troubleshooting: {
+      eyebrow: "Troubleshooting",
+      title: "Start with the hand-off that failed",
+      intro:
+        "Identify the last successful box or event, then inspect one connection at a time. Keep the current draft while investigating unless you are certain it should be discarded.",
+      emptyTitle: "The canvas looks empty",
+      emptyBody:
+        "Confirm the correct tenant is selected and wait for the API to load. Scroll horizontally if the workflow begins in a later stage. If the API-unreachable banner appears, contact the operator rather than importing or creating replacement data.",
+      neverStartsTitle: "A box never starts",
+      neverStartsBody:
+        "Open the box and check its Trigger name. Then click that event and confirm an upstream box emits the exact same spelling and capitalization. Use the event stream to see whether the event actually occurred.",
+      nextBoxTitle: "The next box does not run",
+      nextBoxBody:
+        "Check that the first box completed successfully in Runs, emitted the expected event, and that the next box listens for that exact event. A configured line alone does not prove the event was processed.",
+      publishDisabledTitle: "Publish is disabled",
+      publishDisabledBody:
+        "Save the current edit, resolve blocking editor findings, and wait for any save or validation in progress. Validate and test the saved revision before publishing.",
+      draftFailedTitle: "Draft test failed",
+      draftFailedBody:
+        "Open Agent trace and start at the first blocked or failed action. Check validated inputs, tool policy, provider/model evidence, output-schema findings, and the event budgets before rerunning.",
+      publicationFailedTitle: "Publication failed",
+      publicationFailedBody:
+        "Read the error message, keep the draft, and fix the reported field. Common causes are invalid event names, incomplete agent definitions, or a newer version published by someone else. Refresh and compare before retrying a conflict.",
+      draftReturnedTitle: "My draft returned after refresh",
+      draftReturnedBody:
+        "This is expected: the browser preserves unfinished changes for this tenant. Read the restored time. Continue only if the changes are yours; otherwise choose Discard and coordinate with the previous editor.",
+      wrongThingTitle: "I changed the wrong thing",
+      wrongThingBody:
+        "Before publication, choose Discard draft. After publication, do not recreate history manually—review the Deployments page and restore or republish the last known-good definition using your team's release process.",
+      stopTitle: "Stop before publishing when",
+      stopBody:
+        "You cannot explain an event change, a human approval disappears, the validation result is unclear, or another person may be editing the same workflow. Ask the workflow owner or an engineer to review the draft.",
+    },
+    exampleLabel: "EXAMPLE {number}",
+    startsWith: "starts with {event}",
+    emits: "emits {event}",
+    tryTrace: "Try this trace",
+    watchOut: "Watch out:",
   },
   agentEditor: {
     editBadge: "EDIT",
@@ -2225,6 +5505,191 @@ export const en = {
     available: "Available",
     removeNode: "Remove node",
     moreCount: ", +{count} more",
+    fullSettingsBadge: "FULL SETTINGS",
+    localChangesHint:
+      "Changes stay local until you save the draft, then publish it explicitly.",
+    resizeHint: " Drag the panel edge or expand it for more room.",
+    fullWidthHint: " The panel already uses the full available width.",
+    settingsViewAria: "Agent settings view",
+    guidedSettings: "Guided settings",
+    completeSettings: "Complete definition · all settings",
+    identity: "Identity",
+    name: "Name",
+    namePlaceholder: "camelCase agent name",
+    actor: "Actor",
+    automatedAgent: "Automated agent",
+    humanTask: "Human task",
+    stage: "Stage",
+    agentTemplate: "Agent template",
+    unspecified: "Unspecified",
+    templateBlank: "Blank",
+    templateClassify: "Classify",
+    templateExtract: "Extract",
+    templateRag: "RAG / knowledge",
+    templateLoop: "Loop",
+    templateHuman: "Human review",
+    promptOwnership: "Prompt ownership",
+    inheritManifestBehavior: "Inherit manifest behavior",
+    manifestGeneratedPrompt: "Manifest-generated prompt",
+    tenantPromptRegistry: "Tenant prompt registry",
+    description: "Description",
+    descriptionPlaceholder: "What this step is responsible for",
+    instructionsPrompts: "Instructions and prompts",
+    systemOntologyInstructions: "System / ontology instructions",
+    promptModeAria: "Prompt generation mode",
+    promptModeGenerate: "Generate comprehensive",
+    promptModeImprove: "Improve / regenerate",
+    promptModeShorten: "Shorten safely",
+    promptModeGuardrails: "Add guardrails",
+    generating: "Generating…",
+    regeneratePrompt: "Regenerate prompt",
+    generatePrompt: "Generate prompt",
+    ontologyPlaceholder:
+      "Role, constraints, reasoning policy, output quality bar…",
+    generationHelp:
+      "Generation uses the complete agent definition, selected provider/model, typed ports, tools, actions, and current ontology text. It returns a proposal and never overwrites this field automatically.",
+    promptGenerationFailed: "Prompt generation failed.",
+    generatedProposal: "Generated prompt proposal",
+    defaultValue: "Default",
+    tokenUsage: " · {input} in / {output} out",
+    sourceChanged: "SOURCE CHANGED",
+    readyToReview: "READY TO REVIEW",
+    generatedProposalAria: "Generated prompt proposal",
+    staleProposalHelp:
+      "The source instructions changed after this request began. Regenerate, or review the proposal carefully before applying it.",
+    discard: "Discard",
+    applyProposal: "Apply proposal",
+    userPromptTemplate: "User prompt template",
+    userPromptPlaceholder:
+      "Reference event data or prior results using the runtime's template syntax.",
+    typedInputsOutputs: "Typed inputs and outputs",
+    inputs: "Inputs",
+    outputs: "Outputs",
+    inputsJson: "Inputs JSON",
+    outputsJson: "Outputs JSON",
+    inputsJsonAria: "Typed inputs JSON",
+    outputsJsonAria: "Typed outputs JSON",
+    typedPortsHelp:
+      "Optional typed ports. Each port needs an id and JSON Schema; inputs also require kind (prompt, value, or file).",
+    actions: "Actions",
+    actionsJsonAria: "Actions JSON",
+    jsonArrayHelp:
+      "A JSON array. Invalid JSON stays local and is never applied.",
+    tools: "Tools",
+    toolUseJsonAria: "Tool use JSON",
+    toolsHelp: "Leave blank to inherit no tool allow-list.",
+    invalidJsonArray: "Invalid JSON array",
+    modelSelection: "Model selection",
+    provider: "Provider",
+    inheritGatewayDefault: "Inherit gateway default",
+    model: "Model",
+    inheritProviderDefault: "Inherit provider default",
+    inheritWorkspaceModel: "Inherit workspace model",
+    customModelOption: "Enter a custom model ID…",
+    customModelAria: "Custom model ID",
+    customProviderModelPlaceholder: "Custom {provider} model ID",
+    customWorkspaceModelPlaceholder: "Custom workspace model ID",
+    modelDiscoveryUnavailable:
+      "Model discovery is unavailable; catalog and configured fleet models remain selectable, or enter a custom ID.",
+    runtimeControls: "Runtime controls",
+    temperature: "Temperature",
+    maxTokens: "Max tokens",
+    retries: "Retries",
+    timeout: "Timeout",
+    timeoutSeconds: "Timeout (seconds)",
+    concurrencyLimit: "Concurrency limit",
+    concurrencyEnabled: "Concurrency enabled",
+    inherit: "Inherit",
+    enabled: "Enabled",
+    disabled: "Disabled",
+    concurrencyKey: "Concurrency key",
+    concurrencyKeyPlaceholder: "e.g. {{event.data.subject}}",
+    responseVerbosity: "Response verbosity",
+    providerDefault: "Provider default",
+    providerStorage: "Provider response storage",
+    allowProviderStorage: "Allow provider storage",
+    doNotStore: "Do not store",
+    advancedRuntime: "Reasoning, schedules, tool loop, and observability",
+    reasoningMode: "Reasoning mode",
+    reasoningEffort: "Reasoning effort",
+    reasoningSummary: "Reasoning summary",
+    reasoningContext: "Reasoning context",
+    modelDefault: "Model default",
+    toolLoopMax: "Tool-loop max iterations",
+    cronSchedule: "Cron schedule",
+    cronTimezone: "Cron timezone",
+    traceLevel: "Trace level",
+    minimal: "Minimal",
+    standard: "Standard",
+    debug: "Debug",
+    reasoningSummaries: "Reasoning summaries",
+    capture: "Capture",
+    doNotCapture: "Do not capture",
+    persistRenderedPrompts: "Persist rendered prompts",
+    persist: "Persist",
+    doNotPersist: "Do not persist",
+    traceRetention: "Trace retention (days)",
+    outputPolicy: "Output and artifact policy",
+    strictJsonOutput: "Strict JSON output",
+    strict: "Strict",
+    bestEffort: "Best effort",
+    outputRepairAttempts: "Output repair attempts",
+    unwrapSingleOutput: "Unwrap single output",
+    returnSingleValue: "Return the single value",
+    returnKeyedObject: "Return keyed object",
+    artifactFilename: "Artifact filename",
+    persistIndividualOutputs: "Persist individual outputs",
+    persistEachOutput: "Persist each output",
+    aggregateOnly: "Aggregate only",
+    persistRawResponse: "Persist raw provider response",
+    persistRawResponseOption: "Persist raw response",
+    validatedOutputOnly: "Validated output only",
+    completeSettingsHelp:
+      "Trigger bindings, output bindings, input data, TypeScript code, extension fields, and every action-level override remain losslessly editable in Complete definition · all settings.",
+    completeJsonAria: "Complete agent definition JSON",
+    completeManifestDefinition: "Complete manifest definition",
+    completeManifestHelp:
+      "Every saved and extension field is shown here. Valid JSON is applied immediately to this workflow draft; invalid edits stay local and cannot be saved.",
+    invalidJsonBadge: "INVALID JSON",
+    validDefinitionBadge: "VALID DEFINITION",
+    idMustRemainBefore: "The agent id must remain",
+    idMustRemainAfter:
+      "Guided fields and Complete JSON edit the same in-memory workflow definition.",
+    restoreWidthAria: "Restore standard agent details width",
+    expandWidthAria: "Expand agent details panel",
+    restoreWidthTitle: "Restore the standard details width",
+    expandWidthTitle: "Expand the details panel to show more settings",
+    restorePanel: "Restore panel",
+    expandDetails: "Expand details",
+    fullWidth: "Full width on this screen",
+    automaticLinks: "Automatic canvas links",
+    automaticLinksHelp:
+      "Matching emitted and triggered event names draw links immediately.",
+    activeLinks: "{count} active",
+    workflowContextLoading:
+      "Workflow context is loading. Event names will connect automatically as soon as the canvas is ready.",
+    from: "From",
+    to: "To",
+    unmatchedTrigger:
+      "External or manual trigger — no upstream agent emits it yet.",
+    unmatchedEmit: "No downstream agent listens for this event yet.",
+    addEventRelationship:
+      "Add a triggered-by or emitted event to create a workflow relationship.",
+    definitionValidJson: "Agent definition must be valid JSON.",
+    definitionJsonObject: "Agent definition must be a JSON object.",
+    definitionInvalid: "Agent definition is invalid{path}: {detail}",
+    idMustRemain: 'Agent id must remain "{id}".',
+    mustBeValidJson: "{label} must be valid JSON.",
+    mustBeJsonArray: "{label} must be a JSON array.",
+    portJsonObject: "{label}[{index}] must be a JSON object.",
+    portIdRequired: "{label}[{index}].id is required.",
+    portSchemaObject: "{label}[{index}].schema must be a JSON object.",
+    portKind: "{label}[{index}].kind must be prompt, value, or file.",
+    numberRequired: "{label} is required.",
+    mustBeNumber: "{label} must be a number.",
+    mustBeWholeNumber: "{label} must be a whole number.",
+    mustBeAtLeast: "{label} must be at least {min}.",
+    mustBeAtMost: "{label} must be at most {max}.",
   },
   tenantTokenRevealModal: {
     ariaLabel: "Bootstrap token for {name}",
@@ -2272,6 +5737,9 @@ export const en = {
     agentCount: "{count} agents",
     runs24h: "{count} runs/24h",
     newTenant: "New domain",
+    switchAria: "{name} domain. Switch domain",
+    openAria: "{name} domain. Open domain switcher",
+    tooltip: "Domain: {name}",
   },
   importPreviewGraph: {
     title: "Workflow topology from the manifest",
@@ -2422,6 +5890,3168 @@ export const en = {
     pendingHint:
       "Your account isn't a member of any workspace yet. An admin needs to grant you access before you can continue.",
     pendingSignedInAs: "Signed in as {email}",
+  },
+  helpTip: {
+    ariaLabel: "Help",
+  },
+  toast: {
+    regionLabel: "Notifications",
+    dismiss: "Dismiss notification",
+  },
+  markdownComp: {
+    htmlDocCard: {
+      defaultTitle: "HTML Report",
+      sandboxPreviewNote: "Inline sandbox preview (scripts disabled)",
+      collapse: "Collapse",
+      expand: "Expand",
+      download: "Download .html",
+    },
+  },
+  workspaceSection: {
+    dirtyIdentity: "workspace name or color",
+    nameRequired: "Display name cannot be blank.",
+    saveFailed: "The workspace identity could not be saved.",
+    notConfigured: "Not configured",
+    identityTitle: "Workspace identity",
+    identitySubtitle: "Name and accent are stored on the active tenant record.",
+    loadingTenant: "Loading the active tenant…",
+    unavailableTitle: "Workspace data is unavailable",
+    unavailableHint:
+      "The tenant API could not be reached, so identity controls are disabled.",
+    workspaceIdHint: "Used in URLs and API endpoints. The slug is immutable.",
+    displayNameHint: "Shown in the tenant switcher and audit log.",
+    displayNameAria: "Workspace display name",
+    accentLabel: "Accent color",
+    accentHint: "Stored on the tenant and used by tenant identity surfaces.",
+    accent: {
+      lime: "Lime accent",
+      cyan: "Cyan accent",
+      amber: "Amber accent",
+      violet: "Violet accent",
+    },
+    saved: "Workspace identity saved.",
+    saveIdentity: "Save identity",
+    regionalTitle: "Regional preferences",
+    regionalSubtitle:
+      "Timezone and locale are browser preferences and save immediately.",
+    regionHint:
+      "Deployment configuration. This UI cannot change worker or storage region.",
+    timezone: "Timezone",
+    browserPreferenceHint: "Saved to this browser through /api/prefs.",
+    timezoneAria: "Workspace timezone",
+    locale: "Locale",
+    localeOption: {
+      "en-US": "English (US)",
+      "en-GB": "English (UK)",
+      "zh-CN": "Simplified Chinese",
+      "zh-TW": "Traditional Chinese",
+      "ja-JP": "Japanese",
+      "ko-KR": "Korean",
+    },
+    localeAria: "Workspace locale",
+    runtimeTitle: "Runtime policy",
+    runtimeSubtitle:
+      "Retention, PII masking, and strict schema policy are not configurable from Settings yet.",
+    retentionLabel: "Retention & privacy",
+    retentionHint:
+      "No tenant policy API is installed. Runtime defaults remain in effect.",
+    managedByRuntime: "Managed by runtime configuration",
+  },
+  billingSection: {
+    saveFailed: "The budget could not be saved.",
+    tokenCapWholeNumber: "Token cap must be a whole number or blank.",
+    tokenCapNonNegative: "Token cap must be a non-negative number or blank.",
+    usdCapNonNegative: "USD cap must be a non-negative number or blank.",
+    capsTitle: "Monthly cost caps",
+    capsSubtitle: "Live limits for the current tenant. Blank means unlimited.",
+    openUsageDetails: "Open usage details",
+    loadingBudget: "Loading the tenant budget…",
+    unavailableTitle: "Budget data is unavailable",
+    unavailableHint:
+      "The API did not return a tenant budget. No plan or spend figures are being inferred.",
+    tokenCapHint: "Whole tokens. Leave blank for no token cap.",
+    tokensUnit: "tokens",
+    usdCapHint: "Stored by the API in cents. Leave blank for no cost cap.",
+    saved: "Budget caps saved.",
+    saveCaps: "Save caps",
+    currentPeriod: "Current budget period",
+    periodSubtitle: "Started {date}. Usage is measured by the gateway ledger.",
+    tokens: "Tokens",
+    cost: "Cost",
+    usageAria: "{resource} budget usage",
+  },
+  integrationsSection: {
+    removeConfirm:
+      "Remove the {name} integration? Agents using it will lose access.",
+    testFailed: "Connection test failed: {error}",
+    unknownError: "unknown error",
+    subtitle:
+      "External systems this workspace can reach. API keys are encrypted at rest.",
+    addProvider: "Add {name}",
+    loading: "Loading integrations…",
+    unavailable: "Couldn’t reach the API. Integrations are unavailable.",
+    none: "No integrations configured yet.",
+    addToStart: "Add {name} to get started.",
+    noBaseUrl: "no base URL",
+    keySet: "key set",
+    noKey: "no key",
+    checkedAt: "Checked {time}",
+    notTested: "Not tested yet",
+    testConnection: "Test connection",
+    addKeyFirst: "Add an API key first",
+    testing: "Testing…",
+    test: "Test",
+    addTitle: "Add {name}",
+    configureTitle: "Configure {name}",
+    configureFallback: "Configure the base URL and API key.",
+    baseUrl: "Base URL",
+    baseUrlHint:
+      "The provider's API root. Falls back to the environment default when blank.",
+    apiKey: "API key",
+    keyStoredHint:
+      "A key is stored (encrypted). Leave blank to keep it; type a new one to replace.",
+    newKeyHint: "Stored encrypted at rest; never shown again after saving.",
+    keepKeyPlaceholder: "•••••••• (leave blank to keep)",
+    keyPlaceholder: "Paste the API key from GoHire",
+    save: "Save",
+    cancel: "Cancel",
+    configureAria: "Configure {name}",
+    removeAria: "Remove {name}",
+  },
+  workflowAuthoringError: {
+    networkUnavailable:
+      "Could not reach the workflow authoring service. Check the connection and retry.",
+    requestFailed: "Workflow authoring request failed (HTTP {status}).",
+    invalidResponse:
+      "The workflow authoring service returned an invalid response.",
+    workflowRequired: "Select a workflow before continuing.",
+    agentRequired: "Select an agent before continuing.",
+  },
+  workflowPage: {
+    editingDraftOf: "Editing an unpublished draft of",
+    editingDraftHint:
+      " · Save creates an immutable draft version; Publish explicitly promotes it to live.",
+    subtitle:
+      "Select a tenant workflow, inspect its immutable version, or open the full draft editor.",
+    workflow: "Workflow",
+    workflowLower: "workflow",
+    localDraft: "LOCAL DRAFT",
+    live: "LIVE",
+    draft: "DRAFT",
+    draftLower: "draft",
+    dirtyLabel: "{workflow} draft · +{added} ~{modified} −{removed}",
+    liveAndDraft: "LIVE + DRAFT",
+    liveVersion: "LIVE VERSION",
+    draftVersion: "DRAFT VERSION",
+    unpublishedChanges: "UNPUBLISHED CHANGES",
+    run: "Run",
+    runWorkflow: "Run workflow",
+    help: "Help",
+    closeEditor: "Close editor",
+    validating: "Validating…",
+    validate: "Validate",
+    saveDraft: "Save draft",
+    saveDraftCount: "Save draft ({count})",
+    publishing: "Publishing…",
+    publish: "Publish",
+    publishDraft: "Publish draft",
+    editWorkflow: "Edit workflow",
+    deleteDraft: "Delete draft",
+    newWorkflow: "New workflow",
+    importManifest: "Import manifest",
+    selectedWorkflowAria: "Selected workflow",
+    noWorkflows: "No workflows yet",
+    agentsCount: "{count} agents",
+    catalogUnavailable: "Workflow catalog unavailable",
+    createToBegin: "Create a workflow to begin.",
+    restoredFrom: "Restored unsaved draft from",
+    canvasCoach: "Drag nodes to move · drag output to input to connect",
+    releaseToAdd: "Release to add this agent",
+    closeConfirm:
+      "Close the editor and discard these unsaved browser changes? The last server-saved draft will be kept.",
+    invalidField: "A field is invalid.",
+    deleteConfirm: "Delete the draft workflow “{name}”? This cannot be undone.",
+    stage: {
+      intake: "Intake",
+      analyze: "Analyze",
+      jd: "JD",
+      publish: "Publish",
+      resume: "Resume",
+      matchInterview: "Match & Interview",
+      package: "Package",
+      submit: "Submit",
+    },
+    stageFallback: "Stage {stage}",
+    dagAria: "Workflow DAG: {agents} agents wired by {edges} event edges",
+    edgeAria: "Event edge: {event} from {source} to {target}",
+    actorAgent: "Agent",
+    actorHuman: "Human",
+    nodeState: {
+      added: "draft addition",
+      modified: "draft modification",
+      unchanged: "unchanged",
+    },
+    nodeAria: "{actor} node: {title}, id {id}, {state}",
+    nodeEditTitle:
+      "Drag to move {title}. Double-click to expand all agent settings.",
+    nodeViewTitle:
+      "Open {title} details. Double-click to expand the detail panel.",
+    newBadge: "NEW",
+    modifiedBadge: "MOD",
+    connectIntoAria: "Connect into {title}",
+    inputPortTitle: "Input port for {title}",
+    startConnectionAria: "Start a connection from {title}",
+    outputPortTitle: "Drag to connect from {title}",
+    resizeTitle:
+      "Drag to resize agent details. Double-click to expand or restore.",
+    resizeAria: "Resize workflow canvas and agent details",
+    announcement: {
+      agentReturned:
+        "{agent} returned from Agent Studio and is ready to save in this workflow.",
+      agentAdded:
+        "{agent} added. Drag the node to position it, then use its output port to create a connection.",
+      connected: "{source} connected to {target} with event {event}.",
+      sourceSelected:
+        "{agent} selected as the connection source. Choose a target node.",
+      moved: "{agent} moved to x {x}, y {y}.",
+      creatingConnection:
+        "Creating a connection from {agent}. Drag to another agent's input port.",
+      sourceSelectedPort:
+        "{agent} selected as the connection source. Choose a target input port or node.",
+      cancelled: "Canvas interaction cancelled.",
+      autoLinked:
+        "Automatically linked {source} to {target} with {event}{more}.",
+      autoRemoved:
+        "Removed the automatic {event} link from {source} to {target}{more}.",
+      moreLinks: " and {count} more link(s)",
+    },
+    toast: {
+      wrongVersionTitle: "Agent draft belongs to another workflow version",
+      wrongVersionDescription:
+        "Reload the workflow and reopen Agent Studio so changes are applied to the correct draft.",
+      agentReturnedTitle: "Agent changes returned to workflow",
+      agentReturnedDescription:
+        "Review the node and save the workflow draft when you are ready.",
+      restoreFailedTitle: "Agent changes could not be restored",
+      returnedDraftUnavailable:
+        "The returned Agent Studio draft is unavailable.",
+      fixBeforeSave: "Fix editor errors before saving",
+      draftCannotSave: "Draft cannot be saved",
+      versionLoading: "The selected workflow version has not finished loading.",
+      draftSaved: "Draft saved",
+      draftSavedDescription:
+        "{version} is stored on the server. Live runs are unchanged.",
+      draftSaveFailed: "Draft save failed",
+      fixBeforeValidate: "Fix editor errors before validating",
+      validTitle: "Workflow is valid",
+      needsChangesTitle: "Workflow needs changes",
+      promptsChecked: "{count} agent prompts checked.",
+      blockingIssues: "{count} blocking issue(s).",
+      validationFailed: "Validation failed",
+      cannotPublish: "Workflow cannot be published",
+      noImmutableVersion: "No immutable workflow version is available.",
+      liveTitle: "Workflow is live",
+      liveDescription: "{version} was published to production.",
+      publishFailed: "Publish failed",
+      connectedTitle: "Agents connected",
+      connectedDescription:
+        "{event} is emitted by {source} and consumed by {target}.",
+      connectionFailed: "Connection failed",
+      canvasArranged: "Canvas arranged",
+      canvasArrangedDescription:
+        "Agent positions were packed by stage and saved in the draft.",
+      deleted: "Draft workflow deleted",
+      deleteFailed: "Delete failed",
+    },
+  },
+  usagePage: {
+    tenant: "Tenant",
+    windowedReadFrom: "· windowed read from",
+    limited: "limited",
+    live: "live",
+    backSettings: "Back to Settings",
+    metric: {
+      tokens: "Tokens",
+      usd: "USD",
+      runs: "Runs",
+    },
+    total: {
+      runs: "Runs",
+      tokensIn: "Tokens in",
+      tokensOut: "Tokens out",
+      usdPeriod: "USD this period",
+      unpricedCalls: "Unpriced calls",
+      providerAttempts: "Provider attempts",
+      failedTimeout: "Failed / timed out",
+      retriesFallbacks: "Retries / fallbacks",
+      latency: "Latency p50 / p95",
+    },
+    byDayTitle: "Usage by day · {metric}",
+    byDaySubtitle: "Last {window} · {count} buckets",
+    byAgent: "By agent",
+    byModel: "By model",
+    tokensTop: "Tokens in+out · top 10",
+    byReasoning: "By reasoning configuration",
+    byReasoningSubtitle:
+      "Mode · effort · summary/context · verbosity/storage · tokens in+out",
+    routingTitle: "Routing & reliability",
+    routingSubtitle:
+      "Attempts, failures, latency, retries, and failover by runtime decision",
+    routingDimensionAria: "Routing usage dimension",
+    routingDimension: {
+      task: "Feature / task",
+      gateway: "Gateway instance",
+      route: "Model route",
+      actor: "User / actor",
+      profile: "Routing profile",
+    },
+    unattributed: "unattributed",
+    routingLegend:
+      "Bar = provider attempts · secondary value = failed attempts.",
+    attributionTitle: "Billing attribution",
+    attributionSubtitle:
+      "Trace provider spend to an account, product interaction, server function, or API route",
+    attributionDimensionAria: "Billing attribution dimension",
+    attributionDimension: {
+      account: "Account",
+      provider: "Provider",
+      surface: "Product surface",
+      action: "Product action",
+      function: "Function",
+      api: "API call",
+    },
+    unavailableTitle: "Live usage data unavailable",
+    unavailableHint:
+      "The /v1/usage endpoint did not respond. Showing budget row only.",
+    budget: {
+      title: "Monthly budget",
+      periodStarted: "Period started {date}",
+      saveCaps: "Save caps",
+      used: "Used {value}",
+      noCap: "No cap configured — unlimited",
+    },
+  },
+  systemCheck: {
+    title: "Agent system check",
+    subtitle:
+      "One click builds, publishes, deploys, runs, and verifies two different agents using the production operator.",
+    loadingSaved: "Loading saved reliability checks…",
+    loading: "Loading system check…",
+    runAria: "Run two-agent system check",
+    starting: "Starting check…",
+    running: "Check running…",
+    run: "Run two-agent check",
+    assertionValueAria: "{label} assertion value",
+    whatItDoesAria: "What this check does",
+    safeTitle: "A safe, visible production check",
+    safeDescription:
+      "The check creates or updates two reserved test agents, writes their manifests, publishes and deploys them, sends generated test events, and checks the resulting JSON, trace, logs, and artifacts. It does not turn on demo mode or replace your business agents. Test deployments, events, and runs remain in history as evidence.",
+    startFailed: "Could not start the check: {error}",
+    currentTitle: "Current check",
+    notStarted: "Not started",
+    reliabilityCheck: "Two-agent reliability check",
+    readyTitle: "Ready to verify the agent operator",
+    readyInstructions:
+      "Select Run two-agent check. This screen updates automatically as every build and run completes.",
+    loadingCheck: "Loading check {id}…",
+    detailUnavailable: "Check details are unavailable: {error}",
+    nowStage: "Now: {stage}",
+    progressAria: "Two-agent check progress",
+    started: "Started {time}",
+    duration: "Duration {duration}",
+    stoppedAt:
+      "The check stopped at {stage}. Review the failed step below, then run the check again after correcting the issue.",
+    verificationStage: "a verification stage",
+    scenariosTitle: "Two independent agent scenarios",
+    sequenceTitle: "Build and run sequence",
+    autoUpdates: "updates automatically",
+    historyAria: "System check history",
+    historyTitle: "Check history",
+    latestCount: "latest {count}",
+    loadingHistory: "Loading history…",
+    historyUnavailable: "History unavailable: {error}",
+    viewHistoryAria: "View {status} check started {time}",
+    noChecks: "No checks yet",
+    noChecksHint: "Your first completed check will be saved here.",
+    scenarioSequence: "Scenario sequence",
+    waitingBuild: "Waiting to build this agent.",
+    assertionsTitle: "Verification assertions",
+    assertionsPending:
+      "Assertions will appear after the run produces evidence.",
+    validatedOutput: "Validated output JSON",
+    outputAria: "{scenario} output JSON",
+    manifestEvidence: "Manifest, deployment, and run evidence",
+    openFullRun: "Open full run, trace, and logs",
+    expectedActual: "Expected and actual values",
+    expected: "Expected",
+    actual: "Actual",
+    loadingSequence: "Loading build sequence…",
+    noSequence: "No sequence yet",
+    noSequenceHint: "Start the check to watch every build and run step here.",
+    sequenceAria: "Agent check build and run stages",
+    technicalEvidence: "Technical evidence",
+    technicalEvidenceAria: "{stage} technical evidence",
+    status: {
+      queued: "Queued",
+      running: "Running",
+      passed: "Passed",
+      failed: "Failed",
+      ready: "Ready",
+    },
+    phase: {
+      preflight: "Check platform health",
+      agent: "Create or find managed agent",
+      draft: "Write the agent manifest draft",
+      validate: "Validate the agent definition",
+      publish: "Publish and deploy the agent",
+      trigger: "Send a targeted test event",
+      "discover-run": "Find the triggered run",
+      "await-run": "Wait for the run to finish",
+      output: "Verify JSON output",
+      trace: "Verify execution trace",
+      logs: "Verify run logs",
+      artifacts: "Verify saved evidence files",
+      complete: "Complete scenario",
+      finish: "Finish operator check",
+    },
+    scenario: {
+      "support-triage": {
+        title: "Support request triage",
+        description:
+          "Builds an agent that classifies a realistic customer request and returns structured JSON.",
+        purpose:
+          "Checks prompt input, schema enforcement, publishing, event delivery, and stored output.",
+      },
+      "context-probe": {
+        title: "Runtime context probe",
+        description:
+          "Builds a different agent that verifies structured variables and runtime context survive a full run.",
+        purpose:
+          "Checks manifest compatibility, mappings, runtime execution, trace evidence, logs, and artifacts.",
+      },
+    },
+    evidence: {
+      agent: "Agent",
+      draft: "Draft",
+      deployment: "Deployment",
+      workflowVersion: "Workflow version",
+      agentVersion: "Agent version",
+      triggerEvent: "Trigger event",
+      run: "Run",
+    },
+    assertion: {
+      runOutput: {
+        name: "Run output is available",
+        message: "The completed run returned its persisted JSON output.",
+      },
+      outputSchema: {
+        name: "Output matches its schema",
+        message: "The runtime marked the authored JSON output as valid.",
+      },
+      requestIdentity: {
+        name: "Request identity was preserved",
+        message: "The mapped output contains the synthetic request ID.",
+      },
+      supportClassification: {
+        name: "Support classification is deterministic",
+        message:
+          "The local mock-model result was wrapped in the strict authored shape.",
+      },
+      mockAnswered: {
+        name: "Local mock model answered",
+        message:
+          "The summary proves the mock LLM path executed without an external key.",
+      },
+      contextPong: {
+        name: "Global context tool returned pong",
+        message: "The global meta.ping tool executed successfully.",
+      },
+      tenantScoped: {
+        name: "Runtime context is tenant-scoped",
+        message:
+          "The tool received the expected agent, action, tenant, subject, and event.",
+      },
+      contextClean: {
+        name: "Context starts clean",
+        message:
+          "The first tool step did not inherit a prior result or hidden configuration.",
+      },
+      timestampValid: {
+        name: "Diagnostic timestamp is valid",
+        message: "The tool returned a parseable ISO timestamp.",
+      },
+      traceComplete: {
+        name: "Trace contains the complete sequence",
+        message:
+          "Structured trace evidence covers input, execution, validation, artifacts, and completion.",
+      },
+      eventSuppressed: {
+        name: "Downstream event was safely suppressed",
+        message:
+          "Test traffic did not fan out into another production workflow.",
+      },
+      logEvidence: {
+        name: "Run log contains expected evidence",
+        message:
+          "The file log records dispatch, execution, safe event suppression, and success.",
+      },
+      noErrorLog: {
+        name: "Run log has no error-level entry",
+        message: "No error-level diagnostic was written during the test run.",
+      },
+      outputSaved: {
+        name: "Output file was saved",
+        message:
+          "The agent's authored JSON output file is present in run artifacts.",
+      },
+      recordSaved: {
+        name: "Run record was saved",
+        message:
+          "The terminal evidence envelope is present for replay and audit.",
+      },
+      artifactsNonEmpty: {
+        name: "Artifacts are non-empty",
+        message: "Mandatory evidence files contain data.",
+      },
+      runCompleted: {
+        name: "Run completed successfully",
+        message: "The targeted event run reached a successful terminal state.",
+      },
+      isolatedTraffic: {
+        name: "Run is isolated test traffic",
+        message:
+          "The run is marked as an event-driven test with downstream effects suppressed.",
+      },
+      stepExecuted: {
+        name: "Expected agent step executed",
+        message: "The authored action appears as a successful persisted step.",
+      },
+      scenarioCompleted: { name: "Scenario completed" },
+    },
+  },
+  aiSection: {
+    dirtyLabel: "AI settings for {tenant}",
+    settingsPath: "settings",
+    invalidSettings: "Invalid settings",
+    validationError:
+      "{path}: {message}. Check route IDs, timeouts, and gateway URLs.",
+    savedRevision: "Saved AI settings revision {revision}.",
+    loadedRevision: "Loaded server revision {revision}.",
+    mirrorRewritten:
+      "Rewrote the managed .env.local mirror from the JSON settings file.",
+    unavailableTitle: "AI settings unavailable",
+    retry: "Retry",
+    loading: "Loading AI settings…",
+    controlPlane: "AI control plane",
+    unsavedChanges: "Unsaved changes",
+    revision: "Revision {revision}",
+    fileDrift: "File drift",
+    filesSynced: "Files synced",
+    controlPlaneDescription:
+      "Routes are stored in JSON and mirrored to .env.local. API keys stay encrypted and are never written into either settings file.",
+    discard: "Discard",
+    saving: "Saving…",
+    saveSettings: "Save AI settings",
+    mirrorDriftTitle: "The JSON and .env.local mirrors differ",
+    mirrorDriftMessage: "The managed mirror needs to be rebuilt.",
+    repairing: "Repairing…",
+    repairMirror: "Repair mirror",
+    repairBlockedByDirty: "Save or discard local edits before repairing.",
+    conflictTitle: "A newer settings revision exists",
+    conflictMessage:
+      "Your edits were not overwritten. Load the server revision before applying them again.",
+    loadLatest: "Load latest",
+    actionFailed: "Settings action failed",
+    updated: "Settings updated",
+    tabsAria: "AI settings areas",
+    tabs: {
+      routing: {
+        label: "Routing & defaults",
+        hint: "Map task classes to primary and fallback models",
+      },
+      connections: {
+        label: "Provider connections",
+        hint: "Direct providers, OpenRouter, and NewAPI instances",
+      },
+      models: {
+        label: "Model routes",
+        hint: "Browse the current model catalog and tenant fleet",
+      },
+      test: {
+        label: "Test lab",
+        hint: "Run a billable prompt and inspect routing and usage",
+      },
+    },
+    catalogTitle: "Catalog and fleet",
+    catalogPrefix: "Model routes use",
+    catalogDescription:
+      "This existing fleet view remains the place to browse current, tiered, and free catalog entries.",
+    tasks: {
+      ontologyGenerate: {
+        label: "Ontology generation",
+        description: "Schema, class, relationship, and ontology generation.",
+      },
+      evaluationRun: {
+        label: "Evaluation",
+        description:
+          "Rubrics, graders, quality evaluation, and comparison runs.",
+      },
+      assistantSuggest: {
+        label: "AI suggestion",
+        description:
+          "Inline suggestions, completions, and operator assistance.",
+      },
+      chatRespond: {
+        label: "Chat",
+        description: "Interactive assistant and conversational responses.",
+      },
+      ontogeneGenerate: {
+        label: "OntoGene",
+        description: "OntoGene-specific generation and transformation.",
+      },
+      graphQuery: {
+        label: "Graph Engine query",
+        description: "Natural-language graph queries and result synthesis.",
+      },
+      fileParse: {
+        label: "File parsing",
+        description: "Document extraction, parsing, and structured output.",
+      },
+    },
+    taskInheritsParent:
+      "Inherits from {parent} before falling back to the workspace default.",
+    taskUsesClosestParent:
+      "Uses the closest configured parent before the workspace default.",
+    configuredOutsideTaxonomy:
+      "Configured task profile retained outside the current taxonomy.",
+    closestFallbackTitle: "Closest-task fallback is automatic",
+    closestFallbackDescription:
+      "Exact and alias matches win first, followed by the nearest parent task class and finally the workspace default. Blank controls are omitted so each provider can apply its native defaults.",
+    workspaceDefault: "Workspace default",
+    workspaceDefaultHint:
+      "Used only when no closer task profile can be resolved",
+    taskRoutesTitle: "Task-specific routes",
+    taskRoutesCount: "{count} taxonomy and configured task classes",
+    inheritsRoute: "Inherits {route}",
+    usesDefault: "Uses default",
+    customize: "Customize",
+    profileStatus: "Profile status",
+    profileStatusHint: "Disabled profiles are skipped during task resolution.",
+    enabled: "Enabled",
+    disabled: "Disabled",
+    workload: "Workload",
+    workloadHint: "A routing intent used by policy and telemetry.",
+    routeChain: "Route chain",
+    routeChainPrefix:
+      "The first eligible route is selected. A route splits only on its first slash, so",
+    routeChainSuffix: "preserves the provider-native model ID.",
+    primary: "Primary",
+    primaryLower: "primary",
+    fallbackNumber: "Fallback {index}",
+    routeAria: "{title} {position} route",
+    modelFamilyAria: "{title} {position} model family",
+    modelFamilyOptional: "Model family (optional)",
+    use: "Use",
+    removeRouteAria: "Remove {title} route {index}",
+    fallbackPolicy: "Fallback policy",
+    defaultValue: "default",
+    usePlatformDefaults: "Use platform defaults",
+    addFallback: "Add fallback",
+    optionalModelControls: "Optional model controls",
+    optionalModelControlsHint:
+      "Leave any control blank to use the selected model or provider default. Unsupported controls are omitted from the request.",
+    reasoningMode: "Reasoning mode",
+    catalogCapabilityUnknown: "Catalog capability unknown.",
+    executionPathHint: "Execution path, where supported.",
+    reasoningUnsupported:
+      "This model does not support normalized reasoning controls.",
+    providerDefault: "Provider default",
+    reasoningEffort: "Reasoning effort",
+    reasoningMandatory: "Reasoning is mandatory for this model.",
+    reasoningEffortHint:
+      "Higher effort can increase latency and reasoning-token cost.",
+    reasoningSummary: "Reasoning summary",
+    reasoningSummaryHint:
+      "Safe provider-generated summary; raw chain-of-thought is never requested.",
+    reasoningContext: "Reasoning context",
+    reasoningContextHint:
+      "Controls reuse of persisted reasoning items when supported.",
+    answerVerbosity: "Answer verbosity",
+    answerVerbosityHint: "Provider-normalized visible answer detail.",
+    temperature: "Temperature",
+    temperatureUnsupported:
+      "Not supported by this model; the gateway will omit it.",
+    supportedRange: "Supported range {min}–{max}.",
+    temperatureUnknown: "Catalog support unknown; leave blank unless verified.",
+    maximumOutputTokens: "Maximum output tokens",
+    maxTokensCatalogHint:
+      "Blank uses the provider default; catalog ceiling {ceiling}.",
+    maxTokensDefaultHint: "Blank uses the provider/model maximum or default.",
+    requestTimeout: "Request timeout",
+    requestTimeoutHint: "Per upstream attempt, in seconds.",
+    seconds: "seconds",
+    secondsShort: "sec",
+    overallDeadline: "Overall deadline",
+    overallDeadlineHint: "Across retries and fallbacks, in seconds.",
+    jsonMode: "JSON mode",
+    jsonModeHint: "Request a structured JSON response where supported.",
+    providerStorage: "Provider storage",
+    providerStorageHint:
+      "Blank keeps the platform privacy default (off for Responses); local usage logs are separate.",
+    platformDefault: "Platform default",
+    capabilityRequirements: "Task capability requirements",
+    capabilityRequirementsHint:
+      "Candidates that cannot satisfy a required capability are skipped by policy when capability data is available.",
+    removeOverride: "Remove override",
+    candidateOverrides: "Candidate overrides",
+    overrideCount: "{count} set",
+    inherit: "inherit",
+    candidateOverridesHint:
+      "Blank values inherit the task profile, then the model/provider default. Unsupported controls are omitted from this candidate.",
+    inheritExecutionPath: "Blank inherits the profile execution path.",
+    inheritProfile: "Inherit profile",
+    reasoningMandatoryInherit:
+      "Reasoning is mandatory; blank inherits the profile/provider effort.",
+    inheritReasoningEffort: "Blank inherits the profile effort.",
+    inheritReasoningSummary:
+      "Safe provider-generated summary; blank inherits the profile.",
+    inheritReasoningContext: "Blank inherits persisted-reasoning reuse policy.",
+    inheritVerbosity: "Blank inherits visible answer detail from the profile.",
+    temperatureUnsupportedShort:
+      "Unsupported by this model; omitted automatically.",
+    temperatureInheritUnknown:
+      "Catalog support unknown; blank inherits the profile.",
+    inheritMaxTokensCatalog:
+      "Blank inherits the profile/model limit; catalog ceiling {ceiling}.",
+    inheritMaxTokens: "Blank inherits the profile/model output limit.",
+    inheritRequestTimeout:
+      "Per upstream attempt; blank inherits the profile timeout.",
+    inheritOverallDeadline:
+      "Across retries/fallbacks; blank inherits the profile deadline.",
+    inheritJsonMode: "Blank inherits the profile structured-output preference.",
+    inheritProviderStorage:
+      "Blank inherits the profile, then the platform privacy default.",
+    clearCandidateOverrides: "Clear candidate overrides",
+    unknownGatewayTitle: "Route is incomplete or references an unknown gateway",
+    unknownGatewayPrefix: "Use",
+    unknownGatewaySuffix: "and save a matching provider connection first.",
+    modelNotCatalogedTitle: "Model capability is not in the local catalog",
+    modelNotCatalogedPrefix: "The route",
+    modelNotCatalogedSuffix:
+      "is allowed, but optional controls cannot be pre-validated. Leave them blank to use provider defaults.",
+    capabilitiesAria: "Selected model capabilities",
+    reasoning: "Reasoning",
+    noReasoning: "No reasoning control",
+    tools: "Tools",
+    noTools: "No tools",
+    vision: "Vision",
+    textOnly: "Text only",
+    temperatureOmitted: "Temperature omitted",
+    temperatureOptional: "Temperature optional",
+    tierLabel: "{tier}-tier",
+    routingPreview: "Routing preview",
+    routingPreviewSubtitle: "Explain the saved resolver decision",
+    taskClass: "Task class",
+    taskClassHint: "Aliases and parent categories are accepted.",
+    explicitRoute: "Explicit route",
+    explicitRouteHint: "Optional; bypasses task-profile matching.",
+    resolving: "Resolving…",
+    previewRoute: "Preview route",
+    previewUsesSaved:
+      "Preview uses the last saved revision, not unsaved edits.",
+    savedRevisionShort: "Saved revision {revision}.",
+    resolveFailed: "Could not resolve route",
+    requested: "Requested",
+    matched: "Matched",
+    matchType: "Match type",
+    selectedRoute: "Selected route",
+    resolutionTrace: "Resolution trace ({count} steps)",
+    connectionTestTitle: "Connection tests do not generate tokens",
+    connectionTestDescription:
+      "Test a base URL and credential here before saving. Use Test lab only when you are ready to make a real, potentially billable model call.",
+    gatewayInstances: "Gateway instances",
+    gatewayInstancesSubtitle: "Canonical route prefix and upstream transport",
+    cancel: "Cancel",
+    addGateway: "Add gateway",
+    removeGatewayReferenced: "Remove this gateway from all route chains first.",
+    oneGatewayRequired: "At least one gateway instance is required.",
+    gatewayAlreadyExists: "Gateway instance {id} already exists.",
+    gatewayPath: "gateway",
+    invalidGatewayConfiguration: "Invalid gateway configuration",
+    gatewayValidationError: "{path}: {message}",
+    addCompatibleGateway: "Add NewAPI or compatible gateway",
+    instanceIdPrefix:
+      "The instance ID becomes the route prefix. Arbitrary aliases such as",
+    instanceIdMiddle: "and",
+    instanceIdSuffix: "are supported.",
+    instanceId: "Instance ID",
+    instanceIdHint: "Lowercase kebab-case; cannot be renamed after adding.",
+    displayName: "Display name",
+    gatewayType: "Gateway type",
+    baseUrl: "Base URL",
+    baseUrlHint: "HTTP(S), with no embedded credential, query, or fragment.",
+    wireDialect: "Wire dialect",
+    wireDialectHint:
+      "Use auto unless the gateway requires provider-specific request translation.",
+    apiMode: "API mode",
+    cannotAddGateway: "Cannot add gateway",
+    addToDraft: "Add to draft",
+    credentialSaved: "Credential saved as {key}.",
+    encryptedSecret: "encrypted secret",
+    temporaryKeyRequired:
+      "Paste a temporary API key to test an unsaved or changed endpoint. Stored credentials are deliberately not sent to draft base URLs.",
+    connectionTestResult: "{status} in {latency} ms{models}. {message}",
+    connected: "Connected",
+    connectionFailed: "Connection failed",
+    modelCountSuffix: " · {count} models",
+    saveRequired: "Save required",
+    type: "Type",
+    directProvider: "Direct provider",
+    timeoutPolicy: "Timeout policy",
+    connectTimeout: "Connect timeout",
+    maximumTimeout: "Maximum timeout",
+    apiCredential: "API credential",
+    storedCredential: "{key} · {source}",
+    keyStored: "Key stored",
+    noSavedKey: "No saved key detected",
+    keyPlaceholder: "Paste a new key (write-only)",
+    newKeyAria: "New API key for {name}",
+    credentialScopeAria: "Credential scope for {name}",
+    rotateKey: "Rotate key",
+    saveKey: "Save key",
+    saveBeforeKey:
+      "Save the gateway instance before storing its key. You can still test the draft connection below with a temporary key.",
+    transportChangedWarning:
+      "The connection draft differs from the saved instance. Testing it requires re-entering a temporary key so a stored secret cannot be sent to a substituted URL.",
+    testing: "Testing…",
+    testConnection: "Test connection",
+    saveBeforeDiscovering: "Save connection changes before discovering models.",
+    hideModels: "Hide models",
+    discoverModels: "Discover models",
+    remove: "Remove",
+    connectionResult: "Connection result",
+    connectionActionFailed: "Connection action failed",
+    discoveringModels: "Discovering models…",
+    modelDiscoveryFailed: "Model discovery failed",
+    modelsCount: "{count} models",
+    showingFirstModels: "Showing the first {count} models.",
+    defaultTestPrompt:
+      "Reply with one sentence confirming the model route and your role.",
+    billableTestTitle: "Model tests can incur provider charges",
+    billableTestDescription:
+      "A test call generates tokens, appears in LLM usage logs, and may be retained by the upstream provider if storage is enabled. Connection-only probes live on the Provider connections tab.",
+    testRoutedCall: "Test a routed LLM call",
+    testRoutedCallSubtitle: "Prompt, routing, tokens, latency, and cost",
+    testTaskClassHint: "Leave the route blank to exercise task routing.",
+    explicitModelRoute: "Explicit model route",
+    explicitModelRouteHint: "Optional canonical route, e.g. newapi/kimi-k3.",
+    useTaskRouting: "Use task routing",
+    prompt: "Prompt",
+    catalogCeiling: "Catalog ceiling {ceiling}.",
+    routeValidatesCeiling:
+      "The selected route validates its model-specific ceiling.",
+    timeout: "Timeout",
+    timeoutDefaultHint: "Blank uses the route/provider timeout.",
+    blankUsesProviderDefault: "Blank uses provider default.",
+    providerStorageTestHint:
+      "Blank keeps the platform privacy default (off for Responses).",
+    billableConfirmation:
+      "I understand this sends a real model request and may incur cost.",
+    runningModelTest: "Running model test…",
+    runModelTest: "Run model test",
+    unsavedRoutesNotUsed: "Unsaved route changes are not used by this test.",
+    modelTestFailed: "Model test failed",
+    unpriced: "Unpriced",
+    latestModelResult: "Latest model result",
+    latency: "Latency",
+    latencyMs: "{value} ms",
+    inputTokens: "Input tokens",
+    outputTokens: "Output tokens",
+    reasoningTokens: "Reasoning tokens",
+    estimatedCost: "Estimated cost",
+    finishReason: "Finish reason",
+    providerRequestId: "Provider request ID",
+    pricing: "Pricing",
+    asOf: "as of {date}",
+    cachedInput: "Cached input: {count} tokens",
+    yes: "Yes",
+    no: "No",
+    enums: {
+      workload: {
+        quality: "Quality",
+        balanced: "Balanced",
+        fast: "Fast",
+        "low-cost": "Low cost",
+        structured: "Structured",
+        "long-context": "Long context",
+        "tool-use": "Tool use",
+      },
+      reasoningMode: {
+        standard: "Standard",
+        pro: "Pro",
+      },
+      reasoningEffort: {
+        none: "None",
+        minimal: "Minimal",
+        low: "Low",
+        medium: "Medium",
+        high: "High",
+        xhigh: "Extra high",
+        max: "Maximum",
+      },
+      reasoningSummary: {
+        none: "None",
+        auto: "Auto",
+        concise: "Concise",
+        detailed: "Detailed",
+      },
+      reasoningContext: {
+        auto: "Auto",
+        current_turn: "Current turn",
+        all_turns: "All turns",
+      },
+      verbosity: {
+        low: "Low",
+        medium: "Medium",
+        high: "High",
+      },
+      fallbackCondition: {
+        rate_limit: "Rate limit",
+        timeout: "Timeout",
+        network: "Network",
+        provider_error: "Provider error",
+        not_configured: "Not configured",
+        auth: "Authentication",
+        model_not_found: "Model not found",
+      },
+      requirement: {
+        vision: "Vision",
+        tools: "Tools",
+        reasoning: "Reasoning",
+        structuredOutput: "Structured output",
+      },
+      tier: {
+        top: "Top",
+        mid: "Mid",
+        low: "Low",
+        free: "Free",
+      },
+      matchType: {
+        explicit: "Explicit",
+        exact: "Exact",
+        alias: "Alias",
+        parent: "Parent",
+        default: "Default",
+      },
+      traceOutcome: {
+        miss: "Miss",
+        skipped: "Skipped",
+        eligible: "Eligible",
+        selected: "Selected",
+      },
+      traceStage: {
+        explicit: "Explicit",
+        exact: "Exact",
+        alias: "Alias",
+        parent: "Parent",
+        default: "Default",
+        candidate: "Candidate",
+      },
+      gatewayKind: {
+        direct: "Direct",
+        openrouter: "OpenRouter",
+        newapi: "NewAPI",
+        "openai-compatible": "OpenAI compatible",
+        mock: "Mock",
+      },
+      wireDialect: {
+        auto: "Auto",
+        "openai-chat": "OpenAI Chat",
+        openrouter: "OpenRouter",
+        moonshot: "Moonshot",
+        zai: "Z.ai",
+        deepseek: "DeepSeek",
+        unsupported: "Unsupported",
+      },
+      apiMode: {
+        auto: "Auto",
+        "chat-completions": "Chat Completions",
+        responses: "Responses",
+      },
+      credentialScope: {
+        workspace: "Workspace",
+        tenant: "Tenant",
+      },
+      modelSource: {
+        live: "Live",
+        unsupported: "Unsupported",
+      },
+      resolutionReason: {
+        explicit: "Explicit",
+        exact: "Exact",
+        alias: "Alias",
+        parent: "Parent",
+        default: "Default",
+        legacy: "Legacy",
+      },
+    },
+  },
+  agentStudioError: {
+    errorCode: "Error code: {code}",
+    whatToDo: "What to do: {hint}",
+    draftRequiredSave: "Create a draft before saving changes.",
+    draftRequiredValidate: "Create a draft before validating it.",
+    draftRequiredGenerate: "Create a draft before generating instructions.",
+    draftRequiredPublish: "Create a draft before publishing it.",
+    serviceUnavailable:
+      "Could not reach Agent Studio. Check the connection and retry.",
+    invalidResponse:
+      "Agent Studio returned an invalid response. Check the connection and retry.",
+  },
+  agentStudioUi: {
+    copy: {
+      k12g0yo6: "0 9 * * 1-5 means weekdays at 9:00",
+      k1gmjpmk:
+        "0 is consistent; higher values are more varied. Leave blank to use the agent setting.",
+      k1kkkl3g: "1 blocking issue",
+      k1ky8r7m: "1 error",
+      k1vgge5j: "1 issue",
+      k1d5u6ax: "10000000 is about 10 MB",
+      kxy0wl5: "30 days",
+      k1ps5nsu:
+        "A category that helps people recognize the request, such as approval, review, or data-entry.",
+      k1kf1xad:
+        "A concise plain-language explanation shown across the operator portal.",
+      klh99o2:
+        "A realistic sample that helps people understand the expected value. It is not automatically used in production.",
+      kxa98vn: "A run cannot start until this value is supplied.",
+      k1ntpshn: "A run fails output validation when this value is missing.",
+      k1xhnyni: "A short answer ready to send to the customer.",
+      k74xctb:
+        "A short label shown in run history, such as draftReply or managerReview.",
+      kvdl9lj:
+        "A short permanent name used to connect this field to prompts and workflows. Use letters, numbers, and underscores; do not use spaces.",
+      kwrt6u8:
+        "A simple ordering number used when showing the agent in a workflow. Lower numbers appear earlier.",
+      kgwz2ss:
+        "A simple yes/no check. Use an input, event value, or the previous step result; for example: inputs.score >= 70 or lastResult.approved == true.",
+      k17el2mu:
+        "A unique internal reference for branches and traces. Leave blank to use the step name; avoid changing it after connecting conditions.",
+      k19s3mhy: "ADVANCED TEST SETTINGS",
+      knzubvk: "AI / logic",
+      kv6f2vi: "AI agent",
+      k35nt36: "AI model",
+      kkvddu3: "AI proposal applied to the draft",
+      k8jyqxw: "AI provider",
+      k15ysrm1: "AI retry attempts",
+      k1bt7n8f: "AI step time limit",
+      khrz1hq: "Accepted range: {min}–{max}.",
+      k17rv3f8: "Add",
+      k183ti4w: "Add input",
+      k1tw3yj5: "Add output",
+      kfjsua9: "Add safety rules",
+      kg59t5a: "Add step",
+      koh89li: "Add the first piece of information this agent will receive.",
+      k1lpdy01: "Add the first piece of information this agent will return.",
+      ks18o8: "Add the first thing this agent should do.",
+      kqwfkor: "Advanced",
+      kj2pd2t: "Advanced validation rules",
+      k1fl75jo:
+        "Advanced view of the same form fields. Each key must match an input's internal field name.",
+      k1e3efhp:
+        "Advanced. Choose which named outputs become the outgoing event payload. Keep {} to send the aggregate output.",
+      kyyqiez:
+        "Advanced. Map each input ID to a value in the incoming event. Keep {} when the event payload already uses the same input names.",
+      k6cey10: "Advanced: data mappings and model limits",
+      k1ec1i9p:
+        "Advanced: describe the expected response as JSON Schema. Leave the empty object form for a simple approval, or define fields such as decision and comments.",
+      kldhi9x:
+        "Advanced: edits the same fields as Guided mode. Invalid JSON is not applied, and unknown extension fields are preserved.",
+      k1w5o8jq: "Agent",
+      k1iu4h0k: "Agent Studio could not load",
+      k1qv0sqc:
+        "Agent Studio recovered this draft from {source}. The original version remains unchanged for historical runs. Review and test this draft before publishing.",
+      kffh1gv:
+        "Agent Studio translated the older manifest into the current editor format without changing its published history. Edit creates a safe draft for review and updates.",
+      k1eyq5qp: "Agent editor sections",
+      kznba6g: "Agent identity",
+      kjtpcn: "Agent instructions",
+      kvp0x95: "Agent message",
+      kcp468l: "Agent running…",
+      k1n12l7j: "Agent setup",
+      k1nbpmxh: "Agent: {value}",
+      k1h0dd3h: "All test inputs",
+      k1fui39g: "Allow more than one file",
+      kxh92sg: "Allow tool",
+      kojcn37: "Allowed",
+      kdxo60y: "Allowed file types",
+      k8q7zv6: "Always save run details",
+      kbtfwr0:
+        "An ordered, traceable plan. Steps can call the model, tools, people, conditions, delays, or subflows.",
+      k11bb3o2: "Answer verbosity",
+      k1vfyq7n: "Any media type",
+      kxzzblm: "Artifacts unavailable",
+      krrqksq: "Ask a follow-up…",
+      k140odb5:
+        "Ask the AI model to understand, write, classify, or transform information.",
+      k1enb5du: "Automatic correction attempts",
+      kbv9ylv: "Automatic prompt binding",
+      k1uda7lf: "Autosave",
+      kl3v8bj: "Available in Edit mode. It never publishes automatically.",
+      k17ntqgl: "Awaiting role",
+      k14xmvcz: "BUILD",
+      k1x4jiej: "Back to agents",
+      ky3tghg: "Back to workflow",
+      k1r27bhl: "Blank — start from scratch",
+      kb5d1gt: "CONFIG KEYS",
+      kyw96dj:
+        "Call one approved capability, such as searching, reading a file, or saving a result.",
+      kew9em3: "Cancel",
+      kl0ehzt:
+        "Cancel this edit session and restore the draft to how it was when you clicked Edit? Changes already saved by autosave will also be safely restored.",
+      k1a3t1vg: "Cancelled",
+      kv6jrnl: "Capture reasoning summaries",
+      k1oi30bc: "Changes now autosave without affecting the live version.",
+      koqday5: "Chat request — main user message",
+      k1g9287b:
+        "Check required fields, links, schemas, tools, and runtime settings",
+      k67quu: "Check setup",
+      k1itjznw:
+        "Choose AI agent for automated work, or Human task when a person must complete this step.",
+      kfexj6h:
+        "Choose Chat request for the main user message, Form value for a separate field, or File upload for an attachment.",
+      kfm8iwn:
+        "Choose a later step to run when the rule does not pass, or continue normally.",
+      k1bgfw4r:
+        "Choose a later step to run when the rule passes, or continue normally.",
+      kbgrx2d:
+        "Choose a model available from {provider}, or enter a custom model ID.",
+      k17brj2l: "Choose a model from {provider}",
+      k1adedzo: "Choose an option",
+      k1ml9onf: "Choose and rename data kept from this step. Example:",
+      kswclfb: "Choose and rename data sent into this step. Example:",
+      kxvytxa:
+        "Choose from the Agentic Operator catalog. Only allowed tools can be called by this agent.",
+      k1adoskb:
+        "Choose or enter a model for {provider}. A temporary provider override must send an explicit provider/model pair.",
+      k36u2mu:
+        "Choose the safest category that describes the value. Sensitive values are hidden or reduced in traces and logs.",
+      k7sietw:
+        "Choose tools from the catalog. The allow-list is the agent's trust boundary.",
+      kww6xbp: "Choose what happens next by checking a simple yes/no rule.",
+      k18km3pj:
+        "Choose whether this agent should wait for the hand-off or continue immediately. Saved for future execution support.",
+      k1u27mje: "Classify for routing tickets; Extract for reading invoices",
+      k1gxt7f7: "Classify — sort into categories",
+      kdvi7s5: "Closed",
+      kcd83gs: "Code-defined",
+      kt50zf5: "Code-defined agent — read-only compatibility view",
+      ka65s69: "Code-defined agents are edited in their source implementation.",
+      k12jlm6j: "Compatibility",
+      k1y4fpty: "Complete definition (developer JSON)",
+      ke1625i: "Complete required inputs in Test setup:",
+      k1bz2yvy: "Complete required inputs:",
+      kdc0w5u:
+        "Complete validated output for the selected run. This remains JSON even when the conversation shows only its response text.",
+      k1ks2b1a: "Condition",
+      k1dy84ko: "Condition expression",
+      k1poe1zm: "Confidential — business-sensitive",
+      kt76w2d:
+        "Configured outgoing events. Successful runs can publish them to continue downstream workflow steps.",
+      kt6p0bn: "Continue to the next step",
+      k1esw7g4:
+        "Controls how concise or detailed the model's visible answer should be.",
+      k1pdnct1:
+        "Controls provider-side response retention. Local run logs and usage accounting remain independent.",
+      k9rny2v:
+        "Controls upstream response retention for this test. Local run logs and usage accounting are separate.",
+      k1qw0e7q:
+        "Controls variation. Use 0–0.3 for consistent extraction/classification and 0.7–1 for creative writing.",
+      k1innke7:
+        "Controls which persisted reasoning items may be reused on later conversation turns.",
+      kw11c1z:
+        "Controls which persisted reasoning items the provider may reuse on later turns.",
+      k17o4v1i: "Conversation",
+      kalktss: "Conversation unavailable",
+      ky3fwnf: "Could not cancel editing",
+      k1y6x0oy: "Could not create draft",
+      kfrw61z: "Could not encode {file}.",
+      k1krngnq: "Could not finish editing",
+      kjgps7: "Could not read the selected file.",
+      ketnfwx: "Could not read {file}.",
+      k99dyht: "Could not return to workflow",
+      kpcpbzb: "Could not stop the run:",
+      kv7lfix: "Could not switch agents",
+      k1n8cqic: "Create a safe draft and enter Edit mode",
+      kmlyubp: "Creating draft…",
+      k7e0h0w: "Creating…",
+      k1hotsz7: "Creativity",
+      k10obv76: "Custom model ID…",
+      kksd7tu: "Customer message",
+      kwdvsy0: "Data format",
+      k1dp0d0a:
+        "Data planned for the receiving agent. Most users can leave this as {}; technical users can map named values for the hand-off.",
+      kbrb7so: "Debug",
+      k1a31coh: "Deep Search",
+      k1sfxoya:
+        "Define the agent's role, objective, operating rules, and safety boundaries.",
+      k3ormio: "Definition",
+      k1hzbzmu: "Definition health",
+      ky8eq0d: "Delay (milliseconds)",
+      k2b1iv: "Delay (preview)",
+      kkfhce1:
+        "Delay and subflow steps are recorded in the trace, but delays do not wait and subflows are not invoked by the production runtime yet.",
+      k1ywhvs1:
+        "Describe a hand-off to another agent or event. Production invocation is not enabled yet.",
+      ksjj37t: "Description",
+      k1gzu0jf:
+        "Developer troubleshooting only. It may contain sensitive or rejected content that is not present in the validated output.",
+      k132gnxu: "Developer view",
+      klnzwr0: "Display name",
+      k1u0wz25: "Do not store upstream",
+      k13cn9g1: "Done",
+      k129n38s: "Draft",
+      k1n566ai: "Draft is not publishable",
+      k88m0uu: "Draft is valid",
+      k1ff5mhq:
+        "Draft runs test your saved changes without changing the live agent.",
+      khox9mn: "Draft saved",
+      k1i1lcq9: "Edit",
+      kf71zhp: "Edit mode is on",
+      kxkj9wm: "Edit session cancelled",
+      k10exug7: "Edit unavailable",
+      kk96j5a: "Editable draft created",
+      k1vkb7an: "Editing",
+      ku0z9je: "Editing complete",
+      k1mpn0mh: "Editor view",
+      kl1u1ka: "Emit event",
+      k11sm4bf: "Emit events",
+      k1se6w0q:
+        "Emit events after success and bind their payloads from named outputs.",
+      k1rhmv48: "Emitted events",
+      kjs793k: "Enter Edit mode for this draft",
+      kd0sdc5: "Enter a custom model ID…",
+      k16egrz1: "Enter a {provider} model ID",
+      kgia2kl:
+        "Enter one event name per line for downstream workflow steps. Leave empty if nothing else needs to start.",
+      k1p8bxez:
+        "Enter one event name per line. Leave empty when the agent is only started manually.",
+      kj0yctz:
+        "Enter standard media types separated by commas. Leave empty to use the workspace file policy.",
+      kehv2a8:
+        "Enter the exact name of a tool enabled in this agent's Tools section. Example: fs.readFromInbox.",
+      kvqmanj:
+        "Enter the model or deployment ID expected by {provider}; no provider model list is available.",
+      k1bvavn0: "Enter the {field} expected by this agent.",
+      k84f1p0: "Enter to send · Shift+Enter for a new line",
+      k14hbyxi:
+        "Events can start this agent; input bindings map event payloads into typed inputs.",
+      k8nh6hb: "Events sent after success",
+      kb8dhy6: "Events that start this agent",
+      kzfnni7:
+        "Every completed Studio run stores its aggregate JSON output as an artifact.",
+      k1xmaegg:
+        "Every completed run produces one aggregate JSON document and validates its named outputs.",
+      kkwdsib: "Example shown to builders",
+      k1f77ush: "Example:",
+      kialu9:
+        "Example: 60000 milliseconds represents a planned wait of one minute.",
+      kbiz49i:
+        "Example: Check the proposed refund and approve or reject it with a short reason.",
+      kqtk2oj: "Example: Create a first draft from the customer's request.",
+      kxmo78w:
+        "Example: Return a three-sentence summary and list any missing facts.",
+      k1wmaawq:
+        "Example: ask a delivery manager to approve a high-value refund before continuing.",
+      kqfwdeq:
+        "Example: call fs.readFromInbox to load a document before the next AI step.",
+      k1skhiyy: "Example: fs.readFromInbox",
+      kolja53: "Example: fulfilOrder",
+      k19a8dga:
+        "Example: if lastResult.score >= 70, continue to Approve; otherwise go to Review.",
+      k1bkjdft: "Example: lastResult.approved == true",
+      k1fmfm3b:
+        "Example: pass the approved request to an order-fulfilment agent.",
+      k1cgyvri:
+        "Example: read the customer request and produce a concise, friendly reply.",
+      kyzd1x2: "Execution sequence",
+      knmrwmk:
+        "Explain this step's purpose to teammates. This is documentation; it does not tell the AI what to do.",
+      kjkmmma: "External side effects enabled",
+      kvgdhgl: "Extra user-message context",
+      kyjtgfq: "Extract — read structured facts",
+      kq8ly6r: "FILE POLICY",
+      k98dtzq:
+        "Fail the run when the model cannot produce your output fields after the allowed correction attempts.",
+      knpsixg: "Failed",
+      k1o27aw1: "File upload — attachment",
+      k1qwbk9g: "Fix validation errors first",
+      k1hf0yuf: "Form",
+      kqr0vvn: "Form value — separate input field",
+      k7hr9xr: "Generated manifest",
+      k4gcjj2: "Group of named values",
+      k1l380or: "Group runs by",
+      kadiae5: "Guided",
+      k1k70vhr: "Help & examples",
+      kp2z1lq: "Help text for this field",
+      k1m9o5u0: "Hide run history",
+      k1l9cli5:
+        "Higher effort can improve difficult reasoning, but usually adds latency and reasoning tokens.",
+      kqn3zvn:
+        "Higher effort may improve difficult reasoning while increasing latency and reasoning-token cost.",
+      kyugfpb: "History",
+      k1uumw81: "History unavailable",
+      kxu4eu: "How event data fills inputs",
+      kb592ak:
+        "How many days to retain trace and debugging information. Follow your organization's privacy policy.",
+      km0nu78:
+        "How many extra times to try this AI step after a temporary failure. Use 0 for no retry. Tools are never retried automatically.",
+      k1ewa3yt:
+        "How many times the model may fix an answer that does not match your output fields. Start with 1.",
+      k1hm7yka:
+        "How many times to try the whole run again after a temporary failure. Tools with side effects are protected from unsafe automatic repeats.",
+      k7d3p39: "How people find and understand this agent.",
+      khc4g00: "How this input is provided",
+      k1d0i2hg: "Human response form schema",
+      k1ar44kz: "Human task",
+      k1pm1qv8: "Immutable versions",
+      kxg8kx7: "Improve",
+      k1h25hxb: "Incoming event mapping",
+      k1ho6gvy: "Incoming events",
+      k112kvxb: "Input contract",
+      k1kgb0lh: "Input editor view",
+      k1yrwy0x: "Input mapping",
+      k5i5jpq: "Input variables",
+      kui94ot: "Input {index}",
+      k17s6ks8: "Inputs",
+      k1uo8xy2: "Inspect run",
+      k79xzni: "Inspecting this run",
+      k3au9ng: "Instruction generation failed",
+      kk7ffxg: "Instructions",
+      k14wusu7: "Internal field name",
+      k5vfici: "Invalid JSON",
+      kmvsr6l: "Invalid output",
+      k18eu20k: "Item {index}",
+      km8q2b4: "JSON OUTPUT",
+      k141zo93: "JSON artifact policy",
+      kwv968t: "JSON error",
+      k7j84yg: "Keep run details for",
+      km8v1sa: "Learn how to create, edit, test, publish, and operate an agent",
+      kcpacbp: "Leave blank for no schedule",
+      kiu9jhp:
+        "Leave off unless approved debugging requires it. Final prompts can contain sensitive user data.",
+      k1rvxb5a: "Leave provider and model inherited to use workspace defaults.",
+      k1cgvqkd: "Limit simultaneous runs",
+      k1amlo6g: "List of values",
+      k11rknnz: "Live",
+      k1i86to8: "Live definition — view mode",
+      k9w6pyt: "Live effects — allow configured changes",
+      k1vbe6b0:
+        "Live runs use the currently published version—the same version production callers use.",
+      k1j6sv6q: "Loading Agent Studio…",
+      k1t6ihpu: "Loading artifacts…",
+      k1sze3rk: "Loading conversation…",
+      k8q1kaz: "Loading history…",
+      kszligx: "Loading the selected run output…",
+      k1kkufq6: "Loading tools…",
+      k1hzl9ig: "Loading trace…",
+      k1jpa6em: "Loading versions…",
+      k10oeymm: "Loading {provider} models…",
+      kiqpxg7:
+        "Make changes across any section. Autosave creates checkpoints; Save stores one immediately, Done saves and exits, and Cancel restores the draft to the start of this edit session.",
+      k1euf7se: "Make shorter",
+      kdhq2u7: "Maximum answer length",
+      k1642yi6: "Maximum file size",
+      km3sv81:
+        "Maximum seconds to wait for this AI step before marking it failed. 120 seconds is a practical starting point.",
+      k1azshf:
+        "Maximum tokens for this test. Leave blank to use the agent setting.",
+      k18ctzyd: "Maximum tool turns",
+      krm889w: "Message for the agent ({input})",
+      k12cu7gy: "Message the agent to start a test…",
+      kfwmiwg: "Minimal",
+      k107rbay: "Model",
+      k1y0g9dz: "Model and generation",
+      kc2tjmw: "Move down",
+      k1rvkqip: "Move up",
+      k1k5ek9p: "New chat",
+      kr5wqai: "No",
+      kgnls3v: "No artifacts yet",
+      k1norm96: "No change note",
+      k168a5qr: "No editable definition found",
+      k1wrj8u5: "No emitted events configured",
+      k1uca475: "No inputs yet",
+      kugy85u: "No local or server validation issues.",
+      k1qgl2zq: "No outputs yet",
+      k1xlvg2g: "No prompt preview",
+      k175hps9: "No published versions",
+      krurqg7: "No result",
+      k16jgog6: "No runs yet",
+      k10xemgt: "No steps",
+      k1wxr90l: "No tools allowed",
+      kp5j8jv:
+        "No usable manifest was saved, so Agent Studio created a safe starting draft from the agent's identity and known event triggers. Review the instructions, inputs, steps, and outputs; then test before publishing.",
+      k1ubnp7t: "No validated output",
+      kwbkaya: "Normal — safe to show in traces",
+      k1tq8w6q: "Not supported — omitted",
+      kldoe4u: "Number (may include decimals)",
+      k1ft7lvc: "Older agent upgraded — view mode",
+      k17xw8xa: "Older definition converted to the current format",
+      k1wo7ic: "One prompt plus any number of typed variables or files.",
+      k15vkfvf:
+        "Only changes this test run. Leave inherited to test the agent exactly as configured.",
+      k18ylh5o: "Open Test Lab",
+      k5j44tv: "Open another agent",
+      k13folvu: "Open full run ↗",
+      k11h5qxd: "Open the Test Lab without starting a run",
+      k1rc0huu: "Open workflow editor ↗",
+      k1yfbac9: "Optional",
+      k11pa91f:
+        "Optional advanced key for limiting related runs together. Leave blank to share one limit for the whole agent.",
+      k14bzq98:
+        "Optional advanced schedule in cron format. Leave blank unless this agent should run automatically at fixed times.",
+      k10c5bpo:
+        "Optional cron execution; event and manual triggers continue to work independently.",
+      k1rkxmfk:
+        "Optional directions for this AI step only. The agent's main Instructions still apply.",
+      kcmln4h:
+        "Optional expert settings for limits, allowed values, or nested objects. The basic type above is enough for most agents.",
+      k1wqf6w7:
+        "Optional settings that apply whenever this agent uses the tool. Use only the keys listed below. Reference environment-variable names for credentials; never paste secret values here.",
+      k1g4io1d:
+        "Optional value used when the runner does not enter anything. Leave null when the user must decide.",
+      k1rloby7:
+        "Optional. Add structured inputs beside the user's request. The chat prompt is inserted automatically, so do not repeat it here.",
+      k6wrg3b: "Order",
+      k99799d: "Outgoing event mapping",
+      k1x3nhug: "Outgoing events",
+      k1u5xhd0: "Output",
+      ktbc2n2: "Output contract",
+      k1900qa5: "Output file name",
+      k1a67jsr: "Output file settings",
+      k1426wzq: "Output is not ready",
+      k1z01hze: "Output mapping",
+      k1ypeupe: "Output {index}",
+      k1fxlvxx: "Outputs",
+      kthnxru: "Overview",
+      k1corff8: "Owner type",
+      k2na60t:
+        "Past runs stay pinned to the exact definition that produced them.",
+      k1h01qpw: "Paste the full customer email, including the subject line.",
+      kqrk7a7:
+        "Pause a published run and ask a person to review, approve, or provide information. Studio test runs record the request without waiting.",
+      k11ns0cd: "Personal — identifies a person",
+      k1o9c1ts:
+        "Pick the pattern closest to the job. This is descriptive and does not lock what you can edit.",
+      k1r19htw:
+        "Pick the simple format users should provide or receive. Most fields only need one of these choices.",
+      ku982wf: "Pinned",
+      kedq0ti: "Pinned for every message in this conversation.",
+      k4skqek:
+        "Planned wait in thousandths of a second; 60000 means one minute. Preview only: the value is retained and traced, but production does not wait on a durable timer yet.",
+      k1ui0ha4: "Pre-filled value",
+      khbsplm: "Preparing files…",
+      ks42sbr: "Preparing file…",
+      khi5574: "Pressing Send publishes this event to start the agent.",
+      k1jn92hb:
+        "Preview only: the target and input are validated and traced, but production execution does not invoke the subflow yet.",
+      krtslgq: "Preview steps in this definition",
+      k1hwqt0d: "Privacy level",
+      k187t5re: "Programmatic name",
+      k1b7l9ua:
+        "Protect shared AI providers and connected services from sudden traffic spikes.",
+      k1i9ttwy: "Provider response storage",
+      ku2m17s: "Publish",
+      k8t3vbh: "Publish failed",
+      k1yyzydm: "Publish the draft to create version 1.",
+      k1dq1cb3:
+        "Publish this draft as a new immutable live version? Existing in-flight runs will continue on their pinned definition.",
+      kdy4vgz: "Published {version}",
+      ku948r9:
+        "Publishing creates a new version; it never mutates historical runs.",
+      kh5pmi0: "Publishing the agent trigger event…",
+      k13p0ebo: "Publishing the trigger event to the agent runtime…",
+      k132gcmq: "Publishing…",
+      k4cofj5: "Purpose",
+      k12h50sj: "QUICK FACTS",
+      k1ezsj3x: "Question shown to users",
+      k11ehjg3: "REASONING SUMMARY",
+      kqumjfl: "Read only",
+      k1p4iuo0: "Read-only — approved reads, writes blocked",
+      k39rjx0: "Ready",
+      kyp0nwc: "Reasoning context",
+      kjk85rj: "Reasoning effort",
+      k1qeavm: "Reasoning mode",
+      kbk1oz: "Reasoning summary",
+      k1xohnqd: "Reasoning visibility",
+      k15o5opw:
+        "Record a planned waiting period. Durable production waiting is not enabled yet.",
+      ku1k2le: "Reliability and capacity",
+      k9c35st: "Remove",
+      kdi6x94: "Remove permission",
+      kniymld: "Repeat until complete",
+      k1bv2aq9:
+        "Requests a provider-generated summary for evaluation; raw chain-of-thought is never stored.",
+      k2jiczy:
+        "Requests a safe provider-generated summary; raw chain-of-thought is never recorded.",
+      k1vgyzbf: "Require the declared output format",
+      k152jrl8: "Require this input",
+      kyucxjp: "Require this output",
+      kmq0cow: "Required",
+      k1gto7l6:
+        "Required for reproducibility. Stores the version, timing, validation, model usage, artifacts, and emitted events.",
+      k9bydx3: "Resize Conversation and Run history panels",
+      knt5fad: "Resize Conversation and Run history rows",
+      kn4tzmd: "Resize Test setup and Conversation panels",
+      kehs03d: "Resolve the server validation issues and retry.",
+      k1gxi7jn: "Resolving the live version and your latest draft.",
+      k1iws8mq: "Restore the draft to how it was when Edit mode started",
+      k1b3y7j7:
+        "Retain the validated inputs so a result can be reproduced. Privacy and redaction rules still apply.",
+      k8vih8h: "Retry attempts",
+      knzp0d1: "Return a single output directly",
+      k10i0wqv:
+        "Return to the workflow canvas before choosing another agent. This keeps the saved workflow version and agent draft paired correctly.",
+      k1rm1a8:
+        "Return to the workflow canvas to choose another agent. This agent and its exact workflow version are pinned together.",
+      k1chpvjh: "Returning…",
+      kxvffj5: "Review and edit it before publishing.",
+      k14s6r5f: "Revision {revision}",
+      kk9i35h: "Run detail level",
+      kbo2kas: "Run details",
+      kltyvna: "Run history",
+      k1t1fmy6: "Run is still producing output…",
+      k18wml6g:
+        "Run the agent or select a saved run to inspect its JSON output.",
+      kryy3l2: "Run the agent to inspect it",
+      k85wpqc: "Run time limit",
+      k164srqw: "Runs at the same time",
+      kwkub4b: "Runtime",
+      ksgiwvd: "Runtime pending registration",
+      k9bchf1: "Runtime registered",
+      k10a40ts:
+        "Safe is recommended and runs only tools explicitly approved for tests. Read-only permits approved reads but blocks writes. Live can change connected systems.",
+      kglsh5g: "Safe test — approved test tools only",
+      klewgh4: "Save",
+      kjw9zkz: "Save any remaining changes and return to protected view mode",
+      kum7v70: "Save each output as a separate file",
+      k1t4ozx: "Save failed",
+      kl80tty: "Save final prompts for troubleshooting",
+      kxa6gok:
+        "Save the current draft changes before running so the test is pinned to this exact revision.",
+      k1k6fp2o: "Save the draft before starting this conversation.",
+      k1fucjvk: "Save the model's unprocessed response",
+      k10s3uyt: "Save the run's inputs",
+      k1bvs96k: "Save this agent draft and return to the workflow canvas",
+      k1w9iy0s: "Saved for this agent",
+      k1mtgz8d:
+        "Saves the draft shortly after you stop typing. It never publishes automatically.",
+      k19hwlpo: "Schedule",
+      k1cvijon: "Schedule timezone",
+      kkoc91g: "Schema valid",
+      k12v4vei: "Search by action, such as email or file…",
+      k1k6l3uj: "Search the catalog, then choose",
+      k1wo3udj: "Secret — credentials or restricted data",
+      k9pu5u7: "Select a model…",
+      k13rjtku:
+        "Select a provider to browse its models, or enter a workspace model ID manually.",
+      khqzf5y: "Selected run JSON output",
+      k1vatbdb: "Send",
+      km1e5xj:
+        "Send an end-user prompt below. The result appears here, and follow-up messages continue with the same session context.",
+      kwxa9el:
+        "Send publishes a runtime event that triggers this agent. Your chat message is copied exactly into the event as the agent's prompt input. Structured variables stay separate, and every run, trace event, log, and JSON artifact is retained in history.",
+      k1j1yjql: "Sending event…",
+      k1wir1js: "Session {id}…",
+      k145bxvh: "Show an example",
+      k6swzgd: "Show run history",
+      k143zlvw: "Simultaneous-run limits",
+      k1k8ul6u: "Size limit in bytes for each upload.",
+      k1tlzfy5: "Stable step ID",
+      kcscafh: "Stage",
+      kzsp552: "Standard (recommended)",
+      k1brinx8:
+        "Standard balances quality and latency; Pro uses the model's highest-compute execution path.",
+      k1phil8f:
+        "Standard balances quality and speed. Pro gives supported frontier models their highest-compute execution path.",
+      kcynsgp:
+        "Standard is best for normal use. Debug saves more details for troubleshooting; Minimal reduces stored detail.",
+      k1eeji9j: "Start a chat to test the agent",
+      k1ob0roz: "Start and continue",
+      k7ec4n1: "Starter manifest created for this older agent",
+      kse38g9: "Starting template",
+      k2w6s2m: "Step name",
+      k16cvkr7: "Step prompt",
+      kazqmrl: "Step {index}",
+      k1mxszis: "Steps",
+      kky4lc5: "Stop",
+      k19ow2iv:
+        "Stop a run that takes longer than this many seconds. Increase it for long documents or slow tools.",
+      kkikpna:
+        "Stop this test after this many seconds. Leave blank to use the agent setting.",
+      kw3hald:
+        "Store concise user-visible summaries, never hidden chain-of-thought.",
+      k1aecu47: "Store upstream",
+      klpmmtf:
+        "Stored with the definition for developers. Publishing this text does not deploy or run code; executable agents use the code-defined agent deployment workflow.",
+      k7qqsib: "Structured inputs and runtime settings",
+      k1a6fx7u: "Subflow (preview)",
+      k1whi71t: "Subflow agent or event",
+      k12865pp: "Subflow input",
+      k1ul4agw: "Suggested reply",
+      kduz5hd: "Support Ticket Classifier",
+      k2ykfx9: "Task instructions",
+      k5b3umk: "Task type",
+      kvnsfac:
+        "Tell the agent who it is, what result it must produce, the rules it must follow, and when it should stop or ask for help.",
+      k1sf4jbn: "Tell the person exactly what to review, decide, or provide.",
+      kh86x37:
+        "Tell the person running the agent exactly what to enter. This appears below the field in the Test Lab.",
+      k1048if:
+        "Temperature must be between {min} and {max}; max tokens and timeout must be positive whole numbers.",
+      k16ij4n7: "Temporary AI model",
+      k1uh7e7n: "Temporary AI provider",
+      kfntv7q: "Temporary answer length",
+      k4m1y4z: "Temporary answer verbosity",
+      kepfz7q: "Temporary creativity",
+      k1g2sn6o: "Temporary provider storage",
+      k1cwzdf7: "Temporary reasoning context",
+      k1rbakny: "Temporary reasoning effort",
+      k8mhsvn: "Temporary reasoning mode",
+      k13cwnp4: "Temporary reasoning summary",
+      k1cew36i: "Temporary time limit",
+      k19pbkfi: "Test Lab",
+      k1g3of7t: "Test Lab conversation",
+      k17gmjvb: "Test Lab uses the real runtime",
+      krmz134: "Test setup",
+      k1cpb16m: "Test your agent in a conversation",
+      kh8361q: "Text",
+      k14ykjcc:
+        "The Test Lab and runtime automatically insert the prompt input as the user message.",
+      ks40lv4: "The agent definition must be a JSON object.",
+      kqv7d3: "The aggregate output is always persisted as a JSON artifact.",
+      kuaip5h:
+        "The catalog description tells you what each tool can do. “Allowed” tools appear on the right.",
+      ku7d0ok: 'The chat request always uses the reserved name "prompt".',
+      k1sevih:
+        "The company that runs the model. Leave inherited unless your administrator gave you a specific provider.",
+      k156kd2w:
+        "The draft was restored to its state before you clicked Edit. The live agent was never changed.",
+      kx6bxy7:
+        "The editor remains open with all current changes. Nothing has been discarded.",
+      k5fz26e:
+        "The exact agent name or event identifier that should receive the hand-off.",
+      kif6ubf:
+        "The exact model to use. Leave blank to follow the workspace default and future upgrades.",
+      kdf7rop: "The friendly label displayed in the Test Lab form.",
+      k19ajybl:
+        "The friendly name people see in the agent list and run history.",
+      kv8ovl1:
+        "The kind of person expected to respond, such as manager or operator. This is saved as workflow metadata; task access is managed separately.",
+      kzyn72m:
+        "The live definition is protected. Edit creates a safe draft; you can still run the live version and inspect history.",
+      k1mcv1d1:
+        "The live sequence, reasoning summaries, logs, and output appear here.",
+      kcj356p:
+        "The location used to interpret the schedule. Use an IANA timezone name.",
+      km0anc5:
+        "The maximum number of this agent's runs that may execute together when concurrency limiting is enabled.",
+      ksmzz14:
+        "The most tool-call rounds the model may use in one logic step. This prevents accidental loops.",
+      k1gx13bb:
+        "The name of the downloadable JSON file saved after each successful run. Keep the .json ending.",
+      kbjwx1s:
+        "The permanent internal name used by workflows and APIs. It cannot be changed after creation.",
+      kejo3vz: "The run finished with status {status}.",
+      k1fddms4: "The selected run is still producing output…",
+      k9rde28:
+        "The single input marked “Prompt” becomes the user role message. You do not need to copy user text into the system instructions.",
+      k1rxu0wd:
+        "The studio shows concise model reasoning summaries and tool decisions when enabled. Hidden chain-of-thought is never exposed.",
+      k1fp0wp5:
+        "The token budget for one model answer. A token is roughly part of a word; 1,000 tokens is about 750 English words.",
+      k1a37qr4: "The trigger event",
+      k1cpjfgr:
+        "The validated JSON artifact will appear when the run completes.",
+      ka8gtbm:
+        "These settings are optional. Leave both mappings as {} to pass normal data through without custom reshaping.",
+      k1593mj8: "This agent has neither a live version nor an existing draft.",
+      kqvfs18:
+        "This older agent runs from source code, so Agent Studio cannot safely recreate or replace its behavior with a manifest. Its saved metadata has been adjusted to the current format for viewing. Continue editing the source implementation, or create a new manifest agent when you want Studio-managed behavior.",
+      k44vhb0: "This run did not produce a validated JSON output.",
+      kvk7hcs:
+        "This run may write files, call third-party services, or change downstream systems through the agent's allowed tools.",
+      koenkno:
+        "This saved conversation cannot safely reuse its pinned target. Start a new chat to continue.",
+      k1u80a3h:
+        "This version changes {contracts}. Downstream events, tools, or callers may be affected. Publish anyway?",
+      k1r38oal: "This workflow agent is pinned",
+      k1m5xsdj: "Tool",
+      k1szup7m: "Tool catalog unavailable",
+      kmmh4km: "Tool name",
+      kffc28z: "Tool permissions",
+      k1xqqjrc: "Tool settings",
+      k1chdn61: "Tool {index}",
+      k15cdqf0: "Tools",
+      k1fputuz: "Tools let an agent take actions",
+      kata72m: "Trace",
+      k1u7fyo4: "Trace unavailable",
+      k1gotgab: "Trigger event",
+      kyagjvx: "Trigger event {event}",
+      k114f7vk: "Try this:",
+      k1b6f7ry:
+        "Turn this on only when the agent is designed to process a group of files in one run.",
+      k1m2zofh: "Type",
+      k15ce1hc: "Type of information",
+      kdsgzxm: "TypeScript reference (documentation only)",
+      k11ofcra: "Unknown extension fields are preserved on round-trip.",
+      k1niwshg: "Upgraded format",
+      k18jl0rp: "Use 10, 20, 30 so you can insert steps later.",
+      k1cx10zk: "Use agent / model default",
+      kqw9p55: "Use agent / model{setting}",
+      k1mlnrqy: "Use agent / service default",
+      k1mltky5: "Use agent / workspace ({model})",
+      kxyslms: "Use agent / workspace model",
+      k11dwfx2: "Use agent / workspace{provider}",
+      knz4dm4: "Use agent model",
+      k1005gnj: "Use inherited model",
+      k14kpebg: "Use model default",
+      k1le3ity: "Use service default",
+      kw0qlb0: "Use the same shape as the selected type.",
+      k12cc6ji:
+        "Use the workflow editor to see downstream impact before publishing trigger or output changes.",
+      k1lc4e0i: "Use workspace default (recommended)",
+      k17uw2sl: "Used as the LLM system prompt",
+      k11owa92:
+        "Useful when another system downloads or processes one output at a time.",
+      k17pktsu: "User prompt template",
+      k12rixe9: "Valid JSON",
+      k1y4gr5q: "Valid definition",
+      k1hohagf: "Validation failed",
+      k18fbgtb: "Validation found blocking issues",
+      k90jn08: "Version to test",
+      k1plkiuj: "Version-safe editing",
+      k1ubkemk: "Versions",
+      k1rtgrvq: "Versions unavailable",
+      k1osn1yz: "View mode",
+      k7n73r3: "Wait for completion",
+      k9iyzgn: "Wait for this response before sending a follow-up",
+      k1ir4pl6: "Wait policy",
+      k1056tly: "Waiting for output…",
+      k106zevo: "Waiting for runtime logs…",
+      k1rtr973: "Waiting for the first trace event…",
+      k1oqzb0v: "What each outgoing event contains",
+      k44f1wf:
+        "What this step does. Selecting a type reveals only the settings it needs.",
+      k802e7n: "What tools may change",
+      khbkjze: "When false",
+      k1hjdfpo:
+        "When there is one named output, callers receive its value directly. The complete JSON file is still saved.",
+      kx8kb96:
+        "When this step runs. Use Move up or Move down to reorder safely.",
+      kejsrmv: "When true",
+      k8zureu: "Which step type should I choose?",
+      keaapnx: "Whole number",
+      k1yj1sco: "Workflow",
+      km47ljd:
+        "Workflow handoff for {workflow}. {agent} is pinned until you return to the workflow canvas.",
+      k1pyssg8: "Working",
+      k1tlxw0z: "Write for me",
+      k15glwqk: "YOU",
+      k1dudzcg: "Yes",
+      k1e8i3ks: "Yes / No",
+      k1efd4xo: "You",
+      kh1aant: "You are editing draft revision {revision}.",
+      k73lzp0: "You are viewing draft revision {revision}.",
+      k1b7nc2h: "You are viewing the immutable live definition.",
+      kvfy3ib: "You are… Your objective is… Follow these rules…",
+      kvpng79:
+        "You classify support tickets. Return one category and a short reason. Never invent account details.",
+      kxoc7i:
+        "Your changes are still open in Agent Studio. Retry Save, then return to the workflow.",
+      kpzs9ar:
+        "Your changes are still open in the editor. Retry Save or Done; nothing has been discarded.",
+      k1n2fd3q:
+        "Your draft is saved and protected in view mode. It has not been published.",
+      kccz26o: "Your first test run will be retained here.",
+      k1o8eyxp: "Your message",
+      k15l9per:
+        "Your unsaved changes are still open. Save them before opening another agent.",
+      k24o49j: "add_guardrails",
+      k1h8bivv: "advanced",
+      km65q5i: "agent",
+      k4caf61: "an earlier saved version",
+      kc951l9: "any",
+      k12dwizq: "array",
+      k1f37bow: "artifacts",
+      kun3f0h: "blank",
+      ksaec3j: "boolean",
+      k10q6ecc: "cancelled",
+      k1914xwr: "chat",
+      k76qjmb: "chevron-right",
+      k1h3ljqn: "classify",
+      k1x54bn8: "code",
+      kher7iv: "confidential",
+      koiy1eg: "debug",
+      k14unowu: "default",
+      k1eckznw: "draft",
+      k1yj1fof: "event",
+      ke6ko0a: "external",
+      k154zczi: "extract",
+      k1qc7sfo: "failed",
+      k1bf856r: "file",
+      k1l0u8ia: "generate",
+      kncpx7v: "git",
+      kvfr7ne: "human",
+      kjy6vrf: "improve",
+      k1xbmwzf: "input",
+      koc5fh4: "inputs",
+      kq6mp8k: "instructions",
+      k1h82i4l: "integer",
+      k27aenj: "live",
+      k1l6jm37: "locked",
+      k1lfrrt2: "logs",
+      k1pkudm3: "loop",
+      k1dkz2q8: "minimal",
+      kxv7whe: "no hash",
+      k1j9fv3o: "no run selected",
+      k1c6lasb: "none",
+      k7q2940: "number",
+      k1f9nhdm: "object",
+      kscvxkf: "ok",
+      k18qh3po:
+        "only for actions this agent genuinely needs. Allowing a tool gives the model permission to call it; removing it immediately blocks future calls after publishing.",
+      kxr8ow4: "output",
+      k1y2guhh: "outputs",
+      k1qubp22: "overview",
+      k2svw0b: "paused",
+      k3e4eq5: "personal",
+      k1i1rk9v: "play",
+      k1q4gxff: "prompt",
+      kogvpec: "queued",
+      knb0qap: "rag",
+      ka1vjs1: "rev {revision}",
+      k1bl6va2: "rev {revision} · protected",
+      k5opvf0: "running",
+      kj2qecr: "runtime",
+      klj6okf: "runtime-facing contracts",
+      k1qrgqx0: "saved",
+      k1cuo867: "saving…",
+      ksfpc7l: "secret",
+      k1kvbpbt: "selected run",
+      ksv2vig: "settings",
+      ka7qkbe: "shorten",
+      khj4mei: "spark",
+      k11tljc: "standard",
+      kc9ljxw: "steps",
+      k6labeg: "string",
+      k1cs5qlh: "test",
+      k1w0qiez: "the older action catalog",
+      k1ue1hlo: "tools",
+      kzuxy9a: "trace",
+      k174uabd: "unknown",
+      kdzmmnc: "unpublished",
+      k1witjll: "unsaved",
+      kieyeh6: "value",
+      k1jrcs8c: "versions",
+      k1u9tm7c: "waiting",
+      k1uzjrfs: "workflow",
+      ko0arf3: "workspace default",
+      kz4c07v: "{count} blocking",
+      keycjqt: "{count} blocking issues",
+      k214ea7: "{count} bytes",
+      k1cg7qe9: "{count} chars",
+      ky4764r: "{count} errors",
+      k1p5ucjt: "{count} inputs",
+      k6eu6n8: "{count} issues",
+      k1ru6wd2: "{count} outputs",
+      k1vcdp9b: "{count} tools",
+      kdmd2mh:
+        "{event}{id} was accepted. The agent is working on this request…",
+      khos2k4: "{file} has media type {type}. Choose {allowed}.",
+      k1jp3u0f: "{file} is {size}; the limit is {limit} per file.",
+      k11gelcv:
+        "{model} does not support temperature. The saved agent setting is omitted for this test.",
+      k4xmftd:
+        "{model} does not support temperature. This saved compatibility value is omitted by the gateway.",
+      k6vewao: "{seconds}s / {retries} retries",
+      k4zi5ld:
+        "{target} is pinned for this conversation. Start a new chat to change it.",
+      k112u5wz: "{target} target · new conversation",
+      kwqrnh: "{target} target · session context",
+      kl6gqdr: "{types} · {size} max per file{multiple}",
+      k1cudkul: "{type} step",
+      k16afh01: "· Multiple files allowed",
+      kc8rpcs: "Add at least one named output.",
+      k1vks92p: "Error",
+      k13x78yt: "Info",
+      k1i9w0js: "Input IDs must be unique.",
+      kay3h9:
+        "Instructions should be at least 40 characters so the model has a clear objective.",
+      k1ub2wux: "LLM agents require exactly one prompt input.",
+      k8he2kd: "Name must use lower camelCase letters and numbers.",
+      k6gfwyk:
+        "No trigger event is configured; production runs are manual only.",
+      k1bxglg3: "Output IDs must be unique.",
+      kaogrpg: 'The prompt input must use the reserved variable ID "prompt".',
+      ks9i8m1: "This agent inherits the workspace primary model.",
+      kb1ew4y: "Title is required.",
+      kfh2d8v: "Warning",
+      k1nc7yc0: "{title} draft",
+      kfsvpyn: "Disconnected — retry in {seconds}s",
+      k1ap7vsj: "Stream closed by server",
+    },
+  },
+  agentStudioHelp: {
+    copy: {
+      k1qczswi: ", then open the live agent to test it in Agent Studio.",
+      kx3scks: ". Fix every blocking error.",
+      k1ftarwz:
+        ". Studio uses the existing draft or creates one safely from the live version.",
+      k1g8vnra: ". Warnings deserve review but do not always block publishing.",
+      kk5g10u: "1 · Prepare",
+      k119vxc7: "2 · Protect",
+      k1g8a9uj: "3 · Observe",
+      kmi2922: "5 minute tour",
+      ksdknly: "A clear filename ending in .json.",
+      k107ll08:
+        "A concise, safe explanation of a model decision. It is not hidden chain-of-thought.",
+      k1uenhcr:
+        "A configured worker that receives inputs, follows instructions and steps, and produces validated outputs.",
+      k1d6o2xx:
+        "A default can hide missing data; do not use one for information that must be supplied.",
+      k1mczxbl:
+        "A documentation field reserved for specialized code-defined agents.",
+      k1hz3ahx:
+        "A file retained from a run, such as output.json or an individual named output.",
+      kyqh1ez: "A label describing the human task.",
+      k1fucuxl:
+        "A named message that can start an agent or notify a downstream workflow.",
+      kgldk7s: "A one-paragraph explanation for operators.",
+      kh539te: "A permanent reference used by branches and traces.",
+      k1w8hlh8: "A plain-language explanation of the step's purpose.",
+      kwuy6ad: "A planned wait duration.",
+      k1cq7u9r:
+        "A read-only current-format view of code-defined metadata. It does not replace or reproduce the source-code behavior.",
+      k1c60lwd: "A readable name shown in traces.",
+      kv5076z: "A repeating time schedule.",
+      k1883vk1: "A restricted yes/no test used to choose the next step.",
+      k1pwmkwg:
+        "A safe editable starting draft Agent Studio creates when an older agent has identity data but no usable saved manifest.",
+      kez3kuf: "A safe path from idea to live agent",
+      k1ugvlys:
+        "A safe working copy. It is protected in View mode and unlocked only while Edit mode is on; saving never changes the live agent.",
+      k148p812: "A sample that helps people understand and test the field.",
+      k14f0ryx: "A sample valid result.",
+      kwyqb62: "A set of rules that validates the type and shape of JSON data.",
+      k1pwgk27:
+        "A shared vocabulary makes reviews faster. These definitions describe how the words are used in this product.",
+      kook1t6: "A short label a user will understand.",
+      k1uape93: "A short name that says what the agent does.",
+      k7fnsch: "A short technical name without spaces, such as customer_tier.",
+      ktxnyzz: "A starting pattern for the agent.",
+      kxe9755:
+        "A structured text format made of objects, lists, text, numbers, true/false, and null.",
+      kcs1d7v:
+        "A syntactically valid JSON object can still fail agent validation.",
+      ksbbygy: "A useful minimum test set",
+      k18vky4s:
+        "A value filled in automatically when the caller does not provide one.",
+      k1ek9k7g: "A whole number of bytes. 10,000,000 is about 10 MB.",
+      kyk9hzm: "A whole number. Lower numbers normally appear earlier.",
+      kpg5vnb:
+        "AI / logic, Tool, Human task, Condition, Delay (preview), or Subflow (preview).",
+      k35nt36: "AI model",
+      k8jyqxw: "AI provider",
+      k15ysrm1: "AI retry attempts",
+      k1bt7n8f: "AI step time limit",
+      kfjsua9: "Add safety rules",
+      k5vhrii: "Adds or removes the agent's permission to call a tool.",
+      k1swbcod: "Adds structured context around the user's chat message.",
+      kj2pd2t: "Advanced validation rules",
+      k1w5o8jq: "Agent",
+      k1x1jv9c:
+        "Agent Studio automatically translates an older saved manifest into the current format. If no usable manifest exists, it creates a starter draft from the agent's saved identity and event triggers. Review every generated field and test before publishing. A code-defined agent instead opens as a read-only Compatibility view because its source-code behavior cannot be reconstructed safely from metadata.",
+      kq4cwig: "Agent Studio guide",
+      k20pnmx: "Agent Studio help topics",
+      k1se0z3x:
+        "Agent Studio separates an editable draft from the live version, so you can experiment without changing production behavior.",
+      ka3lutr: "Agent Studio terms, decoded",
+      kjtpcn: "Agent instructions",
+      k1sa8ub3: "Agents",
+      k1fui39g: "Allow more than one file",
+      k1beziiz: "Allow only tools the agent actually needs.",
+      k1129fby: "Allow tool / Remove permission",
+      kdxo60y: "Allowed file types",
+      k19n59w0: "Always on; it is required for traceability.",
+      k8q7zv6: "Always save run details",
+      k1w4lh1b: "An AI agent must have exactly one Chat request input.",
+      kyn7nxw:
+        "An approved capability that can read data or take an action outside the language model.",
+      kvw43bw:
+        "An immutable published snapshot. Past runs remain linked to the version they used.",
+      k1la8ksj: "Artifact",
+      kdvv9u8: "Artifacts",
+      k1abyi7q:
+        "Asks AI to draft agent instructions from the current definition.",
+      k1dt6vfd: "Audit history and expert-only escape hatches.",
+      k1enb5du: "Automatic correction attempts",
+      k1uda7lf: "Autosave",
+      k1b0sv20: "Autosave never publishes the draft.",
+      k175p7en: "Autosave waits briefly after each change. The header says",
+      k1wat2nk:
+        "Avoid changing it after conditions or integrations refer to it.",
+      k17ntqgl: "Awaiting role",
+      k1iih9ta:
+        "Be careful when tools can write or send; side effects should be idempotent.",
+      kxau2gj: "Before you press Run",
+      kbzt6b2:
+        "Blank, classify, extract, Deep Search, loop, or human. It is a design hint; review every generated setting.",
+      k1wu87qp: "Boundary case:",
+      khytmw9: "Build an agent in five decisions",
+      kbh6v50: "Builds each outgoing event payload from named outputs.",
+      kew9em3: "Cancel",
+      k32t50w:
+        "Cancel also safely reverses changes already stored by autosave. None of these actions publishes.",
+      kv6jrnl: "Capture reasoning summaries",
+      k14cdywb:
+        "Change document_text to a File upload input, set allowed file types and size, and allow an approved document-reading tool. Test with Safe test or Read-only before allowing Live effects.",
+      kco2y81:
+        "Changing a label is safe; this identifier stays fixed so links and history do not break.",
+      k1ebt25i: "Chat request",
+      k1peatya:
+        "Chat request for the main user message, Form value for separate text/numbers/objects, or File upload for attachments.",
+      k7lwyrb: "Check both the values and the Schema valid badge.",
+      k67quu: "Check setup",
+      k131mt30:
+        "Checks that the definition, inputs, and outputs match their required contracts.",
+      kw4fyow: "Choose",
+      kr0deq1:
+        "Choose AI agent for model-driven work; Human task for work completed by an operator.",
+      k1bhm5qe: "Choose Edit whenever the header says View mode.",
+      ku8daeg:
+        "Choose Wait for completion or Start and continue. This is retained for future durable execution.",
+      kqqv92u: "Choose a later step, or continue to the next step.",
+      kjktjye:
+        "Choose a limit that providers and downstream services can safely handle.",
+      k11ryj98:
+        "Choose the simple type. Open Advanced validation rules only for allowed choices, limits, or nested data.",
+      k1ub5fao: "Choose tool effects",
+      k1p1ocvl: "Chooses the definition version to run.",
+      k6c9par:
+        "Chronological sequence of steps, tool decisions, and safe reasoning summaries.",
+      kjmbq23:
+        "Classify the output based on the most sensitive information it may contain.",
+      k1aeugy: "Clear",
+      k1m8hpo: "Close Agent Studio guide",
+      k1csfidv: "Close guide (Escape)",
+      k17gja61:
+        "Comma-separated MIME types such as application/pdf, text/plain.",
+      kw4m6zq:
+        "Compare an input or previous result, such as inputs.score >= 70.",
+      k1f8sgng: "Compatibility view",
+      k1f1qm21:
+        "Complete Identity, Events, Build, and Runtime. Review the event contract, model policy, ontology access, and pre-flight checks.",
+      k1y4fpty: "Complete definition (developer JSON)",
+      k1dy84ko: "Condition expression",
+      ka1gc2r: "Contract",
+      k1odp0xv: "Controls what tools may do during this test.",
+      k408405:
+        "Copy the name from the Tools catalog and also allow that tool in the Tools section.",
+      k1il8p3l: "Copy the pattern",
+      kyvg26s: "Create & publish",
+      kbuh1o0:
+        "Create a draft, test with Safe test tool effects, check the setup, then publish.",
+      kygwpb5: "Create a new agent",
+      k1o1s8ar:
+        "Create, edit, test, publish, and operate an agent safely—no coding required.",
+      kte0dpm: "Creating immediately makes a version live",
+      k1hotsz7: "Creativity",
+      k1fpwexi:
+        "Creativity 0.1 · 1 correction attempt · output file ticket-classification.json",
+      k89pcv4:
+        "Creativity 0.2 · maximum answer length 2000 · output file document-summary.json",
+      k1iyol4w:
+        "Define a small JSON object with clearly labeled required answers.",
+      k47csr2:
+        "Define what comes in and the exact JSON result that must come out.",
+      k1hzbzmu: "Definition health",
+      ky8eq0d: "Delay (milliseconds)",
+      k195mmtk: "Describe",
+      k18nkthd: "Describe meaning, units, and any allowed values.",
+      k1iimpox: "Describe the intended outcome, not implementation details.",
+      ksjj37t: "Description",
+      k1purs5v:
+        "Detailed runtime messages. Use them after the trace identifies the affected step.",
+      klnzwr0: "Display name",
+      k15zjzow: "Display name: Document Summarizer · Template: extract",
+      k1j2b8c5: "Display name: Support Ticket Classifier · Template: classify",
+      k1ql2l6l: "Document summarizer",
+      k13cn9g1: "Done",
+      k129n38s: "Draft",
+      ka98329: "Draft / Live",
+      kfztn0t:
+        "Draft tests your saved edits; Live tests the currently published version.",
+      kct9rim: "Draft versus Live:",
+      k101pgo4:
+        "Drafts are working copies; versions are permanent snapshots. This makes edits testable, reviewable, and traceable.",
+      k1i1lcq9: "Edit",
+      k37xk5o: "Edit mode",
+      k1xjxdk4: "Edit without changing live behavior",
+      k1xvzsix: "Enter a JSON object whose keys match the target inputs.",
+      k98mckt:
+        "Enter a JSON object. Leave {} when names already match or the event needs no mapping.",
+      koc7vr4: "Enter a realistic prompt and all required variables.",
+      k8gpykh: "Enter milliseconds, such as 60000 for one minute.",
+      k1uanyjw:
+        "Enter one event name per line (or comma-separated), exactly as registered.",
+      kuo2s7i:
+        "Enter registered event names that downstream workflows understand.",
+      k16i5n8i:
+        "Enter the real request. It is automatically bound to the Chat request input.",
+      k1lrcegv: "Event",
+      k8nh6hb: "Events sent after success",
+      k1j2psp7: "Events sent after the agent succeeds.",
+      k6vaezi: "Events that can start this agent.",
+      kb8dhy6: "Events that start this agent",
+      ko1240: "Every field",
+      kkwdsib: "Example shown to builders",
+      k33yzl6: "Example shown to builders (Outputs)",
+      k15y3bfg: "Example {number}",
+      kvyljdc: "Explains what a correct value represents.",
+      k16wlugb: "Extra model instructions that apply only to this AI step.",
+      kvgdhgl: "Extra user-message context",
+      k4xkoav: "FIELD",
+      kr20ik4:
+        "Fails a run when the model cannot produce the declared output fields.",
+      k1ubedsa:
+        "Fields that appear only after choosing a particular step type.",
+      k12uxa8n:
+        "Files retained by the run, including the aggregate output JSON.",
+      k125kcny: "Final prompts can contain sensitive input values.",
+      k1eoaaqh: "Find a field",
+      k1nmef2f: "Finds tools available in this Agentic Operator installation.",
+      k1m4896f:
+        "Follow Trace first, verify Output, use Logs for detail, and review every Artifact.",
+      k1ye5eld: "Follow a classifier or summarizer end to end.",
+      kh5ervu: "Follow your organization's data and audit policy.",
+      kq8391n: "For example: timeout, mapping, Stable step ID…",
+      kwktbp1:
+        'For simple text use {"type":"string"}; ask a technical user before changing unfamiliar rules.',
+      k1ha0upz:
+        "Form and JSON edit the same values. File fields enforce the configured type and size limits.",
+      k7hr9xr: "Generated manifest",
+      ksvj1xw: "Give the agent a clear name and one-sentence purpose.",
+      k1ggod7p:
+        "Give the decision, evidence to review, and completion criteria.",
+      kmbtrw5: "Glossary",
+      k1i4y56s: "Goal:",
+      k1l380or: "Group runs by",
+      kb7yrax: "Groups runs that share a limit.",
+      k1lv07gz: "Guidance that explains the input.",
+      ke4ybay: "Happy path:",
+      k1f8350a: "Help",
+      kp2z1lq: "Help text for this field",
+      kyugfpb: "History",
+      k16gaq8y: "How carefully traces and stored values should be handled.",
+      kxu4eu: "How event data fills inputs",
+      k1fq60r8: "How many days Studio observability data is kept.",
+      khh7vum:
+        "How many times the agent run may be retried after eligible failures.",
+      k1pxhsy6:
+        "How many times the runtime may ask the model to fix output that does not match the schema.",
+      ku2rdjr: "How much operational detail is recorded.",
+      k16vcopi: "How the runtime treats the input.",
+      khc4g00: "How this input is provided",
+      k442pjo: "How to read a run",
+      koz0k7n: "How varied model responses may be.",
+      k1d0i2hg: "Human response form schema",
+      kml1uyw:
+        "I reset my security key and now every login attempt fails. I need access before today's payroll run.",
+      k11fi1wb: "Immutable published definitions.",
+      kxg8kx7: "Improve",
+      ktpe6nn: "Input / output contract",
+      k1yrwy0x: "Input mapping",
+      k1gfssxo: "Input variables — Form / All test inputs (JSON)",
+      k17s6ks8: "Inputs",
+      k8edmz: "Instruct",
+      kk7ffxg: "Instructions",
+      k14wusu7: "Internal field name",
+      k1q2vmwz: "JSON",
+      k1duwuqi: "JSON Schema",
+      kcm1s2e:
+        "Keep it on for normal editing, or use Save whenever you want an immediate checkpoint.",
+      k4x00y3:
+        "Keep on for agents that may receive bursts or call limited services.",
+      k7smu66:
+        "Keep on when callers or workflows depend on a predictable result.",
+      k7j84yg: "Keep run details for",
+      k1vrwur5: "Keep tool effects on",
+      k1gn4swc: "Learn the safe Draft → Test → Check setup sequence.",
+      k1w8qxyz:
+        "Leave blank for the agent defaults; use positive whole numbers for answer length and time limit.",
+      k1upfxl6:
+        "Leave blank to inherit the workspace model, or enter an available model name.",
+      kisvrnl: "Leave blank to use the agent/workspace settings.",
+      kgo0sxs:
+        "Leave blank unless your engineering team owns the accompanying code-defined agent.",
+      k1eh4i1u:
+        "Leave off in normal use. Turn on temporarily for approved debugging.",
+      kyuwmba: "Leave off unless needed for approved debugging.",
+      k1sccky: "Leave {} unless a later step or output needs an explicit name.",
+      k11c0j1c:
+        "Leave {} when the step can use normal inputs. Advanced users can map named values explicitly.",
+      k1cgvqkd: "Limit simultaneous runs",
+      k1o4qi1y: "Limits that keep runs safe, useful, and observable.",
+      k11rknnz: "Live",
+      kmnp3mu: "Logs",
+      k1euf7se: "Make shorter",
+      k1sjgqzc: "Makes instructions more concise.",
+      k1ep1pe9: "Makes the run fail validation if the result is absent.",
+      kw98rd0: "Manifest",
+      k19npgpg:
+        "Map event fields to output paths; use the workflow editor to check downstream impact.",
+      kqor320: "Maps incoming event fields to agent inputs.",
+      kdhq2u7: "Maximum answer length",
+      k2svnn: "Maximum duration allowed for an agent run.",
+      k1642yi6: "Maximum file size",
+      k16xt9t4: "Maximum number of model-to-tool cycles in one run.",
+      kfhk3bq:
+        "Maximum number of runs allowed at the same time for a concurrency group.",
+      kev16w4: "Maximum seconds allowed for this model step.",
+      k18ctzyd: "Maximum tool turns",
+      kihyn94: "Missing or vague information:",
+      k1xo1crk:
+        "More attempts can improve reliability but add time and model cost.",
+      k1gl5ywp: "Need a field explained?",
+      k1apyez4: "New Agent",
+      k1o78i69: "No field matches “{search}”. Try a shorter label.",
+      k1frac0g: "Non-secret settings a tool needs for this workspace.",
+      k1xxuo2m:
+        "Normal case passes · incomplete input behaves safely · output says Schema valid · tools have only intended effects · downstream event contract is reviewed.",
+      k1rpl9im:
+        "Normal, Personal, Confidential, or Secret. Choose the strictest accurate level.",
+      kik1fyb: "Nothing while editing—it is intentionally read-only.",
+      k6nuot5: "One AI / logic step named Classify ticket",
+      kkfix6f: "One AI / logic step named Summarize document",
+      k1wzzzqd:
+        "One execution of one pinned agent version with a particular set of inputs.",
+      k1cwpzos:
+        "One-off test settings; these do not permanently change the agent definition.",
+      kn6hn1l: "Open",
+      k1m98isf: "Open Test Lab and select",
+      kmu342w: "Open examples",
+      kwgews: "Open field reference",
+      ky953ki: "Open or download them only according to your data policy.",
+      k1hbcflf: "Open test guide",
+      k10x5dgo: "Open the agent in protected",
+      kw1f2vq: "Optional JSON Schema rules for a more exact data shape.",
+      k6wrg3b: "Order",
+      k1u5xhd0: "Output",
+      k1551sz9: "Output JSON Schema",
+      k1900qa5: "Output file name",
+      kn0ah2: "Output help text",
+      k1hb7vgo: "Output internal field name",
+      k1z01hze: "Output mapping",
+      k12su3u2: "Output privacy level",
+      k11iqa8m: "Output question shown to users",
+      k1fxlvxx: "Outputs",
+      k2cv1v8: "Outputs and saved files",
+      k1rgoa9c: "Overrides:",
+      kthnxru: "Overview",
+      k1corff8: "Owner type",
+      k72yhxf:
+        "Pick an execution pattern. Blank agent is best when unsure; Classifier, Extractor, and Deep Search provide focused starting plans.",
+      k7nhnqh: "Plain-language reference",
+      k1ui0ha4: "Pre-filled value",
+      k1rcf6c9: "Prefer an example?",
+      k94mrr0: "Prevents a run from starting when the value is missing.",
+      k1pllko2:
+        "Preview only: it is traced but production does not wait on a durable timer yet.",
+      k15tr2nj:
+        "Preview only: production validates and traces it but does not invoke it yet.",
+      kdudado: "Previous test runs for this agent.",
+      k1hwqt0d: "Privacy level",
+      k187t5re: "Programmatic name",
+      k1i6iihg: "Proposes safety, privacy, and uncertainty rules.",
+      k1iij628: "Provider / model",
+      ku2m17s: "Publish",
+      k4cofj5: "Purpose",
+      k1ezsj3x: "Question shown to users",
+      key0rbj: "Raw text may contain sensitive or unwanted content.",
+      k1uceoy1: "Read it to find where a run slowed down or failed.",
+      klly0un: "Read the inspector",
+      kzk5luu: "Ready to try it?",
+      kbk1oz: "Reasoning summary",
+      km4etnx: "Recommended release check",
+      k1vgyzbf: "Require the declared output format",
+      k152jrl8: "Require this input",
+      kyucxjp: "Require this output",
+      kp9qejv: "Resolve red items in",
+      k1xa79vj:
+        "Retained files, including the aggregate JSON output and run record.",
+      k1wpa1z0: "Retries only this model step after a model error.",
+      k8vih8h: "Retry attempts",
+      knzp0d1: "Return a single output directly",
+      k17g7jzw:
+        "Returns the value directly when the agent declares only one output.",
+      k2ddr51:
+        "Review event, input, output, and tool changes with affected workflow owners.",
+      khglwn2: "Rewrites existing instructions for clarity and completeness.",
+      k1ebgi0i:
+        "Route a new support request to billing, technical, account, or other.",
+      kn23g36: "Routes this step's result to named values for later use.",
+      k137u7vu: "Run",
+      kk9i35h: "Run detail level",
+      kltyvna: "Run history",
+      kfds4rm: "Run once, inspect everything, learn safely",
+      kwxggmz:
+        "Run the saved draft with realistic inputs and inspect the trace and output.",
+      k85wpqc: "Run time limit",
+      ki8q61y:
+        "Run, then inspect Trace, Output, Logs, and Artifacts. Test both a normal case and a difficult or incomplete case.",
+      k1hheaqe: "Runs and history",
+      k164srqw: "Runs at the same time",
+      kwkub4b: "Runtime",
+      k1x5infm: "Runtime — model",
+      kvtguvm: "Runtime — reliability, capacity, and records",
+      kwq6jzq: "SHOWN",
+      k1vohw1x: "Safe default",
+      kxug9f0: "Safe test",
+      k16k8lef:
+        "Safe test runs tools approved for testing; Read-only permits approved reads but blocks writes; Live effects can change real systems.",
+      kqt5esl: "Safe workflow",
+      k1wx8uj5: "Safety case:",
+      klewgh4: "Save",
+      k1w4ptv8: "Save / Done / Cancel",
+      kum7v70: "Save each output as a separate file",
+      kl80tty: "Save final prompts for troubleshooting",
+      k534iun:
+        "Save stores a checkpoint; Done saves and returns to View mode; Cancel restores the start of the current edit session.",
+      k1jt1qtx:
+        "Save the draft, select Draft, enter the user prompt, and fill every required variable.",
+      k1fucjvk: "Save the model's unprocessed response",
+      k10s3uyt: "Save the run's inputs",
+      k1q2j1af:
+        "Saves each output separately in addition to the aggregate JSON file.",
+      kj9xwt0:
+        "Saves your draft shortly after you stop typing while Edit mode is open.",
+      kpvuow1:
+        "Say what to provide, expected units or format, and where it comes from.",
+      k19hwlpo: "Schedule",
+      kogp5s7: "Schedule and workflow events",
+      k1cvijon: "Schedule timezone",
+      k1i7ykyz:
+        "Search by action or system name, then read the tool description.",
+      k34nwt5:
+        "Search by the label you see in Agent Studio. Advanced JSON fields include a safe starting point; ask an engineer before changing unfamiliar integration mappings.",
+      k1a3bo8g: "Search every editor label in plain language.",
+      k16by6pu: "Search tool catalog",
+      k1x0w60d:
+        "Select a run to review its prompt preview, status, duration, trace, output, logs, and artifacts.",
+      klswyei:
+        "Select any previous run to reopen its status, timing, trace, output, logs, and artifacts.",
+      k1w9e6ab: "Selects or renames values supplied to this step.",
+      k1jsmmcb:
+        "Set enough for the output schema, without allowing unnecessarily long responses.",
+      k1tlzfy5: "Stable step ID",
+      kcscafh: "Stage",
+      k1rmoy4x:
+        "Standard for normal use, Minimal for lower retention, Debug temporarily during approved troubleshooting.",
+      k1yu4tby:
+        "Standing directions that define the agent's role, rules, and response behavior.",
+      k1ch7ihv: "Start here",
+      kgwoflx:
+        "Start with 120 seconds; increase only for known long-running work.",
+      kw6ayf8:
+        "Start with Safe test or Read-only, then use Live effects only in an approved test environment.",
+      k1y5bh25:
+        "Start with Safe test. Read-only permits approved reads but blocks writes. Live effects allows configured real changes.",
+      k2gbvle:
+        "Start with a simple type; add enum, properties, or required only when useful.",
+      kse38g9: "Starting template",
+      ku9jhxt:
+        "State the local task and constraints. Leave blank if the Agent instructions already cover it.",
+      k2w6s2m: "Step name",
+      k16cvkr7: "Step prompt",
+      k1mxszis: "Steps",
+      kra7jnu: "Steps — common fields",
+      k1kl0ytk: "Steps — type-specific fields",
+      k189oh76:
+        "Stop asks an active run to cancel at a safe checkpoint. It cannot reverse an external change a tool already made. This is why Safe test or Read-only is the right first choice.",
+      k1we5npt: "Stop versus undo",
+      k148cbj4: "Stores short, user-visible explanations of model decisions.",
+      kuc02tu: "Stores the final prompts after templates are filled.",
+      k1h4fy1g: "Stores the model text before output validation and cleanup.",
+      k1e91f4l: "Stores the structured values used for reproducibility.",
+      k26fb58:
+        "Stores version, timing, validation, usage, artifacts, and emitted events.",
+      k1whi71t: "Subflow agent or event",
+      k12865pp: "Subflow input",
+      k1myey1b:
+        "Summarize the document for an executive reader. Focus on decisions, risks, and actions.",
+      k195x1vl: "Support ticket classifier",
+      k1u3icdx: "TEST PROMPT",
+      k2ykfx9: "Task instructions",
+      k5b3umk: "Task type",
+      kr22l9x: "Technical runtime messages for troubleshooting.",
+      k19twxpj: "Tell it its role, rules, and required response behavior.",
+      k1a7iaxu: "Temporarily changes generation limits for this run.",
+      k120bnz9: "Temporarily tests another model setup.",
+      kgfovy0: "Temporary AI provider / Temporary AI model",
+      kalz4gq:
+        "Temporary creativity / Temporary answer length / Temporary time limit",
+      k4133su: "Terms decoded",
+      kdbbxmt: "Test",
+      krmx1hf: "Test & operate",
+      kl2fp9w: "Test Lab controls",
+      k1y9m7ed:
+        "Test Lab uses the real runtime and retains the result. Start with a saved draft and Safe test tool effects.",
+      k1q62v9e: "Test the saved draft",
+      kdfl2cv:
+        "Text entered here is stored, but publishing it does not deploy or execute code.",
+      kxmxzg0:
+        "The AI service and the particular model used to generate a response.",
+      krmj1jo:
+        "The Chat request input is inserted automatically as the user message; do not copy it into agent instructions.",
+      kzitfr8:
+        "The agent's standing role, goal, rules, limits, and required response behavior.",
+      k1ll2gv0:
+        "The allow-list is a security boundary, not just a convenience list.",
+      kxxvfgl:
+        "The basic text, number, yes/no, list, or object format this field accepts.",
+      k1tvvecs: "The column or phase where the agent appears in a workflow.",
+      kmss6w5: "The complete JSON source edited by Guided mode.",
+      k1nozf73:
+        "The complete machine-readable definition of agents and workflow behavior.",
+      k14stzql: "The currently published, operational agent version.",
+      kvrkcti:
+        "The declared data shape callers provide and the result shape the agent promises.",
+      k1vlebhw: "The exact allowed tool executed by a Tool step.",
+      kupqh0y: "The explicit permission list for actions outside the model.",
+      kvttk27: "The fields the person completes.",
+      khrbecn: "The final schema-validated JSON result.",
+      kmru8dq:
+        "The final validated JSON. Require both correct values and the Schema valid badge.",
+      k1vz75ch: "The friendly label shown in Test Lab forms.",
+      k1qr7zxh: "The friendly name shown in the portal.",
+      k1hetpc7: "The human-friendly name for the result.",
+      k149v6hm:
+        "The information a person, event, or API must provide to start a run.",
+      k41z4jk: "The input marked",
+      k1e0mk4z: "The largest accepted upload size.",
+      k1ry3078: "The model service used by the agent.",
+      kc0oj6s: "The name and purpose people see when they browse agents.",
+      kx3prca: "The name of the aggregate JSON result saved after a run.",
+      kevx45p:
+        "The new immutable version becomes Live. Existing in-flight runs continue on the version they started with.",
+      k18yh05o: "The next step for each condition outcome.",
+      kuzr0aq: "The one Chat request input always uses the reserved ID prompt.",
+      k1y81jy9: "The operator role responsible for the task.",
+      kkp1no6:
+        "The ordered plan the agent follows. The screenshot in this guide shows these fields.",
+      k1f1rk70:
+        "The permanent technical identifier used by integrations and past runs.",
+      kfvbczc: "The planned workflow or agent to start.",
+      kne4fmq: "The promised result shape and which run records are retained.",
+      kmjvk9d: "The prompt is automatic",
+      kbaaibd:
+        "The protected default state for inspecting, testing, validating, or publishing without accidentally changing fields.",
+      k1453vud: "The provider's model identifier.",
+      k1h3i0zl: "The region used to interpret the schedule.",
+      k5owwu8: "The request sent as the agent's Chat request input.",
+      k3xlkin: "The sensitivity level of this result.",
+      k1bqp9hb:
+        "The sequence of steps and tool decisions. Start here to locate delays or failures. Reasoning summaries are concise explanations, never hidden chain-of-thought.",
+      k1olc9gj: "The stable key for one named result.",
+      k1fpoc8t: "The stable key used in templates and integrations.",
+      ko3vwcx:
+        "The state that unlocks a draft for changes. Save and Done keep the changes; Cancel restores the start of the edit session.",
+      k11rsyxt:
+        "The time-ordered record of steps and important runtime decisions for a run.",
+      k13m42rl: "The type and shape the model result must match.",
+      k14nhsg:
+        "The user's request. Agent Studio automatically sends the declared prompt input as the AI model's user message.",
+      kih2riu:
+        "These examples use simple contracts and one AI step so the relationship between instructions, inputs, and outputs stays easy to see.",
+      k1m5xsdj: "Tool",
+      kmie5w1: "Tool case:",
+      kmmh4km: "Tool name",
+      k1xqqjrc: "Tool settings",
+      k15cdqf0: "Tools",
+      kata72m: "Trace",
+      khfspw4:
+        "Turn a long document into a short summary, key points, and follow-up actions.",
+      kvl0c7x:
+        "Turn on for a simpler caller response; the complete JSON file is still saved.",
+      k12k5fdi: "Turn on for every result downstream users or systems rely on.",
+      k41e8d:
+        "Turn on only when the agent and its tools are designed to process a collection.",
+      k1f05j1n:
+        "Turn on only when the agent cannot produce a useful result without it.",
+      k6q142h:
+        "Turn on when downstream consumers need individual output files.",
+      k1hetdpl: "Turns the configured traffic protection on.",
+      k42276u: "Two small agents you can reproduce",
+      k1di8zjk: "Two views of the same non-prompt inputs.",
+      k1m2zofh: "Type",
+      k15ce1hc: "Type of information",
+      kdsgzxm: "TypeScript reference (documentation only)",
+      k16xqrku: "USER GUIDE",
+      k158egzz:
+        "Unlocks a safe draft for changes. If only a live version exists, Studio creates the draft automatically.",
+      k11u5g05: "Upper limit on generated response length.",
+      k13sweyq:
+        "Use 0–0.3 for extraction/classification, around 0.5–0.8 for writing, and test before going higher.",
+      k1lz6z9r: "Use 1 for most agents; 0 disables correction; maximum is 3.",
+      k1o59hiu:
+        "Use 1, 2, 3, and so on. Move up/down is safer than manually renumbering.",
+      kgrb7xl: "Use 1–3 for most agents.",
+      k8f6215:
+        "Use Done when you finish. Use Cancel only when you want to reverse this session's changes; Studio asks first.",
+      ke5i68e:
+        "Use Form for normal testing; All test inputs is convenient for pasting a complete JSON object.",
+      k2to6xh:
+        "Use Live effects only when you understand every allowed tool and intend its real-world changes.",
+      kx0vj5o: "Use a configured role such as operator or compliance-reviewer.",
+      kmtl5tx:
+        "Use a modest limit such as 4–8 to prevent loops and unexpected cost.",
+      k1cl6mo1:
+        "Use a realistic safe default, or null when there should be no default.",
+      k1aengd: "Use a short name such as category, summary, or next_actions.",
+      k1lvxnpd:
+        "Use a stable grouping key, commonly a subject or customer identifier; leave blank when no special grouping is needed.",
+      k1t1cgz4: "Use a unique technical name, such as classify_ticket.",
+      k34b5tv: "Use a verb and object, such as Classify ticket.",
+      km8467i: "Use after the Trace identifies a failing area.",
+      k1jbacf0:
+        "Use after writing the main intent; check that the meaning did not change.",
+      kwkkbng:
+        "Use an IANA timezone such as Asia/Singapore, not an abbreviation such as SGT.",
+      kaqls0l: "Use approval, review, correction, or another team convention.",
+      kprrw6r:
+        "Use as a review aid, especially for agents using sensitive data or tools.",
+      k1g2q5zs:
+        "Use conservative tools and runtime settings in the creation wizard. Refine it safely as a draft afterward.",
+      k1utchck:
+        "Use enough time for the expected task; 120 seconds is a reasonable starting point.",
+      kqlzuxz:
+        "Use five-part cron, such as 0 9 * * 1-5 for 9:00 on weekdays. Leave blank for no schedule.",
+      k1cvbqm7:
+        "Use for a first draft, then review it carefully before saving.",
+      kavjci6:
+        "Use it to make the contract concrete for reviewers and testers.",
+      kxshmpz: "Use its configured agent or event name.",
+      k1abw8su:
+        "Use only when comfortable with the manifest contract; keep the Valid definition badge green.",
+      k1h8trix: "Use plausible, non-sensitive sample data.",
+      k11iwrux: "Use realistic inputs",
+      k1nsnz04:
+        "Use the documented keys shown below the editor. Reference credential environment variables where supported; never paste secrets into prompts.",
+      k8zu17t:
+        "Use the version list to identify what was live for a past run. Publishing creates a new entry.",
+      k1336ugx:
+        "Use the workspace default unless there is an approved reason to override it.",
+      krbbjq:
+        "Use when instructions repeat themselves. Recheck important rules afterward.",
+      kfrgvl4: "Use words an operator recognizes, such as Recommended queue.",
+      k1qggyl:
+        "Usually 0–2. Tools are never retried automatically because they may cause duplicate effects.",
+      kczz73w:
+        "Usually leave it simple. Reference declared inputs with template expressions such as {{json inputs.context}}.",
+      k1dmf36b: "Usually on. The system never exposes hidden chain-of-thought.",
+      k1919omo:
+        "Usually on. Turn off only when retention policy requires it and reproducibility is less important.",
+      kp5d1st: "Validate and publish",
+      k1uc2sr7:
+        "Validate, review downstream impact, and create a new live version.",
+      kgy1qqi: "Validation",
+      k1eoli6y: "Values intended for the subflow.",
+      k1hfxnyg: "Variables:",
+      kq0zd4n: "Version",
+      k1ubkemk: "Versions",
+      k1y3mqg0: "Versions and Developer view",
+      k1osn1yz: "View mode",
+      k1ir4pl6: "Wait policy",
+      kp8znqv: "Want file upload instead?",
+      k12ymx8y: "Watch out:",
+      k1oqzb0v: "What each outgoing event contains",
+      kswlda0: "What kind of work happens in the step.",
+      kxcnvja: "What should the agent do?",
+      k1dhk2el: "What the assigned person must decide or enter.",
+      k19mqxgw:
+        "What the model is responsible for and how the user request is assembled.",
+      k1mjomlt: "What to enter, in plain language",
+      k1d6x8o: "What to enter:",
+      k802e7n: "What tools may change",
+      kef9g1b: "When the agent starts and what it sends downstream.",
+      k51ta0d: "When true / When false",
+      kkbcd4u: "When you open an older agent",
+      k1s3fls4: "Where the step runs in the sequence.",
+      kco5964: "Whether one input can contain several uploads.",
+      kul7ze7: "Whether this work runs automatically or pauses for a person.",
+      kn3b4wn: "Whether to wait for a subflow result or continue immediately.",
+      kf0nib9: "Which model runs and how it generates a response.",
+      k11rf0mb: "Which uploaded file formats are accepted.",
+      kwowhae:
+        "Who the agent helps, what it does, and what a good result looks like.",
+      kjhifd0:
+        "Work through Overview, Instructions, Inputs, Outputs, Steps, Tools, Runtime, and Workflow.",
+      k120f4v4: "Worked examples",
+      k1dub5e9:
+        "Write a realistic request. It is inserted automatically as the user message.",
+      ke2wnnh:
+        "Write direct instructions: role, objective, method, output rules, and what to do when information is missing.",
+      k1tlxw0z: "Write for me",
+      k1u3e1q3: "a longest value, unusual category, or near-threshold score.",
+      k1cympv: "and choose",
+      k1h4lyry:
+        "and read the impact confirmation. Confirm only when the change is intentional.",
+      k1c99b6t:
+        "becomes the AI model's user message. Keep permanent rules in Agent instructions and put each user's request in Test Lab.",
+      k61l08a:
+        "category (required enum) · urgency (required enum) · rationale (required string)",
+      k6bmaiu: "complete, ordinary input that should succeed.",
+      k3mshc5:
+        "confirm the agent asks, abstains, or applies the intended fallback.",
+      keq5wzm: "for the first run.",
+      k1e5wws:
+        "leave provider, model, temperature, tokens, and timeout blank unless you are deliberately comparing configurations.",
+      k1bbf6bt:
+        "prompt (Chat request, required) · customer_tier (Form value, optional text)",
+      k1x5sl6w:
+        "prompt (Chat request, required) · document_text (Form value, required text) · audience (Form value, optional text)",
+      k1qrgqx0: "saved",
+      k1gbcje1:
+        "sensitive data, unsafe instruction, or a request outside the agent's role.",
+      k1kyommp:
+        "summary (required string) · key_points (required string array) · action_items (string array)",
+      k11wxpbu:
+        "to restore the draft to the start of this edit session, including safely reversing autosaved changes.",
+      k1jbfbqk: "to save and return to View mode. Choose",
+      k1j7oqyq:
+        "use Draft for saved edits and Live for the published version users currently depend on.",
+      km6vgma: "when the revision is stored; use",
+      kefkff4: "when you need an immediate checkpoint.",
+      kcfxo55: "{count} fields",
+    },
+  },
+  agentAuthoringError: {
+    operation: {
+      promptGeneration: "Prompt generation",
+      publishing: "Agent publishing",
+      idCheck: "Agent ID check",
+      request: "Agent authoring request",
+    },
+    unreachable:
+      "Could not reach the agent authoring service. Check the connection and retry.",
+    unreadable:
+      "{operation} returned an unreadable response (HTTP {status}). Please retry.",
+    failed: "{operation} failed (HTTP {status}). Please retry.",
+    unavailable:
+      "{operation} is temporarily unavailable (HTTP {status}). Please retry.",
+    invalidResponse:
+      "{operation} returned an invalid response (HTTP {status}). Please retry.",
+  },
+  deployAgentBuilder: {
+    stepBuild: "Build",
+    stepRuntime: "Runtime",
+    header: {
+      liveTitle: "Agent is live",
+      newTitle: "New Agent",
+      liveSubtitle: "Published to {tenant} and ready for events.",
+      newSubtitle:
+        "Design an event-driven agent, publish it, and run it in {tenant}.",
+      closeAria: "Close New Agent builder",
+    },
+    actions: {
+      tryAgain: "Try again",
+      generate: "Generate",
+      regenerate: "Regenerate",
+      done: "Done",
+      openRun: "Open & run",
+      publishing: "Publishing…",
+      createPublish: "Create & publish",
+    },
+    errors: {
+      promptGeneration: "Could not generate the system prompt",
+      promptGenerationDetail: "Could not generate the system prompt: {message}",
+      publish: "Agent publishing failed",
+      publishDetail: "Agent publishing failed: {message}",
+    },
+    toast: {
+      liveTitle: "{title} is live",
+      liveDescription: "{functionId} is published and ready to run.{events}",
+      createdEventOne: "1 new event type created.",
+      createdEventMany: "{count} new event types created.",
+      publishFailed: "Publish failed",
+    },
+    templates: {
+      heading: "Choose how this agent works",
+      intro:
+        "Each pattern includes a production execution plan, safeguards, and an automatic model recommendation. Everything stays editable.",
+      bestFor: "Best for",
+      safeguards: "Built-in safeguards",
+      blank: {
+        name: "Blank agent",
+        description:
+          "Design a purpose-built agent from a clean, production-ready foundation.",
+        outcome:
+          "A flexible event-driven agent with an editable plan, tools, model policy, and output contract.",
+        bestFor: {
+          "0": "Novel workflows",
+          "1": "Domain copilots",
+          "2": "Custom reasoning",
+        },
+        safeguards: {
+          "0": "Validate the incoming event",
+          "1": "Return a bounded, explicit result",
+        },
+      },
+      classify: {
+        name: "Classifier",
+        description:
+          "Route requests with constrained labels, confidence, evidence, and an abstain path.",
+        outcome:
+          "A schema-valid classification that downstream agents can route without parsing prose.",
+        bestFor: {
+          "0": "Intent routing",
+          "1": "Risk triage",
+          "2": "Priority queues",
+        },
+        safeguards: {
+          "0": "Closed label set",
+          "1": "Confidence threshold",
+          "2": "Abstain when evidence is weak",
+        },
+      },
+      extract: {
+        name: "Extractor",
+        description:
+          "Turn documents or messages into validated structured data with provenance.",
+        outcome:
+          "Typed JSON with field-level evidence, null handling, validation, and a repair pass when needed.",
+        bestFor: {
+          "0": "Document intake",
+          "1": "Entity extraction",
+          "2": "Form automation",
+        },
+        safeguards: {
+          "0": "Never invent missing fields",
+          "1": "Preserve provenance",
+          "2": "Validate before emit",
+        },
+      },
+      rag: {
+        name: "Deep Search",
+        description:
+          "Investigate a question across ontology, connected knowledge, and approved sources with citations.",
+        outcome:
+          "An evidence-backed answer that decomposes the question, searches iteratively, and reports uncertainty.",
+        bestFor: {
+          "0": "Enterprise research",
+          "1": "Knowledge discovery",
+          "2": "Evidence synthesis",
+        },
+        safeguards: {
+          "0": "Cite every material claim",
+          "1": "Separate evidence from inference",
+          "2": "Expose coverage gaps",
+        },
+      },
+      loop: {
+        name: "Tool-loop agent",
+        description:
+          "Plan and execute multi-step work by choosing tools, observing results, and self-correcting.",
+        outcome:
+          "A completed objective with a bounded plan-act-observe loop and a verified final state.",
+        bestFor: {
+          "0": "Operations",
+          "1": "API orchestration",
+          "2": "Multi-step automation",
+        },
+        safeguards: {
+          "0": "Bound steps and retries",
+          "1": "Confirm risky actions",
+          "2": "Verify completion from tool output",
+        },
+      },
+      human: {
+        name: "Human approval",
+        description:
+          "Prepare an evidence-rich decision packet and pause for an accountable operator decision.",
+        outcome:
+          "An approve, reject, or revise decision with rationale, audit context, and a resumable event.",
+        bestFor: {
+          "0": "High-impact decisions",
+          "1": "Policy exceptions",
+          "2": "Quality gates",
+        },
+        safeguards: {
+          "0": "Show evidence and uncertainty",
+          "1": "No silent auto-approval",
+          "2": "Record decision rationale",
+        },
+      },
+    },
+    identity: {
+      nameInvalid:
+        "Start with a lowercase letter and use letters or numbers only.",
+      checkingName: "Checking whether this agent ID is available…",
+      nameAvailable: "Agent ID {id} is available.",
+      nameConflict:
+        "An agent with this {field} already exists: {value}. Choose a different name.",
+      nameCheckFailed:
+        "Could not verify this agent ID. Continue is disabled until the check succeeds.",
+      purposeLabel: "Purpose and success criteria",
+      purposeHint:
+        "Explain what the agent should accomplish, the context it can trust, and what a successful result contains. Auto model selection uses this brief.",
+      purposeInvalid: "Describe the agent in at least 10 characters.",
+      executionLabel: "Execution",
+      executionHint:
+        "Agents are placed by their event contract, not a workflow stage.",
+      executionHuman: "Prepares context and pauses for operator authority",
+      executionAgent: "Runs automatically when a trigger event arrives",
+      architectureLabel: "Architecture",
+      architectureHint: "Every agent is independent and event-driven.",
+      noStage: "No workflow stage required",
+    },
+    events: {
+      useSuggestedContract: "Use suggested contract",
+      triggersLabel: "Trigger events",
+      triggersHint:
+        "The agent starts whenever any selected event arrives. Pick an existing event or create a new type.",
+      triggerRequired:
+        "At least one trigger is required so the runtime can start this agent.",
+      emitsLabel: "Emit events",
+      emitsHint:
+        "Publish one or more result events so downstream agents can continue the work.",
+      emitRequired:
+        "At least one emitted event is required to complete the event contract.",
+      apiNote:
+        "Event names are the agent's API. New event types are created only when you publish.",
+      newBadge: "NEW",
+      pickerPlaceholder: "Search or name a new event…",
+      createNew: "Create new event",
+      useEvent: "Use event",
+    },
+    build: {
+      tabPlan: "Execution plan",
+      tabCapabilities: "Capabilities",
+      promptErrorRetry: "{message} Open System prompt to retry.",
+      promptHint:
+        "Generated from the purpose, event contract, execution pattern, model policy, ontology, and tools. Review it before publishing.",
+      generatingPrompt: "Generating prompt…",
+      promptAria: "Generated system prompt",
+      promptStale:
+        "Agent details changed after this prompt was generated. Regenerate it, or edit the prompt to confirm your custom version.",
+      promptTooShort: "The system prompt must contain at least 40 characters.",
+      typescriptLabel: "TypeScript source (optional)",
+      typescriptHint:
+        "Stored with the manifest as implementation metadata. Generated manifest agents execute through the system prompt and runtime tool loop.",
+      noToolsPrefix: "No tools selected. Choose workspace tools under",
+      noToolsSuffix: "; their live schemas will appear here for editing.",
+    },
+    model: {
+      workspaceDefault: "Workspace default",
+      auto: "Auto",
+      autoLoading: "Auto · loading fleet…",
+      autoSelected: "Auto selected",
+      userSelected: "User selected",
+      autoModel: "Auto model",
+      fixedModel: "Fixed model",
+      reasons: {
+        default: "The workspace primary model is the starting recommendation.",
+        blank:
+          "A balanced general model is the safest starting point until the purpose is more specific.",
+        classify:
+          "Classification benefits from a fast, low-cost model with reliable structured output.",
+        extract:
+          "Extraction needs dependable schema adherence and enough context for long source material.",
+        rag: "Deep Search needs a strong reasoning model for query planning, source comparison, and synthesis.",
+        loop: "Tool loops need a model with strong function calling, planning, and error recovery.",
+        human:
+          "The preparation step benefits from nuanced judgment while the final authority remains human.",
+        reasoningSignal: "The purpose also signals multi-step reasoning.",
+        latencySignal: "The purpose also signals a latency-sensitive workload.",
+      },
+    },
+    search: {
+      heading: "Research depth",
+      answer: {
+        title: "Answer",
+        time: "seconds",
+        description: "Focused retrieval and a concise cited response.",
+      },
+      investigate: {
+        title: "Investigate",
+        time: "minutes",
+        description: "Iterative search, gap analysis, and evidence synthesis.",
+      },
+      deepResearch: {
+        title: "Deep Research",
+        time: "background",
+        description:
+          "Reviewable plan, parallel workstreams, evidence ledger, and citation verification.",
+      },
+    },
+    steps: {
+      understandPlan: {
+        title: "Understand & plan",
+        description:
+          "Validate the event, identify the goal, and form a bounded execution plan.",
+      },
+      executeVerify: {
+        title: "Execute & verify",
+        description:
+          "Use approved context and tools, verify the result, and emit the output contract.",
+      },
+      classify: {
+        title: "Classify",
+        description:
+          "Normalize the input, apply the label rubric, and return label, confidence, and evidence.",
+      },
+      extractEvidence: {
+        title: "Extract with evidence",
+        description:
+          "Map source content to the requested schema and retain field-level provenance.",
+      },
+      validateRepair: {
+        title: "Validate & repair",
+        description:
+          "Check types, required fields, and ontology constraints; repair only from source evidence.",
+      },
+      planInvestigation: {
+        title: "Plan the investigation",
+        description:
+          "Decompose the question, identify entities, and create independent search paths.",
+      },
+      searchLeads: {
+        title: "Search & follow leads",
+        description:
+          "Traverse ontology and approved sources, reranking evidence and closing coverage gaps.",
+      },
+      synthesizeCitations: {
+        title: "Synthesize with citations",
+        description:
+          "Resolve conflicts, distinguish facts from inference, and produce a cited answer.",
+      },
+      plan: {
+        title: "Plan",
+        description:
+          "Define success criteria, dependencies, and a bounded sequence of actions.",
+      },
+      actObserveRecover: {
+        title: "Act, observe & recover",
+        description:
+          "Call allowed tools, inspect results, and adapt without exceeding runtime limits.",
+      },
+      verifyEmit: {
+        title: "Verify & emit",
+        description:
+          "Confirm the intended state from evidence and publish a machine-readable result.",
+      },
+      prepareDecision: {
+        title: "Prepare decision brief",
+        description:
+          "Summarize evidence, policy constraints, options, uncertainty, and a recommendation.",
+      },
+      humanDecision: {
+        title: "Human decision",
+        description:
+          "Pause for approve, reject, or revise; capture rationale and resume from the decision event.",
+      },
+      retrieveEvidence: {
+        title: "Retrieve focused evidence",
+        description:
+          "Search ontology and approved sources within a tight budget, then rank the strongest evidence.",
+      },
+      answerCitations: {
+        title: "Answer with citations",
+        description:
+          "Produce a concise grounded answer, cite material claims, and state when evidence is insufficient.",
+      },
+      clarifyScope: {
+        title: "Clarify scope",
+        description:
+          "Resolve ambiguity, define success criteria, and turn the request into research questions.",
+      },
+      reviewResearchPlan: {
+        title: "Review research plan",
+        description:
+          "Present the investigation plan, sources, budget, and boundaries before the background run starts.",
+      },
+      researchWorkstreams: {
+        title: "Run research workstreams",
+        description:
+          "Investigate independent source and ontology workstreams within a bounded durable run, preserving evidence for later synthesis.",
+      },
+      closeEvidenceGaps: {
+        title: "Close evidence gaps",
+        description:
+          "Compare findings, identify unresolved claims, and follow the most valuable remaining leads.",
+      },
+      verifyCitations: {
+        title: "Verify citations",
+        description:
+          "Independently check claim support, source quality, freshness, and citation coverage.",
+      },
+      synthesizeReport: {
+        title: "Synthesize report",
+        description:
+          "Produce a structured report that separates evidence, inference, uncertainty, and recommended next steps.",
+      },
+    },
+    plan: {
+      heading: "{template} plan · {count} steps",
+      humanCheckpoint: "Human checkpoint · no LLM",
+      modelAria: "Model for {step}",
+      inheritModel: "Inherit agent model · {model}",
+      overrideHint:
+        "Override only the steps that need a different cost, latency, context, or reasoning profile. Other steps inherit the agent model.",
+    },
+    capabilities: {
+      ontologyApi: "Ontology API",
+      included: "Included",
+      includedTitle: "Included with Ontology API",
+      ontologyDescription:
+        "Every agent can discover the graph schema, resolve entities, and run tenant-scoped Neo4j reads through approved tools. The runtime supplies credentials; prompts never see them.",
+      loadingGraph: "Loading graph capabilities…",
+      resolveOnPublish:
+        "Ontology binding will be resolved when the agent is published.",
+      additionalLabel: "Additional capabilities · {count} selected",
+      additionalHint:
+        "Choose only the workspace tools this agent may invoke. Ontology access is included for every agent.",
+      loadingTools: "Loading workspace tools…",
+      noTools: "No workspace tools are registered.",
+    },
+    runtime: {
+      modelPolicy: "Model policy",
+      overrideNote: "Per-step overrides are configured in the execution plan.",
+      retriesHint:
+        "Maximum immediate retry attempts for a failed model action.",
+      timeoutLabel: "Per-call timeout",
+      timeoutHint:
+        "Maximum duration of each model gateway call; a multi-step run may take longer.",
+      limitsNote:
+        "Concurrency is partitioned by the runtime event subject. Exhausted retries are recorded in the run and audit logs.",
+    },
+    review: {
+      ready: "ready",
+      identityRequired: "available name, title, description required",
+      nameAvailable: "Agent ID available",
+      promptReady: "System prompt ready",
+      charCount: "{count} chars",
+      graphToolCount: "{count} graph tool(s)",
+      ontologyServerManaged: "ontology.query · server managed",
+      executionStepCount: "{count} execution step(s)",
+      modelOverrideCount: "{count} model override(s)",
+      liveToolCount: "{count} live tool binding(s)",
+      typescriptMetadata: "typescript_code metadata · {count} lines",
+      noTypescriptMetadata: "No TypeScript metadata",
+      liveCatalogSchemas: "live catalog schemas",
+      optional: "optional",
+      modelSelection: "Model selection",
+      runtimeValid: "Runtime limits valid",
+      publishTarget: "Publish target",
+      liveRuntime: "Live runtime · {tenant}",
+      publishActions:
+        "Persist manifest, create a workflow version, and hot-load the runtime function",
+      publishGatePrefix: "Publishing succeeds only after the API confirms",
+      publishGateSuffix:
+        "is registered, live, and ready for its trigger events.",
+    },
+    published: {
+      title: "{title} is live",
+      description:
+        "The agent is published in {tenant}, registered with the runtime, and ready to run whenever one of its trigger events arrives.",
+      runtime: "Runtime",
+      functionRegistered: "Function registered",
+      workflowVersion: "Workflow version",
+      liveDeployment: "Live deployment",
+      nextStep: "Next step",
+      nextStepDescription:
+        "Open the agent to test it with a message or send one of its trigger events. Live runs, steps, logs, and emitted events will appear in Agent Studio.",
+      createdEventOne: "1 event type created",
+      createdEventMany: "{count} event types created",
+    },
+    progress: {
+      title: "Generating system prompt",
+      description:
+        "Analyzing purpose, event contract, execution plan, tools, and model policy…",
+    },
+  },
+  portalError: {
+    eyebrow: "Portal error",
+    title: "Something broke while rendering this view.",
+    description:
+      "The control plane recovered but couldn’t complete the page. Retry below, or refresh if the problem persists.",
+    retry: "Try again",
+    authUnavailable:
+      "The authentication service is unavailable. Check the API connection and retry.",
+    authHttpError: "The authentication service returned HTTP {status}.",
+    authInvalidJson:
+      "The authentication service returned a response that could not be read.",
+    authInvalidSession:
+      "The authentication service returned an invalid session response.",
+  },
+  createToolModal: {
+    meta: {
+      auth: "Auth: {authHint}",
+      confidence: "Confidence {confidence}",
+    },
+    toast: {
+      intentRequired: "First describe what this tool does (intent)",
+      sourceRequired: "Provide a public API doc URL, or paste the doc text",
+      extractSuccess: "Contract draft extracted — review and save",
+      extractFailed: "Extraction failed: {message}",
+      nameRequired:
+        "Tool name can't be empty (use a namespace, e.g. acme.createTicket)",
+      urlTemplateRequired: "URL template can't be empty",
+      paramsSchemaInvalid: "Params schema is not valid JSON",
+      returnsSchemaInvalid: "Returns schema is not valid JSON",
+      headersInvalid: "headers is not valid JSON",
+      saveSuccess: 'Saved tool "{name}" to the tool library',
+      saveFailed: "Save failed: {message}",
+    },
+    title: "Create tool · Add to shared tool library",
+    extractSection: {
+      heading: "① Extract with AI from a URL / doc (optional)",
+    },
+    field: {
+      intentLabel: "What should this tool do (intent)",
+      intentPlaceholder: "e.g. fetch job details by jobId",
+      urlLabel: "Public API doc URL",
+      docTextLabel: "Or paste the doc text directly",
+      docTextPlaceholder: "Paste the relevant API doc sections here…",
+      nameLabel: "Tool name (with namespace)",
+      methodLabel: "Method",
+      descriptionLabel: "Description",
+      descriptionPlaceholder: "One-line description of what this tool does",
+      urlTemplateLabel:
+        "URL template (may contain {placeholder}, filled from the event payload at runtime)",
+      sideEffectLabel: "Side effect",
+      sharedLabel:
+        "Shared (any domain can bind); uncheck to keep it tenant-only",
+      headersLabel:
+        "headers (JSON; write credentials as {ENV_NAME}, filled from config/env at runtime)",
+      bodyTemplateLabel: "body template (may contain {placeholder})",
+      paramsSchemaLabel: "Params schema (JSON)",
+      paramsSchemaPlaceholder: '{ "job_id": "string · job ID" }',
+      returnsSchemaLabel: "Returns schema (JSON)",
+    },
+    extractButton: {
+      pending: "Extracting…",
+      idle: "✦ AI extract contract",
+    },
+    formSection: {
+      heading: "② Review / fill in the tool contract",
+    },
+    cancel: "Cancel",
+    saveButton: {
+      pending: "Saving…",
+      idle: "Save to tool library",
+    },
   },
 } satisfies Dict;
 

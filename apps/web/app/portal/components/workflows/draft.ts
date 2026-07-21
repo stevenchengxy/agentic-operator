@@ -237,6 +237,9 @@ export interface NewAgentDefinitionOptions {
   emits?: string[];
   stage?: number;
   position?: CanvasPosition;
+  actionDescription?: string;
+  actionPrompt?: string;
+  ontologyInstructions?: string;
   overrides?: Record<string, unknown>;
 }
 
@@ -283,16 +286,19 @@ export function createAutomatedAgentDefinition(
         order: "1",
         name: "execute",
         description:
+          options.actionDescription ??
           "Process the request and verify the result before emitting success.",
         type: "logic",
         action_prompt:
+          options.actionPrompt ??
           "Use the agent instructions and supplied inputs. Do not invent missing facts. Return a concise, verifiable result.",
       },
     ],
     triggered_event: options.emits ?? [`${prefix}_COMPLETED`],
     ontology_instructions:
+      options.ontologyInstructions ??
       `You are ${title}. Validate the incoming data, perform only the requested work, ` +
-      "and report uncertainty or missing information explicitly.",
+        "and report uncertainty or missing information explicitly.",
     generated: true,
     stage: options.stage ?? 0,
   } as CompleteAgentDefinition;
@@ -322,6 +328,7 @@ export function createHumanAgentDefinition(
         order: "1",
         name: "review",
         description:
+          options.actionDescription ??
           "Review the evidence and submit a decision with rationale.",
         type: "manual",
         task_type: "approval",

@@ -62,7 +62,7 @@ function metaSummary(row: AuditRow): string {
 }
 
 export function OperationLogTab() {
-  const { t } = useI18n();
+  const { t, language } = useI18n();
   const [q, setQ] = useState("");
   const [open, setOpen] = useState<Set<string>>(new Set());
   const query = useAuditPages({ limit: 300 });
@@ -207,7 +207,11 @@ export function OperationLogTab() {
                           {r.action}
                         </Field>
                         <Field label={t("logsExplorer.colTime")}>
-                          {r.at ? new Date(r.at).toLocaleString() : "—"}
+                          {r.at
+                            ? new Date(r.at).toLocaleString(
+                                language === "zh" ? "zh-CN" : "en-US",
+                              )
+                            : "—"}
                         </Field>
                         <Field label={t("logsExplorer.colTarget")}>
                           {r.targetType

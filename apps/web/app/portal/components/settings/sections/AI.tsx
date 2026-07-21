@@ -37,6 +37,7 @@ import {
 import { Badge, Button, Empty, Icon, Panel } from "@/app/portal/components";
 import { ModelsSection } from "@/app/portal/components/settings/sections/Models";
 import { useDirty } from "@/app/portal/lib/dirty-context";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 import { useTenant } from "@/app/portal/lib/use-tenant";
 import {
   LlmSettingsApiError,
@@ -54,64 +55,36 @@ import {
 
 type AiTab = "routing" | "connections" | "models" | "test";
 
-const AI_TABS: Array<{ id: AiTab; label: string; hint: string }> = [
-  {
-    id: "routing",
-    label: "Routing & defaults",
-    hint: "Map task classes to primary and fallback models",
-  },
-  {
-    id: "connections",
-    label: "Provider connections",
-    hint: "Direct providers, OpenRouter, and NewAPI instances",
-  },
-  {
-    id: "models",
-    label: "Model routes",
-    hint: "Browse the current model catalog and tenant fleet",
-  },
-  {
-    id: "test",
-    label: "Test lab",
-    hint: "Run a billable prompt and inspect routing and usage",
-  },
-];
+const AI_TABS: AiTab[] = ["routing", "connections", "models", "test"];
 
 const REQUIRED_TASKS = [
   {
     id: "ontology.generate",
-    label: "Ontology generation",
-    description: "Schema, class, relationship, and ontology generation.",
+    key: "ontologyGenerate",
   },
   {
     id: "evaluation.run",
-    label: "Evaluation",
-    description: "Rubrics, graders, quality evaluation, and comparison runs.",
+    key: "evaluationRun",
   },
   {
     id: "assistant.suggest",
-    label: "AI suggestion",
-    description: "Inline suggestions, completions, and operator assistance.",
+    key: "assistantSuggest",
   },
   {
     id: "chat.respond",
-    label: "Chat",
-    description: "Interactive assistant and conversational responses.",
+    key: "chatRespond",
   },
   {
     id: "ontogene.generate",
-    label: "OntoGene",
-    description: "OntoGene-specific generation and transformation.",
+    key: "ontogeneGenerate",
   },
   {
     id: "graph.query",
-    label: "Graph Engine query",
-    description: "Natural-language graph queries and result synthesis.",
+    key: "graphQuery",
   },
   {
     id: "file.parse",
-    label: "File parsing",
-    description: "Document extraction, parsing, and structured output.",
+    key: "fileParse",
   },
 ] as const;
 
@@ -256,6 +229,7 @@ function sanitizeParametersForModel(
 }
 
 export function AISection() {
+  const { t } = useI18n();
   const tenant = useTenant();
   const dirtyStore = useDirty();
   const snapshot = useLlmSettings();
@@ -301,10 +275,10 @@ export function AISection() {
   useEffect(() => {
     dirtyStore.setDirty(
       "ai-settings",
-      dirty ? `AI settings for ${tenant}` : null,
+      dirty ? t("aiSection.dirtyLabel", { tenant }) : null,
     );
     return () => dirtyStore.setDirty("ai-settings", null);
-  }, [dirty, dirtyStore, tenant]);
+  }, [dirty, dirtyStore, t, tenant]);
 
   useEffect(() => {
     if (!dirty) return;
@@ -320,7 +294,7 @@ export function AISection() {
     event: ReactKeyboardEvent<HTMLButtonElement>,
     current: AiTab,
   ) {
-    const index = AI_TABS.findIndex((candidate) => candidate.id === current);
+    const index = AI_TABS.findIndex((candidate) => candidate === current);
     let nextIndex: number | undefined;
     if (event.key === "ArrowRight") nextIndex = (index + 1) % AI_TABS.length;
     if (event.key === "ArrowLeft")
@@ -331,9 +305,9 @@ export function AISection() {
     event.preventDefault();
     const next = AI_TABS[nextIndex];
     if (!next) return;
-    setTab(next.id);
+    setTab(next);
     requestAnimationFrame(() => {
-      document.getElementById(`ai-tab-${next.id}`)?.focus();
+      document.getElementById(`ai-tab-${next}`)?.focus();
     });
   }
 
@@ -346,7 +320,10 @@ export function AISection() {
     if (!parsed.success) {
       const first = parsed.error.issues[0];
       setError(
-        `${first?.path.join(".") || "settings"}: ${first?.message ?? "Invalid settings"}. Check route IDs, timeouts, and gateway URLs.`,
+        t("aiSection.validationError", {
+          path: first?.path.join(".") || t("aiSection.settingsPath"),
+          message: first?.message ?? t("aiSection.invalidSettings"),
+        }),
       );
       return;
     }
@@ -358,7 +335,7 @@ export function AISection() {
       const next = cloneSettings(result.settings);
       setDraft(next);
       setBaseline(cloneSettings(next));
-      setMessage(`Saved AI settings revision ${next.revision}.`);
+      setMessage(t("aiSection.savedRevision", { revision: next.revision }));
     } catch (saveError) {
       if (
         saveError instanceof LlmSettingsApiError &&
@@ -378,7 +355,7 @@ export function AISection() {
     setDraft(next);
     setBaseline(cloneSettings(next));
     setConflict(false);
-    setMessage(`Loaded server revision ${next.revision}.`);
+    setMessage(t("aiSection.loadedRevision", { revision: next.revision }));
   }
 
   async function repairMirror() {
@@ -388,9 +365,7 @@ export function AISection() {
       const next = cloneSettings(result.settings);
       setDraft(next);
       setBaseline(cloneSettings(next));
-      setMessage(
-        "Rewrote the managed .env.local mirror from the JSON settings file.",
-      );
+      setMessage(t("aiSection.mirrorRewritten"));
     } catch (repairError) {
       setError(errorText(repairError));
     }
@@ -400,14 +375,14 @@ export function AISection() {
     return (
       <Panel padded>
         <Empty
-          title="AI settings unavailable"
+          title={t("aiSection.unavailableTitle")}
           hint={errorText(snapshot.error)}
         />
         <div
           style={{ display: "flex", justifyContent: "center", marginTop: 12 }}
         >
           <Button small onClick={() => snapshot.refetch()}>
-            Retry
+            {t("aiSection.retry")}
           </Button>
         </div>
       </Panel>
@@ -418,7 +393,7 @@ export function AISection() {
     return (
       <Panel padded>
         <div role="status" style={{ color: "var(--text-3)", fontSize: 12 }}>
-          Loading AI settings…
+          {t("aiSection.loading")}
         </div>
       </Panel>
     );
@@ -441,13 +416,17 @@ export function AISection() {
               }}
             >
               <strong style={{ color: "var(--text)", fontSize: 13 }}>
-                AI control plane
+                {t("aiSection.controlPlane")}
               </strong>
               <Badge tone={dirty ? "amber" : "muted"}>
-                {dirty ? "Unsaved changes" : `Revision ${draft.revision}`}
+                {dirty
+                  ? t("aiSection.unsavedChanges")
+                  : t("aiSection.revision", { revision: draft.revision })}
               </Badge>
               <Badge tone={sync?.status === "drift" ? "amber" : "green"}>
-                {sync?.status === "drift" ? "File drift" : "Files synced"}
+                {sync?.status === "drift"
+                  ? t("aiSection.fileDrift")
+                  : t("aiSection.filesSynced")}
               </Badge>
             </div>
             <p
@@ -459,8 +438,7 @@ export function AISection() {
                 lineHeight: 1.55,
               }}
             >
-              Routes are stored in JSON and mirrored to .env.local. API keys
-              stay encrypted and are never written into either settings file.
+              {t("aiSection.controlPlaneDescription")}
             </p>
           </div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 7 }}>
@@ -470,7 +448,7 @@ export function AISection() {
               disabled={!dirty || save.isPending}
               onClick={() => setDraft(cloneSettings(baseline))}
             >
-              Discard
+              {t("aiSection.discard")}
             </Button>
             <Button
               small
@@ -478,47 +456,46 @@ export function AISection() {
               disabled={!dirty || save.isPending}
               onClick={saveSettings}
             >
-              {save.isPending ? "Saving…" : "Save AI settings"}
+              {save.isPending
+                ? t("aiSection.saving")
+                : t("aiSection.saveSettings")}
             </Button>
           </div>
         </div>
       </Panel>
 
       {sync?.status === "drift" && (
-        <Notice tone="warn" title="The JSON and .env.local mirrors differ">
-          <span>
-            {sync.message ?? "The managed mirror needs to be rebuilt."}
-          </span>
+        <Notice tone="warn" title={t("aiSection.mirrorDriftTitle")}>
+          <span>{sync.message ?? t("aiSection.mirrorDriftMessage")}</span>
           <Button
             small
             onClick={repairMirror}
             disabled={resync.isPending || dirty}
           >
-            {resync.isPending ? "Repairing…" : "Repair mirror"}
+            {resync.isPending
+              ? t("aiSection.repairing")
+              : t("aiSection.repairMirror")}
           </Button>
-          {dirty && <span>Save or discard local edits before repairing.</span>}
+          {dirty && <span>{t("aiSection.repairBlockedByDirty")}</span>}
         </Notice>
       )}
 
       {conflict && (
-        <Notice tone="warn" title="A newer settings revision exists">
-          <span>
-            Your edits were not overwritten. Load the server revision before
-            applying them again.
-          </span>
+        <Notice tone="warn" title={t("aiSection.conflictTitle")}>
+          <span>{t("aiSection.conflictMessage")}</span>
           <Button small onClick={loadLatest}>
-            Load latest
+            {t("aiSection.loadLatest")}
           </Button>
         </Notice>
       )}
 
       {error && (
-        <Notice tone="error" title="Settings action failed">
+        <Notice tone="error" title={t("aiSection.actionFailed")}>
           {error}
         </Notice>
       )}
       {message && (
-        <Notice tone="ok" title="Settings updated">
+        <Notice tone="ok" title={t("aiSection.updated")}>
           {message}
         </Notice>
       )}
@@ -529,33 +506,33 @@ export function AISection() {
       <div
         className="ai-settings-tabs"
         role="tablist"
-        aria-label="AI settings areas"
+        aria-label={t("aiSection.tabsAria")}
         aria-orientation="horizontal"
       >
         {AI_TABS.map((item) => (
           <button
-            key={item.id}
-            id={`ai-tab-${item.id}`}
+            key={item}
+            id={`ai-tab-${item}`}
             type="button"
             role="tab"
-            aria-selected={tab === item.id}
-            aria-controls={`ai-panel-${item.id}`}
-            tabIndex={tab === item.id ? 0 : -1}
-            onClick={() => setTab(item.id)}
-            onKeyDown={(event) => selectTabFromKeyboard(event, item.id)}
+            aria-selected={tab === item}
+            aria-controls={`ai-panel-${item}`}
+            tabIndex={tab === item ? 0 : -1}
+            onClick={() => setTab(item)}
+            onKeyDown={(event) => selectTabFromKeyboard(event, item)}
             style={{
               minWidth: 170,
               padding: "10px 12px",
               border: 0,
-              borderBottom: `2px solid ${tab === item.id ? "var(--signal)" : "transparent"}`,
-              background: tab === item.id ? "var(--panel-2)" : "transparent",
-              color: tab === item.id ? "var(--text)" : "var(--text-2)",
+              borderBottom: `2px solid ${tab === item ? "var(--signal)" : "transparent"}`,
+              background: tab === item ? "var(--panel-2)" : "transparent",
+              color: tab === item ? "var(--text)" : "var(--text-2)",
               cursor: "pointer",
               textAlign: "left",
             }}
           >
             <span style={{ display: "block", fontSize: 12, fontWeight: 600 }}>
-              {item.label}
+              {t(`aiSection.tabs.${item}.label`)}
             </span>
             <span
               style={{
@@ -565,7 +542,7 @@ export function AISection() {
                 fontSize: 9.5,
               }}
             >
-              {item.hint}
+              {t(`aiSection.tabs.${item}.hint`)}
             </span>
           </button>
         ))}
@@ -590,10 +567,10 @@ export function AISection() {
         )}
         {tab === "models" && (
           <div className="ai-settings-models">
-            <Notice tone="info" title="Catalog and fleet">
-              Model routes use <code>gateway-instance/provider-model-id</code>.
-              This existing fleet view remains the place to browse current,
-              tiered, and free catalog entries.
+            <Notice tone="info" title={t("aiSection.catalogTitle")}>
+              {t("aiSection.catalogPrefix")}{" "}
+              <code>gateway-instance/provider-model-id</code>.{" "}
+              {t("aiSection.catalogDescription")}
             </Notice>
             <ModelsSection />
           </div>
@@ -613,6 +590,7 @@ function RoutingPanel({
   onChange: (settings: LlmSettings) => void;
   dirty: boolean;
 }) {
+  const { t } = useI18n();
   const profileByTask = new Map(
     settings.taskProfiles.map((profile) => [
       String(profile.taskClass),
@@ -624,20 +602,29 @@ function RoutingPanel({
   );
   const taskDefinitions = settings.taxonomy
     .filter((task) => task.id !== "default")
-    .map((task) => ({
-      id: String(task.id),
-      label: task.label,
-      description:
-        task.description ??
-        coreTaskById.get(task.id)?.description ??
-        (task.parent
-          ? `Inherits from ${task.parent} before falling back to the workspace default.`
-          : "Uses the closest configured parent before the workspace default."),
-    }));
+    .map((task) => {
+      const coreTask = coreTaskById.get(task.id);
+      return {
+        id: String(task.id),
+        label: coreTask
+          ? t(`aiSection.tasks.${coreTask.key}.label`)
+          : task.label,
+        description: coreTask
+          ? t(`aiSection.tasks.${coreTask.key}.description`)
+          : (task.description ??
+            (task.parent
+              ? t("aiSection.taskInheritsParent", { parent: task.parent })
+              : t("aiSection.taskUsesClosestParent"))),
+      };
+    });
   const knownTaskIds = new Set(taskDefinitions.map((task) => task.id));
   for (const task of REQUIRED_TASKS) {
     if (!knownTaskIds.has(task.id)) {
-      taskDefinitions.push(task);
+      taskDefinitions.push({
+        id: task.id,
+        label: t(`aiSection.tasks.${task.key}.label`),
+        description: t(`aiSection.tasks.${task.key}.description`),
+      });
       knownTaskIds.add(task.id);
     }
   }
@@ -648,8 +635,7 @@ function RoutingPanel({
         id,
         label: id,
         description:
-          profile.description ??
-          "Configured task profile retained outside the current taxonomy.",
+          profile.description ?? t("aiSection.configuredOutsideTaxonomy"),
       });
       knownTaskIds.add(id);
     }
@@ -692,15 +678,13 @@ function RoutingPanel({
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-      <Notice tone="info" title="Closest-task fallback is automatic">
-        Exact and alias matches win first, followed by the nearest parent task
-        class and finally the workspace default. Blank controls are omitted so
-        each provider can apply its native defaults.
+      <Notice tone="info" title={t("aiSection.closestFallbackTitle")}>
+        {t("aiSection.closestFallbackDescription")}
       </Notice>
 
       <ProfileEditor
-        title="Workspace default"
-        subtitle="Used only when no closer task profile can be resolved"
+        title={t("aiSection.workspaceDefault")}
+        subtitle={t("aiSection.workspaceDefaultHint")}
         profile={settings.defaultProfile}
         settings={settings}
         onChange={(profile) => setDefault(profile as DefaultTaskRoutingProfile)}
@@ -708,8 +692,10 @@ function RoutingPanel({
       />
 
       <Panel
-        title="Task-specific routes"
-        subtitle={`${taskDefinitions.length} taxonomy and configured task classes`}
+        title={t("aiSection.taskRoutesTitle")}
+        subtitle={t("aiSection.taskRoutesCount", {
+          count: taskDefinitions.length,
+        })}
         padded
       >
         <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
@@ -741,7 +727,10 @@ function RoutingPanel({
                         overflowWrap: "anywhere",
                       }}
                     >
-                      Inherits {settings.defaultProfile.candidates[0]?.route}
+                      {t("aiSection.inheritsRoute", {
+                        route:
+                          settings.defaultProfile.candidates[0]?.route ?? "—",
+                      })}
                     </code>
                   </div>
                   <div
@@ -752,9 +741,9 @@ function RoutingPanel({
                       gap: 7,
                     }}
                   >
-                    <Badge tone="muted">Uses default</Badge>
+                    <Badge tone="muted">{t("aiSection.usesDefault")}</Badge>
                     <Button small onClick={() => customize(task.id)}>
-                      Customize
+                      {t("aiSection.customize")}
                     </Button>
                   </div>
                 </div>
@@ -800,6 +789,7 @@ function ProfileEditor({
   onRemove?: () => void;
   alwaysOpen?: boolean;
 }) {
+  const { t, language } = useI18n();
   const firstCandidate = profile.candidates[0];
   const firstRoute = String(firstCandidate?.route ?? "");
   const capability = inferCatalogModel(
@@ -941,18 +931,18 @@ function ProfileEditor({
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
       <div className="ai-form-grid">
         <FormField
-          label="Profile status"
-          hint="Disabled profiles are skipped during task resolution."
+          label={t("aiSection.profileStatus")}
+          hint={t("aiSection.profileStatusHint")}
         >
           <CheckboxControl
             checked={profile.enabled}
             onChange={(checked) => changeProfile({ enabled: checked })}
-            label="Enabled"
+            label={t("aiSection.enabled")}
           />
         </FormField>
         <FormField
-          label="Workload"
-          hint="A routing intent used by policy and telemetry."
+          label={t("aiSection.workload")}
+          hint={t("aiSection.workloadHint")}
         >
           <SelectControl
             value={profile.workload}
@@ -960,16 +950,17 @@ function ProfileEditor({
               changeProfile({ workload: value as TaskWorkloadProfile })
             }
             options={WORKLOADS}
+            optionLabel={(option) => t(`aiSection.enums.workload.${option}`)}
           />
         </FormField>
       </div>
 
       <div>
-        <div className="ai-subheading">Route chain</div>
+        <div className="ai-subheading">{t("aiSection.routeChain")}</div>
         <p className="ai-help-text">
-          The first eligible route is selected. A route splits only on its first
-          slash, so <code>openrouter/openai/gpt-5.6-sol</code> preserves the
-          provider-native model ID.
+          {t("aiSection.routeChainPrefix")}{" "}
+          <code>openrouter/openai/gpt-5.6-sol</code>{" "}
+          {t("aiSection.routeChainSuffix")}
         </p>
         <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
           {profile.candidates.map((candidate, index) => {
@@ -981,7 +972,9 @@ function ProfileEditor({
             return (
               <div key={`${index}-${candidate.route}`} className="ai-route-row">
                 <span className="ai-route-rank">
-                  {index === 0 ? "Primary" : `Fallback ${index}`}
+                  {index === 0
+                    ? t("aiSection.primary")
+                    : t("aiSection.fallbackNumber", { index })}
                 </span>
                 <input
                   className="ai-route-id"
@@ -989,7 +982,13 @@ function ProfileEditor({
                   onChange={(event) =>
                     updateCandidate(index, { route: event.target.value })
                   }
-                  aria-label={`${title} ${index === 0 ? "primary" : `fallback ${index}`} route`}
+                  aria-label={t("aiSection.routeAria", {
+                    title,
+                    position:
+                      index === 0
+                        ? t("aiSection.primaryLower")
+                        : t("aiSection.fallbackNumber", { index }),
+                  })}
                   spellCheck={false}
                   style={{ ...CONTROL_STYLE, fontFamily: "var(--mono)" }}
                 />
@@ -999,8 +998,14 @@ function ProfileEditor({
                   onChange={(event) =>
                     updateCandidate(index, { modelFamily: event.target.value })
                   }
-                  aria-label={`${title} ${index === 0 ? "primary" : `fallback ${index}`} model family`}
-                  placeholder="Model family (optional)"
+                  aria-label={t("aiSection.modelFamilyAria", {
+                    title,
+                    position:
+                      index === 0
+                        ? t("aiSection.primaryLower")
+                        : t("aiSection.fallbackNumber", { index }),
+                  })}
+                  placeholder={t("aiSection.modelFamilyOptional")}
                   spellCheck={false}
                   style={{ ...CONTROL_STYLE, fontFamily: "var(--mono)" }}
                 />
@@ -1012,14 +1017,17 @@ function ProfileEditor({
                       updateCandidate(index, { enabled: event.target.checked })
                     }
                   />
-                  Use
+                  {t("aiSection.use")}
                 </label>
                 <Button
                   small
                   tone="ghost"
                   disabled={profile.candidates.length === 1}
                   onClick={() => removeCandidate(index)}
-                  ariaLabel={`Remove ${title} route ${index + 1}`}
+                  ariaLabel={t("aiSection.removeRouteAria", {
+                    title,
+                    index: index + 1,
+                  })}
                 >
                   <Icon name="x" size={10} />
                 </Button>
@@ -1034,8 +1042,9 @@ function ProfileEditor({
                 />
                 <details className="ai-route-fallbacks">
                   <summary>
-                    Fallback policy ·{" "}
-                    {candidate.fallbackOn?.length ?? "default"}
+                    {t("aiSection.fallbackPolicy")} ·{" "}
+                    {candidate.fallbackOn?.length ??
+                      t("aiSection.defaultValue")}
                   </summary>
                   <div className="ai-route-fallback-options">
                     <label className="ai-check-label">
@@ -1050,7 +1059,7 @@ function ProfileEditor({
                           })
                         }
                       />
-                      Use platform defaults
+                      {t("aiSection.usePlatformDefaults")}
                     </label>
                     {FALLBACK_CONDITIONS.map((condition) => (
                       <label className="ai-check-label" key={condition}>
@@ -1071,7 +1080,7 @@ function ProfileEditor({
                             });
                           }}
                         />
-                        {condition.replaceAll("_", " ")}
+                        {t(`aiSection.enums.fallbackCondition.${condition}`)}
                       </label>
                     ))}
                   </div>
@@ -1086,80 +1095,91 @@ function ProfileEditor({
           onClick={addCandidate}
           style={{ marginTop: 8 }}
         >
-          <Icon name="plus" size={10} /> Add fallback
+          <Icon name="plus" size={10} /> {t("aiSection.addFallback")}
         </Button>
       </div>
 
       <CapabilitySummary route={firstRoute} capability={capability} />
 
       <details className="ai-settings-details">
-        <summary>Optional model controls</summary>
+        <summary>{t("aiSection.optionalModelControls")}</summary>
         <p className="ai-help-text">
-          Leave any control blank to use the selected model or provider default.
-          Unsupported controls are omitted from the request.
+          {t("aiSection.optionalModelControlsHint")}
         </p>
         <div className="ai-form-grid">
           <FormField
-            label="Reasoning mode"
+            label={t("aiSection.reasoningMode")}
             hint={
               !model
-                ? "Catalog capability unknown."
+                ? t("aiSection.catalogCapabilityUnknown")
                 : model.reasoning
-                  ? "Execution path, where supported."
-                  : "This model does not support normalized reasoning controls."
+                  ? t("aiSection.executionPathHint")
+                  : t("aiSection.reasoningUnsupported")
             }
           >
             <SelectControl
               value={profile.parameters?.reasoning?.mode ?? ""}
               onChange={(value) => setReasoning("mode", value)}
               disabled={model?.reasoning === false}
-              placeholder="Provider default"
+              placeholder={t("aiSection.providerDefault")}
               options={model?.reasoningModes ?? ALL_REASONING_MODES}
+              optionLabel={(option) =>
+                t(`aiSection.enums.reasoningMode.${option}`)
+              }
             />
           </FormField>
           <FormField
-            label="Reasoning effort"
+            label={t("aiSection.reasoningEffort")}
             hint={
               model?.reasoningMandatory
-                ? "Reasoning is mandatory for this model."
-                : "Higher effort can increase latency and reasoning-token cost."
+                ? t("aiSection.reasoningMandatory")
+                : t("aiSection.reasoningEffortHint")
             }
           >
             <SelectControl
               value={profile.parameters?.reasoning?.effort ?? ""}
               onChange={(value) => setReasoning("effort", value)}
               disabled={model?.reasoning === false}
-              placeholder="Provider default"
+              placeholder={t("aiSection.providerDefault")}
               options={model?.reasoningEfforts ?? ALL_REASONING_EFFORTS}
+              optionLabel={(option) =>
+                t(`aiSection.enums.reasoningEffort.${option}`)
+              }
             />
           </FormField>
           <FormField
-            label="Reasoning summary"
-            hint="Safe provider-generated summary; raw chain-of-thought is never requested."
+            label={t("aiSection.reasoningSummary")}
+            hint={t("aiSection.reasoningSummaryHint")}
           >
             <SelectControl
               value={profile.parameters?.reasoning?.summary ?? ""}
               onChange={(value) => setReasoning("summary", value)}
               disabled={model?.reasoning === false}
-              placeholder="Provider default"
+              placeholder={t("aiSection.providerDefault")}
               options={model?.reasoningSummaries ?? ALL_REASONING_SUMMARIES}
+              optionLabel={(option) =>
+                t(`aiSection.enums.reasoningSummary.${option}`)
+              }
             />
           </FormField>
           <FormField
-            label="Reasoning context"
-            hint="Controls reuse of persisted reasoning items when supported."
+            label={t("aiSection.reasoningContext")}
+            hint={t("aiSection.reasoningContextHint")}
           >
             <SelectControl
               value={profile.parameters?.reasoning?.context ?? ""}
               onChange={(value) => setReasoning("context", value)}
               disabled={model?.reasoning === false}
-              placeholder="Provider default"
+              placeholder={t("aiSection.providerDefault")}
               options={model?.reasoningContexts ?? ALL_REASONING_CONTEXTS}
+              optionLabel={(option) =>
+                t(`aiSection.enums.reasoningContext.${option}`)
+              }
             />
           </FormField>
           <FormField
-            label="Answer verbosity"
-            hint="Provider-normalized visible answer detail."
+            label={t("aiSection.answerVerbosity")}
+            hint={t("aiSection.answerVerbosityHint")}
           >
             <SelectControl
               value={profile.parameters?.verbosity ?? ""}
@@ -1170,18 +1190,22 @@ function ProfileEditor({
                 )
               }
               disabled={Boolean(model && !model.textVerbosities?.length)}
-              placeholder="Provider default"
+              placeholder={t("aiSection.providerDefault")}
               options={model?.textVerbosities ?? ALL_VERBOSITIES}
+              optionLabel={(option) => t(`aiSection.enums.verbosity.${option}`)}
             />
           </FormField>
           <FormField
-            label="Temperature"
+            label={t("aiSection.temperature")}
             hint={
               model?.temperatureRange === null
-                ? "Not supported by this model; the gateway will omit it."
+                ? t("aiSection.temperatureUnsupported")
                 : model?.temperatureRange
-                  ? `Supported range ${model.temperatureRange.min}–${model.temperatureRange.max}.`
-                  : "Catalog support unknown; leave blank unless verified."
+                  ? t("aiSection.supportedRange", {
+                      min: model.temperatureRange.min,
+                      max: model.temperatureRange.max,
+                    })
+                  : t("aiSection.temperatureUnknown")
             }
           >
             <NumberControl
@@ -1194,13 +1218,15 @@ function ProfileEditor({
             />
           </FormField>
           <FormField
-            label="Maximum output tokens"
+            label={t("aiSection.maximumOutputTokens")}
             hint={
               model
-                ? `Blank uses the provider default; catalog ceiling ${(
-                    model.out ?? model.ctx
-                  ).toLocaleString("en-US")}.`
-                : "Blank uses the provider/model maximum or default."
+                ? t("aiSection.maxTokensCatalogHint", {
+                    ceiling: (model.out ?? model.ctx).toLocaleString(
+                      language === "zh" ? "zh-CN" : "en-US",
+                    ),
+                  })
+                : t("aiSection.maxTokensDefaultHint")
             }
           >
             <NumberControl
@@ -1212,8 +1238,8 @@ function ProfileEditor({
             />
           </FormField>
           <FormField
-            label="Request timeout"
-            hint="Per upstream attempt, in seconds."
+            label={t("aiSection.requestTimeout")}
+            hint={t("aiSection.requestTimeoutHint")}
           >
             <NumberControl
               value={
@@ -1224,7 +1250,7 @@ function ProfileEditor({
               min={1}
               max={7200}
               step={1}
-              suffix="seconds"
+              suffix={t("aiSection.seconds")}
               onChange={(value) =>
                 setParameter(
                   "timeoutMs",
@@ -1234,8 +1260,8 @@ function ProfileEditor({
             />
           </FormField>
           <FormField
-            label="Overall deadline"
-            hint="Across retries and fallbacks, in seconds."
+            label={t("aiSection.overallDeadline")}
+            hint={t("aiSection.overallDeadlineHint")}
           >
             <NumberControl
               value={
@@ -1246,7 +1272,7 @@ function ProfileEditor({
               min={1}
               max={7200}
               step={1}
-              suffix="seconds"
+              suffix={t("aiSection.seconds")}
               onChange={(value) =>
                 setParameter(
                   "overallDeadlineMs",
@@ -1256,8 +1282,8 @@ function ProfileEditor({
             />
           </FormField>
           <FormField
-            label="JSON mode"
-            hint="Request a structured JSON response where supported."
+            label={t("aiSection.jsonMode")}
+            hint={t("aiSection.jsonModeHint")}
           >
             <TriStateControl
               value={profile.parameters?.jsonMode}
@@ -1265,23 +1291,22 @@ function ProfileEditor({
             />
           </FormField>
           <FormField
-            label="Provider storage"
-            hint="Blank keeps the platform privacy default (off for Responses); local usage logs are separate."
+            label={t("aiSection.providerStorage")}
+            hint={t("aiSection.providerStorageHint")}
           >
             <TriStateControl
               value={profile.parameters?.store}
               onChange={(value) => setParameter("store", value)}
-              placeholder="Platform default"
+              placeholder={t("aiSection.platformDefault")}
             />
           </FormField>
         </div>
       </details>
 
       <details className="ai-settings-details">
-        <summary>Task capability requirements</summary>
+        <summary>{t("aiSection.capabilityRequirements")}</summary>
         <p className="ai-help-text">
-          Candidates that cannot satisfy a required capability are skipped by
-          policy when capability data is available.
+          {t("aiSection.capabilityRequirementsHint")}
         </p>
         <div className="ai-checkbox-grid">
           {(["vision", "tools", "reasoning", "structuredOutput"] as const).map(
@@ -1301,9 +1326,7 @@ function ProfileEditor({
                     });
                   }}
                 />
-                {requirement === "structuredOutput"
-                  ? "Structured output"
-                  : requirement}
+                {t(`aiSection.enums.requirement.${requirement}`)}
               </label>
             ),
           )}
@@ -1313,7 +1336,7 @@ function ProfileEditor({
       {onRemove && (
         <div style={{ display: "flex", justifyContent: "flex-end" }}>
           <Button small tone="danger" onClick={onRemove}>
-            Remove override
+            {t("aiSection.removeOverride")}
           </Button>
         </div>
       )}
@@ -1351,6 +1374,7 @@ function CandidateParameterEditor({
   model?: CatalogModel;
   onChange: (parameters: TaskModelParameters | undefined) => void;
 }) {
+  const { t, language } = useI18n();
   const overrideCount = Object.keys(parameters ?? {}).length;
 
   function setParameter<K extends keyof TaskModelParameters>(
@@ -1376,74 +1400,85 @@ function CandidateParameterEditor({
   return (
     <details className="ai-route-parameters">
       <summary>
-        Candidate overrides ·{" "}
-        {overrideCount ? `${overrideCount} set` : "inherit"}
+        {t("aiSection.candidateOverrides")} ·{" "}
+        {overrideCount
+          ? t("aiSection.overrideCount", { count: overrideCount })
+          : t("aiSection.inherit")}
       </summary>
       <div className="ai-route-parameter-body">
-        <p className="ai-help-text">
-          Blank values inherit the task profile, then the model/provider
-          default. Unsupported controls are omitted from this candidate.
-        </p>
+        <p className="ai-help-text">{t("aiSection.candidateOverridesHint")}</p>
         <div className="ai-form-grid ai-form-grid--compact">
           <FormField
-            label="Reasoning mode"
+            label={t("aiSection.reasoningMode")}
             hint={
               model?.reasoning === false
-                ? "This model does not support normalized reasoning controls."
-                : "Blank inherits the profile execution path."
+                ? t("aiSection.reasoningUnsupported")
+                : t("aiSection.inheritExecutionPath")
             }
           >
             <SelectControl
               value={parameters?.reasoning?.mode ?? ""}
               onChange={(value) => setReasoning("mode", value)}
               disabled={model?.reasoning === false}
-              placeholder="Inherit profile"
+              placeholder={t("aiSection.inheritProfile")}
               options={model?.reasoningModes ?? ALL_REASONING_MODES}
+              optionLabel={(option) =>
+                t(`aiSection.enums.reasoningMode.${option}`)
+              }
             />
           </FormField>
           <FormField
-            label="Reasoning effort"
+            label={t("aiSection.reasoningEffort")}
             hint={
               model?.reasoningMandatory
-                ? "Reasoning is mandatory; blank inherits the profile/provider effort."
-                : "Blank inherits the profile effort."
+                ? t("aiSection.reasoningMandatoryInherit")
+                : t("aiSection.inheritReasoningEffort")
             }
           >
             <SelectControl
               value={parameters?.reasoning?.effort ?? ""}
               onChange={(value) => setReasoning("effort", value)}
               disabled={model?.reasoning === false}
-              placeholder="Inherit profile"
+              placeholder={t("aiSection.inheritProfile")}
               options={model?.reasoningEfforts ?? ALL_REASONING_EFFORTS}
+              optionLabel={(option) =>
+                t(`aiSection.enums.reasoningEffort.${option}`)
+              }
             />
           </FormField>
           <FormField
-            label="Reasoning summary"
-            hint="Safe provider-generated summary; blank inherits the profile."
+            label={t("aiSection.reasoningSummary")}
+            hint={t("aiSection.inheritReasoningSummary")}
           >
             <SelectControl
               value={parameters?.reasoning?.summary ?? ""}
               onChange={(value) => setReasoning("summary", value)}
               disabled={model?.reasoning === false}
-              placeholder="Inherit profile"
+              placeholder={t("aiSection.inheritProfile")}
               options={model?.reasoningSummaries ?? ALL_REASONING_SUMMARIES}
+              optionLabel={(option) =>
+                t(`aiSection.enums.reasoningSummary.${option}`)
+              }
             />
           </FormField>
           <FormField
-            label="Reasoning context"
-            hint="Blank inherits persisted-reasoning reuse policy."
+            label={t("aiSection.reasoningContext")}
+            hint={t("aiSection.inheritReasoningContext")}
           >
             <SelectControl
               value={parameters?.reasoning?.context ?? ""}
               onChange={(value) => setReasoning("context", value)}
               disabled={model?.reasoning === false}
-              placeholder="Inherit profile"
+              placeholder={t("aiSection.inheritProfile")}
               options={model?.reasoningContexts ?? ALL_REASONING_CONTEXTS}
+              optionLabel={(option) =>
+                t(`aiSection.enums.reasoningContext.${option}`)
+              }
             />
           </FormField>
           <FormField
-            label="Answer verbosity"
-            hint="Blank inherits visible answer detail from the profile."
+            label={t("aiSection.answerVerbosity")}
+            hint={t("aiSection.inheritVerbosity")}
           >
             <SelectControl
               value={parameters?.verbosity ?? ""}
@@ -1454,18 +1489,22 @@ function CandidateParameterEditor({
                 )
               }
               disabled={Boolean(model && !model.textVerbosities?.length)}
-              placeholder="Inherit profile"
+              placeholder={t("aiSection.inheritProfile")}
               options={model?.textVerbosities ?? ALL_VERBOSITIES}
+              optionLabel={(option) => t(`aiSection.enums.verbosity.${option}`)}
             />
           </FormField>
           <FormField
-            label="Temperature"
+            label={t("aiSection.temperature")}
             hint={
               model?.temperatureRange === null
-                ? "Unsupported by this model; omitted automatically."
+                ? t("aiSection.temperatureUnsupportedShort")
                 : model?.temperatureRange
-                  ? `Supported range ${model.temperatureRange.min}–${model.temperatureRange.max}.`
-                  : "Catalog support unknown; blank inherits the profile."
+                  ? t("aiSection.supportedRange", {
+                      min: model.temperatureRange.min,
+                      max: model.temperatureRange.max,
+                    })
+                  : t("aiSection.temperatureInheritUnknown")
             }
           >
             <NumberControl
@@ -1474,18 +1513,20 @@ function CandidateParameterEditor({
               max={model?.temperatureRange?.max ?? 2}
               step={0.1}
               disabled={model?.temperatureRange === null}
-              placeholder="Inherit profile"
+              placeholder={t("aiSection.inheritProfile")}
               onChange={(value) => setParameter("temperature", value)}
             />
           </FormField>
           <FormField
-            label="Maximum output tokens"
+            label={t("aiSection.maximumOutputTokens")}
             hint={
               model
-                ? `Blank inherits the profile/model limit; catalog ceiling ${(
-                    model.out ?? model.ctx
-                  ).toLocaleString("en-US")}.`
-                : "Blank inherits the profile/model output limit."
+                ? t("aiSection.inheritMaxTokensCatalog", {
+                    ceiling: (model.out ?? model.ctx).toLocaleString(
+                      language === "zh" ? "zh-CN" : "en-US",
+                    ),
+                  })
+                : t("aiSection.inheritMaxTokens")
             }
           >
             <NumberControl
@@ -1493,13 +1534,13 @@ function CandidateParameterEditor({
               min={1}
               max={model ? (model.out ?? model.ctx) : 1_048_576}
               step={1}
-              placeholder="Inherit profile"
+              placeholder={t("aiSection.inheritProfile")}
               onChange={(value) => setParameter("maxTokens", value)}
             />
           </FormField>
           <FormField
-            label="Request timeout"
-            hint="Per upstream attempt; blank inherits the profile timeout."
+            label={t("aiSection.requestTimeout")}
+            hint={t("aiSection.inheritRequestTimeout")}
           >
             <NumberControl
               value={
@@ -1510,8 +1551,8 @@ function CandidateParameterEditor({
               min={1}
               max={7200}
               step={1}
-              suffix="seconds"
-              placeholder="Inherit profile"
+              suffix={t("aiSection.seconds")}
+              placeholder={t("aiSection.inheritProfile")}
               onChange={(value) =>
                 setParameter(
                   "timeoutMs",
@@ -1521,8 +1562,8 @@ function CandidateParameterEditor({
             />
           </FormField>
           <FormField
-            label="Overall deadline"
-            hint="Across retries/fallbacks; blank inherits the profile deadline."
+            label={t("aiSection.overallDeadline")}
+            hint={t("aiSection.inheritOverallDeadline")}
           >
             <NumberControl
               value={
@@ -1533,8 +1574,8 @@ function CandidateParameterEditor({
               min={1}
               max={7200}
               step={1}
-              suffix="seconds"
-              placeholder="Inherit profile"
+              suffix={t("aiSection.seconds")}
+              placeholder={t("aiSection.inheritProfile")}
               onChange={(value) =>
                 setParameter(
                   "overallDeadlineMs",
@@ -1544,30 +1585,30 @@ function CandidateParameterEditor({
             />
           </FormField>
           <FormField
-            label="JSON mode"
-            hint="Blank inherits the profile structured-output preference."
+            label={t("aiSection.jsonMode")}
+            hint={t("aiSection.inheritJsonMode")}
           >
             <TriStateControl
               value={parameters?.jsonMode}
               onChange={(value) => setParameter("jsonMode", value)}
-              placeholder="Inherit profile"
+              placeholder={t("aiSection.inheritProfile")}
             />
           </FormField>
           <FormField
-            label="Provider storage"
-            hint="Blank inherits the profile, then the platform privacy default."
+            label={t("aiSection.providerStorage")}
+            hint={t("aiSection.inheritProviderStorage")}
           >
             <TriStateControl
               value={parameters?.store}
               onChange={(value) => setParameter("store", value)}
-              placeholder="Inherit profile"
+              placeholder={t("aiSection.inheritProfile")}
             />
           </FormField>
         </div>
         {overrideCount > 0 && (
           <div style={{ display: "flex", justifyContent: "flex-end" }}>
             <Button small tone="ghost" onClick={() => onChange(undefined)}>
-              Clear candidate overrides
+              {t("aiSection.clearCandidateOverrides")}
             </Button>
           </div>
         )}
@@ -1583,22 +1624,21 @@ function CapabilitySummary({
   route: string;
   capability: ReturnType<typeof inferCatalogModel>;
 }) {
+  const { t } = useI18n();
   if (!capability.knownRoute) {
     return (
-      <Notice
-        tone="warn"
-        title="Route is incomplete or references an unknown gateway"
-      >
-        Use <code>gateway-instance/provider-native-model-id</code> and save a
-        matching provider connection first.
+      <Notice tone="warn" title={t("aiSection.unknownGatewayTitle")}>
+        {t("aiSection.unknownGatewayPrefix")}{" "}
+        <code>gateway-instance/provider-native-model-id</code>{" "}
+        {t("aiSection.unknownGatewaySuffix")}
       </Notice>
     );
   }
   if (!capability.model) {
     return (
-      <Notice tone="info" title="Model capability is not in the local catalog">
-        The route <code>{route}</code> is allowed, but optional controls cannot
-        be pre-validated. Leave them blank to use provider defaults.
+      <Notice tone="info" title={t("aiSection.modelNotCatalogedTitle")}>
+        {t("aiSection.modelNotCatalogedPrefix")} <code>{route}</code>{" "}
+        {t("aiSection.modelNotCatalogedSuffix")}
       </Notice>
     );
   }
@@ -1606,26 +1646,32 @@ function CapabilitySummary({
   return (
     <div
       className="ai-capability-strip"
-      aria-label="Selected model capabilities"
+      aria-label={t("aiSection.capabilitiesAria")}
     >
       <span className="mono">
         {capability.provider}/{model.name}
       </span>
       <Badge tone={model.reasoning ? "green" : "muted"}>
-        {model.reasoning ? "Reasoning" : "No reasoning control"}
+        {model.reasoning
+          ? t("aiSection.reasoning")
+          : t("aiSection.noReasoning")}
       </Badge>
       <Badge tone={model.tools ? "green" : "muted"}>
-        {model.tools ? "Tools" : "No tools"}
+        {model.tools ? t("aiSection.tools") : t("aiSection.noTools")}
       </Badge>
       <Badge tone={model.vision ? "green" : "muted"}>
-        {model.vision ? "Vision" : "Text only"}
+        {model.vision ? t("aiSection.vision") : t("aiSection.textOnly")}
       </Badge>
       <Badge tone={model.temperatureRange === null ? "amber" : "muted"}>
         {model.temperatureRange === null
-          ? "Temperature omitted"
-          : "Temperature optional"}
+          ? t("aiSection.temperatureOmitted")
+          : t("aiSection.temperatureOptional")}
       </Badge>
-      <Badge tone="muted">{model.tier}-tier</Badge>
+      <Badge tone="muted">
+        {t("aiSection.tierLabel", {
+          tier: t(`aiSection.enums.tier.${model.tier}`),
+        })}
+      </Badge>
     </div>
   );
 }
@@ -1637,6 +1683,7 @@ function RoutingPreview({
   settings: LlmSettings;
   dirty: boolean;
 }) {
+  const { t } = useI18n();
   const resolve = useResolveLlmRouting();
   const [taskClass, setTaskClass] = useState("chat.respond");
   const [explicitRoute, setExplicitRoute] = useState("");
@@ -1657,15 +1704,15 @@ function RoutingPreview({
 
   return (
     <Panel
-      title="Routing preview"
-      subtitle="Explain the saved resolver decision"
+      title={t("aiSection.routingPreview")}
+      subtitle={t("aiSection.routingPreviewSubtitle")}
       padded
     >
       <form onSubmit={preview}>
         <div className="ai-form-grid">
           <FormField
-            label="Task class"
-            hint="Aliases and parent categories are accepted."
+            label={t("aiSection.taskClass")}
+            hint={t("aiSection.taskClassHint")}
           >
             <input
               list="ai-task-taxonomy"
@@ -1682,8 +1729,8 @@ function RoutingPreview({
             </datalist>
           </FormField>
           <FormField
-            label="Explicit route"
-            hint="Optional; bypasses task-profile matching."
+            label={t("aiSection.explicitRoute")}
+            hint={t("aiSection.explicitRouteHint")}
           >
             <input
               value={explicitRoute}
@@ -1702,7 +1749,9 @@ function RoutingPreview({
           }}
         >
           <Button type="submit" small disabled={resolve.isPending}>
-            {resolve.isPending ? "Resolving…" : "Preview route"}
+            {resolve.isPending
+              ? t("aiSection.resolving")
+              : t("aiSection.previewRoute")}
           </Button>
           <span
             style={{
@@ -1711,14 +1760,16 @@ function RoutingPreview({
             }}
           >
             {dirty
-              ? "Preview uses the last saved revision, not unsaved edits."
-              : `Saved revision ${settings.revision}.`}
+              ? t("aiSection.previewUsesSaved")
+              : t("aiSection.savedRevisionShort", {
+                  revision: settings.revision,
+                })}
           </span>
         </div>
       </form>
       {error && (
         <div style={{ marginTop: 12 }}>
-          <Notice tone="error" title="Could not resolve route">
+          <Notice tone="error" title={t("aiSection.resolveFailed")}>
             {error}
           </Notice>
         </div>
@@ -1726,14 +1777,22 @@ function RoutingPreview({
       {resolve.data && (
         <div className="ai-routing-result" aria-live="polite">
           <div className="ai-metric-grid">
-            <Metric label="Requested" value={resolve.data.requestedTaskClass} />
             <Metric
-              label="Matched"
-              value={resolve.data.matchedTaskClass ?? "default"}
+              label={t("aiSection.requested")}
+              value={resolve.data.requestedTaskClass}
             />
-            <Metric label="Match type" value={resolve.data.matchType} />
             <Metric
-              label="Selected route"
+              label={t("aiSection.matched")}
+              value={
+                resolve.data.matchedTaskClass ?? t("aiSection.defaultValue")
+              }
+            />
+            <Metric
+              label={t("aiSection.matchType")}
+              value={t(`aiSection.enums.matchType.${resolve.data.matchType}`)}
+            />
+            <Metric
+              label={t("aiSection.selectedRoute")}
               value={resolve.data.selectedCandidate.route}
               mono
             />
@@ -1741,7 +1800,9 @@ function RoutingPreview({
           <p>{resolve.data.explanation}</p>
           <details className="ai-settings-details">
             <summary>
-              Resolution trace ({resolve.data.trace.length} steps)
+              {t("aiSection.resolutionTrace", {
+                count: resolve.data.trace.length,
+              })}
             </summary>
             <ol className="ai-trace-list">
               {resolve.data.trace.map((step, index) => (
@@ -1753,9 +1814,9 @@ function RoutingPreview({
                         : "muted"
                     }
                   >
-                    {step.outcome}
+                    {t(`aiSection.enums.traceOutcome.${step.outcome}`)}
                   </Badge>
-                  <code>{step.stage}</code>
+                  <code>{t(`aiSection.enums.traceStage.${step.stage}`)}</code>
                   <span>{step.message}</span>
                 </li>
               ))}
@@ -1778,6 +1839,7 @@ function ConnectionsPanel({
   credentials: Record<string, GatewayCredentialMeta>;
   onChange: (settings: LlmSettings) => void;
 }) {
+  const { t } = useI18n();
   const [showAdd, setShowAdd] = useState(false);
 
   function update(instance: GatewayInstance) {
@@ -1808,17 +1870,16 @@ function ConnectionsPanel({
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-      <Notice tone="info" title="Connection tests do not generate tokens">
-        Test a base URL and credential here before saving. Use Test lab only
-        when you are ready to make a real, potentially billable model call.
+      <Notice tone="info" title={t("aiSection.connectionTestTitle")}>
+        {t("aiSection.connectionTestDescription")}
       </Notice>
       <Panel
-        title="Gateway instances"
-        subtitle="Canonical route prefix and upstream transport"
+        title={t("aiSection.gatewayInstances")}
+        subtitle={t("aiSection.gatewayInstancesSubtitle")}
         action={
           <Button small onClick={() => setShowAdd((value) => !value)}>
             <Icon name={showAdd ? "x" : "plus"} size={10} />
-            {showAdd ? "Cancel" : "Add gateway"}
+            {showAdd ? t("aiSection.cancel") : t("aiSection.addGateway")}
           </Button>
         }
         padded
@@ -1848,9 +1909,9 @@ function ConnectionsPanel({
                 }
                 removalReason={
                   referenced
-                    ? "Remove this gateway from all route chains first."
+                    ? t("aiSection.removeGatewayReferenced")
                     : settings.gatewayInstances.length === 1
-                      ? "At least one gateway instance is required."
+                      ? t("aiSection.oneGatewayRequired")
                       : undefined
                 }
               />
@@ -1869,6 +1930,7 @@ function AddGatewayForm({
   settings: LlmSettings;
   onAdd: (instance: GatewayInstance) => void;
 }) {
+  const { t } = useI18n();
   const [id, setId] = useState("newapi-csi");
   const [displayName, setDisplayName] = useState("NewAPI CSI");
   const [kind, setKind] = useState<"newapi" | "openai-compatible">("newapi");
@@ -1883,7 +1945,7 @@ function AddGatewayForm({
     if (
       settings.gatewayInstances.some((instance) => instance.id === id.trim())
     ) {
-      setError(`Gateway instance ${id.trim()} already exists.`);
+      setError(t("aiSection.gatewayAlreadyExists", { id: id.trim() }));
       return;
     }
     const result = GatewayInstanceSchema.safeParse({
@@ -1904,7 +1966,10 @@ function AddGatewayForm({
     if (!result.success) {
       const issue = result.error.issues[0];
       setError(
-        `${issue?.path.join(".") || "gateway"}: ${issue?.message ?? "Invalid gateway configuration"}`,
+        t("aiSection.gatewayValidationError", {
+          path: issue?.path.join(".") || t("aiSection.gatewayPath"),
+          message: issue?.message ?? t("aiSection.invalidGatewayConfiguration"),
+        }),
       );
       return;
     }
@@ -1915,17 +1980,18 @@ function AddGatewayForm({
     <form onSubmit={submit} className="ai-add-gateway">
       <div>
         <strong style={{ color: "var(--text)", fontSize: 12.5 }}>
-          Add NewAPI or compatible gateway
+          {t("aiSection.addCompatibleGateway")}
         </strong>
         <p className="ai-help-text">
-          The instance ID becomes the route prefix. Arbitrary aliases such as
-          <code> newapi-csi</code> and <code>newapi2</code> are supported.
+          {t("aiSection.instanceIdPrefix")} <code>newapi-csi</code>{" "}
+          {t("aiSection.instanceIdMiddle")} <code>newapi2</code>{" "}
+          {t("aiSection.instanceIdSuffix")}
         </p>
       </div>
       <div className="ai-form-grid">
         <FormField
-          label="Instance ID"
-          hint="Lowercase kebab-case; cannot be renamed after adding."
+          label={t("aiSection.instanceId")}
+          hint={t("aiSection.instanceIdHint")}
         >
           <input
             value={id}
@@ -1933,23 +1999,24 @@ function AddGatewayForm({
             style={{ ...CONTROL_STYLE, fontFamily: "var(--mono)" }}
           />
         </FormField>
-        <FormField label="Display name">
+        <FormField label={t("aiSection.displayName")}>
           <input
             value={displayName}
             onChange={(event) => setDisplayName(event.target.value)}
             style={CONTROL_STYLE}
           />
         </FormField>
-        <FormField label="Gateway type">
+        <FormField label={t("aiSection.gatewayType")}>
           <SelectControl
             value={kind}
             onChange={(value) => setKind(value as typeof kind)}
             options={["newapi", "openai-compatible"]}
+            optionLabel={(option) => t(`aiSection.enums.gatewayKind.${option}`)}
           />
         </FormField>
         <FormField
-          label="Base URL"
-          hint="HTTP(S), with no embedded credential, query, or fragment."
+          label={t("aiSection.baseUrl")}
+          hint={t("aiSection.baseUrlHint")}
         >
           <input
             type="url"
@@ -1959,8 +2026,8 @@ function AddGatewayForm({
           />
         </FormField>
         <FormField
-          label="Wire dialect"
-          hint="Use auto unless the gateway requires provider-specific request translation."
+          label={t("aiSection.wireDialect")}
+          hint={t("aiSection.wireDialectHint")}
         >
           <SelectControl
             value={dialect}
@@ -1976,25 +2043,27 @@ function AddGatewayForm({
               "deepseek",
               "unsupported",
             ]}
+            optionLabel={(option) => t(`aiSection.enums.wireDialect.${option}`)}
           />
         </FormField>
-        <FormField label="API mode">
+        <FormField label={t("aiSection.apiMode")}>
           <SelectControl
             value={apiMode}
             onChange={(value) =>
               setApiMode(value as GatewayInstance["apiMode"])
             }
             options={["auto", "chat-completions", "responses"]}
+            optionLabel={(option) => t(`aiSection.enums.apiMode.${option}`)}
           />
         </FormField>
       </div>
       {error && (
-        <Notice tone="error" title="Cannot add gateway">
+        <Notice tone="error" title={t("aiSection.cannotAddGateway")}>
           {error}
         </Notice>
       )}
       <Button type="submit" small tone="primary">
-        Add to draft
+        {t("aiSection.addToDraft")}
       </Button>
     </form>
   );
@@ -2019,6 +2088,7 @@ function GatewayCard({
   removalDisabled: boolean;
   removalReason?: string;
 }) {
+  const { t } = useI18n();
   const saveKey = useSaveGatewayKey();
   const test = useTestGatewayConnection();
   const [apiKey, setApiKey] = useState("");
@@ -2069,7 +2139,9 @@ function GatewayCard({
       setApiKey("");
       if (!instance.credentialScope) patch({ credentialScope: scope });
       setMessage(
-        `Credential saved as ${result.keyMasked ?? "encrypted secret"}.`,
+        t("aiSection.credentialSaved", {
+          key: result.keyMasked ?? t("aiSection.encryptedSecret"),
+        }),
       );
     } catch (keyError) {
       setError(errorText(keyError));
@@ -2080,9 +2152,7 @@ function GatewayCard({
     setError(null);
     setMessage(null);
     if (instance.kind !== "mock" && transportChanged && !apiKey) {
-      setError(
-        "Paste a temporary API key to test an unsaved or changed endpoint. Stored credentials are deliberately not sent to draft base URLs.",
-      );
+      setError(t("aiSection.temporaryKeyRequired"));
       return;
     }
     try {
@@ -2093,7 +2163,19 @@ function GatewayCard({
         timeoutMs: instance.timeouts?.connectTimeoutMs,
       });
       setMessage(
-        `${result.ok ? "Connected" : "Connection failed"} in ${result.latencyMs} ms${result.modelCount === null ? "" : ` · ${result.modelCount} models`}. ${result.message}`,
+        t("aiSection.connectionTestResult", {
+          status: result.ok
+            ? t("aiSection.connected")
+            : t("aiSection.connectionFailed"),
+          latency: result.latencyMs,
+          models:
+            result.modelCount === null
+              ? ""
+              : t("aiSection.modelCountSuffix", {
+                  count: result.modelCount,
+                }),
+          message: result.message,
+        }),
       );
     } catch (testError) {
       setError(errorText(testError));
@@ -2114,9 +2196,13 @@ function GatewayCard({
           >
             <strong>{instance.displayName}</strong>
             <Badge tone={instance.enabled ? "green" : "muted"}>
-              {instance.enabled ? "Enabled" : "Disabled"}
+              {instance.enabled
+                ? t("aiSection.enabled")
+                : t("aiSection.disabled")}
             </Badge>
-            {!saved && <Badge tone="amber">Save required</Badge>}
+            {!saved && (
+              <Badge tone="amber">{t("aiSection.saveRequired")}</Badge>
+            )}
           </div>
           <code>{instance.id}/…</code>
         </div>
@@ -2126,27 +2212,27 @@ function GatewayCard({
             checked={instance.enabled}
             onChange={(event) => patch({ enabled: event.target.checked })}
           />
-          Use
+          {t("aiSection.use")}
         </label>
       </header>
 
       <div className="ai-form-grid ai-form-grid--compact">
-        <FormField label="Display name">
+        <FormField label={t("aiSection.displayName")}>
           <input
             value={instance.displayName}
             onChange={(event) => patch({ displayName: event.target.value })}
             style={CONTROL_STYLE}
           />
         </FormField>
-        <FormField label="Type">
+        <FormField label={t("aiSection.type")}>
           <input
-            value={instance.kind}
+            value={t(`aiSection.enums.gatewayKind.${instance.kind}`)}
             readOnly
             style={{ ...CONTROL_STYLE, color: "var(--text-3)" }}
           />
         </FormField>
         {instance.providerId && (
-          <FormField label="Direct provider">
+          <FormField label={t("aiSection.directProvider")}>
             <input
               value={instance.providerId}
               readOnly
@@ -2155,7 +2241,7 @@ function GatewayCard({
           </FormField>
         )}
         {isCustomUrl && (
-          <FormField label="Base URL">
+          <FormField label={t("aiSection.baseUrl")}>
             <input
               type="url"
               value={instance.baseUrl ?? ""}
@@ -2166,16 +2252,17 @@ function GatewayCard({
             />
           </FormField>
         )}
-        <FormField label="API mode">
+        <FormField label={t("aiSection.apiMode")}>
           <SelectControl
             value={instance.apiMode}
             onChange={(value) =>
               patch({ apiMode: value as GatewayInstance["apiMode"] })
             }
             options={["auto", "chat-completions", "responses"]}
+            optionLabel={(option) => t(`aiSection.enums.apiMode.${option}`)}
           />
         </FormField>
-        <FormField label="Wire dialect">
+        <FormField label={t("aiSection.wireDialect")}>
           <SelectControl
             value={instance.dialect}
             onChange={(value) =>
@@ -2190,17 +2277,18 @@ function GatewayCard({
               "deepseek",
               "unsupported",
             ]}
+            optionLabel={(option) => t(`aiSection.enums.wireDialect.${option}`)}
           />
         </FormField>
       </div>
 
       <details className="ai-settings-details">
-        <summary>Timeout policy</summary>
+        <summary>{t("aiSection.timeoutPolicy")}</summary>
         <div
           className="ai-form-grid ai-form-grid--compact"
           style={{ marginTop: 10 }}
         >
-          <FormField label="Connect timeout">
+          <FormField label={t("aiSection.connectTimeout")}>
             <NumberControl
               value={
                 instance.timeouts?.connectTimeoutMs === undefined
@@ -2210,11 +2298,11 @@ function GatewayCard({
               min={1}
               max={120}
               step={1}
-              suffix="sec"
+              suffix={t("aiSection.secondsShort")}
               onChange={(value) => patchTimeout("connectTimeoutMs", value)}
             />
           </FormField>
-          <FormField label="Request timeout">
+          <FormField label={t("aiSection.requestTimeout")}>
             <NumberControl
               value={
                 instance.timeouts?.requestTimeoutMs === undefined
@@ -2224,11 +2312,11 @@ function GatewayCard({
               min={1}
               max={7200}
               step={1}
-              suffix="sec"
+              suffix={t("aiSection.secondsShort")}
               onChange={(value) => patchTimeout("requestTimeoutMs", value)}
             />
           </FormField>
-          <FormField label="Maximum timeout">
+          <FormField label={t("aiSection.maximumTimeout")}>
             <NumberControl
               value={
                 instance.timeouts?.maxRequestTimeoutMs === undefined
@@ -2238,7 +2326,7 @@ function GatewayCard({
               min={1}
               max={7200}
               step={1}
-              suffix="sec"
+              suffix={t("aiSection.secondsShort")}
               onChange={(value) => patchTimeout("maxRequestTimeoutMs", value)}
             />
           </FormField>
@@ -2248,11 +2336,14 @@ function GatewayCard({
       {supportsKey && (
         <div className="ai-key-box">
           <div>
-            <strong>API credential</strong>
+            <strong>{t("aiSection.apiCredential")}</strong>
             <span>
               {credential?.hasKey
-                ? `${credential.keyMasked ?? "Key stored"} · ${credential.source}`
-                : "No saved key detected"}
+                ? t("aiSection.storedCredential", {
+                    key: credential.keyMasked ?? t("aiSection.keyStored"),
+                    source: credential.source,
+                  })
+                : t("aiSection.noSavedKey")}
             </span>
           </div>
           <div className="ai-key-controls">
@@ -2261,16 +2352,23 @@ function GatewayCard({
               value={apiKey}
               autoComplete="new-password"
               onChange={(event) => setApiKey(event.target.value)}
-              placeholder="Paste a new key (write-only)"
-              aria-label={`New API key for ${instance.displayName}`}
+              placeholder={t("aiSection.keyPlaceholder")}
+              aria-label={t("aiSection.newKeyAria", {
+                name: instance.displayName,
+              })}
               style={CONTROL_STYLE}
             />
             <SelectControl
               value={scope}
               onChange={(value) => setScope(value as typeof scope)}
               options={["workspace", "tenant"]}
+              optionLabel={(option) =>
+                t(`aiSection.enums.credentialScope.${option}`)
+              }
               disabled={Boolean(instance.credentialScope)}
-              ariaLabel={`Credential scope for ${instance.displayName}`}
+              ariaLabel={t("aiSection.credentialScopeAria", {
+                name: instance.displayName,
+              })}
             />
             <Button
               small
@@ -2278,24 +2376,15 @@ function GatewayCard({
               disabled={!saved || !apiKey || saveKey.isPending}
             >
               {saveKey.isPending
-                ? "Saving…"
+                ? t("aiSection.saving")
                 : credential?.hasKey
-                  ? "Rotate key"
-                  : "Save key"}
+                  ? t("aiSection.rotateKey")
+                  : t("aiSection.saveKey")}
             </Button>
           </div>
-          {!saved && (
-            <small>
-              Save the gateway instance before storing its key. You can still
-              test the draft connection below with a temporary key.
-            </small>
-          )}
+          {!saved && <small>{t("aiSection.saveBeforeKey")}</small>}
           {transportChanged && saved && (
-            <small>
-              The connection draft differs from the saved instance. Testing it
-              requires re-entering a temporary key so a stored secret cannot be
-              sent to a substituted URL.
-            </small>
+            <small>{t("aiSection.transportChangedWarning")}</small>
           )}
         </div>
       )}
@@ -2303,7 +2392,9 @@ function GatewayCard({
       <div className="ai-gateway-actions">
         <Button small onClick={testConnection} disabled={test.isPending}>
           <Icon name="replay" size={10} />
-          {test.isPending ? "Testing…" : "Test connection"}
+          {test.isPending
+            ? t("aiSection.testing")
+            : t("aiSection.testConnection")}
         </Button>
         <Button
           small
@@ -2311,14 +2402,14 @@ function GatewayCard({
           onClick={() => setShowModels((value) => !value)}
           disabled={!saved || transportChanged}
           title={
-            transportChanged
-              ? "Save connection changes before discovering models."
-              : undefined
+            transportChanged ? t("aiSection.saveBeforeDiscovering") : undefined
           }
           ariaExpanded={showModels && !transportChanged}
           ariaControls={`gateway-models-${instance.id}`}
         >
-          {showModels ? "Hide models" : "Discover models"}
+          {showModels
+            ? t("aiSection.hideModels")
+            : t("aiSection.discoverModels")}
         </Button>
         <Button
           small
@@ -2327,20 +2418,20 @@ function GatewayCard({
           disabled={removalDisabled}
           title={removalReason}
         >
-          Remove
+          {t("aiSection.remove")}
         </Button>
       </div>
 
       {message && (
         <Notice
           tone={test.data?.ok === false ? "warn" : "ok"}
-          title="Connection result"
+          title={t("aiSection.connectionResult")}
         >
           {message}
         </Notice>
       )}
       {error && (
-        <Notice tone="error" title="Connection action failed">
+        <Notice tone="error" title={t("aiSection.connectionActionFailed")}>
           {error}
         </Notice>
       )}
@@ -2350,9 +2441,11 @@ function GatewayCard({
           id={`gateway-models-${instance.id}`}
           className="ai-discovered-models"
         >
-          {models.isLoading && <span role="status">Discovering models…</span>}
+          {models.isLoading && (
+            <span role="status">{t("aiSection.discoveringModels")}</span>
+          )}
           {models.isError && (
-            <Notice tone="error" title="Model discovery failed">
+            <Notice tone="error" title={t("aiSection.modelDiscoveryFailed")}>
               {errorText(models.error)}
             </Notice>
           )}
@@ -2360,9 +2453,13 @@ function GatewayCard({
             <>
               <div className="ai-model-discovery-summary">
                 <Badge tone={models.data.source === "live" ? "green" : "muted"}>
-                  {models.data.source}
+                  {t(`aiSection.enums.modelSource.${models.data.source}`)}
                 </Badge>
-                <span>{models.data.models.length} models</span>
+                <span>
+                  {t("aiSection.modelsCount", {
+                    count: models.data.models.length,
+                  })}
+                </span>
                 {models.data.message && <span>{models.data.message}</span>}
               </div>
               <div className="ai-model-chip-list">
@@ -2373,7 +2470,9 @@ function GatewayCard({
                 ))}
               </div>
               {models.data.models.length > 60 && (
-                <small>Showing the first 60 models.</small>
+                <small>
+                  {t("aiSection.showingFirstModels", { count: 60 })}
+                </small>
               )}
             </>
           )}
@@ -2390,12 +2489,11 @@ function TestLab({
   settings: LlmSettings;
   dirty: boolean;
 }) {
+  const { t, language } = useI18n();
   const test = useTestLlmCall();
   const [taskClass, setTaskClass] = useState("chat.respond");
   const [route, setRoute] = useState("");
-  const [prompt, setPrompt] = useState(
-    "Reply with one sentence confirming the model route and your role.",
-  );
+  const [prompt, setPrompt] = useState(t("aiSection.defaultTestPrompt"));
   const [maxTokens, setMaxTokens] = useState<number | undefined>(256);
   const [timeoutSeconds, setTimeoutSeconds] = useState<number | undefined>();
   const [temperature, setTemperature] = useState<number | undefined>();
@@ -2453,22 +2551,20 @@ function TestLab({
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-      <Notice tone="warn" title="Model tests can incur provider charges">
-        A test call generates tokens, appears in LLM usage logs, and may be
-        retained by the upstream provider if storage is enabled. Connection-only
-        probes live on the Provider connections tab.
+      <Notice tone="warn" title={t("aiSection.billableTestTitle")}>
+        {t("aiSection.billableTestDescription")}
       </Notice>
       <Panel
-        title="Test a routed LLM call"
-        subtitle="Prompt, routing, tokens, latency, and cost"
+        title={t("aiSection.testRoutedCall")}
+        subtitle={t("aiSection.testRoutedCallSubtitle")}
         padded
       >
         <form onSubmit={submit}>
           <div className="ai-test-grid">
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
               <FormField
-                label="Task class"
-                hint="Leave the route blank to exercise task routing."
+                label={t("aiSection.taskClass")}
+                hint={t("aiSection.testTaskClassHint")}
               >
                 <input
                   list="ai-test-task-taxonomy"
@@ -2485,17 +2581,17 @@ function TestLab({
                 </datalist>
               </FormField>
               <FormField
-                label="Explicit model route"
-                hint="Optional canonical route, e.g. newapi/kimi-k3."
+                label={t("aiSection.explicitModelRoute")}
+                hint={t("aiSection.explicitModelRouteHint")}
               >
                 <input
                   value={route}
                   onChange={(event) => setRoute(event.target.value)}
-                  placeholder="Use task routing"
+                  placeholder={t("aiSection.useTaskRouting")}
                   style={{ ...CONTROL_STYLE, fontFamily: "var(--mono)" }}
                 />
               </FormField>
-              <FormField label="Prompt">
+              <FormField label={t("aiSection.prompt")}>
                 <textarea
                   value={prompt}
                   onChange={(event) => setPrompt(event.target.value)}
@@ -2510,13 +2606,15 @@ function TestLab({
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
               <FormField
-                label="Maximum output tokens"
+                label={t("aiSection.maximumOutputTokens")}
                 hint={
                   model
-                    ? `Catalog ceiling ${(
-                        model.out ?? model.ctx
-                      ).toLocaleString("en-US")}.`
-                    : "The selected route validates its model-specific ceiling."
+                    ? t("aiSection.catalogCeiling", {
+                        ceiling: (model.out ?? model.ctx).toLocaleString(
+                          language === "zh" ? "zh-CN" : "en-US",
+                        ),
+                      })
+                    : t("aiSection.routeValidatesCeiling")
                 }
               >
                 <NumberControl
@@ -2528,24 +2626,24 @@ function TestLab({
                 />
               </FormField>
               <FormField
-                label="Timeout"
-                hint="Blank uses the route/provider timeout."
+                label={t("aiSection.timeout")}
+                hint={t("aiSection.timeoutDefaultHint")}
               >
                 <NumberControl
                   value={timeoutSeconds}
                   min={1}
                   max={7200}
                   step={1}
-                  suffix="seconds"
+                  suffix={t("aiSection.seconds")}
                   onChange={setTimeoutSeconds}
                 />
               </FormField>
               <FormField
-                label="Temperature"
+                label={t("aiSection.temperature")}
                 hint={
                   model?.temperatureRange === null
-                    ? "Unsupported; omitted automatically."
-                    : "Blank uses provider default."
+                    ? t("aiSection.temperatureUnsupportedShort")
+                    : t("aiSection.blankUsesProviderDefault")
                 }
               >
                 <NumberControl
@@ -2557,44 +2655,53 @@ function TestLab({
                   onChange={setTemperature}
                 />
               </FormField>
-              <FormField label="Reasoning effort">
+              <FormField label={t("aiSection.reasoningEffort")}>
                 <SelectControl
                   value={effort}
                   onChange={setEffort}
-                  placeholder="Provider default"
+                  placeholder={t("aiSection.providerDefault")}
                   disabled={model?.reasoning === false}
                   options={model?.reasoningEfforts ?? ALL_REASONING_EFFORTS}
+                  optionLabel={(option) =>
+                    t(`aiSection.enums.reasoningEffort.${option}`)
+                  }
                 />
               </FormField>
-              <FormField label="Reasoning mode">
+              <FormField label={t("aiSection.reasoningMode")}>
                 <SelectControl
                   value={mode}
                   onChange={setMode}
-                  placeholder="Provider default"
+                  placeholder={t("aiSection.providerDefault")}
                   disabled={model?.reasoning === false}
                   options={model?.reasoningModes ?? ALL_REASONING_MODES}
+                  optionLabel={(option) =>
+                    t(`aiSection.enums.reasoningMode.${option}`)
+                  }
                 />
               </FormField>
-              <FormField label="Answer verbosity">
+              <FormField label={t("aiSection.answerVerbosity")}>
                 <SelectControl
                   value={verbosity}
                   onChange={setVerbosity}
-                  placeholder="Provider default"
+                  placeholder={t("aiSection.providerDefault")}
                   disabled={Boolean(model && !model.textVerbosities?.length)}
                   options={model?.textVerbosities ?? ALL_VERBOSITIES}
+                  optionLabel={(option) =>
+                    t(`aiSection.enums.verbosity.${option}`)
+                  }
                 />
               </FormField>
-              <FormField label="JSON mode">
+              <FormField label={t("aiSection.jsonMode")}>
                 <TriStateControl value={jsonMode} onChange={setJsonMode} />
               </FormField>
               <FormField
-                label="Provider storage"
-                hint="Blank keeps the platform privacy default (off for Responses)."
+                label={t("aiSection.providerStorage")}
+                hint={t("aiSection.providerStorageTestHint")}
               >
                 <TriStateControl
                   value={store}
                   onChange={setStore}
-                  placeholder="Platform default"
+                  placeholder={t("aiSection.platformDefault")}
                 />
               </FormField>
             </div>
@@ -2610,7 +2717,7 @@ function TestLab({
               checked={confirmed}
               onChange={(event) => setConfirmed(event.target.checked)}
             />
-            I understand this sends a real model request and may incur cost.
+            {t("aiSection.billableConfirmation")}
           </label>
           <div
             style={{
@@ -2627,11 +2734,13 @@ function TestLab({
               disabled={!confirmed || !prompt.trim() || test.isPending}
             >
               <Icon name="play" size={11} />{" "}
-              {test.isPending ? "Running model test…" : "Run model test"}
+              {test.isPending
+                ? t("aiSection.runningModelTest")
+                : t("aiSection.runModelTest")}
             </Button>
             {dirty && (
               <span style={{ color: "var(--amber)", fontSize: 10.5 }}>
-                Unsaved route changes are not used by this test.
+                {t("aiSection.unsavedRoutesNotUsed")}
               </span>
             )}
           </div>
@@ -2639,7 +2748,7 @@ function TestLab({
       </Panel>
 
       {error && (
-        <Notice tone="error" title="Model test failed">
+        <Notice tone="error" title={t("aiSection.modelTestFailed")}>
           {error}
         </Notice>
       )}
@@ -2653,36 +2762,44 @@ function TestResult({
 }: {
   result: NonNullable<ReturnType<typeof useTestLlmCall>["data"]>;
 }) {
+  const { t, language } = useI18n();
   const totalNanos = result.cost?.totalUsdNanos;
   const totalCost =
     totalNanos === null || totalNanos === undefined
-      ? "Unpriced"
+      ? t("aiSection.unpriced")
       : `$${(totalNanos / 1_000_000_000).toFixed(6)}`;
   return (
     <Panel
-      title="Latest model result"
+      title={t("aiSection.latestModelResult")}
       subtitle={`${result.provider} · ${result.model}`}
       padded
     >
       <div className="ai-metric-grid">
         <Metric
-          label="Latency"
-          value={`${result.latencyMs.toLocaleString()} ms`}
+          label={t("aiSection.latency")}
+          value={t("aiSection.latencyMs", {
+            value: result.latencyMs.toLocaleString(
+              language === "zh" ? "zh-CN" : "en-US",
+            ),
+          })}
         />
         <Metric
-          label="Input tokens"
+          label={t("aiSection.inputTokens")}
           value={String(result.usage?.inputTokens ?? result.tokensIn ?? "—")}
         />
         <Metric
-          label="Output tokens"
+          label={t("aiSection.outputTokens")}
           value={String(result.usage?.outputTokens ?? result.tokensOut ?? "—")}
         />
         <Metric
-          label="Reasoning tokens"
+          label={t("aiSection.reasoningTokens")}
           value={String(result.usage?.reasoningTokens ?? 0)}
         />
-        <Metric label="Estimated cost" value={totalCost} />
-        <Metric label="Finish reason" value={result.finishReason || "—"} />
+        <Metric label={t("aiSection.estimatedCost")} value={totalCost} />
+        <Metric
+          label={t("aiSection.finishReason")}
+          value={result.finishReason || "—"}
+        />
       </div>
       {result.routing && (
         <div className="ai-result-routing">
@@ -2691,7 +2808,11 @@ function TestResult({
               `${result.provider}/${result.model}`}
           </code>
           <Badge tone="muted">
-            {result.routing.resolutionReason ?? "explicit"}
+            {result.routing.resolutionReason
+              ? t(
+                  `aiSection.enums.resolutionReason.${result.routing.resolutionReason}`,
+                )
+              : t("aiSection.enums.resolutionReason.explicit")}
           </Badge>
           {result.routing.explanation && (
             <span>{result.routing.explanation}</span>
@@ -2702,19 +2823,27 @@ function TestResult({
       <div className="ai-result-footnotes">
         {result.providerRequestId && (
           <span>
-            Provider request ID: <code>{result.providerRequestId}</code>
+            {t("aiSection.providerRequestId")}:{" "}
+            <code>{result.providerRequestId}</code>
           </span>
         )}
         {result.cost?.source && (
           <span>
-            Pricing: {result.cost.source}
-            {result.cost.priceAsOf ? ` · as of ${result.cost.priceAsOf}` : ""}
+            {t("aiSection.pricing")}: {result.cost.source}
+            {result.cost.priceAsOf
+              ? ` · ${t("aiSection.asOf", {
+                  date: result.cost.priceAsOf,
+                })}`
+              : ""}
           </span>
         )}
         {result.usage && result.usage.cachedInputTokens > 0 && (
           <span>
-            Cached input: {result.usage.cachedInputTokens.toLocaleString()}{" "}
-            tokens
+            {t("aiSection.cachedInput", {
+              count: result.usage.cachedInputTokens.toLocaleString(
+                language === "zh" ? "zh-CN" : "en-US",
+              ),
+            })}
           </span>
         )}
       </div>
@@ -2793,6 +2922,7 @@ function SelectControl({
   placeholder,
   disabled,
   ariaLabel,
+  optionLabel,
 }: {
   value: string;
   onChange: (value: string) => void;
@@ -2800,6 +2930,7 @@ function SelectControl({
   placeholder?: string;
   disabled?: boolean;
   ariaLabel?: string;
+  optionLabel?: (option: string) => string;
 }) {
   const field = useContext(FormFieldA11yContext);
   return (
@@ -2815,7 +2946,7 @@ function SelectControl({
       {placeholder !== undefined && <option value="">{placeholder}</option>}
       {options.map((option) => (
         <option key={option} value={option}>
-          {option}
+          {optionLabel ? optionLabel(option) : option}
         </option>
       ))}
     </select>
@@ -2830,7 +2961,7 @@ function NumberControl({
   step,
   disabled,
   suffix,
-  placeholder = "Provider default",
+  placeholder,
 }: {
   value: number | undefined;
   onChange: (value: number | undefined) => void;
@@ -2841,6 +2972,7 @@ function NumberControl({
   suffix?: string;
   placeholder?: string;
 }) {
+  const { t } = useI18n();
   const field = useContext(FormFieldA11yContext);
   return (
     <div className="ai-number-control">
@@ -2853,7 +2985,7 @@ function NumberControl({
         max={max}
         step={step}
         disabled={disabled}
-        placeholder={placeholder}
+        placeholder={placeholder ?? t("aiSection.providerDefault")}
         onChange={(event) =>
           onChange(
             event.target.value === "" ? undefined : Number(event.target.value),
@@ -2893,18 +3025,22 @@ function CheckboxControl({
 function TriStateControl({
   value,
   onChange,
-  placeholder = "Provider default",
+  placeholder,
 }: {
   value: boolean | undefined;
   onChange: (value: boolean | undefined) => void;
   placeholder?: string;
 }) {
+  const { t } = useI18n();
   return (
     <SelectControl
       value={value === undefined ? "" : value ? "true" : "false"}
       onChange={(next) => onChange(next === "" ? undefined : next === "true")}
-      placeholder={placeholder}
+      placeholder={placeholder ?? t("aiSection.providerDefault")}
       options={["true", "false"]}
+      optionLabel={(option) =>
+        option === "true" ? t("aiSection.yes") : t("aiSection.no")
+      }
     />
   );
 }

@@ -13,6 +13,7 @@
  */
 
 import { useMemo, useState } from "react";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 import type { BrainEvent } from "@/lib/hooks/useBrainStream";
 import { FullModal } from "./atoms";
 import type { AgentCardData } from "./model";
@@ -30,10 +31,15 @@ function Badge({ icon, n, title }: { icon: string; n: number; title: string }) {
 }
 
 function RoleTranscript({ role }: { role: RoleCard }) {
+  const { t } = useI18n();
   const icon: Record<string, string> = { tool: "🔧", spawn: "🧩", make: "✨", code: "⚙" };
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-      {role.transcript.length === 0 && <div style={{ padding: 12, fontSize: 12, color: "var(--text-4)" }}>该角色本次还没干活</div>}
+      {role.transcript.length === 0 && (
+        <div style={{ padding: 12, fontSize: 12, color: "var(--text-4)" }}>
+          {t("factory.systemMap.roleTranscript.empty")}
+        </div>
+      )}
       {role.transcript.map((it) => (
         <div key={it.id} style={{ display: "flex", gap: 8, padding: "6px 4px", borderBottom: "1px solid var(--border)", fontSize: 12, lineHeight: 1.55 }}>
           <span style={{ width: 18, textAlign: "center", color: it.ok === false ? "var(--red)" : "var(--text-3)" }}>{icon[it.kind] ?? "•"}</span>
@@ -51,19 +57,34 @@ function RoleTranscript({ role }: { role: RoleCard }) {
 const sectionTitle: React.CSSProperties = { fontSize: 10.5, fontFamily: "var(--mono)", color: "var(--text-3)", margin: "2px 0 6px" };
 
 export function SystemMap({ events, agents, running, onSelectAgent }: { events: BrainEvent[]; agents: AgentCardData[]; running: boolean; onSelectAgent: (slug: string) => void }) {
-  const view = useMemo(() => deriveSystemA(events as SysBrainEvent[], running), [events, running]);
+  const { t } = useI18n();
+  const view = useMemo(
+    () => deriveSystemA(t, events as SysBrainEvent[], running),
+    [events, running, t],
+  );
   const groups = useMemo(() => groupFunctions(agents), [agents]);
   const [openRoleId, setOpenRoleId] = useState<string | null>(null);
   const openRole = view.roles.find((r) => r.id === openRoleId) ?? null;
   const activeRoles = view.roles.filter((r) => r.status !== "idle");
 
   const totallyIdle = activeRoles.length === 0 && !view.intent && !view.understanding && !view.capability && groups.length === 0;
-  if (totallyIdle) return <div style={{ fontSize: 11.5, color: "var(--text-4)", padding: 8 }}>运行后在此展示两套系统的实时活动。</div>;
+  if (totallyIdle) {
+    return (
+      <div style={{ fontSize: 11.5, color: "var(--text-4)", padding: 8 }}>
+        {t("factory.systemMap.emptyState")}
+      </div>
+    );
+  }
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
       {openRole && (
-        <FullModal title={`${openRole.name} · 过程`} onClose={() => setOpenRoleId(null)}>
+        <FullModal
+          title={t("factory.systemMap.roleModalTitle", {
+            name: openRole.name,
+          })}
+          onClose={() => setOpenRoleId(null)}
+        >
           <RoleTranscript role={openRole} />
         </FullModal>
       )}
@@ -71,7 +92,7 @@ export function SystemMap({ events, agents, running, onSelectAgent }: { events: 
       {/* ── 系统 A（有活动才渲染）── */}
       {(activeRoles.length > 0 || view.intent || view.understanding || view.capability) && (
       <div style={{ border: "1px solid var(--border)", borderRadius: 10, padding: "10px 12px", background: "var(--panel-2)" }}>
-        <div style={sectionTitle}>系统 A · 生成</div>
+        <div style={sectionTitle}>{t("factory.systemMap.systemA.title")}</div>
         <div style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 11.5, lineHeight: 1.55, marginBottom: 8 }}>
           {view.intent && (
             <div style={{ display: "flex", gap: 6 }}>
@@ -93,7 +114,10 @@ export function SystemMap({ events, agents, running, onSelectAgent }: { events: 
           )}
           {(view.specialists > 0 || view.subbrains > 0) && (
             <div style={{ fontSize: 10.5, color: "var(--text-3)", fontFamily: "var(--mono)" }}>
-              生成域 sub-agents：认知专家 ×{view.specialists} · 子大脑 ×{view.subbrains}（永不进交付物）
+              {t("factory.systemMap.systemA.subAgentsSummary", {
+                specialists: view.specialists,
+                subBrains: view.subbrains,
+              })}
             </div>
           )}
         </div>
@@ -103,19 +127,25 @@ export function SystemMap({ events, agents, running, onSelectAgent }: { events: 
               <button
                 key={r.id}
                 onClick={() => setOpenRoleId(r.id)}
-                title={`${ROLE_META[r.id].hint} · 点击看过程`}
+                title={t("factory.systemMap.roleCard.hintTooltip", {
+                  hint: t(ROLE_META[r.id].hintKey),
+                })}
                 style={{ textAlign: "left", border: "1px solid var(--border)", borderRadius: 8, padding: "7px 9px", background: "var(--panel)", cursor: "pointer" }}
               >
                 <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                   <span className={r.status === "running" ? "health-pulse" : undefined} style={{ width: 7, height: 7, borderRadius: "50%", background: DOT[r.status], display: "inline-block", flexShrink: 0 }} />
                   <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text)" }}>{r.name}</span>
-                  <span style={{ marginLeft: "auto", fontSize: 10, color: "var(--text-3)", fontFamily: "var(--mono)" }}>{r.toolCalls} 次</span>
+                  <span style={{ marginLeft: "auto", fontSize: 10, color: "var(--text-3)", fontFamily: "var(--mono)" }}>
+                    {t("factory.systemMap.roleCard.toolCalls", {
+                      count: r.toolCalls,
+                    })}
+                  </span>
                 </div>
                 <div style={{ display: "flex", gap: 4, marginTop: 4, flexWrap: "wrap" }}>
-                  <Badge icon="⚙" n={r.badges.codeact} title="CodeAct：写码/驱动执行" />
-                  <Badge icon="🧩" n={r.badges.spawns} title="派生 sub-agents（认知专家/子大脑）" />
-                  <Badge icon="🔧" n={r.badges.tools} title="造工具" />
-                  <Badge icon="🛠" n={r.badges.skills} title="造技能" />
+                  <Badge icon="⚙" n={r.badges.codeact} title={t("factory.systemMap.badge.codeact")} />
+                  <Badge icon="🧩" n={r.badges.spawns} title={t("factory.systemMap.badge.spawns")} />
+                  <Badge icon="🔧" n={r.badges.tools} title={t("factory.systemMap.badge.tools")} />
+                  <Badge icon="🛠" n={r.badges.skills} title={t("factory.systemMap.badge.skills")} />
                   {!r.badges.codeact && !r.badges.spawns && !r.badges.tools && !r.badges.skills && <span style={{ fontSize: 10, color: "var(--text-4)" }}>—</span>}
                 </div>
               </button>
@@ -131,9 +161,18 @@ export function SystemMap({ events, agents, running, onSelectAgent }: { events: 
           onClick={() => onSelectAgent("")}
           style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", textAlign: "left", padding: "8px 11px", border: "1px dashed var(--border)", borderRadius: 10, background: "none", color: "var(--text-2)", cursor: "pointer", fontSize: 11.5 }}
         >
-          <span style={{ color: "var(--text-3)" }}>↓ 晋升 · 交付</span>
-          <span style={{ flex: 1 }}>系统 B · {groups.length} 个 functions（{groups.reduce((n, g) => n + g.children.length, 0)} 个交付域 sub-agents）</span>
-          <span style={{ color: "var(--signal)", whiteSpace: "nowrap" }}>去「智能体」→</span>
+          <span style={{ color: "var(--text-3)" }}>
+            {t("factory.systemMap.systemB.promotionLabel")}
+          </span>
+          <span style={{ flex: 1 }}>
+            {t("factory.systemMap.systemB.summary", {
+              functions: groups.length,
+              subAgents: groups.reduce((n, g) => n + g.children.length, 0),
+            })}
+          </span>
+          <span style={{ color: "var(--signal)", whiteSpace: "nowrap" }}>
+            {t("factory.systemMap.systemB.goToAgents")}
+          </span>
         </button>
       )}
     </div>

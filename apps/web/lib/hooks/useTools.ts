@@ -10,7 +10,7 @@
 
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import type { UseQueryResult } from "@tanstack/react-query";
-import { readApiData } from "@/lib/api-response";
+import { fetchApiData } from "@/lib/api-response";
 import { tenantHeader } from "./tenant-header";
 
 export interface ToolFieldSchema {
@@ -82,21 +82,27 @@ export interface SaveToolBody {
 }
 
 async function callV1<T>(path: string): Promise<T> {
-  const res = await fetch(path, {
+  return fetchApiData<T>(path, {
     credentials: "same-origin",
     headers: { Accept: "application/json", ...tenantHeader() },
   });
-  return readApiData<T>(res, path);
 }
 
-async function sendV1<T>(path: string, method: "POST" | "DELETE", payload?: unknown): Promise<T> {
-  const res = await fetch(path, {
+async function sendV1<T>(
+  path: string,
+  method: "POST" | "DELETE",
+  payload?: unknown,
+): Promise<T> {
+  return fetchApiData<T>(path, {
     method,
     credentials: "same-origin",
-    headers: { Accept: "application/json", ...(payload !== undefined ? { "Content-Type": "application/json" } : {}), ...tenantHeader() },
+    headers: {
+      Accept: "application/json",
+      ...(payload !== undefined ? { "Content-Type": "application/json" } : {}),
+      ...tenantHeader(),
+    },
     body: payload !== undefined ? JSON.stringify(payload) : undefined,
   });
-  return readApiData<T>(res, path);
 }
 
 export function useTools(): UseQueryResult<ToolCatalogPayload> {
@@ -123,7 +129,8 @@ export function useGenerateToolFromDoc() {
 export function useSaveTool() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: SaveToolBody) => sendV1<{ saved: boolean; name: string }>("/v1/tools", "POST", body),
+    mutationFn: (body: SaveToolBody) =>
+      sendV1<{ saved: boolean; name: string }>("/v1/tools", "POST", body),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["tools", "catalog"] }),
   });
 }
@@ -132,7 +139,11 @@ export function useSaveTool() {
 export function useDeleteTool() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (name: string) => sendV1<{ deleted: boolean }>(`/v1/tools/${encodeURIComponent(name)}`, "DELETE"),
+    mutationFn: (name: string) =>
+      sendV1<{ deleted: boolean }>(
+        `/v1/tools/${encodeURIComponent(name)}`,
+        "DELETE",
+      ),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["tools", "catalog"] }),
   });
 }

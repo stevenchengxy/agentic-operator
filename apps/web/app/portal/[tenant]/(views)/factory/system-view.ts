@@ -14,6 +14,8 @@
  * PURE + 自包含（不 import 别名路径）——可被 tsx 脚本直接喂真实 SSE 事件回放测试。
  */
 
+import type { Translate } from "../../../lib/preferences-context";
+
 export type SysBrainEvent = { t: string; [k: string]: unknown };
 
 export type RoleId = "understand" | "plan" | "design" | "verify" | "sandbox" | "asset" | "deliver";
@@ -63,23 +65,55 @@ const ROLE_OF_TOOL: Record<string, RoleId> = {
   list_agents: "deliver", analyze_failure: "deliver", finish: "deliver", generate_report: "deliver",
 };
 
-export const ROLE_META: Record<RoleId, { name: string; hint: string }> = {
-  understand: { name: "理解角色", hint: "读本体 · 消化 · 能力解析" },
-  plan: { name: "规划角色", hint: "分解 · 独立评审" },
-  design: { name: "设计角色", hint: "设计 · 写码 · 精修" },
-  verify: { name: "验证角色", hint: "图闭合 · 用例" },
-  sandbox: { name: "试运行角色", hint: "真沙箱部署与观察" },
-  asset: { name: "资产角色", hint: "造工具 · 造技能 · 检索" },
-  deliver: { name: "交付角色", hint: "评审 · 验收 · 交付" },
+export const ROLE_META: Record<RoleId, { nameKey: string; hintKey: string }> = {
+  understand: {
+    nameKey: "factory.systemView.role.understand.name",
+    hintKey: "factory.systemView.role.understand.hint",
+  },
+  plan: {
+    nameKey: "factory.systemView.role.plan.name",
+    hintKey: "factory.systemView.role.plan.hint",
+  },
+  design: {
+    nameKey: "factory.systemView.role.design.name",
+    hintKey: "factory.systemView.role.design.hint",
+  },
+  verify: {
+    nameKey: "factory.systemView.role.verify.name",
+    hintKey: "factory.systemView.role.verify.hint",
+  },
+  sandbox: {
+    nameKey: "factory.systemView.role.sandbox.name",
+    hintKey: "factory.systemView.role.sandbox.hint",
+  },
+  asset: {
+    nameKey: "factory.systemView.role.asset.name",
+    hintKey: "factory.systemView.role.asset.hint",
+  },
+  deliver: {
+    nameKey: "factory.systemView.role.deliver.name",
+    hintKey: "factory.systemView.role.deliver.hint",
+  },
 };
 
 const s = (v: unknown): string => (v == null ? "" : String(v));
 const clip = (t: string, n: number): string => (t.length > n ? `${t.slice(0, n - 1)}…` : t);
 
-export function deriveSystemA(events: SysBrainEvent[], running: boolean): SystemAView {
+export function deriveSystemA(
+  t: Translate,
+  events: SysBrainEvent[],
+  running: boolean,
+): SystemAView {
   const roles = new Map<RoleId, RoleCard>();
   for (const id of Object.keys(ROLE_META) as RoleId[]) {
-    roles.set(id, { id, name: ROLE_META[id].name, status: "idle", toolCalls: 0, badges: { codeact: 0, spawns: 0, tools: 0, skills: 0 }, transcript: [] });
+    roles.set(id, {
+      id,
+      name: t(ROLE_META[id].nameKey),
+      status: "idle",
+      toolCalls: 0,
+      badges: { codeact: 0, spawns: 0, tools: 0, skills: 0 },
+      transcript: [],
+    });
   }
   const lastIdxOf = new Map<RoleId, number>();
   let intent: string | undefined;
@@ -130,7 +164,16 @@ export function deriveSystemA(events: SysBrainEvent[], running: boolean): System
         const role = currentRole ?? "understand";
         const rc = roles.get(role)!;
         rc.badges.spawns++;
-        rc.transcript.push({ id: nid(), kind: "spawn", label: isSpecialist ? `派生 ${task.replace(/^认知专家 · /, "")}` : "派生子大脑", detail: isSpecialist ? undefined : clip(task, 90) });
+        rc.transcript.push({
+          id: nid(),
+          kind: "spawn",
+          label: isSpecialist
+            ? t("factory.systemView.transcript.spawnSpecialist", {
+                name: task.replace(/^认知专家 · /, ""),
+              })
+            : t("factory.systemView.transcript.spawnSubbrain"),
+          detail: isSpecialist ? undefined : clip(task, 90),
+        });
         lastIdxOf.set(role, idx);
         break;
       }
@@ -138,7 +181,15 @@ export function deriveSystemA(events: SysBrainEvent[], running: boolean): System
         const role = currentRole ?? "asset";
         const rc = roles.get(role)!;
         rc.badges.tools++;
-        rc.transcript.push({ id: nid(), kind: "make", label: `造工具 ${s(e.name)}`, detail: clip(s(e.description), 90), ok: true });
+        rc.transcript.push({
+          id: nid(),
+          kind: "make",
+          label: t("factory.systemView.transcript.toolCreated", {
+            name: s(e.name),
+          }),
+          detail: clip(s(e.description), 90),
+          ok: true,
+        });
         lastIdxOf.set(role, idx);
         break;
       }
@@ -146,14 +197,30 @@ export function deriveSystemA(events: SysBrainEvent[], running: boolean): System
         const role = currentRole ?? "asset";
         const rc = roles.get(role)!;
         rc.badges.skills++;
-        rc.transcript.push({ id: nid(), kind: "make", label: `造技能 ${s(e.name)}`, detail: clip(s(e.purpose), 90), ok: true });
+        rc.transcript.push({
+          id: nid(),
+          kind: "make",
+          label: t("factory.systemView.transcript.skillCreated", {
+            name: s(e.name),
+          }),
+          detail: clip(s(e.purpose), 90),
+          ok: true,
+        });
         lastIdxOf.set(role, idx);
         break;
       }
       case "code": {
         const rc = roles.get("design")!;
         if (s(e.codeSource) === "llm") rc.badges.codeact++;
-        rc.transcript.push({ id: nid(), kind: "code", label: `生成代码（${s(e.codeSource) || "render"}）`, detail: s(e.actionName), ok: true });
+        rc.transcript.push({
+          id: nid(),
+          kind: "code",
+          label: t("factory.systemView.transcript.codeGenerated", {
+            source: s(e.codeSource) || "render",
+          }),
+          detail: s(e.actionName),
+          ok: true,
+        });
         lastIdxOf.set("design", idx);
         break;
       }
@@ -170,9 +237,12 @@ export function deriveSystemA(events: SysBrainEvent[], running: boolean): System
           id: nid(),
           kind: "code",
           label: simulated
-            ? "历史模拟记录 · 无效执行证据"
-            : "真沙箱部署",
-          detail: `部署 ${s(e.functionsRegistered ?? 0)} · 跑 ${s(e.ran ?? 0)}`,
+            ? t("factory.systemView.transcript.simulatedRecord")
+            : t("factory.systemView.transcript.realSandbox"),
+          detail: t("factory.systemView.transcript.sandboxDetail", {
+            registered: s(e.functionsRegistered ?? 0),
+            ran: s(e.ran ?? 0),
+          }),
           ok,
         });
         if (ok) roleErr.delete("sandbox");

@@ -64,7 +64,8 @@ export function RunWithInputModal({
   onClose,
   onSubmitted,
 }: RunWithInputModalProps) {
-  const { t } = useI18n();
+  const { language, t } = useI18n();
+  const dateTimeLocale = language === "zh" ? "zh-CN" : "en-US";
   const invoke = useInvokeAgent();
 
   // Seed the textarea once on open. Re-opening with a different agent
@@ -133,7 +134,7 @@ export function RunWithInputModal({
           t("runWithInputModal.protocolError", {
             detail: first
               ? `${first.path.join(".") || "response"}: ${first.message}`
-              : "invalid response",
+              : t("runWithInputModal.invalidResponse"),
           }),
         );
         return;
@@ -155,9 +156,7 @@ export function RunWithInputModal({
         onSubmitted?.(result.data.runId);
       }
     } catch (err) {
-      setServerError(
-        err instanceof Error ? err.message : String(err),
-      );
+      setServerError(err instanceof Error ? err.message : String(err));
     }
   }
 
@@ -274,7 +273,8 @@ export function RunWithInputModal({
               fontSize: 12.5,
               color: "var(--text-2)",
               background: "color-mix(in srgb, var(--signal) 6%, transparent)",
-              border: "1px solid color-mix(in srgb, var(--signal) 32%, transparent)",
+              border:
+                "1px solid color-mix(in srgb, var(--signal) 32%, transparent)",
               borderRadius: 4,
               padding: "10px 12px",
               display: "flex",
@@ -288,8 +288,15 @@ export function RunWithInputModal({
                 <span className="mono" style={{ color: "var(--text)" }}>
                   {submitted.runId}
                 </span>
-                <span className="mono" style={{ fontSize: 11, color: "var(--text-3)", marginLeft: 8 }}>
-                  ({new Date(submitted.submittedAt).toLocaleTimeString()})
+                <span
+                  className="mono"
+                  style={{
+                    fontSize: 11,
+                    color: "var(--text-3)",
+                    marginLeft: 8,
+                  }}
+                >
+                  {`(${new Date(submitted.submittedAt).toLocaleTimeString(dateTimeLocale)})`}
                 </span>
               </span>
             ) : (
@@ -300,8 +307,15 @@ export function RunWithInputModal({
                   <span className="mono" style={{ color: "var(--text)" }}>
                     {submitted.eventId}
                   </span>
-                  <span className="mono" style={{ fontSize: 11, color: "var(--text-3)", marginLeft: 8 }}>
-                    ({new Date(submitted.submittedAt).toLocaleTimeString()})
+                  <span
+                    className="mono"
+                    style={{
+                      fontSize: 11,
+                      color: "var(--text-3)",
+                      marginLeft: 8,
+                    }}
+                  >
+                    {`(${new Date(submitted.submittedAt).toLocaleTimeString(dateTimeLocale)})`}
                   </span>
                 </span>
                 <span style={{ fontSize: 11.5, color: "var(--text-3)" }}>
@@ -324,8 +338,15 @@ export function RunWithInputModal({
             marginTop: 4,
           }}
         >
-          <Button small tone="ghost" onClick={onClose} disabled={invoke.isPending}>
-            {submitted ? t("runWithInputModal.close") : t("runWithInputModal.cancel")}
+          <Button
+            small
+            tone="ghost"
+            onClick={onClose}
+            disabled={invoke.isPending}
+          >
+            {submitted
+              ? t("runWithInputModal.close")
+              : t("runWithInputModal.cancel")}
           </Button>
           <Button
             small

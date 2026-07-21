@@ -366,7 +366,7 @@
       {
         "order": "4",
         "name": "routeMatchOutcome",
-        "description": "按旧版生产逻辑确定性路由：matchScore < 40 发 MATCH_FAILED；其余一律发 MATCH_PASSED_NEED_INTERVIEW。缺失或非法分数直接失败重试，不由 LLM 编造。",
+        "description": "按 Job_Requisition 明确配置的 resume_match_score_threshold 确定性路由：低于阈值发 MATCH_FAILED，达到阈值发 MATCH_PASSED_NEED_INTERVIEW。阈值缺失/冲突或分数非法时 fail-closed，不使用代码默认值，也不由 LLM 编造。",
         "type": "tool",
         "condition": "匹配结果已持久化"
       },

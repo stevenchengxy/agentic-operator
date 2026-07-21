@@ -10,6 +10,7 @@
 
 import { useState } from "react";
 import { Button, Markdown } from "@/app/portal/components";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 import { chip, Field } from "./atoms";
 import type { AgentCardData, AgentIO } from "./model";
 import type { SessionTask } from "./workers";
@@ -17,6 +18,7 @@ import { TaskTranscript } from "./background-panel";
 
 // ── per-agent mini event-flow ──────────────────────────────────────────────────────
 function MiniAgentSvg({ agent }: { agent: AgentCardData }) {
+  const { t } = useI18n();
   const rows = Math.max(1, agent.trigger.length, agent.emit.length);
   const H = 22 + rows * 26;
   const W = 340;
@@ -37,28 +39,29 @@ function MiniAgentSvg({ agent }: { agent: AgentCardData }) {
       {ev(agent.emit, 230, "start", "var(--violet)")}
       <rect x={116} y={cy - 18} width={108} height={36} rx={9} fill="var(--panel-2)" stroke="var(--signal)" strokeWidth={1.4} />
       <text x={170} y={cy - 2} textAnchor="middle" fontSize={11} fontWeight={700} fill="var(--text)">{(agent.actionName || agent.short).slice(0, 14)}</text>
-      <text x={170} y={cy + 11} textAnchor="middle" fontSize={8.5} fill="var(--text-3)" fontFamily="var(--mono)">{agent.tools.length}🔧 · {agent.codeSource === "ai" ? "AI码" : "渲染码"}</text>
+      <text x={170} y={cy + 11} textAnchor="middle" fontSize={8.5} fill="var(--text-3)" fontFamily="var(--mono)">{agent.tools.length}🔧 · {agent.codeSource === "ai" ? t("factory.inspector.codeSource.aiShort") : t("factory.inspector.codeSource.rendered")}</text>
     </svg>
   );
 }
 
 // ── code / prompt version history ──────────────────────────────────────────────────
 function VersionHistory({ versions, onShowCode }: { versions: AgentCardData[]; onShowCode: (a: AgentCardData) => void }) {
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
   if (versions.length <= 1) return null;
   return (
     <div style={{ border: "1px solid var(--border)", borderRadius: 10, background: "var(--panel-2)", overflow: "hidden" }}>
       <button onClick={() => setOpen((o) => !o)} style={{ display: "flex", alignItems: "center", gap: 6, width: "100%", padding: "9px 12px", background: "none", border: "none", cursor: "pointer", color: "var(--text-2)" }}>
-        <span style={{ fontSize: 11, fontFamily: "var(--mono)", textTransform: "uppercase", letterSpacing: "0.04em" }}>变更版本（{versions.length}）</span>
-        <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--signal)" }}>{open ? "收起" : "展开"}</span>
+        <span style={{ fontSize: 11, fontFamily: "var(--mono)", textTransform: "uppercase", letterSpacing: "0.04em" }}>{t("factory.inspector.versionHistory.title", { count: versions.length })}</span>
+        <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--signal)" }}>{open ? t("factory.inspector.common.collapse") : t("factory.inspector.common.expand")}</span>
       </button>
       {open && (
         <div style={{ borderTop: "1px solid var(--border)", padding: 10, display: "flex", flexDirection: "column", gap: 8 }}>
           {versions.map((v, i) => (
             <div key={i} style={{ borderLeft: `2px solid ${i === versions.length - 1 ? "var(--signal)" : "var(--border-2)"}`, paddingLeft: 10 }}>
               <div style={{ fontSize: 11.5, color: "var(--text)", display: "flex", alignItems: "center", gap: 8 }}>
-                <b>v{i + 1}</b>{i === versions.length - 1 && chip("当前", "var(--signal)")}{chip(v.codeSource === "ai" ? "AI写码" : "渲染码", "var(--text-3)")}<span style={{ color: "var(--text-3)", fontFamily: "var(--mono)", fontSize: 10 }}>{v.tools.length} 工具</span>
-                {v.code && <button onClick={() => onShowCode(v)} style={{ marginLeft: "auto", fontSize: 10.5, color: "var(--green)", background: "none", border: "none", cursor: "pointer" }}>看代码 ⛶</button>}
+                <b>v{i + 1}</b>{i === versions.length - 1 && chip(t("factory.inspector.versionHistory.current"), "var(--signal)")}{chip(v.codeSource === "ai" ? t("factory.inspector.codeSource.aiWritten") : t("factory.inspector.codeSource.rendered"), "var(--text-3)")}<span style={{ color: "var(--text-3)", fontFamily: "var(--mono)", fontSize: 10 }}>{t("factory.inspector.versionHistory.toolCount", { count: v.tools.length })}</span>
+                {v.code && <button onClick={() => onShowCode(v)} style={{ marginLeft: "auto", fontSize: 10.5, color: "var(--green)", background: "none", border: "none", cursor: "pointer" }}>{t("factory.inspector.versionHistory.viewCode")}</button>}
               </div>
               {v.systemPrompt && <div style={{ fontSize: 11, color: "var(--text-3)", marginTop: 3, lineHeight: 1.5, maxHeight: 48, overflow: "hidden" }}>{v.systemPrompt.slice(0, 120)}{v.systemPrompt.length > 120 ? "…" : ""}</div>}
             </div>
@@ -71,6 +74,7 @@ function VersionHistory({ versions, onShowCode }: { versions: AgentCardData[]; o
 
 // ── supplement + regenerate ────────────────────────────────────────────────────────
 function RegenerateBox({ actionName, onRegenerate }: { actionName: string; onRegenerate: (actionName: string, supplement: string) => void | Promise<void> }) {
+  const { t } = useI18n();
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -82,17 +86,17 @@ function RegenerateBox({ actionName, onRegenerate }: { actionName: string; onReg
       await onRegenerate(actionName, text.trim());
       setText("");
     } catch (cause) {
-      setError(cause instanceof Error && cause.message ? cause.message : "重新生成请求失败");
+      setError(cause instanceof Error && cause.message ? cause.message : t("factory.inspector.regenerate.error"));
     } finally {
       setBusy(false);
     }
   };
   return (
     <div style={{ border: "1px solid var(--border)", borderRadius: 10, padding: 12, background: "var(--panel-2)" }}>
-      <div style={{ fontSize: 11, color: "var(--text-3)", fontFamily: "var(--mono)", textTransform: "uppercase", marginBottom: 6 }}>补充信息 · 重新生成</div>
-      <textarea value={text} onChange={(e) => setText(e.target.value)} rows={2} placeholder="补充背景 / 要求 / 修正（如：这个外部 API 的返回字段是 …），大脑会只重做这一个 agent。" style={{ width: "100%", resize: "none", fontSize: 12, padding: "7px 9px", background: "var(--panel)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 8, fontFamily: "var(--sans)" }} />
+      <div style={{ fontSize: 11, color: "var(--text-3)", fontFamily: "var(--mono)", textTransform: "uppercase", marginBottom: 6 }}>{t("factory.inspector.regenerate.heading")}</div>
+      <textarea value={text} onChange={(e) => setText(e.target.value)} rows={2} placeholder={t("factory.inspector.regenerate.placeholder")} style={{ width: "100%", resize: "none", fontSize: 12, padding: "7px 9px", background: "var(--panel)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 8, fontFamily: "var(--sans)" }} />
       <div style={{ marginTop: 8 }}>
-        <Button icon="replay" tone="primary" disabled={busy} onClick={() => void submit()}>{busy ? "提交中…" : "重新生成这个 agent"}</Button>
+        <Button icon="replay" tone="primary" disabled={busy} onClick={() => void submit()}>{busy ? t("factory.inspector.regenerate.submitting") : t("factory.inspector.regenerate.submit")}</Button>
       </div>
       {error && <div role="alert" style={{ marginTop: 7, color: "var(--red)", fontSize: 11.5 }}>{error}</div>}
     </div>
@@ -105,6 +109,7 @@ function RegenerateBox({ actionName, onRegenerate }: { actionName: string; onReg
  *  "点开卡片看它内部推理流程" surface: strategy chosen, each executed reasoning method, each
  *  tool call with ✓/✗ — not just the final design artifacts. */
 function ReasoningStream({ task }: { task: SessionTask }) {
+  const { t } = useI18n();
   const [open, setOpen] = useState(true);
   const steps = task.transcript.length;
   if (!steps) return null;
@@ -112,9 +117,9 @@ function ReasoningStream({ task }: { task: SessionTask }) {
   return (
     <div style={{ border: "1px solid var(--border)", borderRadius: 10, background: "var(--panel-2)", overflow: "hidden" }}>
       <button onClick={() => setOpen((o) => !o)} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "9px 12px", background: "none", border: "none", cursor: "pointer", color: "var(--text-2)" }}>
-        <span style={{ fontSize: 11, fontFamily: "var(--mono)", textTransform: "uppercase", letterSpacing: "0.04em" }}>内部推理流（{steps} 步）</span>
-        {strategy && chip(`推理方法 ${strategy}`, "var(--violet)")}
-        <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--signal)" }}>{open ? "收起" : "展开"}</span>
+        <span style={{ fontSize: 11, fontFamily: "var(--mono)", textTransform: "uppercase", letterSpacing: "0.04em" }}>{t("factory.inspector.reasoningStream.title", { count: steps })}</span>
+        {strategy && chip(t("factory.inspector.reasoningStream.method", { strategy }), "var(--violet)")}
+        <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--signal)" }}>{open ? t("factory.inspector.common.collapse") : t("factory.inspector.common.expand")}</span>
       </button>
       {open && (
         <div style={{ borderTop: "1px solid var(--border)", padding: "4px 10px", maxHeight: 340, overflowY: "auto" }}>
@@ -137,11 +142,12 @@ export function AgentInspector({ agent, io, score, versions, task, onBack, onSho
   onShowCode: (a: AgentCardData) => void;
   onRegenerate?: (actionName: string, supplement: string) => void | Promise<void>;
 }) {
+  const { t } = useI18n();
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <Button icon="chevron-left" onClick={onBack}>返回画布</Button>
-        {agent.code && <Button icon="code" onClick={() => onShowCode(agent)}>查看代码{agent.codeSource === "ai" ? "（AI写）" : "（渲染）"}</Button>}
+        <Button icon="chevron-left" onClick={onBack}>{t("factory.inspector.actions.backToCanvas")}</Button>
+        {agent.code && <Button icon="code" onClick={() => onShowCode(agent)}>{t("factory.inspector.actions.viewCode")}{agent.codeSource === "ai" ? t("factory.inspector.codeSource.aiParen") : t("factory.inspector.codeSource.renderedParen")}</Button>}
       </div>
 
       <div style={{ border: "1px solid var(--border)", borderRadius: 10, padding: 12, background: "var(--panel-2)" }}>
@@ -151,7 +157,7 @@ export function AgentInspector({ agent, io, score, versions, task, onBack, onSho
         </div>
         {score && (
           <div style={{ fontSize: 11.5, marginTop: 4, color: score.regression ? "var(--red)" : "var(--green)" }}>
-            评分 {score.next} · 最近一轮精修 {score.delta >= 0 ? "▲ +" : "▼ "}{score.delta}{score.regression ? "（退步）" : ""}
+            {t("factory.inspector.score.label")} {score.next} · {t("factory.inspector.score.lastRefinement")} {score.delta >= 0 ? "▲ +" : "▼ "}{score.delta}{score.regression ? t("factory.inspector.score.regression") : ""}
           </div>
         )}
         <div style={{ marginTop: 8 }}><MiniAgentSvg agent={agent} /></div>
@@ -160,9 +166,9 @@ export function AgentInspector({ agent, io, score, versions, task, onBack, onSho
 
       {(agent.reasoning || agent.decisionLogic || agent.systemPrompt) && (
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {agent.reasoning && <Field label="设计推理" text={agent.reasoning} markdown />}
-          {agent.decisionLogic && <Field label="分支决策逻辑" text={agent.decisionLogic} markdown />}
-          {agent.systemPrompt && <Field label="system prompt（指令）" text={agent.systemPrompt} mono />}
+          {agent.reasoning && <Field label={t("factory.inspector.fields.designReasoning")} text={agent.reasoning} markdown />}
+          {agent.decisionLogic && <Field label={t("factory.inspector.fields.branchLogic")} text={agent.decisionLogic} markdown />}
+          {agent.systemPrompt && <Field label={t("factory.inspector.fields.systemPrompt")} text={agent.systemPrompt} mono />}
         </div>
       )}
 
@@ -173,15 +179,15 @@ export function AgentInspector({ agent, io, score, versions, task, onBack, onSho
       {io && (
         <div style={{ border: "1px solid var(--border)", borderRadius: 10, padding: 12, background: "var(--panel-2)" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
-            <div style={{ fontSize: 11, color: "var(--text-3)", fontFamily: "var(--mono)", textTransform: "uppercase" }}>真实运行 I/O</div>
-            <span style={{ fontSize: 10.5, fontFamily: "var(--mono)", color: /complet/i.test(io.status) ? "var(--green)" : /miss/i.test(io.status) ? "var(--amber)" : "var(--text-3)" }}>{io.status}{io.degraded ? " · 降级" : ""}</span>
+            <div style={{ fontSize: 11, color: "var(--text-3)", fontFamily: "var(--mono)", textTransform: "uppercase" }}>{t("factory.inspector.io.title")}</div>
+            <span style={{ fontSize: 10.5, fontFamily: "var(--mono)", color: /complet/i.test(io.status) ? "var(--green)" : /miss/i.test(io.status) ? "var(--amber)" : "var(--text-3)" }}>{io.status}{io.degraded ? t("factory.inspector.io.degraded") : ""}</span>
           </div>
           <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginBottom: 6 }}>
             {io.triggerEvent && chip(`◂ ${io.triggerEvent}`, "var(--blue)")}
             {io.outputEvent && chip(`▸ ${io.outputEvent}`, "var(--violet)")}
           </div>
-          {io.inputPayload && <Field label="输入" text={JSON.stringify(io.inputPayload, null, 2)} mono />}
-          {io.outputPayload && <Field label="输出" text={JSON.stringify(io.outputPayload, null, 2)} mono />}
+          {io.inputPayload && <Field label={t("factory.inspector.io.input")} text={JSON.stringify(io.inputPayload, null, 2)} mono />}
+          {io.outputPayload && <Field label={t("factory.inspector.io.output")} text={JSON.stringify(io.outputPayload, null, 2)} mono />}
           {io.reasoning && <div style={{ fontSize: 11.5, color: "var(--text-2)", marginTop: 6, lineHeight: 1.5 }}><Markdown>{io.reasoning}</Markdown></div>}
         </div>
       )}

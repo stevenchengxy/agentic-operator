@@ -2,13 +2,19 @@
  * Format helpers ported from prototype components.jsx (window.fmtAgo, etc.).
  * Pure functions — safe to import from server or client components.
  */
+import type { Language } from "./i18n/types";
 
-export function fmtAgo(ms: number): string {
-  const d = Date.now() - ms;
-  if (d < 60_000) return `${Math.max(1, Math.floor(d / 1000))}s ago`;
-  if (d < 3_600_000) return `${Math.floor(d / 60_000)}m ago`;
-  if (d < 86_400_000) return `${Math.floor(d / 3_600_000)}h ago`;
-  return `${Math.floor(d / 86_400_000)}d ago`;
+export function fmtAgo(ms: number, language: Language = "en"): string {
+  if (!Number.isFinite(ms) || ms <= 0) return "—";
+  const d = Math.max(0, Date.now() - ms);
+  const [value, enUnit, zhUnit] = d < 60_000
+    ? [Math.max(1, Math.floor(d / 1000)), "s", "秒"] as const
+    : d < 3_600_000
+      ? [Math.floor(d / 60_000), "m", "分钟"] as const
+      : d < 86_400_000
+        ? [Math.floor(d / 3_600_000), "h", "小时"] as const
+        : [Math.floor(d / 86_400_000), "d", "天"] as const;
+  return language === "zh" ? `${value} ${zhUnit}前` : `${value}${enUnit} ago`;
 }
 
 export function fmtDur(ms: number | null | undefined): string {

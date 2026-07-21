@@ -17,12 +17,8 @@ import {
   useQueryClient,
   type UseQueryResult,
 } from "@tanstack/react-query";
-import type {
-  AdminUserRow,
-  MemberRow,
-  TenantRole,
-} from "@agentic/contracts";
-import { readApiData } from "@/lib/api-response";
+import type { AdminUserRow, MemberRow, TenantRole } from "@agentic/contracts";
+import { fetchApiData } from "@/lib/api-response";
 import { tenantHeader } from "./tenant-header";
 
 async function callV1<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -30,7 +26,7 @@ async function callV1<T>(path: string, init: RequestInit = {}): Promise<T> {
   // Only set a JSON content-type when there's a body — Fastify 400s on an empty
   // body with `content-type: application/json`, which would break bodyless
   // DELETE (remove member, revoke membership, delete user).
-  const res = await fetch(path, {
+  return fetchApiData<T>(path, {
     credentials: "same-origin",
     ...rest,
     headers: {
@@ -40,7 +36,6 @@ async function callV1<T>(path: string, init: RequestInit = {}): Promise<T> {
       ...(initHeaders as Record<string, string> | undefined),
     },
   });
-  return readApiData<T>(res, path);
 }
 
 export const ACCESS_KEYS = {
@@ -53,7 +48,8 @@ export const ACCESS_KEYS = {
 export function useMembers(enabled: boolean): UseQueryResult<MemberRow[]> {
   return useQuery({
     queryKey: ACCESS_KEYS.members,
-    queryFn: () => callV1<{ items: MemberRow[] }>("/v1/members").then((d) => d.items),
+    queryFn: () =>
+      callV1<{ items: MemberRow[] }>("/v1/members").then((d) => d.items),
     enabled,
     staleTime: 10_000,
     retry: false,
@@ -88,17 +84,22 @@ export function useRemoveMember() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (userId: string) =>
-      callV1<{ items: MemberRow[] }>(`/v1/members/${userId}`, { method: "DELETE" }),
+      callV1<{ items: MemberRow[] }>(`/v1/members/${userId}`, {
+        method: "DELETE",
+      }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ACCESS_KEYS.members }),
   });
 }
 
 // ─── Platform-wide users (superadmin) ────────────────────────────────────────
 
-export function useAdminUsers(enabled: boolean): UseQueryResult<AdminUserRow[]> {
+export function useAdminUsers(
+  enabled: boolean,
+): UseQueryResult<AdminUserRow[]> {
   return useQuery({
     queryKey: ACCESS_KEYS.users,
-    queryFn: () => callV1<{ items: AdminUserRow[] }>("/v1/admin/users").then((d) => d.items),
+    queryFn: () =>
+      callV1<{ items: AdminUserRow[] }>("/v1/admin/users").then((d) => d.items),
     enabled,
     staleTime: 10_000,
     retry: false,
@@ -136,10 +137,13 @@ export function useGrantMembership() {
       tenantSlug: string;
       role: TenantRole;
     }) =>
-      callV1<{ items: AdminUserRow[] }>(`/v1/admin/users/${userId}/memberships`, {
-        method: "POST",
-        body: JSON.stringify({ tenantSlug, role }),
-      }),
+      callV1<{ items: AdminUserRow[] }>(
+        `/v1/admin/users/${userId}/memberships`,
+        {
+          method: "POST",
+          body: JSON.stringify({ tenantSlug, role }),
+        },
+      ),
     onSuccess: () => qc.invalidateQueries({ queryKey: ACCESS_KEYS.users }),
   });
 }
@@ -148,7 +152,9 @@ export function useDeleteUser() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (userId: string) =>
-      callV1<{ items: AdminUserRow[] }>(`/v1/admin/users/${userId}`, { method: "DELETE" }),
+      callV1<{ items: AdminUserRow[] }>(`/v1/admin/users/${userId}`, {
+        method: "DELETE",
+      }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ACCESS_KEYS.users }),
   });
 }
@@ -156,7 +162,13 @@ export function useDeleteUser() {
 export function useRevokeMembership() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ userId, tenantSlug }: { userId: string; tenantSlug: string }) =>
+    mutationFn: ({
+      userId,
+      tenantSlug,
+    }: {
+      userId: string;
+      tenantSlug: string;
+    }) =>
       callV1<{ items: AdminUserRow[] }>(
         `/v1/admin/users/${userId}/memberships/${tenantSlug}`,
         { method: "DELETE" },

@@ -75,22 +75,20 @@ describe("enterprise workflow canvas authoring", () => {
   it("keeps complete agent settings in a resizable in-canvas panel", () => {
     expect(page).toContain("<Splitter");
     expect(page).toContain('axis="x"');
-    expect(page).toContain(
-      'ariaLabel="Resize workflow canvas and agent details"',
-    );
+    expect(page).toContain('ariaLabel={t("workflowPage.resizeAria")}');
     expect(page).toContain("expandAgentPanel(a.kebabId)");
     expect(page).toContain("onToggleWidth={toggleAgentPanelWidth}");
     expect(page).not.toContain("async function navAgent(id: string)");
     expect(page).not.toContain("agentStudioWorkflowHref({");
     expect(styles).toContain("--workflow-inspector-width");
     expect(styles).toContain(".inspectorSplitter");
-    expect(editor).toContain("Complete definition · all settings");
-    expect(editor).toContain("Generate prompt");
-    expect(editor).toContain('<EditorField label="Provider">');
-    expect(editor).toContain('<EditorField label="Concurrency limit">');
-    expect(editor).toContain('<EditorField label="Reasoning mode">');
-    expect(editor).toContain('<EditorField label="Trace level">');
-    expect(editor).toContain('<EditorField label="Artifact filename">');
+    expect(editor).toContain('t("agentEditor.completeSettings")');
+    expect(editor).toContain('t("agentEditor.generatePrompt")');
+    expect(editor).toContain('label={t("agentEditor.provider")}');
+    expect(editor).toContain('label={t("agentEditor.concurrencyLimit")}');
+    expect(editor).toContain('label={t("agentEditor.reasoningMode")}');
+    expect(editor).toContain('label={t("agentEditor.traceLevel")}');
+    expect(editor).toContain('label={t("agentEditor.artifactFilename")}');
   });
 
   it("keeps enterprise draft/live execution and evidence on the workflow page", () => {
@@ -99,17 +97,19 @@ describe("enterprise workflow canvas authoring", () => {
     );
     expect(page.match(/setShowRunConsole\(true\)/g)).toHaveLength(2);
     expect(page).toContain("<WorkflowRunConsole");
-    expect(runConsole).toContain("Current draft test");
-    expect(runConsole).toContain("Published live");
-    expect(runConsole).toContain("Tool effects");
-    expect(runConsole).toContain("Failure policy");
-    expect(runConsole).toContain("Agent trace");
-    expect(runConsole).toContain("Terminal outputs");
-    expect(runConsole).toContain("Copy JSON");
-    expect(runConsole).toContain("Example event payload");
-    expect(runConsole).toContain("Load example");
-    expect(runConsole).toContain("Expected fields");
-    expect(runConsole).toContain("Advanced payload overlay");
+    expect(runConsole).toContain('t("workflowRunConsole.currentDraftTest")');
+    expect(runConsole).toContain('t("workflowRunConsole.publishedLive")');
+    expect(runConsole).toContain('t("workflowRunConsole.toolEffects")');
+    expect(runConsole).toContain('t("workflowRunConsole.failurePolicy")');
+    expect(runConsole).toContain('t("workflowRunConsole.agentTrace")');
+    expect(runConsole).toContain('t("workflowRunConsole.terminalOutputs")');
+    expect(runConsole).toContain('t("workflowRunConsole.copyJson")');
+    expect(runConsole).toContain('t("workflowRunConsole.examplePayload")');
+    expect(runConsole).toContain('t("workflowRunConsole.loadExample")');
+    expect(runConsole).toContain('t("workflowRunConsole.expectedFields")');
+    expect(runConsole).toContain(
+      't("workflowRunConsole.advancedPayloadOverlay")',
+    );
     expect(runConsole).toContain("buildWorkflowPayloadGuide");
     expect(runConsoleStyles).toContain(".payloadRecipe");
     expect(runConsoleStyles).toContain(".rawPayloadHelp");
@@ -120,7 +120,7 @@ describe("enterprise workflow canvas authoring", () => {
   it("draws event links directly from the edited trigger and emit fields", () => {
     expect(page).toContain("deriveEventEdges(agents)");
     expect(page).toContain("previousDerivedEdgesRef");
-    expect(page).toContain("Automatically linked");
+    expect(page).toContain('t("workflowPage.announcement.autoLinked"');
     expect(page).toContain("workflowAgents={agents}");
   });
 });

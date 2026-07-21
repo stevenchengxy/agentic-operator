@@ -3,6 +3,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Badge, Icon, ModalOverlay } from "@/app/portal/components";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 
 export type WorkflowHelpTopic =
   | "start"
@@ -18,29 +19,13 @@ export interface WorkflowHelpProps {
   initialTopic?: WorkflowHelpTopic;
 }
 
-const TOPICS: Array<{
-  id: WorkflowHelpTopic;
-  label: string;
-  eyebrow: string;
-}> = [
-  { id: "start", label: "Start here", eyebrow: "A five-minute tour" },
-  { id: "read", label: "Read a workflow", eyebrow: "Nodes, lines, and events" },
-  { id: "edit", label: "Edit safely", eyebrow: "Draft to publication" },
-  {
-    id: "fields",
-    label: "Fields & buttons",
-    eyebrow: "Plain-language reference",
-  },
-  {
-    id: "examples",
-    label: "Worked examples",
-    eyebrow: "Follow two common flows",
-  },
-  {
-    id: "troubleshooting",
-    label: "Troubleshooting",
-    eyebrow: "What to do when stuck",
-  },
+const TOPICS: WorkflowHelpTopic[] = [
+  "start",
+  "read",
+  "edit",
+  "fields",
+  "examples",
+  "troubleshooting",
 ];
 
 const listStyle = {
@@ -56,6 +41,7 @@ export function WorkflowHelp({
   onClose,
   initialTopic = "start",
 }: WorkflowHelpProps) {
+  const { t } = useI18n();
   const titleId = useId();
   const descriptionId = useId();
   const panelRef = useRef<HTMLDivElement>(null);
@@ -155,9 +141,9 @@ export function WorkflowHelp({
                 id={titleId}
                 style={{ margin: 0, fontSize: 15, fontWeight: 600 }}
               >
-                Workflows user guide
+                {t("workflowHelp.title")}
               </h1>
-              <Badge tone="signal">Help</Badge>
+              <Badge tone="signal">{t("workflowHelp.helpBadge")}</Badge>
             </div>
             <p
               id={descriptionId}
@@ -167,16 +153,15 @@ export function WorkflowHelp({
                 fontSize: 10.5,
               }}
             >
-              Understand, trace, and safely change a workflow—no coding
-              required.
+              {t("workflowHelp.subtitle")}
             </p>
           </div>
           <button
             ref={closeRef}
             type="button"
             onClick={onClose}
-            aria-label="Close Workflows user guide"
-            title="Close guide (Escape)"
+            aria-label={t("workflowHelp.closeAria")}
+            title={t("workflowHelp.closeTitle")}
             style={{
               width: 30,
               height: 30,
@@ -201,7 +186,7 @@ export function WorkflowHelp({
           }}
         >
           <nav
-            aria-label="Workflow help topics"
+            aria-label={t("workflowHelp.topicsAria")}
             className="workflow-help-nav"
             style={{
               minHeight: 0,
@@ -220,16 +205,16 @@ export function WorkflowHelp({
                 letterSpacing: ".08em",
               }}
             >
-              USER GUIDE
+              {t("workflowHelp.userGuide")}
             </div>
             {TOPICS.map((item, index) => {
-              const active = item.id === topic;
+              const active = item === topic;
               return (
                 <button
-                  key={item.id}
+                  key={item}
                   type="button"
                   aria-current={active ? "page" : undefined}
-                  onClick={() => selectTopic(item.id)}
+                  onClick={() => selectTopic(item)}
                   style={{
                     width: "100%",
                     padding: 9,
@@ -260,7 +245,7 @@ export function WorkflowHelp({
                         fontWeight: active ? 600 : 500,
                       }}
                     >
-                      {item.label}
+                      {t(`workflowHelp.topic.${item}.label`)}
                     </span>
                     <span
                       style={{
@@ -270,7 +255,7 @@ export function WorkflowHelp({
                         fontSize: 9.5,
                       }}
                     >
-                      {item.eyebrow}
+                      {t(`workflowHelp.topic.${item}.eyebrow`)}
                     </span>
                   </span>
                 </button>
@@ -288,10 +273,11 @@ export function WorkflowHelp({
                 lineHeight: 1.5,
               }}
             >
-              <strong style={{ color: "var(--text-2)" }}>Safe rule</strong>
+              <strong style={{ color: "var(--text-2)" }}>
+                {t("workflowHelp.safeRule")}
+              </strong>
               <br />
-              Trace the current flow, edit a draft, review the change count,
-              then deploy deliberately.
+              {t("workflowHelp.safeRuleBody")}
             </div>
           </nav>
 
@@ -354,17 +340,17 @@ function StartHere({
 }: {
   onNavigate: (topic: WorkflowHelpTopic) => void;
 }) {
+  const { t } = useI18n();
   return (
     <>
-      <PageHeading eyebrow="Start here" title="A workflow is a shared plan">
-        Each box is a person or agent doing one part of the work. A named event
-        carries the work from one box to the next. The canvas helps you see the
-        complete process without reading code.
+      <PageHeading
+        eyebrow={t("workflowHelp.start.eyebrow")}
+        title={t("workflowHelp.start.title")}
+      >
+        {t("workflowHelp.start.intro")}
       </PageHeading>
-      <Callout tone="blue" title="Looking does not change anything">
-        Clicking a box or event only highlights and explains it. Live behavior
-        changes only after someone enters Edit workflow, makes a draft, and
-        deploys that draft.
+      <Callout tone="blue" title={t("workflowHelp.start.lookTitle")}>
+        {t("workflowHelp.start.lookBody")}
       </Callout>
       <div
         className="workflow-help-card-grid"
@@ -375,37 +361,31 @@ function StartHere({
           margin: "18px 0",
         }}
       >
-        <MiniCard label="1 · Find" title="Locate the work">
-          Read the stage headings and find the box whose name matches the task
-          you care about.
+        <MiniCard
+          label={t("workflowHelp.start.findLabel")}
+          title={t("workflowHelp.start.findTitle")}
+        >
+          {t("workflowHelp.start.findBody")}
         </MiniCard>
-        <MiniCard label="2 · Trace" title="Follow the hand-off">
-          Click the box, then click its incoming or outgoing event to see all
-          connected steps.
+        <MiniCard
+          label={t("workflowHelp.start.traceLabel")}
+          title={t("workflowHelp.start.traceTitle")}
+        >
+          {t("workflowHelp.start.traceBody")}
         </MiniCard>
-        <MiniCard label="3 · Inspect" title="Read the details">
-          Use the right panel to see what starts the step, what it emits, and
-          recent activity.
+        <MiniCard
+          label={t("workflowHelp.start.inspectLabel")}
+          title={t("workflowHelp.start.inspectTitle")}
+        >
+          {t("workflowHelp.start.inspectBody")}
         </MiniCard>
       </div>
-      <GuideSection number="01" title="What you see on the canvas">
+      <GuideSection number="01" title={t("workflowHelp.start.canvasTitle")}>
         <ul style={listStyle}>
-          <li>
-            <strong>Columns</strong> are stages such as Intake, Analyze, or
-            Submit. Work usually moves from left to right.
-          </li>
-          <li>
-            <strong>Boxes</strong> are nodes. A lime edge means an AI agent; a
-            violet edge means a human task.
-          </li>
-          <li>
-            <strong>Lines</strong> show event hand-offs. The arrow points to the
-            next listener.
-          </li>
-          <li>
-            <strong>The right panel</strong> explains the selected box or event.
-            With nothing selected, it shows the legend and event list.
-          </li>
+          <li>{t("workflowHelp.start.canvasColumns")}</li>
+          <li>{t("workflowHelp.start.canvasBoxes")}</li>
+          <li>{t("workflowHelp.start.canvasLines")}</li>
+          <li>{t("workflowHelp.start.canvasPanel")}</li>
         </ul>
       </GuideSection>
       <div
@@ -418,21 +398,21 @@ function StartHere({
         }}
       >
         <JumpCard
-          title="Need to trace a problem?"
-          body="Learn how to follow boxes and events."
-          action="Read a workflow"
+          title={t("workflowHelp.start.jumpTraceTitle")}
+          body={t("workflowHelp.start.jumpTraceBody")}
+          action={t("workflowHelp.topic.read.label")}
           onClick={() => onNavigate("read")}
         />
         <JumpCard
-          title="Need to change the flow?"
-          body="Use a safe draft and deploy deliberately."
-          action="Edit safely"
+          title={t("workflowHelp.start.jumpEditTitle")}
+          body={t("workflowHelp.start.jumpEditBody")}
+          action={t("workflowHelp.topic.edit.label")}
           onClick={() => onNavigate("edit")}
         />
         <JumpCard
-          title="Prefer an example?"
-          body="Follow support and invoice workflows."
-          action="View examples"
+          title={t("workflowHelp.start.jumpExampleTitle")}
+          body={t("workflowHelp.start.jumpExampleBody")}
+          action={t("workflowHelp.start.jumpExampleAction")}
           onClick={() => onNavigate("examples")}
         />
       </div>
@@ -441,86 +421,53 @@ function StartHere({
 }
 
 function ReadGuide() {
+  const { t } = useI18n();
   return (
     <>
       <PageHeading
-        eyebrow="View & trace"
-        title="Follow the work from start to finish"
+        eyebrow={t("workflowHelp.read.eyebrow")}
+        title={t("workflowHelp.read.title")}
       >
-        Start with a business question: “What happens after this?” or “Why did
-        this step run?” Then use selections to narrow the canvas.
+        {t("workflowHelp.read.intro")}
       </PageHeading>
-      <GuideSection number="01" title="Trace from a box">
+      <GuideSection number="01" title={t("workflowHelp.read.boxTitle")}>
         <ol style={listStyle}>
-          <li>Click the agent or human-task box you want to understand.</li>
-          <li>
-            The connected boxes and lines stay bright; unrelated work dims.
-          </li>
-          <li>
-            Read <strong>Triggers</strong> in the right panel to learn what can
-            start it.
-          </li>
-          <li>
-            Read <strong>Emits</strong> to learn what it announces after
-            success.
-          </li>
-          <li>
-            Double-click the box to widen the right panel. Drag the divider when
-            you want more room for instructions, inputs, outputs, tools, runtime
-            settings, or the complete definition.
-          </li>
+          <li>{t("workflowHelp.read.box1")}</li>
+          <li>{t("workflowHelp.read.box2")}</li>
+          <li>{t("workflowHelp.read.box3")}</li>
+          <li>{t("workflowHelp.read.box4")}</li>
+          <li>{t("workflowHelp.read.box5")}</li>
         </ol>
       </GuideSection>
-      <GuideSection number="02" title="Trace an event hand-off">
+      <GuideSection number="02" title={t("workflowHelp.read.eventTitle")}>
         <ol style={listStyle}>
-          <li>
-            Click a line, or choose an event from the right-side event list.
-          </li>
-          <li>Every line carrying that event is highlighted.</li>
-          <li>
-            The inspector lists which boxes <strong>emit</strong> the event and
-            which boxes <strong>listen</strong> for it.
-          </li>
-          <li>
-            Use <strong>View in event stream</strong> to inspect recent real
-            occurrences and timestamps.
-          </li>
+          <li>{t("workflowHelp.read.event1")}</li>
+          <li>{t("workflowHelp.read.event2")}</li>
+          <li>{t("workflowHelp.read.event3")}</li>
+          <li>{t("workflowHelp.read.event4")}</li>
         </ol>
       </GuideSection>
       <Callout
         tone="amber"
-        title="A line is a promise, not proof of a successful run"
+        title={t("workflowHelp.read.lineTitle")}
       >
-        The graph shows configured hand-offs. Use the event stream and Runs
-        pages to confirm that a particular event was emitted and processed.
+        {t("workflowHelp.read.lineBody")}
       </Callout>
-      <GuideSection number="03" title="Run with evidence">
+      <GuideSection number="03" title={t("workflowHelp.read.runTitle")}>
         <ol style={listStyle}>
-          <li>
-            Choose <strong>Run workflow</strong> to open the Run Console.
-          </li>
-          <li>
-            Use <strong>Current draft test</strong> for bounded execution of the
-            exact canvas definition, or <strong>Published live</strong> for the
-            durable runtime.
-          </li>
-          <li>
-            Enter the generated variables, choose the tool and failure policy,
-            and keep the agent, event, and depth budgets bounded.
-          </li>
-          <li>
-            Inspect summary, agent trace, events, terminal outputs, tokens, and
-            raw JSON before accepting the result.
-          </li>
+          <li>{t("workflowHelp.read.run1")}</li>
+          <li>{t("workflowHelp.read.run2")}</li>
+          <li>{t("workflowHelp.read.run3")}</li>
+          <li>{t("workflowHelp.read.run4")}</li>
         </ol>
       </GuideSection>
-      <GuideSection number="04" title="Questions this view can answer">
+      <GuideSection number="04" title={t("workflowHelp.read.questionsTitle")}>
         <ul style={listStyle}>
-          <li>What starts this agent, and what happens after it finishes?</li>
-          <li>Which agents depend on this event?</li>
-          <li>Where does a person review or approve the work?</li>
-          <li>Which stage contains the problem?</li>
-          <li>Will renaming an event affect more than one listener?</li>
+          <li>{t("workflowHelp.read.question1")}</li>
+          <li>{t("workflowHelp.read.question2")}</li>
+          <li>{t("workflowHelp.read.question3")}</li>
+          <li>{t("workflowHelp.read.question4")}</li>
+          <li>{t("workflowHelp.read.question5")}</li>
         </ul>
       </GuideSection>
     </>
@@ -528,112 +475,56 @@ function ReadGuide() {
 }
 
 function EditGuide() {
+  const { t } = useI18n();
   return (
     <>
       <PageHeading
-        eyebrow="Edit mode"
-        title="Change a draft, not the live workflow"
+        eyebrow={t("workflowHelp.edit.eyebrow")}
+        title={t("workflowHelp.edit.title")}
       >
-        Edit mode gives you a working copy. Your live workflow keeps running
-        until you deliberately deploy the draft.
+        {t("workflowHelp.edit.intro")}
       </PageHeading>
-      <Callout tone="green" title="Recommended sequence">
-        Understand the current path → enter Edit workflow → change one idea at a
-        time → save → validate → run representative tests → publish
-        deliberately.
+      <Callout tone="green" title={t("workflowHelp.edit.sequenceTitle")}>
+        {t("workflowHelp.edit.sequenceBody")}
       </Callout>
-      <GuideSection number="01" title="Start a draft">
+      <GuideSection number="01" title={t("workflowHelp.edit.startTitle")}>
         <ol style={listStyle}>
-          <li>
-            Choose <strong>Edit workflow</strong> in the page header.
-          </li>
-          <li>
-            Confirm the amber <strong>Draft</strong> badge is visible. This
-            means you are not changing the live version yet.
-          </li>
-          <li>Click a box. Its editable details appear on the right.</li>
+          <li>{t("workflowHelp.edit.start1")}</li>
+          <li>{t("workflowHelp.edit.start2")}</li>
+          <li>{t("workflowHelp.edit.start3")}</li>
         </ol>
       </GuideSection>
-      <GuideSection number="02" title="Edit a box">
+      <GuideSection number="02" title={t("workflowHelp.edit.boxTitle")}>
         <ul style={listStyle}>
-          <li>
-            <strong>Title:</strong> change the friendly name people see.
-          </li>
-          <li>
-            <strong>Triggered by:</strong> list events that are allowed to start
-            this box.
-          </li>
-          <li>
-            <strong>Triggered event:</strong> list events announced when the box
-            succeeds.
-          </li>
-          <li>
-            <strong>Instructions:</strong> generate or regenerate a reviewable
-            system-prompt proposal from the current role, ontology, inputs,
-            outputs, tools, and actions. Applying it is always explicit.
-          </li>
-          <li>
-            <strong>Model and runtime:</strong> set provider, model, reasoning,
-            temperature, tokens, retries, timeout, concurrency, schedule,
-            observability, tool-loop, output, and artifact controls.
-          </li>
-          <li>
-            <strong>Complete definition · all settings:</strong> inspect or edit
-            the entire lossless agent JSON contract.
-          </li>
-          <li>
-            <strong>Remove node:</strong> removes the box from this draft. It
-            does not delete past versions or run history.
-          </li>
+          <li>{t("workflowHelp.edit.box1")}</li>
+          <li>{t("workflowHelp.edit.box2")}</li>
+          <li>{t("workflowHelp.edit.box3")}</li>
+          <li>{t("workflowHelp.edit.box4")}</li>
+          <li>{t("workflowHelp.edit.box5")}</li>
+          <li>{t("workflowHelp.edit.box6")}</li>
+          <li>{t("workflowHelp.edit.box7")}</li>
         </ul>
-        <Callout tone="amber" title="Event names connect the workflow">
-          An emitted event must exactly match the event a downstream box listens
-          for. As soon as the names match, the canvas draws the link
-          automatically. Changing spelling, spaces, or capitalization removes
-          that hand-off.
+        <Callout tone="amber" title={t("workflowHelp.edit.eventsTitle")}>
+          {t("workflowHelp.edit.eventsBody")}
         </Callout>
       </GuideSection>
-      <GuideSection number="03" title="Review, test, and publish">
+      <GuideSection number="03" title={t("workflowHelp.edit.reviewTitle")}>
         <ol style={listStyle}>
-          <li>
-            Review the header count for added, changed, and removed boxes.
-          </li>
-          <li>
-            Ask the affected process owner to review changes to events or human
-            approval steps.
-          </li>
-          <li>
-            Choose <strong>Save draft</strong>, then <strong>Validate</strong>.
-            Resolve every blocking server finding.
-          </li>
-          <li>
-            Choose <strong>Run</strong> and test representative entry events,
-            values, failure paths, and human decisions.
-          </li>
-          <li>
-            Choose <strong>Publish</strong> only after the exact saved revision
-            and its evidence are acceptable.
-          </li>
+          <li>{t("workflowHelp.edit.review1")}</li>
+          <li>{t("workflowHelp.edit.review2")}</li>
+          <li>{t("workflowHelp.edit.review3")}</li>
+          <li>{t("workflowHelp.edit.review4")}</li>
+          <li>{t("workflowHelp.edit.review5")}</li>
         </ol>
-        <Callout tone="blue" title="About the Validate button">
-          Validate runs authoritative server checks against the saved immutable
-          draft. It reports blocking graph, manifest, model, tool, and prompt
-          findings without publishing or replacing the live version.
+        <Callout tone="blue" title={t("workflowHelp.edit.validateTitle")}>
+          {t("workflowHelp.edit.validateBody")}
         </Callout>
       </GuideSection>
-      <GuideSection number="04" title="Stop or continue later">
+      <GuideSection number="04" title={t("workflowHelp.edit.laterTitle")}>
         <ul style={listStyle}>
-          <li>
-            <strong>Discard draft</strong> abandons the current working changes.
-          </li>
-          <li>
-            Unsaved draft state is kept in this browser for the current tenant.
-            If it is restored later, a banner shows when it was saved.
-          </li>
-          <li>
-            A browser draft is not a team hand-off. Save and publish it, or
-            coordinate with another editor before switching devices.
-          </li>
+          <li>{t("workflowHelp.edit.later1")}</li>
+          <li>{t("workflowHelp.edit.later2")}</li>
+          <li>{t("workflowHelp.edit.later3")}</li>
         </ul>
       </GuideSection>
     </>
@@ -641,202 +532,74 @@ function EditGuide() {
 }
 
 function FieldReference() {
+  const { t } = useI18n();
+  const row = (key: string): [string, string, string] => [
+    t(`${key}.name`),
+    t(`${key}.meaning`),
+    t(`${key}.use`),
+  ];
   const groups = [
     {
-      title: "Canvas and inspector",
-      summary: "Controls used to explore the live workflow.",
+      title: t("workflowHelp.fields.canvas.title"),
+      summary: t("workflowHelp.fields.canvas.summary"),
       rows: [
-        [
-          "Stage heading",
-          "A business phase of the workflow.",
-          "Use it to find where work is in the overall process.",
-        ],
-        [
-          "Agent node",
-          "An automated unit of work.",
-          "Click it to highlight its hand-offs and read its triggers and emitted events.",
-        ],
-        [
-          "Human node",
-          "A step that waits for a person.",
-          "Click it to see where review or approval fits in the process.",
-        ],
-        [
-          "Event line",
-          "A named message connecting one box to another.",
-          "Click it to highlight every sender and listener for that event.",
-        ],
-        [
-          "Triggers",
-          "Events that are allowed to start the selected box.",
-          "Use these to work backward to the source.",
-        ],
-        [
-          "Emits",
-          "Events announced after the selected box succeeds.",
-          "Use these to follow the process forward.",
-        ],
-        [
-          "Resizable agent details",
-          "Keeps the selected agent and its complete definition beside the canvas.",
-          "Drag the divider or double-click a box to make room for instructions, input/output contracts, tools, runtime, and advanced JSON.",
-        ],
-        [
-          "View in event stream",
-          "Opens recent occurrences of one event.",
-          "Use it to confirm that a configured hand-off actually happened.",
-        ],
-      ],
+        "stage",
+        "agent",
+        "human",
+        "event",
+        "triggers",
+        "emits",
+        "details",
+        "eventStream",
+      ].map((id) => row(`workflowHelp.fields.canvas.${id}`)),
     },
     {
-      title: "Page actions",
-      summary: "Actions that create, import, or change a workflow.",
-      rows: [
-        [
-          "Edit workflow",
-          "Starts a safe working draft of the current workflow.",
-          "Use it when changing box titles or event connections.",
-        ],
-        [
-          "Run workflow",
-          "Opens typed draft testing and published-live execution in one operational console.",
-          "Use draft mode for bounded multi-agent evidence; use live mode only when you intend to dispatch the published workflow.",
-        ],
-        [
-          "New workflow",
-          "Creates a tenant-scoped server draft from a blank canvas, template, clone, or manifest.",
-          "Complete, validate, and test the resulting draft before publishing it.",
-        ],
-        [
-          "Import manifest",
-          "Loads workflow definition files.",
-          "This is for technical users with reviewed workflow.json and actions.json files.",
-        ],
-        [
-          "Help",
-          "Opens this guide.",
-          "It is available in both view and edit modes.",
-        ],
-      ],
+      title: t("workflowHelp.fields.actions.title"),
+      summary: t("workflowHelp.fields.actions.summary"),
+      rows: ["edit", "run", "new", "import", "help"].map((id) =>
+        row(`workflowHelp.fields.actions.${id}`),
+      ),
     },
     {
-      title: "Edit-mode fields and actions",
-      summary: "What you can change in a workflow draft.",
+      title: t("workflowHelp.fields.edit.title"),
+      summary: t("workflowHelp.fields.edit.summary"),
       rows: [
-        [
-          "Title",
-          "The friendly box name on the canvas.",
-          "Use a short verb-and-object name, such as Classify ticket.",
-        ],
-        [
-          "Triggered by",
-          "The list of event names that start this box.",
-          "Enter exact registered names, separated by commas or new lines.",
-        ],
-        [
-          "Triggered event",
-          "The list of event names emitted after success.",
-          "Enter the exact names expected by downstream listeners.",
-        ],
-        [
-          "Generate prompt",
-          "Creates a non-destructive system/ontology prompt proposal from the complete current agent definition.",
-          "Review the proposal and provenance, then explicitly apply or discard it.",
-        ],
-        [
-          "Model & runtime",
-          "Controls provider/model, reasoning, sampling, tokens, retries, timeout, concurrency, schedule, observability, tool loop, and persistence.",
-          "Use inherited defaults unless the workflow needs an intentional, reviewed override.",
-        ],
-        [
-          "Complete definition · all settings",
-          "The lossless JSON contract for every agent setting.",
-          "Use it for expert review or fields not convenient in the guided controls.",
-        ],
-        [
-          "Remove node",
-          "Excludes the box from the new draft version.",
-          "Use only after checking every incoming and outgoing event dependency.",
-        ],
-        [
-          "Validate",
-          "Runs authoritative server checks against the saved draft revision.",
-          "Resolve blocking findings and save a new revision before publishing.",
-        ],
-        [
-          "Run",
-          "Executes the exact current canvas in the bounded draft harness.",
-          "Supply representative inputs and review agent, event, output, token, and warning evidence.",
-        ],
-        [
-          "Publish",
-          "Promotes one immutable workflow version to live.",
-          "Publish only after save, validation, testing, and affected-owner review.",
-        ],
-        [
-          "Discard draft",
-          "Abandons the current working changes.",
-          "Use it when you want to return to the live definition without deploying.",
-        ],
-      ],
+        "titleField",
+        "triggeredBy",
+        "triggeredEvent",
+        "generatePrompt",
+        "runtime",
+        "complete",
+        "remove",
+        "validate",
+        "run",
+        "publish",
+        "discard",
+      ].map((id) => row(`workflowHelp.fields.edit.${id}`)),
     },
     {
-      title: "New workflow fields",
-      summary: "Choices shown when starting a workflow.",
+      title: t("workflowHelp.fields.newWorkflow.title"),
+      summary: t("workflowHelp.fields.newWorkflow.summary"),
       rows: [
-        [
-          "Start from",
-          "How the first draft is created.",
-          "Choose Blank canvas, From template, or Import manifest.",
-        ],
-        [
-          "Display name",
-          "The friendly workflow name.",
-          "Use the business process name, such as Customer Support Triage.",
-        ],
-        [
-          "Workflow ID",
-          "The stable technical identifier.",
-          "Accept the suggested lowercase ID unless your naming policy says otherwise.",
-        ],
-        [
-          "Tenant",
-          "The workspace that owns the workflow.",
-          "Choose the team or organization whose agents and runs this workflow belongs to.",
-        ],
-        [
-          "Default model",
-          "The starting AI model for new automated steps.",
-          "Use the approved workspace default unless an expert recommends a change.",
-        ],
-        [
-          "Trigger type",
-          "How a blank workflow begins.",
-          "Choose Event, Scheduled, Webhook, or Manual based on the real business start.",
-        ],
-        [
-          "First agent name",
-          "The first box created on a blank canvas.",
-          "Use a short technical name describing the first action.",
-        ],
-        [
-          "Template",
-          "A prepared multi-step pattern.",
-          "Choose the closest business process, then review every box and event before publication.",
-        ],
-      ],
+        "startFrom",
+        "displayName",
+        "workflowId",
+        "tenant",
+        "defaultModel",
+        "triggerType",
+        "firstAgent",
+        "template",
+      ].map((id) => row(`workflowHelp.fields.newWorkflow.${id}`)),
     },
   ];
 
   return (
     <>
       <PageHeading
-        eyebrow="Reference"
-        title="Every workflow field in plain language"
+        eyebrow={t("workflowHelp.fields.eyebrow")}
+        title={t("workflowHelp.fields.title")}
       >
-        Use the label you see in the page to find what it means and what you
-        should do. Import files and technical identifiers are best reviewed with
-        an engineer.
+        {t("workflowHelp.fields.intro")}
       </PageHeading>
       <div style={{ display: "grid", gap: 8 }}>
         {groups.map((group, index) => (
@@ -888,7 +651,7 @@ function FieldReference() {
                     {meaning}
                     <span style={{ display: "block", marginTop: 4 }}>
                       <strong style={{ color: "var(--text)" }}>
-                        What to do:
+                        {t("workflowHelp.fields.whatToDo")}
                       </strong>{" "}
                       {use}
                     </span>
@@ -904,14 +667,14 @@ function FieldReference() {
 }
 
 function ExamplesGuide() {
+  const { t } = useI18n();
   return (
     <>
       <PageHeading
-        eyebrow="Worked examples"
-        title="See how events move real work"
+        eyebrow={t("workflowHelp.examples.eyebrow")}
+        title={t("workflowHelp.examples.title")}
       >
-        These examples use ordinary business language first, then show the event
-        names a workflow builder would configure.
+        {t("workflowHelp.examples.intro")}
       </PageHeading>
       <div
         className="workflow-help-example-grid"
@@ -923,93 +686,93 @@ function ExamplesGuide() {
       >
         <ExampleCard
           number="01"
-          title="Customer support triage"
-          goal="Classify a new ticket and route urgent cases for immediate human attention."
+          title={t("workflowHelp.examples.support.title")}
+          goal={t("workflowHelp.examples.support.goal")}
           steps={[
-            ["Receive ticket", "support.ticket.received"],
-            ["Classify topic and urgency", "support.ticket.classified"],
-            ["Human priority review", "support.ticket.approved"],
-            ["Assign service queue", "support.ticket.routed"],
+            [t("workflowHelp.examples.support.step1"), "support.ticket.received"],
+            [
+              t("workflowHelp.examples.support.step2"),
+              "support.ticket.classified",
+            ],
+            [t("workflowHelp.examples.support.step3"), "support.ticket.approved"],
+            [t("workflowHelp.examples.support.step4"), "support.ticket.routed"],
           ]}
           tryIt={[
-            "Click Classify topic and urgency.",
-            "Confirm support.ticket.received is a trigger.",
-            "Click support.ticket.classified and verify the review and routing listeners.",
+            t("workflowHelp.examples.support.try1"),
+            t("workflowHelp.examples.support.try2"),
+            t("workflowHelp.examples.support.try3"),
           ]}
-          watch="If you rename support.ticket.classified, update every listener using it or the route will break."
+          watch={t("workflowHelp.examples.support.watch")}
         />
         <ExampleCard
           number="02"
-          title="Invoice approval"
-          goal="Check an invoice, pause for approval when needed, then send it to payment."
+          title={t("workflowHelp.examples.invoice.title")}
+          goal={t("workflowHelp.examples.invoice.goal")}
           steps={[
-            ["Read invoice", "invoice.received"],
-            ["Check amount and supplier", "invoice.checked"],
-            ["Manager approval", "invoice.approved"],
-            ["Schedule payment", "payment.scheduled"],
+            [t("workflowHelp.examples.invoice.step1"), "invoice.received"],
+            [t("workflowHelp.examples.invoice.step2"), "invoice.checked"],
+            [t("workflowHelp.examples.invoice.step3"), "invoice.approved"],
+            [t("workflowHelp.examples.invoice.step4"), "payment.scheduled"],
           ]}
           tryIt={[
-            "Click Manager approval to locate the human step.",
-            "Trace invoice.checked backward to the automated check.",
-            "Trace invoice.approved forward to Schedule payment.",
+            t("workflowHelp.examples.invoice.try1"),
+            t("workflowHelp.examples.invoice.try2"),
+            t("workflowHelp.examples.invoice.try3"),
           ]}
-          watch="Removing the approval box can change a financial control. Ask the process owner before deploying."
+          watch={t("workflowHelp.examples.invoice.watch")}
         />
       </div>
-      <Callout tone="blue" title="A useful design test">
-        Explain every box as “When [trigger] happens, this box [does one job],
-        then emits [event].” If that sentence is unclear, rename the title or
-        event before adding more steps.
+      <Callout tone="blue" title={t("workflowHelp.examples.testTitle")}>
+        {t("workflowHelp.examples.testBody")}
       </Callout>
     </>
   );
 }
 
 function TroubleshootingGuide() {
+  const { t } = useI18n();
   const issues = [
     [
-      "The canvas looks empty",
-      "Confirm the correct tenant is selected and wait for the API to load. Scroll horizontally if the workflow begins in a later stage. If the API-unreachable banner appears, contact the operator rather than importing or creating replacement data.",
+      t("workflowHelp.troubleshooting.emptyTitle"),
+      t("workflowHelp.troubleshooting.emptyBody"),
     ],
     [
-      "A box never starts",
-      "Open the box and check its Trigger name. Then click that event and confirm an upstream box emits the exact same spelling and capitalization. Use the event stream to see whether the event actually occurred.",
+      t("workflowHelp.troubleshooting.neverStartsTitle"),
+      t("workflowHelp.troubleshooting.neverStartsBody"),
     ],
     [
-      "The next box does not run",
-      "Check that the first box completed successfully in Runs, emitted the expected event, and that the next box listens for that exact event. A configured line alone does not prove the event was processed.",
+      t("workflowHelp.troubleshooting.nextBoxTitle"),
+      t("workflowHelp.troubleshooting.nextBoxBody"),
     ],
     [
-      "Publish is disabled",
-      "Save the current edit, resolve blocking editor findings, and wait for any save or validation in progress. Validate and test the saved revision before publishing.",
+      t("workflowHelp.troubleshooting.publishDisabledTitle"),
+      t("workflowHelp.troubleshooting.publishDisabledBody"),
     ],
     [
-      "Draft test failed",
-      "Open Agent trace and start at the first blocked or failed action. Check validated inputs, tool policy, provider/model evidence, output-schema findings, and the event budgets before rerunning.",
+      t("workflowHelp.troubleshooting.draftFailedTitle"),
+      t("workflowHelp.troubleshooting.draftFailedBody"),
     ],
     [
-      "Publication failed",
-      "Read the error message, keep the draft, and fix the reported field. Common causes are invalid event names, incomplete agent definitions, or a newer version published by someone else. Refresh and compare before retrying a conflict.",
+      t("workflowHelp.troubleshooting.publicationFailedTitle"),
+      t("workflowHelp.troubleshooting.publicationFailedBody"),
     ],
     [
-      "My draft returned after refresh",
-      "This is expected: the browser preserves unfinished changes for this tenant. Read the restored time. Continue only if the changes are yours; otherwise choose Discard and coordinate with the previous editor.",
+      t("workflowHelp.troubleshooting.draftReturnedTitle"),
+      t("workflowHelp.troubleshooting.draftReturnedBody"),
     ],
     [
-      "I changed the wrong thing",
-      "Before publication, choose Discard draft. After publication, do not recreate history manually—review the Deployments page and restore or republish the last known-good definition using your team's release process.",
+      t("workflowHelp.troubleshooting.wrongThingTitle"),
+      t("workflowHelp.troubleshooting.wrongThingBody"),
     ],
   ];
 
   return (
     <>
       <PageHeading
-        eyebrow="Troubleshooting"
-        title="Start with the hand-off that failed"
+        eyebrow={t("workflowHelp.troubleshooting.eyebrow")}
+        title={t("workflowHelp.troubleshooting.title")}
       >
-        Identify the last successful box or event, then inspect one connection
-        at a time. Keep the current draft while investigating unless you are
-        certain it should be discarded.
+        {t("workflowHelp.troubleshooting.intro")}
       </PageHeading>
       <div style={{ display: "grid", gap: 8 }}>
         {issues.map(([title, answer], index) => (
@@ -1041,10 +804,11 @@ function TroubleshootingGuide() {
           </details>
         ))}
       </div>
-      <Callout tone="red" title="Stop before publishing when">
-        You cannot explain an event change, a human approval disappears, the
-        validation result is unclear, or another person may be editing the same
-        workflow. Ask the workflow owner or an engineer to review the draft.
+      <Callout
+        tone="red"
+        title={t("workflowHelp.troubleshooting.stopTitle")}
+      >
+        {t("workflowHelp.troubleshooting.stopBody")}
       </Callout>
     </>
   );
@@ -1270,6 +1034,7 @@ function ExampleCard({
   tryIt: string[];
   watch: string;
 }) {
+  const { t } = useI18n();
   return (
     <article
       style={{
@@ -1287,7 +1052,7 @@ function ExampleCard({
           letterSpacing: ".08em",
         }}
       >
-        EXAMPLE {number}
+        {t("workflowHelp.exampleLabel", { number })}
       </div>
       <h3 style={{ margin: "6px 0", fontSize: 15, fontWeight: 600 }}>
         {title}
@@ -1336,7 +1101,9 @@ function ExampleCard({
                     fontSize: 9.5,
                   }}
                 >
-                  {index === 0 ? `starts with ${event}` : `emits ${event}`}
+                  {index === 0
+                    ? t("workflowHelp.startsWith", { event })
+                    : t("workflowHelp.emits", { event })}
                 </code>
               </span>
             </div>
@@ -1353,7 +1120,9 @@ function ExampleCard({
           </div>
         ))}
       </div>
-      <h4 style={{ margin: "14px 0 5px", fontSize: 11.5 }}>Try this trace</h4>
+      <h4 style={{ margin: "14px 0 5px", fontSize: 11.5 }}>
+        {t("workflowHelp.tryTrace")}
+      </h4>
       <ol style={{ ...listStyle, fontSize: 10.75 }}>
         {tryIt.map((item) => (
           <li key={item}>{item}</li>
@@ -1370,7 +1139,7 @@ function ExampleCard({
           lineHeight: 1.5,
         }}
       >
-        <strong>Watch out:</strong> {watch}
+        <strong>{t("workflowHelp.watchOut")}</strong> {watch}
       </div>
     </article>
   );

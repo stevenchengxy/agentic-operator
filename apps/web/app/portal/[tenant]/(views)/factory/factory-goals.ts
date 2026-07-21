@@ -1,3 +1,4 @@
+import type { Translate } from "@/app/portal/lib/preferences-context";
 import type { DomainRow } from "./model";
 
 export interface FactoryGoalAction {
@@ -40,6 +41,7 @@ function cleanDomainLabel(raw: string): string {
  * suggest — the factory does not generate agents for Human actions.
  */
 export function buildFactoryGoalSuggestions(
+  t: Translate,
   domain: DomainRow | null,
   actions: readonly FactoryGoalAction[],
 ): string[] {
@@ -57,18 +59,18 @@ export function buildFactoryGoalSuggestions(
 
   const domainLabel = cleanDomainLabel(domain.name?.trim() || domain.id);
   const visibleNames = agentActionNames.slice(0, 3);
-  const actionSummary = `${visibleNames.join("、")}${
-    agentActionNames.length > visibleNames.length ? " 等" : ""
+  const actionSummary = `${visibleNames.join(t("factory.goals.actionSeparator"))}${
+    agentActionNames.length > visibleNames.length ? t("factory.goals.actionOverflowSuffix") : ""
   }`;
   const suggestions = [
-    `为「${domainLabel}」生成覆盖 ${agentActionNames.length} 个 Agent 执行动作的智能体，并通过真实运行验证完整事件链。`,
-    `优先围绕 Agent 动作「${actionSummary}」生成智能体，并验证每个动作的真实工具与输入输出契约。`,
+    t("factory.goals.coverActions", { domain: domainLabel, count: agentActionNames.length }),
+    t("factory.goals.prioritizeActions", { actions: actionSummary }),
   ];
 
   const ruleCount = domain.counts?.rules ?? 0;
   if (ruleCount > 0) {
     suggestions.push(
-      `基于「${domainLabel}」已连接的 ${ruleCount} 条本体规则生成智能体，并用真实执行证据验证规则约束。`,
+      t("factory.goals.basedOnRules", { domain: domainLabel, count: ruleCount }),
     );
   }
 

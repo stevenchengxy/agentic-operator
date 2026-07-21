@@ -8,6 +8,7 @@
  */
 
 import { Empty, HelpTip } from "@/app/portal/components";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 import type { BrainStep, BrainStepStatus } from "./model";
 
 const COLOR: Record<BrainStepStatus, string> = {
@@ -29,7 +30,8 @@ const CARD_W = 270;
 const CARD_H = 44;
 
 export function BrainFlow({ steps, running }: { steps: BrainStep[]; running: boolean }) {
-  if (!steps.length) return <Empty title={<>大脑还没开始推理 <HelpTip>运行后，这里逐步画出大脑的决策路径：校验 / 修订 / 暂停等你 / 试运行 / 交付</HelpTip></>} />;
+  const { t } = useI18n();
+  if (!steps.length) return <Empty title={<>{t("factory.brainFlow.emptyTitle")} <HelpTip>{t("factory.brainFlow.emptyHelp")}</HelpTip></>} />;
 
   const cy = (i: number) => PADTOP + i * ROWH + CARD_H / 2;
   const H = PADTOP + steps.length * ROWH + 8;
@@ -84,7 +86,7 @@ export function BrainFlow({ steps, running }: { steps: BrainStep[]; running: boo
           );
         })}
         {refineCount > 0 && (
-          <text x={14} y={cy(0) - 14} fontSize={10} fill="var(--amber)" fontFamily="var(--mono)">↺ 自我修订 ×{refineCount}</text>
+          <text x={14} y={cy(0) - 14} fontSize={10} fill="var(--amber)" fontFamily="var(--mono)">{t("factory.brainFlow.selfReviseCount", { count: refineCount })}</text>
         )}
       </svg>
     </div>

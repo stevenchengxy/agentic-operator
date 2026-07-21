@@ -202,7 +202,7 @@ export function TenantCreateModal({
                     setSlug(e.target.value.toLowerCase());
                     setSlugDirty(true);
                   }}
-                  placeholder="acme"
+                  placeholder={t("tenantCreateModal.slugPlaceholder")}
                   style={{ ...inputStyle(), fontFamily: "var(--mono)" }}
                 />
               </Field>
@@ -213,7 +213,7 @@ export function TenantCreateModal({
                 <input
                   value={subtitle}
                   onChange={(e) => setSubtitle(e.target.value)}
-                  placeholder="Recruitment-as-a-Service · Asia-Pac"
+                  placeholder={t("tenantCreateModal.subtitlePlaceholder")}
                   style={inputStyle()}
                 />
               </Field>
@@ -267,7 +267,7 @@ export function TenantCreateModal({
                   type="number"
                   min="0"
                   onChange={(e) => setTokenCap(e.target.value)}
-                  placeholder="e.g. 50000000"
+                  placeholder={t("tenantCreateModal.tokenCapPlaceholder")}
                   style={{ ...inputStyle(), fontFamily: "var(--mono)" }}
                 />
               </Field>
@@ -281,7 +281,7 @@ export function TenantCreateModal({
                   min="0"
                   step="0.01"
                   onChange={(e) => setUsdCap(e.target.value)}
-                  placeholder="e.g. 500.00"
+                  placeholder={t("tenantCreateModal.usdCapPlaceholder")}
                   style={{ ...inputStyle(), fontFamily: "var(--mono)" }}
                 />
               </Field>

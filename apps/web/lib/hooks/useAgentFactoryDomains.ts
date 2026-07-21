@@ -2,7 +2,7 @@
 
 import { useQuery, type UseQueryResult } from "@tanstack/react-query";
 import type { AgentFactoryDomain } from "@/lib/domain-display";
-import { readApiData } from "@/lib/api-response";
+import { fetchApiData } from "@/lib/api-response";
 import { tenantHeader } from "./tenant-header";
 
 export interface FactoryDomainBinding {
@@ -28,7 +28,7 @@ export interface AgentFactoryDomainsResponse {
 }
 
 async function callV1<T>(path: string, tenant?: string): Promise<T> {
-  const res = await fetch(path, {
+  return fetchApiData<T>(path, {
     credentials: "same-origin",
     headers: {
       Accept: "application/json",
@@ -36,7 +36,6 @@ async function callV1<T>(path: string, tenant?: string): Promise<T> {
       ...(tenant ? { "x-agentic-tenant": tenant } : {}),
     },
   });
-  return readApiData<T>(res, path);
 }
 
 export const AGENT_FACTORY_DOMAIN_KEYS = {

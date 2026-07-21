@@ -13,6 +13,7 @@ import {
   useToast,
 } from "@/app/portal/components";
 import { useDirty } from "@/app/portal/lib/dirty-context";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 import { useTenant } from "@/app/portal/lib/use-tenant";
 import { useAgents } from "@/lib/hooks/useAgents";
 import {
@@ -55,6 +56,7 @@ import { TestLab } from "./TestLab";
 import { ToolsEditor } from "./ToolsEditor";
 import { AgentStudioHelp, type AgentStudioHelpTopic } from "./AgentStudioHelp";
 import { workflowCanvasHref } from "../workflows/workflow-navigation";
+import { studioLocale, studioUi, type StudioTranslate } from "./copy";
 
 type SectionId =
   | "overview"
@@ -146,8 +148,8 @@ const TEMPLATES = [
   { value: "human", label: "Human task" },
 ];
 
-function errorMessage(error: unknown): string {
-  return formatAgentStudioError(error);
+function errorMessage(error: unknown, t: StudioTranslate): string {
+  return formatAgentStudioError(error, t);
 }
 
 function issueTone(
@@ -158,6 +160,56 @@ function issueTone(
     : severity === "warning"
       ? "amber"
       : "blue";
+}
+
+function issueSeverityLabel(
+  t: StudioTranslate,
+  severity: StudioValidationIssue["severity"],
+): string {
+  if (severity === "error") return studioUi(t, "Error");
+  if (severity === "warning") return studioUi(t, "Warning");
+  return studioUi(t, "Info");
+}
+
+function localizedValidationMessage(
+  t: StudioTranslate,
+  message: string,
+): string {
+  switch (message) {
+    case "Name must use lower camelCase letters and numbers.":
+      return studioUi(t, "Name must use lower camelCase letters and numbers.");
+    case "Title is required.":
+      return studioUi(t, "Title is required.");
+    case "Instructions should be at least 40 characters so the model has a clear objective.":
+      return studioUi(
+        t,
+        "Instructions should be at least 40 characters so the model has a clear objective.",
+      );
+    case "LLM agents require exactly one prompt input.":
+      return studioUi(t, "LLM agents require exactly one prompt input.");
+    case 'The prompt input must use the reserved variable ID "prompt".':
+      return studioUi(
+        t,
+        'The prompt input must use the reserved variable ID "prompt".',
+      );
+    case "Add at least one named output.":
+      return studioUi(t, "Add at least one named output.");
+    case "Input IDs must be unique.":
+      return studioUi(t, "Input IDs must be unique.");
+    case "Output IDs must be unique.":
+      return studioUi(t, "Output IDs must be unique.");
+    case "This agent inherits the workspace primary model.":
+      return studioUi(t, "This agent inherits the workspace primary model.");
+    case "No trigger event is configured; production runs are manual only.":
+      return studioUi(
+        t,
+        "No trigger event is configured; production runs are manual only.",
+      );
+    default:
+      // Server validators can return integration-specific diagnostics. Preserve
+      // those details verbatim instead of hiding or mistranslating identifiers.
+      return message;
+  }
 }
 
 function sectionForIssue(path: string): SectionId {
@@ -179,7 +231,11 @@ function sectionForIssue(path: string): SectionId {
   return "overview";
 }
 
-function friendlyIssuePath(path: string, definition: StudioDefinition): string {
+function friendlyIssuePath(
+  path: string,
+  definition: StudioDefinition,
+  t: StudioTranslate,
+): string {
   const labels: Record<string, string> = {
     title: "Display name",
     name: "Programmatic name",
@@ -214,7 +270,7 @@ function friendlyIssuePath(path: string, definition: StudioDefinition): string {
     .replace(/^\$?\.?\/?/, "")
     .split(/[/.\[\]]+/)
     .filter(Boolean);
-  if (segments.length === 0) return "Agent setup";
+  if (segments.length === 0) return studioUi(t, "Agent setup");
   return segments
     .map((segment, index) => {
       if (/^\d+$/.test(segment)) {
@@ -222,22 +278,28 @@ function friendlyIssuePath(path: string, definition: StudioDefinition): string {
         const parent = segments[index - 1];
         if (parent === "inputs")
           return (
-            definition.inputs[itemIndex]?.label ?? `Input ${itemIndex + 1}`
+            definition.inputs[itemIndex]?.label ??
+            studioUi(t, "Input {index}", { index: itemIndex + 1 })
           );
         if (parent === "outputs")
           return (
-            definition.outputs[itemIndex]?.label ?? `Output ${itemIndex + 1}`
+            definition.outputs[itemIndex]?.label ??
+            studioUi(t, "Output {index}", { index: itemIndex + 1 })
           );
         if (parent === "actions")
-          return definition.actions[itemIndex]?.name ?? `Step ${itemIndex + 1}`;
+          return (
+            definition.actions[itemIndex]?.name ??
+            studioUi(t, "Step {index}", { index: itemIndex + 1 })
+          );
         if (parent === "tool_use")
           return (
-            definition.tool_use[itemIndex]?.name ?? `Tool ${itemIndex + 1}`
+            definition.tool_use[itemIndex]?.name ??
+            studioUi(t, "Tool {index}", { index: itemIndex + 1 })
           );
-        return `Item ${itemIndex + 1}`;
+        return studioUi(t, "Item {index}", { index: itemIndex + 1 });
       }
       return (
-        labels[segment] ??
+        (labels[segment] ? studioUi(t, labels[segment]) : undefined) ??
         segment
           .replaceAll("_", " ")
           .replace(/^./, (letter) => letter.toUpperCase())
@@ -255,6 +317,7 @@ function RawDefinitionEditor({
   onChange: (next: StudioDefinition) => void;
   disabled?: boolean;
 }) {
+  const { t } = useI18n();
   const serialized = toPrettyJson(value);
   const [text, setText] = useState(serialized);
   const [error, setError] = useState<string | null>(null);
@@ -279,7 +342,9 @@ function RawDefinitionEditor({
         }}
       >
         <Badge tone={error ? "red" : "green"}>
-          {error ? "Invalid JSON" : "Valid definition"}
+          {error
+            ? studioUi(t, "Invalid JSON")
+            : studioUi(t, "Valid definition")}
         </Badge>
         <span
           style={{
@@ -288,7 +353,7 @@ function RawDefinitionEditor({
             lineHeight: 1.5,
           }}
         >
-          Unknown extension fields are preserved on round-trip.
+          {studioUi(t, "Unknown extension fields are preserved on round-trip.")}
         </span>
       </div>
       <div
@@ -310,7 +375,9 @@ function RawDefinitionEditor({
               typeof parsed.value !== "object" ||
               Array.isArray(parsed.value)
             )
-              return setError("The agent definition must be a JSON object.");
+              return setError(
+                studioUi(t, "The agent definition must be a JSON object."),
+              );
             setError(null);
             lastValid.current = toPrettyJson(parsed.value);
             onChange(normalizeStudioDefinition(parsed.value, value));
@@ -347,6 +414,7 @@ export function AgentStudio({
   resumeToken,
 }: AgentStudioProps) {
   const tenant = useTenant();
+  const { language, t } = useI18n();
   const router = useRouter();
   const toast = useToast();
   const dirtyStore = useDirty();
@@ -439,10 +507,14 @@ export function AgentStudio({
   useEffect(() => {
     dirtyStore.setDirty(
       "agent-studio",
-      dirty ? `${definition?.title ?? "agent"} draft` : null,
+      dirty
+        ? studioUi(t, "{title} draft", {
+            title: definition?.title ?? studioUi(t, "Agent"),
+          })
+        : null,
     );
     return () => dirtyStore.setDirty("agent-studio", null);
-  }, [dirty, definition?.title, dirtyStore]);
+  }, [dirty, definition?.title, dirtyStore, t]);
 
   const persist = useCallback(
     async (quiet = false, override?: StudioDefinition) => {
@@ -478,8 +550,10 @@ export function AgentStudio({
         if (!quiet)
           toast({
             tone: "green",
-            title: "Draft saved",
-            description: `Revision ${result.draft.revision}`,
+            title: studioUi(t, "Draft saved"),
+            description: studioUi(t, "Revision {revision}", {
+              revision: result.draft.revision,
+            }),
           });
         return result.draft;
       } catch (error) {
@@ -487,15 +561,15 @@ export function AgentStudio({
         if (!quiet)
           toast({
             tone: "red",
-            title: "Save failed",
-            description: errorMessage(error),
+            title: studioUi(t, "Save failed"),
+            description: errorMessage(error, t),
           });
         return null;
       } finally {
         saveInFlight.current = false;
       }
     },
-    [definition, editor.data?.draft, revision, saveDraft, toast],
+    [definition, editor.data?.draft, revision, saveDraft, t, toast],
   );
 
   useEffect(() => {
@@ -530,15 +604,18 @@ export function AgentStudio({
       }
       toast({
         tone: "green",
-        title: "Editable draft created",
-        description: "Changes now autosave without affecting the live version.",
+        title: studioUi(t, "Editable draft created"),
+        description: studioUi(
+          t,
+          "Changes now autosave without affecting the live version.",
+        ),
       });
       await editor.refetch();
     } catch (error) {
       toast({
         tone: "red",
-        title: "Could not create draft",
-        description: errorMessage(error),
+        title: studioUi(t, "Could not create draft"),
+        description: errorMessage(error, t),
       });
     }
   }
@@ -587,9 +664,11 @@ export function AgentStudio({
     if (workflowSlug) {
       toast({
         tone: "amber",
-        title: "This workflow agent is pinned",
-        description:
+        title: studioUi(t, "This workflow agent is pinned"),
+        description: studioUi(
+          t,
           "Return to the workflow canvas before choosing another agent. This keeps the saved workflow version and agent draft paired correctly.",
+        ),
       });
       return;
     }
@@ -598,9 +677,11 @@ export function AgentStudio({
       setNavigationPending(false);
       toast({
         tone: "red",
-        title: "Could not switch agents",
-        description:
+        title: studioUi(t, "Could not switch agents"),
+        description: studioUi(
+          t,
           "Your unsaved changes are still open. Save them before opening another agent.",
+        ),
       });
       return;
     }
@@ -624,9 +705,11 @@ export function AgentStudio({
         setNavigationPending(false);
         toast({
           tone: "red",
-          title: "Could not return to workflow",
-          description:
+          title: studioUi(t, "Could not return to workflow"),
+          description: studioUi(
+            t,
             "Your changes are still open in Agent Studio. Retry Save, then return to the workflow.",
+          ),
         });
         return;
       }
@@ -649,9 +732,11 @@ export function AgentStudio({
     if (dirty && !(await persist(true))) {
       toast({
         tone: "red",
-        title: "Could not finish editing",
-        description:
+        title: studioUi(t, "Could not finish editing"),
+        description: studioUi(
+          t,
           "Your changes are still open in the editor. Retry Save or Done; nothing has been discarded.",
+        ),
       });
       return;
     }
@@ -659,9 +744,11 @@ export function AgentStudio({
     editSessionStart.current = null;
     toast({
       tone: "green",
-      title: "Editing complete",
-      description:
+      title: studioUi(t, "Editing complete"),
+      description: studioUi(
+        t,
         "Your draft is saved and protected in view mode. It has not been published.",
+      ),
     });
   }
 
@@ -682,7 +769,10 @@ export function AgentStudio({
     const confirmed =
       typeof window === "undefined" ||
       window.confirm(
-        "Cancel this edit session and restore the draft to how it was when you clicked Edit? Changes already saved by autosave will also be safely restored.",
+        studioUi(
+          t,
+          "Cancel this edit session and restore the draft to how it was when you clicked Edit? Changes already saved by autosave will also be safely restored.",
+        ),
       );
     if (!confirmed) return;
 
@@ -692,9 +782,11 @@ export function AgentStudio({
       if (!restored) {
         toast({
           tone: "red",
-          title: "Could not cancel editing",
-          description:
+          title: studioUi(t, "Could not cancel editing"),
+          description: studioUi(
+            t,
             "The editor remains open with all current changes. Nothing has been discarded.",
+          ),
         });
         return;
       }
@@ -708,9 +800,11 @@ export function AgentStudio({
     editSessionStart.current = null;
     toast({
       tone: "amber",
-      title: "Edit session cancelled",
-      description:
+      title: studioUi(t, "Edit session cancelled"),
+      description: studioUi(
+        t,
         "The draft was restored to its state before you clicked Edit. The live agent was never changed.",
+      ),
     });
   }
 
@@ -723,15 +817,20 @@ export function AgentStudio({
         tone: result.validation.status === "valid" ? "green" : "red",
         title:
           result.validation.status === "valid"
-            ? "Draft is valid"
-            : "Validation found blocking issues",
-        description: `${result.validation.issues.length} issue${result.validation.issues.length === 1 ? "" : "s"}`,
+            ? studioUi(t, "Draft is valid")
+            : studioUi(t, "Validation found blocking issues"),
+        description:
+          result.validation.issues.length === 1
+            ? studioUi(t, "1 issue")
+            : studioUi(t, "{count} issues", {
+                count: result.validation.issues.length,
+              }),
       });
     } catch (error) {
       toast({
         tone: "red",
-        title: "Validation failed",
-        description: errorMessage(error),
+        title: studioUi(t, "Validation failed"),
+        description: errorMessage(error, t),
       });
     }
   }
@@ -741,8 +840,11 @@ export function AgentStudio({
       setSection("overview");
       toast({
         tone: "red",
-        title: "Fix validation errors first",
-        description: `${errorCount} blocking issue${errorCount === 1 ? "" : "s"}`,
+        title: studioUi(t, "Fix validation errors first"),
+        description:
+          errorCount === 1
+            ? studioUi(t, "1 blocking issue")
+            : studioUi(t, "{count} blocking issues", { count: errorCount }),
       });
       return;
     }
@@ -758,13 +860,19 @@ export function AgentStudio({
       if (validation.validation.status !== "valid")
         return toast({
           tone: "red",
-          title: "Draft is not publishable",
-          description: "Resolve the server validation issues and retry.",
+          title: studioUi(t, "Draft is not publishable"),
+          description: studioUi(
+            t,
+            "Resolve the server validation issues and retry.",
+          ),
         });
       if (
         typeof window !== "undefined" &&
         !window.confirm(
-          "Publish this draft as a new immutable live version? Existing in-flight runs will continue on their pinned definition.",
+          studioUi(
+            t,
+            "Publish this draft as a new immutable live version? Existing in-flight runs will continue on their pinned definition.",
+          ),
         )
       )
         return;
@@ -785,15 +893,28 @@ export function AgentStudio({
         const accepted =
           typeof window !== "undefined" &&
           window.confirm(
-            `This version changes ${labels.length ? labels.join(", ") : "runtime-facing contracts"}. Downstream events, tools, or callers may be affected. Publish anyway?`,
+            studioUi(
+              t,
+              "This version changes {contracts}. Downstream events, tools, or callers may be affected. Publish anyway?",
+              {
+                contracts:
+                  labels.length > 0
+                    ? labels.join(", ")
+                    : studioUi(t, "runtime-facing contracts"),
+              },
+            ),
           );
         if (!accepted) return;
         result = await publishDraft.mutateAsync({ confirmImpact: true, note });
       }
       toast({
         tone: "green",
-        title: `Published ${result.version}`,
-        description: `Runtime ${result.runtime.registered ? "registered" : "pending registration"}`,
+        title: studioUi(t, "Published {version}", {
+          version: result.version,
+        }),
+        description: result.runtime.registered
+          ? studioUi(t, "Runtime registered")
+          : studioUi(t, "Runtime pending registration"),
       });
       setEditing(false);
       editSessionStart.current = null;
@@ -801,8 +922,8 @@ export function AgentStudio({
     } catch (error) {
       toast({
         tone: "red",
-        title: "Publish failed",
-        description: errorMessage(error),
+        title: studioUi(t, "Publish failed"),
+        description: errorMessage(error, t),
       });
     }
   }
@@ -810,19 +931,25 @@ export function AgentStudio({
   if (editor.isLoading)
     return (
       <Empty
-        title="Loading Agent Studio…"
-        hint="Resolving the live version and your latest draft."
+        title={studioUi(t, "Loading Agent Studio…")}
+        hint={studioUi(t, "Resolving the live version and your latest draft.")}
       />
     );
   if (editor.isError)
     return (
-      <Empty title="Agent Studio could not load" hint={editor.error.message} />
+      <Empty
+        title={studioUi(t, "Agent Studio could not load")}
+        hint={editor.error.message}
+      />
     );
   if (!editor.data || !definition)
     return (
       <Empty
-        title="No editable definition found"
-        hint="This agent has neither a live version nor an existing draft."
+        title={studioUi(t, "No editable definition found")}
+        hint={studioUi(
+          t,
+          "This agent has neither a live version nor an existing draft.",
+        )}
       />
     );
 
@@ -849,8 +976,8 @@ export function AgentStudio({
     if (section === "overview")
       return (
         <StudioPanel
-          title="Agent identity"
-          subtitle="How people find and understand this agent."
+          title={studioUi(t, "Agent identity")}
+          subtitle={studioUi(t, "How people find and understand this agent.")}
         >
           <div style={{ display: "grid", gap: 14 }}>
             <div
@@ -862,10 +989,13 @@ export function AgentStudio({
               }}
             >
               <Field
-                label="Display name"
+                label={studioUi(t, "Display name")}
                 required
-                hint="The friendly name people see in the agent list and run history."
-                example="Support Ticket Classifier"
+                hint={studioUi(
+                  t,
+                  "The friendly name people see in the agent list and run history.",
+                )}
+                example={studioUi(t, "Support Ticket Classifier")}
               >
                 <TextInput
                   value={definition.title}
@@ -874,9 +1004,12 @@ export function AgentStudio({
                 />
               </Field>
               <Field
-                label="Programmatic name"
+                label={studioUi(t, "Programmatic name")}
                 required
-                hint="The permanent internal name used by workflows and APIs. It cannot be changed after creation."
+                hint={studioUi(
+                  t,
+                  "The permanent internal name used by workflows and APIs. It cannot be changed after creation.",
+                )}
                 example="supportTicketClassifier"
               >
                 <TextInput
@@ -888,8 +1021,11 @@ export function AgentStudio({
               </Field>
             </div>
             <Field
-              label="Purpose"
-              hint="A concise plain-language explanation shown across the operator portal."
+              label={studioUi(t, "Purpose")}
+              hint={studioUi(
+                t,
+                "A concise plain-language explanation shown across the operator portal.",
+              )}
             >
               <TextArea
                 value={definition.description}
@@ -909,8 +1045,11 @@ export function AgentStudio({
               }}
             >
               <Field
-                label="Owner type"
-                hint="Choose AI agent for automated work, or Human task when a person must complete this step."
+                label={studioUi(t, "Owner type")}
+                hint={studioUi(
+                  t,
+                  "Choose AI agent for automated work, or Human task when a person must complete this step.",
+                )}
               >
                 <SelectInput
                   value={definition.actor[0] ?? "Agent"}
@@ -922,15 +1061,21 @@ export function AgentStudio({
                     })
                   }
                   options={[
-                    { value: "Agent", label: "AI agent" },
-                    { value: "Human", label: "Human task" },
+                    { value: "Agent", label: studioUi(t, "AI agent") },
+                    { value: "Human", label: studioUi(t, "Human task") },
                   ]}
                 />
               </Field>
               <Field
-                label="Stage"
-                hint="A simple ordering number used when showing the agent in a workflow. Lower numbers appear earlier."
-                example="Use 10, 20, 30 so you can insert steps later."
+                label={studioUi(t, "Stage")}
+                hint={studioUi(
+                  t,
+                  "A simple ordering number used when showing the agent in a workflow. Lower numbers appear earlier.",
+                )}
+                example={studioUi(
+                  t,
+                  "Use 10, 20, 30 so you can insert steps later.",
+                )}
               >
                 <TextInput
                   value={definition.stage}
@@ -943,27 +1088,44 @@ export function AgentStudio({
                 />
               </Field>
               <Field
-                label="Starting template"
-                hint="Pick the pattern closest to the job. This is descriptive and does not lock what you can edit."
-                example="Classify for routing tickets; Extract for reading invoices"
+                label={studioUi(t, "Starting template")}
+                hint={studioUi(
+                  t,
+                  "Pick the pattern closest to the job. This is descriptive and does not lock what you can edit.",
+                )}
+                example={studioUi(
+                  t,
+                  "Classify for routing tickets; Extract for reading invoices",
+                )}
               >
                 <SelectInput
                   value={definition.template}
                   disabled={!editable}
                   onChange={(template) => update({ ...definition, template })}
-                  options={TEMPLATES}
+                  options={TEMPLATES.map((option) => ({
+                    ...option,
+                    label: studioUi(t, option.label),
+                  }))}
                 />
               </Field>
             </div>
-            <InlineNotice title="Version-safe editing">
-              You are{" "}
+            <InlineNotice title={studioUi(t, "Version-safe editing")}>
               {editable
-                ? `editing draft revision ${revision}`
+                ? studioUi(t, "You are editing draft revision {revision}.", {
+                    revision,
+                  })
                 : draft
-                  ? `viewing draft revision ${revision}`
-                  : "viewing the immutable live definition"}
-              . Publishing creates a new version; it never mutates historical
-              runs.
+                  ? studioUi(t, "You are viewing draft revision {revision}.", {
+                      revision,
+                    })
+                  : studioUi(
+                      t,
+                      "You are viewing the immutable live definition.",
+                    )}{" "}
+              {studioUi(
+                t,
+                "Publishing creates a new version; it never mutates historical runs.",
+              )}
             </InlineNotice>
           </div>
         </StudioPanel>
@@ -972,8 +1134,11 @@ export function AgentStudio({
       return (
         <div style={{ display: "grid", gap: 14 }}>
           <StudioPanel
-            title="Agent instructions"
-            subtitle="Define the agent's role, objective, operating rules, and safety boundaries."
+            title={studioUi(t, "Agent instructions")}
+            subtitle={studioUi(
+              t,
+              "Define the agent's role, objective, operating rules, and safety boundaries.",
+            )}
             action={
               <div style={{ display: "flex", gap: 6 }}>
                 {INSTRUCTION_ACTIONS.map((action) => (
@@ -995,38 +1160,53 @@ export function AgentStudio({
                         });
                         toast({
                           tone: "signal",
-                          title: "AI proposal applied to the draft",
+                          title: studioUi(
+                            t,
+                            "AI proposal applied to the draft",
+                          ),
                           description:
                             result.explanation ??
-                            "Review and edit it before publishing.",
+                            studioUi(
+                              t,
+                              "Review and edit it before publishing.",
+                            ),
                         });
                       } catch (error) {
                         toast({
                           tone: "red",
-                          title: "Instruction generation failed",
-                          description: errorMessage(error),
+                          title: studioUi(t, "Instruction generation failed"),
+                          description: errorMessage(error, t),
                         });
                       }
                     }}
                   >
-                    {action.label}
+                    {studioUi(t, action.label)}
                   </Button>
                 ))}
               </div>
             }
           >
             <Field
-              label="Agent instructions"
+              label={studioUi(t, "Agent instructions")}
               required
-              hint="Tell the agent who it is, what result it must produce, the rules it must follow, and when it should stop or ask for help."
-              example="You classify support tickets. Return one category and a short reason. Never invent account details."
+              hint={studioUi(
+                t,
+                "Tell the agent who it is, what result it must produce, the rules it must follow, and when it should stop or ask for help.",
+              )}
+              example={studioUi(
+                t,
+                "You classify support tickets. Return one category and a short reason. Never invent account details.",
+              )}
             >
               <TextArea
                 value={definition.ontology_instructions}
                 rows={18}
                 mono
                 disabled={!editable}
-                placeholder="You are… Your objective is… Follow these rules…"
+                placeholder={studioUi(
+                  t,
+                  "You are… Your objective is… Follow these rules…",
+                )}
                 onChange={(ontology_instructions) =>
                   update({ ...definition, ontology_instructions })
                 }
@@ -1042,19 +1222,29 @@ export function AgentStudio({
                 marginTop: 6,
               }}
             >
-              <span>Used as the LLM system prompt</span>
+              <span>{studioUi(t, "Used as the LLM system prompt")}</span>
               <span className="mono">
-                {definition.ontology_instructions.length.toLocaleString()} chars
+                {studioUi(t, "{count} chars", {
+                  count: definition.ontology_instructions.length.toLocaleString(
+                    studioLocale(language),
+                  ),
+                })}
               </span>
             </div>
           </StudioPanel>
           <StudioPanel
-            title="User prompt template"
-            subtitle="The Test Lab and runtime automatically insert the prompt input as the user message."
+            title={studioUi(t, "User prompt template")}
+            subtitle={studioUi(
+              t,
+              "The Test Lab and runtime automatically insert the prompt input as the user message.",
+            )}
           >
             <Field
-              label="Extra user-message context"
-              hint="Optional. Add structured inputs beside the user's request. The chat prompt is inserted automatically, so do not repeat it here."
+              label={studioUi(t, "Extra user-message context")}
+              hint={studioUi(
+                t,
+                "Optional. Add structured inputs beside the user's request. The chat prompt is inserted automatically, so do not repeat it here.",
+              )}
               example={"Customer tier: {{inputs.customer_tier}}"}
             >
               <TextArea
@@ -1070,9 +1260,14 @@ export function AgentStudio({
                 }
               />
             </Field>
-            <InlineNotice tone="blue" title="Automatic prompt binding">
-              The single input marked “Prompt” becomes the user role message.
-              You do not need to copy user text into the system instructions.
+            <InlineNotice
+              tone="blue"
+              title={studioUi(t, "Automatic prompt binding")}
+            >
+              {studioUi(
+                t,
+                "The single input marked “Prompt” becomes the user role message. You do not need to copy user text into the system instructions.",
+              )}
             </InlineNotice>
           </StudioPanel>
         </div>
@@ -1080,8 +1275,11 @@ export function AgentStudio({
     if (section === "inputs")
       return (
         <StudioPanel
-          title="Input contract"
-          subtitle="One prompt plus any number of typed variables or files."
+          title={studioUi(t, "Input contract")}
+          subtitle={studioUi(
+            t,
+            "One prompt plus any number of typed variables or files.",
+          )}
         >
           <PortsEditor
             kind="input"
@@ -1100,8 +1298,11 @@ export function AgentStudio({
       return (
         <div style={{ display: "grid", gap: 14 }}>
           <StudioPanel
-            title="Output contract"
-            subtitle="Every completed run produces one aggregate JSON document and validates its named outputs."
+            title={studioUi(t, "Output contract")}
+            subtitle={studioUi(
+              t,
+              "Every completed run produces one aggregate JSON document and validates its named outputs.",
+            )}
           >
             <PortsEditor
               kind="output"
@@ -1116,8 +1317,11 @@ export function AgentStudio({
             />
           </StudioPanel>
           <StudioPanel
-            title="JSON artifact policy"
-            subtitle="The aggregate output is always persisted as a JSON artifact."
+            title={studioUi(t, "JSON artifact policy")}
+            subtitle={studioUi(
+              t,
+              "The aggregate output is always persisted as a JSON artifact.",
+            )}
           >
             <div
               className="agent-studio-form-grid agent-studio-form-grid--2"
@@ -1128,8 +1332,11 @@ export function AgentStudio({
               }}
             >
               <Field
-                label="Output file name"
-                hint="The name of the downloadable JSON file saved after each successful run. Keep the .json ending."
+                label={studioUi(t, "Output file name")}
+                hint={studioUi(
+                  t,
+                  "The name of the downloadable JSON file saved after each successful run. Keep the .json ending.",
+                )}
                 example="ticket-classification.json"
               >
                 <TextInput
@@ -1154,8 +1361,11 @@ export function AgentStudio({
                 />
               </Field>
               <Field
-                label="Automatic correction attempts"
-                hint="How many times the model may fix an answer that does not match your output fields. Start with 1."
+                label={studioUi(t, "Automatic correction attempts")}
+                hint={studioUi(
+                  t,
+                  "How many times the model may fix an answer that does not match your output fields. Start with 1.",
+                )}
                 example="1"
               >
                 <TextInput
@@ -1185,8 +1395,11 @@ export function AgentStudio({
                   output_config: { ...definition.output_config, strict },
                 })
               }
-              label="Require the declared output format"
-              hint="Fail the run when the model cannot produce your output fields after the allowed correction attempts."
+              label={studioUi(t, "Require the declared output format")}
+              hint={studioUi(
+                t,
+                "Fail the run when the model cannot produce your output fields after the allowed correction attempts.",
+              )}
             />
             <Toggle
               checked={Boolean(definition.output_config.unwrap_single_output)}
@@ -1200,8 +1413,11 @@ export function AgentStudio({
                   },
                 })
               }
-              label="Return a single output directly"
-              hint="When there is one named output, callers receive its value directly. The complete JSON file is still saved."
+              label={studioUi(t, "Return a single output directly")}
+              hint={studioUi(
+                t,
+                "When there is one named output, callers receive its value directly. The complete JSON file is still saved.",
+              )}
             />
             <Toggle
               checked={Boolean(
@@ -1221,8 +1437,11 @@ export function AgentStudio({
                   },
                 })
               }
-              label="Save each output as a separate file"
-              hint="Useful when another system downloads or processes one output at a time."
+              label={studioUi(t, "Save each output as a separate file")}
+              hint={studioUi(
+                t,
+                "Useful when another system downloads or processes one output at a time.",
+              )}
             />
             <Toggle
               checked={Boolean(
@@ -1242,15 +1461,21 @@ export function AgentStudio({
                   },
                 })
               }
-              label="Save the run's inputs"
-              hint="Retain the validated inputs so a result can be reproduced. Privacy and redaction rules still apply."
+              label={studioUi(t, "Save the run's inputs")}
+              hint={studioUi(
+                t,
+                "Retain the validated inputs so a result can be reproduced. Privacy and redaction rules still apply.",
+              )}
             />
             <Toggle
               checked
               disabled
               onChange={() => undefined}
-              label="Always save run details"
-              hint="Required for reproducibility. Stores the version, timing, validation, model usage, artifacts, and emitted events."
+              label={studioUi(t, "Always save run details")}
+              hint={studioUi(
+                t,
+                "Required for reproducibility. Stores the version, timing, validation, model usage, artifacts, and emitted events.",
+              )}
             />
             <Toggle
               checked={Boolean(
@@ -1270,8 +1495,11 @@ export function AgentStudio({
                   },
                 })
               }
-              label="Save the model's unprocessed response"
-              hint="Developer troubleshooting only. It may contain sensitive or rejected content that is not present in the validated output."
+              label={studioUi(t, "Save the model's unprocessed response")}
+              hint={studioUi(
+                t,
+                "Developer troubleshooting only. It may contain sensitive or rejected content that is not present in the validated output.",
+              )}
             />
           </StudioPanel>
         </div>
@@ -1279,8 +1507,11 @@ export function AgentStudio({
     if (section === "steps")
       return (
         <StudioPanel
-          title="Execution sequence"
-          subtitle="An ordered, traceable plan. Steps can call the model, tools, people, conditions, delays, or subflows."
+          title={studioUi(t, "Execution sequence")}
+          subtitle={studioUi(
+            t,
+            "An ordered, traceable plan. Steps can call the model, tools, people, conditions, delays, or subflows.",
+          )}
         >
           <StepsEditor
             actions={definition.actions}
@@ -1292,8 +1523,11 @@ export function AgentStudio({
     if (section === "tools")
       return (
         <StudioPanel
-          title="Tool permissions"
-          subtitle="Choose from the Agentic Operator catalog. Only allowed tools can be called by this agent."
+          title={studioUi(t, "Tool permissions")}
+          subtitle={studioUi(
+            t,
+            "Choose from the Agentic Operator catalog. Only allowed tools can be called by this agent.",
+          )}
         >
           <ToolsEditor
             tools={definition.tool_use}
@@ -1306,8 +1540,11 @@ export function AgentStudio({
       return (
         <div style={{ display: "grid", gap: 14 }}>
           <StudioPanel
-            title="Model and generation"
-            subtitle="Leave provider and model inherited to use workspace defaults."
+            title={studioUi(t, "Model and generation")}
+            subtitle={studioUi(
+              t,
+              "Leave provider and model inherited to use workspace defaults.",
+            )}
           >
             <div
               className="agent-studio-form-grid agent-studio-form-grid--2"
@@ -1318,8 +1555,11 @@ export function AgentStudio({
               }}
             >
               <Field
-                label="AI provider"
-                hint="The company that runs the model. Leave inherited unless your administrator gave you a specific provider."
+                label={studioUi(t, "AI provider")}
+                hint={studioUi(
+                  t,
+                  "The company that runs the model. Leave inherited unless your administrator gave you a specific provider.",
+                )}
               >
                 <SelectInput
                   value={definition.provider}
@@ -1327,27 +1567,38 @@ export function AgentStudio({
                   onChange={(provider) => update({ ...definition, provider })}
                   options={PROVIDERS.map((value) => ({
                     value,
-                    label: value || "Use workspace default (recommended)",
+                    label:
+                      value ||
+                      studioUi(t, "Use workspace default (recommended)"),
                   }))}
                 />
               </Field>
               <Field
-                label="AI model"
-                hint="The exact model to use. Leave blank to follow the workspace default and future upgrades."
+                label={studioUi(t, "AI model")}
+                hint={studioUi(
+                  t,
+                  "The exact model to use. Leave blank to follow the workspace default and future upgrades.",
+                )}
                 example="gpt-5-mini"
               >
                 <TextInput
                   value={definition.model}
                   mono
                   disabled={!editable}
-                  placeholder="Use workspace default (recommended)"
+                  placeholder={studioUi(
+                    t,
+                    "Use workspace default (recommended)",
+                  )}
                   onChange={(model) => update({ ...definition, model })}
                 />
               </Field>
               {runtimeModelCapabilities?.reasoningModes?.length ? (
                 <Field
-                  label="Reasoning mode"
-                  hint="Standard balances quality and speed. Pro gives supported frontier models their highest-compute execution path."
+                  label={studioUi(t, "Reasoning mode")}
+                  hint={studioUi(
+                    t,
+                    "Standard balances quality and speed. Pro gives supported frontier models their highest-compute execution path.",
+                  )}
                 >
                   <SelectInput
                     value={String(asRecord(definition.reasoning).mode ?? "")}
@@ -1356,7 +1607,7 @@ export function AgentStudio({
                       update(withReasoningControl(definition, "mode", mode))
                     }
                     options={[
-                      { value: "", label: "Use model default" },
+                      { value: "", label: studioUi(t, "Use model default") },
                       ...runtimeModelCapabilities.reasoningModes.map(
                         (value) => ({
                           value,
@@ -1369,8 +1620,11 @@ export function AgentStudio({
               ) : null}
               {runtimeModelCapabilities?.reasoningEfforts?.length ? (
                 <Field
-                  label="Reasoning effort"
-                  hint="Higher effort can improve difficult reasoning, but usually adds latency and reasoning tokens."
+                  label={studioUi(t, "Reasoning effort")}
+                  hint={studioUi(
+                    t,
+                    "Higher effort can improve difficult reasoning, but usually adds latency and reasoning tokens.",
+                  )}
                 >
                   <SelectInput
                     value={String(asRecord(definition.reasoning).effort ?? "")}
@@ -1379,7 +1633,7 @@ export function AgentStudio({
                       update(withReasoningControl(definition, "effort", effort))
                     }
                     options={[
-                      { value: "", label: "Use model default" },
+                      { value: "", label: studioUi(t, "Use model default") },
                       ...runtimeModelCapabilities.reasoningEfforts.map(
                         (value) => ({
                           value,
@@ -1392,8 +1646,11 @@ export function AgentStudio({
               ) : null}
               {runtimeModelCapabilities?.reasoningSummaries?.length ? (
                 <Field
-                  label="Reasoning summary"
-                  hint="Requests a provider-generated summary for evaluation; raw chain-of-thought is never stored."
+                  label={studioUi(t, "Reasoning summary")}
+                  hint={studioUi(
+                    t,
+                    "Requests a provider-generated summary for evaluation; raw chain-of-thought is never stored.",
+                  )}
                 >
                   <SelectInput
                     value={String(asRecord(definition.reasoning).summary ?? "")}
@@ -1404,7 +1661,7 @@ export function AgentStudio({
                       )
                     }
                     options={[
-                      { value: "", label: "Use model default" },
+                      { value: "", label: studioUi(t, "Use model default") },
                       ...runtimeModelCapabilities.reasoningSummaries.map(
                         (value) => ({
                           value,
@@ -1417,8 +1674,11 @@ export function AgentStudio({
               ) : null}
               {runtimeModelCapabilities?.reasoningContexts?.length ? (
                 <Field
-                  label="Reasoning context"
-                  hint="Controls which persisted reasoning items the provider may reuse on later turns."
+                  label={studioUi(t, "Reasoning context")}
+                  hint={studioUi(
+                    t,
+                    "Controls which persisted reasoning items the provider may reuse on later turns.",
+                  )}
                 >
                   <SelectInput
                     value={String(asRecord(definition.reasoning).context ?? "")}
@@ -1429,7 +1689,7 @@ export function AgentStudio({
                       )
                     }
                     options={[
-                      { value: "", label: "Use model default" },
+                      { value: "", label: studioUi(t, "Use model default") },
                       ...runtimeModelCapabilities.reasoningContexts.map(
                         (value) => ({
                           value,
@@ -1442,8 +1702,11 @@ export function AgentStudio({
               ) : null}
               {runtimeModelCapabilities?.textVerbosities?.length ? (
                 <Field
-                  label="Answer verbosity"
-                  hint="Controls how concise or detailed the model's visible answer should be."
+                  label={studioUi(t, "Answer verbosity")}
+                  hint={studioUi(
+                    t,
+                    "Controls how concise or detailed the model's visible answer should be.",
+                  )}
                 >
                   <SelectInput
                     value={definition.verbosity ?? ""}
@@ -1455,7 +1718,7 @@ export function AgentStudio({
                       update(next);
                     }}
                     options={[
-                      { value: "", label: "Use model default" },
+                      { value: "", label: studioUi(t, "Use model default") },
                       ...runtimeModelCapabilities.textVerbosities.map(
                         (value) => ({
                           value,
@@ -1469,8 +1732,11 @@ export function AgentStudio({
               {definition.provider === "openai" ||
               definition.provider === "openrouter" ? (
                 <Field
-                  label="Provider response storage"
-                  hint="Controls provider-side response retention. Local run logs and usage accounting remain independent."
+                  label={studioUi(t, "Provider response storage")}
+                  hint={studioUi(
+                    t,
+                    "Controls provider-side response retention. Local run logs and usage accounting remain independent.",
+                  )}
                 >
                   <SelectInput
                     value={
@@ -1486,21 +1752,42 @@ export function AgentStudio({
                       update(next);
                     }}
                     options={[
-                      { value: "", label: "Use service default" },
-                      { value: "false", label: "Do not store upstream" },
+                      { value: "", label: studioUi(t, "Use service default") },
+                      {
+                        value: "false",
+                        label: studioUi(t, "Do not store upstream"),
+                      },
                       ...(definition.provider === "openai"
-                        ? [{ value: "true", label: "Store upstream" }]
+                        ? [
+                            {
+                              value: "true",
+                              label: studioUi(t, "Store upstream"),
+                            },
+                          ]
                         : []),
                     ]}
                   />
                 </Field>
               ) : null}
               <Field
-                label="Creativity"
+                label={studioUi(t, "Creativity")}
                 hint={
                   runtimeTemperatureUnsupported
-                    ? `${definition.provider}/${definition.model.replace(/^~/, "")} does not support temperature. This saved compatibility value is omitted by the gateway.`
-                    : `Controls variation. Use 0–0.3 for consistent extraction/classification and 0.7–1 for creative writing.${runtimeTemperatureRange ? ` Accepted range: ${runtimeTemperatureRange.min}–${runtimeTemperatureRange.max}.` : ""}`
+                    ? studioUi(
+                        t,
+                        "{model} does not support temperature. This saved compatibility value is omitted by the gateway.",
+                        {
+                          model: `${definition.provider}/${definition.model.replace(/^~/, "")}`,
+                        },
+                      )
+                    : `${studioUi(t, "Controls variation. Use 0–0.3 for consistent extraction/classification and 0.7–1 for creative writing.")}${
+                        runtimeTemperatureRange
+                          ? ` ${studioUi(t, "Accepted range: {min}–{max}.", {
+                              min: runtimeTemperatureRange.min,
+                              max: runtimeTemperatureRange.max,
+                            })}`
+                          : ""
+                      }`
                 }
                 example={runtimeTemperatureUnsupported ? undefined : "0.2"}
               >
@@ -1513,7 +1800,7 @@ export function AgentStudio({
                   max={runtimeTemperatureRange?.max ?? 2}
                   placeholder={
                     runtimeTemperatureUnsupported
-                      ? "Not supported — omitted"
+                      ? studioUi(t, "Not supported — omitted")
                       : undefined
                   }
                   disabled={!editable || runtimeTemperatureUnsupported}
@@ -1523,8 +1810,11 @@ export function AgentStudio({
                 />
               </Field>
               <Field
-                label="Maximum answer length"
-                hint="The token budget for one model answer. A token is roughly part of a word; 1,000 tokens is about 750 English words."
+                label={studioUi(t, "Maximum answer length")}
+                hint={studioUi(
+                  t,
+                  "The token budget for one model answer. A token is roughly part of a word; 1,000 tokens is about 750 English words.",
+                )}
                 example="2000"
               >
                 <TextInput
@@ -1539,7 +1829,7 @@ export function AgentStudio({
               </Field>
             </div>
           </StudioPanel>
-          <StudioPanel title="Reliability and capacity">
+          <StudioPanel title={studioUi(t, "Reliability and capacity")}>
             <div
               className="agent-studio-form-grid agent-studio-form-grid--3"
               style={{
@@ -1549,8 +1839,11 @@ export function AgentStudio({
               }}
             >
               <Field
-                label="Run time limit"
-                hint="Stop a run that takes longer than this many seconds. Increase it for long documents or slow tools."
+                label={studioUi(t, "Run time limit")}
+                hint={studioUi(
+                  t,
+                  "Stop a run that takes longer than this many seconds. Increase it for long documents or slow tools.",
+                )}
                 example="120"
               >
                 <TextInput
@@ -1564,8 +1857,11 @@ export function AgentStudio({
                 />
               </Field>
               <Field
-                label="Retry attempts"
-                hint="How many times to try the whole run again after a temporary failure. Tools with side effects are protected from unsafe automatic repeats."
+                label={studioUi(t, "Retry attempts")}
+                hint={studioUi(
+                  t,
+                  "How many times to try the whole run again after a temporary failure. Tools with side effects are protected from unsafe automatic repeats.",
+                )}
                 example="2"
               >
                 <TextInput
@@ -1580,8 +1876,11 @@ export function AgentStudio({
                 />
               </Field>
               <Field
-                label="Maximum tool turns"
-                hint="The most tool-call rounds the model may use in one logic step. This prevents accidental loops."
+                label={studioUi(t, "Maximum tool turns")}
+                hint={studioUi(
+                  t,
+                  "The most tool-call rounds the model may use in one logic step. This prevents accidental loops.",
+                )}
                 example="8"
               >
                 <TextInput
@@ -1602,8 +1901,11 @@ export function AgentStudio({
                 />
               </Field>
               <Field
-                label="Runs at the same time"
-                hint="The maximum number of this agent's runs that may execute together when concurrency limiting is enabled."
+                label={studioUi(t, "Runs at the same time")}
+                hint={studioUi(
+                  t,
+                  "The maximum number of this agent's runs that may execute together when concurrency limiting is enabled.",
+                )}
                 example="8"
               >
                 <TextInput
@@ -1627,8 +1929,11 @@ export function AgentStudio({
                 />
               </Field>
               <Field
-                label="Group runs by"
-                hint="Optional advanced key for limiting related runs together. Leave blank to share one limit for the whole agent."
+                label={studioUi(t, "Group runs by")}
+                hint={studioUi(
+                  t,
+                  "Optional advanced key for limiting related runs together. Leave blank to share one limit for the whole agent.",
+                )}
                 example="event.data.customerId"
               >
                 <TextInput
@@ -1644,8 +1949,11 @@ export function AgentStudio({
                 />
               </Field>
               <Field
-                label="Run detail level"
-                hint="Standard is best for normal use. Debug saves more details for troubleshooting; Minimal reduces stored detail."
+                label={studioUi(t, "Run detail level")}
+                hint={studioUi(
+                  t,
+                  "Standard is best for normal use. Debug saves more details for troubleshooting; Minimal reduces stored detail.",
+                )}
               >
                 <SelectInput
                   value={String(
@@ -1662,9 +1970,12 @@ export function AgentStudio({
                     })
                   }
                   options={[
-                    { value: "minimal", label: "Minimal" },
-                    { value: "standard", label: "Standard (recommended)" },
-                    { value: "debug", label: "Debug" },
+                    { value: "minimal", label: studioUi(t, "Minimal") },
+                    {
+                      value: "standard",
+                      label: studioUi(t, "Standard (recommended)"),
+                    },
+                    { value: "debug", label: studioUi(t, "Debug") },
                   ]}
                 />
               </Field>
@@ -1681,8 +1992,11 @@ export function AgentStudio({
                   },
                 })
               }
-              label="Capture reasoning summaries"
-              hint="Store concise user-visible summaries, never hidden chain-of-thought."
+              label={studioUi(t, "Capture reasoning summaries")}
+              hint={studioUi(
+                t,
+                "Store concise user-visible summaries, never hidden chain-of-thought.",
+              )}
             />
             <Toggle
               checked={Boolean(definition.concurrency.enabled)}
@@ -1693,8 +2007,11 @@ export function AgentStudio({
                   concurrency: { ...definition.concurrency, enabled },
                 })
               }
-              label="Limit simultaneous runs"
-              hint="Protect shared AI providers and connected services from sudden traffic spikes."
+              label={studioUi(t, "Limit simultaneous runs")}
+              hint={studioUi(
+                t,
+                "Protect shared AI providers and connected services from sudden traffic spikes.",
+              )}
             />
             <Toggle
               checked={Boolean(
@@ -1710,14 +2027,20 @@ export function AgentStudio({
                   },
                 })
               }
-              label="Save final prompts for troubleshooting"
-              hint="Leave off unless approved debugging requires it. Final prompts can contain sensitive user data."
+              label={studioUi(t, "Save final prompts for troubleshooting")}
+              hint={studioUi(
+                t,
+                "Leave off unless approved debugging requires it. Final prompts can contain sensitive user data.",
+              )}
             />
             <div style={{ maxWidth: 260, marginTop: 8 }}>
               <Field
-                label="Keep run details for"
-                hint="How many days to retain trace and debugging information. Follow your organization's privacy policy."
-                example="30 days"
+                label={studioUi(t, "Keep run details for")}
+                hint={studioUi(
+                  t,
+                  "How many days to retain trace and debugging information. Follow your organization's privacy policy.",
+                )}
+                example={studioUi(t, "30 days")}
               >
                 <TextInput
                   value={Number(definition.observability.retention_days ?? 30)}
@@ -1738,8 +2061,11 @@ export function AgentStudio({
             </div>
           </StudioPanel>
           <StudioPanel
-            title="Schedule"
-            subtitle="Optional cron execution; event and manual triggers continue to work independently."
+            title={studioUi(t, "Schedule")}
+            subtitle={studioUi(
+              t,
+              "Optional cron execution; event and manual triggers continue to work independently.",
+            )}
           >
             <div
               className="agent-studio-form-grid agent-studio-form-grid--2"
@@ -1750,23 +2076,29 @@ export function AgentStudio({
               }}
             >
               <Field
-                label="Schedule"
-                hint="Optional advanced schedule in cron format. Leave blank unless this agent should run automatically at fixed times."
-                example="0 9 * * 1-5 means weekdays at 9:00"
+                label={studioUi(t, "Schedule")}
+                hint={studioUi(
+                  t,
+                  "Optional advanced schedule in cron format. Leave blank unless this agent should run automatically at fixed times.",
+                )}
+                example={studioUi(t, "0 9 * * 1-5 means weekdays at 9:00")}
               >
                 <TextInput
                   value={definition.cron ?? ""}
                   mono
                   disabled={!editable}
-                  placeholder="Leave blank for no schedule"
+                  placeholder={studioUi(t, "Leave blank for no schedule")}
                   onChange={(cron) =>
                     update({ ...definition, cron: cron || null })
                   }
                 />
               </Field>
               <Field
-                label="Schedule timezone"
-                hint="The location used to interpret the schedule. Use an IANA timezone name."
+                label={studioUi(t, "Schedule timezone")}
+                hint={studioUi(
+                  t,
+                  "The location used to interpret the schedule. Use an IANA timezone name.",
+                )}
                 example="Asia/Singapore"
               >
                 <TextInput
@@ -1790,12 +2122,18 @@ export function AgentStudio({
       return (
         <div style={{ display: "grid", gap: 14 }}>
           <StudioPanel
-            title="Incoming events"
-            subtitle="Events can start this agent; input bindings map event payloads into typed inputs."
+            title={studioUi(t, "Incoming events")}
+            subtitle={studioUi(
+              t,
+              "Events can start this agent; input bindings map event payloads into typed inputs.",
+            )}
           >
             <Field
-              label="Events that start this agent"
-              hint="Enter one event name per line. Leave empty when the agent is only started manually."
+              label={studioUi(t, "Events that start this agent")}
+              hint={studioUi(
+                t,
+                "Enter one event name per line. Leave empty when the agent is only started manually.",
+              )}
               example="support/ticket.created"
             >
               <TextArea
@@ -1814,19 +2152,28 @@ export function AgentStudio({
                 update({ ...definition, trigger_bindings })
               }
               height={210}
-              label="How event data fills inputs"
-              hint="Advanced. Map each input ID to a value in the incoming event. Keep {} when the event payload already uses the same input names."
+              label={studioUi(t, "How event data fills inputs")}
+              hint={studioUi(
+                t,
+                "Advanced. Map each input ID to a value in the incoming event. Keep {} when the event payload already uses the same input names.",
+              )}
               example={'{"customer_id":"$.data.customerId"}'}
               readOnly={!editable}
             />
           </StudioPanel>
           <StudioPanel
-            title="Outgoing events"
-            subtitle="Emit events after success and bind their payloads from named outputs."
+            title={studioUi(t, "Outgoing events")}
+            subtitle={studioUi(
+              t,
+              "Emit events after success and bind their payloads from named outputs.",
+            )}
           >
             <Field
-              label="Events sent after success"
-              hint="Enter one event name per line for downstream workflow steps. Leave empty if nothing else needs to start."
+              label={studioUi(t, "Events sent after success")}
+              hint={studioUi(
+                t,
+                "Enter one event name per line for downstream workflow steps. Leave empty if nothing else needs to start.",
+              )}
               example="support/ticket.classified"
             >
               <TextArea
@@ -1848,8 +2195,11 @@ export function AgentStudio({
                 })
               }
               height={210}
-              label="What each outgoing event contains"
-              hint="Advanced. Choose which named outputs become the outgoing event payload. Keep {} to send the aggregate output."
+              label={studioUi(t, "What each outgoing event contains")}
+              hint={studioUi(
+                t,
+                "Advanced. Choose which named outputs become the outgoing event payload. Keep {} to send the aggregate output.",
+              )}
               example={
                 '{"support/ticket.classified":{"category":"$.outputs.category"}}'
               }
@@ -1861,12 +2211,14 @@ export function AgentStudio({
                   href={`/portal/${tenant}/workflows`}
                   style={{ color: "var(--blue)" }}
                 >
-                  Open workflow editor ↗
+                  {studioUi(t, "Open workflow editor ↗")}
                 </Link>
               }
             >
-              Use the workflow editor to see downstream impact before publishing
-              trigger or output changes.
+              {studioUi(
+                t,
+                "Use the workflow editor to see downstream impact before publishing trigger or output changes.",
+              )}
             </InlineNotice>
           </StudioPanel>
         </div>
@@ -1885,13 +2237,19 @@ export function AgentStudio({
     if (section === "versions")
       return (
         <StudioPanel
-          title="Immutable versions"
-          subtitle="Past runs stay pinned to the exact definition that produced them."
+          title={studioUi(t, "Immutable versions")}
+          subtitle={studioUi(
+            t,
+            "Past runs stay pinned to the exact definition that produced them.",
+          )}
         >
           {versions.isLoading ? (
-            <Empty title="Loading versions…" />
+            <Empty title={studioUi(t, "Loading versions…")} />
           ) : versions.isError ? (
-            <Empty title="Versions unavailable" hint={versions.error.message} />
+            <Empty
+              title={studioUi(t, "Versions unavailable")}
+              hint={versions.error.message}
+            />
           ) : versions.data?.items.length ? (
             <div style={{ display: "grid", gap: 7 }}>
               {versions.data.items.map((version) => (
@@ -1910,7 +2268,9 @@ export function AgentStudio({
                 >
                   <div>
                     <Badge tone={version.live ? "green" : "muted"}>
-                      {version.live ? "Live" : version.workflowVersion}
+                      {version.live
+                        ? studioUi(t, "Live")
+                        : version.workflowVersion}
                     </Badge>
                   </div>
                   <div>
@@ -1922,7 +2282,8 @@ export function AgentStudio({
                         fontWeight: 600,
                       }}
                     >
-                      {version.definitionHash?.slice(0, 16) ?? "no hash"}
+                      {version.definitionHash?.slice(0, 16) ??
+                        studioUi(t, "no hash")}
                     </div>
                     <div
                       style={{
@@ -1932,7 +2293,7 @@ export function AgentStudio({
                         marginTop: 4,
                       }}
                     >
-                      {version.changeNote ?? "No change note"}
+                      {version.changeNote ?? studioUi(t, "No change note")}
                     </div>
                   </div>
                   <div
@@ -1943,17 +2304,17 @@ export function AgentStudio({
                       lineHeight: 1.5,
                     }}
                   >
-                    {(
-                      version.publishedAt ?? version.createdAt
-                    ).toLocaleString()}
+                    {(version.publishedAt ?? version.createdAt).toLocaleString(
+                      studioLocale(language),
+                    )}
                   </div>
                 </div>
               ))}
             </div>
           ) : (
             <Empty
-              title="No published versions"
-              hint="Publish the draft to create version 1."
+              title={studioUi(t, "No published versions")}
+              hint={studioUi(t, "Publish the draft to create version 1.")}
             />
           )}
         </StudioPanel>
@@ -1961,8 +2322,11 @@ export function AgentStudio({
     return (
       <div style={{ display: "grid", gap: 14 }}>
         <StudioPanel
-          title="Complete definition (developer JSON)"
-          subtitle="Advanced: edits the same fields as Guided mode. Invalid JSON is not applied, and unknown extension fields are preserved."
+          title={studioUi(t, "Complete definition (developer JSON)")}
+          subtitle={studioUi(
+            t,
+            "Advanced: edits the same fields as Guided mode. Invalid JSON is not applied, and unknown extension fields are preserved.",
+          )}
         >
           <RawDefinitionEditor
             value={definition}
@@ -1971,8 +2335,11 @@ export function AgentStudio({
           />
         </StudioPanel>
         <StudioPanel
-          title="TypeScript reference (documentation only)"
-          subtitle="Stored with the definition for developers. Publishing this text does not deploy or run code; executable agents use the code-defined agent deployment workflow."
+          title={studioUi(t, "TypeScript reference (documentation only)")}
+          subtitle={studioUi(
+            t,
+            "Stored with the definition for developers. Publishing this text does not deploy or run code; executable agents use the code-defined agent deployment workflow.",
+          )}
         >
           <MonacoEditor
             value={definition.typescript_code}
@@ -2023,16 +2390,21 @@ export function AgentStudio({
               small
               icon="chevron-left"
               disabled={navigationPending || saveState === "saving"}
-              title="Save this agent draft and return to the workflow canvas"
+              title={studioUi(
+                t,
+                "Save this agent draft and return to the workflow canvas",
+              )}
               onClick={() => void returnToWorkflow()}
             >
-              {navigationPending ? "Returning…" : "Back to workflow"}
+              {navigationPending
+                ? studioUi(t, "Returning…")
+                : studioUi(t, "Back to workflow")}
             </Button>
           ) : (
             <Link
               href={`/portal/${tenant}/agents`}
               style={{ display: "inline-flex", color: "var(--text-2)" }}
-              aria-label="Back to agents"
+              aria-label={studioUi(t, "Back to agents")}
             >
               <Icon name="chevron-left" size={14} />
             </Link>
@@ -2053,35 +2425,45 @@ export function AgentStudio({
               <Badge
                 tone={draft ? "amber" : codeCompatibility ? "muted" : "green"}
               >
-                {draft ? "Draft" : codeCompatibility ? "Compatibility" : "Live"}
+                {draft
+                  ? studioUi(t, "Draft")
+                  : codeCompatibility
+                    ? studioUi(t, "Compatibility")
+                    : studioUi(t, "Live")}
               </Badge>
               <Badge
                 tone={editing ? "solid" : "muted"}
                 style={editing ? undefined : { color: "var(--text-2)" }}
               >
                 {codeCompatibility
-                  ? "Read only"
+                  ? studioUi(t, "Read only")
                   : editing
-                    ? "Editing"
-                    : "View mode"}
+                    ? studioUi(t, "Editing")
+                    : studioUi(t, "View mode")}
               </Badge>
               <Badge tone="muted" style={{ color: "var(--text-2)" }}>
-                {editor.data.agent.actor}
+                {editor.data.agent.actor === "Agent"
+                  ? studioUi(t, "AI agent")
+                  : editor.data.agent.actor === "Human"
+                    ? studioUi(t, "Human task")
+                    : editor.data.agent.actor}
               </Badge>
               {codeCompatibility && (
                 <Badge tone="muted" style={{ color: "var(--text-2)" }}>
-                  Code-defined
+                  {studioUi(t, "Code-defined")}
                 </Badge>
               )}
               {generatedCompatibility && (
-                <Badge tone="amber">Generated manifest</Badge>
+                <Badge tone="amber">{studioUi(t, "Generated manifest")}</Badge>
               )}
               {upgradedCompatibility && (
-                <Badge tone="blue">Upgraded format</Badge>
+                <Badge tone="blue">{studioUi(t, "Upgraded format")}</Badge>
               )}
               {errorCount > 0 && (
                 <Badge tone="red">
-                  {errorCount} error{errorCount === 1 ? "" : "s"}
+                  {errorCount === 1
+                    ? studioUi(t, "1 error")
+                    : studioUi(t, "{count} errors", { count: errorCount })}
                 </Badge>
               )}
             </div>
@@ -2089,17 +2471,34 @@ export function AgentStudio({
               className="mono agent-studio-header-meta"
               style={{ marginTop: 3 }}
             >
-              {definition.name} · {editor.data.live?.version ?? "unpublished"} ·{" "}
-              {definition.inputs.length} inputs · {definition.outputs.length}{" "}
-              outputs · {definition.tool_use.length} tools
+              {definition.name} ·{" "}
+              {editor.data.live?.version ?? studioUi(t, "unpublished")} ·{" "}
+              {studioUi(t, "{count} inputs", {
+                count: definition.inputs.length,
+              })}{" "}
+              ·{" "}
+              {studioUi(t, "{count} outputs", {
+                count: definition.outputs.length,
+              })}{" "}
+              ·{" "}
+              {studioUi(t, "{count} tools", {
+                count: definition.tool_use.length,
+              })}
             </div>
           </div>
           {workflowSlug ? (
             <div
               className="agent-studio-agent-select"
               role="status"
-              aria-label={`Workflow handoff for ${workflowSlug}. ${definition.title} is pinned until you return to the workflow canvas.`}
-              title="Return to the workflow canvas to choose another agent. This agent and its exact workflow version are pinned together."
+              aria-label={studioUi(
+                t,
+                "Workflow handoff for {workflow}. {agent} is pinned until you return to the workflow canvas.",
+                { workflow: workflowSlug, agent: definition.title },
+              )}
+              title={studioUi(
+                t,
+                "Return to the workflow canvas to choose another agent. This agent and its exact workflow version are pinned together.",
+              )}
               style={{
                 minWidth: 0,
                 maxWidth: 260,
@@ -2124,14 +2523,14 @@ export function AgentStudio({
                 {workflowSlug} · {definition.title}
               </span>
               <Badge tone="blue" style={{ marginLeft: "auto" }}>
-                Pinned
+                {studioUi(t, "Pinned")}
               </Badge>
             </div>
           ) : (
             <select
               className="agent-studio-agent-select"
               value={agentId}
-              aria-label="Open another agent"
+              aria-label={studioUi(t, "Open another agent")}
               disabled={navigationPending || saveState === "saving"}
               onChange={(event) => void openAnotherAgent(event.target.value)}
               style={{
@@ -2150,35 +2549,41 @@ export function AgentStudio({
             </select>
           )}
           <Segmented
-            ariaLabel="Editor view"
+            ariaLabel={studioUi(t, "Editor view")}
             value={mode}
             onChange={(next) => {
               setMode(next);
               if (next === "advanced") setSection("advanced");
             }}
             options={[
-              { value: "guided", label: "Guided" },
-              { value: "advanced", label: "Developer view" },
+              { value: "guided", label: studioUi(t, "Guided") },
+              { value: "advanced", label: studioUi(t, "Developer view") },
             ]}
           />
           <Button
             small
             icon="task"
-            title="Learn how to create, edit, test, publish, and operate an agent"
+            title={studioUi(
+              t,
+              "Learn how to create, edit, test, publish, and operate an agent",
+            )}
             onClick={() => {
               setHelpTopic(activeSection === "test" ? "testing" : "start");
               setHelpOpen(true);
             }}
           >
-            Help & examples
+            {studioUi(t, "Help & examples")}
           </Button>
           {codeCompatibility ? (
             <Button
               small
               disabled
-              title="Code-defined agents are edited in their source implementation."
+              title={studioUi(
+                t,
+                "Code-defined agents are edited in their source implementation.",
+              )}
             >
-              Edit unavailable
+              {studioUi(t, "Edit unavailable")}
             </Button>
           ) : !draft ? (
             <>
@@ -2186,13 +2591,16 @@ export function AgentStudio({
                 <Button
                   small
                   icon="play"
-                  title="Open the Test Lab without starting a run"
+                  title={studioUi(
+                    t,
+                    "Open the Test Lab without starting a run",
+                  )}
                   onClick={() => {
                     setMode("guided");
                     setSection("test");
                   }}
                 >
-                  Open Test Lab
+                  {studioUi(t, "Open Test Lab")}
                 </Button>
               )}
               <Button
@@ -2201,10 +2609,12 @@ export function AgentStudio({
                 disabled={
                   !editor.data.capabilities.canEdit || createDraft.isPending
                 }
-                title="Create a safe draft and enter Edit mode"
+                title={studioUi(t, "Create a safe draft and enter Edit mode")}
                 onClick={() => void startEditing()}
               >
-                {createDraft.isPending ? "Creating draft…" : "Edit"}
+                {createDraft.isPending
+                  ? studioUi(t, "Creating draft…")
+                  : studioUi(t, "Edit")}
               </Button>
             </>
           ) : editing ? (
@@ -2222,12 +2632,12 @@ export function AgentStudio({
                 }}
               >
                 {saveState === "saving"
-                  ? "saving…"
+                  ? studioUi(t, "saving…")
                   : dirty
-                    ? "unsaved"
+                    ? studioUi(t, "unsaved")
                     : saveState === "saved"
-                      ? "saved"
-                      : `rev ${revision}`}
+                      ? studioUi(t, "saved")
+                      : studioUi(t, "rev {revision}", { revision })}
               </span>
               <Button
                 small
@@ -2236,45 +2646,54 @@ export function AgentStudio({
                 }
                 onClick={() => void persist(false)}
               >
-                Save
+                {studioUi(t, "Save")}
               </Button>
               <Button
                 small
                 disabled={saveState === "saving"}
-                title="Restore the draft to how it was when Edit mode started"
+                title={studioUi(
+                  t,
+                  "Restore the draft to how it was when Edit mode started",
+                )}
                 onClick={() => void cancelEditing()}
               >
-                Cancel
+                {studioUi(t, "Cancel")}
               </Button>
               <Button
                 small
                 icon="check"
                 disabled={saveState === "saving"}
-                title="Save any remaining changes and return to protected view mode"
+                title={studioUi(
+                  t,
+                  "Save any remaining changes and return to protected view mode",
+                )}
                 onClick={() => void finishEditing()}
               >
-                Done
+                {studioUi(t, "Done")}
               </Button>
               <Button
                 small
                 icon="check"
-                title="Check required fields, links, schemas, tools, and runtime settings"
+                title={studioUi(
+                  t,
+                  "Check required fields, links, schemas, tools, and runtime settings",
+                )}
                 disabled={validateDraft.isPending || dirty}
                 onClick={() => void validate()}
               >
-                Check setup
+                {studioUi(t, "Check setup")}
               </Button>
               <Button
                 small
                 icon="play"
-                title="Open the Test Lab without starting a run"
+                title={studioUi(t, "Open the Test Lab without starting a run")}
                 disabled={!editor.data.capabilities.canRun}
                 onClick={() => {
                   setMode("guided");
                   setSection("test");
                 }}
               >
-                Open Test Lab
+                {studioUi(t, "Open Test Lab")}
               </Button>
               <Button
                 tone="primary"
@@ -2288,34 +2707,39 @@ export function AgentStudio({
                 }
                 onClick={() => void publish()}
               >
-                {publishDraft.isPending ? "Publishing…" : "Publish"}
+                {publishDraft.isPending
+                  ? studioUi(t, "Publishing…")
+                  : studioUi(t, "Publish")}
               </Button>
             </>
           ) : (
             <>
               <span className="mono agent-studio-revision-status">
-                rev {revision} · protected
+                {studioUi(t, "rev {revision} · protected", { revision })}
               </span>
               <Button
                 small
                 icon="check"
-                title="Check required fields, links, schemas, tools, and runtime settings"
+                title={studioUi(
+                  t,
+                  "Check required fields, links, schemas, tools, and runtime settings",
+                )}
                 disabled={validateDraft.isPending}
                 onClick={() => void validate()}
               >
-                Check setup
+                {studioUi(t, "Check setup")}
               </Button>
               <Button
                 small
                 icon="play"
-                title="Open the Test Lab without starting a run"
+                title={studioUi(t, "Open the Test Lab without starting a run")}
                 disabled={!editor.data.capabilities.canRun}
                 onClick={() => {
                   setMode("guided");
                   setSection("test");
                 }}
               >
-                Open Test Lab
+                {studioUi(t, "Open Test Lab")}
               </Button>
               <Button
                 small
@@ -2327,15 +2751,17 @@ export function AgentStudio({
                 }
                 onClick={() => void publish()}
               >
-                {publishDraft.isPending ? "Publishing…" : "Publish"}
+                {publishDraft.isPending
+                  ? studioUi(t, "Publishing…")
+                  : studioUi(t, "Publish")}
               </Button>
               <Button
                 tone="primary"
                 disabled={!editor.data.capabilities.canEdit}
-                title="Enter Edit mode for this draft"
+                title={studioUi(t, "Enter Edit mode for this draft")}
                 onClick={() => void startEditing()}
               >
-                Edit
+                {studioUi(t, "Edit")}
               </Button>
             </>
           )}
@@ -2352,13 +2778,15 @@ export function AgentStudio({
         >
           <InlineNotice
             tone="blue"
-            title="Code-defined agent — read-only compatibility view"
+            title={studioUi(
+              t,
+              "Code-defined agent — read-only compatibility view",
+            )}
           >
-            This older agent runs from source code, so Agent Studio cannot
-            safely recreate or replace its behavior with a manifest. Its saved
-            metadata has been adjusted to the current format for viewing.
-            Continue editing the source implementation, or create a new manifest
-            agent when you want Studio-managed behavior.
+            {studioUi(
+              t,
+              "This older agent runs from source code, so Agent Studio cannot safely recreate or replace its behavior with a manifest. Its saved metadata has been adjusted to the current format for viewing. Continue editing the source implementation, or create a new manifest agent when you want Studio-managed behavior.",
+            )}
           </InlineNotice>
         </div>
       )}
@@ -2375,8 +2803,8 @@ export function AgentStudio({
             tone="blue"
             title={
               upgradedCompatibility
-                ? "Older agent upgraded — view mode"
-                : "Live definition — view mode"
+                ? studioUi(t, "Older agent upgraded — view mode")
+                : studioUi(t, "Live definition — view mode")
             }
             action={
               <Button
@@ -2387,13 +2815,21 @@ export function AgentStudio({
                 }
                 onClick={() => void startEditing()}
               >
-                {createDraft.isPending ? "Creating…" : "Edit"}
+                {createDraft.isPending
+                  ? studioUi(t, "Creating…")
+                  : studioUi(t, "Edit")}
               </Button>
             }
           >
             {upgradedCompatibility
-              ? "Agent Studio translated the older manifest into the current editor format without changing its published history. Edit creates a safe draft for review and updates."
-              : "The live definition is protected. Edit creates a safe draft; you can still run the live version and inspect history."}
+              ? studioUi(
+                  t,
+                  "Agent Studio translated the older manifest into the current editor format without changing its published history. Edit creates a safe draft for review and updates.",
+                )
+              : studioUi(
+                  t,
+                  "The live definition is protected. Edit creates a safe draft; you can still run the live version and inspect history.",
+                )}
           </InlineNotice>
         </div>
       )}
@@ -2413,10 +2849,14 @@ export function AgentStudio({
             }}
           >
             {editing && (
-              <InlineNotice tone="signal" title="Edit mode is on">
-                Make changes across any section. Autosave creates checkpoints;
-                Save stores one immediately, Done saves and exits, and Cancel
-                restores the draft to the start of this edit session.
+              <InlineNotice
+                tone="signal"
+                title={studioUi(t, "Edit mode is on")}
+              >
+                {studioUi(
+                  t,
+                  "Make changes across any section. Autosave creates checkpoints; Save stores one immediately, Done saves and exits, and Cancel restores the draft to the start of this edit session.",
+                )}
               </InlineNotice>
             )}
             {(generatedCompatibility || upgradedCompatibility) && (
@@ -2424,13 +2864,30 @@ export function AgentStudio({
                 tone={generatedCompatibility ? "amber" : "blue"}
                 title={
                   generatedCompatibility
-                    ? "Starter manifest created for this older agent"
-                    : "Older definition converted to the current format"
+                    ? studioUi(
+                        t,
+                        "Starter manifest created for this older agent",
+                      )
+                    : studioUi(
+                        t,
+                        "Older definition converted to the current format",
+                      )
                 }
               >
                 {generatedCompatibility
-                  ? "No usable manifest was saved, so Agent Studio created a safe starting draft from the agent's identity and known event triggers. Review the instructions, inputs, steps, and outputs; then test before publishing."
-                  : `Agent Studio recovered this draft from ${compatibilitySource.includes("action-catalog") ? "the older action catalog" : "an earlier saved version"}. The original version remains unchanged for historical runs. Review and test this draft before publishing.`}
+                  ? studioUi(
+                      t,
+                      "No usable manifest was saved, so Agent Studio created a safe starting draft from the agent's identity and known event triggers. Review the instructions, inputs, steps, and outputs; then test before publishing.",
+                    )
+                  : studioUi(
+                      t,
+                      "Agent Studio recovered this draft from {source}. The original version remains unchanged for historical runs. Review and test this draft before publishing.",
+                      {
+                        source: compatibilitySource.includes("action-catalog")
+                          ? studioUi(t, "the older action catalog")
+                          : studioUi(t, "an earlier saved version"),
+                      },
+                    )}
               </InlineNotice>
             )}
           </div>
@@ -2442,7 +2899,7 @@ export function AgentStudio({
       >
         <nav
           className="agent-studio-section-nav"
-          aria-label="Agent editor sections"
+          aria-label={studioUi(t, "Agent editor sections")}
           style={{
             overflow: "auto",
             borderRight: "1px solid var(--border)",
@@ -2456,7 +2913,7 @@ export function AgentStudio({
               padding: "0 8px 8px",
             }}
           >
-            BUILD
+            {studioUi(t, "BUILD")}
           </div>
           {SECTIONS.map((item) => {
             const active = activeSection === item.id;
@@ -2486,7 +2943,7 @@ export function AgentStudio({
                 }}
               >
                 <Icon name={item.icon} size={11} />
-                <span style={{ flex: 1 }}>{item.label}</span>
+                <span style={{ flex: 1 }}>{studioUi(t, item.label)}</span>
                 {item.id === "inputs" && (
                   <span className="mono agent-studio-section-nav-count">
                     {definition.inputs.length}
@@ -2517,11 +2974,17 @@ export function AgentStudio({
                 checked={autoSave}
                 disabled={!editing}
                 onChange={setAutoSave}
-                label="Autosave"
+                label={studioUi(t, "Autosave")}
                 hint={
                   editing
-                    ? "Saves the draft shortly after you stop typing. It never publishes automatically."
-                    : "Available in Edit mode. It never publishes automatically."
+                    ? studioUi(
+                        t,
+                        "Saves the draft shortly after you stop typing. It never publishes automatically.",
+                      )
+                    : studioUi(
+                        t,
+                        "Available in Edit mode. It never publishes automatically.",
+                      )
                 }
               />
             </div>
@@ -2542,7 +3005,11 @@ export function AgentStudio({
             <div style={{ marginBottom: 14 }}>
               <div className="mono agent-studio-section-eyebrow" style={{}}>
                 Agent Studio /{" "}
-                {SECTIONS.find((item) => item.id === activeSection)?.label}
+                {studioUi(
+                  t,
+                  SECTIONS.find((item) => item.id === activeSection)?.label ??
+                    "Overview",
+                )}
               </div>
               <h2
                 className="agent-studio-section-title"
@@ -2550,7 +3017,11 @@ export function AgentStudio({
                   margin: "4px 0 0",
                 }}
               >
-                {SECTIONS.find((item) => item.id === activeSection)?.label}
+                {studioUi(
+                  t,
+                  SECTIONS.find((item) => item.id === activeSection)?.label ??
+                    "Overview",
+                )}
               </h2>
             </div>
             <div className="agent-studio-section-content">
@@ -2578,10 +3049,12 @@ export function AgentStudio({
             }}
           >
             <span className="agent-studio-context-title">
-              Definition health
+              {studioUi(t, "Definition health")}
             </span>
             <Badge tone={errorCount ? "red" : "green"}>
-              {errorCount ? `${errorCount} blocking` : "Ready"}
+              {errorCount
+                ? studioUi(t, "{count} blocking", { count: errorCount })
+                : studioUi(t, "Ready")}
             </Badge>
           </div>
           <div style={{ display: "grid", gap: 7 }}>
@@ -2611,7 +3084,7 @@ export function AgentStudio({
                     }}
                   >
                     <Badge tone={issueTone(issue.severity)}>
-                      {issue.severity}
+                      {issueSeverityLabel(t, issue.severity)}
                     </Badge>
                     <span
                       className="agent-studio-issue-path"
@@ -2619,7 +3092,7 @@ export function AgentStudio({
                         overflowWrap: "anywhere",
                       }}
                     >
-                      {friendlyIssuePath(issue.path, definition)}
+                      {friendlyIssuePath(issue.path, definition, t)}
                     </span>
                   </div>
                   <div
@@ -2628,7 +3101,7 @@ export function AgentStudio({
                       marginTop: 6,
                     }}
                   >
-                    {issue.message}
+                    {localizedValidationMessage(t, issue.message)}
                   </div>
                   {issue.suggestion && (
                     <div
@@ -2637,14 +3110,14 @@ export function AgentStudio({
                         marginTop: 5,
                       }}
                     >
-                      Try this: {issue.suggestion}
+                      {studioUi(t, "Try this:")} {issue.suggestion}
                     </div>
                   )}
                 </button>
               ))
             ) : (
               <InlineNotice tone="green">
-                No local or server validation issues.
+                {studioUi(t, "No local or server validation issues.")}
               </InlineNotice>
             )}
           </div>
@@ -2659,11 +3132,11 @@ export function AgentStudio({
               className="mono agent-studio-quick-facts-title"
               style={{ marginBottom: 8 }}
             >
-              QUICK FACTS
+              {studioUi(t, "QUICK FACTS")}
             </div>
             {[
               [
-                "Definition",
+                studioUi(t, "Definition"),
                 (
                   draft?.definitionHash ??
                   editor.data.live?.definitionHash ??
@@ -2671,20 +3144,29 @@ export function AgentStudio({
                 ).slice(0, 12),
               ],
               [
-                "Runtime",
-                `${definition.timeout_s}s / ${definition.retries} retries`,
+                studioUi(t, "Runtime"),
+                studioUi(t, "{seconds}s / {retries} retries", {
+                  seconds: definition.timeout_s,
+                  retries: definition.retries,
+                }),
               ],
-              ["Model", definition.model || "workspace default"],
               [
-                "Output",
+                studioUi(t, "Model"),
+                definition.model || studioUi(t, "workspace default"),
+              ],
+              [
+                studioUi(t, "Output"),
                 String(
                   asRecord(definition.output_config.artifact).filename ??
                     "output.json",
                 ),
               ],
               [
-                "Trace",
-                String(definition.observability.trace_level ?? "standard"),
+                studioUi(t, "Trace"),
+                studioUi(
+                  t,
+                  String(definition.observability.trace_level ?? "standard"),
+                ),
               ],
             ].map(([label, value]) => (
               <div

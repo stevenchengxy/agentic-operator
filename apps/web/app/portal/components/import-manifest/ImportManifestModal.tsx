@@ -1,12 +1,6 @@
 "use client";
 
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   ManifestImportCommit as ManifestImportCommitSchema,
@@ -425,7 +419,7 @@ export function ImportManifestModal({
       );
       if (!result.success) {
         throw new Error(
-          `${t("importManifestModal.errInvalidPreview")}: ${result.error.issues[0]?.message ?? "unknown schema error"}`,
+          `${t("importManifestModal.errInvalidPreview")}: ${result.error.issues[0]?.message ?? t("importManifestModal.errUnknownSchema")}`,
         );
       }
       committedRef.current = false;
@@ -451,7 +445,9 @@ export function ImportManifestModal({
     }
   }
 
-  function actualCommitBody(confirmOverwrite: boolean): ManifestImportBody | null {
+  function actualCommitBody(
+    confirmOverwrite: boolean,
+  ): ManifestImportBody | null {
     if (!commitBody) return null;
     return { ...commitBody, confirm_overwrite: confirmOverwrite };
   }
@@ -496,7 +492,7 @@ export function ImportManifestModal({
       );
       if (!committed.success) {
         throw new Error(
-          `${t("importManifestModal.errInvalidCommitResponse")}: ${committed.error.issues[0]?.message ?? "unknown schema error"}`,
+          `${t("importManifestModal.errInvalidCommitResponse")}: ${committed.error.issues[0]?.message ?? t("importManifestModal.errUnknownSchema")}`,
         );
       }
       committedRef.current = true;
@@ -564,7 +560,7 @@ export function ImportManifestModal({
       );
       if (!normalizedResult.success) {
         throw new Error(
-          `${t("importManifestModal.errInvalidPreview")}: ${normalizedResult.error.issues[0]?.message ?? "unknown schema error"}`,
+          `${t("importManifestModal.errInvalidPreview")}: ${normalizedResult.error.issues[0]?.message ?? t("importManifestModal.errUnknownSchema")}`,
         );
       }
       const normalized = normalizedResult.data;
@@ -575,14 +571,12 @@ export function ImportManifestModal({
         (conflict) => conflict.severity === "block",
       );
       if (blockingIssues.length || blockingConflicts.length) {
-        setCommitError(
-          "Resolve every blocking validation issue before creating the draft.",
-        );
+        setCommitError(t("importManifestModal.errResolveBlockingBeforeDraft"));
         setCommitIssues(blockingIssues as CommitIssue[]);
         return;
       }
       if (!normalized.normalized_workflow) {
-        throw new Error("Validation did not return a normalized workflow.");
+        throw new Error(t("importManifestModal.errMissingNormalizedWorkflow"));
       }
       const createResponse = await fetch("/v1/workflows", {
         method: "POST",
@@ -591,7 +585,7 @@ export function ImportManifestModal({
         body: JSON.stringify({
           slug: draftTarget.slug,
           name: draftTarget.name,
-          description: "Created from an imported manifest.",
+          description: t("importManifestModal.importedDraftDescription"),
           source: {
             type: "manifest",
             manifest: normalized.normalized_workflow,
@@ -608,15 +602,19 @@ export function ImportManifestModal({
       );
       toast({
         tone: "green",
-        title: "Workflow draft created",
-        description: `${workflow.name} is ready to edit.`,
+        title: t("importManifestModal.toastDraftCreated"),
+        description: t("importManifestModal.toastDraftReady", {
+          name: workflow.name,
+        }),
       });
       refetchManifestDependents();
       onDraftCreated?.(workflow);
       onClose();
     } catch (error) {
       setCommitError(
-        error instanceof Error ? error.message : "Draft creation failed.",
+        error instanceof Error
+          ? error.message
+          : t("importManifestModal.errDraftCreationFailed"),
       );
     } finally {
       setCommitting(false);
@@ -707,9 +705,15 @@ export function ImportManifestModal({
     <ModalOverlay onClose={() => void requestClose()}>
       <div style={modalStyle}>
         <header style={headerStyle}>
-          <Icon name="upload" size={14} style={{ color: "var(--accent-text)" }} />
+          <Icon
+            name="upload"
+            size={14}
+            style={{ color: "var(--accent-text)" }}
+          />
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 14, color: "var(--text)", fontWeight: 500 }}>
+            <div
+              style={{ fontSize: 14, color: "var(--text)", fontWeight: 500 }}
+            >
               {title}
             </div>
             <div style={{ fontSize: 11, color: "var(--text-3)" }}>
@@ -851,10 +855,10 @@ export function ImportManifestModal({
               >
                 {committing
                   ? draftTarget
-                    ? "Creating draft…"
+                    ? t("importManifestModal.creatingDraft")
                     : t("importManifestModal.deploying")
                   : draftTarget
-                    ? "Create workflow draft"
+                    ? t("importManifestModal.createWorkflowDraft")
                     : t("importManifestModal.deployToProd")}
               </Button>
             )}
@@ -998,7 +1002,9 @@ function SourceStep({
                 actions.json
               </span>
             </div>
-            <div style={{ marginTop: 4, fontSize: 11.5, color: "var(--text-3)" }}>
+            <div
+              style={{ marginTop: 4, fontSize: 11.5, color: "var(--text-3)" }}
+            >
               {t("importManifestModal.or")}{" "}
               <label style={{ color: "var(--accent-text)", cursor: "pointer" }}>
                 {t("importManifestModal.browseFiles")}
@@ -1014,15 +1020,28 @@ function SourceStep({
             </div>
           </div>
           {files.length > 0 && (
-            <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 4 }}>
+            <div
+              style={{
+                marginTop: 12,
+                display: "flex",
+                flexDirection: "column",
+                gap: 4,
+              }}
+            >
               {files.map((file, index) => (
-                <div key={`${file.name}:${index}`} style={fileRowStyle(file.ok)}>
+                <div
+                  key={`${file.name}:${index}`}
+                  style={fileRowStyle(file.ok)}
+                >
                   <Icon
                     name={file.ok ? "check" : "alert"}
                     size={12}
                     style={{ color: file.ok ? "var(--green)" : "var(--amber)" }}
                   />
-                  <span className="mono" style={{ fontSize: 12, color: "var(--text)" }}>
+                  <span
+                    className="mono"
+                    style={{ fontSize: 12, color: "var(--text)" }}
+                  >
                     {file.name}
                   </span>
                   {file.error && (
@@ -1030,7 +1049,14 @@ function SourceStep({
                       {file.error}
                     </span>
                   )}
-                  <span style={{ marginLeft: "auto", fontSize: 11, fontFamily: "var(--mono)", color: "var(--text-3)" }}>
+                  <span
+                    style={{
+                      marginLeft: "auto",
+                      fontSize: 11,
+                      fontFamily: "var(--mono)",
+                      color: "var(--text-3)",
+                    }}
+                  >
                     {fmtBytes(file.size)}
                   </span>
                   <Badge tone={file.ok ? "green" : "amber"}>
@@ -1069,12 +1095,18 @@ function SourceStep({
       )}
 
       {source === "git" && (
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 180px", gap: 12 }}>
+        <div
+          style={{ display: "grid", gridTemplateColumns: "1fr 180px", gap: 12 }}
+        >
           <div>
-            <FieldLabel>{t("importManifestModal.repoRepositoryLabel")}</FieldLabel>
+            <FieldLabel>
+              {t("importManifestModal.repoRepositoryLabel")}
+            </FieldLabel>
             <input
               value={repo.repository}
-              onChange={(event) => setRepo({ ...repo, repository: event.target.value })}
+              onChange={(event) =>
+                setRepo({ ...repo, repository: event.target.value })
+              }
               placeholder="https://github.com/organization/repository"
               style={inputStyle}
             />
@@ -1083,7 +1115,9 @@ function SourceStep({
             <FieldLabel>{t("importManifestModal.repoRefLabel")}</FieldLabel>
             <input
               value={repo.ref}
-              onChange={(event) => setRepo({ ...repo, ref: event.target.value })}
+              onChange={(event) =>
+                setRepo({ ...repo, ref: event.target.value })
+              }
               placeholder={t("importManifestModal.repoRefPlaceholder")}
               style={inputStyle}
             />
@@ -1092,7 +1126,9 @@ function SourceStep({
             <FieldLabel>{t("importManifestModal.repoPathLabel")}</FieldLabel>
             <input
               value={repo.path}
-              onChange={(event) => setRepo({ ...repo, path: event.target.value })}
+              onChange={(event) =>
+                setRepo({ ...repo, path: event.target.value })
+              }
               placeholder="path/to/workflow.json"
               style={inputStyle}
             />
@@ -1106,7 +1142,14 @@ function SourceStep({
 
 function FieldLabel({ children }: { children: React.ReactNode }) {
   return (
-    <label style={{ display: "block", fontSize: 11, color: "var(--text-2)", marginBottom: 4 }}>
+    <label
+      style={{
+        display: "block",
+        fontSize: 11,
+        color: "var(--text-2)",
+        marginBottom: 4,
+      }}
+    >
       {children}
     </label>
   );
@@ -1127,7 +1170,14 @@ function SourceCard({
 }) {
   return (
     <button onClick={onClick} style={sourceCardStyle(active)}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 5 }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          marginBottom: 5,
+        }}
+      >
         <Icon
           name={icon}
           size={12}
@@ -1165,22 +1215,52 @@ function ValidateStep({ preview }: { preview: ManifestImportPreview | null }) {
   return (
     <div>
       <div style={metricsGridStyle}>
-        <MetricCell label={t("importManifestModal.cellSchemaVersion")} value={preview.schema_version} />
-        <MetricCell label={t("importManifestModal.cellAgents")} value={preview.parsed.agents} />
-        <MetricCell label={t("importManifestModal.cellEvents")} value={preview.parsed.events} />
-        <MetricCell label={t("importManifestModal.cellActions")} value={preview.parsed.actions} />
-        <MetricCell label={t("importManifestModal.cellElapsed")} value={`${preview.elapsed_ms} ms`} />
+        <MetricCell
+          label={t("importManifestModal.cellSchemaVersion")}
+          value={preview.schema_version}
+        />
+        <MetricCell
+          label={t("importManifestModal.cellAgents")}
+          value={preview.parsed.agents}
+        />
+        <MetricCell
+          label={t("importManifestModal.cellEvents")}
+          value={preview.parsed.events}
+        />
+        <MetricCell
+          label={t("importManifestModal.cellActions")}
+          value={preview.parsed.actions}
+        />
+        <MetricCell
+          label={t("importManifestModal.cellElapsed")}
+          value={`${preview.elapsed_ms} ms`}
+        />
       </div>
       <IssuesPanel issues={preview.issues} />
     </div>
   );
 }
 
-function MetricCell({ label, value }: { label: string; value: string | number }) {
+function MetricCell({
+  label,
+  value,
+}: {
+  label: string;
+  value: string | number;
+}) {
   return (
-    <div style={{ padding: "10px 14px", borderRight: "1px solid var(--border)" }}>
+    <div
+      style={{ padding: "10px 14px", borderRight: "1px solid var(--border)" }}
+    >
       <div style={metricLabelStyle}>{label}</div>
-      <div style={{ marginTop: 4, fontSize: 16, fontFamily: "var(--mono)", color: "var(--text)" }}>
+      <div
+        style={{
+          marginTop: 4,
+          fontSize: 16,
+          fontFamily: "var(--mono)",
+          color: "var(--text)",
+        }}
+      >
         {value}
       </div>
     </div>
@@ -1195,7 +1275,10 @@ function IssuesPanel({ issues }: { issues: ManifestImportPreview["issues"] }) {
         <div style={emptyRowStyle}>{t("importManifestModal.noIssues")}</div>
       ) : (
         issues.map((issue, index) => (
-          <div key={`${issue.path}:${issue.code}:${index}`} style={issueRowStyle(index, issues.length)}>
+          <div
+            key={`${issue.path}:${issue.code}:${index}`}
+            style={issueRowStyle(index, issues.length)}
+          >
             <Icon
               name={issue.severity === "info" ? "check" : "alert"}
               size={11}
@@ -1208,13 +1291,24 @@ function IssuesPanel({ issues }: { issues: ManifestImportPreview["issues"] }) {
                       : "var(--green)",
               }}
             />
-            <span className="mono" style={{ fontSize: 11, color: "var(--text-3)" }}>
+            <span
+              className="mono"
+              style={{ fontSize: 11, color: "var(--text-3)" }}
+            >
               {issue.path || "/"}
             </span>
             <span style={{ fontSize: 12, color: "var(--text-2)" }}>
               {issue.message}
             </span>
-            <Badge tone={issue.severity === "error" ? "red" : issue.severity === "warning" ? "amber" : "muted"}>
+            <Badge
+              tone={
+                issue.severity === "error"
+                  ? "red"
+                  : issue.severity === "warning"
+                    ? "amber"
+                    : "muted"
+              }
+            >
               {issue.code}
             </Badge>
           </div>
@@ -1236,9 +1330,20 @@ function DiffStep({ preview }: { preview: ManifestImportPreview }) {
         imported: preview.parsed.agents,
       });
   return (
-    <Panel title={t("importManifestModal.diffTitle")} subtitle={subtitle} padded={false}>
+    <Panel
+      title={t("importManifestModal.diffTitle")}
+      subtitle={subtitle}
+      padded={false}
+    >
       {preview.prior.live_deployment_id && (
-        <div style={{ padding: "8px 14px", borderBottom: "1px solid var(--border)", fontSize: 11, color: "var(--text-3)" }}>
+        <div
+          style={{
+            padding: "8px 14px",
+            borderBottom: "1px solid var(--border)",
+            fontSize: 11,
+            color: "var(--text-3)",
+          }}
+        >
           {t("importManifestModal.priorDeploymentId")}{" "}
           <span className="mono">{preview.prior.live_deployment_id}</span>
         </div>
@@ -1306,7 +1411,9 @@ function ResolveStep({
   const { t } = useI18n();
   return (
     <Panel
-      title={t("importManifestModal.conflictsTitle", { count: preview.conflicts.length })}
+      title={t("importManifestModal.conflictsTitle", {
+        count: preview.conflicts.length,
+      })}
       subtitle={t("importManifestModal.conflictsSubtitle")}
       padded={false}
     >
@@ -1317,16 +1424,24 @@ function ResolveStep({
           const key = conflictKey(conflict, index);
           const current = resolutions[key] ?? "skip";
           return (
-            <div key={key} style={conflictRowStyle(index, preview.conflicts.length)}>
+            <div
+              key={key}
+              style={conflictRowStyle(index, preview.conflicts.length)}
+            >
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <Badge tone={conflict.severity === "block" ? "red" : "amber"}>
                   {conflict.type}
                 </Badge>
-                <span className="mono" style={{ fontSize: 12, color: "var(--text)" }}>
+                <span
+                  className="mono"
+                  style={{ fontSize: 12, color: "var(--text)" }}
+                >
                   {conflict.path}
                 </span>
               </div>
-              <div style={{ marginTop: 6, fontSize: 11.5, color: "var(--text-2)" }}>
+              <div
+                style={{ marginTop: 6, fontSize: 11.5, color: "var(--text-2)" }}
+              >
                 {conflict.detail}
               </div>
               <div style={{ display: "flex", gap: 6, marginTop: 10 }}>
@@ -1347,7 +1462,9 @@ function ResolveStep({
                 )}
                 <ResolveOption
                   active={current === "skip"}
-                  onClick={() => setResolutions({ ...resolutions, [key]: "skip" })}
+                  onClick={() =>
+                    setResolutions({ ...resolutions, [key]: "skip" })
+                  }
                   label={t("importManifestModal.conflictSkip")}
                   hint={t("importManifestModal.conflictSkipHint")}
                 />
@@ -1374,7 +1491,13 @@ function ResolveOption({
   return (
     <button onClick={onClick} style={resolveOptionStyle(active)}>
       <span>{label}</span>
-      <span style={{ fontSize: 10, fontFamily: "var(--mono)", color: "var(--text-3)" }}>
+      <span
+        style={{
+          fontSize: 10,
+          fontFamily: "var(--mono)",
+          color: "var(--text-3)",
+        }}
+      >
         {hint}
       </span>
     </button>
@@ -1396,20 +1519,71 @@ function PreviewStep({
         subtitle={`${t("importManifestModal.sessionLabel")} ${preview.deployment_id}`}
         padded
       >
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 12 }}>
-          <Stat label={t("importManifestModal.cellAgents")} value={preview.parsed.agents} mono />
-          <Stat label={t("importManifestModal.cellEvents")} value={preview.parsed.events} mono />
-          <Stat label={t("importManifestModal.cellActions")} value={preview.parsed.actions} mono />
-          <Stat label={t("importManifestModal.statIssues")} value={preview.issues.length} mono />
-          <Stat label={t("importManifestModal.statValidationTime")} value={`${preview.elapsed_ms} ms`} mono />
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(5, 1fr)",
+            gap: 12,
+          }}
+        >
+          <Stat
+            label={t("importManifestModal.cellAgents")}
+            value={preview.parsed.agents}
+            mono
+          />
+          <Stat
+            label={t("importManifestModal.cellEvents")}
+            value={preview.parsed.events}
+            mono
+          />
+          <Stat
+            label={t("importManifestModal.cellActions")}
+            value={preview.parsed.actions}
+            mono
+          />
+          <Stat
+            label={t("importManifestModal.statIssues")}
+            value={preview.issues.length}
+            mono
+          />
+          <Stat
+            label={t("importManifestModal.statValidationTime")}
+            value={`${preview.elapsed_ms} ms`}
+            mono
+          />
         </div>
       </Panel>
       <Panel title={t("importManifestModal.summaryTitle")} padded>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
-          <Stat label={t("importManifestModal.diffAdded")} value={preview.diff.added.length} mono accent="var(--green)" />
-          <Stat label={t("importManifestModal.diffModified")} value={preview.diff.modified.length} mono accent="var(--amber)" />
-          <Stat label={t("importManifestModal.diffRemoved")} value={preview.diff.removed.length} mono accent="var(--red)" />
-          <Stat label={t("importManifestModal.statConflicts")} value={preview.conflicts.length} mono />
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(4, 1fr)",
+            gap: 12,
+          }}
+        >
+          <Stat
+            label={t("importManifestModal.diffAdded")}
+            value={preview.diff.added.length}
+            mono
+            accent="var(--green)"
+          />
+          <Stat
+            label={t("importManifestModal.diffModified")}
+            value={preview.diff.modified.length}
+            mono
+            accent="var(--amber)"
+          />
+          <Stat
+            label={t("importManifestModal.diffRemoved")}
+            value={preview.diff.removed.length}
+            mono
+            accent="var(--red)"
+          />
+          <Stat
+            label={t("importManifestModal.statConflicts")}
+            value={preview.conflicts.length}
+            mono
+          />
         </div>
       </Panel>
       <Panel title={t("importPreviewGraph.title")} padded>
@@ -1443,7 +1617,7 @@ function DeployStep({
           padded
         >
           {/* Single supported tier — the api contract has no staging target,
-            * so the wizard makes no staging claim. */}
+           * so the wizard makes no staging claim. */}
           <DeployTargetOption
             value="production"
             current={target}
@@ -1519,7 +1693,16 @@ function ErrorSurface({
   const { t } = useI18n();
   const tone = commitError || validationError ? "var(--red)" : "var(--amber)";
   return (
-    <div style={{ padding: "10px 18px", borderTop: `1px solid ${tone}`, color: tone, fontSize: 12, maxHeight: 180, overflow: "auto" }}>
+    <div
+      style={{
+        padding: "10px 18px",
+        borderTop: `1px solid ${tone}`,
+        color: tone,
+        fontSize: 12,
+        maxHeight: 180,
+        overflow: "auto",
+      }}
+    >
       {validationError && <div>{validationError}</div>}
       {pendingLock && (
         <div>
@@ -1533,7 +1716,8 @@ function ErrorSurface({
         <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
           {commitIssues.map((issue, index) => (
             <li key={`${issue.path}:${issue.code}:${index}`}>
-              <span className="mono">{issue.path}</span> — {issue.message} [{issue.code}]
+              <span className="mono">{issue.path}</span> — {issue.message} [
+              {issue.code}]
             </li>
           ))}
         </ul>

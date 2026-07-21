@@ -60,15 +60,17 @@ describe("RAAS ingress normalization", () => {
         employee_id: "0000199059",
         employeeId: "0000199059",
         recruiter_id: "0000199059",
-        __correlationId: "trace-1",
-        __raas: {
-          protocol: "raas-v1",
-          external_event_id: "raas-event-1",
-          entity_type: "Candidate",
-          entity_id: "candidate-1",
-          source_action: "raas.resume.download",
-          trace: { trace_id: "trace-1" },
-        },
+      },
+    });
+    expect(normalized.runtimeMetadata).toMatchObject({
+      __correlationId: "trace-1",
+      __raas: {
+        protocol: "raas-v1",
+        external_event_id: "raas-event-1",
+        entity_type: "Candidate",
+        entity_id: "candidate-1",
+        source_action: "raas.resume.download",
+        trace: { trace_id: "trace-1" },
       },
     });
   });
@@ -92,8 +94,10 @@ describe("RAAS ingress normalization", () => {
       payload: {
         job_requisition_id: "jr-thin-1",
         requirement_id: "jr-thin-1",
-        __correlationId: "trace-jd-thin-1",
       },
+    });
+    expect(normalized.runtimeMetadata).toMatchObject({
+      __correlationId: "trace-jd-thin-1",
     });
   });
 
@@ -498,6 +502,7 @@ describe("POST /v1/events RAAS boundary", () => {
           upload_id: "upload-1",
           object_key: "2026/07/张三.pdf",
           objectKey: "2026/07/张三.pdf",
+          __correlationId: "trace-1",
           __raas: { external_event_id: eventId },
         },
       });

@@ -12,6 +12,7 @@ import {
   Td,
   Th,
 } from "@/app/portal/components";
+import { useI18n, type Translate } from "@/app/portal/lib/preferences-context";
 import { fmtAgo } from "@/lib/format";
 import {
   useApiTokens,
@@ -22,10 +23,10 @@ import {
 
 type RevealOperation = "created" | "rotated";
 
-function errorMessage(error: unknown): string {
+function errorMessage(error: unknown, t: Translate): string {
   return error instanceof Error
     ? error.message
-    : "The request could not be completed.";
+    : t("tokensSection.requestFailed");
 }
 
 function ApiTokenRevealModal({
@@ -37,6 +38,7 @@ function ApiTokenRevealModal({
   operation: RevealOperation;
   onClose: () => void;
 }) {
+  const { t } = useI18n();
   const [acknowledged, setAcknowledged] = useState(false);
   const [revealed, setRevealed] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -70,7 +72,7 @@ function ApiTokenRevealModal({
   return (
     <ModalOverlay
       onClose={dismiss}
-      ariaLabel={`${operation === "created" ? "New" : "Rotated"} API token for ${token.name}`}
+      ariaLabel={t(`tokensSection.reveal.${operation === "created" ? "ariaCreated" : "ariaRotated"}`, { name: token.name })}
     >
       <div
         style={{
@@ -96,7 +98,7 @@ function ApiTokenRevealModal({
             <div
               style={{ fontSize: 13, fontWeight: 600, color: "var(--text)" }}
             >
-              API token {operation}
+              {t(`tokensSection.reveal.${operation === "created" ? "titleCreated" : "titleRotated"}`)}
             </div>
             <div style={{ marginTop: 3, fontSize: 11, color: "var(--text-3)" }}>
               {token.name}
@@ -106,9 +108,9 @@ function ApiTokenRevealModal({
             type="button"
             onClick={dismiss}
             disabled={!acknowledged}
-            aria-label="Close API token dialog"
+            aria-label={t("tokensSection.reveal.closeAria")}
             title={
-              acknowledged ? "Close" : "Confirm secure storage before closing"
+              acknowledged ? t("tokensSection.reveal.close") : t("tokensSection.reveal.confirmBeforeClose")
             }
             style={{
               padding: 5,
@@ -137,8 +139,7 @@ function ApiTokenRevealModal({
               lineHeight: 1.55,
             }}
           >
-            This is the only time the plaintext token will be shown. Store it in
-            a secrets manager now; the server keeps only its hash.
+            {t("tokensSection.reveal.warning")}
           </div>
 
           <div
@@ -151,7 +152,7 @@ function ApiTokenRevealModal({
           >
             <div
               className="mono"
-              aria-label={revealed ? "API token plaintext" : "API token hidden"}
+              aria-label={revealed ? t("tokensSection.reveal.plaintextAria") : t("tokensSection.reveal.hiddenAria")}
               style={{
                 minHeight: 34,
                 padding: "8px 10px",
@@ -175,7 +176,7 @@ function ApiTokenRevealModal({
               }}
             >
               <div style={{ fontSize: 11, color: "var(--text-3)" }}>
-                Scope: {token.scopes.join(", ")}
+                {t("tokensSection.reveal.scope", { scopes: token.scopes.join(", ") })}
               </div>
               <div style={{ display: "flex", gap: 6 }}>
                 <Button
@@ -183,10 +184,10 @@ function ApiTokenRevealModal({
                   tone="ghost"
                   onClick={() => setRevealed((value) => !value)}
                 >
-                  {revealed ? "Hide" : "Reveal"}
+                  {revealed ? t("tokensSection.reveal.hide") : t("tokensSection.reveal.show")}
                 </Button>
                 <Button small tone="primary" onClick={() => void copyToken()}>
-                  {copied ? "Copied" : "Copy token"}
+                  {copied ? t("tokensSection.reveal.copied") : t("tokensSection.reveal.copy")}
                 </Button>
               </div>
             </div>
@@ -195,7 +196,7 @@ function ApiTokenRevealModal({
                 role="alert"
                 style={{ marginTop: 8, fontSize: 11, color: "var(--red)" }}
               >
-                Clipboard access failed. Reveal the token and copy it manually.
+                {t("tokensSection.reveal.copyFailed")}
               </div>
             )}
           </div>
@@ -226,10 +227,10 @@ function ApiTokenRevealModal({
               checked={acknowledged}
               onChange={(event) => setAcknowledged(event.target.checked)}
             />
-            I have stored this token securely
+            {t("tokensSection.reveal.acknowledged")}
           </label>
           <Button tone="primary" disabled={!acknowledged} onClick={onClose}>
-            Done
+            {t("tokensSection.reveal.done")}
           </Button>
         </footer>
       </div>
@@ -238,6 +239,7 @@ function ApiTokenRevealModal({
 }
 
 export function TokensSection() {
+  const { language, t } = useI18n();
   const tokens = useApiTokens();
   const createToken = useCreateApiToken();
   const rotateToken = useRotateApiToken();
@@ -261,14 +263,14 @@ export function TokensSection() {
       setCreating(false);
       setReveal({ token: created, operation: "created" });
     } catch (error) {
-      setActionError(errorMessage(error));
+      setActionError(errorMessage(error, t));
     }
   }
 
   async function rotate(id: string, label: string) {
     if (
       !window.confirm(
-        `Rotate “${label}”? The current token will stop working immediately.`,
+        t("tokensSection.rotateConfirm", { label }),
       )
     ) {
       return;
@@ -278,14 +280,14 @@ export function TokensSection() {
       const rotated = await rotateToken.mutateAsync(id);
       setReveal({ token: rotated, operation: "rotated" });
     } catch (error) {
-      setActionError(errorMessage(error));
+      setActionError(errorMessage(error, t));
     }
   }
 
   async function revoke(id: string, label: string) {
     if (
       !window.confirm(
-        `Revoke “${label}”? Services using this token will lose access immediately.`,
+        t("tokensSection.revokeConfirm", { label }),
       )
     ) {
       return;
@@ -294,7 +296,7 @@ export function TokensSection() {
     try {
       await revokeToken.mutateAsync(id);
     } catch (error) {
-      setActionError(errorMessage(error));
+      setActionError(errorMessage(error, t));
     }
   }
 
@@ -303,8 +305,8 @@ export function TokensSection() {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
       <Panel
-        title="Workspace API tokens"
-        subtitle="Use these to call the runtime from CI, scripts, or downstream services."
+        title={t("tokensSection.workspaceTokensTitle")}
+        subtitle={t("tokensSection.workspaceTokensSubtitle")}
         padded={false}
         action={
           <Button
@@ -317,7 +319,7 @@ export function TokensSection() {
               setCreating((value) => !value);
             }}
           >
-            {creating ? "Cancel" : "New token"}
+            {creating ? t("tokensSection.cancel") : t("tokensSection.newToken")}
           </Button>
         }
       >
@@ -336,7 +338,7 @@ export function TokensSection() {
           >
             <label style={{ display: "flex", flexDirection: "column", gap: 5 }}>
               <span style={{ fontSize: 11, color: "var(--text-2)" }}>
-                Token label
+                {t("tokensSection.tokenLabel")}
               </span>
               <input
                 autoFocus
@@ -345,7 +347,7 @@ export function TokensSection() {
                 value={name}
                 disabled={createToken.isPending}
                 onChange={(event) => setName(event.target.value)}
-                placeholder="Production deployment"
+                placeholder={t("tokensSection.tokenLabelPlaceholder")}
                 style={{
                   minWidth: 0,
                   padding: "7px 9px",
@@ -368,7 +370,7 @@ export function TokensSection() {
               disabled={createToken.isPending || !name.trim()}
               style={{ marginBottom: 1 }}
             >
-              {createToken.isPending ? "Creating…" : "Create token"}
+              {createToken.isPending ? t("tokensSection.creating") : t("tokensSection.createToken")}
             </Button>
           </form>
         )}
@@ -395,21 +397,21 @@ export function TokensSection() {
             role="status"
             style={{ padding: 24, color: "var(--text-3)", fontSize: 12 }}
           >
-            Loading API tokens…
+            {t("tokensSection.loading")}
           </div>
         ) : tokens.isError ? (
           <div
             role="alert"
             style={{ padding: 24, color: "var(--red)", fontSize: 12 }}
           >
-            <div>Could not load API tokens: {errorMessage(tokens.error)}</div>
+            <div>{t("tokensSection.loadFailed", { message: errorMessage(tokens.error, t) })}</div>
             <Button
               small
               tone="ghost"
               style={{ marginTop: 8 }}
               onClick={() => void tokens.refetch()}
             >
-              Retry
+              {t("tokensSection.retry")}
             </Button>
           </div>
         ) : rows.length === 0 ? (
@@ -422,8 +424,7 @@ export function TokensSection() {
               lineHeight: 1.55,
             }}
           >
-            No API tokens yet. Create one for a service, CI job, or local
-            script.
+            {t("tokensSection.empty")}
           </div>
         ) : (
           <div style={{ overflowX: "auto" }}>
@@ -436,11 +437,11 @@ export function TokensSection() {
             >
               <thead>
                 <tr style={{ borderBottom: "1px solid var(--border)" }}>
-                  <Th>Label</Th>
-                  <Th>Token prefix</Th>
-                  <Th>Scopes</Th>
-                  <Th>Created</Th>
-                  <Th>Last used</Th>
+                  <Th>{t("tokensSection.colLabel")}</Th>
+                  <Th>{t("tokensSection.colTokenPrefix")}</Th>
+                  <Th>{t("tokensSection.colScopes")}</Th>
+                  <Th>{t("tokensSection.colCreated")}</Th>
+                  <Th>{t("tokensSection.colLastUsed")}</Th>
                   <Th />
                 </tr>
               </thead>
@@ -488,14 +489,14 @@ export function TokensSection() {
                       </Td>
                       <Td>
                         <span style={{ color: "var(--text-3)" }}>
-                          {fmtAgo(token.createdAt)}
+                          {fmtAgo(token.createdAt, language)}
                         </span>
                       </Td>
                       <Td>
                         <span style={{ color: "var(--text-2)" }}>
                           {token.lastUsedAt === null
-                            ? "Never"
-                            : fmtAgo(token.lastUsedAt)}
+                            ? t("tokensSection.never")
+                            : fmtAgo(token.lastUsedAt, language)}
                         </span>
                       </Td>
                       <Td style={{ textAlign: "right" }}>
@@ -508,7 +509,7 @@ export function TokensSection() {
                             }
                             onClick={() => void rotate(token.id, token.name)}
                           >
-                            {rotating ? "Rotating…" : "Rotate"}
+                            {rotating ? t("tokensSection.rotating") : t("tokensSection.rotate")}
                           </Button>
                           <Button
                             small
@@ -518,7 +519,7 @@ export function TokensSection() {
                             }
                             onClick={() => void revoke(token.id, token.name)}
                           >
-                            {revoking ? "Revoking…" : "Revoke"}
+                            {revoking ? t("tokensSection.revoking") : t("tokensSection.revoke")}
                           </Button>
                         </div>
                       </Td>
@@ -531,7 +532,7 @@ export function TokensSection() {
         )}
       </Panel>
 
-      <Panel title="API authentication" padded>
+      <Panel title={t("tokensSection.apiAuthTitle")} padded>
         <div
           style={{
             fontSize: 12.5,
@@ -540,8 +541,7 @@ export function TokensSection() {
             lineHeight: 1.55,
           }}
         >
-          Send the token as a bearer credential. Keep it in an environment
-          variable or secrets manager rather than source control.
+          {t("tokensSection.apiAuthDescription")}
         </div>
         <CodeBlock>{`$ export AGENTIC_API_TOKEN='ao_live_…'
 $ curl http://localhost:3501/v1/agents \\

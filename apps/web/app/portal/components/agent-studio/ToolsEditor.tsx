@@ -2,9 +2,11 @@
 
 import { useMemo, useState } from "react";
 import { Badge, Button, Empty, SearchInput } from "@/app/portal/components";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 import { useTools } from "@/lib/hooks/useTools";
 import { InlineNotice, JsonValueEditor } from "./fields";
 import type { StudioToolBinding } from "./model";
+import { studioUi } from "./copy";
 
 export function ToolsEditor({
   tools,
@@ -15,6 +17,7 @@ export function ToolsEditor({
   onChange: (tools: StudioToolBinding[]) => void;
   disabled?: boolean;
 }) {
+  const { t } = useI18n();
   const catalog = useTools();
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState(tools[0]?.name ?? "");
@@ -33,11 +36,16 @@ export function ToolsEditor({
 
   return (
     <div style={{ display: "grid", gap: 12 }}>
-      <InlineNotice tone="blue" title="Tools let an agent take actions">
-        Search the catalog, then choose <strong>Allow tool</strong> only for
-        actions this agent genuinely needs. Allowing a tool gives the model
-        permission to call it; removing it immediately blocks future calls after
-        publishing.
+      <InlineNotice
+        tone="blue"
+        title={studioUi(t, "Tools let an agent take actions")}
+      >
+        {studioUi(t, "Search the catalog, then choose")}{" "}
+        <strong>{studioUi(t, "Allow tool")}</strong>{" "}
+        {studioUi(
+          t,
+          "only for actions this agent genuinely needs. Allowing a tool gives the model permission to call it; removing it immediately blocks future calls after publishing.",
+        )}
       </InlineNotice>
       <div
         className="agent-studio-tools-grid"
@@ -56,7 +64,10 @@ export function ToolsEditor({
             <SearchInput
               value={query}
               onChange={setQuery}
-              placeholder="Search by action, such as email or file…"
+              placeholder={studioUi(
+                t,
+                "Search by action, such as email or file…",
+              )}
             />
           </div>
           <div
@@ -67,14 +78,16 @@ export function ToolsEditor({
               lineHeight: 1.5,
             }}
           >
-            The catalog description tells you what each tool can do. “Allowed”
-            tools appear on the right.
+            {studioUi(
+              t,
+              "The catalog description tells you what each tool can do. “Allowed” tools appear on the right.",
+            )}
           </div>
           {catalog.isLoading ? (
-            <Empty title="Loading tools…" />
+            <Empty title={studioUi(t, "Loading tools…")} />
           ) : catalog.isError ? (
             <Empty
-              title="Tool catalog unavailable"
+              title={studioUi(t, "Tool catalog unavailable")}
               hint={catalog.error.message}
             />
           ) : (
@@ -151,7 +164,9 @@ export function ToolsEditor({
                           }
                         }}
                       >
-                        {enabled ? "Remove permission" : "Allow tool"}
+                        {enabled
+                          ? studioUi(t, "Remove permission")
+                          : studioUi(t, "Allow tool")}
                       </Button>
                     </div>
                   </div>
@@ -163,8 +178,11 @@ export function ToolsEditor({
         <div>
           {!binding ? (
             <Empty
-              title="No tools allowed"
-              hint="Choose tools from the catalog. The allow-list is the agent's trust boundary."
+              title={studioUi(t, "No tools allowed")}
+              hint={studioUi(
+                t,
+                "Choose tools from the catalog. The allow-list is the agent's trust boundary.",
+              )}
             />
           ) : (
             <div style={{ display: "grid", gap: 14 }}>
@@ -184,7 +202,7 @@ export function ToolsEditor({
                   >
                     {binding.name}
                   </h3>
-                  <Badge tone="green">Allowed</Badge>
+                  <Badge tone="green">{studioUi(t, "Allowed")}</Badge>
                   {meta && <Badge tone="muted">{meta.category}</Badge>}
                 </div>
                 <p
@@ -209,8 +227,11 @@ export function ToolsEditor({
                   )
                 }
                 height={220}
-                label="Tool settings"
-                hint="Optional settings that apply whenever this agent uses the tool. Use only the keys listed below. Reference environment-variable names for credentials; never paste secret values here."
+                label={studioUi(t, "Tool settings")}
+                hint={studioUi(
+                  t,
+                  "Optional settings that apply whenever this agent uses the tool. Use only the keys listed below. Reference environment-variable names for credentials; never paste secret values here.",
+                )}
                 example={'{"subdir":"support-archive"}'}
                 readOnly={disabled}
               />
@@ -232,7 +253,7 @@ export function ToolsEditor({
                       marginBottom: 7,
                     }}
                   >
-                    CONFIG KEYS
+                    {studioUi(t, "CONFIG KEYS")}
                   </div>
                   {Object.entries(meta.configSchema).map(([name, field]) => (
                     <div

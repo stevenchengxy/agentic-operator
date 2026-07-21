@@ -14,6 +14,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 export type BrainEvent = { t: string; [k: string]: unknown };
+export type BrainStreamError =
+  | "missingRunId"
+  | "runUnresponsive"
+  | "connectionInterrupted";
 
 export interface BrainStreamRequest {
   tenant: string;
@@ -30,13 +34,16 @@ export interface UseBrainStreamResult {
   events: BrainEvent[];
   running: boolean;
   runId: string | null;
-  error: string | null;
+  error: BrainStreamError | null;
 }
 
-export const activeRunKey = (tenant: string) => `ao:factory:activeRun:${tenant}`;
+export const activeRunKey = (tenant: string) =>
+  `ao:factory:activeRun:${tenant}`;
 
 /** Full effect identity: any changed request must close/re-open the SSE. */
-export function brainStreamRequestKey(req: BrainStreamRequest | null): string | null {
+export function brainStreamRequestKey(
+  req: BrainStreamRequest | null,
+): string | null {
   return req
     ? JSON.stringify([
         req.tenant,
@@ -53,28 +60,39 @@ export function brainStreamRequestKey(req: BrainStreamRequest | null): string | 
  * same view, while a tenant switch can never reuse another tenant's buffered
  * events even if its conversation id happens to be identical.
  */
-export function brainStreamViewKey(req: BrainStreamRequest | null): string | null {
+export function brainStreamViewKey(
+  req: BrainStreamRequest | null,
+): string | null {
   if (!req) return null;
   if (req.replayMode !== "append") {
-    return JSON.stringify([req.tenant, "replace", req.reconnectRunId, req.nonce]);
+    return JSON.stringify([
+      req.tenant,
+      "replace",
+      req.reconnectRunId,
+      req.nonce,
+    ]);
   }
-  return JSON.stringify([
-    req.tenant,
-    req.conversation ?? req.reconnectRunId,
-  ]);
+  return JSON.stringify([req.tenant, req.conversation ?? req.reconnectRunId]);
 }
 
-export function shouldAppendBrainReplay(previousConversation: string | null, req: BrainStreamRequest): boolean {
-  return req.replayMode === "append"
-    && !!req.conversation
-    && req.conversation === previousConversation;
+export function shouldAppendBrainReplay(
+  previousConversation: string | null,
+  req: BrainStreamRequest,
+): boolean {
+  return (
+    req.replayMode === "append" &&
+    !!req.conversation &&
+    req.conversation === previousConversation
+  );
 }
 
-export function useBrainStream(req: BrainStreamRequest | null): UseBrainStreamResult {
+export function useBrainStream(
+  req: BrainStreamRequest | null,
+): UseBrainStreamResult {
   const [events, setEvents] = useState<BrainEvent[]>([]);
   const [running, setRunning] = useState(false);
   const [runId, setRunId] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<BrainStreamError | null>(null);
   const [activeViewKey, setActiveViewKey] = useState<string | null>(null);
   const esRef = useRef<EventSource | null>(null);
   const generationRef = useRef(0);
@@ -105,13 +123,21 @@ export function useBrainStream(req: BrainStreamRequest | null): UseBrainStreamRe
     // must wipe the prior conversation's events — otherwise the old transcript lingers and it looks
     // like a new conversation never started. (A history run sets `viewingRun`, which bypasses these
     // live events, so clearing here is safe.)
-    if (!req) { setActiveViewKey(null); setEvents([]); setRunning(false); setRunId(null); setError(null); lastConvRef.current = null; return; }
+    if (!req) {
+      setActiveViewKey(null);
+      setEvents([]);
+      setRunning(false);
+      setRunId(null);
+      setError(null);
+      lastConvRef.current = null;
+      return;
+    }
     if (!req.reconnectRunId.trim()) {
       setActiveViewKey(null);
       setEvents([]);
       setRunning(false);
       setRunId(null);
-      setError("无法连接 Agent 工厂：缺少服务端运行 ID。");
+      setError("missingRunId");
       return;
     }
     // A `started` POST with an existing, finished conversation creates a new turn; its SSE
@@ -127,7 +153,9 @@ export function useBrainStream(req: BrainStreamRequest | null): UseBrainStreamRe
 
     const qs = new URLSearchParams({ tenant: req.tenant });
     qs.set("run", req.reconnectRunId);
-    const es = new EventSource(`/factory-stream?${qs.toString()}`, { withCredentials: true });
+    const es = new EventSource(`/factory-stream?${qs.toString()}`, {
+      withCredentials: true,
+    });
     esRef.current = es;
 
     // SILENCE WATCHDOG — a reconnect can attach to a ZOMBIE run (in the live registry but its driver
@@ -147,7 +175,7 @@ export function useBrainStream(req: BrainStreamRequest | null): UseBrainStreamRe
         if (!isCurrentGeneration()) return;
         setRunning(false);
         persistActive(req.tenant, null);
-        setError("该运行已无响应（可能是之前中断的运行）——已解锁，可重新开始。");
+        setError("runUnresponsive");
         es.close();
       }, SILENCE_MS);
     };
@@ -179,7 +207,9 @@ export function useBrainStream(req: BrainStreamRequest | null): UseBrainStreamRe
         setEvents((prev) => {
           if (prev.length <= 4000) return [...prev, ev];
           const cut = prev.length - 3000;
-          const head = prev.slice(0, cut).filter((e) => e.t !== "think" && e.t !== "model");
+          const head = prev
+            .slice(0, cut)
+            .filter((e) => e.t !== "think" && e.t !== "model");
           return [...head, ...prev.slice(cut), ev];
         });
       } catch {
@@ -199,7 +229,7 @@ export function useBrainStream(req: BrainStreamRequest | null): UseBrainStreamRe
       // #AUDIT-FIX(L26) — 连接断开≠运行结束：服务器端 run 往往还在继续。旧行为静默把 UI 置为
       // "已结束"且无任何提示（残缺 transcript 被当成完整结果）。现在如实告知 + 指引重连。
       setRunning(false);
-      setError("连接中断——服务器端运行可能仍在继续。刷新页面或重新打开本会话即可重连并回放完整过程。");
+      setError("connectionInterrupted");
     };
 
     return () => {

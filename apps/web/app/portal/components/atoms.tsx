@@ -27,7 +27,11 @@ const BADGE_TONES: Record<
   BadgeTone,
   { bg: string; fg: string; border: string }
 > = {
-  default: { bg: "transparent", fg: "var(--text-2)", border: "var(--border-2)" },
+  default: {
+    bg: "transparent",
+    fg: "var(--text-2)",
+    border: "var(--border-2)",
+  },
   signal: {
     bg: "color-mix(in srgb, var(--signal) 8%, transparent)",
     fg: "var(--accent-text)",
@@ -59,7 +63,11 @@ const BADGE_TONES: Record<
     border: "color-mix(in srgb, var(--violet) 30%, transparent)",
   },
   muted: { bg: "var(--panel-2)", fg: "var(--text-3)", border: "var(--border)" },
-  solid: { bg: "var(--signal)", fg: "var(--on-signal)", border: "var(--signal)" },
+  solid: {
+    bg: "var(--signal)",
+    fg: "var(--on-signal)",
+    border: "var(--signal)",
+  },
 };
 
 export interface BadgeProps {
@@ -105,21 +113,27 @@ export type { BadgeTone };
 
 export interface ActorTagProps {
   actor: "Agent" | "Human";
+  label?: ReactNode;
   /** v1_1 accepts a `compact` prop but never reads it. Kept for parity. */
   compact?: boolean;
 }
 
-export function ActorTag({ actor }: ActorTagProps) {
+export function ActorTag({ actor, label }: ActorTagProps) {
   if (actor === "Agent") {
     return (
-      <Badge tone="signal" style={{ background: "color-mix(in srgb, var(--signal) 6%, transparent)" }}>
-        <Icon name="dot" size={6} /> AGENT
+      <Badge
+        tone="signal"
+        style={{
+          background: "color-mix(in srgb, var(--signal) 6%, transparent)",
+        }}
+      >
+        <Icon name="dot" size={6} /> {label ?? "AGENT"}
       </Badge>
     );
   }
   return (
     <Badge tone="violet">
-      <Icon name="human" size={9} /> HUMAN
+      <Icon name="human" size={9} /> {label ?? "HUMAN"}
     </Badge>
   );
 }
@@ -151,14 +165,17 @@ const STATUS_MAP: Record<
 export interface StatusDotProps {
   status: StatusName;
   size?: number;
+  /** Localized accessible name; omit when adjacent text already names the status. */
+  label?: string;
 }
 
-export function StatusDot({ status, size = 7 }: StatusDotProps) {
+export function StatusDot({ status, size = 7, label }: StatusDotProps) {
   const s = STATUS_MAP[status] || STATUS_MAP.idle;
   return (
     <span
-      role="status"
-      aria-label={status}
+      role={label ? "status" : undefined}
+      aria-label={label}
+      aria-hidden={label ? undefined : "true"}
       style={{
         display: "inline-block",
         width: size,

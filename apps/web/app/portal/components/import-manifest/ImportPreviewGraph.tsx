@@ -62,7 +62,10 @@ export interface ImportPreviewGraphProps {
   diff?: ManifestDiff | null;
 }
 
-export function ImportPreviewGraph({ manifest, diff }: ImportPreviewGraphProps) {
+export function ImportPreviewGraph({
+  manifest,
+  diff,
+}: ImportPreviewGraphProps) {
   const { t } = useI18n();
   const agents = useMemo(() => normalizeManifest(manifest), [manifest]);
   const stages = useMemo(() => computeStages(agents), [agents]);
@@ -113,7 +116,8 @@ export function ImportPreviewGraph({ manifest, diff }: ImportPreviewGraphProps) 
       src.emits.forEach((ev) => {
         const dsts = listeners.get(ev) ?? [];
         dsts.forEach((dstId) => {
-          if (dstId !== src.id) out.push({ src: src.id, dst: dstId, event: ev });
+          if (dstId !== src.id)
+            out.push({ src: src.id, dst: dstId, event: ev });
         });
       });
     });
@@ -295,9 +299,7 @@ export function ImportPreviewGraph({ manifest, diff }: ImportPreviewGraphProps) 
             <g
               key={a.id}
               onMouseEnter={() => setHovered(a.id)}
-              onMouseLeave={() =>
-                setHovered((h) => (h === a.id ? null : h))
-              }
+              onMouseLeave={() => setHovered((h) => (h === a.id ? null : h))}
               style={{
                 cursor: "default",
                 opacity: isHi ? 1 : 0.3,
@@ -343,7 +345,9 @@ export function ImportPreviewGraph({ manifest, diff }: ImportPreviewGraphProps) 
                 fontSize="9.5"
                 fontFamily="var(--mono)"
               >
-                {a.actor === "Human" ? "HUMAN" : "AGENT"}
+                {a.actor === "Human"
+                  ? t("common.actorHuman")
+                  : t("common.actorAgent")}
                 {klass ? ` · ${klass.toUpperCase()}` : ""}
               </text>
             </g>
@@ -361,7 +365,7 @@ function normalizeManifest(raw: unknown): NormalizedAgent[] {
   const list: RawAgent[] = Array.isArray(raw)
     ? (raw as RawAgent[])
     : Array.isArray((raw as { agents?: RawAgent[] }).agents)
-      ? ((raw as { agents: RawAgent[] }).agents)
+      ? (raw as { agents: RawAgent[] }).agents
       : [];
   return list.map((a, idx) => {
     const id = String(a.id ?? a.kebab_id ?? a.kebabId ?? idx);

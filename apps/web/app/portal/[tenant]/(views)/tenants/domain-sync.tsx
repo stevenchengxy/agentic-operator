@@ -9,16 +9,12 @@
  */
 
 import { Icon, Panel } from "@/app/portal/components";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 import { domainLabel } from "@/lib/domain-display";
 import { useAgentFactoryDomains } from "@/lib/hooks/useAgentFactoryDomains";
 
-const SOURCE_LABEL = {
-  explicit: "人工连接",
-  auto: "迁移确认",
-  upload: "上传本体",
-} as const;
-
 export function DomainSyncPanel({ activeTenant }: { activeTenant: string }) {
+  const { t } = useI18n();
   const query = useAgentFactoryDomains(activeTenant);
   const binding = query.data?.binding ?? null;
   const boundDomain = query.data?.boundDomain ?? null;
@@ -27,7 +23,7 @@ export function DomainSyncPanel({ activeTenant }: { activeTenant: string }) {
   if (query.isLoading) return null;
 
   return (
-    <Panel title="运行领域 ↔ 本体连接">
+    <Panel title={t("tenants.domainSync.panelTitle")}>
       <div
         style={{
           padding: 12,
@@ -38,35 +34,52 @@ export function DomainSyncPanel({ activeTenant }: { activeTenant: string }) {
           fontSize: 12,
         }}
       >
-        <Identity label="运行领域（租户）" value={activeTenant} />
+        <Identity
+          label={t("tenants.domainSync.runtimeDomainLabel")}
+          value={activeTenant}
+        />
         <Icon name="chevron-right" size={13} />
 
         {query.isError ? (
-          <span style={{ color: "var(--red)" }}>无法读取本体连接：{(query.error as Error).message}</span>
+          <span style={{ color: "var(--red)" }}>
+            {t("tenants.domainSync.readError", {
+              message: (query.error as Error).message,
+            })}
+          </span>
         ) : binding && boundDomain ? (
           <>
             <Identity
-              label="已连接本体"
+              label={t("tenants.domainSync.connectedLabel")}
               value={domainLabel(boundDomain)}
-              detail={`${boundDomain.id} · ${SOURCE_LABEL[binding.source]}`}
+              detail={`${boundDomain.id} · ${t(`tenants.domainSync.source.${binding.source}`)}`}
             />
-            <a href={factoryHref} style={linkStyle}>查看或更换连接</a>
+            <a href={factoryHref} style={linkStyle}>
+              {t("tenants.domainSync.viewOrChange")}
+            </a>
           </>
         ) : binding ? (
           <>
             <Identity
-              label="连接不可用"
+              label={t("tenants.domainSync.unavailableLabel")}
               value={binding.ontologyDomainName || binding.ontologyDomainId}
               detail={binding.ontologyDomainId}
               tone="red"
             />
-            <span style={{ color: "var(--red)" }}>目录中已找不到该本体，工厂已停止执行。</span>
-            <a href={factoryHref} style={linkStyle}>重新连接</a>
+            <span style={{ color: "var(--red)" }}>
+              {t("tenants.domainSync.missingOntology")}
+            </span>
+            <a href={factoryHref} style={linkStyle}>
+              {t("tenants.domainSync.reconnect")}
+            </a>
           </>
         ) : (
           <>
-            <span style={{ color: "var(--amber)" }}>尚未连接本体；该租户仍然有效，但 Agent 工厂不会猜测一个本体。</span>
-            <a href={factoryHref} style={linkStyle}>去 Agent 工厂连接</a>
+            <span style={{ color: "var(--amber)" }}>
+              {t("tenants.domainSync.notConnected")}
+            </span>
+            <a href={factoryHref} style={linkStyle}>
+              {t("tenants.domainSync.goToFactory")}
+            </a>
           </>
         )}
       </div>

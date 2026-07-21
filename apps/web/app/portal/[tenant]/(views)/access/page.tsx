@@ -32,6 +32,7 @@ import {
   useUpdateMemberRole,
   useUpdateUser,
 } from "@/lib/hooks/useAccess";
+import { formatApiError } from "@/lib/api-response";
 
 const ROLES: TenantRole[] = ["admin", "operator", "viewer"];
 
@@ -66,7 +67,7 @@ export default function AccessPage() {
         <ViewHeader title={t("nav.access")} subtitle={t("access.subtitle")} />
         <Empty
           title={t("access.loadFailed")}
-          hint={meQuery.error instanceof Error ? meQuery.error.message : t("access.apiUnreachable")}
+          hint={formatApiError(meQuery.error, t, "access.apiUnreachable")}
         />
       </div>
     );
@@ -76,8 +77,18 @@ export default function AccessPage() {
     return (
       <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
         <ViewHeader title={t("nav.access")} subtitle={t("access.subtitle")} />
-        <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
-          <Empty title={t("access.noAccessTitle")} hint={t("access.noAccessHint")} />
+        <div
+          style={{
+            flex: 1,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          <Empty
+            title={t("access.noAccessTitle")}
+            hint={t("access.noAccessHint")}
+          />
         </div>
       </div>
     );
@@ -92,7 +103,12 @@ export default function AccessPage() {
         subtitle={t("access.subtitle")}
         action={
           activeTab === "members" && canManage ? (
-            <Button tone="primary" small icon="plus" onClick={() => setAddOpen(true)}>
+            <Button
+              tone="primary"
+              small
+              icon="plus"
+              onClick={() => setAddOpen(true)}
+            >
               {t("access.addMember")}
             </Button>
           ) : null
@@ -108,10 +124,16 @@ export default function AccessPage() {
             borderBottom: "1px solid var(--border)",
           }}
         >
-          <TabButton active={activeTab === "members"} onClick={() => setTab("members")}>
+          <TabButton
+            active={activeTab === "members"}
+            onClick={() => setTab("members")}
+          >
             {t("access.tabMembers")}
           </TabButton>
-          <TabButton active={activeTab === "users"} onClick={() => setTab("users")}>
+          <TabButton
+            active={activeTab === "users"}
+            onClick={() => setTab("users")}
+          >
             {t("access.tabAllUsers")}
           </TabButton>
         </div>
@@ -161,8 +183,14 @@ function TabButton({
 
 // ─── Members (tenant-scoped) ─────────────────────────────────────────────────
 
-function MembersView({ canManage, selfId }: { canManage: boolean; selfId: string | null }) {
-  const { t } = useI18n();
+function MembersView({
+  canManage,
+  selfId,
+}: {
+  canManage: boolean;
+  selfId: string | null;
+}) {
+  const { language, t } = useI18n();
   const { data: members, isLoading, isError, error } = useMembers(true);
   const updateRole = useUpdateMemberRole();
   const removeMember = useRemoveMember();
@@ -171,21 +199,37 @@ function MembersView({ canManage, selfId }: { canManage: boolean; selfId: string
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return (members ?? []).filter(
-      (m) => !q || m.email.toLowerCase().includes(q) || m.name.toLowerCase().includes(q),
+      (m) =>
+        !q ||
+        m.email.toLowerCase().includes(q) ||
+        m.name.toLowerCase().includes(q),
     );
   }, [members, query]);
-  const adminCount = (members ?? []).filter((member) => member.role === "admin").length;
+  const adminCount = (members ?? []).filter(
+    (member) => member.role === "admin",
+  ).length;
 
-  if (isError) return <Empty title={t("access.loadFailed")} hint={error instanceof Error ? error.message : t("access.apiUnreachable")} />;
+  if (isError)
+    return (
+      <Empty
+        title={t("access.loadFailed")}
+        hint={formatApiError(error, t, "access.apiUnreachable")}
+      />
+    );
   if (isLoading) return <Empty title={t("access.loading")} />;
-  if (!members || members.length === 0) return <Empty title={t("access.emptyMembers")} />;
+  if (!members || members.length === 0)
+    return <Empty title={t("access.emptyMembers")} />;
 
   async function onRole(m: MemberRow, role: TenantRole) {
     try {
       await updateRole.mutateAsync({ userId: m.userId, role });
       toast({ tone: "signal", title: t("access.toastRoleChanged") });
     } catch (e) {
-      toast({ tone: "red", title: t("access.toastFailed"), description: (e as Error).message });
+      toast({
+        tone: "red",
+        title: t("access.toastFailed"),
+        description: formatApiError(e, t, "access.apiUnreachable"),
+      });
     }
   }
   async function onRemove(m: MemberRow) {
@@ -194,14 +238,29 @@ function MembersView({ canManage, selfId }: { canManage: boolean; selfId: string
       await removeMember.mutateAsync(m.userId);
       toast({ tone: "signal", title: t("access.toastMemberRemoved") });
     } catch (e) {
-      toast({ tone: "red", title: t("access.toastFailed"), description: (e as Error).message });
+      toast({
+        tone: "red",
+        title: t("access.toastFailed"),
+        description: formatApiError(e, t, "access.apiUnreachable"),
+      });
     }
   }
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-      <SearchBox value={query} onChange={setQuery} placeholder={t("access.searchPlaceholder")} />
-      <Table head={[t("access.colMember"), t("access.colRole"), t("access.colJoined"), ""]}>
+      <SearchBox
+        value={query}
+        onChange={setQuery}
+        placeholder={t("access.searchPlaceholder")}
+      />
+      <Table
+        head={[
+          t("access.colMember"),
+          t("access.colRole"),
+          t("access.colJoined"),
+          "",
+        ]}
+      >
         {filtered.map((m) => {
           const isSelf = m.userId === selfId;
           const isLastAdmin = m.role === "admin" && adminCount <= 1;
@@ -211,37 +270,39 @@ function MembersView({ canManage, selfId }: { canManage: boolean; selfId: string
               ? t("access.lastAdminProtected")
               : undefined;
           return (
-          <tr key={m.userId} style={{ borderTop: "1px solid var(--border)" }}>
-            <Cell>
-              <MemberCell name={m.name} email={m.email} isSelf={isSelf} />
-            </Cell>
-            <Cell>
-              {canManage ? (
-                <RoleSelect
-                  value={m.role}
-                  onChange={(r) => onRole(m, r)}
-                  disabled={updateRole.isPending || Boolean(protectedReason)}
-                  title={protectedReason}
-                />
-              ) : (
-                <Badge tone="muted">{roleLabel(t, m.role)}</Badge>
-              )}
-            </Cell>
-            <Cell muted>{fmtDate(m.createdAt)}</Cell>
-            <Cell align="right">
-              {canManage ? (
-                <Button
-                  tone="danger"
-                  small
-                  onClick={() => onRemove(m)}
-                  disabled={removeMember.isPending || Boolean(protectedReason)}
-                  title={protectedReason}
-                >
-                  {t("access.remove")}
-                </Button>
-              ) : null}
-            </Cell>
-          </tr>
+            <tr key={m.userId} style={{ borderTop: "1px solid var(--border)" }}>
+              <Cell>
+                <MemberCell name={m.name} email={m.email} isSelf={isSelf} />
+              </Cell>
+              <Cell>
+                {canManage ? (
+                  <RoleSelect
+                    value={m.role}
+                    onChange={(r) => onRole(m, r)}
+                    disabled={updateRole.isPending || Boolean(protectedReason)}
+                    title={protectedReason}
+                  />
+                ) : (
+                  <Badge tone="muted">{roleLabel(t, m.role)}</Badge>
+                )}
+              </Cell>
+              <Cell muted>{fmtDate(m.createdAt, language)}</Cell>
+              <Cell align="right">
+                {canManage ? (
+                  <Button
+                    tone="danger"
+                    small
+                    onClick={() => onRemove(m)}
+                    disabled={
+                      removeMember.isPending || Boolean(protectedReason)
+                    }
+                    title={protectedReason}
+                  >
+                    {t("access.remove")}
+                  </Button>
+                ) : null}
+              </Cell>
+            </tr>
           );
         })}
       </Table>
@@ -263,13 +324,15 @@ function AddMemberModal({ onClose }: { onClose: () => void }) {
       toast({ tone: "signal", title: t("access.toastMemberAdded") });
       onClose();
     } catch (e) {
-      setError((e as Error).message);
+      setError(formatApiError(e, t, "access.apiUnreachable"));
     }
   }
 
   return (
     <Modal title={t("access.addMemberTitle")} onClose={onClose}>
-      <p style={{ fontSize: 12, color: "var(--text-3)", marginTop: 0 }}>{t("access.addMemberHint")}</p>
+      <p style={{ fontSize: 12, color: "var(--text-3)", marginTop: 0 }}>
+        {t("access.addMemberHint")}
+      </p>
       <LabeledInput
         label={t("access.emailLabel")}
         value={email}
@@ -277,17 +340,33 @@ function AddMemberModal({ onClose }: { onClose: () => void }) {
         placeholder={t("access.emailPlaceholder")}
         type="email"
       />
-      <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 12 }}>
-        <span style={{ fontSize: 11.5, color: "var(--text-2)" }}>{t("access.roleLabel")}</span>
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          gap: 6,
+          marginTop: 12,
+        }}
+      >
+        <span style={{ fontSize: 11.5, color: "var(--text-2)" }}>
+          {t("access.roleLabel")}
+        </span>
         <RoleSelect value={role} onChange={setRole} />
-        <span style={{ fontSize: 11, color: "var(--text-4)" }}>{t(`access.roleHint${role[0]!.toUpperCase()}${role.slice(1)}`)}</span>
+        <span style={{ fontSize: 11, color: "var(--text-4)" }}>
+          {t(`access.roleHint${role[0]!.toUpperCase()}${role.slice(1)}`)}
+        </span>
       </div>
       {error ? <ErrorNote text={error} /> : null}
       <ModalActions>
         <Button tone="ghost" small onClick={onClose}>
           {t("access.cancel")}
         </Button>
-        <Button tone="primary" small onClick={submit} disabled={addMember.isPending || !email}>
+        <Button
+          tone="primary"
+          small
+          onClick={submit}
+          disabled={addMember.isPending || !email}
+        >
           {addMember.isPending ? t("access.adding") : t("access.add")}
         </Button>
       </ModalActions>
@@ -308,39 +387,72 @@ function AllUsersView({ selfId }: { selfId: string | null }) {
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return (users ?? []).filter(
-      (u) => !q || u.email.toLowerCase().includes(q) || u.name.toLowerCase().includes(q),
+      (u) =>
+        !q ||
+        u.email.toLowerCase().includes(q) ||
+        u.name.toLowerCase().includes(q),
     );
   }, [users, query]);
   const superadminCount = (users ?? []).filter(
     (user) => user.platformRole === "superadmin",
   ).length;
 
-  if (isError) return <Empty title={t("access.loadFailed")} hint={error instanceof Error ? error.message : t("access.apiUnreachable")} />;
+  if (isError)
+    return (
+      <Empty
+        title={t("access.loadFailed")}
+        hint={formatApiError(error, t, "access.apiUnreachable")}
+      />
+    );
   if (isLoading) return <Empty title={t("access.loading")} />;
-  if (!users || users.length === 0) return <Empty title={t("access.emptyUsers")} />;
+  if (!users || users.length === 0)
+    return <Empty title={t("access.emptyUsers")} />;
 
-  async function patch(u: AdminUserRow, body: { platformRole?: "none" | "superadmin"; status?: "active" | "suspended" }) {
+  async function patch(
+    u: AdminUserRow,
+    body: {
+      platformRole?: "none" | "superadmin";
+      status?: "active" | "suspended";
+    },
+  ) {
     try {
       await updateUser.mutateAsync({ userId: u.id, ...body });
       toast({ tone: "signal", title: t("access.toastUserUpdated") });
     } catch (e) {
-      toast({ tone: "red", title: t("access.toastFailed"), description: (e as Error).message });
+      toast({
+        tone: "red",
+        title: t("access.toastFailed"),
+        description: formatApiError(e, t, "access.apiUnreachable"),
+      });
     }
   }
 
   async function onDelete(u: AdminUserRow) {
-    if (!window.confirm(t("access.deleteUserConfirm", { name: u.name, email: u.email }))) return;
+    if (
+      !window.confirm(
+        t("access.deleteUserConfirm", { name: u.name, email: u.email }),
+      )
+    )
+      return;
     try {
       await deleteUser.mutateAsync(u.id);
       toast({ tone: "signal", title: t("access.toastUserDeleted") });
     } catch (e) {
-      toast({ tone: "red", title: t("access.toastFailed"), description: (e as Error).message });
+      toast({
+        tone: "red",
+        title: t("access.toastFailed"),
+        description: formatApiError(e, t, "access.apiUnreachable"),
+      });
     }
   }
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-      <SearchBox value={query} onChange={setQuery} placeholder={t("access.searchPlaceholder")} />
+      <SearchBox
+        value={query}
+        onChange={setQuery}
+        placeholder={t("access.searchPlaceholder")}
+      />
       <Table
         head={[
           t("access.colMember"),
@@ -360,88 +472,109 @@ function AllUsersView({ selfId }: { selfId: string | null }) {
               ? t("access.lastSuperadminProtected")
               : undefined;
           return (
-          <tr key={u.id} style={{ borderTop: "1px solid var(--border)" }}>
-            <Cell>
-              <MemberCell name={u.name} email={u.email} isSelf={u.id === selfId} />
-            </Cell>
-            <Cell>
-              {u.platformRole === "superadmin" ? (
-                <Badge tone="signal">{t("access.platformSuperadmin")}</Badge>
-              ) : (
-                <span style={{ color: "var(--text-4)", fontSize: 12 }}>{t("access.platformNone")}</span>
-              )}
-            </Cell>
-            <Cell>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-                {u.memberships.length === 0 ? (
-                  <span style={{ color: "var(--text-4)", fontSize: 11.5 }}>{t("access.notMember")}</span>
+            <tr key={u.id} style={{ borderTop: "1px solid var(--border)" }}>
+              <Cell>
+                <MemberCell
+                  name={u.name}
+                  email={u.email}
+                  isSelf={u.id === selfId}
+                />
+              </Cell>
+              <Cell>
+                {u.platformRole === "superadmin" ? (
+                  <Badge tone="signal">{t("access.platformSuperadmin")}</Badge>
                 ) : (
-                  u.memberships.map((m) => (
-                    <span
-                      key={m.tenantSlug}
-                      title={`${m.tenantName} · ${m.role}`}
-                      style={{
-                        fontSize: 10.5,
-                        fontFamily: "var(--mono)",
-                        padding: "2px 6px",
-                        borderRadius: 4,
-                        background: "var(--panel-2)",
-                        border: "1px solid var(--border)",
-                        color: "var(--text-2)",
-                      }}
-                    >
-                      {m.tenantSlug}:{m.role}
-                    </span>
-                  ))
+                  <span style={{ color: "var(--text-4)", fontSize: 12 }}>
+                    {t("access.platformNone")}
+                  </span>
                 )}
-              </div>
-            </Cell>
-            <Cell>
-              <Badge tone={u.status === "active" ? "green" : "muted"}>
-                {t(u.status === "active" ? "access.statusActive" : "access.statusSuspended")}
-              </Badge>
-            </Cell>
-            <Cell align="right">
-              <div style={{ display: "inline-flex", gap: 6 }}>
-                <Button tone="default" small onClick={() => setManage(u)}>
-                  {t("access.manageMemberships")}
-                </Button>
-                <Button
-                  tone="default"
-                  small
-                  disabled={updateUser.isPending || Boolean(platformRoleLock)}
-                  title={platformRoleLock}
-                  onClick={() =>
-                    patch(u, {
-                      platformRole: u.platformRole === "superadmin" ? "none" : "superadmin",
-                    })
-                  }
-                >
-                  {u.platformRole === "superadmin"
-                    ? t("access.demoteSuperadmin")
-                    : t("access.promoteSuperadmin")}
-                </Button>
-                <Button
-                  tone={u.status === "active" ? "danger" : "default"}
-                  small
-                  disabled={updateUser.isPending || isSelf}
-                  title={isSelf ? t("access.selfProtected") : undefined}
-                  onClick={() => patch(u, { status: u.status === "active" ? "suspended" : "active" })}
-                >
-                  {u.status === "active" ? t("access.suspend") : t("access.activate")}
-                </Button>
-                <Button
-                  tone="danger"
-                  small
-                  disabled={deleteUser.isPending || isSelf}
-                  title={isSelf ? t("access.selfProtected") : undefined}
-                  onClick={() => onDelete(u)}
-                >
-                  {t("access.deleteUser")}
-                </Button>
-              </div>
-            </Cell>
-          </tr>
+              </Cell>
+              <Cell>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                  {u.memberships.length === 0 ? (
+                    <span style={{ color: "var(--text-4)", fontSize: 11.5 }}>
+                      {t("access.notMember")}
+                    </span>
+                  ) : (
+                    u.memberships.map((m) => (
+                      <span
+                        key={m.tenantSlug}
+                        title={`${m.tenantName} · ${m.role}`}
+                        style={{
+                          fontSize: 10.5,
+                          fontFamily: "var(--mono)",
+                          padding: "2px 6px",
+                          borderRadius: 4,
+                          background: "var(--panel-2)",
+                          border: "1px solid var(--border)",
+                          color: "var(--text-2)",
+                        }}
+                      >
+                        {m.tenantSlug}:{m.role}
+                      </span>
+                    ))
+                  )}
+                </div>
+              </Cell>
+              <Cell>
+                <Badge tone={u.status === "active" ? "green" : "muted"}>
+                  {t(
+                    u.status === "active"
+                      ? "access.statusActive"
+                      : "access.statusSuspended",
+                  )}
+                </Badge>
+              </Cell>
+              <Cell align="right">
+                <div style={{ display: "inline-flex", gap: 6 }}>
+                  <Button tone="default" small onClick={() => setManage(u)}>
+                    {t("access.manageMemberships")}
+                  </Button>
+                  <Button
+                    tone="default"
+                    small
+                    disabled={updateUser.isPending || Boolean(platformRoleLock)}
+                    title={platformRoleLock}
+                    onClick={() =>
+                      patch(u, {
+                        platformRole:
+                          u.platformRole === "superadmin"
+                            ? "none"
+                            : "superadmin",
+                      })
+                    }
+                  >
+                    {u.platformRole === "superadmin"
+                      ? t("access.demoteSuperadmin")
+                      : t("access.promoteSuperadmin")}
+                  </Button>
+                  <Button
+                    tone={u.status === "active" ? "danger" : "default"}
+                    small
+                    disabled={updateUser.isPending || isSelf}
+                    title={isSelf ? t("access.selfProtected") : undefined}
+                    onClick={() =>
+                      patch(u, {
+                        status: u.status === "active" ? "suspended" : "active",
+                      })
+                    }
+                  >
+                    {u.status === "active"
+                      ? t("access.suspend")
+                      : t("access.activate")}
+                  </Button>
+                  <Button
+                    tone="danger"
+                    small
+                    disabled={deleteUser.isPending || isSelf}
+                    title={isSelf ? t("access.selfProtected") : undefined}
+                    onClick={() => onDelete(u)}
+                  >
+                    {t("access.deleteUser")}
+                  </Button>
+                </div>
+              </Cell>
+            </tr>
           );
         })}
       </Table>
@@ -477,7 +610,9 @@ function ManageMembershipsModal({
 
   // Re-read the live row so the list updates after grant/revoke without closing.
   const current = liveUsers?.find((u) => u.id === user.id) ?? user;
-  const tenantOptions = (tenantsData?.items ?? []).filter((tn) => tn.archivedAt == null);
+  const tenantOptions = (tenantsData?.items ?? []).filter(
+    (tn) => tn.archivedAt == null,
+  );
 
   async function onGrant() {
     if (!tenantSlug) return;
@@ -486,7 +621,11 @@ function ManageMembershipsModal({
       toast({ tone: "signal", title: t("access.toastUserUpdated") });
       setTenantSlug("");
     } catch (e) {
-      toast({ tone: "red", title: t("access.toastFailed"), description: (e as Error).message });
+      toast({
+        tone: "red",
+        title: t("access.toastFailed"),
+        description: formatApiError(e, t, "access.apiUnreachable"),
+      });
     }
   }
   async function onRevoke(slug: string) {
@@ -494,24 +633,33 @@ function ManageMembershipsModal({
       await revoke.mutateAsync({ userId: user.id, tenantSlug: slug });
       toast({ tone: "signal", title: t("access.toastUserUpdated") });
     } catch (e) {
-      toast({ tone: "red", title: t("access.toastFailed"), description: (e as Error).message });
+      toast({
+        tone: "red",
+        title: t("access.toastFailed"),
+        description: formatApiError(e, t, "access.apiUnreachable"),
+      });
     }
   }
 
   return (
-    <Modal title={t("access.manageMembershipsFor", { name: current.name })} onClose={onClose}>
+    <Modal
+      title={t("access.manageMembershipsFor", { name: current.name })}
+      onClose={onClose}
+    >
       {tenantsQuery.isError || usersQuery.isError ? (
         <ErrorNote
           text={
-            (tenantsQuery.error instanceof Error ? tenantsQuery.error.message : null) ??
-            (usersQuery.error instanceof Error ? usersQuery.error.message : null) ??
-            t("access.apiUnreachable")
+            tenantsQuery.error
+              ? formatApiError(tenantsQuery.error, t, "access.apiUnreachable")
+              : formatApiError(usersQuery.error, t, "access.apiUnreachable")
           }
         />
       ) : null}
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {current.memberships.length === 0 ? (
-          <span style={{ color: "var(--text-4)", fontSize: 12 }}>{t("access.notMember")}</span>
+          <span style={{ color: "var(--text-4)", fontSize: 12 }}>
+            {t("access.notMember")}
+          </span>
         ) : (
           current.memberships.map((m) => (
             <div
@@ -528,7 +676,13 @@ function ManageMembershipsModal({
             >
               <span style={{ fontSize: 12.5, color: "var(--text)" }}>
                 {m.tenantName}{" "}
-                <span style={{ color: "var(--text-3)", fontFamily: "var(--mono)", fontSize: 11 }}>
+                <span
+                  style={{
+                    color: "var(--text-3)",
+                    fontFamily: "var(--mono)",
+                    fontSize: 11,
+                  }}
+                >
                   · {roleLabel(t, m.role)}
                 </span>
               </span>
@@ -537,7 +691,9 @@ function ManageMembershipsModal({
                 small
                 onClick={() => onRevoke(m.tenantSlug)}
                 disabled={revoke.isPending || user.id === selfId}
-                title={user.id === selfId ? t("access.selfProtected") : undefined}
+                title={
+                  user.id === selfId ? t("access.selfProtected") : undefined
+                }
               >
                 {t("access.revoke")}
               </Button>
@@ -546,13 +702,38 @@ function ManageMembershipsModal({
         )}
       </div>
 
-      <div style={{ height: 1, background: "var(--border)", margin: "14px 0" }} />
+      <div
+        style={{ height: 1, background: "var(--border)", margin: "14px 0" }}
+      />
 
-      <div style={{ fontSize: 11.5, color: "var(--text-2)", marginBottom: 8 }}>{t("access.grantTenant")}</div>
-      <div style={{ display: "flex", gap: 8, alignItems: "flex-end", flexWrap: "wrap" }}>
-        <label style={{ display: "flex", flexDirection: "column", gap: 6, flex: 1, minWidth: 140 }}>
-          <span style={{ fontSize: 11, color: "var(--text-3)" }}>{t("access.tenantLabel")}</span>
-          <select value={tenantSlug} onChange={(e) => setTenantSlug(e.target.value)} style={selectStyle}>
+      <div style={{ fontSize: 11.5, color: "var(--text-2)", marginBottom: 8 }}>
+        {t("access.grantTenant")}
+      </div>
+      <div
+        style={{
+          display: "flex",
+          gap: 8,
+          alignItems: "flex-end",
+          flexWrap: "wrap",
+        }}
+      >
+        <label
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: 6,
+            flex: 1,
+            minWidth: 140,
+          }}
+        >
+          <span style={{ fontSize: 11, color: "var(--text-3)" }}>
+            {t("access.tenantLabel")}
+          </span>
+          <select
+            value={tenantSlug}
+            onChange={(e) => setTenantSlug(e.target.value)}
+            style={selectStyle}
+          >
             <option value="">—</option>
             {tenantOptions.map((tn) => (
               <option key={tn.slug} value={tn.slug}>
@@ -561,11 +742,25 @@ function ManageMembershipsModal({
             ))}
           </select>
         </label>
-        <label style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 120 }}>
-          <span style={{ fontSize: 11, color: "var(--text-3)" }}>{t("access.roleLabel")}</span>
+        <label
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: 6,
+            minWidth: 120,
+          }}
+        >
+          <span style={{ fontSize: 11, color: "var(--text-3)" }}>
+            {t("access.roleLabel")}
+          </span>
           <RoleSelect value={role} onChange={setRole} />
         </label>
-        <Button tone="primary" small onClick={onGrant} disabled={!tenantSlug || grant.isPending}>
+        <Button
+          tone="primary"
+          small
+          onClick={onGrant}
+          disabled={!tenantSlug || grant.isPending}
+        >
           {t("access.grant")}
         </Button>
       </div>
@@ -620,7 +815,15 @@ function RoleSelect({
   );
 }
 
-function MemberCell({ name, email, isSelf }: { name: string; email: string; isSelf: boolean }) {
+function MemberCell({
+  name,
+  email,
+  isSelf,
+}: {
+  name: string;
+  email: string;
+  isSelf: boolean;
+}) {
   const { t } = useI18n();
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -643,21 +846,49 @@ function MemberCell({ name, email, isSelf }: { name: string; email: string; isSe
         {name.trim().slice(0, 2).toUpperCase()}
       </span>
       <div style={{ minWidth: 0 }}>
-        <div style={{ fontSize: 13, color: "var(--text)", display: "flex", alignItems: "center", gap: 6 }}>
+        <div
+          style={{
+            fontSize: 13,
+            color: "var(--text)",
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+          }}
+        >
           {name}
           {isSelf ? (
-            <span style={{ fontSize: 9.5, color: "var(--text-4)", fontFamily: "var(--mono)" }}>
+            <span
+              style={{
+                fontSize: 9.5,
+                color: "var(--text-4)",
+                fontFamily: "var(--mono)",
+              }}
+            >
               ({t("access.you")})
             </span>
           ) : null}
         </div>
-        <div style={{ fontSize: 11, color: "var(--text-3)", fontFamily: "var(--mono)" }}>{email}</div>
+        <div
+          style={{
+            fontSize: 11,
+            color: "var(--text-3)",
+            fontFamily: "var(--mono)",
+          }}
+        >
+          {email}
+        </div>
       </div>
     </div>
   );
 }
 
-function Table({ head, children }: { head: string[]; children: React.ReactNode }) {
+function Table({
+  head,
+  children,
+}: {
+  head: string[];
+  children: React.ReactNode;
+}) {
   return (
     <div
       style={{
@@ -776,7 +1007,15 @@ function Modal({
           boxShadow: "0 12px 40px rgba(0,0,0,0.45)",
         }}
       >
-        <h2 style={{ margin: "0 0 14px", fontSize: 17, fontFamily: "var(--display)", fontWeight: 400, color: "var(--text)" }}>
+        <h2
+          style={{
+            margin: "0 0 14px",
+            fontSize: 17,
+            fontFamily: "var(--display)",
+            fontWeight: 400,
+            color: "var(--text)",
+          }}
+        >
           {title}
         </h2>
         {children}
@@ -787,7 +1026,16 @@ function Modal({
 
 function ModalActions({ children }: { children: React.ReactNode }) {
   return (
-    <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 18 }}>{children}</div>
+    <div
+      style={{
+        display: "flex",
+        justifyContent: "flex-end",
+        gap: 8,
+        marginTop: 18,
+      }}
+    >
+      {children}
+    </div>
   );
 }
 
@@ -837,10 +1085,12 @@ function ErrorNote({ text }: { text: string }) {
   );
 }
 
-function fmtDate(ms: number): string {
+function fmtDate(ms: number, language: "en" | "zh"): string {
   if (!ms) return "—";
   try {
-    return new Date(ms).toLocaleDateString();
+    return new Date(ms).toLocaleDateString(
+      language === "zh" ? "zh-CN" : "en-US",
+    );
   } catch {
     return "—";
   }

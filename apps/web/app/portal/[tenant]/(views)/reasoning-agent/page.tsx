@@ -10,7 +10,7 @@ import React, {
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
 import { Icon, ViewHeader } from "@/app/portal/components";
-import { useI18n } from "@/app/portal/lib/preferences-context";
+import { useI18n, type Translate } from "@/app/portal/lib/preferences-context";
 import { useTenant } from "@/app/portal/lib/use-tenant";
 import { ApiResponseError } from "@/lib/api-response";
 import { useInvokeAgent } from "@/lib/hooks/useAgents";
@@ -58,7 +58,7 @@ import {
   projectRuntimeAgents,
   RUNTIME_EDGES,
 } from "./run-projection";
-import { REASONING_TEST_EXAMPLES } from "./examples";
+import { getReasoningTestExamples } from "./examples";
 import styles from "./reasoning-agent.module.css";
 
 interface ChatMessage {
@@ -129,31 +129,68 @@ function statusColor(status: RuntimeStatus | RuleAssessment["status"]): string {
   return "var(--text-3)";
 }
 
+function statusLabel(status: string, t: Translate): string {
+  const keyByStatus: Record<string, string> = {
+    completed: "reasoningAgent.page.status.completed",
+    warning: "reasoningAgent.page.status.warning",
+    blocked: "reasoningAgent.page.status.blocked",
+    running: "reasoningAgent.page.status.running",
+    waiting: "reasoningAgent.page.status.waiting",
+    queued: "reasoningAgent.page.status.queued",
+    ok: "reasoningAgent.page.status.ok",
+    failed: "reasoningAgent.page.status.failed",
+    cancelled: "reasoningAgent.page.status.cancelled",
+    active: "reasoningAgent.page.status.active",
+    satisfied: "reasoningAgent.page.status.satisfied",
+    violated: "reasoningAgent.page.status.violated",
+    optional_unmet: "reasoningAgent.page.status.optionalUnmet",
+    not_applicable: "reasoningAgent.page.status.notApplicable",
+    insufficient_evidence: "reasoningAgent.page.status.insufficientEvidence",
+  };
+  const key = keyByStatus[status];
+  return key ? t(key) : status;
+}
+
+function tokenIoLabel(
+  tokensIn: number | null | undefined,
+  tokensOut: number | null | undefined,
+  t: Translate,
+): string {
+  return t("reasoningAgent.page.format.tokenIo", {
+    input: tokensIn ?? 0,
+    output: tokensOut ?? 0,
+  });
+}
+
 function decisionColor(decision: ReasoningOutput["decision"]): string {
   if (decision === "eligible") return "var(--green)";
   if (decision === "ineligible") return "var(--red)";
   return "var(--amber)";
 }
 
-function scopeSourceLabel(source?: string): string {
-  if (source === "job_requisition") return "Job Requisition";
-  if (source === "jd") return "JD";
-  if (source === "explicit_fallback") return "显式 fallback";
-  if (source === "generic_inputs_fallback") return "Generic Inputs fallback";
-  if (source === "missing") return "缺失";
-  return "旧运行 / 未记录";
+function scopeSourceLabel(source: string | undefined, t: Translate): string {
+  if (source === "job_requisition")
+    return t("reasoningAgent.page.scopeSource.jobRequisition");
+  if (source === "jd") return t("reasoningAgent.page.scopeSource.jd");
+  if (source === "explicit_fallback")
+    return t("reasoningAgent.page.scopeSource.explicitFallback");
+  if (source === "generic_inputs_fallback")
+    return t("reasoningAgent.page.scopeSource.genericInputsFallback");
+  if (source === "missing") return t("reasoningAgent.page.scopeSource.missing");
+  return t("reasoningAgent.page.scopeSource.unknown");
 }
 
 export default function ReasoningAgentPage() {
   const tenant = useTenant();
-  const { t } = useI18n();
+  const { language, t } = useI18n();
+  const reasoningTestExamples = useMemo(() => getReasoningTestExamples(t), [t]);
   const invoke = useInvokeAgent();
   const reasoningContextQuery = useReasoningAgentContext(tenant);
   const [prompt, setPrompt] = useState("");
   const [action, setAction] = useState("");
   const [scenario, setScenario] = useState("");
   const [exampleId, setExampleId] = useState<string>(
-    REASONING_TEST_EXAMPLES[0]?.id ?? "",
+    reasoningTestExamples[0]?.id ?? "",
   );
   const [context, setContext] = useState(EMPTY_CONTEXT);
   const [jsonError, setJsonError] = useState("");
@@ -204,9 +241,10 @@ export default function ReasoningAgentPage() {
     () =>
       projectReasoningToolAudit(
         reasoningRunQuery.data?.steps ?? [],
+        t,
         reasoningRunQuery.data?.children ?? [],
       ),
-    [reasoningRunQuery.data?.children, reasoningRunQuery.data?.steps],
+    [reasoningRunQuery.data?.children, reasoningRunQuery.data?.steps, t],
   );
   const visibleRuleCount =
     latest?.output.ruleCount ?? toolAudit.ruleSelection?.rules.length ?? 0;
@@ -319,7 +357,11 @@ export default function ReasoningAgentPage() {
     }
     if (run.status === "failed" || run.status === "cancelled") {
       const detail =
-        run.error ?? run.errorMessage ?? `run ended with ${run.status}`;
+        run.error ??
+        run.errorMessage ??
+        t("reasoningAgent.page.runEndedWith", {
+          status: statusLabel(run.status, t),
+        });
       setMessages((previous) =>
         previous.some(
           (message) =>
@@ -350,6 +392,7 @@ export default function ReasoningAgentPage() {
             : runStatus,
         reasoningRunQuery.data?.steps ?? [],
         latest?.runId === activeRunId ? latest.output : null,
+        t,
         reasoningRunQuery.data?.children ?? [],
       ),
     [
@@ -361,6 +404,7 @@ export default function ReasoningAgentPage() {
       reasoningRunQuery.data?.steps,
       reasoningRunQuery.data?.children,
       runStatus,
+      t,
     ],
   );
   const runtimeEdges = runtimeAgents.length > 0 ? [...RUNTIME_EDGES] : [];
@@ -426,8 +470,8 @@ export default function ReasoningAgentPage() {
 
   function loadExample() {
     const example =
-      REASONING_TEST_EXAMPLES.find((item) => item.id === exampleId) ??
-      REASONING_TEST_EXAMPLES[0];
+      reasoningTestExamples.find((item) => item.id === exampleId) ??
+      reasoningTestExamples[0];
     if (!example) return;
     const preferred =
       actionOptions.find(
@@ -471,7 +515,7 @@ export default function ReasoningAgentPage() {
           Array.isArray(genericInputs))
       ) {
         throw new Error(
-          `${t("reasoningAgent.genericInputs")}: JSON object required`,
+          `${t("reasoningAgent.genericInputs")}: ${t("reasoningAgent.page.jsonObjectRequired")}`,
         );
       }
       structured = {
@@ -525,7 +569,7 @@ export default function ReasoningAgentPage() {
         async: true,
       });
       if (!response.runId) {
-        throw new Error("Reasoning runtime did not return a durable runId");
+        throw new Error(t("reasoningAgent.page.noDurableRunId"));
       }
       setActiveRunId(response.runId);
       const auditUrl = new URL(window.location.href);
@@ -547,7 +591,7 @@ export default function ReasoningAgentPage() {
   function downloadAuditLog() {
     if (!reasoningRunQuery.data) return;
     const blob = new Blob(
-      [JSON.stringify(publicAuditPayload(reasoningRunQuery.data), null, 2)],
+      [JSON.stringify(publicAuditPayload(reasoningRunQuery.data, t), null, 2)],
       {
         type: "application/json",
       },
@@ -567,7 +611,7 @@ export default function ReasoningAgentPage() {
         subtitle={t("reasoningAgent.subtitle")}
         action={
           <span className={styles.pill}>
-            Allmeta · {domainId || "—"} · read-only
+            Allmeta · {domainId || "—"} · {t("reasoningAgent.page.readOnly")}
           </span>
         }
       />
@@ -635,7 +679,9 @@ export default function ReasoningAgentPage() {
                         {message.output.decision}
                       </span>
                       <span className={styles.pill}>
-                        {message.output.ruleCount} rules
+                        {t("reasoningAgent.page.rulesCount", {
+                          count: message.output.ruleCount,
+                        })}
                       </span>
                       <span className={styles.pill}>
                         {message.output.scenario}
@@ -716,8 +762,8 @@ export default function ReasoningAgentPage() {
               />
               <div className={styles.composerFooter}>
                 <span className={styles.domainTag}>
-                  {t("reasoningAgent.domain")}: {domainId || "—"} · Action:{" "}
-                  {action || "—"}
+                  {t("reasoningAgent.domain")}: {domainId || "—"} ·{" "}
+                  {t("reasoningAgent.page.actionInline")}: {action || "—"}
                 </span>
                 {reasoningContextQuery.isError ? (
                   <span className={styles.error}>
@@ -736,7 +782,7 @@ export default function ReasoningAgentPage() {
                         {t("reasoningAgent.domainLoadFailed")}:{" "}
                         {reasoningContextQuery.error instanceof Error
                           ? reasoningContextQuery.error.message
-                          : "unknown error"}
+                          : t("reasoningAgent.page.unknownError")}
                         <button
                           type="button"
                           className={styles.inlineRetry}
@@ -843,11 +889,11 @@ export default function ReasoningAgentPage() {
                   ["flow", t("reasoningAgent.flowTab")],
                   [
                     "rules",
-                    `Rules${visibleRuleCount > 0 ? ` (${visibleRuleCount})` : ""}`,
+                    `${t("reasoningAgent.page.rulesTab")}${visibleRuleCount > 0 ? ` (${visibleRuleCount})` : ""}`,
                   ],
                   [
                     "logs",
-                    `Log${
+                    `${t("reasoningAgent.page.logTab")}${
                       reasoningRunQuery.data
                         ? ` (${reasoningRunQuery.data.steps.length + reasoningRunQuery.data.children.reduce((count, child) => count + child.steps.length, 0)})`
                         : ""
@@ -887,7 +933,9 @@ export default function ReasoningAgentPage() {
                       <strong>{t("reasoningAgent.runConfig")}</strong>
                       <span>{domainId || "—"}</span>
                     </div>
-                    <span className={styles.pill}>read-only ontology</span>
+                    <span className={styles.pill}>
+                      {t("reasoningAgent.page.readOnlyOntology")}
+                    </span>
                   </div>
                   <div className={styles.sidebarFields}>
                     <label className={styles.field}>
@@ -953,7 +1001,7 @@ export default function ReasoningAgentPage() {
                         value={exampleId}
                         onChange={(event) => setExampleId(event.target.value)}
                       >
-                        {REASONING_TEST_EXAMPLES.map((example) => (
+                        {reasoningTestExamples.map((example) => (
                           <option key={example.id} value={example.id}>
                             {example.label}
                           </option>
@@ -1054,8 +1102,11 @@ export default function ReasoningAgentPage() {
                               id={`reasoning-business-input-${key}-meta`}
                               className={styles.inputMeta}
                             >
-                              {context[key].length.toLocaleString()} chars ·
-                              JSON
+                              {t("reasoningAgent.page.charsJson", {
+                                count: context[key].length.toLocaleString(
+                                  language === "zh" ? "zh-CN" : "en-US",
+                                ),
+                              })}
                             </div>
                           </div>
                         </details>
@@ -1074,10 +1125,12 @@ export default function ReasoningAgentPage() {
 
             {inspectorTab !== "input" && reasoningRunQuery.error ? (
               <div className={`${styles.auditCard} ${styles.error}`}>
-                无法读取运行审计：
-                {reasoningRunQuery.error instanceof Error
-                  ? reasoningRunQuery.error.message
-                  : "unknown error"}
+                {t("reasoningAgent.page.runAuditReadFailed", {
+                  detail:
+                    reasoningRunQuery.error instanceof Error
+                      ? reasoningRunQuery.error.message
+                      : t("reasoningAgent.page.unknownError"),
+                })}
               </div>
             ) : null}
 
@@ -1093,13 +1146,19 @@ export default function ReasoningAgentPage() {
                   run={reasoningRunQuery.data?.run ?? null}
                   steps={reasoningRunQuery.data?.steps ?? []}
                   children={reasoningRunQuery.data?.children ?? []}
+                  language={language}
+                  t={t}
                 />
                 {runtimeAgents.length > 0 ? (
                   <details className={styles.graphCard}>
                     <summary className={styles.graphSummary}>
-                      查看动态 Agent 执行图
+                      {t("reasoningAgent.page.viewDynamicAgentGraph")}
                     </summary>
-                    <RuntimeGraph agents={runtimeAgents} edges={runtimeEdges} />
+                    <RuntimeGraph
+                      agents={runtimeAgents}
+                      edges={runtimeEdges}
+                      t={t}
+                    />
                   </details>
                 ) : null}
               </>
@@ -1108,6 +1167,7 @@ export default function ReasoningAgentPage() {
               <RulesCards
                 output={latest?.output ?? null}
                 selection={toolAudit.ruleSelection}
+                t={t}
               />
             ) : null}
             {inspectorTab === "logs" ? (
@@ -1115,6 +1175,7 @@ export default function ReasoningAgentPage() {
                 run={reasoningRunQuery.data?.run ?? null}
                 steps={reasoningRunQuery.data?.steps ?? []}
                 children={reasoningRunQuery.data?.children ?? []}
+                t={t}
               />
             ) : null}
           </div>
@@ -1135,10 +1196,12 @@ function ruleScope(rule: RetrievedRule): RuleScope {
   return generic.has(department) ? "client_general" : "client_department";
 }
 
-function scopeLabel(scope: RuleScope): string {
-  if (scope === "csi_universal") return "CSI 通用";
-  if (scope === "client_general") return "客户通用";
-  return "客户部门";
+function scopeLabel(scope: RuleScope, t: Translate): string {
+  if (scope === "csi_universal")
+    return t("reasoningAgent.page.scope.csiUniversal");
+  if (scope === "client_general")
+    return t("reasoningAgent.page.scope.clientGeneral");
+  return t("reasoningAgent.page.scope.clientDepartment");
 }
 
 function scopeCounts(
@@ -1181,6 +1244,8 @@ function FlowCards({
   run,
   steps,
   children,
+  language,
+  t,
 }: {
   input: unknown;
   output: ReasoningOutput | null;
@@ -1189,6 +1254,8 @@ function FlowCards({
   run: ReasoningRunResponse["run"] | null;
   steps: ReasoningRunStep[];
   children: ReasoningRunResponse["children"];
+  language: "en" | "zh";
+  t: Translate;
 }) {
   if (!input && !output && !run) return null;
   const selection = toolAudit.ruleSelection;
@@ -1231,6 +1298,7 @@ function FlowCards({
     output,
     selection,
     output?.audit.input ?? input,
+    t,
     toolAudit.compiledPrompt,
   );
   const selectionFunnel = projectSelectionFunnel(
@@ -1242,12 +1310,14 @@ function FlowCards({
     receiptQueryAgent?.modelRationale ??
     receiptQueryAgent?.rationale ??
     output?.intentSummary ??
-    "正在生成有界 Query IR 与可审计筛选依据…";
+    t("reasoningAgent.page.generatingBoundedQueryIr");
   const selectionStrategy = legacyResult
-    ? "legacy replay"
+    ? t("reasoningAgent.page.legacyReplay")
     : (finalQueryAgent?.selectionStrategy ??
       receiptQueryAgent?.selectionStrategy ??
-      (queryExecution ? "semantic-link-traversal" : "legacy replay"));
+      (queryExecution
+        ? "semantic-link-traversal"
+        : t("reasoningAgent.page.legacyReplay")));
   return (
     <div className={styles.cardStack}>
       {queryIr ? (
@@ -1257,81 +1327,95 @@ function FlowCards({
         >
           <CardHeading
             index="AI"
-            title="本轮可审计推理"
+            title={t("reasoningAgent.page.card.auditableReasoning")}
             status={
               legacyResult ? "warning" : selection ? "completed" : "running"
             }
+            t={t}
           />
           {legacyResult ? (
             <div
               className={styles.scopeWarning}
               data-testid="legacy-result-warning"
             >
-              Legacy result schema ({resultSchemaVersion ?? "unversioned"})：
-              仅作兼容回放；不声明 v2 的 child receipt、prompt hash、Link-only
-              或双查询保证。
+              {t("reasoningAgent.page.legacyResultSchema", {
+                version:
+                  resultSchemaVersion ?? t("reasoningAgent.page.unversioned"),
+              })}
             </div>
           ) : null}
           <div className={styles.callout}>{selectionRationale}</div>
           <p className={styles.cardText}>
-            展示意图摘要、筛选策略、工具参数与证据依据；不展示模型私有隐藏思维链。
+            {t("reasoningAgent.page.showsIntentSummary")}
           </p>
           <div className={styles.chipRow}>
             <span className={styles.pill}>{selectionStrategy}</span>
-            <span className={styles.pill}>canonical capability boundary</span>
+            <span className={styles.pill}>
+              {t("reasoningAgent.page.canonicalCapabilityBoundary")}
+            </span>
             <span className={styles.pill}>
               {semanticLinkContractVerified
-                ? "semantic links only"
-                : "legacy / link contract unverified"}
+                ? t("reasoningAgent.page.semanticLinksOnly")
+                : t("reasoningAgent.page.linkContractUnverified")}
             </span>
           </div>
           <div className={styles.scopeGrid}>
             <Metric
-              label="CSI 通用"
+              label={t("reasoningAgent.page.scope.csiUniversal")}
               value={selectedScopeCounts.csi_universal}
               tone="green"
             />
             <Metric
-              label="客户通用"
+              label={t("reasoningAgent.page.scope.clientGeneral")}
               value={selectedScopeCounts.client_general}
             />
             <Metric
-              label="客户部门"
+              label={t("reasoningAgent.page.scope.clientDepartment")}
               value={selectedScopeCounts.client_department}
               tone="amber"
             />
           </div>
           <div className={styles.metaGrid}>
-            <span>canonical capability boundary</span>
+            <span>{t("reasoningAgent.page.canonicalCapabilityBoundary")}</span>
             <strong>
               {filters?.actionHint ?? filters?.action ?? queryIr.actionHint}
             </strong>
-            <span>client</span>
+            <span>{t("reasoningAgent.page.meta.client")}</span>
             <strong>
-              {filters?.client || queryIr.applicableClient || "通用"}
+              {filters?.client ||
+                queryIr.applicableClient ||
+                t("reasoningAgent.page.generic")}
             </strong>
-            <span>client source</span>
-            <strong>{scopeSourceLabel(filters?.clientSource)}</strong>
-            <span>department</span>
+            <span>{t("reasoningAgent.page.meta.clientSource")}</span>
+            <strong>{scopeSourceLabel(filters?.clientSource, t)}</strong>
+            <span>{t("reasoningAgent.page.meta.department")}</span>
             <strong>
-              {filters?.department || queryIr.applicableDepartment || "通用"}
+              {filters?.department ||
+                queryIr.applicableDepartment ||
+                t("reasoningAgent.page.generic")}
             </strong>
-            <span>department source</span>
-            <strong>{scopeSourceLabel(filters?.departmentSource)}</strong>
-            <span>objects</span>
+            <span>{t("reasoningAgent.page.meta.departmentSource")}</span>
+            <strong>{scopeSourceLabel(filters?.departmentSource, t)}</strong>
+            <span>{t("reasoningAgent.page.meta.objects")}</span>
             <strong>{queryIr.objectTypes.join(", ") || "—"}</strong>
-            <span>keywords</span>
+            <span>{t("reasoningAgent.page.meta.keywords")}</span>
             <strong>{queryIr.strongKeywords.join(", ") || "—"}</strong>
           </div>
           {(filters?.scopeConflicts?.length ?? 0) > 0 ? (
             <div className={styles.scopeWarning}>
-              <strong>Scope 冲突已隔离</strong>
+              <strong>{t("reasoningAgent.page.scopeConflictIsolated")}</strong>
               {filters?.scopeConflicts?.map((conflict, index) => (
                 <div key={`${conflict.field}-${index}`}>
-                  {conflict.field}: 使用 {conflict.selectedValue}（
-                  {scopeSourceLabel(conflict.selectedSource)}），忽略{" "}
-                  {conflict.ignoredValue}（
-                  {scopeSourceLabel(conflict.ignoredSource)}）
+                  {t("reasoningAgent.page.scopeConflictDetail", {
+                    field: conflict.field,
+                    selectedValue: conflict.selectedValue,
+                    selectedSource: scopeSourceLabel(
+                      conflict.selectedSource,
+                      t,
+                    ),
+                    ignoredValue: conflict.ignoredValue,
+                    ignoredSource: scopeSourceLabel(conflict.ignoredSource, t),
+                  })}
                 </div>
               ))}
             </div>
@@ -1341,21 +1425,34 @@ function FlowCards({
 
       {run ? (
         <section className={styles.auditCard}>
-          <CardHeading index="00" title="Durable Run" status={run.status} />
+          <CardHeading
+            index="00"
+            title={t("reasoningAgent.page.card.durableRun")}
+            status={run.status}
+            t={t}
+          />
           <div className={styles.metaGrid}>
             <span>run_id</span>
             <strong>{run.id}</strong>
-            <span>status</span>
-            <strong>{run.status}</strong>
-            <span>model</span>
-            <strong>{run.model ?? "等待 provider…"}</strong>
-            <span>tokens</span>
-            <strong>
-              {run.tokensIn ?? 0} in / {run.tokensOut ?? 0} out
+            <span>{t("reasoningAgent.page.meta.status")}</span>
+            <strong
+              title={t("reasoningAgent.page.rawStatusTitle", {
+                status: run.status,
+              })}
+            >
+              {statusLabel(run.status, t)}
             </strong>
-            <span>duration</span>
+            <span>{t("reasoningAgent.page.meta.model")}</span>
             <strong>
-              {run.durationMs == null ? "运行中" : `${run.durationMs} ms`}
+              {run.model ?? t("reasoningAgent.page.awaitingProvider")}
+            </strong>
+            <span>{t("reasoningAgent.page.meta.tokens")}</span>
+            <strong>{tokenIoLabel(run.tokensIn, run.tokensOut, t)}</strong>
+            <span>{t("reasoningAgent.page.meta.duration")}</span>
+            <strong>
+              {run.durationMs == null
+                ? t("reasoningAgent.page.inProgress")
+                : `${run.durationMs} ms`}
             </strong>
           </div>
         </section>
@@ -1365,19 +1462,28 @@ function FlowCards({
         <section className={styles.auditCard} key={child.run.id}>
           <CardHeading
             index="00Q"
-            title="QualifiedAgent Child Run"
+            title={t("reasoningAgent.page.card.qualifiedAgentChildRun")}
             status={child.run.status}
+            t={t}
           />
           <div className={styles.metaGrid}>
             <span>child_run_id</span>
             <strong>{child.run.id}</strong>
             <span>parent_run_id</span>
             <strong>{child.run.parentRunId ?? run?.id ?? "—"}</strong>
-            <span>status</span>
-            <strong>{child.run.status}</strong>
-            <span>model</span>
-            <strong>{child.run.model ?? "等待 provider…"}</strong>
-            <span>steps</span>
+            <span>{t("reasoningAgent.page.meta.status")}</span>
+            <strong
+              title={t("reasoningAgent.page.rawStatusTitle", {
+                status: child.run.status,
+              })}
+            >
+              {statusLabel(child.run.status, t)}
+            </strong>
+            <span>{t("reasoningAgent.page.meta.model")}</span>
+            <strong>
+              {child.run.model ?? t("reasoningAgent.page.awaitingProvider")}
+            </strong>
+            <span>{t("reasoningAgent.page.meta.steps")}</span>
             <strong>{child.steps.length}</strong>
           </div>
         </section>
@@ -1386,33 +1492,38 @@ function FlowCards({
       <section className={styles.auditCard}>
         <CardHeading
           index="01"
-          title="实例输入 / Evidence"
+          title={t("reasoningAgent.page.card.instanceInputEvidence")}
           status="completed"
+          t={t}
         />
         <p className={styles.cardText}>
-          Candidate、Resume、Job Requisition、JD 与通用 Inputs
-          会作为本轮唯一事实来源。
+          {t("reasoningAgent.page.instanceInputBody")}
         </p>
         <details className={styles.codeDetails}>
-          <summary>查看完整实例数据 JSON</summary>
+          <summary>{t("reasoningAgent.page.viewFullInstanceJson")}</summary>
           <JsonBlock value={output?.audit.input ?? input} />
         </details>
       </section>
 
-      <EvidenceAnalysisCard analysis={evidenceAnalysis} />
+      <EvidenceAnalysisCard analysis={evidenceAnalysis} t={t} />
 
       <ReasoningHarnessCard
         plan={harnessPlan}
         legacy={!harnessPlan && !!(output || selection)}
+        t={t}
       />
 
       {!output && toolAudit.ruleSelection ? (
         <>
-          <PartialRuleSelectionCards selection={toolAudit.ruleSelection} />
+          <PartialRuleSelectionCards
+            selection={toolAudit.ruleSelection}
+            t={t}
+          />
           <RulePoolCard
             rules={selectedRules}
             evidencePlan={evidenceAnalysis.ruleEvidencePlan}
             funnel={selectionFunnel}
+            t={t}
           />
         </>
       ) : null}
@@ -1427,6 +1538,8 @@ function FlowCards({
           qualifiedRun={toolAudit.compilerReceipt?.qualifiedRun ?? null}
           ruleBundleId={toolAudit.ruleSelection?.bundleId ?? null}
           executedPrompt={toolAudit.executedQualifiedPrompt}
+          language={language}
+          t={t}
         />
       ) : null}
 
@@ -1435,13 +1548,16 @@ function FlowCards({
           <section className={styles.auditCard}>
             <CardHeading
               index="02C"
-              title="Intent Reasoner"
+              title={t("reasoningAgent.page.card.intentReasoner")}
               status="completed"
+              t={t}
             />
             <div className={styles.callout}>{output.intentSummary}</div>
-            <div className={styles.metaLine}>strategy · {output.strategy}</div>
+            <div className={styles.metaLine}>
+              {t("reasoningAgent.page.strategyPrefix")} · {output.strategy}
+            </div>
             <p className={styles.cardText}>
-              这里展示的是可验证的意图摘要与策略选择，不是模型私有隐藏思维链。
+              {t("reasoningAgent.page.intentReasonerBody")}
             </p>
           </section>
 
@@ -1452,12 +1568,14 @@ function FlowCards({
             ruleCount={output.ruleCount}
             legacyTemplateId={output.audit.ruleSelection.cypherTemplateId}
             resultSchemaVersion={resultSchemaVersion}
+            t={t}
           />
 
           <RulePoolCard
             rules={selectedRules}
             evidencePlan={evidenceAnalysis.ruleEvidencePlan}
             funnel={selectionFunnel}
+            t={t}
           />
 
           <PromptCompilerCard
@@ -1466,12 +1584,14 @@ function FlowCards({
             qualifiedRun={output.audit.qualityCheck.run ?? null}
             ruleBundleId={output.ruleBundleId}
             executedPrompt={toolAudit.executedQualifiedPrompt}
+            language={language}
+            t={t}
           />
 
           <section className={styles.auditCard}>
             <CardHeading
               index="05"
-              title={"QualifiedAgent Quality Check"}
+              title={t("reasoningAgent.page.card.qualifiedAgentQualityCheck")}
               status={
                 output.audit.qualityCheck.mandatoryBlocked > 0
                   ? "blocked"
@@ -1480,67 +1600,70 @@ function FlowCards({
                     ? "warning"
                     : "completed"
               }
+              t={t}
             />
             {output.audit.qualityCheck.run ? (
               <div className={styles.metaGrid}>
-                <span>child run</span>
+                <span>{t("reasoningAgent.page.meta.childRun")}</span>
                 <strong>{output.audit.qualityCheck.run.runId}</strong>
-                <span>prompt receipt</span>
+                <span>{t("reasoningAgent.page.meta.promptReceipt")}</span>
                 <strong>{output.audit.qualityCheck.run.promptSha256}</strong>
-                <span>provider / model</span>
+                <span>{t("reasoningAgent.page.meta.providerModel")}</span>
                 <strong>
                   {output.audit.qualityCheck.run.provider} /{" "}
                   {output.audit.qualityCheck.run.model}
                 </strong>
-                <span>tokens</span>
+                <span>{t("reasoningAgent.page.meta.tokens")}</span>
                 <strong>
-                  {output.audit.qualityCheck.run.tokensIn ?? 0} in /{" "}
-                  {output.audit.qualityCheck.run.tokensOut ?? 0} out
+                  {tokenIoLabel(
+                    output.audit.qualityCheck.run.tokensIn,
+                    output.audit.qualityCheck.run.tokensOut,
+                    t,
+                  )}
                 </strong>
               </div>
             ) : (
               <div className={styles.scopeWarning}>
-                这是旧运行，未记录独立 QualifiedAgent child
-                run；新运行会显示完整父子回执。
+                {t("reasoningAgent.page.legacyNoChildRun")}
               </div>
             )}
             <div className={styles.metricGrid}>
               <Metric
-                label="checked"
+                label={t("reasoningAgent.page.metric.checked")}
                 value={output.audit.qualityCheck.assessmentCount}
               />
               <Metric
-                label="satisfied"
+                label={t("reasoningAgent.page.metric.satisfied")}
                 value={output.audit.qualityCheck.statusCounts.satisfied}
                 tone="green"
               />
               <Metric
-                label="violated"
+                label={t("reasoningAgent.page.metric.violated")}
                 value={output.audit.qualityCheck.statusCounts.violated}
                 tone="red"
               />
               <Metric
-                label="optional flags"
+                label={t("reasoningAgent.page.metric.optionalFlags")}
                 value={output.audit.qualityCheck.optionalFlagged}
                 tone="amber"
               />
               <Metric
-                label="mandatory pending"
+                label={t("reasoningAgent.page.metric.mandatoryPending")}
                 value={output.audit.qualityCheck.mandatoryPending}
                 tone="amber"
               />
               <Metric
-                label="not applicable"
+                label={t("reasoningAgent.page.metric.notApplicable")}
                 value={output.audit.qualityCheck.statusCounts.not_applicable}
               />
             </div>
-            <QualifiedAssessmentList assessments={output.assessments} />
+            <QualifiedAssessmentList assessments={output.assessments} t={t} />
           </section>
 
           <section className={styles.auditCard}>
             <CardHeading
               index="06"
-              title="Deterministic Fold"
+              title={t("reasoningAgent.page.card.deterministicFold")}
               status={
                 output.decision === "ineligible"
                   ? "blocked"
@@ -1548,6 +1671,7 @@ function FlowCards({
                     ? "completed"
                     : "warning"
               }
+              t={t}
             />
             <div
               className={styles.decisionValue}
@@ -1564,7 +1688,9 @@ function FlowCards({
             </div>
             {output.flags.length > 0 ? (
               <>
-                <div className={styles.subLabel}>Optional flags</div>
+                <div className={styles.subLabel}>
+                  {t("reasoningAgent.page.optionalFlagsLabel")}
+                </div>
                 <ul className={styles.missingList}>
                   {output.flags.map((flag) => (
                     <li key={flag}>{flag}</li>
@@ -1574,7 +1700,9 @@ function FlowCards({
             ) : null}
             {output.missingEvidence.length > 0 ? (
               <>
-                <div className={styles.subLabel}>Missing evidence</div>
+                <div className={styles.subLabel}>
+                  {t("reasoningAgent.page.missingEvidenceLabel")}
+                </div>
                 <ul className={styles.missingList}>
                   {output.missingEvidence.map((item) => (
                     <li key={item}>{item}</li>
@@ -1585,7 +1713,12 @@ function FlowCards({
           </section>
 
           <section className={styles.auditCard}>
-            <CardHeading index="07" title="审计时间线" status="completed" />
+            <CardHeading
+              index="07"
+              title={t("reasoningAgent.page.card.auditTimeline")}
+              status="completed"
+              t={t}
+            />
             <div className={styles.timeline}>
               {output.audit.trace.map((entry) => (
                 <div
@@ -1602,7 +1735,7 @@ function FlowCards({
                     </strong>
                     <p>{entry.summary}</p>
                     <span>
-                      {formatTimestamp(entry.at)}
+                      {formatTimestamp(entry.at, language)}
                       {entry.durationMs == null
                         ? ""
                         : ` · ${entry.durationMs} ms`}
@@ -1619,10 +1752,10 @@ function FlowCards({
             index="…"
             title={
               run?.status === "failed" || run?.status === "cancelled"
-                ? "真实执行步骤（运行已终止）"
+                ? t("reasoningAgent.page.card.realStepsTerminated")
                 : run?.status === "ok"
-                  ? "真实执行步骤"
-                  : "真实步骤正在写入"
+                  ? t("reasoningAgent.page.card.realSteps")
+                  : t("reasoningAgent.page.card.realStepsWriting")
             }
             status={
               run?.status === "failed" || run?.status === "cancelled"
@@ -1631,6 +1764,7 @@ function FlowCards({
                   ? "completed"
                   : "running"
             }
+            t={t}
           />
           <div className={styles.liveSteps}>
             {steps.map((step) => (
@@ -1648,7 +1782,14 @@ function FlowCards({
                 >
                   ●
                 </span>{" "}
-                {step.ord}. {humanStepName(step, steps)} · {step.status}
+                {step.ord}. {humanStepName(step, t, steps)} ·{" "}
+                <span
+                  title={t("reasoningAgent.page.rawStatusTitle", {
+                    status: step.status,
+                  })}
+                >
+                  {statusLabel(step.status, t)}
+                </span>
               </div>
             ))}
             {children.flatMap((child) =>
@@ -1667,9 +1808,17 @@ function FlowCards({
                   >
                     ●
                   </span>{" "}
-                  child {step.ord}.{" "}
-                  {humanStepName(step, child.steps, "qualified")} ·{" "}
-                  {step.status}
+                  {t("reasoningAgent.page.meta.childStep", {
+                    ordinal: step.ord,
+                  })}{" "}
+                  {humanStepName(step, t, child.steps, "qualified")} ·{" "}
+                  <span
+                    title={t("reasoningAgent.page.rawStatusTitle", {
+                      status: step.status,
+                    })}
+                  >
+                    {statusLabel(step.status, t)}
+                  </span>
                 </div>
               )),
             )}
@@ -1682,8 +1831,10 @@ function FlowCards({
 
 function EvidenceAnalysisCard({
   analysis,
+  t,
 }: {
   analysis: VisibleEvidenceAnalysis;
+  t: Translate;
 }) {
   const scopeFacts = analysis.facts.filter(
     (fact) => fact.purpose === "scope_selection",
@@ -1698,59 +1849,76 @@ function EvidenceAnalysisCard({
     >
       <CardHeading
         index="02A"
-        title="事实抽取 / Evidence Analysis"
+        title={t("reasoningAgent.page.card.evidenceAnalysis")}
         status={analysis.unverifiedCount > 0 ? "warning" : "completed"}
+        t={t}
       />
       <div className={styles.chipRow}>
         <span className={styles.pill}>
           {analysis.source === "llm_path_verified"
-            ? "LLM 提交 path · runtime 取值"
-            : "旧运行 · 输入确定性回放"}
+            ? t("reasoningAgent.page.llmPathRuntimeValues")
+            : t("reasoningAgent.page.legacyInputDeterministicReplay")}
         </span>
-        <span className={styles.pill}>{analysis.verifiedCount} verified</span>
+        <span className={styles.pill}>
+          {t("reasoningAgent.page.verifiedCount", {
+            count: analysis.verifiedCount,
+          })}
+        </span>
         {analysis.unverifiedCount > 0 ? (
           <span className={styles.warningPill}>
-            {analysis.unverifiedCount} unverified
+            {t("reasoningAgent.page.unverifiedCount", {
+              count: analysis.unverifiedCount,
+            })}
           </span>
         ) : null}
       </div>
       <p className={styles.cardText}>
-        这里展示模型选择的事实路径和系统从原始 JSON
-        解析出的真实值。目标岗位事实用于筛选作用域；候选人和简历事实只用于逐规则判定，不会提前删除规则。
+        {t("reasoningAgent.page.evidenceAnalysisBody")}
       </p>
       {analysis.source === "legacy_input_projection" ? (
         <div className={styles.scopeWarning}>
-          该历史运行早于结构化事实回执；以下内容从持久化输入回放，不冒充当时模型的隐藏思考。重新运行即可得到
-          LLM path + runtime verification。
+          {t("reasoningAgent.page.legacyEvidenceReplayNote")}
         </div>
       ) : null}
       {scopeFacts.length > 0 ? (
         <>
-          <div className={styles.subLabel}>用于规则作用域</div>
-          <EvidenceFactList facts={scopeFacts} />
+          <div className={styles.subLabel}>
+            {t("reasoningAgent.page.forRuleScope")}
+          </div>
+          <EvidenceFactList facts={scopeFacts} t={t} />
         </>
       ) : null}
       {evaluationFacts.length > 0 ? (
         <>
-          <div className={styles.subLabel}>用于逐规则判定</div>
-          <EvidenceFactList facts={evaluationFacts} />
+          <div className={styles.subLabel}>
+            {t("reasoningAgent.page.forPerRuleAssessment")}
+          </div>
+          <EvidenceFactList facts={evaluationFacts} t={t} />
         </>
       ) : null}
       {analysis.facts.length === 0 ? (
-        <p className={styles.cardText}>等待 Intent Reasoner 写入事实路径…</p>
+        <p className={styles.cardText}>
+          {t("reasoningAgent.page.awaitingIntentReasonerFacts")}
+        </p>
       ) : null}
       {analysis.temporalFacts.length > 0 ? (
         <details className={styles.codeDetails}>
           <summary>
-            查看 {analysis.temporalFacts.length} 条确定性时间事实
+            {t("reasoningAgent.page.viewTemporalFacts", {
+              count: analysis.temporalFacts.length,
+            })}
           </summary>
           <div className={styles.temporalFacts}>
             {analysis.temporalFacts.slice(0, 24).map((fact) => (
               <div className={styles.temporalFact} key={fact.path}>
                 <strong>{fact.path}</strong>
                 <span>
-                  {fact.value} · {fact.relationToAsOf} · {fact.calendarDays} 天
-                  · {fact.completedCalendarMonths} 个完整月
+                  {t("reasoningAgent.page.temporalFactDetail", {
+                    value: fact.value,
+                    relation: fact.relationToAsOf,
+                    days: fact.calendarDays,
+                    months: fact.completedCalendarMonths,
+                  })}
                 </span>
               </div>
             ))}
@@ -1764,9 +1932,11 @@ function EvidenceAnalysisCard({
 function ReasoningHarnessCard({
   plan,
   legacy,
+  t,
 }: {
   plan: ReasoningHarnessPlan | null;
   legacy: boolean;
+  t: Translate;
 }) {
   if (!plan) {
     if (!legacy) return null;
@@ -1774,12 +1944,12 @@ function ReasoningHarnessCard({
       <section className={styles.auditCard}>
         <CardHeading
           index="02B"
-          title="Dynamic Reasoning Harness"
+          title={t("reasoningAgent.page.card.dynamicReasoningHarness")}
           status="warning"
+          t={t}
         />
         <div className={styles.scopeWarning}>
-          该历史运行没有持久化 Harness
-          回执。重新运行后会显示模型选择的方法、语义锚点、证据锚点与停止条件。
+          {t("reasoningAgent.page.harnessLegacyNote")}
         </div>
       </section>
     );
@@ -1788,13 +1958,12 @@ function ReasoningHarnessCard({
     <section className={styles.auditCard} data-testid="reasoning-harness-card">
       <CardHeading
         index="02B"
-        title="Dynamic Reasoning Harness"
+        title={t("reasoningAgent.page.card.dynamicReasoningHarness")}
         status="completed"
+        t={t}
       />
       <div className={styles.callout}>{plan.publicRationale}</div>
-      <p className={styles.cardText}>
-        这是模型公开提交、运行时校验后的推理计划；展示可审计的方法与边界，不展示私有思维链。
-      </p>
+      <p className={styles.cardText}>{t("reasoningAgent.page.harnessBody")}</p>
       <div className={styles.chipRow}>
         {plan.methods.map((method) => (
           <span className={styles.pill} key={method}>
@@ -1803,18 +1972,24 @@ function ReasoningHarnessCard({
         ))}
       </div>
       <div className={styles.metaGrid}>
-        <span>capabilities</span>
+        <span>{t("reasoningAgent.page.meta.capabilities")}</span>
         <strong>{plan.capabilityAnchors.join(" · ") || "—"}</strong>
-        <span>objects</span>
+        <span>{t("reasoningAgent.page.meta.objects")}</span>
         <strong>{plan.objectAnchors.join(" · ") || "—"}</strong>
       </div>
       {plan.evidenceAnchors.length > 0 ? (
         <details className={styles.codeDetails}>
-          <summary>{plan.evidenceAnchors.length} 组 evidence anchors</summary>
+          <summary>
+            {t("reasoningAgent.page.evidenceAnchorsGroups", {
+              count: plan.evidenceAnchors.length,
+            })}
+          </summary>
           <JsonBlock value={plan.evidenceAnchors} />
         </details>
       ) : null}
-      <div className={styles.subLabel}>停止条件</div>
+      <div className={styles.subLabel}>
+        {t("reasoningAgent.page.stopConditions")}
+      </div>
       <ul className={styles.missingList}>
         {plan.stopConditions.map((condition) => (
           <li key={condition}>{condition}</li>
@@ -1831,6 +2006,7 @@ function CypherExecutionCard({
   ruleCount,
   legacyTemplateId,
   resultSchemaVersion,
+  t,
 }: {
   executions: RuleQueryExecution[];
   queryIr: ReasoningOutput["queryIr"];
@@ -1838,22 +2014,27 @@ function CypherExecutionCard({
   ruleCount: number;
   legacyTemplateId?: string;
   resultSchemaVersion?: ReasoningRunResponse["resultSchemaVersion"];
+  t: Translate;
 }) {
   if (executions.length === 0) {
     return (
       <section className={styles.auditCard} data-testid="cypher-execution-card">
         <CardHeading
           index="03"
-          title="Rule Selector / QueryAgent"
+          title={t("reasoningAgent.page.card.ruleSelectorQueryAgent")}
           status="warning"
+          t={t}
         />
         <div className={styles.scopeWarning}>
-          该历史运行只记录了
-          {legacyTemplateId ? `模板 ${legacyTemplateId}` : "旧版选择回执"}
-          ，没有保存实际执行的
-          Cypher。重新运行后会显示完整查询、参数、指纹、路径模式与行数。
+          {t("reasoningAgent.page.cypherLegacyNote", {
+            source: legacyTemplateId
+              ? t("reasoningAgent.page.templateId", { id: legacyTemplateId })
+              : t("reasoningAgent.page.legacySelectionReceipt"),
+          })}
         </div>
-        <div className={styles.subLabel}>Query IR replay</div>
+        <div className={styles.subLabel}>
+          {t("reasoningAgent.page.queryIrReplay")}
+        </div>
         <JsonBlock value={queryIr} />
       </section>
     );
@@ -1869,42 +2050,53 @@ function CypherExecutionCard({
     <section className={styles.auditCard} data-testid="cypher-execution-card">
       <CardHeading
         index="03"
-        title="Generated Cypher / QueryAgent"
+        title={t("reasoningAgent.page.card.generatedCypherQueryAgent")}
         status="completed"
+        t={t}
       />
       {legacyResult ? (
         <div className={styles.scopeWarning}>
-          Legacy v1 query receipts：保留原始回放，但不声明 v2 Link-only
-          双查询契约。
+          {t("reasoningAgent.page.cypherLegacyV1Note")}
         </div>
       ) : null}
       <div className={styles.chipRow}>
-        <span className={styles.pill}>read-only</span>
-        <span className={styles.pill}>domain-locked</span>
+        <span className={styles.pill}>{t("reasoningAgent.page.readOnly")}</span>
         <span className={styles.pill}>
-          {semanticLinkContractVerified
-            ? "link-only"
-            : "link contract unverified"}
+          {t("reasoningAgent.page.domainLocked")}
         </span>
         <span className={styles.pill}>
           {semanticLinkContractVerified
-            ? "fallback=false"
-            : "fallback unverified"}
+            ? t("reasoningAgent.page.linkOnly")
+            : t("reasoningAgent.page.linkContractUnverifiedShort")}
         </span>
-        <span className={styles.pill}>{executions.length} query receipts</span>
-        <span className={styles.pill}>{ruleCount} rules</span>
+        <span className={styles.pill}>
+          {semanticLinkContractVerified
+            ? t("reasoningAgent.page.fallbackFalse")
+            : t("reasoningAgent.page.fallbackUnverified")}
+        </span>
+        <span className={styles.pill}>
+          {t("reasoningAgent.page.queryReceiptsCount", {
+            count: executions.length,
+          })}
+        </span>
+        <span className={styles.pill}>
+          {t("reasoningAgent.page.rulesCount", { count: ruleCount })}
+        </span>
       </div>
       <div className={styles.metricGrid}>
         <Metric
-          label="selection rows"
+          label={t("reasoningAgent.page.metric.selectionRows")}
           value={selectionExecution.rowCount}
           tone="green"
         />
         <Metric
-          label="total duration"
+          label={t("reasoningAgent.page.metric.totalDuration")}
           value={`${executions.reduce((sum, execution) => sum + execution.durationMs, 0)} ms`}
         />
-        <Metric label="max hops" value={queryIr.maxHops} />
+        <Metric
+          label={t("reasoningAgent.page.metric.maxHops")}
+          value={queryIr.maxHops}
+        />
       </div>
       {executions.map((execution, index) => (
         <div
@@ -1913,46 +2105,67 @@ function CypherExecutionCard({
           key={`${execution.purpose}-${execution.fingerprint}`}
         >
           <div className={styles.subLabel}>
-            {index + 1}. {executionPurposeLabel(execution.purpose)}
+            {index + 1}. {executionPurposeLabel(execution.purpose, t)}
           </div>
           <div className={styles.chipRow}>
             <span className={styles.pill}>{execution.purpose}</span>
-            <span className={styles.pill}>{execution.rowCount} rows</span>
+            <span className={styles.pill}>
+              {t("reasoningAgent.page.rowsCount", {
+                count: execution.rowCount,
+              })}
+            </span>
             <span className={styles.pill}>{execution.durationMs} ms</span>
           </div>
           <div className={styles.metaGrid}>
-            <span>fingerprint</span>
+            <span>{t("reasoningAgent.page.meta.fingerprint")}</span>
             <strong>{execution.fingerprint}</strong>
-            <span>path pattern</span>
+            <span>{t("reasoningAgent.page.meta.pathPattern")}</span>
             <strong>{execution.pathPattern}</strong>
           </div>
-          <div className={styles.subLabel}>Executed Cypher</div>
+          <div className={styles.subLabel}>
+            {t("reasoningAgent.page.executedCypher")}
+          </div>
           <pre className={styles.cypherBlock}>{execution.query}</pre>
-          <div className={styles.subLabel}>Bound parameters</div>
+          <div className={styles.subLabel}>
+            {t("reasoningAgent.page.boundParameters")}
+          </div>
           <JsonBlock value={execution.parameters} />
         </div>
       ))}
       <details className={styles.codeDetails}>
-        <summary>查看 Query IR 与 Allmeta diagnostics</summary>
-        <div className={styles.subLabel}>Query IR</div>
+        <summary>{t("reasoningAgent.page.viewQueryIrDiagnostics")}</summary>
+        <div className={styles.subLabel}>
+          {t("reasoningAgent.page.queryIr")}
+        </div>
         <JsonBlock value={queryIr} />
-        <div className={styles.subLabel}>Allmeta diagnostics</div>
-        <JsonBlock value={diagnostics ?? { note: "no diagnostics" }} />
+        <div className={styles.subLabel}>
+          {t("reasoningAgent.page.allmetaDiagnostics")}
+        </div>
+        <JsonBlock
+          value={
+            diagnostics ?? { note: t("reasoningAgent.page.noDiagnostics") }
+          }
+        />
       </details>
     </section>
   );
 }
 
-function executionPurposeLabel(purpose: RuleQueryExecution["purpose"]): string {
+function executionPurposeLabel(
+  purpose: RuleQueryExecution["purpose"],
+  t: Translate,
+): string {
   return purpose === "mandatory-link-coverage"
-    ? "Mandatory Link Coverage"
-    : "Semantic Rule Selection";
+    ? t("reasoningAgent.page.executionPurpose.mandatoryLinkCoverage")
+    : t("reasoningAgent.page.executionPurpose.semanticRuleSelection");
 }
 
 function EvidenceFactList({
   facts,
+  t,
 }: {
   facts: VisibleEvidenceAnalysis["facts"];
+  t: Translate;
 }) {
   return (
     <div className={styles.factList}>
@@ -1968,10 +2181,14 @@ function EvidenceFactList({
             <span
               style={{ color: fact.verified ? "var(--green)" : "var(--amber)" }}
             >
-              {fact.verified ? "verified" : "unverified"}
+              {fact.verified
+                ? t("reasoningAgent.page.verified")
+                : t("reasoningAgent.page.unverified")}
             </span>
           </div>
-          <div className={styles.factValue}>{fact.value ?? "未解析"}</div>
+          <div className={styles.factValue}>
+            {fact.value ?? t("reasoningAgent.page.unparsed")}
+          </div>
           <code>{fact.evidencePath}</code>
           <p>{fact.relevance}</p>
         </article>
@@ -1984,10 +2201,12 @@ function RulePoolCard({
   rules,
   evidencePlan,
   funnel,
+  t,
 }: {
   rules: RetrievedRule[];
   evidencePlan: VisibleEvidenceAnalysis["ruleEvidencePlan"];
   funnel: { scanned: number | null; matched: number | null; selected: number };
+  t: Translate;
 }) {
   if (rules.length === 0) return null;
   const planByRule = new Map(
@@ -2000,20 +2219,26 @@ function RulePoolCard({
     >
       <CardHeading
         index="03B"
-        title="RuleBundle · 入选规则与事实关联"
+        title={t("reasoningAgent.page.card.ruleBundleSelected")}
         status="completed"
+        t={t}
       />
       <div className={styles.metricGrid}>
-        <Metric label="Allmeta scanned" value={funnel.scanned ?? "—"} />
-        <Metric label="semantic matched" value={funnel.matched ?? "—"} />
-        <Metric label="selected" value={funnel.selected} tone="green" />
+        <Metric
+          label={t("reasoningAgent.page.metric.allmetaScanned")}
+          value={funnel.scanned ?? "—"}
+        />
+        <Metric
+          label={t("reasoningAgent.page.metric.semanticMatched")}
+          value={funnel.matched ?? "—"}
+        />
+        <Metric
+          label={t("reasoningAgent.page.metric.selected")}
+          value={funnel.selected}
+          tone="green"
+        />
       </div>
-      <p className={styles.cardText}>
-        规则通过 SCOPED_TO、GOVERNS、APPLIES_TO、RELEVANT_TO
-        三元组进入规则池；规范 Action 必须通过 GOVERNS/RELEVANT_TO
-        构成能力语义门。下方“事实关联”是 QualifiedAgent
-        的查证路线，不等同于通过或违反。
-      </p>
+      <p className={styles.cardText}>{t("reasoningAgent.page.rulePoolBody")}</p>
       <div className={styles.selectionRuleList}>
         {rules.map((rule, index) => {
           const plan = planByRule.get(rule.id);
@@ -2028,36 +2253,48 @@ function RulePoolCard({
               <div className={styles.chipRow}>
                 <span className={styles.pill}>{rule.enforcementLevel}</span>
                 <span className={styles.pill}>
-                  {scopeLabel(ruleScope(rule))}
+                  {scopeLabel(ruleScope(rule), t)}
                 </span>
-                <span className={styles.pill}>score {rule.selectionScore}</span>
                 <span className={styles.pill}>
-                  {rule.linkPaths?.length ?? 0} link triples
+                  {t("reasoningAgent.page.scoreLabel", {
+                    score: rule.selectionScore,
+                  })}
+                </span>
+                <span className={styles.pill}>
+                  {t("reasoningAgent.page.linkTriplesCount", {
+                    count: rule.linkPaths?.length ?? 0,
+                  })}
                 </span>
                 {plan ? (
-                  <span className={styles.pill}>signal · {plan.relevance}</span>
+                  <span className={styles.pill}>
+                    {t("reasoningAgent.page.meta.signal")} · {plan.relevance}
+                  </span>
                 ) : null}
               </div>
               <div className={styles.selectionReasonRow}>
-                <span>为何进入 RuleBundle</span>
+                <span>{t("reasoningAgent.page.whyEnteredRuleBundle")}</span>
                 <strong>
-                  {rule.matchReasons.map(humanizeMatchReason).join(" · ") ||
+                  {rule.matchReasons
+                    .map((reason) => humanizeMatchReason(reason, t))
+                    .join(" · ") ||
                     rule.scopeReason ||
-                    "Allmeta 语义 Link 路径匹配"}
+                    t("reasoningAgent.page.allmetaSemanticLinkMatch")}
                 </strong>
               </div>
               {(rule.matchedAnchors?.length ?? 0) > 0 ? (
                 <div className={styles.metaLine}>
-                  matched anchors · {rule.matchedAnchors.join(" · ")}
+                  {t("reasoningAgent.page.meta.matchedAnchors")} ·{" "}
+                  {rule.matchedAnchors.join(" · ")}
                 </div>
               ) : null}
               <SemanticLinkPaths
                 paths={rule.linkPaths ?? []}
                 ruleId={rule.id}
+                t={t}
               />
               {plan ? (
                 <div className={styles.ruleEvidencePlan}>
-                  <strong>LLM 事实关联</strong>
+                  <strong>{t("reasoningAgent.page.llmFactLinkage")}</strong>
                   <p>{plan.summary}</p>
                   {plan.evidence.length > 0 ? (
                     <ul>
@@ -2080,13 +2317,14 @@ function RulePoolCard({
                       ))}
                     </ul>
                   ) : (
-                    <div className={styles.metaLine}>没有直接事实信号</div>
+                    <div className={styles.metaLine}>
+                      {t("reasoningAgent.page.noDirectFactSignal")}
+                    </div>
                   )}
                 </div>
               ) : (
                 <div className={styles.metaLine}>
-                  尚无结构化 fact → rule 路线；最终引用证据见 QualifiedAgent
-                  判定卡。
+                  {t("reasoningAgent.page.noStructuredFactRoute")}
                 </div>
               )}
             </article>
@@ -2100,20 +2338,24 @@ function RulePoolCard({
 function SemanticLinkPaths({
   paths,
   ruleId,
+  t,
 }: {
   paths: RetrievedRule["linkPaths"];
   ruleId: string;
+  t: Translate;
 }) {
   if (paths.length === 0) {
     return (
       <div className={styles.scopeWarning}>
-        该历史规则没有语义 Link 回执；新运行不会接受这种结果。
+        {t("reasoningAgent.page.noSemanticLinkReceipt")}
       </div>
     );
   }
   return (
     <details className={styles.linkPathDetails}>
-      <summary>Semantic Link Paths · {paths.length}</summary>
+      <summary>
+        {t("reasoningAgent.page.semanticLinkPaths")} · {paths.length}
+      </summary>
       <div className={styles.linkPathList}>
         {paths.map((path, index) => (
           <article
@@ -2134,14 +2376,30 @@ function SemanticLinkPaths({
             </div>
             <p>{path.semanticRelationship}</p>
             <div className={styles.metaLine}>
-              link_id · {path.linkId ?? "—"} · status · {path.status ?? "—"}
+              link_id · {path.linkId ?? "—"} ·{" "}
+              {t("reasoningAgent.page.meta.status")} ·{" "}
+              {path.status ? (
+                <span
+                  title={t("reasoningAgent.page.rawStatusTitle", {
+                    status: path.status,
+                  })}
+                >
+                  {statusLabel(path.status, t)}
+                </span>
+              ) : (
+                "—"
+              )}
               {path.confidence == null
                 ? ""
-                : ` · confidence · ${path.confidence.toFixed(3)}`}
+                : ` · ${t("reasoningAgent.page.meta.confidence")} · ${path.confidence.toFixed(3)}`}
             </div>
             {path.evidence.length > 0 ? (
               <details className={styles.linkEvidence}>
-                <summary>{path.evidence.length} 条 link evidence</summary>
+                <summary>
+                  {t("reasoningAgent.page.linkEvidenceCount", {
+                    count: path.evidence.length,
+                  })}
+                </summary>
                 <JsonBlock value={path.evidence} />
               </details>
             ) : null}
@@ -2154,8 +2412,10 @@ function SemanticLinkPaths({
 
 function QualifiedAssessmentList({
   assessments,
+  t,
 }: {
   assessments: RuleAssessment[];
+  t: Translate;
 }) {
   const priority: Record<RuleAssessment["status"], number> = {
     violated: 0,
@@ -2172,7 +2432,9 @@ function QualifiedAssessmentList({
       className={styles.qualificationList}
       data-testid="qualified-agent-assessments"
     >
-      <div className={styles.subLabel}>逐条判定与证据</div>
+      <div className={styles.subLabel}>
+        {t("reasoningAgent.page.perRuleAssessmentEvidence")}
+      </div>
       {ordered.map((assessment) => (
         <article
           className={styles.qualificationItem}
@@ -2185,8 +2447,13 @@ function QualifiedAssessmentList({
             <strong>
               {assessment.ruleId} · {assessment.ruleName}
             </strong>
-            <span style={{ color: statusColor(assessment.status) }}>
-              {assessment.status}
+            <span
+              style={{ color: statusColor(assessment.status) }}
+              title={t("reasoningAgent.page.rawStatusTitle", {
+                status: assessment.status,
+              })}
+            >
+              {statusLabel(assessment.status, t)}
             </span>
           </div>
           <div className={styles.chipRow}>
@@ -2201,7 +2468,9 @@ function QualifiedAssessmentList({
               ))}
             </ul>
           ) : (
-            <div className={styles.metaLine}>未引用直接 evidence path</div>
+            <div className={styles.metaLine}>
+              {t("reasoningAgent.page.noDirectEvidencePath")}
+            </div>
           )}
         </article>
       ))}
@@ -2211,19 +2480,29 @@ function QualifiedAssessmentList({
 
 function PartialRuleSelectionCards({
   selection,
+  t,
 }: {
   selection: RuleSelectionToolData;
+  t: Translate;
 }) {
   return (
     <>
       <section className={styles.auditCard}>
-        <CardHeading index="02C" title="Intent Reasoner" status="completed" />
+        <CardHeading
+          index="02C"
+          title={t("reasoningAgent.page.card.intentReasoner")}
+          status="completed"
+          t={t}
+        />
         <div className={styles.callout}>
           {selection.queryAgent.rationale ||
-            `已锁定 ${selection.scenario} 场景与 ${selection.action} Action。`}
+            t("reasoningAgent.page.lockedScenarioAction", {
+              scenario: selection.scenario,
+              action: selection.action,
+            })}
         </div>
         <p className={styles.cardText}>
-          这是工具调用的可审计选择摘要；不展示模型私有隐藏思维链。
+          {t("reasoningAgent.page.toolAuditableSelectionSummary")}
         </p>
       </section>
       <CypherExecutionCard
@@ -2239,6 +2518,7 @@ function PartialRuleSelectionCards({
         queryIr={selection.queryIr}
         diagnostics={selection.queryAgent.diagnostics}
         ruleCount={selection.rules.length}
+        t={t}
       />
     </>
   );
@@ -2250,12 +2530,16 @@ export function PromptCompilerCard({
   qualifiedRun,
   ruleBundleId,
   executedPrompt,
+  language = "en",
+  t,
 }: {
   prompt: CompiledPrompt | null;
   receipt: ReasoningToolAudit["compilerReceipt"];
   qualifiedRun: QualifiedAgentRunReceipt | null;
   ruleBundleId: string | null;
   executedPrompt: ReasoningToolAudit["executedQualifiedPrompt"];
+  language?: "en" | "zh";
+  t: Translate;
 }) {
   const compiler = prompt ?? receipt?.compilerReceipt ?? null;
   const child = qualifiedRun ?? receipt?.qualifiedRun ?? null;
@@ -2271,13 +2555,14 @@ export function PromptCompilerCard({
   const receiptMismatch =
     binding.status === "mismatch" || executedContentMatches === false;
   const visibleStatus = receiptMismatch
-    ? "receipt mismatch"
+    ? t("reasoningAgent.page.receiptMismatch")
     : binding.status === "verified"
-      ? "receipt verified"
+      ? t("reasoningAgent.page.receiptVerified")
       : binding.status === "awaiting_child"
-        ? "awaiting child"
-        : "legacy / unverified";
-  const compilerVersion = compiler?.compilerVersion ?? "unknown compiler";
+        ? t("reasoningAgent.page.awaitingChild")
+        : t("reasoningAgent.page.legacyUnverified");
+  const compilerVersion =
+    compiler?.compilerVersion ?? t("reasoningAgent.page.unknownCompiler");
   const compilerId = compiler?.compilerId ?? "—";
   const promptSha256 = compiler?.promptSha256 ?? "—";
   const fullSemanticPathsSha256 =
@@ -2288,10 +2573,10 @@ export function PromptCompilerCard({
   const assessmentCount =
     child?.assessmentCount ?? receipt?.assessmentCount ?? null;
   const promptSource = prompt
-    ? "reasoning-result compiledPrompt"
+    ? t("reasoningAgent.page.promptSourceReasoningResult")
     : executedPrompt
-      ? "verified QualifiedAgent child input"
-      : "compact compiler receipt";
+      ? t("reasoningAgent.page.promptSourceVerifiedChild")
+      : t("reasoningAgent.page.promptSourceCompactReceipt");
 
   return (
     <section
@@ -2300,55 +2585,78 @@ export function PromptCompilerCard({
     >
       <CardHeading
         index="04"
-        title="Prompt Compiler"
+        title={t("reasoningAgent.page.card.promptCompiler")}
         status={receiptMismatch ? "blocked" : visibleStatus}
+        t={t}
       />
       <div className={styles.chipRow}>
         <span className={styles.pill}>{compilerVersion}</span>
-        <span className={styles.pill}>{ruleCount} rules</span>
         <span className={styles.pill}>
-          {prompt?.evidenceKeys.length ?? "—"} evidence keys
+          {t("reasoningAgent.page.rulesCount", { count: ruleCount })}
         </span>
         <span className={styles.pill}>
-          {prompt?.semanticLinkCount ?? "—"} semantic links
+          {t("reasoningAgent.page.evidenceKeysCount", {
+            count: prompt?.evidenceKeys.length ?? "—",
+          })}
         </span>
         <span className={styles.pill}>
-          {prompt?.evidencePlan?.length ?? "—"} evidence routes
+          {t("reasoningAgent.page.semanticLinksCount", {
+            count: prompt?.semanticLinkCount ?? "—",
+          })}
+        </span>
+        <span className={styles.pill}>
+          {t("reasoningAgent.page.evidenceRoutesCount", {
+            count: prompt?.evidencePlan?.length ?? "—",
+          })}
         </span>
       </div>
       <p className={styles.cardText}>
-        本卡展示的是 Intent/Harness、QueryAgent RuleBundle
-        与实例证据动态编译后的实际执行输入；固定安全指令与动态业务数据保持分层，不展示模型私有隐藏思维链。
+        {t("reasoningAgent.page.promptCompilerBody")}
       </p>
       <div className={styles.metaGrid}>
         <span>compiler id</span>
         <strong>{compilerId}</strong>
-        <span>scenario</span>
+        <span>{t("reasoningAgent.page.meta.scenario")}</span>
         <strong>
-          {prompt?.scenario ?? "compact receipt / see runtime input"}
+          {prompt?.scenario ??
+            t("reasoningAgent.page.compactReceiptSeeRuntime")}
         </strong>
-        <span>harness methods</span>
+        <span>{t("reasoningAgent.page.meta.harnessMethods")}</span>
         <strong>{prompt?.harnessPlan?.methods.join(" → ") || "—"}</strong>
         <span>RuleBundle</span>
         <strong>{ruleBundleId ?? child?.ruleBundleId ?? "—"}</strong>
-        <span>prompt source</span>
+        <span>{t("reasoningAgent.page.meta.promptSource")}</span>
         <strong>{promptSource}</strong>
-        <span>prompt chars</span>
+        <span>{t("reasoningAgent.page.meta.promptCharacters")}</span>
         <strong>
-          {systemPrompt == null ? "—" : systemPrompt.length.toLocaleString()}{" "}
-          system /{" "}
-          {userPrompt == null ? "—" : userPrompt.length.toLocaleString()} user
+          {t("reasoningAgent.page.format.promptCharacters", {
+            system:
+              systemPrompt == null
+                ? "—"
+                : systemPrompt.length.toLocaleString(
+                    language === "zh" ? "zh-CN" : "en-US",
+                  ),
+            user:
+              userPrompt == null
+                ? "—"
+                : userPrompt.length.toLocaleString(
+                    language === "zh" ? "zh-CN" : "en-US",
+                  ),
+          })}
         </strong>
       </div>
       <div className={styles.subLabel} data-testid="prompt-compiler-receipt">
-        Immutable receipts
+        {t("reasoningAgent.page.immutableReceipts")}
       </div>
       <div className={styles.metaGrid}>
         <span>prompt sha256</span>
         <strong>{promptSha256}</strong>
         <span>semantic paths sha256</span>
-        <strong>{fullSemanticPathsSha256 ?? "legacy / not recorded"}</strong>
-        <span>compiler ↔ child</span>
+        <strong>
+          {fullSemanticPathsSha256 ??
+            t("reasoningAgent.page.legacyNotRecorded")}
+        </strong>
+        <span>{t("reasoningAgent.page.meta.compilerChild")}</span>
         <strong
           style={{
             color: receiptMismatch
@@ -2360,34 +2668,32 @@ export function PromptCompilerCard({
         >
           {visibleStatus}
         </strong>
-        <span>compiled ↔ child messages</span>
+        <span>{t("reasoningAgent.page.meta.compiledChildMessages")}</span>
         <strong>
           {executedContentMatches == null
             ? executedPrompt
-              ? "child input recovered"
-              : "child messages not loaded"
+              ? t("reasoningAgent.page.childInputRecovered")
+              : t("reasoningAgent.page.childMessagesNotLoaded")
             : executedContentMatches
-              ? "exact match"
-              : "mismatch"}
+              ? t("reasoningAgent.page.exactMatch")
+              : t("reasoningAgent.page.mismatch")}
         </strong>
       </div>
       {child ? (
         <>
           <div className={styles.subLabel}>
-            QualifiedAgent execution receipt
+            {t("reasoningAgent.page.qualifiedAgentExecutionReceipt")}
           </div>
           <div className={styles.metaGrid}>
-            <span>child run</span>
+            <span>{t("reasoningAgent.page.meta.childRun")}</span>
             <strong>{child.runId}</strong>
-            <span>provider / model</span>
+            <span>{t("reasoningAgent.page.meta.providerModel")}</span>
             <strong>
               {child.provider} / {child.model}
             </strong>
-            <span>tokens</span>
-            <strong>
-              {child.tokensIn ?? 0} in / {child.tokensOut ?? 0} out
-            </strong>
-            <span>duration / assessments</span>
+            <span>{t("reasoningAgent.page.meta.tokens")}</span>
+            <strong>{tokenIoLabel(child.tokensIn, child.tokensOut, t)}</strong>
+            <span>{t("reasoningAgent.page.meta.durationAssessments")}</span>
             <strong>
               {child.durationMs} ms / {assessmentCount ?? "—"}
             </strong>
@@ -2396,34 +2702,34 @@ export function PromptCompilerCard({
       ) : null}
       {receiptMismatch ? (
         <div className={styles.scopeWarning} role="alert">
-          编译回执、RuleBundle 或 QualifiedAgent 实际输入不一致。该 Prompt
-          不应被视为已验证执行输入，请导出审计日志排查。
+          {t("reasoningAgent.page.receiptMismatchWarning")}
         </div>
       ) : null}
       {systemPrompt && userPrompt ? (
         <>
           <div className={styles.promptPrivacyNotice}>
-            完整 Prompt 含本轮实例数据，仅在当前受权限保护的 Reasoning
-            审计页按需展开。
+            {t("reasoningAgent.page.promptPrivacyNotice")}
           </div>
           <details
             className={styles.codeDetails}
             data-testid="prompt-system-details"
           >
-            <summary>查看完整 system prompt</summary>
+            <summary>{t("reasoningAgent.page.viewFullSystemPrompt")}</summary>
             <pre className={styles.promptBlock}>{systemPrompt}</pre>
           </details>
           <details
             className={styles.codeDetails}
             data-testid="prompt-user-details"
           >
-            <summary>查看完整 user prompt + RuleBundle</summary>
+            <summary>{t("reasoningAgent.page.viewFullUserPrompt")}</summary>
             <pre className={styles.promptBlock}>{userPrompt}</pre>
           </details>
           {prompt?.evidencePlan?.length ? (
             <details className={styles.codeDetails}>
               <summary>
-                查看 {prompt.evidencePlan.length} 条 fact → rule 查证路线
+                {t("reasoningAgent.page.viewFactRuleRoutes", {
+                  count: prompt.evidencePlan.length,
+                })}
               </summary>
               <JsonBlock value={prompt.evidencePlan} />
             </details>
@@ -2431,8 +2737,7 @@ export function PromptCompilerCard({
         </>
       ) : (
         <p className={styles.cardText}>
-          当前只收到 compact receipt；完整 Prompt 会从已验证的 QualifiedAgent
-          child step 输入恢复，或在最终 reasoning-result 生成后显示。
+          {t("reasoningAgent.page.compactReceiptOnly")}
         </p>
       )}
     </section>
@@ -2442,16 +2747,17 @@ export function PromptCompilerCard({
 function RulesCards({
   output,
   selection,
+  t,
 }: {
   output: ReasoningOutput | null;
   selection: RuleSelectionToolData | null;
+  t: Translate;
 }) {
   const rules = output?.audit.ruleSelection.selectedRules ?? selection?.rules;
   if (!rules || rules.length === 0) {
     return (
       <div className={styles.emptyInspector}>
-        Rule Selector 完成后，这里会显示 Allmeta 返回的完整规则与 QualifiedAgent
-        判定。
+        {t("reasoningAgent.page.rulesEmptyHint")}
       </div>
     );
   }
@@ -2477,27 +2783,33 @@ function RulesCards({
   return (
     <div className={styles.rulesCard}>
       <div className={styles.rulesHeader}>
-        <span>Allmeta RuleBundle</span>
+        <span>{t("reasoningAgent.page.allmetaRuleBundle")}</span>
         <span className={styles.pill}>
-          {mandatoryCount} mandatory · {optionalCount} optional
+          {t("reasoningAgent.page.mandatoryOptionalCount", {
+            mandatory: mandatoryCount,
+            optional: optionalCount,
+          })}
         </span>
       </div>
       <div className={`${styles.scopeGrid} ${styles.rulesScopeGrid}`}>
         <Metric
-          label="CSI 通用"
+          label={t("reasoningAgent.page.scope.csiUniversal")}
           value={selectedScopeCounts.csi_universal}
           tone="green"
         />
-        <Metric label="客户通用" value={selectedScopeCounts.client_general} />
         <Metric
-          label="客户部门"
+          label={t("reasoningAgent.page.scope.clientGeneral")}
+          value={selectedScopeCounts.client_general}
+        />
+        <Metric
+          label={t("reasoningAgent.page.scope.clientDepartment")}
           value={selectedScopeCounts.client_department}
           tone="amber"
         />
       </div>
       {!output ? (
         <div className={styles.metaLine}>
-          Rule Selector 已完成；QualifiedAgent 尚未产生最终逐条判定。
+          {t("reasoningAgent.page.ruleSelectorDoneNoAssessment")}
         </div>
       ) : null}
       {rules.map((rule) => {
@@ -2525,15 +2837,23 @@ function RulesCards({
               <span className={styles.ruleLevel}>{rule.enforcementLevel}</span>
             </summary>
             <div className={styles.ruleBody}>
-              <div className={styles.subLabel}>入选依据</div>
+              <div className={styles.subLabel}>
+                {t("reasoningAgent.page.selectionBasis")}
+              </div>
               <div className={styles.chipRow}>
                 <span className={styles.pill}>
-                  {scopeLabel(ruleScope(rule))}
+                  {scopeLabel(ruleScope(rule), t)}
                 </span>
                 <span className={styles.pill}>{rule.failurePolicy}</span>
-                <span className={styles.pill}>score {rule.selectionScore}</span>
                 <span className={styles.pill}>
-                  {rule.linkPaths?.length ?? 0} link triples
+                  {t("reasoningAgent.page.scoreLabel", {
+                    score: rule.selectionScore,
+                  })}
+                </span>
+                <span className={styles.pill}>
+                  {t("reasoningAgent.page.linkTriplesCount", {
+                    count: rule.linkPaths?.length ?? 0,
+                  })}
                 </span>
                 {rule.matchReasons.map((reason) => (
                   <span className={styles.pill} key={reason}>
@@ -2542,31 +2862,44 @@ function RulesCards({
                 ))}
               </div>
               {rule.scopeReason ? (
-                <RuleField label="Scope path" value={rule.scopeReason} />
+                <RuleField
+                  label={t("reasoningAgent.page.field.scopePath")}
+                  value={rule.scopeReason}
+                />
               ) : null}
               {(rule.matchedAnchors?.length ?? 0) > 0 ? (
                 <RuleField
-                  label="命中锚点"
+                  label={t("reasoningAgent.page.field.matchedAnchors")}
                   value={rule.matchedAnchors.join(" · ")}
                 />
               ) : null}
               <SemanticLinkPaths
                 paths={rule.linkPaths ?? []}
                 ruleId={rule.id}
+                t={t}
               />
-              <RuleField label="规则逻辑" value={rule.logic} />
-              <RuleField label="提交条件" value={rule.submissionCriteria} />
-              <RuleField label="业务原因" value={rule.businessReason} />
               <RuleField
-                label="适用客户/部门"
+                label={t("reasoningAgent.page.field.ruleLogic")}
+                value={rule.logic}
+              />
+              <RuleField
+                label={t("reasoningAgent.page.field.submissionCriteria")}
+                value={rule.submissionCriteria}
+              />
+              <RuleField
+                label={t("reasoningAgent.page.field.businessReason")}
+                value={rule.businessReason}
+              />
+              <RuleField
+                label={t("reasoningAgent.page.field.applicableClientDept")}
                 value={
                   [rule.applicableClient, rule.applicableDepartment]
                     .filter(Boolean)
-                    .join(" / ") || "通用"
+                    .join(" / ") || t("reasoningAgent.page.generic")
                 }
               />
               <RuleField
-                label="关联对象"
+                label={t("reasoningAgent.page.field.relatedObjects")}
                 value={
                   [...rule.relatedObjectTypes, ...rule.relatedEntities].join(
                     ", ",
@@ -2575,9 +2908,16 @@ function RulesCards({
               />
               {assessment ? (
                 <div className={styles.assessmentBox}>
-                  <div className={styles.subLabel}>QualifiedAgent 判定依据</div>
-                  <strong style={{ color: statusColor(assessment.status) }}>
-                    QualifiedAgent · {assessment.status}
+                  <div className={styles.subLabel}>
+                    {t("reasoningAgent.page.qualifiedAgentAssessmentBasis")}
+                  </div>
+                  <strong
+                    style={{ color: statusColor(assessment.status) }}
+                    title={t("reasoningAgent.page.rawStatusTitle", {
+                      status: assessment.status,
+                    })}
+                  >
+                    QualifiedAgent · {statusLabel(assessment.status, t)}
                   </strong>
                   <p>{assessment.reason}</p>
                   {assessment.evidence.length > 0 ? (
@@ -2601,26 +2941,32 @@ function ExecutionLog({
   run,
   steps,
   children,
+  t,
 }: {
   run: ReasoningRunResponse["run"] | null;
   steps: ReasoningRunStep[];
   children: ReasoningRunResponse["children"];
+  t: Translate;
 }) {
   if (!run)
     return (
       <div className={styles.emptyInspector}>
-        运行开始后，这里会逐步写入真实 LLM 与工具调用日志。
+        {t("reasoningAgent.page.logEmptyHint")}
       </div>
     );
   return (
     <div className={styles.cardStack}>
       <section className={styles.auditCard}>
-        <CardHeading index="LOG" title="完整公开审计日志" status={run.status} />
+        <CardHeading
+          index="LOG"
+          title={t("reasoningAgent.page.card.fullPublicAuditLog")}
+          status={run.status}
+          t={t}
+        />
         <p className={styles.cardText}>
-          保留真实 LLM / 工具 I/O；凭证、会话信息与 provider
-          私有思维字段会被脱敏。
+          {t("reasoningAgent.page.auditLogBody")}
         </p>
-        <JsonBlock value={publicAuditPayload(run)} />
+        <JsonBlock value={publicAuditPayload(run, t)} />
       </section>
       {steps.map((step) => (
         <details
@@ -2636,7 +2982,9 @@ function ExecutionLog({
             <span className={styles.logOrd}>
               {String(step.ord).padStart(2, "0")}
             </span>
-            <span className={styles.logName}>{humanStepName(step, steps)}</span>
+            <span className={styles.logName}>
+              {humanStepName(step, t, steps)}
+            </span>
             <span
               style={{
                 color: statusColor(
@@ -2648,22 +2996,32 @@ function ExecutionLog({
                 ),
               }}
             >
-              {step.status}
+              <span
+                title={t("reasoningAgent.page.rawStatusTitle", {
+                  status: step.status,
+                })}
+              >
+                {statusLabel(step.status, t)}
+              </span>
             </span>
           </summary>
           <div className={styles.logBody}>
             <div className={styles.metaLine}>
               {step.type} · {step.provider ?? "local"}/{step.model ?? "tool"} ·{" "}
-              {step.durationMs ?? 0} ms · {step.tokensIn ?? 0}/
-              {step.tokensOut ?? 0} tokens
+              {step.durationMs ?? 0} ms ·{" "}
+              {tokenIoLabel(step.tokensIn, step.tokensOut, t)}
             </div>
             {step.error ? (
               <div className={styles.error}>{step.error}</div>
             ) : null}
-            <div className={styles.subLabel}>Input</div>
-            <JsonBlock value={publicAuditPayload(step.input)} />
-            <div className={styles.subLabel}>Output</div>
-            <JsonBlock value={publicAuditPayload(step.output)} />
+            <div className={styles.subLabel}>
+              {t("reasoningAgent.page.input")}
+            </div>
+            <JsonBlock value={publicAuditPayload(step.input, t)} />
+            <div className={styles.subLabel}>
+              {t("reasoningAgent.page.output")}
+            </div>
+            <JsonBlock value={publicAuditPayload(step.output, t)} />
           </div>
         </details>
       ))}
@@ -2673,8 +3031,9 @@ function ExecutionLog({
             index="CHILD"
             title={`QualifiedAgent · ${child.run.id}`}
             status={child.run.status}
+            t={t}
           />
-          <JsonBlock value={publicAuditPayload(child.run)} />
+          <JsonBlock value={publicAuditPayload(child.run, t)} />
           {child.steps.map((step) => (
             <details
               className={styles.logStep}
@@ -2686,24 +3045,35 @@ function ExecutionLog({
                   {String(step.ord).padStart(2, "0")}
                 </span>
                 <span className={styles.logName}>
-                  {humanStepName(step, child.steps, "qualified")}
+                  {humanStepName(step, t, child.steps, "qualified")}
                 </span>
-                <span>{step.status}</span>
+                <span
+                  title={t("reasoningAgent.page.rawStatusTitle", {
+                    status: step.status,
+                  })}
+                >
+                  {statusLabel(step.status, t)}
+                </span>
               </summary>
               <div className={styles.logBody}>
                 <div className={styles.metaLine}>
-                  child run · {step.provider ?? "local"}/{step.model ?? "tool"}
+                  {t("reasoningAgent.page.meta.childRun")} ·{" "}
+                  {step.provider ?? "local"}/{step.model ?? "tool"}
                   {" · "}
-                  {step.durationMs ?? 0} ms · {step.tokensIn ?? 0}/
-                  {step.tokensOut ?? 0} tokens
+                  {step.durationMs ?? 0} ms ·{" "}
+                  {tokenIoLabel(step.tokensIn, step.tokensOut, t)}
                 </div>
                 {step.error ? (
                   <div className={styles.error}>{step.error}</div>
                 ) : null}
-                <div className={styles.subLabel}>Input</div>
-                <JsonBlock value={publicAuditPayload(step.input)} />
-                <div className={styles.subLabel}>Output</div>
-                <JsonBlock value={publicAuditPayload(step.output)} />
+                <div className={styles.subLabel}>
+                  {t("reasoningAgent.page.input")}
+                </div>
+                <JsonBlock value={publicAuditPayload(step.input, t)} />
+                <div className={styles.subLabel}>
+                  {t("reasoningAgent.page.output")}
+                </div>
+                <JsonBlock value={publicAuditPayload(step.output, t)} />
               </div>
             </details>
           ))}
@@ -2717,10 +3087,12 @@ function CardHeading({
   index,
   title,
   status,
+  t,
 }: {
   index: string;
   title: string;
   status: string;
+  t: Translate;
 }) {
   const mapped: RuntimeStatus =
     status === "failed" || status === "cancelled" || status === "blocked"
@@ -2737,8 +3109,9 @@ function CardHeading({
       <span
         className={styles.cardStatus}
         style={{ color: statusColor(mapped) }}
+        title={t("reasoningAgent.page.rawStatusTitle", { status })}
       >
-        {status}
+        {statusLabel(status, t)}
       </span>
     </div>
   );
@@ -2787,17 +3160,21 @@ function JsonBlock({ value }: { value: unknown }) {
   );
 }
 
-function formatTimestamp(value: string): string {
+function formatTimestamp(value: string, language: "en" | "zh"): string {
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleTimeString();
+  return Number.isNaN(date.getTime())
+    ? value
+    : date.toLocaleTimeString(language === "zh" ? "zh-CN" : "en-US");
 }
 
 function RuntimeGraph({
   agents,
   edges,
+  t,
 }: {
   agents: RuntimeAgent[];
   edges: Array<{ from: string; to: string }>;
+  t: Translate;
 }) {
   const nodes = agents.slice(0, 8);
   const y = nodes.map((_, index) => 42 + index * 70);
@@ -2810,7 +3187,7 @@ function RuntimeGraph({
       className={styles.graph}
       viewBox={`0 0 340 ${viewHeight}`}
       role="img"
-      aria-label="Reasoning Agent runtime graph"
+      aria-label={t("reasoningAgent.page.runtimeGraphAriaLabel")}
     >
       <defs>
         <marker
@@ -2868,7 +3245,12 @@ function RuntimeGraph({
               {node.label}
             </text>
             <text x="275" y="20" textAnchor="end" fill={color} fontSize="9.5">
-              {node.status}
+              <title>
+                {t("reasoningAgent.page.rawStatusTitle", {
+                  status: node.status,
+                })}
+              </title>
+              {statusLabel(node.status, t)}
             </text>
             <text x="18" y="38" fill="var(--text-3)" fontSize="9.5">
               {node.detail.length > 47

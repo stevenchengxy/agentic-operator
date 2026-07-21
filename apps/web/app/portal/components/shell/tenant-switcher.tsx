@@ -132,8 +132,14 @@ export function TenantSwitcher({
         }}
         aria-haspopup="listbox"
         aria-expanded={open}
-        aria-label={`${active.name} tenant. ${expanded ? "Switch tenant" : "Open tenant switcher"}`}
-        data-sidebar-tooltip={`Tenant: ${active.name}`}
+        aria-label={
+          expanded
+            ? t("tenantSwitcher.switchAria", { name: active.name })
+            : t("tenantSwitcher.openAria", { name: active.name })
+        }
+        data-sidebar-tooltip={t("tenantSwitcher.tooltip", {
+          name: active.name,
+        })}
         className={styles.tenantButton}
       >
         <div

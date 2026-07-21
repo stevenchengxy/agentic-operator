@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import type { ReactNode } from "react";
+import { useI18n } from "@/app/portal/lib/preferences-context";
 
 const FOCUSABLE = [
   "button:not([disabled])",
@@ -47,10 +48,12 @@ export function ModalOverlay({
   ariaLabel?: string;
   ariaLabelledBy?: string;
 }) {
+  const { t } = useI18n();
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const onCloseRef = useRef(onClose);
   const returnFocusRef = useRef<HTMLElement | null>(
-    typeof document !== "undefined" && document.activeElement instanceof HTMLElement
+    typeof document !== "undefined" &&
+      document.activeElement instanceof HTMLElement
       ? document.activeElement
       : null,
   );
@@ -78,7 +81,10 @@ export function ModalOverlay({
       const first = items[0]!;
       const last = items[items.length - 1]!;
       const active = document.activeElement;
-      if (e.shiftKey && (active === first || !dialogRef.current.contains(active))) {
+      if (
+        e.shiftKey &&
+        (active === first || !dialogRef.current.contains(active))
+      ) {
         e.preventDefault();
         last.focus();
       } else if (!e.shiftKey && active === last) {
@@ -124,7 +130,9 @@ export function ModalOverlay({
         ref={dialogRef}
         role="dialog"
         aria-modal="true"
-        aria-label={ariaLabel ?? (ariaLabelledBy ? undefined : "Dialog")}
+        aria-label={
+          ariaLabel ?? (ariaLabelledBy ? undefined : t("common.dialog"))
+        }
         aria-labelledby={ariaLabelledBy}
         tabIndex={-1}
         onClick={(e) => e.stopPropagation()}

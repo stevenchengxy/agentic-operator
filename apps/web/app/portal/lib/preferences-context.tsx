@@ -42,10 +42,21 @@ export type SetPref = <K extends keyof Preferences>(
   val?: Preferences[K],
 ) => void;
 
+/**
+ * The translator signature. Exported so pure (`.ts`, no-JSX) projection/view
+ * modules can accept a `t` parameter threaded in from a component that holds
+ * the `useI18n()` hook — the modules stay hook-free while their user-facing
+ * strings still switch language.
+ */
+export type Translate = (
+  key: string,
+  vars?: Record<string, string | number>,
+) => string;
+
 interface PreferencesContextValue {
   prefs: Preferences;
   setPref: SetPref;
-  t: (key: string, vars?: Record<string, string | number>) => string;
+  t: Translate;
 }
 
 const PreferencesContext = createContext<PreferencesContextValue | null>(null);

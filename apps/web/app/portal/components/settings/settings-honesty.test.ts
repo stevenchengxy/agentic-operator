@@ -29,7 +29,9 @@ describe("Settings production-honesty guard", () => {
   it("persists workspace identity and leaves runtime policy read-only", () => {
     const text = source("./sections/Workspace.tsx");
     expect(text).toContain("useUpdateTenant()");
-    expect(text).toContain('value="Managed by runtime configuration"');
+    expect(text).toContain(
+      'value={t("workspaceSection.managedByRuntime")}',
+    );
     expect(text).not.toMatch(/<Toggle|Save changes/);
   });
 

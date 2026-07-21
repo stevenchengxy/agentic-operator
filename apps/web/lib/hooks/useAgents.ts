@@ -12,12 +12,12 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import type { UseQueryResult } from "@tanstack/react-query";
 import type { AgentSpec } from "@agentic/contracts";
 import { AGENT_KEYS, COUNT_KEYS } from "./useStream";
-import { readApiData } from "@/lib/api-response";
+import { fetchApiData } from "@/lib/api-response";
 import { tenantHeader } from "./tenant-header";
 
 async function callV1<T>(path: string, init: RequestInit = {}): Promise<T> {
   const { headers: initHeaders, ...rest } = init;
-  const res = await fetch(path, {
+  return fetchApiData<T>(path, {
     credentials: "same-origin",
     ...rest,
     headers: {
@@ -26,7 +26,6 @@ async function callV1<T>(path: string, init: RequestInit = {}): Promise<T> {
       ...(initHeaders as Record<string, string> | undefined),
     },
   });
-  return readApiData<T>(res, path);
 }
 
 export interface AgentListRow {
@@ -247,7 +246,9 @@ export function useSetAgentEnabled() {
       }),
     onSettled: (_data, _err, vars) => {
       void client.invalidateQueries({ queryKey: AGENT_KEYS.list });
-      void client.invalidateQueries({ queryKey: AGENT_KEYS.detail(vars.kebabId) });
+      void client.invalidateQueries({
+        queryKey: AGENT_KEYS.detail(vars.kebabId),
+      });
     },
   });
 }
@@ -257,14 +258,19 @@ export function useRenameAgent() {
   const client = useQueryClient();
   return useMutation({
     mutationFn: (vars: { kebabId: string; title: string }) =>
-      callV1<{ kebabId: string; title: string }>(`/v1/agents/${encodeURIComponent(vars.kebabId)}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title: vars.title }),
-      }),
+      callV1<{ kebabId: string; title: string }>(
+        `/v1/agents/${encodeURIComponent(vars.kebabId)}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title: vars.title }),
+        },
+      ),
     onSettled: (_data, _err, vars) => {
       void client.invalidateQueries({ queryKey: AGENT_KEYS.list });
-      void client.invalidateQueries({ queryKey: AGENT_KEYS.detail(vars.kebabId) });
+      void client.invalidateQueries({
+        queryKey: AGENT_KEYS.detail(vars.kebabId),
+      });
     },
   });
 }
@@ -274,7 +280,13 @@ export function useDeleteAgent() {
   const client = useQueryClient();
   return useMutation({
     mutationFn: (vars: { kebabId: string; force?: boolean }) =>
-      callV1<{ kebabId: string; deleted: boolean; disabled: boolean; runCount: number; note?: string }>(
+      callV1<{
+        kebabId: string;
+        deleted: boolean;
+        disabled: boolean;
+        runCount: number;
+        note?: string;
+      }>(
         `/v1/agents/${encodeURIComponent(vars.kebabId)}${vars.force ? "?force=1" : ""}`,
         { method: "DELETE" },
       ),
