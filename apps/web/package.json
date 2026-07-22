@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "node scripts/next-with-env.mjs dev --port 3599",
-    "build": "node scripts/next-with-env.mjs build",
+    "build": "node scripts/next-with-env.mjs build --experimental-build-mode compile",
     "start": "node scripts/next-with-env.mjs start --port 3599",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
