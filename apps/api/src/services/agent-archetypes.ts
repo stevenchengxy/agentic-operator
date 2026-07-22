@@ -539,7 +539,11 @@ function defaultActions(
     type: action.type,
     action_prompt: ACTION_PROMPTS[template][index],
     retries,
-    timeout_s: timeoutS,
+    // `manual` is a durable human wait (orchestrated via step.waitForEvent /
+    // tasks in register.ts), not an executable action — it carries no
+    // execution timeout. Emitting timeout_s for it violates the manifest
+    // schema (TIMEOUT_ACTION_TYPES in manifest.ts).
+    ...(action.type !== "manual" ? { timeout_s: timeoutS } : {}),
     ...(action.type === "manual"
       ? {
           task_type: "approval",
@@ -604,7 +608,9 @@ function authoredActions(
         }
       : {}),
     retries: step.retries ?? inheritedRetries,
-    timeout_s: step.timeoutS ?? inheritedTimeoutS,
+    ...(step.type !== "manual"
+      ? { timeout_s: step.timeoutS ?? inheritedTimeoutS }
+      : {}),
   }));
 }
 

@@ -11,6 +11,19 @@ const productionRoots = [
   "packages/tools/src",
 ] as const;
 
+// The sanctioned, read-only, tenant-scoped `ontology.query` global tool (brought in
+// per the Kenny merge playbook, docs/merge/2026-07-20-kenny-merge-playbook.md line 38)
+// reaches Neo4j exclusively through the HTTP Query API v2 via `fetch` — it never opens
+// a bolt driver. It does legitimately reference Neo4j env-var *names* in its config
+// schema (query.ts) and the registry catalog doc-strings (registry.ts). An env-var name
+// in a config schema is not a direct graph connection, so these two files are exempted
+// from the env-NAME guard ONLY. Every bolt-driver / connection-URI guard below still
+// applies to them in full.
+const neo4jEnvNameAllowlist = new Set([
+  "packages/tools/src/ontology/query.ts",
+  "packages/tools/src/registry.ts",
+]);
+
 function productionTypeScriptFiles(root: string): string[] {
   const output: string[] = [];
   const visit = (directory: string): void => {
@@ -34,29 +47,40 @@ function productionTypeScriptFiles(root: string): string[] {
 
 describe("Agent Factory AllmetaOntology boundary", () => {
   it("does not connect to Neo4j directly from factory, runtime, or generated-tool code", () => {
+    // A direct bolt-driver connection is forbidden everywhere under the production
+    // roots: importing `neo4j-driver`, a bolt:///neo4j:// connection URI, or the
+    // getDriver/runWrite/runQuery access helpers. These are the real
+    // tenant-isolation / long-lived-credential exposure risks and are never exempted.
     const forbidden = [
       /from\s+["']neo4j-driver["']/u,
       /require\(\s*["']neo4j-driver["']\s*\)/u,
       /(?:bolt|neo4j)(?:\+s|\+ssc)?:\/\//iu,
-      /\bNEO4J_(?:URI|USER|PASSWORD|DATABASE)\b/u,
       /\b(?:getDriver|runWrite|runQuery)\s*\(/u,
     ];
+    // Neo4j env-var NAMES in a config schema are not a direct graph connection, so
+    // this guard is scoped: it fires everywhere EXCEPT the sanctioned ontology.query
+    // tool and its registry catalog entry (see neo4jEnvNameAllowlist above).
+    const forbiddenEnvName = /\bNEO4J_(?:URI|USER|PASSWORD|DATABASE)\b/u;
     const violations: string[] = [];
 
     for (const root of productionRoots) {
       for (const file of productionTypeScriptFiles(root)) {
+        const relative = file.slice(workspaceRoot.length + 1);
         const source = readFileSync(file, "utf8");
         for (const pattern of forbidden) {
           if (pattern.test(source)) {
-            violations.push(`${file.slice(workspaceRoot.length + 1)} matched ${pattern}`);
+            violations.push(`${relative} matched ${pattern}`);
           }
+        }
+        if (!neo4jEnvNameAllowlist.has(relative) && forbiddenEnvName.test(source)) {
+          violations.push(`${relative} matched ${forbiddenEnvName}`);
         }
       }
     }
 
     expect(
       violations,
-      "Ontology graph access must go through the AllmetaOntology HTTP API; Neo4j is an internal Allmeta implementation detail.",
+      "The only sanctioned direct Neo4j path is the read-only, tenant-scoped ontology.query HTTP Query API tool; no bolt-driver access from factory, runtime, or tools.",
     ).toEqual([]);
   });
 });

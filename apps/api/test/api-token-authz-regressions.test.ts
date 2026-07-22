@@ -20,14 +20,14 @@ const viewer = {
 };
 const sessionSecret = `token-authz-${suffix}-session-secret-32-chars`;
 
-async function cookieFor(emailSubject: string): Promise<string> {
+async function cookieFor(userId: string): Promise<string> {
   const jwt = await new SignJWT({
-    name: emailSubject,
+    name: userId,
     initials: "QA",
     tenant: tenant.slug,
   })
     .setProtectedHeader({ alg: "HS256" })
-    .setSubject(emailSubject)
+    .setSubject(userId)
     .setIssuedAt()
     .setExpirationTime("1h")
     .sign(new TextEncoder().encode(sessionSecret));
@@ -61,8 +61,8 @@ describe("API-token administrator authorization regressions", () => {
       .run();
     process.env.AUTH_SESSION_SECRET = sessionSecret;
     env = await buildTestEnv();
-    adminCookie = await cookieFor(admin.email);
-    viewerCookie = await cookieFor(viewer.email);
+    adminCookie = await cookieFor(admin.id);
+    viewerCookie = await cookieFor(viewer.id);
   });
 
   afterAll(() => {

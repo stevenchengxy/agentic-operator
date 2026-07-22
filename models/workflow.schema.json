@@ -1,6 +1,6 @@
 {
   "title": "Agentic Operator Workflow Manifest",
-  "description": "Canonical shape of `models/<tenant>-v<n>/workflow_v*.json`. Mirrors the merged `packages/runtime/src/manifest.ts` (WorkflowManifestSchema): Agent Studio V2 authoring fields (per-action provider/model/reasoning overrides, mappings, wait_policy) plus the factory runtime action types (invoke/foreach/emit/decision) and their step fields. Some legacy on-disk shapes (eg `tool_use: \"\"`, array-of-strings tool refs, omitted `name`/`type`/`order` on actions) are tolerated by the runtime and accepted by this schema; the runtime normalizes them at parse time. Unknown extra fields pass through (Zod .passthrough()).",
+  "description": "Canonical shape of `models/<tenant>-v<n>/workflow_v*.json`. Generated from `packages/runtime/src/manifest.ts` (WorkflowManifestSchema). Some legacy on-disk shapes (eg `tool_use: \"\"`, array-of-strings tool refs, omitted `name`/`type`/`order` on actions) are tolerated by the runtime and accepted by this schema; the runtime normalizes them at parse time.",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "array",
   "items": {
@@ -40,6 +40,7 @@
         "type": "array",
         "items": {
           "$ref": "#/$defs/__schema0",
+          "required": [],
           "description": "Step in an agent's action list. On disk either `id` or `order` must be present; missing `name` falls back to `id`/`order`, and missing `type` defaults to 'logic' at runtime.",
           "anyOf": [
             {
@@ -61,6 +62,12 @@
           "type": "string"
         }
       },
+      "retries": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 10
+      },
+      "compensation_event": {},
       "input_data": {
         "type": "object",
         "propertyNames": {
@@ -81,6 +88,52 @@
                   "properties": {
                     "name": {
                       "type": "string"
+                    },
+                    "side_effect": {
+                      "type": "string",
+                      "enum": [
+                        "read",
+                        "write",
+                        "dual",
+                        "call"
+                      ]
+                    },
+                    "execution_policy": {
+                      "type": "object",
+                      "properties": {
+                        "operation": {
+                          "type": "string",
+                          "enum": [
+                            "read",
+                            "compute",
+                            "write",
+                            "read_write"
+                          ]
+                        },
+                        "effect_scope": {
+                          "type": "string",
+                          "enum": [
+                            "none",
+                            "sandbox_local",
+                            "external"
+                          ]
+                        },
+                        "sandbox_policy": {
+                          "type": "string",
+                          "enum": [
+                            "pure",
+                            "sandbox_local",
+                            "live_external",
+                            "requires_attempt_grant"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "operation",
+                        "effect_scope",
+                        "sandbox_policy"
+                      ],
+                      "additionalProperties": false
                     },
                     "description": {
                       "type": "string"
@@ -119,20 +172,106 @@
       "generated": {
         "type": "boolean"
       },
+      "provider": {
+        "type": "string",
+        "enum": [
+          "anthropic",
+          "openai",
+          "openrouter",
+          "gemini",
+          "mistral",
+          "groq",
+          "together",
+          "deepseek",
+          "moonshot",
+          "zai",
+          "qwen",
+          "azure",
+          "bedrock",
+          "vertex",
+          "custom",
+          "mock"
+        ]
+      },
+      "model": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 240
+      },
       "task_class": {
         "type": "string",
         "minLength": 1,
         "maxLength": 128,
         "pattern": "^[a-z][a-z0-9_-]*(?:\\.[a-z][a-z0-9_-]*)*$"
       },
-      "cron": {},
-      "cron_timezone": {},
-      "retries": {
-        "type": "integer",
-        "minimum": 0,
-        "maximum": 10
+      "reasoning": {
+        "type": "object",
+        "properties": {
+          "effort": {
+            "type": "string",
+            "enum": [
+              "none",
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "standard",
+              "pro"
+            ]
+          },
+          "summary": {
+            "type": "string",
+            "enum": [
+              "none",
+              "auto",
+              "concise",
+              "detailed"
+            ]
+          },
+          "context": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "current_turn",
+              "all_turns"
+            ]
+          }
+        },
+        "additionalProperties": false
       },
-      "compensation_event": {},
+      "verbosity": {
+        "type": "string",
+        "enum": [
+          "low",
+          "medium",
+          "high"
+        ]
+      },
+      "store": {
+        "type": "boolean"
+      },
+      "temperature": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 2
+      },
+      "max_tokens": {
+        "type": "integer",
+        "exclusiveMinimum": 0,
+        "maximum": 1048576
+      },
+      "timeout_s": {
+        "type": "integer",
+        "exclusiveMinimum": 0,
+        "maximum": 86400
+      },
       "factory_domain_id": {
         "type": "string",
         "minLength": 1
@@ -571,6 +710,8 @@
         ],
         "additionalProperties": false
       },
+      "cron": {},
+      "cron_timezone": {},
       "cron_env": {},
       "cron_timezone_env": {}
     },
@@ -718,16 +859,10 @@
         "tool": {
           "type": "string"
         },
-        "condition": {
-          "type": "string"
-        },
         "true_action_id": {
           "type": "string"
         },
         "false_action_id": {
-          "type": "string"
-        },
-        "task_type": {
           "type": "string"
         },
         "form_schema": {
@@ -739,31 +874,6 @@
         },
         "awaiting_role": {
           "type": "string"
-        },
-        "retries": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 9007199254740991
-        },
-        "timeout_s": {
-          "type": "integer",
-          "exclusiveMinimum": 0,
-          "maximum": 9007199254740991
-        },
-        "delay_ms": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 9007199254740991
-        },
-        "subflow": {
-          "type": "string"
-        },
-        "subflow_input": {
-          "type": "object",
-          "propertyNames": {
-            "type": "string"
-          },
-          "additionalProperties": {}
         },
         "wait_policy": {
           "type": "string",
@@ -792,6 +902,37 @@
             "type": "string",
             "minLength": 1
           }
+        },
+        "condition": {
+          "type": "string",
+          "minLength": 1
+        },
+        "task_type": {
+          "type": "string"
+        },
+        "retries": {
+          "not": {}
+        },
+        "timeout_s": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
+        "delay_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "subflow": {
+          "type": "string",
+          "minLength": 1
+        },
+        "subflow_input": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {}
         },
         "depends_on": {
           "type": "array",
@@ -1478,7 +1619,12 @@
           }
         }
       },
-      "required": [],
+      "required": [
+        "order",
+        "name",
+        "description",
+        "type"
+      ],
       "additionalProperties": {}
     }
   }

@@ -69,6 +69,7 @@ import { resolveOntologyReferences } from "./ontology-references";
 import { compileInputBindings } from "./input-bindings";
 import {
   applyIntegrationHumanBoundaries,
+  type IntegrationHumanBoundary,
   deriveIntegrationRequirements,
   resolveIntegrationBindings,
   type IntegrationBindingReport,
@@ -399,6 +400,13 @@ interface CurrentExecutionResources {
   realTools: RealTool[];
   declarativeTools: DeclarativeTool[];
   capabilityProviders: IntegrationCapabilityProvider[];
+  /** Tenant-confirmed System Profile alias groups (System Profiles are the
+   * only sanctioned synonym source for cross-name system matching). */
+  systemAliasGroups: string[][];
+  /** A3 — human-boundary confirmations pre-seeded from System Profiles marked
+   * governance.humanBoundary:true (mode "all"), so such a system's identity-gap
+   * is not re-asked every run. */
+  systemProfileBoundaries: IntegrationHumanBoundary[];
 }
 
 class ExecutionResourcesUnavailableError extends Error {
@@ -417,10 +425,12 @@ async function currentExecutionResources(ctx: BrainCtx): Promise<CurrentExecutio
   // having only their in-memory registry snapshot; production contexts still
   // fail closed when an explicitly configured port read rejects.
   const ports = ctx.ports;
-  const [registryTools, declarativeTools, capabilityProviders] = await Promise.all([
+  const [registryTools, declarativeTools, capabilityProviders, systemAliasGroups, boundarySystems] = await Promise.all([
     ports?.toolRegistry ? ports.toolRegistry.list() : Promise.resolve(ctx.realTools ?? []),
     ports?.tools ? ports.tools.list(ctx.domain) : Promise.resolve([]),
     ports?.integrationCapabilities ? ports.integrationCapabilities.list() : Promise.resolve([]),
+    ports?.systemAliases ? ports.systemAliases.list() : Promise.resolve([]),
+    ports?.systemHumanBoundaries ? ports.systemHumanBoundaries.list() : Promise.resolve([]),
   ]);
   const globalNames = new Set(registryTools.map((tool) => tool.name));
   const realTools = [
@@ -429,7 +439,19 @@ async function currentExecutionResources(ctx: BrainCtx): Promise<CurrentExecutio
       .filter((tool) => !globalNames.has(tool.name))
       .map(persistedToolAsRealTool),
   ];
-  return { realTools, declarativeTools, capabilityProviders };
+  // mode:"all" is deliberate — a System Profile flagged humanBoundary treats the
+  // WHOLE system as manually handled (both read & write roles). This is broader
+  // than the per-(system,mode) run-time clarify path, but only ever affects PURE
+  // identity gaps (tool-backed roles are excluded by applyIntegrationHumanBoundaries),
+  // and execution/promotion gates still treat human_boundary as unresolved.
+  const seededAt = Date.now();
+  const systemProfileBoundaries: IntegrationHumanBoundary[] = boundarySystems.map((system) => ({
+    system,
+    mode: "all",
+    actor: "system-profile",
+    confirmedAt: seededAt,
+  }));
+  return { realTools, declarativeTools, capabilityProviders, systemAliasGroups, systemProfileBoundaries };
 }
 
 function executionResourcesUnavailable(scopeLabel: string) {
@@ -475,7 +497,11 @@ function refreshCurrentIntegrationBindings(
     if (!action) throw new Error(`agent ${spec.short} 的 action ${spec.actionName} 已不在当前 Ontology`);
     const selectedProfiles: Record<string, IntegrationProfile> = {};
     for (const toolName of spec.tools ?? []) {
-      const tool = resources.realTools.find((candidate) => candidate.name === toolName);
+      const tool = resources.realTools.find(
+        (candidate) =>
+          candidate.name === toolName ||
+          (candidate.aliases ?? []).includes(toolName),
+      );
       if (!tool || !toolRequiresConfirmedIntegrationProfile(tool)) continue;
       const profileRef = environment === "sandbox"
         ? spec.sandboxToolProfileRefs?.[toolName]
@@ -490,6 +516,7 @@ function refreshCurrentIntegrationBindings(
         ? (spec.sandboxToolConfigs ?? {})
         : (spec.toolConfigs ?? {}),
       capabilityProviders: resources.capabilityProviders,
+      systemAliasGroups: resources.systemAliasGroups,
       toolProfiles: selectedProfiles,
       executionScope: {
         tenantId: ctx.ports?.factoryScope?.tenantId,
@@ -522,6 +549,7 @@ function executableToolSuggestions(
 ): string[] {
   const integration = resolveIntegrationBindings(action, resources.realTools, {
     capabilityProviders: resources.capabilityProviders,
+    systemAliasGroups: resources.systemAliasGroups,
   });
   const bindingTools = integration.bindings
     .map((binding) => binding.toolName)
@@ -1452,6 +1480,7 @@ const read_ontology: BrainTool = {
           integration: a.integration,
           integration_binding: resolveIntegrationBindings(a, realTools, {
             capabilityProviders: resources.capabilityProviders,
+            systemAliasGroups: resources.systemAliasGroups,
           }),
           execution_plan_requirement: analyzeExecutionPlanRequirement(a),
           side_effects: a.side_effects,
@@ -1955,6 +1984,7 @@ function actionReadinessFromSnapshot(
   const isGate = ontologyActionIsRuleGate(action);
   const discoveryReport = resolveIntegrationBindings(action, resources.realTools, {
     capabilityProviders: resources.capabilityProviders,
+    systemAliasGroups: resources.systemAliasGroups,
   });
   const uniqueDiscoveredTools = [...new Set(discoveryReport.bindings
     .filter((binding) => !binding.selectionRequired)
@@ -1968,12 +1998,16 @@ function actionReadinessFromSnapshot(
   const integrationReportRaw = resolveIntegrationBindings(action, resources.realTools, {
     ...(effectiveTools.length ? { boundToolNames: effectiveTools } : {}),
     capabilityProviders: resources.capabilityProviders,
+    systemAliasGroups: resources.systemAliasGroups,
   });
   // #HUMAN-BOUNDARY — confirmed manual boundaries stop counting as identity gaps (authoring may
   // proceed); the report's `ready` stays false so sandbox/promotion readiness is untouched.
   const integrationReport = {
     ...integrationReportRaw,
-    bindings: applyIntegrationHumanBoundaries(integrationReportRaw.bindings, ctx.integrationHumanBoundaries),
+    bindings: applyIntegrationHumanBoundaries(integrationReportRaw.bindings, [
+      ...(ctx.integrationHumanBoundaries ?? []),
+      ...resources.systemProfileBoundaries,
+    ]),
   };
   const candidateToolNames = new Set<string>(effectiveTools);
   for (const binding of integrationReport.bindings) {
@@ -2914,6 +2948,7 @@ const design_agent: BrainTool = {
         : "none";
     const discoveryBinding = resolveIntegrationBindings(action, resources.realTools, {
       capabilityProviders: resources.capabilityProviders,
+      systemAliasGroups: resources.systemAliasGroups,
     });
     const ambiguousDiscovery = discoveryBinding.bindings.filter((binding) => binding.selectionRequired);
     if (selectionSource === "none" && ambiguousDiscovery.length) {
@@ -3106,6 +3141,7 @@ const design_agent: BrainTool = {
       plan,
       toolConfigs,
       capabilityProviders: resources.capabilityProviders,
+      systemAliasGroups: resources.systemAliasGroups,
       toolProfiles: selectedToolEvidence.productionProfiles,
       executionScope: {
         tenantId: ctx.ports?.factoryScope?.tenantId,
@@ -3119,7 +3155,10 @@ const design_agent: BrainTool = {
     // execution-stage consumer still sees the integration as NOT ready.
     const integrationBinding = {
       ...integrationBindingRaw,
-      bindings: applyIntegrationHumanBoundaries(integrationBindingRaw.bindings, ctx.integrationHumanBoundaries),
+      bindings: applyIntegrationHumanBoundaries(integrationBindingRaw.bindings, [
+        ...(ctx.integrationHumanBoundaries ?? []),
+        ...resources.systemProfileBoundaries,
+      ]),
     };
     if (!integrationBinding.ready) {
       const ambiguousBindings = integrationBinding.bindings.filter((binding) => binding.selectionRequired);

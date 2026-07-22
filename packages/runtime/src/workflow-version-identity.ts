@@ -11,9 +11,22 @@ export function workflowVersionContentSha256(
   manifest: unknown,
   actions: unknown,
 ): string {
+  // Content identity is defined over the agents only. A manifest persisted as
+  // the V2 envelope ({ $schemaVersion, agents, extensions }) and its bare
+  // agents array MUST produce the same id, otherwise a commit that stores the
+  // envelope and a bootstrap that re-derives the bare on-disk form disagree on
+  // the version (assertDeploymentOwnsLiveLane then 500s). Normalizing here keeps
+  // bare-array ids byte-identical to before (bareAgentsForIdentity is a no-op on
+  // an array) while unifying the envelope with its bare form.
   return crypto
     .createHash("sha256")
-    .update(canonicalEvidenceJson({ manifest, actions: actions ?? [] }), "utf8")
+    .update(
+      canonicalEvidenceJson({
+        manifest: bareAgentsForIdentity(manifest),
+        actions: actions ?? [],
+      }),
+      "utf8",
+    )
     .digest("hex");
 }
 
@@ -34,14 +47,33 @@ export function legacyWorkflowVersionId(manifest: unknown): string {
   return `auto-${short}`;
 }
 
+/**
+ * A stored or on-disk manifest may be persisted either as the bare canonical
+ * agents array (the runtime shape) or as the envelope-preserving V2 object
+ * (`{ $schemaVersion, agents, extensions }`) that authoring/import writes so
+ * top-level metadata survives publication. Content identity is defined over the
+ * agents only; extract them so an envelope and its bare array compare equal.
+ */
+function bareAgentsForIdentity(value: unknown): unknown {
+  if (
+    value &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    Array.isArray((value as { agents?: unknown }).agents)
+  ) {
+    return (value as { agents: unknown }).agents;
+  }
+  return value;
+}
+
 export function workflowVersionContentMatches(
   row: StoredWorkflowVersionContent,
   manifest: unknown,
   actions: unknown,
 ): boolean {
   return (
-    canonicalEvidenceJson(row.manifestJson) ===
-      canonicalEvidenceJson(manifest) &&
+    canonicalEvidenceJson(bareAgentsForIdentity(row.manifestJson)) ===
+      canonicalEvidenceJson(bareAgentsForIdentity(manifest)) &&
     canonicalEvidenceJson(row.actionsJson ?? []) ===
       canonicalEvidenceJson(actions ?? [])
   );

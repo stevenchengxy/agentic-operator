@@ -107,6 +107,7 @@ import {
   findWorkflowSecretPolicyIssues,
   isWorkflowSecretPolicyIssueCode,
 } from "./workflow-secret-policy";
+import { attachReviewedToolExecutionPolicies } from "./workflow-authoring";
 
 // Overwrite-guard knobs. The compound rule (per review C2 + PRD §"Overwrite
 // guard") replaces the single-ratio "≥30% modified" check that under-fired
@@ -300,6 +301,45 @@ function isFactoryPromotionAuthorized(
   );
 }
 
+/**
+ * Whether a `generated: true` agent carries Agent-Factory / CodeAct provenance
+ * that subjects it to the production promotion gate.
+ *
+ * The `generated` flag is overloaded: the Agent Factory stamps it on real
+ * factory artifacts (CodeAct handlers + ontology-grounded declarative agents
+ * that must clear the promotion + regression-replay pipeline), while Agent
+ * Studio also stamps it as a benign "derived from a legacy definition" marker
+ * on human-authored declarative agents. Only the former needs a promotion
+ * receipt. A generated agent that carries no executable `typescript_code`, no
+ * CodeAct attestation, and no `factory_*` identity has no more capability than
+ * any hand-authored declarative agent an operator could write directly (it runs
+ * through the same declarative step-engine path), so quarantining it adds no
+ * security value and would wrongly block the internal Agent Studio publish path.
+ */
+function generatedAgentCarriesFactoryProvenance(
+  agent: WorkflowManifest[number],
+): boolean {
+  const a = agent as Record<string, unknown> & {
+    codeExecuted?: unknown;
+    typescript_code?: unknown;
+    code_attestation?: unknown;
+  };
+  if (a.codeExecuted === true) return true;
+  if (
+    typeof a.typescript_code === "string" &&
+    a.typescript_code.trim().length > 0
+  ) {
+    return true;
+  }
+  if (a.code_attestation != null) return true;
+  // Any Agent-Factory identity field (domain, execution scope, promotion
+  // version, regression fingerprint, contract/tool provenance, …) marks a real
+  // factory artifact that must clear promotion even when it carries no code.
+  return Object.entries(a).some(
+    ([key, value]) => key.startsWith("factory_") && value != null,
+  );
+}
+
 /** Pure production generated-Agent gate used by the import pipeline and focused
  * tests. Both CodeAct and declarative generated functions require the exact
  * Factory promotion capability or independently verified historical evidence. */
@@ -318,6 +358,11 @@ export function productionGeneratedAgentImportIssues(args: {
   );
   args.manifest.forEach((agent, index) => {
     if (agent.generated !== true) return;
+    // Only real factory artifacts (generated code / CodeAct attestation /
+    // `factory_*` identity) are subject to the promotion gate. A bare
+    // declarative generated agent — e.g. an Agent Studio definition derived
+    // from a legacy agent — is not, and must not be blocked here.
+    if (!generatedAgentCarriesFactoryProvenance(agent)) return;
     let codeSha256: string | undefined;
     if (agent.codeExecuted === true) {
       const code = agent.typescript_code;
@@ -1563,8 +1608,16 @@ async function runPipeline(
 ): Promise<PipelineResult> {
   // 1. migrate raw → bare array
   const migration = migrate(input.workflow);
+  // Canonicalize generated agents' tools with the reviewed execution_policy
+  // triple from the registry before the schema check, so a template/model
+  // produced generated manifest parses instead of failing the manifest
+  // superRefine — a parse failure here would short-circuit the pipeline and
+  // skip the persistence secret-policy scan below.
+  const canonicalPayload = Array.isArray(migration.payload)
+    ? attachReviewedToolExecutionPolicies(migration.payload as unknown[])
+    : migration.payload;
   // 2. Zod-parse the migrated manifest
-  const parsed = WorkflowManifestSchema.safeParse(migration.payload);
+  const parsed = WorkflowManifestSchema.safeParse(canonicalPayload);
   if (!parsed.success) {
     const issues: Issue[] = parsed.error.issues.slice(0, 50).map((i) => ({
       path: "agents." + i.path.join("."),
@@ -2008,9 +2061,14 @@ export async function validate(
   const targetWorkflowSlug = authoringWorkflowSlug(input, ctx);
   let reuseDeploymentId: string | null = null;
   if (existingPending) {
+    // The single pending lock may only be auto-reused/resumed for the SAME
+    // authoring workflow. A validate for a different workflow slug must 423
+    // rather than silently rebinding another workflow's in-flight session —
+    // otherwise one pending import overwrites another workflow's session.
     if (
-      !input.deployment_id ||
-      input.deployment_id === existingPending.deploymentId
+      existingPending.workflowSlug === targetWorkflowSlug &&
+      (!input.deployment_id ||
+        input.deployment_id === existingPending.deploymentId)
     ) {
       reuseDeploymentId = existingPending.deploymentId;
     } else {
@@ -2019,6 +2077,16 @@ export async function validate(
   }
 
   const result = await runPipeline(input, ctx, factoryAuthorization);
+  // Canonical persistence policy: a manifest carrying literal credentials,
+  // malformed secret references, cross-tenant secret scope, or forbidden
+  // endpoints must never open a pending import lock. Reject before any row is
+  // written so the unsafe payload can neither be persisted nor resumed.
+  const secretBlocking = result.issues.filter((issue) =>
+    isWorkflowSecretPolicyIssueCode(issue.code),
+  );
+  if (secretBlocking.length > 0) {
+    throw new BlockingIssuesError(secretBlocking);
+  }
   const ok = result.issues.every((i) => i.severity !== "error");
 
   // Persist the pending lock row. Even when `ok=false` we keep the row —
@@ -2064,7 +2132,7 @@ export async function validate(
       if (oldRow) {
         db.update(workflowVersions)
           .set({
-            manifestJson: result.persistedManifest as object,
+            manifestJson: result.migrated as unknown as object,
             actionsJson: (result.actions ?? null) as unknown as object,
           })
           .where(eq(workflowVersions.id, oldRow.versionId))
@@ -2295,6 +2363,39 @@ async function pickAndReserveNextFilename(
   );
 }
 
+/**
+ * Content-identity check that tolerates the persisted V2 envelope shape.
+ *
+ * `validate()` stores the full `{ $schemaVersion, extensions, agents }` envelope
+ * in `workflow_versions.manifest_json` so authoring metadata survives a wizard
+ * refresh, while `commit()` reconciles every workflow-version row against the
+ * bare canonical agent array (`result.migrated`) — the exact form written to
+ * disk and re-derived byte-for-byte by runtime bootstrap. Comparing an
+ * envelope-shaped row against the bare array always fails, so a legitimate
+ * pending-session promotion would spuriously 409. Normalize an envelope row to
+ * its `agents` projection before delegating to the canonical comparison; bare
+ * rows pass through unchanged.
+ */
+function storedWorkflowVersionMatchesMigrated(
+  row: { manifestJson: unknown; actionsJson: unknown },
+  migratedManifest: WorkflowManifest,
+  actions: unknown,
+): boolean {
+  const stored = row.manifestJson;
+  const normalizedManifest =
+    stored &&
+    typeof stored === "object" &&
+    !Array.isArray(stored) &&
+    Array.isArray((stored as { agents?: unknown }).agents)
+      ? (stored as { agents: unknown }).agents
+      : stored;
+  return workflowVersionContentMatches(
+    { manifestJson: normalizedManifest, actionsJson: row.actionsJson },
+    migratedManifest,
+    actions,
+  );
+}
+
 export async function commit(
   input: ManifestImportBody,
   ctx: TenantCtx,
@@ -2509,8 +2610,11 @@ export async function commit(
         // identity and version prevents ABA-style stale compensation.
         assertLiveDeploymentBaseline(ctx, preimage.deployments);
 
-        // (a) ensure tenant workflow row
-        const workflowSlug = workflowSlugFor(ctx);
+        // (a) ensure tenant workflow row. Honour an explicit authoring
+        // `workflow_slug` (the Publish path targets a named immutable workflow
+        // lane) instead of always collapsing onto the `<tenant>-default` lane —
+        // otherwise the published version is owned by the legacy default row.
+        const workflowSlug = authoringWorkflowSlug(input, ctx);
         let wf = db
           .select()
           .from(workflows)
@@ -2584,7 +2688,7 @@ export async function commit(
             .all()[0];
           if (
             fullExisting &&
-            !workflowVersionContentMatches(
+            !storedWorkflowVersionMatchesMigrated(
               fullExisting,
               result.migrated,
               result.actions,
@@ -2607,7 +2711,7 @@ export async function commit(
           const reusableExisting =
             fullExisting ??
             (legacyExisting &&
-            workflowVersionContentMatches(
+            storedWorkflowVersionMatchesMigrated(
               legacyExisting,
               result.migrated,
               result.actions,
@@ -2625,7 +2729,7 @@ export async function commit(
               .all()[0];
             if (
               !pendingVersion ||
-              !workflowVersionContentMatches(
+              !storedWorkflowVersionMatchesMigrated(
                 pendingVersion,
                 result.migrated,
                 result.actions,
@@ -2665,7 +2769,7 @@ export async function commit(
               .all()[0];
             if (
               !pendingVersion ||
-              !workflowVersionContentMatches(
+              !storedWorkflowVersionMatchesMigrated(
                 pendingVersion,
                 result.migrated,
                 result.actions,
@@ -2711,7 +2815,7 @@ export async function commit(
             .all()[0];
           if (
             fullExisting &&
-            !workflowVersionContentMatches(
+            !storedWorkflowVersionMatchesMigrated(
               fullExisting,
               result.migrated,
               result.actions,
@@ -2734,7 +2838,7 @@ export async function commit(
           const existing =
             fullExisting ??
             (legacyExisting &&
-            workflowVersionContentMatches(
+            storedWorkflowVersionMatchesMigrated(
               legacyExisting,
               result.migrated,
               result.actions,
@@ -2750,7 +2854,11 @@ export async function commit(
                 id: workflowVersionId,
                 workflowId: wf.id,
                 version: desiredVersion,
-                manifestJson: result.migrated as unknown as object,
+                // Persist the envelope-preserving payload (V2 $schemaVersion +
+                // extensions) exactly like the validate/promotion paths do;
+                // `storedWorkflowVersionMatchesMigrated` normalizes the agents
+                // out of it for content comparison.
+                manifestJson: result.persistedManifest as object,
                 actionsJson: (result.actions ?? null) as unknown as object,
               })
               .run();
@@ -3340,7 +3448,7 @@ export async function commit(
       deploymentId: txOut.deploymentId,
       kind: "manifest",
       version: desiredVersion,
-      workflowSlug: workflowSlugFor(ctx),
+      workflowSlug: authoringWorkflowSlug(input, ctx),
     });
   } catch (err) {
     auditCtx?.log?.info?.(

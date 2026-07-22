@@ -27,7 +27,7 @@ import {
   lint,
   type WorkflowManifest,
 } from "@agentic/runtime";
-import { listGlobalTools } from "@agentic/tools";
+import { globalToolExecutionPolicy, listGlobalTools } from "@agentic/tools";
 import { getLLMGateway } from "./llm";
 import { findWorkflowSecretPolicyIssues } from "./workflow-secret-policy";
 import {
@@ -106,6 +106,53 @@ export class WorkflowManifestInputError extends Error {
     super(message);
     this.name = "WorkflowManifestInputError";
   }
+}
+
+/**
+ * Attach the reviewed execution-policy triple (sourced from the global tool
+ * registry) to every tool on a `generated` agent that does not already declare
+ * one. The runtime manifest schema requires a generated agent's tools to carry a
+ * reviewed execution_policy (manifest.ts superRefine), and the step engine
+ * reconciles the declared triple against the live registry before dispatch — so
+ * the policy MUST come from the registry, never be hand-authored. Agent Studio
+ * already does this in agent-authoring.ts (withReviewedExecutionPolicy);
+ * template- and model-produced workflow manifests converge on the same canonical
+ * shape here so a generated agent validates, imports, and publishes instead of
+ * failing the schema refinement. A tool with no reviewed registry policy is left
+ * untouched so the refinement still fails closed on an unreviewed binding.
+ */
+export function attachReviewedToolExecutionPolicies<T>(agents: T[]): T[] {
+  let mutated = false;
+  const next = agents.map((agent) => {
+    if (!agent || typeof agent !== "object") return agent;
+    const record = agent as Record<string, unknown>;
+    if (!record.generated) return agent;
+    const toolUse = record.tool_use;
+    if (!Array.isArray(toolUse) || toolUse.length === 0) return agent;
+    let agentMutated = false;
+    const nextTools = toolUse.map((tool) => {
+      if (!tool || typeof tool !== "object") return tool;
+      const toolRecord = tool as Record<string, unknown>;
+      if (toolRecord.execution_policy) return tool;
+      const name = toolRecord.name;
+      if (typeof name !== "string") return tool;
+      const policy = globalToolExecutionPolicy(name);
+      if (!policy) return tool;
+      agentMutated = true;
+      return {
+        ...toolRecord,
+        execution_policy: {
+          operation: policy.operation,
+          effect_scope: policy.effectScope,
+          sandbox_policy: policy.sandboxPolicy,
+        },
+      };
+    });
+    if (!agentMutated) return agent;
+    mutated = true;
+    return { ...record, tool_use: nextTools } as T;
+  });
+  return mutated ? next : agents;
 }
 
 function assertWorkflowPersistencePolicy(
@@ -901,6 +948,15 @@ export function validateWorkflowManifest(
       issues: issueFromZod(error),
       promptScores: [],
     };
+  }
+
+  // Canonicalize a generated agent's tools with the reviewed execution_policy
+  // triple from the registry before the runtime schema check below — otherwise
+  // the manifest superRefine rejects template/model-produced generated agents
+  // whose tools do not carry the (registry-owned) policy inline.
+  const canonicalAgents = attachReviewedToolExecutionPolicies(manifest.agents);
+  if (canonicalAgents !== manifest.agents) {
+    manifest = { ...manifest, agents: canonicalAgents } as WorkflowManifestV2;
   }
 
   const issues: WorkflowValidationIssue[] = [];

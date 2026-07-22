@@ -128,10 +128,11 @@ describe("generated Agent runtime tool allowlist", () => {
     ]);
   });
 
-  it("does not change the legacy resolution behaviour of hand-written agents", async () => {
-    // A provider should not normally request an unadvertised tool. This pins
-    // the compatibility boundary explicitly: the new strict check is scoped
-    // to generated:true and does not silently change existing tenant code.
+  it("resolves a DECLARED global tool for hand-written agents (tenant→global)", async () => {
+    // Any agent — generated or hand-authored — may use a global tool it lists
+    // in tool_use[]: the registry resolves tenant→global and the per-call gate
+    // admits it because it is declared. The trust boundary is the tool_use[]
+    // allow-list, not the agent's provenance. (Undeclared calls are rejected.)
     replies.push(
       {
         text: "",
@@ -154,7 +155,7 @@ describe("generated Agent runtime tool allowlist", () => {
         description: "legacy hand-written prompt",
         type: "logic",
       },
-      agent: { name: "handwritten-agent" },
+      agent: { name: "handwritten-agent", tool_use: [{ name: "meta.ping" }] },
       tenantRegistry: { prompts: { handwritten: prompt } },
     });
 

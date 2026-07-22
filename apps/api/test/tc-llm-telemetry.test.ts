@@ -4,7 +4,7 @@ import {
   getLlmTelemetryStatus,
   writeLlmCall,
 } from "../src/services/agent-factory/llm-telemetry";
-import { getDb, llmCalls, eq } from "@agentic/db";
+import { getDb, llmCallTelemetry, eq } from "@agentic/db";
 
 // #P0-3 — raw LLM telemetry is persisted to the llm_calls table (was ephemeral in-memory streaming).
 // Feed the production writer a record and read it back — proving the table + writer + routing fields.
@@ -18,7 +18,7 @@ describe("#P0-3 llm_calls telemetry persistence", () => {
       promptChars: 400, completionChars: 120, approxTokensIn: 100, approxTokensOut: 30, latencyMs: 812, ok: true,
     };
     writeLlmCall(rec);
-    const rows = getDb().select().from(llmCalls).where(eq(llmCalls.conversationId, conv)).all();
+    const rows = getDb().select().from(llmCallTelemetry).where(eq(llmCallTelemetry.conversationId, conv)).all();
     expect(rows.length).toBe(1);
     const row = rows[0]!;
     expect(row.requestedModel).toBe("kimi");
@@ -42,7 +42,7 @@ describe("#P0-3 llm_calls telemetry persistence", () => {
       requestedModel: "kimi", servedModel: "kimi", fallback: false,
       promptChars: 10, completionChars: 0, approxTokensIn: 3, approxTokensOut: 0, latencyMs: 50, ok: false, failureReason: "rate_limit",
     });
-    const row = getDb().select().from(llmCalls).where(eq(llmCalls.conversationId, conv)).all()[0]!;
+    const row = getDb().select().from(llmCallTelemetry).where(eq(llmCallTelemetry.conversationId, conv)).all()[0]!;
     expect(row.ok).toBe(false);
     expect(row.failureReason).toBe("rate_limit");
   });

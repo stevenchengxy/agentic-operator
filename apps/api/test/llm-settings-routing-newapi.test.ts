@@ -79,7 +79,10 @@ const NEWAPI_CASES = [
 
 describe("AI settings persistence, routing API, and NewAPI aliases", () => {
   const temporaryDirectory = mkdtempSync(
-    join(tmpdir(), "agentic-llm-settings-routing-"),
+    join(
+      process.env.AGENTIC_API_TEST_RUN_ROOT ?? tmpdir(),
+      "agentic-llm-settings-routing-",
+    ),
   );
   const settingsPath = join(temporaryDirectory, "llm-settings.json");
   const envMirrorPath = join(temporaryDirectory, ".env.local");
@@ -149,6 +152,24 @@ describe("AI settings persistence, routing API, and NewAPI aliases", () => {
         id: systemTenantId,
         slug: "__system",
         name: "LLM settings test tenant",
+      })
+      .run();
+    // This suite talks to a fresh temp DB (DATABASE_URL above), so the shared
+    // worker-snapshot dev principal is absent. Seed the AUTH_MODE=dev operator
+    // the harness expects (AGENTIC_DEV_USER_EMAIL, set in test/setup.ts) as an
+    // active superadmin so authenticated settings/routing calls resolve.
+    dbPackage
+      .getDb()
+      .insert(dbPackage.users)
+      .values({
+        id: `usr-llm-settings-${randomUUID()}`,
+        email: (
+          process.env.AGENTIC_DEV_USER_EMAIL ??
+          "test-platform-admin@agentic.invalid"
+        ).toLowerCase(),
+        name: "LLM settings test admin",
+        platformRole: "superadmin",
+        status: "active",
       })
       .run();
 

@@ -94,21 +94,27 @@ describe("bootstrap MCP and system schedule truth", () => {
   });
 
   it("registers retention on __system with the configured cron and removes it only when disabled", () => {
+    // buildSystemBaseFns returns [helloFn, studioRunnerFn, ...retentionSweep];
+    // locate the retention function by id rather than positional index so a
+    // future reordering of the base fns doesn't silently re-break this test.
+    type FnWithOpts = {
+      opts: { id: string; triggers?: Array<{ cron?: string }> };
+    };
+    const findRetention = (fns: ReturnType<typeof buildSystemBaseFns>) =>
+      (fns as unknown as FnWithOpts[]).find(
+        (fn) => fn.opts?.id === "agentic.retention.sweep",
+      );
+
     const enabled = buildSystemBaseFns({ AGENTIC_SYSTEM_CRON: "15 4 * * *" });
-    expect(enabled).toHaveLength(2);
-    expect(
-      (
-        enabled[1] as unknown as {
-          opts: { id: string; triggers: Array<{ cron: string }> };
-        }
-      ).opts,
-    ).toMatchObject({
+    expect(enabled).toHaveLength(3);
+    expect(findRetention(enabled)?.opts).toMatchObject({
       id: "agentic.retention.sweep",
       triggers: [{ cron: "15 4 * * *" }],
     });
 
     const disabled = buildSystemBaseFns({ AGENTIC_SYSTEM_CRON_DISABLED: "1" });
-    expect(disabled).toHaveLength(1);
+    expect(disabled).toHaveLength(2);
+    expect(findRetention(disabled)).toBeUndefined();
     expect(() =>
       buildSystemBaseFns({ AGENTIC_SYSTEM_CRON: "not a cron expression" }),
     ).toThrow(/AGENTIC_SYSTEM_CRON is invalid/);

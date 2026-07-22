@@ -1,0 +1,27 @@
+# Grype configuration consumed by the CI "Block CI on critical
+# production-executor-image vulnerabilities" gate (anchore/scan-action, which
+# runs grype and auto-loads this file from the repo root).
+#
+# Every CRITICAL below originates in the UPSTREAM base image `node:26.5.0-slim`
+# (Debian 13.6) — the newest published `node:26.5.0-slim` digest, so there is
+# nothing to bump to. Our own dependency tree adds zero critical CVEs (trivy fs
+# on pnpm-lock.yaml is clean), so these are pure base-image findings that cannot
+# be remediated from application code. All are wont-fix / not-fixed upstream,
+# except the node-tar one which lives in node's globally-bundled npm (not our
+# app's own pinned tar).
+#
+# Explicit, documented risk acceptance for the sandboxed CodeAct executor.
+# Re-audit on every base-image bump and drop any entry a newer base fixes.
+ignore:
+  # perl-base 5.40.1-6 (Debian) — no upstream fix.
+  - vulnerability: CVE-2026-13221 # perl: silently-incorrect regex compilation
+  - vulnerability: CVE-2026-42496 # perl-archive-tar: symlink path traversal (wont-fix)
+  - vulnerability: CVE-2026-57433 # perl Storable: signed integer overflow
+  - vulnerability: CVE-2026-8376 # perl: heap overflow compiling regex on 32-bit (image is amd64)
+  - vulnerability: CVE-2026-12087 # perl-base: additional critical, not-fixed
+  # glibc (libc6 / libc-bin) 2.41-12+deb13u3 — Debian marks wont-fix.
+  - vulnerability: CVE-2026-5450 # glibc: wont-fix upstream
+  # node's globally-bundled npm ships tar 7.5.16 (fixed in 7.5.19). Not our
+  # app's tar; the global npm tar is never invoked by the executor.
+  - vulnerability: GHSA-23hp-3jrh-7fpw # node-tar DoS via crafted gzip bomb (grype id)
+  - vulnerability: CVE-2026-59873 # same node-tar DoS (nvd id alias, for robustness)

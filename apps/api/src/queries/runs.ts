@@ -58,11 +58,19 @@ export async function resolvePayloadRef(
   if (!ref) return null;
   const hashIdx = ref.lastIndexOf("#");
   if (hashIdx === -1) {
-    // step artifact — the whole file is the payload
-    return capPayload(
-      JSON.parse(await readFile(ref, "utf8")),
-      maxPayloadBytes,
-    );
+    // step artifact — the whole file is the payload. Best-effort: a missing
+    // artifact file (ENOENT) resolves to null instead of throwing, so a run
+    // whose step artifact was pruned/absent doesn't 500 the whole run-detail /
+    // reasoning-agent / run-summary / events read that shares this resolver.
+    try {
+      return capPayload(
+        JSON.parse(await readFile(ref, "utf8")),
+        maxPayloadBytes,
+      );
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return null;
+      throw err;
+    }
   }
   // event ledger ref "<file>#<offset>" → the line's `.data`
   const filePath = ref.slice(0, hashIdx);
@@ -766,6 +774,8 @@ export async function listSteps(
   return Promise.all(
     rows.map(async ({ inputRef, outputRef, ...step }) => ({
       ...step,
+      inputRef,
+      outputRef,
       input: await resolvePayloadRef(inputRef, maxPayloadBytes),
       output: await resolvePayloadRef(outputRef, maxPayloadBytes),
     })),

@@ -397,15 +397,27 @@ describe("Agent Studio terminal storage boundaries", () => {
   });
 
   it("atomically cancels Studio runs and persists one retained terminal record", async () => {
-    const send = vi
-      .spyOn(inngest, "send")
-      .mockResolvedValue({ ids: [`cancel-${SUFFIX}`] } as never);
+    // Cancel events now route through the per-tenant client
+    // (`getTenantInngest(slug)`), not the shared __system singleton, so patch
+    // `Inngest.prototype.send` to intercept whichever tenant client the cancel
+    // route actually fires — same captureInngest pattern as
+    // tc-90-run-cancel.test.ts. Restored in the finally so the shared process
+    // isn't left with a leaked global mock.
+    const proto = Object.getPrototypeOf(inngest) as {
+      send: typeof inngest.send;
+    };
+    const originalSend = proto.send;
+    proto.send = (async () => ({
+      ids: [`cancel-${SUFFIX}`],
+    })) as typeof inngest.send;
     const first = await env
       .fetch(`/v1/runs/${cancelRunId}/cancel`, {
         method: "POST",
         headers: { "x-agentic-tenant": TENANT },
       })
-      .finally(() => send.mockRestore());
+      .finally(() => {
+        proto.send = originalSend;
+      });
     expect(first.status).toBe(200);
     const firstBody = (await first.json()) as Envelope<unknown>;
     const cancellation = CancelRunResponse.parse(firstBody.data);

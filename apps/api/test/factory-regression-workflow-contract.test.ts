@@ -42,11 +42,20 @@ describe("Factory regression GitHub workflow contracts", () => {
       "utf8",
     );
 
+    // The factory-regression job runs only on main (never on PRs) AND is gated
+    // behind the `ENABLE_FACTORY_REGRESSION` repo variable — the self-hosted
+    // `agentic-production-evidence` runner is not connected to this repository,
+    // so the signed live-inventory replay is opt-in and re-armable (set the
+    // variable once the runner is registered) rather than a permanently-red
+    // required check.
     expect(ci).toContain(
-      "if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'",
+      "github.event_name != 'pull_request' && github.ref == 'refs/heads/main'",
     );
+    expect(ci).toContain("vars.ENABLE_FACTORY_REGRESSION == 'true'");
+    // The meta gate still blocks on a real factory-regression FAILURE, but
+    // treats a `skipped` run (variable off) as passing so CI is green by default.
     expect(ci).toContain(
-      "(github.event_name != 'pull_request' && needs.factory-regression.result != 'success')",
+      "needs.factory-regression.result != 'success' && needs.factory-regression.result != 'skipped'",
     );
     expect(ci).toContain('--expected-sha "${{ github.sha }}"');
     expect(ci).toContain('- cron: "17 * * * *"');

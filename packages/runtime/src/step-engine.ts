@@ -545,12 +545,15 @@ async function callLLM(
   );
   if (effectiveToolEntries.length > 0) {
     for (const entry of effectiveToolEntries) {
-      // Tenant tool wins; for GENERATED agents, fall back to the global registry so their roster
-      // (ontology.fetchActionRules, fs.*, …) is actually advertised to the model. Hand-authored
-      // tenants keep the strict tenant-only behaviour.
+      // Tenant tool wins; otherwise fall back to the global registry so a
+      // declared global tool (ontology.fetchActionRules, fs.*, meta.ping, …) is
+      // advertised to the model. Per the global-registry contract, any global
+      // tool is callable by ANY agent that lists it in tool_use[] — the
+      // allow-list is the trust boundary — so this applies to hand-authored
+      // agents too. The per-call gate below still rejects UNdeclared calls.
       const handler =
         tenantRegistry?.tools?.[entry.name] ??
-        (agent?.generated ? globalToolRegistry.get(entry.name) : undefined);
+        globalToolRegistry.get(entry.name);
       if (!handler) {
         throw new Error(
           `agent ${agent?.name ?? "unknown"} declares unresolved tool ${entry.name}; refusing to run with a silently reduced tool roster`,
@@ -2719,6 +2722,19 @@ async function runActionCore(input: StepInput): Promise<StepOutput> {
       // worker is neither crash-safe nor replay-safe and could otherwise
       // produce a false completion receipt after a restart.
       const ms = (action as { delay_ms?: number }).delay_ms ?? 0;
+      // A non-positive delay is a no-op (Agent Studio's rewrite/simulation path
+      // emits delay_ms:0): it needs no durable timer, so it resolves instantly
+      // in-process — no setTimeout is spawned, so the crash/replay-safety
+      // rationale is fully preserved. Only a real positive delay is refused and
+      // forced through register.ts step.sleep orchestration.
+      if (ms <= 0) {
+        result = {
+          ok: true,
+          type: "delay",
+          data: { delay_ms: ms, sleptMs: ms },
+        };
+        break;
+      }
       result = {
         ok: false,
         type: "delay",

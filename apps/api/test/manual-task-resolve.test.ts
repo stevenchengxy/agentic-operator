@@ -1,39 +1,130 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { auditLog, getDb, tasks, tenants } from "@agentic/db";
-import { inngest } from "@agentic/runtime";
+import {
+  agents,
+  auditLog,
+  events,
+  getDb,
+  runs,
+  steps,
+  tasks,
+  tenants,
+  workflows,
+} from "@agentic/db";
+import { getTenantInngest, inngest, tenantEventName } from "@agentic/runtime";
 import { eq } from "drizzle-orm";
 import { buildTestEnv, type TestEnv } from "./harness";
 
 describe("manual task resolution", () => {
   let env: TestEnv;
   let tenantId: string;
+  let tenantSlug: string;
+  let agentId: string;
   let taskId: string | null = null;
+  let runId: string | null = null;
+  let stepId: string | null = null;
+  let eventId: string | null = null;
 
   beforeAll(async () => {
     env = await buildTestEnv();
-    tenantId = getDb()
-      .select({ id: tenants.id })
-      .from(tenants)
+    const owner = getDb()
+      .select({
+        tenantId: tenants.id,
+        tenantSlug: tenants.slug,
+        agentId: agents.id,
+      })
+      .from(agents)
+      .innerJoin(workflows, eq(workflows.id, agents.workflowId))
+      .innerJoin(tenants, eq(tenants.id, workflows.tenantId))
       .where(eq(tenants.slug, "__system"))
-      .all()[0]!.id;
+      .all()[0];
+    if (!owner) {
+      throw new Error(
+        "manual-task-resolve test requires a bootstrapped __system agent",
+      );
+    }
+    tenantId = owner.tenantId;
+    tenantSlug = owner.tenantSlug;
+    agentId = owner.agentId;
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
-    if (!taskId) return;
     const db = getDb();
-    db.delete(auditLog).where(eq(auditLog.targetId, taskId)).run();
-    db.delete(tasks).where(eq(tasks.id, taskId)).run();
-    taskId = null;
+    if (taskId) {
+      db.delete(auditLog).where(eq(auditLog.targetId, taskId)).run();
+      db.delete(tasks).where(eq(tasks.id, taskId)).run();
+      taskId = null;
+    }
+    // Deleting the run cascades its steps (steps.runId onDelete: cascade).
+    if (runId) {
+      db.delete(runs).where(eq(runs.id, runId)).run();
+      runId = null;
+    }
+    if (eventId) {
+      db.delete(events).where(eq(events.id, eventId)).run();
+      eventId = null;
+    }
+    stepId = null;
   });
 
-  it("accepts supplement and publishes the tenant-scoped resume event", async () => {
-    taskId = `tsk-supplement-${Date.now().toString(36)}`;
-    getDb()
-      .insert(tasks)
+  it("accepts supplement and dispatches the durable tenant-scoped resume event", async () => {
+    // The /resolve route is now the durable HITL-recovery entrypoint
+    // (requestHumanTaskResolution): a resolvable task must own a `waiting`
+    // run with a `manual`/`running` wait step. Seed that recoverable fixture
+    // exactly like tc-hitl-recovery does, then drive it through the real
+    // Fastify route so the auth gate, form validation, and durable dispatch
+    // are exercised end to end.
+    const suffix = `${Date.now().toString(36)}-${Math.random()
+      .toString(36)
+      .slice(2, 8)}`;
+    taskId = `tsk-supplement-${suffix}`;
+    runId = `run-supplement-${suffix}`;
+    stepId = `stp-supplement-${suffix}`;
+    eventId = `evt-supplement-${suffix}`;
+    const marker = `hitl:${tenantId}:${runId}:${taskId}`;
+    const db = getDb();
+
+    db.insert(events)
+      .values({
+        id: eventId,
+        tenantId,
+        name: `${tenantSlug}/HITL_SUPPLEMENT`,
+        subject: suffix,
+      })
+      .run();
+    db.insert(runs)
+      .values({
+        id: runId,
+        tenantId,
+        agentId,
+        triggerEventId: eventId,
+        status: "waiting",
+        startedAt: new Date(Date.now() - 1_000),
+        correlationId: `corr-${suffix}`,
+        subject: suffix,
+      })
+      .run();
+    db.insert(steps)
+      .values({
+        id: stepId,
+        runId,
+        ord: 0,
+        name: "human review",
+        type: "manual",
+        status: "running",
+        startedAt: new Date(Date.now() - 500),
+      })
+      .run();
+    db.insert(tasks)
       .values({
         id: taskId,
         tenantId,
+        runId,
+        originEventId: eventId,
+        originEventName: `${tenantSlug}/HITL_SUPPLEMENT`,
+        waitStepId: stepId,
+        resumeMarker: marker,
+        resumeState: "pending",
         type: "approval",
         title: "Supply missing decision evidence",
         awaitingRole: "operator",
@@ -58,8 +149,12 @@ describe("manual task resolution", () => {
         },
       })
       .run();
+
+    // The durable resume is dispatched through the per-tenant Inngest client
+    // (hitl-recovery.ts defaultResumeSender → getTenantInngest(slug).send),
+    // not the bare `inngest` singleton the legacy route used.
     const send = vi
-      .spyOn(inngest, "send")
+      .spyOn(getTenantInngest(tenantSlug), "send")
       .mockResolvedValue({ ids: ["evt-task-resolved"] } as never);
 
     const response = await env.fetch(`/v1/tasks/${taskId}/resolve`, {
@@ -74,24 +169,41 @@ describe("manual task resolution", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
       ok: true,
-      data: { task_id: taskId, decision: "supplement" },
-    });
-    expect(send).toHaveBeenCalledWith({
-      name: "task.resolved",
       data: {
-        taskId,
-        tenantId,
+        task_id: taskId,
         decision: "supplement",
-        payload: { decision: "revise", evidence: ["policy-7"] },
+        status: "resolving",
+        resume_marker: marker,
       },
     });
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: `hitl-resume-${taskId}-a1`,
+        name: tenantEventName(tenantSlug, "task.resolved"),
+        data: expect.objectContaining({
+          taskId,
+          tenantId,
+          decision: "supplement",
+          payload: { decision: "revise", evidence: ["policy-7"] },
+          resumeMarker: marker,
+        }),
+      }),
+    );
     expect(
       getDb()
         .select({ meta: auditLog.metaJson })
         .from(auditLog)
         .where(eq(auditLog.targetId, taskId))
         .all(),
-    ).toContainEqual({ meta: { decision: "supplement" } });
+    ).toContainEqual({
+      meta: {
+        decision: "supplement",
+        deliveryStatus: "resolving",
+        resumeMarker: marker,
+        attempt: 1,
+      },
+    });
   });
 
   it("rejects payloads that do not satisfy the authored task form", async () => {

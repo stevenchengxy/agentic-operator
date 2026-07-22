@@ -28,6 +28,7 @@
 
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { ManifestImportBody } from "@agentic/contracts";
+import { isSandboxTenant } from "@agentic/runtime";
 import { requirePermission } from "../../plugins/rbac";
 import { writeAudit } from "../../plugins/audit";
 import {
@@ -51,6 +52,20 @@ const FETCH_URL_ALLOW_CONTENT_TYPES = new Set([
   "text/plain",
   "application/octet-stream",
 ]);
+
+/**
+ * Reduce a fetch-url to just its origin for the audit log. A blocked SSRF
+ * attempt must never persist credential-bearing components (userinfo, path,
+ * query, fragment) into `audit_log`. Returns "[invalid-url]" for unparseable
+ * input so the audit write can never throw.
+ */
+export function redactManifestImportUrlForAudit(raw: string): string {
+  try {
+    return new URL(raw).origin.slice(0, 200);
+  } catch {
+    return "[invalid-url]";
+  }
+}
 
 /** Build an AuditCtx from the Fastify request so the service can `req.log.error(...)` failures. */
 function auditCtxFor(req: FastifyRequest, actorUserId?: string): AuditCtx {
@@ -156,6 +171,19 @@ export async function manifestImportRoutes(app: FastifyInstance) {
       );
     }
     const parsed = ManifestImportBody.parse(req.body);
+    // The `target` enum was widened to `["staging","production"]` for the
+    // in-process sandbox deployer, which calls the validate/commit service
+    // functions directly. Over HTTP, only a sandbox tenant may select the
+    // staging lane; a real tenant asking for staging is rejected before any
+    // pending session is created, so it cannot skip the production CodeAct
+    // authorization gate keyed on `target === "production"`.
+    if (parsed.target === "staging" && !isSandboxTenant(auth.tenantSlug)) {
+      return reply.fail(
+        "invalid_target",
+        "staging deployments are not available for this tenant; use target=production",
+        400,
+      );
+    }
     // Per review A4 the canonical confirm surface is `?confirm=1`. The
     // body field is still honoured for v1 wizard parity, but the query
     // string takes precedence when both are present.
@@ -204,6 +232,21 @@ export async function manifestImportRoutes(app: FastifyInstance) {
             "pending import is no longer active; validate again without the stale deployment id",
             err.reason === "not_found" ? 404 : 409,
           );
+        }
+        if (err instanceof BlockingIssuesError) {
+          return reply.status(400).send({
+            ok: false,
+            error: {
+              code: "blocking_issues",
+              message:
+                "validation refused — credentials must use valid secret references",
+              hint: err.issues
+                .slice(0, 6)
+                .map((issue) => `${issue.path}: ${issue.message}`)
+                .join("; "),
+            },
+            issues: err.issues,
+          });
         }
         throw err;
       }
@@ -356,7 +399,7 @@ export async function manifestImportRoutes(app: FastifyInstance) {
           actorUserId: auth.userId ?? undefined,
           action: "manifest.import.fetch_url.blocked",
           targetType: "url",
-          targetId: url.slice(0, 200),
+          targetId: redactManifestImportUrlForAudit(url),
           meta: { code: err.code, message: err.message },
         });
         // 400 for policy violations; 504 for timeouts.

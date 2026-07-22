@@ -746,16 +746,32 @@ class TenantRoutingGateway extends LLMGateway {
     return routeChat(req, getLlmSettings(slug).settings);
   }
 
+  /**
+   * Resolve the concrete gateway for the request-local billing scope for
+   * read-only introspection, returning undefined instead of throwing when no
+   * real provider can be constructed. resolveConfig() fails closed outside a
+   * test process — it refuses to synthesize the mock adapter — so provider
+   * discovery/registry probes must treat that as "no providers available"
+   * rather than surfacing a 500. Real dispatch (chat) still fails loudly.
+   */
+  private introspectionGateway(): LLMGateway | undefined {
+    try {
+      return concreteGateway(contextTenantId());
+    } catch {
+      return undefined;
+    }
+  }
+
   override listProviders(): ProviderInfo[] {
-    return concreteGateway(contextTenantId()).listProviders();
+    return this.introspectionGateway()?.listProviders() ?? [];
   }
 
   override hasProvider(id: ProviderId): boolean {
-    return concreteGateway(contextTenantId()).hasProvider(id);
+    return this.introspectionGateway()?.hasProvider(id) ?? false;
   }
 
   override getProvider(id: ProviderId): ProviderAdapter | undefined {
-    return concreteGateway(contextTenantId()).getProvider(id);
+    return this.introspectionGateway()?.getProvider(id);
   }
 
   override get defaultProvider(): ProviderId {

@@ -56,7 +56,7 @@ describe("external Factory sandbox deployment contract", () => {
     const workload = between(dockerfile, "FROM sandbox-workload-base AS sandbox-workload", "FROM ${NODE_BASE_IMAGE} AS codeact-candidate");
 
     expect(common).not.toMatch(/COPY[^\n]*\/models(?:\s|\/)/);
-    expect(dockerfile).toContain("ARG NODE_BASE_IMAGE=node:26-slim");
+    expect(dockerfile).toContain("ARG NODE_BASE_IMAGE=node:26.5.0-slim");
     expect(control).not.toMatch(/COPY[^\n]*\/tenants(?:\s|\/)/);
     expect(control).not.toContain("sandbox-runner-executor.ts");
     expect(control).not.toContain("bootstrap.ts");

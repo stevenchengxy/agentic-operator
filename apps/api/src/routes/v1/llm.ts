@@ -551,7 +551,15 @@ export async function llmRoutes(app: FastifyInstance): Promise<void> {
   app.get("/llm/providers", async (req, reply) => {
     requireAuth(req);
     const gateway = getLLMGateway();
-    return reply.ok(gateway.listProviders());
+    // Discovery must not advertise providers this build never runs real
+    // inference through (mock/bedrock/vertex outside a test process). A portal
+    // that lists them would let an operator "configure" a provider that can
+    // never serve traffic.
+    return reply.ok(
+      gateway
+        .listProviders()
+        .filter((provider) => providerAvailableInThisProcess(provider.id)),
+    );
   });
 
   app.get<{ Querystring: { provider?: string } }>(
@@ -626,6 +634,7 @@ export async function llmRoutes(app: FastifyInstance): Promise<void> {
     if (!isProviderId(id)) {
       return reply.fail("bad_request", `Unknown provider: ${id}`, 400);
     }
+    requireRuntimeProvider(id);
     const { apiKey, scope } = req.body ?? {};
     if (typeof apiKey !== "string" || apiKey.trim().length < 8) {
       return reply.fail("bad_request", "apiKey is required (min 8 chars)", 400);
@@ -637,11 +646,23 @@ export async function llmRoutes(app: FastifyInstance): Promise<void> {
         400,
       );
     }
+    if (scope === "tenant") {
+      // The process-wide provider vault feeds a singleton adapter set; a
+      // tenant-scoped provider key would be accepted here but never actually
+      // reach runtime routing, so a caller could believe a per-tenant key is
+      // live when it is not. Fail closed until that scope is wired end-to-end.
+      return reply.fail(
+        "tenant_key_scope_unavailable",
+        "Tenant-scoped provider keys are not wired into the singleton runtime gateway; use workspace scope instead.",
+        409,
+      );
+    }
     try {
+      // Only workspace scope reaches here — tenant scope is rejected above
+      // because it never affects the singleton runtime gateway.
       const meta = setProviderKey(id, {
         apiKey: apiKey.trim(),
         scope,
-        tenantId: scope === "tenant" ? auth.tenantId : undefined,
         setBy: auth.tenantSlug,
       });
       resetLLMGateway();
@@ -725,6 +746,7 @@ export async function llmRoutes(app: FastifyInstance): Promise<void> {
     if (!isProviderId(id)) {
       return reply.fail("bad_request", `Unknown provider: ${id}`, 400);
     }
+    requireRuntimeProvider(id);
     // Candidate key from body wins; fall back to whatever the vault/env has
     // for the caller's tenant. The vault is tenant-scoped (P5-TEN-01) so we
     // pass the auth's tenantId to honor tenant-specific keys.
@@ -763,6 +785,7 @@ export async function llmRoutes(app: FastifyInstance): Promise<void> {
       if (!isProviderId(id)) {
         return reply.fail("bad_request", `Unknown provider: ${id}`, 400);
       }
+      requireRuntimeProvider(id);
       const key = getProviderKey(id, auth.tenantId) ?? "";
       const live = await listAvailableModels(id, key);
       const catalog = PROVIDER_MODEL_CATALOG[id];

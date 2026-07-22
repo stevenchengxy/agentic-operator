@@ -719,7 +719,22 @@ export function registerAgent(
   let productionGeneratedAuthorizationRequest:
     | ProductionGeneratedAgentAuthorizationRequest
     | null = null;
-  if (agent.generated === true && !isFactorySandboxTenant(tenantSlug)) {
+  // A bare declarative `generated` agent (Agent Studio's derived-from-legacy
+  // marker) carries no factory provenance and no executable code — it runs the
+  // same declarative path as a hand-authored agent, so it needs no durable
+  // Factory promotion capability. Only agents that CLAIM factory production
+  // (any factory_* identity field or executable code) must prove one. Mirrors
+  // the manifest-import quarantine + bootstrap gates so all three surfaces agree.
+  const claimsFactoryProduction =
+    agent.generated === true &&
+    (!!agent.factory_domain_id ||
+      !!agent.factory_target_domain_id ||
+      !!agent.factory_promotion_version_id ||
+      !!agent.factory_regression_suite_fingerprint ||
+      !!agent.factory_execution_scope ||
+      agent.codeExecuted === true ||
+      !!agent.typescript_code);
+  if (claimsFactoryProduction && !isFactorySandboxTenant(tenantSlug)) {
     const agentManifestSha256 = productionCodeActManifestSha256(agent);
     const scope = agent.factory_execution_scope;
     if (

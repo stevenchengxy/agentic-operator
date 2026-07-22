@@ -26,14 +26,14 @@ const people = {
 };
 const sessionSecret = `tenant-settings-${suffix}-session-secret-32-chars`;
 
-async function cookieFor(email: string): Promise<string> {
+async function cookieFor(userId: string): Promise<string> {
   const token = await new SignJWT({
-    name: email,
+    name: userId,
     initials: "QA",
     tenant: tenantA.slug,
   })
     .setProtectedHeader({ alg: "HS256" })
-    .setSubject(email)
+    .setSubject(userId)
     .setIssuedAt()
     .setExpirationTime("1h")
     .sign(new TextEncoder().encode(sessionSecret));
@@ -69,8 +69,8 @@ describe("tenant Settings authorization", () => {
     vi.stubEnv("AUTH_MODE", "production");
     vi.stubEnv("AUTH_SESSION_SECRET", sessionSecret);
     env = await buildTestEnv();
-    adminCookie = await cookieFor(people.admin.email);
-    viewerCookie = await cookieFor(people.viewer.email);
+    adminCookie = await cookieFor(people.admin.id);
+    viewerCookie = await cookieFor(people.viewer.id);
   });
 
   afterAll(() => {

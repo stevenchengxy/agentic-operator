@@ -15,7 +15,7 @@ import {
   type ChatRequest,
   type ProviderAdapter,
 } from "@agentic/llm-gateway";
-import { getDb, llmCalls } from "@agentic/db";
+import { getDb, llmCallTelemetry } from "@agentic/db";
 import {
   _resetLlmTelemetryStatusForTests,
   _setLlmTelemetryTestHooks,
@@ -119,8 +119,8 @@ describe("durable LLM telemetry outbox", () => {
     expect(replayLlmTelemetrySpool()).toEqual({ replayed: 1, pending: 0 });
     expect(replayLlmTelemetrySpool()).toEqual({ replayed: 0, pending: 0 });
     expect(existsSync(spoolPath)).toBe(false);
-    const rows = getDb().select().from(llmCalls)
-      .where(eq(llmCalls.conversationId, conversationId)).all();
+    const rows = getDb().select().from(llmCallTelemetry)
+      .where(eq(llmCallTelemetry.conversationId, conversationId)).all();
     expect(rows).toHaveLength(1);
     expect(getLlmTelemetryStatus()).toMatchObject({
       ok: true,

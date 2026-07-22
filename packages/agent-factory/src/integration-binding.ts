@@ -116,10 +116,26 @@ const rows = (value: unknown): Row[] =>
 const stringValue = (value: unknown): string => typeof value === "string" ? value.trim() : "";
 const key = (value: string): string => value.normalize("NFKC").toLocaleLowerCase().replace(/[\s_.:/()-]+/g, "");
 
-function sameSystem(left: string, right: string): boolean {
-  // Aliases belong in the tool capability's explicit `systems[]` metadata.
+function sameSystem(left: string, right: string, aliasGroups?: readonly (readonly string[])[]): boolean {
+  // Direct label equality first. Beyond that, the ONLY sanctioned synonym
+  // source is the tenant's human-confirmed System Profiles (alias groups):
+  // two different names cross-bind iff one confirmed profile lists both.
   // Unknown vendor names never cross-bind through a code-owned synonym table.
-  return key(left) === key(right);
+  if (key(left) === key(right)) return true;
+  if (!aliasGroups?.length) return false;
+  const l = key(left);
+  const r = key(right);
+  return aliasGroups.some((group) => {
+    let hasL = false;
+    let hasR = false;
+    for (const name of group) {
+      const k = key(name);
+      if (k === l) hasL = true;
+      if (k === r) hasR = true;
+      if (hasL && hasR) return true;
+    }
+    return false;
+  });
 }
 function operationsFromCapability(value: string): string[] {
   const operations = new Set<string>();
@@ -199,6 +215,7 @@ export function deriveIntegrationRequirements(action: OntologyAction): Integrati
 function capabilityMatches(
   requirement: IntegrationRequirement,
   capability: ToolCapabilityDescriptor,
+  aliasGroups?: readonly (readonly string[])[],
 ): { matches: boolean; score: number; reason?: string } {
   // A code-owned, profile-bound transport may explicitly declare `*` when it
   // is system-agnostic (for example a server-owned SQL statement catalog).
@@ -210,7 +227,7 @@ function capabilityMatches(
   if (
     !systemWildcard &&
     !capability.systems.some((system) =>
-      sameSystem(system, requirement.system),
+      sameSystem(system, requirement.system, aliasGroups),
     )
   ) {
     return { matches: false, score: 0, reason: "system mismatch" };
@@ -249,6 +266,9 @@ export function resolveIntegrationBindings(
     /** Trusted precomputed hashes for contexts that must not receive raw env
      * values (for example read-only preflight). */
     expectedDefinitionHashes?: Record<string, string>;
+    /** Tenant-confirmed System Profile alias groups: names in one group refer
+     * to the same external system. The ONLY sanctioned synonym source. */
+    systemAliasGroups?: readonly (readonly string[])[];
     capabilityProviders?: IntegrationCapabilityProvider[];
     /** The exact confirmed profile selected for each tool. Binding rechecks
      * identity and catalog profileScope; a stored config alone is not proof
@@ -269,7 +289,16 @@ export function resolveIntegrationBindings(
 ): IntegrationBindingReport {
   const env = opts.env ?? process.env;
   const bound = opts.boundToolNames ? new Set(opts.boundToolNames) : null;
-  const candidates = bound ? tools.filter((tool) => bound.has(tool.name)) : tools;
+  // Alias-aware: a manifest may bind a tool by any of its registered names
+  // (e.g. the legacy `robohire*` aliases for the canonical `gohire*` tools).
+  // Matching only the canonical `tool.name` silently drops alias-bound tools.
+  const candidates = bound
+    ? tools.filter(
+        (tool) =>
+          bound.has(tool.name) ||
+          (tool.aliases ?? []).some((alias) => bound.has(alias)),
+      )
+    : tools;
   const rawBindings = deriveIntegrationRequirements(action).map((requirement): IntegrationToolBinding => {
     const eventBacked = new Set(["notify", "trigger", "consume"]).has(canonicalRole(requirement.role));
     if (eventBacked) {
@@ -296,11 +325,11 @@ export function resolveIntegrationBindings(
     }
 
     const providerMatches = (opts.capabilityProviders ?? [])
-      .flatMap((provider) => provider.capabilities.map((capability) => ({ provider, result: capabilityMatches(requirement, capability) })))
+      .flatMap((provider) => provider.capabilities.map((capability) => ({ provider, result: capabilityMatches(requirement, capability, opts.systemAliasGroups) })))
       .filter((candidate) => candidate.result.matches)
       .sort((left, right) => right.result.score - left.result.score || left.provider.id.localeCompare(right.provider.id));
     const toolMatches = candidates
-      .flatMap((tool) => (tool.capabilities ?? []).map((capability) => ({ tool, capability, result: capabilityMatches(requirement, capability) })))
+      .flatMap((tool) => (tool.capabilities ?? []).map((capability) => ({ tool, capability, result: capabilityMatches(requirement, capability, opts.systemAliasGroups) })))
       .filter((candidate) => candidate.result.matches)
       .sort((left, right) => right.result.score - left.result.score || left.tool.name.localeCompare(right.tool.name));
 
@@ -421,7 +450,7 @@ export function resolveIntegrationBindings(
       if (
         typeof configuredSystem !== "string" ||
         !configuredSystem.trim() ||
-        !sameSystem(configuredSystem, requirement.system)
+        !sameSystem(configuredSystem, requirement.system, opts.systemAliasGroups)
       ) {
         return {
           requirement,

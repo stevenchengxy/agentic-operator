@@ -115,7 +115,16 @@ describe("reviewed Ontology to real global tool capability alignment", () => {
       objects: ["Interview_Record", "Communication_Log"],
     },
   ])("recognizes $tool without treating missing evidence as success", (input) => {
-    expect(bindingStatus(input)).toBe("needs_config");
+    // parse-resume and match-resume carry probeRequired=true in the catalog, so
+    // with no verified probe they resolve to the stricter `needs_probe`; the
+    // others (no probe requirement) resolve to `needs_config`. Both are
+    // evidence-gated — the point of this test is that neither is treated as a
+    // resolved/success binding when the supporting evidence is absent.
+    const expected =
+      input.tool === "parseResumeApi" || input.tool === "matchResumeApi"
+        ? "needs_probe"
+        : "needs_config";
+    expect(bindingStatus(input)).toBe(expected);
   });
 
   it("recognizes the ontology-selected tenant inbox as a Resume_Upload reader", () => {

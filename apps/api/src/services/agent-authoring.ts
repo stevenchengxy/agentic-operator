@@ -28,7 +28,11 @@ import {
   isInngestFunctionRegistered,
   listInngestFunctionIds,
 } from "./inngest-registry";
-import { getGlobalToolCatalogEntry, listGlobalTools } from "@agentic/tools";
+import {
+  getGlobalToolCatalogEntry,
+  globalToolExecutionPolicy,
+  listGlobalTools,
+} from "@agentic/tools";
 import {
   buildAgentArchetypeRuntime,
   getAgentArchetypeSpec,
@@ -424,6 +428,33 @@ function canonicalizeKnownToolEntry(
     : tool;
 }
 
+/**
+ * Attach the reviewed execution-policy triple for a tool, sourced from the
+ * global registry and converted to the manifest's snake_case shape. The
+ * manifest schema requires this on every tool of a generated agent, and the
+ * step engine reconciles the declared triple against the live registry before
+ * dispatch (reviewedExecutionPolicy) — so the policy MUST come from the
+ * registry, never be hand-authored, or dispatch throws on the mismatch. A tool
+ * whose registry entry carries no reviewed policy fails closed here rather than
+ * emitting an undeclared/unsafe tool binding.
+ */
+function withReviewedExecutionPolicy(tool: AgentAuthoringTool) {
+  const policy = globalToolExecutionPolicy(tool.name);
+  if (!policy) {
+    throw new InvalidAuthoredToolError(
+      `missing_execution_policy: ${tool.name} has no reviewed execution_policy in the global tool registry`,
+    );
+  }
+  return {
+    ...tool,
+    execution_policy: {
+      operation: policy.operation,
+      effect_scope: policy.effectScope,
+      sandbox_policy: policy.sandboxPolicy,
+    },
+  };
+}
+
 function resolveStepModels(
   input: DeployAuthoredAgentBody,
   selection: AgentModelSelection,
@@ -536,7 +567,7 @@ export function buildAuthoredManifestAgent(
     output_config: blueprint.outputConfig,
     triggered_event: input.emits,
     ontology_instructions: `${input.systemPrompt}\n\n${blueprint.instructions}`,
-    tool_use: selectedTools,
+    tool_use: selectedTools.map(withReviewedExecutionPolicy),
     typescript_code: input.typescriptCode,
     generated: hasLogic,
     provider: modelSelection.provider,

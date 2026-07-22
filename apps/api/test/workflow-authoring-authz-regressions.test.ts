@@ -46,14 +46,14 @@ function hash(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-async function cookieFor(email: string): Promise<string> {
+async function cookieFor(userId: string): Promise<string> {
   const jwt = await new SignJWT({
-    name: email,
+    name: userId,
     initials: "QA",
     tenant: tenant.slug,
   })
     .setProtectedHeader({ alg: "HS256" })
-    .setSubject(email)
+    .setSubject(userId)
     .setIssuedAt()
     .setExpirationTime("1h")
     .sign(new TextEncoder().encode(sessionSecret));
@@ -143,9 +143,9 @@ describe("workflow authoring writer authorization regressions", () => {
 
     process.env.AUTH_SESSION_SECRET = sessionSecret;
     env = await buildTestEnv();
-    adminCookie = await cookieFor(people.admin.email);
-    operatorCookie = await cookieFor(people.operator.email);
-    viewerCookie = await cookieFor(people.viewer.email);
+    adminCookie = await cookieFor(people.admin.id);
+    operatorCookie = await cookieFor(people.operator.id);
+    viewerCookie = await cookieFor(people.viewer.id);
   });
 
   afterAll(() => {
@@ -170,6 +170,10 @@ describe("workflow authoring writer authorization regressions", () => {
 
   it.each([
     ["viewer cookie", () => ({ cookie: viewerCookie })],
+    // `operator` operates the live system but performs no configuration:
+    // `workflows.write` lives in ADMIN_EXTRA (contracts/permissions.ts), so an
+    // operator cookie must be denied every authoring mutation, same as viewer.
+    ["operator cookie", () => ({ cookie: operatorCookie })],
     [
       "read-only bearer",
       () => ({ authorization: `Bearer ${tokens.readOnly}` }),
@@ -224,12 +228,6 @@ describe("workflow authoring writer authorization regressions", () => {
   );
 
   it.each([
-    [
-      "operator cookie",
-      () => ({ cookie: operatorCookie }),
-      `operator-${suffix}`,
-      people.operator.id,
-    ],
     [
       "admin cookie",
       () => ({ cookie: adminCookie }),

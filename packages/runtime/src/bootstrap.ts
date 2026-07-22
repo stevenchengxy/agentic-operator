@@ -607,6 +607,22 @@ export async function bootstrapTenant(spec: {
   if (!isFactorySandboxTenant(spec.tenantSlug)) {
     for (const agent of manifest) {
       if (agent.generated !== true) continue;
+      // A bare declarative `generated` agent (e.g. Agent Studio's
+      // derived-from-legacy marker) carries no factory provenance and no
+      // executable code — it runs the same declarative step-engine path as a
+      // hand-authored agent, so it needs no production-promotion receipt. Only
+      // agents that CLAIM factory production (any factory_* identity field or
+      // executable code) must prove COMPLETE provenance below. This mirrors the
+      // manifest-import quarantine gate so the two surfaces agree.
+      const claimsFactoryProduction =
+        !!agent.factory_domain_id ||
+        !!agent.factory_target_domain_id ||
+        !!agent.factory_promotion_version_id ||
+        !!agent.factory_regression_suite_fingerprint ||
+        !!agent.factory_execution_scope ||
+        agent.codeExecuted === true ||
+        !!agent.typescript_code;
+      if (!claimsFactoryProduction) continue;
       if (
         !agent.factory_domain_id ||
         agent.factory_target_domain_id !== agent.factory_domain_id ||
@@ -704,7 +720,10 @@ export async function bootstrapTenant(spec: {
     if (!liveVersion) continue;
     if (
       liveVersion.version === versionStr ||
-      liveVersion.version === legacyVersionStr ||
+      // A legacy-labeled live row must NOT be adopted on label alone — that
+      // would overwrite a colliding row. It qualifies only on a canonical
+      // version match (above) or a real content match (below). See
+      // workflow-version-identity.ts:50-54.
       workflowVersionContentMatches(liveVersion, manifest, loaded.actionsExt)
     ) {
       matchingLive = candidate;

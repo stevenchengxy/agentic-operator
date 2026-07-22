@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { defineTool } from "@agentic/agent-kit";
 import { canonicalToolCassetteKey } from "@agentic/shared/cassette";
-import { globalToolRegistry, listGlobalTools } from "@agentic/tools";
+import { getGlobalToolCatalogEntry, globalToolRegistry } from "@agentic/tools";
 import { probeGlobalIntegration } from "../src/services/agent-factory/integration-probe";
 
 const catalog = {
@@ -212,7 +212,7 @@ describe("global integration probe", () => {
   it.each(["inviteCandidateApi", "postgres.executeStatement", "ontology.writeInstance"])(
     "keeps current registry tool %s at needs_config without calling its service",
     async (name) => {
-      const current = listGlobalTools().find((entry) => entry.name === name)!;
+      const current = getGlobalToolCatalogEntry(name)!;
       const descriptor = globalToolRegistry.get(name)!;
       const result = await probeGlobalIntegration({
         catalog: current,
