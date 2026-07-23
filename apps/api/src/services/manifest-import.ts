@@ -76,6 +76,9 @@ import type {
   Conflict,
   Issue,
 } from "@agentic/contracts";
+// Value (not type) import: WorkflowManifestCompatSchema is a runtime Zod schema
+// used below to re-derive the on-disk manifest form exactly as bootstrap does.
+import { WorkflowManifestCompatSchema } from "@agentic/contracts";
 import {
   WorkflowManifestSchema,
   ActionsManifestSchema,
@@ -2132,7 +2135,12 @@ export async function validate(
       if (oldRow) {
         db.update(workflowVersions)
           .set({
-            manifestJson: result.migrated as unknown as object,
+            // Expanded envelope (see bootstrapIdentityManifestJson) so a pending
+            // row promoted to the canonical version at commit — its manifest is
+            // NOT rewritten there — already matches what bootstrap re-derives.
+            manifestJson: bootstrapIdentityManifestJson(
+              result.persistedManifest,
+            ) as object,
             actionsJson: (result.actions ?? null) as unknown as object,
           })
           .where(eq(workflowVersions.id, oldRow.versionId))
@@ -2151,7 +2159,11 @@ export async function validate(
           id: workflowVersionId,
           workflowId: wf.id,
           version: `pending-${deploymentId}`,
-          manifestJson: result.persistedManifest as object,
+          // Expanded envelope (see bootstrapIdentityManifestJson) so the pending
+          // row is byte-identical to what bootstrap re-derives once promoted.
+          manifestJson: bootstrapIdentityManifestJson(
+            result.persistedManifest,
+          ) as object,
           actionsJson: (result.actions ?? null) as unknown as object,
         })
         .run();
@@ -2364,6 +2376,39 @@ async function pickAndReserveNextFilename(
 }
 
 /**
+ * The canonical runtime manifest as bootstrap re-derives it from the on-disk
+ * file. Bootstrap's loadManifestFromDisk branches on Array.isArray and, for the
+ * V2 envelope, compat-parses then schema-parses (expands) its `agents`. Mirror
+ * that EXACT transform on the exact bytes we write to disk
+ * (`result.persistedManifest`) so the version id and the stored manifest_json we
+ * persist here are byte-identical to what bootstrap computes and stores. Hashing
+ * or storing the minimal pre-parse `result.migrated` instead diverges from the
+ * expanded on-disk form and trips bootstrap's version/content digest guard (a
+ * 500 during hot-swap). Direct-parse and compat-parse expand differently, so
+ * this must follow the same branch bootstrap does.
+ */
+function bootstrapIdentityAgents(persistedManifest: unknown): WorkflowManifest {
+  return Array.isArray(persistedManifest)
+    ? WorkflowManifestSchema.parse(persistedManifest)
+    : WorkflowManifestSchema.parse(
+        WorkflowManifestCompatSchema.parse(persistedManifest).agents,
+      );
+}
+
+/**
+ * The `manifest_json` payload to persist for a workflow_version row: the
+ * expanded canonical agents (see {@link bootstrapIdentityAgents}) wrapped back
+ * in the V2 envelope so top-level `$schemaVersion`/`extensions` survive, exactly
+ * as bootstrap and the validate/promotion paths persist it.
+ */
+function bootstrapIdentityManifestJson(persistedManifest: unknown): unknown {
+  const agents = bootstrapIdentityAgents(persistedManifest);
+  return Array.isArray(persistedManifest)
+    ? agents
+    : { ...(persistedManifest as Record<string, unknown>), agents };
+}
+
+/**
  * Content-identity check that tolerates the persisted V2 envelope shape.
  *
  * `validate()` stores the full `{ $schemaVersion, extensions, agents }` envelope
@@ -2511,11 +2556,26 @@ export async function commit(
       }
     : undefined;
   const deploymentId = pendingLockRow?.id ?? makeId("dpl");
+  // Version identity MUST be byte-identical to what runtime bootstrap re-derives
+  // from disk, or bootstrap treats the just-committed version as new, supersedes
+  // this deployment, and assertDeploymentOwnsLiveLane 500s. Bootstrap loads the
+  // on-disk workflow.json (the V2 envelope written below) via
+  // loadManifestFromDisk, which branches on Array.isArray and, for the envelope,
+  // compat-parses then schema-parses its `agents`. Mirror that EXACT transform
+  // here on the EXACT bytes we write to disk (result.persistedManifest) so the
+  // hashed form and the runtime-loaded form are the same object. Hashing the raw
+  // pre-parse `result.migrated` instead (as before) diverged from the envelope's
+  // compat+schema-parsed form and broke every cold commit. The stored
+  // manifestJson reuses this parsed form for the content-collision guard.
+  const migratedForIdentity = bootstrapIdentityAgents(result.persistedManifest);
+  const identityManifestJson = bootstrapIdentityManifestJson(
+    result.persistedManifest,
+  );
   const desiredVersion = canonicalWorkflowVersionId(
-    result.migrated,
+    migratedForIdentity,
     result.actions,
   );
-  const legacyDesiredVersion = legacyWorkflowVersionId(result.migrated);
+  const legacyDesiredVersion = legacyWorkflowVersionId(migratedForIdentity);
   // Capture the authoritative last-good view before the first durable write.
   // Phase-2 failure does not need it, but any later runtime activation failure
   // must restore this exact pre-image rather than merely demoting the new row.
@@ -2548,6 +2608,10 @@ export async function commit(
     await mkdir(tmpDir, { recursive: true });
     await writeFile(
       tmpWorkflowPath,
+      // Persist the V2 envelope ($schemaVersion + extensions + agents) so
+      // top-level authoring metadata survives on disk (asserted by
+      // workflow-authoring-release-regressions). Bootstrap re-derives the exact
+      // version from this envelope via bootstrapIdentityAgents' compat path.
       JSON.stringify(result.persistedManifest, null, 2) + "\n",
       "utf8",
     );
@@ -2690,7 +2754,7 @@ export async function commit(
             fullExisting &&
             !storedWorkflowVersionMatchesMigrated(
               fullExisting,
-              result.migrated,
+              migratedForIdentity,
               result.actions,
             )
           ) {
@@ -2713,7 +2777,7 @@ export async function commit(
             (legacyExisting &&
             storedWorkflowVersionMatchesMigrated(
               legacyExisting,
-              result.migrated,
+              migratedForIdentity,
               result.actions,
             )
               ? legacyExisting
@@ -2731,7 +2795,7 @@ export async function commit(
               !pendingVersion ||
               !storedWorkflowVersionMatchesMigrated(
                 pendingVersion,
-                result.migrated,
+                migratedForIdentity,
                 result.actions,
               )
             ) {
@@ -2771,7 +2835,7 @@ export async function commit(
               !pendingVersion ||
               !storedWorkflowVersionMatchesMigrated(
                 pendingVersion,
-                result.migrated,
+                migratedForIdentity,
                 result.actions,
               )
             ) {
@@ -2817,7 +2881,7 @@ export async function commit(
             fullExisting &&
             !storedWorkflowVersionMatchesMigrated(
               fullExisting,
-              result.migrated,
+              migratedForIdentity,
               result.actions,
             )
           ) {
@@ -2840,7 +2904,7 @@ export async function commit(
             (legacyExisting &&
             storedWorkflowVersionMatchesMigrated(
               legacyExisting,
-              result.migrated,
+              migratedForIdentity,
               result.actions,
             )
               ? legacyExisting
@@ -2854,11 +2918,13 @@ export async function commit(
                 id: workflowVersionId,
                 workflowId: wf.id,
                 version: desiredVersion,
-                // Persist the envelope-preserving payload (V2 $schemaVersion +
-                // extensions) exactly like the validate/promotion paths do;
-                // `storedWorkflowVersionMatchesMigrated` normalizes the agents
-                // out of it for content comparison.
-                manifestJson: result.persistedManifest as object,
+                // Persist the EXPANDED envelope (V2 $schemaVersion + extensions
+                // + schema-parsed agents) so this row is byte-identical to what
+                // bootstrap stores/re-derives from disk. Storing the minimal
+                // pre-parse agents made bootstrap's content check throw a digest
+                // collision. `storedWorkflowVersionMatchesMigrated` normalizes
+                // the agents out for content comparison.
+                manifestJson: identityManifestJson as object,
                 actionsJson: (result.actions ?? null) as unknown as object,
               })
               .run();

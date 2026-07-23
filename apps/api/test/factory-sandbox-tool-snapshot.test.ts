@@ -34,6 +34,15 @@ const tenantId = "tenant-snapshot-test";
 const tenantSlug = "agents-generation-snapshot-test";
 const directories: string[] = [];
 
+// Cassette attestations carry a rolling TTL (DEFAULT_TTL_MS = 7 days). Anchoring
+// probe evidence to a fixed calendar date silently rots: the original
+// `2026-07-15T08:00:00Z` anchor minted an attestation that expired 2026-07-22
+// and then failed every run afterwards (isSandboxReplayToolProbeReceipt drops an
+// expired receipt → tool_evidence_missing). Pin every mint/verify time to a
+// single instant one minute in the past so the 7-day window always straddles the
+// test run while keeping mint- and verify-side comparisons on the same instant.
+const PROBE_NOW = new Date(Date.now() - 60_000);
+
 beforeAll(() => {
   getDb()
     .insert(tenants)
@@ -106,7 +115,7 @@ async function recordVerifiedCassette(input: {
   config: Record<string, unknown>;
   suffix: string;
 }): Promise<{ cassette: CanonicalCassetteDocument; cassettePath: string }> {
-  const recordedAt = new Date("2026-07-15T08:00:00.000Z");
+  const recordedAt = PROBE_NOW;
   const cassette = attestLiveProbeCassette({
     version: 1,
     tool: { name: input.toolName, definitionHash: input.definitionHash },
@@ -222,7 +231,7 @@ describe("external sandbox tool snapshot resolver", () => {
         specs: [generatedSpec],
         toolDefinitions: snapshot.definitions,
         toolEvidence: snapshot.evidence,
-        now: new Date("2026-07-15T08:00:00.000Z"),
+        now: PROBE_NOW,
       }),
     ).not.toThrow();
   });
@@ -311,7 +320,7 @@ describe("external sandbox tool snapshot resolver", () => {
       specs: [first, second],
       toolDefinitions: snapshot.definitions,
       toolEvidence: snapshot.evidence,
-      now: new Date("2026-07-15T08:00:00.000Z"),
+      now: PROBE_NOW,
     });
     expect(() => buildSandboxCandidateBundle({
       attemptId: "00000000-0000-4000-8000-000000000024",
@@ -325,7 +334,7 @@ describe("external sandbox tool snapshot resolver", () => {
         ? { ...entry, definition: { ...entry.definition, selectedName: "tampered.tool" } }
         : entry),
       toolEvidence: snapshot.evidence,
-      now: new Date("2026-07-15T08:00:00.000Z"),
+      now: PROBE_NOW,
     })).toThrow(/do not share one exact executable implementation/i);
     const manifests = bundle.manifest as Array<{
       id: string;
